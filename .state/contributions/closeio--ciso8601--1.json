@@ -1,7 +1,7 @@
 {
   "active_operation_id": null,
   "active_work": null,
-  "activity": "waiting_capacity",
+  "activity": "waiting_human",
   "admission_class": "configuration_integration",
   "blocked_reason": null,
   "budget": {
@@ -43,10 +43,10 @@
   "paused": false,
   "pending_human_action": null,
   "pending_publication": {
-    "attempts": 1,
+    "attempts": 2,
     "exhausted": false,
     "last_reason": "verified pre-fork proposal awaiting trusted publication",
-    "next_attempt_at": "2026-11-22T04:25:40.610689+00:00",
+    "next_attempt_at": "2026-11-22T05:26:27.570323+00:00",
     "worker_run_id": "44982902579"
   },
   "phase": "development",
@@ -97,7 +97,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T04:25:40.610689+00:00",
+  "updated_at": "2026-11-22T04:26:27.570323+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
