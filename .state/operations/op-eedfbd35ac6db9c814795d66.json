@@ -7,9 +7,17 @@
   },
   "contribution_id": "closeio--ciso8601/1",
   "created_at": "2026-11-22T02:33:53.701661+00:00",
-  "discovery": [],
+  "discovery": [
+    {
+      "at": "2026-11-22T04:25:40.610689+00:00",
+      "detail": "fork/source identity, branch and trusted setup receipt verified",
+      "result": "confirmed"
+    }
+  ],
   "external_ids": {
-    "launch_attempts": 1
+    "launch_attempts": 1,
+    "provision_artifact_id": 14738919629,
+    "provision_run_id": "44984912373"
   },
   "kind": "fork_provision",
   "operation_id": "op-eedfbd35ac6db9c814795d66",
@@ -24,7 +32,7 @@
   "resolution": null,
   "revision": 3,
   "schema_version": 1,
-  "status": "planned",
+  "status": "confirmed",
   "target": {
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
     "expected_head": null,
@@ -32,5 +40,5 @@
     "repository": "riseproject-upstreaming/ciso8601",
     "repository_id": null
   },
-  "updated_at": "2026-11-22T04:24:14.201827+00:00"
+  "updated_at": "2026-11-22T04:25:40.610689+00:00"
 }

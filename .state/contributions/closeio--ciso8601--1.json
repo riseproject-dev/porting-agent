@@ -1,5 +1,5 @@
 {
-  "active_operation_id": "op-eedfbd35ac6db9c814795d66",
+  "active_operation_id": null,
   "active_work": null,
   "activity": "waiting_capacity",
   "admission_class": "configuration_integration",
@@ -20,7 +20,13 @@
   ],
   "dossier_evidence_id": "dossier-closeio--ciso8601--1-r2",
   "follows": null,
-  "fork": null,
+  "fork": {
+    "head_ref": "riscv64",
+    "head_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "name": "riseproject-upstreaming/ciso8601",
+    "pr_number": null,
+    "repository_id": 1467208233
+  },
   "generation": 0,
   "handoff_approval": null,
   "handoff_request": null,
@@ -36,8 +42,14 @@
   "parked_reason": null,
   "paused": false,
   "pending_human_action": null,
-  "pending_publication": null,
-  "phase": "provisioning",
+  "pending_publication": {
+    "attempts": 1,
+    "exhausted": false,
+    "last_reason": "verified pre-fork proposal awaiting trusted publication",
+    "next_attempt_at": "2026-11-22T04:25:40.610689+00:00",
+    "worker_run_id": "44982902579"
+  },
+  "phase": "development",
   "prerequisite_ids": [],
   "previous_phase": null,
   "processed_pr_conversation_comment_ids": [],
@@ -85,7 +97,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T04:24:14.201827+00:00",
+  "updated_at": "2026-11-22T04:25:40.610689+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
