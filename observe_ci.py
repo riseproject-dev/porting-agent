@@ -11,8 +11,8 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   dossier's required jobs and expected wheels;
 * record an evidence record and move ``activity`` to ``waiting_ci``,
   ``fix_needed`` (failed) or ``waiting_human`` (approval/access), and
-  enter ``handoff:waiting_human`` with ``last_ci_evidence_id`` set (passed,
-  plan 14.1).
+  take ``nominate_for_handoff`` to ``handoff.awaiting_submission`` with
+  ``last_ci_evidence_id`` set (passed, plan 14.1).
 
 Returns staged records for the state publisher. Never writes remotely.
 """

@@ -218,7 +218,9 @@ class TestLateResultOfWithdrawnWork(unittest.TestCase):
         output = tick(record, publications=publications, queue_works={}, runs=DISPATCHERS)
         result = final(output, record)
         self.assertEqual(output.report["publications"],
-                         [{"contribution": "closeio--ciso8601/1", "ignored": "no outstanding request"}])
+                         [{"contribution": "closeio--ciso8601/1", "ignored": "late Result without matching requested Work"}])
+        self.assertEqual([e["kind"] for k, e in output.staged if k == "events"][:1],
+                         ["record_late_effect"])
         self.assertIn(R5_ARTIFACT, result["processed_publications"])
         self.assertEqual(result["revision"], 5)
         self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))

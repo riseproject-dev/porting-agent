@@ -158,6 +158,7 @@ class TestRecordMigration(unittest.TestCase):
             "clean head": dict(record, clean_head_sha="c" * 40),
             "revision": dict(record, revision=7),
             "no evidence": dict(record, last_ci_evidence_id=None),
+            "pending feedback": dict(record, pending_feedback_evidence_ids=["review-1"]),
             "no PR": dict(record, fork=dict(record["fork"], pr_number=None)),
             "debug": dict(record, debug_commits=[{"sha": HEAD, "subject": "{debug} x",
                                                   "reason": "r"}]),

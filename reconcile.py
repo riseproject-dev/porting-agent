@@ -35,7 +35,6 @@ import capacity
 import collect
 import compat
 import controller
-import engine
 import lifecycle
 import observe_ci
 import recovery
@@ -218,6 +217,40 @@ def _answers_no_request(rec: dict, pub: dict) -> bool:
     return (pub.get("status") not in ("published", "uncertain")
             and rec["phase"] == "development" and rec["activity"] == "waiting_ci"
             and not rec.get("active_work") and not rec.get("pending_publication"))
+
+
+def _may_hold_work(rec: dict) -> bool:
+    """Whether the record is in a state that can request Work at all: a
+    working phase, not paused, and not blocked."""
+    return (rec["phase"] in compat.WORK_PHASES and not rec.get("paused")
+            and not rec.get("blocked_reason"))
+
+
+def _unrequested_result(rec: dict, pub: dict) -> str | None:
+    """Why no request of the record matches this Result, or ``None``.
+
+    A Result is folded only when it answers what the record still asks for:
+    the requested Work at the Result's revision, or the trusted publication
+    of the same worker run (a publish-only retry, or a verified proposal the
+    record holds). Park, abandon, pause, and block clear the Work without a
+    revision bump, so the revision alone does not prove a match.
+    """
+    if rec["phase"] == "handoff":
+        return "late Result during handoff"
+    if not _may_hold_work(rec):
+        return "late Result for a stopped contribution"
+    run = str(pub.get("worker_run_id"))
+    work = rec.get("active_work")
+    if rec["activity"] == "agent_running" and not work:
+        return None                       # a Work state recorded before Work was tracked
+    if work and work.get("revision") == (pub.get("task") or {}).get("revision"):
+        return None
+    if (rec.get("pending_publication") or {}).get("worker_run_id") == run:
+        return None
+    proposal = rec.get("proposal_artifact") or {}
+    if proposal.get("outcome") == "proposal" and str(proposal.get("run_id")) == run:
+        return None
+    return "late Result without matching requested Work"
 
 
 def provably_unadmitted_work(contributions: dict[str, dict], *, runs: list[dict] | None,
@@ -646,23 +679,24 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 for evidence in snap.evidence.values()
             )
         )
+        if recovered_worker_blocker and not _may_hold_work(rec):
+            recovered_worker_blocker = False      # nothing is recovered into a stopped record
         if pid and pid in (rec.get("processed_publications") or []) and not recovered_worker_blocker:
             continue          # already folded in by an earlier tick
         if pid and pid not in (rec.get("processed_publications") or []):
             rec = dict(rec, processed_publications=((rec.get("processed_publications") or []) + [pid])[-64:])
             contributions[key] = rec
         task_revision = pub.get("task", {}).get("revision")
-        if rec["phase"] == "handoff":
-            # No Work is requested in a handoff state, so no Result matches
-            # it. The table records the Result for audit and keeps the state;
-            # a branch effect it carried is seen by head observation.
-            late = engine.apply_transition(
-                rec, "record_late_effect", policy=policy, now=iso,
-                cause_id=_result_cause(pub, pub.get("worker_run_id")),
-                facts={"result_mismatch"},
-                details={"result_status": pub.get("status"), "task_revision": task_revision})
-            out.staged.extend([("contributions", rec), ("events", late.event)])
-            pubs_report.append({"contribution": cid, "ignored": "late Result during handoff"})
+        unrequested = _unrequested_result(rec, pub)
+        if unrequested:
+            # The table's `record_late_effect`: a Result that does not match
+            # the current generation, revision, and requested Work is recorded
+            # for audit and never folded, in every state. A branch effect it
+            # carried is seen by head observation.
+            out.staged.extend([("contributions", rec), ("events", compat.record_late_effect(
+                rec, policy=policy, now=iso, cause_id=_result_cause(pub, pub.get("worker_run_id")),
+                details={"result_status": pub.get("status"), "task_revision": task_revision}))])
+            pubs_report.append({"contribution": cid, "ignored": unrequested})
             continue
         if rec["phase"] == "upstream_review" and pub.get("status") != "published" \
                 and isinstance(task_revision, int) and task_revision <= rec["revision"]:

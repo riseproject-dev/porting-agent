@@ -125,6 +125,8 @@ def handoff_wait_shape_problem(record: dict) -> str | None:
         return "the handoff request is not for the current revision"
     if not record.get("last_ci_evidence_id"):
         return "no CI evidence is recorded"
+    if record.get("pending_feedback_evidence_ids"):
+        return "actionable feedback is pending"
     return None
 
 
@@ -226,6 +228,36 @@ def _check_legacy_write(before: dict, after: dict, site: str) -> None:
     problem = state_problem(after)
     if problem:
         raise TransitionError(f"{site}: {problem}")
+
+
+# The phases whose states can request Work outside the handoff phase.
+WORK_PHASES = frozenset(_LEGACY_PHASES)
+
+
+def record_late_effect(record: dict, *, policy: dict, now: str, cause_id: str | None,
+                       details: dict[str, Any]) -> dict:
+    """The audit event of the table's ``record_late_effect`` for ``record``.
+
+    The rule applies in every state and never changes the record. A state of
+    the table takes it through the engine. A record the engine cannot take
+    it from (a state in ``LEGACY_STATES``, or one that fails the engine's
+    own checks) gets the same event written here, so a Result that matches
+    nothing can never stop a reconciliation.
+    """
+    try:
+        outcome = engine.apply_transition(record, "record_late_effect", policy=policy, now=now,
+                                          cause_id=cause_id, facts={"result_mismatch"},
+                                          details=details)
+        if outcome.accepted and outcome.record == record:
+            return outcome.event
+    except (TransitionError, schemas.SchemaError):
+        pass
+    event = _event(record, record, "record_late_effect", "result", cause_id, now, False)
+    state = engine.state_key(record)
+    event["details"] = {"verb": "record_late_effect", "from_state": state, "to_state": state,
+                        **details}
+    schemas.validate("event", event)
+    return event
 
 
 def _bump(rec: dict) -> None:
@@ -483,6 +515,10 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
             return _reject(record, "follow-ups need a merged contribution")
         # The completed record is left intact; intake.new_followup creates
         # the new identity. Here we only record the event.
+    elif v == "submit-upstream":
+        return _reject(record, f"`/upstreaming submit-upstream` does not apply in "
+                               f"`{engine.state_key(record)}`; it applies in "
+                               "`handoff.awaiting_submission`, after CI passed on the head")
     else:  # pragma: no cover - grammar and this table must agree
         raise TransitionError(f"unhandled verb {v}")
 

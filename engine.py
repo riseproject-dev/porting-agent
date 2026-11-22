@@ -610,8 +610,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "nominate_for_handoff": "observe_ci",
     "return_for_repair": "observe_ci",
     "record_head_change": "observe_ci",
-    # A worker Result that arrives in a handoff state.
-    "record_late_effect": "reconcile",
+    # A worker Result that matches no request of the record, in any state.
+    "record_late_effect": "compat",
     # Commands on a record in a handoff state, and the controller's own stop.
     "submit_upstream": "controller",
     "pause": "controller",

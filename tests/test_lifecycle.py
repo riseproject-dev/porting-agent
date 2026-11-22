@@ -300,6 +300,19 @@ class TestScopeAndProvision(unittest.TestCase):
     def apply(self, rec, body, **kw):
         return compat.apply_command(rec, commands.parse(body), command_id="c", actor=dict(OWNER), now=NOW, **kw)
 
+    def test_submit_upstream_outside_the_handoff_phase_names_where_it_applies(self):
+        for phase, activity in (("development", "waiting_ci"), ("development", "fix_needed"),
+                                ("investigation", "idle"), ("parked", "idle")):
+            rec = contribution(phase=phase, activity=activity)
+            out = self.apply(rec, f"/upstreaming submit-upstream revision=0 head={SHA_A}")
+            with self.subTest(state=f"{phase}.{activity}"):
+                self.assertFalse(out.accepted)
+                self.assertEqual(out.record, rec)
+                self.assertEqual(
+                    out.reason,
+                    f"`/upstreaming submit-upstream` does not apply in `{phase}.{activity}`; it "
+                    "applies in `handoff.awaiting_submission`, after CI passed on the head")
+
     def test_approve_scope_then_provision(self):
         bk = dict(BACKUP)
         out = self.apply(self.rec, f"/upstreaming approve-scope revision=1 class=configuration_integration "
