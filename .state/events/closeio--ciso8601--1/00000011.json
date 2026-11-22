@@ -1,0 +1,20 @@
+{
+  "at": "2026-11-22T08:55:56.948866+00:00",
+  "cause": {
+    "id": "44982902579",
+    "type": "result"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "from": {
+    "activity": "waiting_human",
+    "revision": 3
+  },
+  "kind": "worker_reproduction_blocked",
+  "revision_bumped": true,
+  "schema_version": 1,
+  "sequence": 11,
+  "to": {
+    "activity": "fix_needed",
+    "revision": 4
+  }
+}
