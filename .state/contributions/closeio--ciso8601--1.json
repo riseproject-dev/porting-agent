@@ -1,5 +1,5 @@
 {
-  "active_operation_id": "op-e03bac0b61af5474b8c24727",
+  "active_operation_id": null,
   "active_work": null,
   "activity": "waiting_ci",
   "admission_class": "configuration_integration",
@@ -97,7 +97,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T09:33:25.003293+00:00",
+  "updated_at": "2026-11-22T09:34:14.548779+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
