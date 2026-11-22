@@ -115,6 +115,7 @@ class TestLifecycleTable(unittest.TestCase):
     def test_every_stop_clears_the_pending_publication(self):
         stops = dict(lc.stop_transitions())
         for where in ("flag paused pause", "flag paused pause_on_identity_change",
+                      "flag paused pause_on_processing_error",
                       "development.agent_running --park_contribution-->",
                       "development.waiting_human --park_contribution-->",
                       "upstream_review.waiting_human --park_contribution-->",
@@ -538,7 +539,8 @@ class TestLifecycleTable(unittest.TestCase):
     def test_one_flag_with_reason_and_setter(self):
         self.assertEqual(set(lc.FLAGS), {"paused"})
         flag = lc.FLAGS["paused"]
-        self.assertEqual(set(flag.set_by), {"pause", "pause_on_identity_change"})
+        self.assertEqual(set(flag.set_by), {"pause", "pause_on_identity_change",
+                                            "pause_on_processing_error"})
         self.assertNotIn("a reason is given", flag.set_by["pause"].guard)
         self.assertIn("paused_reason=upstream_identity_changed",
                       flag.set_by["pause_on_identity_change"].effects.sets)
@@ -800,6 +802,45 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             problems = lc.check_table(POLICY)
         self.assertIn("flag paused pause_on_identity_change: a stop set by the controller must "
                       "record its reason", problems)
+
+    def test_processing_error_stop_is_checked(self):
+        flag = lc.FLAGS["paused"]
+        stop = flag.set_by["pause_on_processing_error"]
+        self.assertEqual((stop.trigger, stop.command), (lc.Trigger.TICK, None))
+        self.assertEqual(stop.guard, (lc.NOT_PAUSED, "not terminal", lc.PROCESSING_ERROR))
+        self.assertEqual(stop.effects, lc.Effects(
+            work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller"),
+            clears=(lc.HELD_RESULT, lc.HELD_PROPOSAL)))
+        self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))
+
+        def problems_with(**changes):
+            broken = dataclasses.replace(flag, set_by={
+                **flag.set_by, "pause_on_processing_error": dataclasses.replace(stop, **changes)})
+            with mock.patch.dict(lc.FLAGS, {"paused": broken}):
+                return lc.check_table(POLICY)
+
+        where = "flag paused pause_on_processing_error"
+        by_human = dataclasses.replace(stop.effects, sets=(
+            "paused", "paused_at", "paused_reason", "paused_by=human"))
+        self.assertIn(f"{where}: does not set paused_by=controller",
+                      problems_with(effects=by_human))
+        named = dataclasses.replace(stop.effects, sets=(
+            "paused", "paused_at", "paused_reason=error", "paused_by=controller"))
+        self.assertTrue(any(p.startswith(f"{where}: a stop whose reason the caller states")
+                            for p in problems_with(effects=named)))
+        kept = dataclasses.replace(stop.effects, clears=())
+        self.assertTrue(any(p.startswith(f"{where}: a stop that clears the requested Work")
+                            for p in problems_with(effects=kept)))
+        bumped = dataclasses.replace(stop.effects, revision="bump")
+        self.assertIn(f"{where}: a stop must not bump the revision",
+                      problems_with(effects=bumped))
+        self.assertIn(f"{where}: sets the flag without the guard {lc.NOT_PAUSED!r}",
+                      problems_with(guard=("not terminal", lc.PROCESSING_ERROR)))
+        removed = dataclasses.replace(flag, set_by={
+            v: t for v, t in flag.set_by.items() if v != "pause_on_processing_error"})
+        with mock.patch.dict(lc.FLAGS, {"paused": removed}):
+            self.assertIn("flag paused: pause_on_processing_error is not a set verb",
+                          lc.check_table(POLICY))
 
     def test_operation_table_violations(self):
         broken = dataclasses.replace(lc.OPERATIONS["uncertain"], transitions={})

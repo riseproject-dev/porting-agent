@@ -352,6 +352,73 @@ def park(rec: dict, reason: str) -> dict:
     return rec
 
 
+def _end_requested(record: dict, rec: dict) -> None:
+    """What a stop, or a move to a new revision, ends in ``rec``, the changed
+    copy of ``record``."""
+    # Stopping a contribution or moving it to a new revision ends any
+    # requested task: a late worker outcome is then ignored as stale, and
+    # dispatch recovery must not launch it again.
+    if rec.get("active_work") and (rec["paused"] or rec["phase"] in TERMINAL | {"parked"}
+                                   or rec["revision"] != record["revision"] or rec.get("blocked_reason")):
+        rec["active_work"] = None
+        if rec["activity"] == "agent_running":
+            rec["activity"] = "idle"
+    # A stop also clears the pending publication and a held proposal that is
+    # not published, as the table's stop rows do: what is held is invalidated
+    # and its publication Result takes ``record_late_effect``. A branch the
+    # worker run already pushed is recorded by head observation. The command
+    # that ends a stop clears them too, so nothing held is published after a
+    # stop that began before this rule.
+    if stopped(rec) or stopped(record):
+        cleared = held_cleared(rec)
+        waited_on_held = bool(rec.get("pending_publication")) or (
+            "proposal_artifact" in cleared and rec["phase"] == "development"
+            and not rec.get("active_operation_id"))
+        rec.update(cleared)
+        if waited_on_held and rec["activity"] in ("agent_running", "waiting_capacity"):
+            rec["activity"] = "idle"
+
+
+PROCESSING_ERROR_VERB = "pause_on_processing_error"
+
+
+def pause_on_processing_error(record: dict, *, reason: str, policy: dict, now: str,
+                              cause_id: str | None, details: dict[str, Any]) -> Outcome:
+    """Take the table's ``pause_on_processing_error`` on ``record``.
+
+    The verb sets ``paused`` with ``reason``, ``paused_by`` ``controller`` and
+    ``paused_at`` and clears the requested Work, the pending publication, and
+    a held proposal. Like the ``pause`` command, it is taken through the
+    engine for a record in a handoff state and written here for every other
+    record, with the effects of the legacy pause. The outcome is not accepted,
+    and nothing changes, when the contribution is already stopped (paused or
+    blocked) or terminal: the guards of the verb. Anything else that keeps
+    the verb from applying raises.
+    """
+    if not reason.strip():
+        raise TransitionError(f"{PROCESSING_ERROR_VERB} sets paused_reason; the caller states it")
+    if record.get("paused") or record.get("blocked_reason"):
+        return Outcome(record, False, "contribution is paused", None)
+    if record["phase"] in TERMINAL:
+        return Outcome(record, False, f"contribution is terminal ({record['phase']})", None)
+    if record["phase"] == "handoff":
+        out = engine.apply_transition(
+            record, PROCESSING_ERROR_VERB, policy=policy, now=now, cause_id=cause_id,
+            facts={"processing_error"}, values={"paused_reason": reason[:2000]}, details=details)
+        return Outcome(out.record, out.accepted, out.reason, out.event)
+    rec = copy.deepcopy(record)
+    rec.update(paused=True, paused_at=now, paused_by="controller", paused_reason=reason[:2000],
+               updated_at=now)
+    _end_requested(record, rec)
+    _check_legacy_write(record, rec, PROCESSING_ERROR_VERB)
+    schemas.validate("contribution", rec)
+    event = _event(record, rec, PROCESSING_ERROR_VERB, "tick", cause_id, now, False)
+    event["details"] = {"verb": PROCESSING_ERROR_VERB, "from_state": engine.state_key(record),
+                        "to_state": engine.state_key(rec), **details}
+    schemas.validate("event", event)
+    return Outcome(rec, True, None, event)
+
+
 def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, now: str,
                   provisioning: dict | None = None,
                   backup_user: dict | None = None) -> Outcome:
@@ -540,28 +607,7 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
     else:  # pragma: no cover - grammar and this table must agree
         raise TransitionError(f"unhandled verb {v}")
 
-    # Stopping a contribution or moving it to a new revision ends any
-    # requested task: a late worker outcome is then ignored as stale, and
-    # dispatch recovery must not launch it again.
-    if rec.get("active_work") and (rec["paused"] or rec["phase"] in TERMINAL | {"parked"}
-                                   or rec["revision"] != record["revision"] or rec.get("blocked_reason")):
-        rec["active_work"] = None
-        if rec["activity"] == "agent_running":
-            rec["activity"] = "idle"
-    # A stop also clears the pending publication and a held proposal that is
-    # not published, as the table's stop rows do: what is held is invalidated
-    # and its publication Result takes ``record_late_effect``. A branch the
-    # worker run already pushed is recorded by head observation. The command
-    # that ends a stop clears them too, so nothing held is published after a
-    # stop that began before this rule.
-    if stopped(rec) or stopped(record):
-        cleared = held_cleared(rec)
-        waited_on_held = bool(rec.get("pending_publication")) or (
-            "proposal_artifact" in cleared and rec["phase"] == "development"
-            and not rec.get("active_operation_id"))
-        rec.update(cleared)
-        if waited_on_held and rec["activity"] in ("agent_running", "waiting_capacity"):
-            rec["activity"] = "idle"
+    _end_requested(record, rec)
 
     _check_legacy_write(record, rec, "apply_command")
     if rec != record or v == "authorize-followup":

@@ -50,6 +50,7 @@ SAMPLE = {
     "refresh": {"command_id": "comment-1", "reason": "r", "from_phase": "development",
                 "head_sha": SHA_A, "pr_number": 1},
     "pending_human_action": "operator_action",
+    "paused_reason": "processing_error: KeyError: 'x' (step observation, run 1)",
     "admission_override": {"class": "configuration_integration", "paths": ["a"], "reason": "r"},
     "active_work": {"dedupe_key": "example--proj/12@0:investigation", "task": "investigation",
                     "revision": 0, "attempt": 1, "requested_at": NOW, "deadline_at": NOW},
@@ -290,6 +291,65 @@ class TestTableIsExercised(unittest.TestCase):
             with self.subTest(state=state, verb=verb):
                 out = engine.apply_transition(paused, verb, **kwargs)
                 self.assertEqual(out.accepted, not masked, out.reason)
+
+
+class TestProcessingErrorStop(unittest.TestCase):
+    """``pause_on_processing_error``: the controller's stop after an
+    unexpected error while it processed one contribution."""
+
+    REASON = "processing_error: KeyError: 'x' (step observation, run 7)"
+
+    def take(self, rec, **kwargs):
+        kwargs.setdefault("values", {"paused_reason": self.REASON})
+        kwargs.setdefault("facts", {"processing_error"})
+        return engine.apply_transition(rec, "pause_on_processing_error", policy=POLICY, now=NOW,
+                                       cause_id="7", **kwargs)
+
+    def test_sets_the_flag_with_reason_setter_and_time_in_the_same_state(self):
+        rec = contribution(phase="development", activity="waiting_ci")
+        out = self.take(rec)
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(out.record, dict(rec, paused=True, paused_at=NOW, paused_by="controller",
+                                          paused_reason=self.REASON, updated_at=NOW))
+        self.assertEqual((out.event["kind"], out.event["cause"], out.event["revision_bumped"]),
+                         ("pause_on_processing_error", {"type": "tick", "id": "7"}, False))
+
+    def test_follows_the_pause_semantics(self):
+        rec = contribution(phase="development", activity="agent_running",
+                           active_work=dict(SAMPLE["active_work"]),
+                           pending_publication=dict(SAMPLE["pending_publication"]),
+                           proposal_artifact=dict(SAMPLE["proposal_artifact"], result_commit=None,
+                                                  outcome="proposal"))
+        paused = self.take(rec).record
+        # Work cleared: the state in which it is due again; nothing held is kept.
+        self.assertEqual(engine.state_key(paused), "development.fix_needed")
+        self.assertEqual((paused["active_work"], paused["pending_publication"],
+                          paused["proposal_artifact"], paused["revision"]),
+                         (None, None, None, rec["revision"]))
+        resumed = engine.apply_command(
+            paused, commands.parse("/upstreaming resume revision=0 reason=fixed"), policy=POLICY,
+            now=NOW, command_id="c")
+        self.assertEqual((resumed.verb, resumed.record["revision"], resumed.record["paused"],
+                          resumed.record["paused_reason"], resumed.record["paused_by"]),
+                         ("resume_pause", 1, False, None, None))
+
+    def test_refused_while_stopped_or_terminal_or_without_the_fact(self):
+        rec = contribution(phase="development", activity="waiting_ci")
+        for label, record, why in (
+                ("paused", dict(rec, paused=True, paused_by="human"), "contribution is paused"),
+                ("blocked", dict(rec, blocked_reason="x"), "contribution is paused"),
+                ("terminal", contribution(phase="closed", activity="idle", terminal_reason="x"),
+                 "contribution is terminal (closed.idle)")):
+            with self.subTest(record=label):
+                out = self.take(record)
+                self.assertEqual((out.accepted, out.reason, out.record), (False, why, record))
+        self.assertFalse(self.take(rec, facts=()).accepted)
+
+    def test_the_caller_states_the_reason(self):
+        rec = contribution(phase="development", activity="waiting_ci")
+        for values in ({}, {"paused_reason": None}, {"paused_reason": "  "}):
+            with self.subTest(values=values), self.assertRaises(engine.TransitionError):
+                self.take(rec, values=values)
 
 
 class TestEnginePage(unittest.TestCase):

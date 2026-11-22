@@ -69,6 +69,13 @@ These table mutations break a settled decision but still pass the check:
 - **Records stopped before stops cleared the pending publication** keep it. A paused one resumes normally; a parked one needs `abandon` then `restart`.
 - **Required:** route every stop through the engine.
 
+## The pause after a processing error uses the legacy stop outside the handoff phase
+
+- **Where:** `pause_on_processing_error`; `compat.pause_on_processing_error`.
+- **Today:** the engine takes the verb only for a record in a handoff state. For every other record the stop is written by the compatibility layer with the effects of the legacy `pause`: a record in an `agent_running` state is left in the `idle` activity of its phase, and a record in a state the table does not have (for example `development.idle`) is paused in place.
+- **Table:** the verb applies in every non-terminal state of the table, and setting the flag in an `agent_running` state leads to the state in which the Work is due again (`investigation.idle`, `development.fix_needed`, or `upstream_review.fix_needed`).
+- **Required:** take the verb through the engine everywhere, together with `pause`.
+
 ## Records written before `budget.reruns` existed
 
 The migrated live record has no `budget.reruns`. The schema makes it optional and the engine counts from zero. Make the field required once every record carries it.
@@ -82,6 +89,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - When a CI failure and a review arrive together at the gate, the failure wins.
 - `record_actionable_review` does not list the processed comment and review ids; the collector records them beside the row.
 - The admission scope guard is on `admit_development` only, not on `readmit_development`.
+- A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
 
 ## Code still outside the engine
 

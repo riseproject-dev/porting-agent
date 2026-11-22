@@ -613,6 +613,7 @@ for _guard, _name in (
      "result_mismatch"),
     ("the observed upstream repository identity differs from the recorded one",
      "upstream_identity_changed"),
+    (lc.PROCESSING_ERROR, "processing_error"),
 ):
     _fact(_guard, _name)
 
@@ -668,6 +669,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "park_contribution": "controller",
     "refresh_investigation": "controller",
     "pause_on_identity_change": "controller",
+    # The stop after an unexpected error while one contribution was processed.
+    "pause_on_processing_error": "compat",
 }
 
 
@@ -955,13 +958,16 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         if name == lc.RERUNS:
             continue  # derived below, from the head the row records
         derived, derived_value = _derived(name, ctx)
+        if name in REASON_VALUES and verb in lc.CALLER_REASONS \
+                and not (isinstance(values.get(name), str) and values[name].strip()):
+            raise TransitionError(f"{verb} sets {name}; the caller states the reason")
         if name in values:
             _put(rec, name, copy.deepcopy(values[name]))
         elif derived:
             _put(rec, name, derived_value)
         elif name in REASON_VALUES and _command_arg(ctx, "reason"):
             _put(rec, name, _command_arg(ctx, "reason")[:2000])
-        elif name in OPTIONAL_VALUES:
+        elif name in OPTIONAL_VALUES and verb not in lc.CALLER_REASONS:
             _put(rec, name, None)
         else:
             raise TransitionError(f"{verb} sets {name}; a value is required")

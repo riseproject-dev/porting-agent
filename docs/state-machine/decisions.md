@@ -1372,3 +1372,25 @@ flowchart TB
     handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
     handoff_waiting_upstream_pr ==>|refresh_investigation<br/>/upstreaming refresh| queued_idle
 ```
+
+### An error in one contribution's processing
+
+Whether an unexpected error while the controller processes one contribution stops the tick for every contribution.
+
+**Change.** It does not. Staging is all or nothing per contribution: everything the tick staged for the contribution (record, events, operations, evidence) is discarded, none of its effects is requested, and the tick continues with the other contributions. The controller then takes `pause_on_processing_error` on the record as it was committed before the tick: a set verb of `paused` that applies in every non-terminal state and keeps the state. It records the error class, the message, and the run id in `paused_reason`, `paused_by=controller`, and `paused_at`, and follows the pause semantics: the requested Work, the pending publication, and a held proposal are cleared, and `resume_pause` bumps the revision. The error is posted on the tracking issue and listed in the tick report under `alerts`. Errors in two or more contributions in one tick are a pipeline failure: the whole tick stops, nothing is committed, and no contribution is paused. An error outside any contribution (state load, policy, schema validation of the store, the commit) stops the whole tick as before. Expected rejections (a refused transition of a command, a rejected command, an intake error) are rejected with a reason and pause nothing. A collector failure for one contribution skips that contribution for the tick with no state change and no pause, and the report records it. Stop commands are still applied first; when applying one fails, the contribution is treated as errored and nothing is launched for it in that tick.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_ci_paused["development.waiting_ci, paused=true"]
+        development_agent_running["development.agent_running"]
+        development_fix_needed_paused["development.fix_needed, paused=true"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_waiting_ci ==>|pause_on_processing_error| development_waiting_ci_paused
+    development_agent_running ==>|pause_on_processing_error| development_fix_needed_paused
+    development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
+    development_fix_needed_paused -->|resume_pause<br/>/upstreaming resume| development_fix_needed
+```

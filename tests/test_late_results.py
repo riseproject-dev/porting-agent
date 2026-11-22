@@ -95,14 +95,14 @@ def ci_snapshot(head, verdict):
 
 
 def tick(record, publications=(), *, observe=False, verdict="pending", head=SHA_A, feedback=None,
-         capacity_ok=True, policy=POLICY, now=T):
+         capacity_ok=True, policy=POLICY, now=T, comments=()):
     snapshot = reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, {})
     with mock.patch("observe_ci.collect.branch_head", return_value={"head": head}), \
             mock.patch("observe_ci.collect.development_review_feedback", return_value=feedback), \
             mock.patch("observe_ci.collect.ci_snapshot", return_value=ci_snapshot(head, verdict)), \
             contextlib.redirect_stderr(io.StringIO()):
         return reconcile.tick(object() if observe else None, snapshot, policy=policy, now=now,
-                              publications=list(publications), comments=[],
+                              publications=list(publications), comments=list(comments),
                               pressure=capacity.Pressure(ok=capacity_ok, reason="none"),
                               observe=observe,
                               dispatcher_runs=[], queue_works={})
@@ -529,6 +529,57 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                         self.assertIsNone(after["pending_publication"])
                     count += 1
         self.assertGreater(count, 4000)
+
+    # One function of every step of the tick that works on one contribution.
+    INJECTIONS = {
+        "publication": "reconcile.apply_publication",
+        "late_result": "reconcile.compat.record_late_effect",
+        "dispatch_recovery": "work.graph_id",
+        "observed_head": "observe_ci.collect.branch_head",
+        "observed_ci": "observe_ci.collect.evaluate_snapshot",
+        "command": "compat.apply_command",
+        "table_command": "controller._apply_table_command",
+        "work_selection": "controller._actionable",
+    }
+
+    def test_an_injected_error_in_any_step_never_stops_the_tick(self):
+        """One contribution errors in one step, whatever its state: the tick
+        returns, stages at most the pause of that contribution, and leaves it
+        stopped in an admitted state."""
+        pause = {"issue_number": 12,
+                 "comment": {"id": 900, "body": "/upstreaming pause", "user": dict(OWNER)}}
+        count = errored = 0
+        for key, record in self.records():
+            for step, target in self.INJECTIONS.items():
+                pubs = (publication(record, "published"),)
+                with self.subTest(record=key, step=step), \
+                        mock.patch(target, side_effect=RuntimeError("injected failure")) as hit:
+                    output = tick(record, pubs, observe=True, verdict="passed", comments=[pause])
+                    count += 1
+                    after = final(output, record)
+                    self.assertIsNone(compat.state_problem(after))
+                    if not hit.called:
+                        self.assertEqual(output.failures, [])
+                        continue
+                    errored += 1
+                    self.assertEqual(len(output.failures), 1)
+                    self.assertEqual(len(output.report["controller"]["alerts"]), 1)
+                    self.assertTrue(compat.stopped(after))
+                    self.assertEqual(output.report["requested_effects"], [])
+                    self.assertEqual(output.report["dispatch_relaunch"], [])
+                    if record["paused"] or record.get("blocked_reason") \
+                            or record["phase"] in lifecycle.TERMINAL:
+                        # Already stopped, or terminal: the verb does not apply.
+                        self.assertEqual(output.staged, [])
+                        continue
+                    self.assertEqual([kind for kind, _r in output.staged],
+                                     ["contributions", "events"])
+                    self.assertEqual(events(output)[0]["kind"], "pause_on_processing_error")
+                    self.assertEqual((after["paused_by"], after["active_work"],
+                                      after["pending_publication"], after["revision"]),
+                                     ("controller", None, None, record["revision"]))
+        self.assertGreater(count, 1500)
+        self.assertGreater(errored, 500)
 
     def test_no_stopped_state_retains_a_pending_publication(self):
         """From every admitted state with a pending publication, every stop

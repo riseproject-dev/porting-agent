@@ -13,6 +13,7 @@ from pathlib import Path
 import commands
 import compat
 import engine
+import isolation
 import lifecycle
 import schemas
 from common import CONTROL_REPO
@@ -45,6 +46,12 @@ MESSAGES = {
     "pause": "Paused automatic work. The lifecycle state is retained until resume.",
     "pause_on_identity_change": ("Paused automatic work: the upstream repository identity differs "
                                  "from the recorded one."),
+    "pause_on_processing_error": (
+        "Paused automatic work: the controller hit an unexpected error while it processed this "
+        "contribution. Everything that run had prepared for the contribution was discarded: "
+        "its state is as before the run, apart from this pause, and no Work or remote effect "
+        "was launched for it. The requested Work and anything held for publication are "
+        "cleared. Other contributions were processed normally."),
     "resume_pause": "Resumed: the pause is cleared.",
     "park_contribution": "Parked the contribution; its evidence is kept for audit.",
     "refresh_investigation": ("Started a refresh: a complete investigation runs again while the "
@@ -89,12 +96,30 @@ def _submission_request(event: dict, record: dict) -> tuple[str, str] | None:
     return message, submit_command(revision, head)
 
 
+def _quotable(text, limit: int = 300) -> str:
+    """Untrusted text as one bounded line that cannot close a quote, open an
+    HTML comment, or carry a credential."""
+    body = isolation.clean_text(text or "", limit)
+    return body.replace("<!--", "").replace("-->", "").replace("`", "'")
+
+
+def _processing_error(event: dict) -> str:
+    """The error a ``pause_on_processing_error`` event recorded: its class,
+    its bounded message, the step, and the run. Never a traceback."""
+    details = event.get("details") or {}
+    error = _quotable(f"{details.get('error_class') or 'Error'}: {details.get('message') or ''}")
+    step = _quotable(details.get("step") or "unknown", 60)
+    run = _quotable(details.get("run_id") or "unknown", 40)
+    return (f"\n\n> {error}\n\nStep: {step}. Run: {run}. Once the cause is corrected, "
+            "`resume` at the current revision continues; the full error is in the log of that "
+            "workflow run.\n\n")
+
+
 def _quoted_comments(event: dict) -> str:
     """The comments an explanation event recorded, for the tracking issue."""
     lines = []
     for item in (event.get("details") or {}).get("comments") or []:
-        body = " ".join(str(item.get("body") or "").split())
-        body = body.replace("<!--", "").replace("-->", "").replace("`", "'")[:300]
+        body = _quotable(item.get("body"))
         url = item.get("url")
         lines.append(f"\n> {body}" + (f" ([comment]({url}))" if url else ""))
     return ("\n" + "".join(lines) + "\n\n") if lines else ""
@@ -172,6 +197,8 @@ def render(event: dict, record: dict, run_url: str) -> str:
         message = f"Paused automatic work. Pending lifecycle activity `{pending}` is retained until resume."
     if kind == "record_explanation":
         message += _quoted_comments(event)
+    if kind == compat.PROCESSING_ERROR_VERB:
+        message += _processing_error(event)
     request = _submission_request(event, record)
     if request:
         message = request[0]

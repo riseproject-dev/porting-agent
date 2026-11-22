@@ -12,6 +12,7 @@ refuses anything but a GET.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -31,6 +32,25 @@ _PATH_RE = re.compile(r"^/[A-Za-z0-9_./%?&=,:+-]*$")
 
 class CollectError(RuntimeError):
     pass
+
+
+# Bound of the transport error text that a ``CollectError`` quotes.
+_MAX_ERROR_TEXT = 200
+
+# What reading a response can raise besides ``HTTPError``: the HTTP layer
+# (``IncompleteRead``, ``RemoteDisconnected``, a bad status line) and the
+# transport (``URLError``, TLS errors, socket timeouts, reset connections;
+# all ``OSError``).
+_TRANSPORT_ERRORS = (http.client.HTTPException, OSError)
+
+
+def _transport_error(url: str, error: BaseException) -> CollectError:
+    """A failed read as a ``CollectError`` with a bounded one-line message."""
+    text = " ".join(str(error).split())
+    if len(text) > _MAX_ERROR_TEXT:
+        text = text[: _MAX_ERROR_TEXT - 3] + "..."
+    return CollectError(f"GET {url}: {type(error).__name__}: {text}" if text
+                        else f"GET {url}: {type(error).__name__}")
 
 
 class _ArtifactRedirect(urllib.request.HTTPRedirectHandler):
@@ -61,12 +81,24 @@ class Api:
             "User-Agent": "riseproject-porting-agent",
             **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
         })
+        # Every failure to read the response, including a body that is cut
+        # off or is not JSON, is a ``CollectError``: the collector could not
+        # read GitHub. Only the transport and the decoding of the body are
+        # converted; what the caller does with a well-formed response is not.
         try:
             with self._open(req, timeout=30) as r:
                 body = r.read()
-                return (json.loads(body) if body else None), dict(r.headers)
+                headers = dict(r.headers)
         except urllib.error.HTTPError as e:
             raise CollectError(f"GET {url}: HTTP {e.code}") from None
+        except _TRANSPORT_ERRORS as e:
+            raise _transport_error(url, e) from e
+        if not body:
+            return None, headers
+        try:
+            return json.loads(body), headers
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise CollectError(f"GET {url}: response body is not JSON: {type(e).__name__}") from None
 
     def get(self, path: str) -> Any:
         if not _PATH_RE.match(path) or ".." in path:
@@ -86,6 +118,8 @@ class Api:
                 data = r.read(max_bytes + 1)
         except urllib.error.HTTPError as e:
             raise CollectError(f"GET {path}: HTTP {e.code}") from None
+        except _TRANSPORT_ERRORS as e:
+            raise _transport_error(path, e) from e
         if len(data) > max_bytes:
             raise CollectError("download exceeds size limit")
         return data

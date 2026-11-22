@@ -30,6 +30,7 @@ import collect
 import compat
 import engine
 import intake
+import isolation
 import lifecycle
 import recovery
 import schemas
@@ -99,7 +100,14 @@ WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
 
 def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consumed: dict[int, dict],
-         projects: dict[str, dict], policy: dict, inputs: Inputs) -> TickResult:
+         projects: dict[str, dict], policy: dict, inputs: Inputs,
+         skip: frozenset[str] = frozenset()) -> TickResult:
+    """``skip`` names the contributions this tick does not process: nothing
+    is staged or requested for them, and a command on their tracking issue
+    is left unconsumed for the next tick. They still count as existing
+    contributions (worker slots, one active contribution per upstream).
+    Every step that works on one contribution runs in an
+    ``isolation.contribution`` block."""
     res = TickResult()
     now = _iso(inputs.now)
     by_id = {c["contribution_id"]: c for c in contributions.values()}
@@ -130,6 +138,10 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             continue
         project_id = contribution_file_id(req.upstream.replace("/", "--").lower())
         cid = f"{project_id}/{req.issue_number}"
+        if cid in skip:
+            rep["intake"][-1] = {"issue": req.issue_number, "decision": "deferred",
+                                 "detail": "the contribution is not processed in this tick"}
+            continue
         rec = lifecycle.new_contribution(
             contribution_id=cid, project_id=project_id,
             issue={
@@ -170,62 +182,65 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     for cid, record in list(by_id.items()):
         if not canary.is_target(record):
             continue
-        matching = [
-            operation
-            for operation in operations.values()
-            if operation.get("kind") == canary.OPERATION_KIND
-            and operation.get("contribution_id") == canary.CONTRIBUTION_ID
-        ]
-        if len(matching) == 1 and matching[0].get("status") == "confirmed":
+        if cid in skip:
+            continue
+        with isolation.contribution(cid, "canary_recovery"):
+            matching = [
+                operation
+                for operation in operations.values()
+                if operation.get("kind") == canary.OPERATION_KIND
+                and operation.get("contribution_id") == canary.CONTRIBUTION_ID
+            ]
+            if len(matching) == 1 and matching[0].get("status") == "confirmed":
+                try:
+                    canary.validate_operation(matching[0])
+                    if not canary.has_expected_tracking(record):
+                        raise canary.CanaryError(
+                            "confirmed canary operation has mismatched tracking state"
+                        )
+                except canary.CanaryError as error:
+                    canary_blocked.add(cid)
+                    rep["alerts"].append({
+                        "contribution": cid,
+                        "alert": f"canonical canary recovery blocked: {error}",
+                    })
+                continue
+            if canary.is_repaired(record):
+                continue
+            canary_blocked.add(cid)
+            issue = inputs.tracking_issues.get(record["tracking_issue"]["number"])
             try:
-                canary.validate_operation(matching[0])
-                if not canary.has_expected_tracking(record):
-                    raise canary.CanaryError(
-                        "confirmed canary operation has mismatched tracking state"
+                if issue is None:
+                    raise canary.CanaryError("canonical canary live issue is unavailable")
+                if len(matching) > 1:
+                    raise canary.CanaryError("multiple canonical canary recovery intents")
+                if matching:
+                    operation = matching[0]
+                    canary.validate_operation(operation)
+                    canary.validate_mismatch(record, operation_id=operation["operation_id"])
+                    current_digest = canary.validate_issue(
+                        issue, {canary.INCOMPLETE_DIGEST, canary.EXPECTED_DIGEST}
                     )
+                else:
+                    canary.validate_mismatch(record, operation_id=None)
+                    current_digest = canary.validate_issue(issue, {canary.INCOMPLETE_DIGEST})
+                    operation = canary.operation_for(record, policy=policy, now=now)
+                    record = canary.bind_operation(record, operation, now)
+                    operations[operation["operation_id"]] = operation
+                    by_id[cid] = record
+                    res.stage("operations", operation)
+                    res.stage("contributions", record)
+                    res.stage("events", canary.planned_event(record, operation, now))
+                rep["canary_recovery_requests"].append({
+                    "operation_id": operation["operation_id"],
+                    "contribution_id": cid,
+                    "observed_body_digest": current_digest,
+                })
             except canary.CanaryError as error:
-                canary_blocked.add(cid)
                 rep["alerts"].append({
                     "contribution": cid,
                     "alert": f"canonical canary recovery blocked: {error}",
                 })
-            continue
-        if canary.is_repaired(record):
-            continue
-        canary_blocked.add(cid)
-        issue = inputs.tracking_issues.get(record["tracking_issue"]["number"])
-        try:
-            if issue is None:
-                raise canary.CanaryError("canonical canary live issue is unavailable")
-            if len(matching) > 1:
-                raise canary.CanaryError("multiple canonical canary recovery intents")
-            if matching:
-                operation = matching[0]
-                canary.validate_operation(operation)
-                canary.validate_mismatch(record, operation_id=operation["operation_id"])
-                current_digest = canary.validate_issue(
-                    issue, {canary.INCOMPLETE_DIGEST, canary.EXPECTED_DIGEST}
-                )
-            else:
-                canary.validate_mismatch(record, operation_id=None)
-                current_digest = canary.validate_issue(issue, {canary.INCOMPLETE_DIGEST})
-                operation = canary.operation_for(record, policy=policy, now=now)
-                record = canary.bind_operation(record, operation, now)
-                operations[operation["operation_id"]] = operation
-                by_id[cid] = record
-                res.stage("operations", operation)
-                res.stage("contributions", record)
-                res.stage("events", canary.planned_event(record, operation, now))
-            rep["canary_recovery_requests"].append({
-                "operation_id": operation["operation_id"],
-                "contribution_id": cid,
-                "observed_body_digest": current_digest,
-            })
-        except canary.CanaryError as error:
-            rep["alerts"].append({
-                "contribution": cid,
-                "alert": f"canonical canary recovery blocked: {error}",
-            })
 
     # Before destination writers exist, a verified dossier proceeds to an
     # uncredentialed proposal worker. Retire only an exact, never-launched fork
@@ -234,113 +249,122 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     destination_blocked: set[str] = set()
     if not policy.get("destination_writes", False):
         for cid, record in list(by_id.items()):
-            operation = operations.get(record.get("active_operation_id"))
-            if not operation or operation.get("kind") != "fork_provision":
+            if cid in skip:
                 continue
-            if (record.get("phase") != "provisioning" or record.get("fork") is not None
-                    or not record.get("dossier_evidence_id")):
-                continue
-            if operation.get("status") != "planned":
-                destination_blocked.add(cid)
-                rep["alerts"].append({
-                    "contribution": cid,
-                    "alert": "destination operation exists but is not provably unlaunched",
-                })
-                continue
-            retired = dict(operation, status="not_launched", updated_at=now)
-            schemas.validate("operation", retired)
-            changed = compat.legacy_update(
-                record, "controller.defer_destination_operation",
-                phase="development",
-                activity="idle",
-                active_operation_id=None,
-                updated_at=now,
-            )
-            schemas.validate("contribution", changed)
-            operations[operation["operation_id"]] = retired
-            by_id[cid] = changed
-            res.stage("operations", retired)
-            res.stage("contributions", changed)
-            res.stage("events", lifecycle._event(
-                record,
-                changed,
-                "destination_operation_deferred",
-                "policy",
-                operation["operation_id"],
-                now,
-                False,
-            ))
-            rep["deferred_destination_operations"].append(operation["operation_id"])
+            with isolation.contribution(cid, "destination_deferral"):
+                operation = operations.get(record.get("active_operation_id"))
+                if not operation or operation.get("kind") != "fork_provision":
+                    continue
+                if (record.get("phase") != "provisioning" or record.get("fork") is not None
+                        or not record.get("dossier_evidence_id")):
+                    continue
+                if operation.get("status") != "planned":
+                    destination_blocked.add(cid)
+                    rep["alerts"].append({
+                        "contribution": cid,
+                        "alert": "destination operation exists but is not provably unlaunched",
+                    })
+                    continue
+                retired = dict(operation, status="not_launched", updated_at=now)
+                schemas.validate("operation", retired)
+                changed = compat.legacy_update(
+                    record, "controller.defer_destination_operation",
+                    phase="development",
+                    activity="idle",
+                    active_operation_id=None,
+                    updated_at=now,
+                )
+                schemas.validate("contribution", changed)
+                operations[operation["operation_id"]] = retired
+                by_id[cid] = changed
+                res.stage("operations", retired)
+                res.stage("contributions", changed)
+                res.stage("events", lifecycle._event(
+                    record,
+                    changed,
+                    "destination_operation_deferred",
+                    "policy",
+                    operation["operation_id"],
+                    now,
+                    False,
+                ))
+                rep["deferred_destination_operations"].append(operation["operation_id"])
 
     # Removing the intake label cancels only an accepted request that has not
     # requested any Work yet. Once active_work exists, explicit lifecycle
     # commands are required so an unlabeled event cannot silently stop work.
     for cid, c in list(by_id.items()):
-        issue = inputs.tracking_issues.get(c["tracking_issue"]["number"])
-        labels = {label.get("name") if isinstance(label, dict) else label
-                  for label in (issue or {}).get("labels", [])}
-        unprocessed = c["phase"] == "queued" and c["activity"] == "idle" \
-            and not c.get("active_work") and not c.get("dossier_evidence_id") and not c.get("fork")
-        if issue is None or INTAKE_LABEL in labels or not unprocessed:
+        if cid in skip:
             continue
-        changed = compat.legacy_update(
-            c, "controller.cancel_unlabeled_request", phase="abandoned", activity="idle",
-            terminal_reason=f"{INTAKE_LABEL} label removed before Work admission", updated_at=now)
-        schemas.validate("contribution", changed)
-        by_id[cid] = changed
-        active.pop(c["upstream"]["full_name"], None)
-        res.stage("contributions", changed)
-        res.stage("events", lifecycle._event(c, changed, "intake:label_removed", "observation",
-                                              f"issue-{c['tracking_issue']['id']}", now, False))
-        project = projects.get(c["project_id"])
-        if project and project.get("active_contribution_id") == cid:
-            project = dict(project, active_contribution_id=None, updated_at=now)
-            projects[c["project_id"]] = project
-            res.stage("projects", project)
-        rep["intake"].append({"issue": c["tracking_issue"]["number"], "decision": "cancelled",
-                              "detail": f"{INTAKE_LABEL} label removed before Work admission"})
+        with isolation.contribution(cid, "intake_label"):
+            issue = inputs.tracking_issues.get(c["tracking_issue"]["number"])
+            labels = {label.get("name") if isinstance(label, dict) else label
+                      for label in (issue or {}).get("labels", [])}
+            unprocessed = c["phase"] == "queued" and c["activity"] == "idle" \
+                and not c.get("active_work") and not c.get("dossier_evidence_id") and not c.get("fork")
+            if issue is None or INTAKE_LABEL in labels or not unprocessed:
+                continue
+            changed = compat.legacy_update(
+                c, "controller.cancel_unlabeled_request", phase="abandoned", activity="idle",
+                terminal_reason=f"{INTAKE_LABEL} label removed before Work admission", updated_at=now)
+            schemas.validate("contribution", changed)
+            by_id[cid] = changed
+            active.pop(c["upstream"]["full_name"], None)
+            res.stage("contributions", changed)
+            res.stage("events", lifecycle._event(c, changed, "intake:label_removed", "observation",
+                                                  f"issue-{c['tracking_issue']['id']}", now, False))
+            project = projects.get(c["project_id"])
+            if project and project.get("active_contribution_id") == cid:
+                project = dict(project, active_contribution_id=None, updated_at=now)
+                projects[c["project_id"]] = project
+                res.stage("projects", project)
+            rep["intake"].append({"issue": c["tracking_issue"]["number"], "decision": "cancelled",
+                                  "detail": f"{INTAKE_LABEL} label removed before Work admission"})
 
     # Bind initially unspecified source identities/bases from trusted API data,
     # never from the model's dossier. Already-bound bases remain immutable.
     source_blocked = set(canary_blocked | destination_blocked)
     for cid, c in list(by_id.items()):
-        snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
-        if snapshot is None:
+        if cid in skip:
             continue
-        if snapshot.get("error"):
-            source_blocked.add(cid)
-            rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
-            continue
-        current = c["upstream"].get("repository_id")
-        if current is not None and current != snapshot["repository_id"]:
-            source_blocked.add(cid)
-            if c["phase"] == "handoff":
-                # A handoff state is written by the engine: the table verb for
-                # a changed identity sets the paused flag and keeps the state.
-                out = engine.apply_transition(
-                    c, "pause_on_identity_change", policy=policy, now=now,
-                    cause_id=f"upstream-identity-{snapshot['repository_id']}",
-                    facts={"upstream_identity_changed"})
-                if out.accepted:
-                    by_id[cid] = out.record
-                    res.stage("contributions", out.record)
-                    res.stage("events", out.event)
+        with isolation.contribution(cid, "source_identity"):
+            snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
+            if snapshot is None:
                 continue
-            changed = compat.legacy_update(
-                c, "controller.block_identity_change",
-                blocked_reason="upstream repository identity changed",
-                activity="waiting_human", updated_at=now, **compat.held_cleared(c))
-            by_id[cid] = changed
-            res.stage("contributions", changed)
-            continue
-        updated = dict(c["upstream"])
-        for key in ("repository_id", "base_ref", "base_sha"):
-            if updated.get(key) is None:
-                updated[key] = snapshot[key]
-        if updated != c["upstream"]:
-            changed = dict(c, upstream=updated, updated_at=now)
-            by_id[cid] = changed
-            res.stage("contributions", changed)
+            if snapshot.get("error"):
+                source_blocked.add(cid)
+                rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
+                continue
+            current = c["upstream"].get("repository_id")
+            if current is not None and current != snapshot["repository_id"]:
+                source_blocked.add(cid)
+                if c["phase"] == "handoff":
+                    # A handoff state is written by the engine: the table verb for
+                    # a changed identity sets the paused flag and keeps the state.
+                    out = engine.apply_transition(
+                        c, "pause_on_identity_change", policy=policy, now=now,
+                        cause_id=f"upstream-identity-{snapshot['repository_id']}",
+                        facts={"upstream_identity_changed"})
+                    if out.accepted:
+                        by_id[cid] = out.record
+                        res.stage("contributions", out.record)
+                        res.stage("events", out.event)
+                    continue
+                changed = compat.legacy_update(
+                    c, "controller.block_identity_change",
+                    blocked_reason="upstream repository identity changed",
+                    activity="waiting_human", updated_at=now, **compat.held_cleared(c))
+                by_id[cid] = changed
+                res.stage("contributions", changed)
+                continue
+            updated = dict(c["upstream"])
+            for key in ("repository_id", "base_ref", "base_sha"):
+                if updated.get(key) is None:
+                    updated[key] = snapshot[key]
+            if updated != c["upstream"]:
+                changed = dict(c, upstream=updated, updated_at=now)
+                by_id[cid] = changed
+                res.stage("contributions", changed)
 
     # 2. Authorized commands, urgent stops first, all before any work is selected.
     decisions = []
@@ -354,8 +378,20 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         if d.receipt["comment_id"] in consumed and not d.accepted:
             rep["commands"].append({"comment": d.receipt["comment_id"], "result": d.reason})
             continue
+        target = _command_target(d, by_id, operations)
+        if target in skip:
+            # Left unconsumed: the next tick reads the comment again.
+            rep["commands"].append({"comment": d.receipt["comment_id"], "result": "deferred",
+                                    "reason": "the contribution is not processed in this tick"})
+            continue
         receipt = dict(d.receipt)
-        if d.accepted:
+        if d.accepted and target is not None:
+            # A stop command that cannot be applied makes its contribution
+            # errored: the tick is computed again without it, so nothing is
+            # launched for it.
+            with isolation.contribution(target, "command"):
+                receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy)
+        elif d.accepted:
             receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy)
         consumed[receipt["comment_id"]] = receipt
         res.stage("commands", receipt)
@@ -365,67 +401,73 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # 3. Uncertain operations before any replacement.
     blocked_by_op: set[str] = set()
     for op in operations.values():
-        if op["status"] in recovery.OPEN:
-            blocked_by_op.add(op["contribution_id"])
-            due = recovery.next_discovery_at(op, policy)
-            rep["operations"].append({"id": op["operation_id"], "status": op["status"],
-                                      "next_discovery": due.isoformat() if due else None})
-            for a in recovery.alerts(op, inputs.now):
-                rep["alerts"].append({"operation": op["operation_id"], "alert": a})
+        if op["contribution_id"] in skip:
+            continue
+        with isolation.contribution(op["contribution_id"], "operation_recovery"):
+            if op["status"] in recovery.OPEN:
+                blocked_by_op.add(op["contribution_id"])
+                due = recovery.next_discovery_at(op, policy)
+                rep["operations"].append({"id": op["operation_id"], "status": op["status"],
+                                          "next_discovery": due.isoformat() if due else None})
+                for a in recovery.alerts(op, inputs.now):
+                    rep["alerts"].append({"operation": op["operation_id"], "alert": a})
 
     # Provisioning is a trusted administrative workflow, not a model task.
     # Persist its normal operation intent before dispatch, with no second queue.
     res.report["provision_requests"] = []
     if policy.get("destination_writes", False):
         for cid, c in list(by_id.items()):
-            operation = operations.get(c.get("active_operation_id"))
-            if operation and operation.get("kind") == "fork_provision" \
-                    and operation.get("status") == "planned":
-                attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
-                due = attempts == 0 or (
-                    (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
-                    and attempts < 3
-                )
-                if due:
-                    launched = dict(operation, status="planned", updated_at=now,
-                                    external_ids=dict(operation.get("external_ids") or {},
-                                                      launch_attempts=attempts + 1))
-                    schemas.validate("operation", launched)
-                    operations[launched["operation_id"]] = launched
-                    res.stage("operations", launched)
-                    res.report["provision_requests"].append({
-                        "operation_id": launched["operation_id"], "contribution_id": cid,
-                        "attempt": attempts + 1,
-                    })
-                    break
-            if c.get("fork") is None and c["phase"] == "development" \
-                    and (c.get("proposal_artifact") or {}).get("outcome") == "proposal":
-                prior = [op for op in operations.values()
-                         if op.get("contribution_id") == cid and op.get("kind") == "fork_provision"]
-                if len(prior) == 1 and prior[0]["status"] == "not_launched":
-                    operation = dict(
-                        prior[0], status="planned", updated_at=now,
-                        external_ids=dict(prior[0].get("external_ids") or {}, launch_attempts=1),
+            if cid in skip:
+                continue
+            with isolation.contribution(cid, "provisioning"):
+                operation = operations.get(c.get("active_operation_id"))
+                if operation and operation.get("kind") == "fork_provision" \
+                        and operation.get("status") == "planned":
+                    attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
+                    due = attempts == 0 or (
+                        (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
+                        and attempts < 3
                     )
-                    changed = compat.legacy_update(
-                        c, "controller.rearm_provisioning", phase="provisioning",
-                        activity="waiting_capacity",
-                        active_operation_id=operation["operation_id"], updated_at=now)
-                    schemas.validate("operation", operation)
-                    schemas.validate("contribution", changed)
-                    operations[operation["operation_id"]] = operation
-                    by_id[cid] = changed
-                    res.stage("operations", operation)
-                    res.stage("contributions", changed)
-                    res.stage("events", lifecycle._event(
-                        c, changed, "destination_operation_rearmed", "policy",
-                        operation["operation_id"], now, False,
-                    ))
-                    res.report["provision_requests"].append({
-                        "operation_id": operation["operation_id"], "contribution_id": cid,
-                        "attempt": 1,
-                    })
-                    break
+                    if due:
+                        launched = dict(operation, status="planned", updated_at=now,
+                                        external_ids=dict(operation.get("external_ids") or {},
+                                                          launch_attempts=attempts + 1))
+                        schemas.validate("operation", launched)
+                        operations[launched["operation_id"]] = launched
+                        res.stage("operations", launched)
+                        res.report["provision_requests"].append({
+                            "operation_id": launched["operation_id"], "contribution_id": cid,
+                            "attempt": attempts + 1,
+                        })
+                        break
+                if c.get("fork") is None and c["phase"] == "development" \
+                        and (c.get("proposal_artifact") or {}).get("outcome") == "proposal":
+                    prior = [op for op in operations.values()
+                             if op.get("contribution_id") == cid and op.get("kind") == "fork_provision"]
+                    if len(prior) == 1 and prior[0]["status"] == "not_launched":
+                        operation = dict(
+                            prior[0], status="planned", updated_at=now,
+                            external_ids=dict(prior[0].get("external_ids") or {}, launch_attempts=1),
+                        )
+                        changed = compat.legacy_update(
+                            c, "controller.rearm_provisioning", phase="provisioning",
+                            activity="waiting_capacity",
+                            active_operation_id=operation["operation_id"], updated_at=now)
+                        schemas.validate("operation", operation)
+                        schemas.validate("contribution", changed)
+                        operations[operation["operation_id"]] = operation
+                        by_id[cid] = changed
+                        res.stage("operations", operation)
+                        res.stage("contributions", changed)
+                        res.stage("events", lifecycle._event(
+                            c, changed, "destination_operation_rearmed", "policy",
+                            operation["operation_id"], now, False,
+                        ))
+                        res.report["provision_requests"].append({
+                            "operation_id": operation["operation_id"], "contribution_id": cid,
+                            "attempt": 1,
+                        })
+                        break
     for cid, c in list(by_id.items()):
         if not policy.get("destination_writes", False):
             break
@@ -433,44 +475,47 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             break
         if len(res.report["provision_requests"]) >= 1:
             break
-        if c["phase"] != "provisioning" or c.get("paused") or c.get("blocked_reason") \
-                or c.get("active_operation_id") or cid in source_blocked:
+        if cid in skip:
             continue
-        if (c.get("pending_human_action") or {}).get("kind") not in (None, "provision_fork"):
-            continue
-        if not c.get("dossier_evidence_id") or not c.get("admission_class") \
-                or not c.get("scope_paths") \
-                or not c["upstream"].get("repository_id") or not c["upstream"].get("base_sha"):
-            rep["deferred"].append({"contribution": cid, "why": "provisioning prerequisites missing"})
-            continue
-        ok, why = capacity.admit_expensive(inputs.pressure or capacity.Pressure(ok=False, reason="no usage data"),
-                                           reserved=capacity.reserved_jobs(operations.values()), estimated_jobs=1, policy=policy)
-        if not ok:
-            rep["deferred"].append({"contribution": cid, "why": why})
-            continue
-        fork = c.get("fork") or {}
-        op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="fork_provision",
-                           policy_version=policy["policy_version"], reason_ids=[c["dossier_evidence_id"]],
-                           target={"repository": "riseproject-upstreaming/" + c["upstream"]["full_name"].split('/', 1)[1],
-                                   "repository_id": fork.get("repository_id"), "ref": "riscv64",
-                                   "expected_head": fork.get("head_sha"), "base_sha": c["upstream"]["base_sha"]},
-                           proposed={"commit": c["upstream"]["base_sha"], "marker": f"provision:{cid}:{c['revision']}"},
-                           capacity={"selector": "ubuntu-24.04-riscv", "estimated_jobs": 1,
-                                     "estimated_minutes": 10, "observed_run_ids": []}, now=now)
-        if op["operation_id"] in operations:
-            rep["deferred"].append({"contribution": cid, "why": "existing provisioning operation requires reconciliation"})
-            continue
-        op = dict(op, status="planned", external_ids={"launch_attempts": 1})
-        schemas.validate("operation", op)
-        res.stage("operations", op)
-        planned = compat.legacy_update(c, "controller.plan_provisioning",
-                                       active_operation_id=op["operation_id"],
-                                       activity="waiting_capacity", updated_at=now)
-        res.stage("contributions", planned)
-        by_id[cid] = planned
-        res.report["provision_requests"].append({
-            "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
-        })
+        with isolation.contribution(cid, "provisioning"):
+            if c["phase"] != "provisioning" or c.get("paused") or c.get("blocked_reason") \
+                    or c.get("active_operation_id") or cid in source_blocked:
+                continue
+            if (c.get("pending_human_action") or {}).get("kind") not in (None, "provision_fork"):
+                continue
+            if not c.get("dossier_evidence_id") or not c.get("admission_class") \
+                    or not c.get("scope_paths") \
+                    or not c["upstream"].get("repository_id") or not c["upstream"].get("base_sha"):
+                rep["deferred"].append({"contribution": cid, "why": "provisioning prerequisites missing"})
+                continue
+            ok, why = capacity.admit_expensive(inputs.pressure or capacity.Pressure(ok=False, reason="no usage data"),
+                                               reserved=capacity.reserved_jobs(operations.values()), estimated_jobs=1, policy=policy)
+            if not ok:
+                rep["deferred"].append({"contribution": cid, "why": why})
+                continue
+            fork = c.get("fork") or {}
+            op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="fork_provision",
+                               policy_version=policy["policy_version"], reason_ids=[c["dossier_evidence_id"]],
+                               target={"repository": "riseproject-upstreaming/" + c["upstream"]["full_name"].split('/', 1)[1],
+                                       "repository_id": fork.get("repository_id"), "ref": "riscv64",
+                                       "expected_head": fork.get("head_sha"), "base_sha": c["upstream"]["base_sha"]},
+                               proposed={"commit": c["upstream"]["base_sha"], "marker": f"provision:{cid}:{c['revision']}"},
+                               capacity={"selector": "ubuntu-24.04-riscv", "estimated_jobs": 1,
+                                         "estimated_minutes": 10, "observed_run_ids": []}, now=now)
+            if op["operation_id"] in operations:
+                rep["deferred"].append({"contribution": cid, "why": "existing provisioning operation requires reconciliation"})
+                continue
+            op = dict(op, status="planned", external_ids={"launch_attempts": 1})
+            schemas.validate("operation", op)
+            res.stage("operations", op)
+            planned = compat.legacy_update(c, "controller.plan_provisioning",
+                                           active_operation_id=op["operation_id"],
+                                           activity="waiting_capacity", updated_at=now)
+            res.stage("contributions", planned)
+            by_id[cid] = planned
+            res.report["provision_requests"].append({
+                "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
+            })
 
     # A published development head gets a same-fork development PR before CI
     # observation. Persist intent first; the trusted workflow creates/discovers
@@ -478,27 +523,30 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     res.report["dev_pr_requests"] = []
     if policy.get("destination_writes", False):
         for cid, c in list(by_id.items()):
-            operation = operations.get(c.get("active_operation_id"))
-            if not operation or operation.get("kind") not in {"dev_pr_create", "dev_pr_update"} \
-                    or operation.get("status") != "planned":
+            if cid in skip:
                 continue
-            attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
-            due = attempts == 0 or (
-                (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
-                and attempts < 3
-            )
-            if due:
-                launched = dict(operation, updated_at=now,
-                                external_ids=dict(operation.get("external_ids") or {},
-                                                  launch_attempts=attempts + 1))
-                schemas.validate("operation", launched)
-                operations[launched["operation_id"]] = launched
-                res.stage("operations", launched)
-                res.report["dev_pr_requests"].append({
-                    "operation_id": launched["operation_id"], "contribution_id": cid,
-                    "attempt": attempts + 1,
-                })
-                break
+            with isolation.contribution(cid, "development_pr"):
+                operation = operations.get(c.get("active_operation_id"))
+                if not operation or operation.get("kind") not in {"dev_pr_create", "dev_pr_update"} \
+                        or operation.get("status") != "planned":
+                    continue
+                attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
+                due = attempts == 0 or (
+                    (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
+                    and attempts < 3
+                )
+                if due:
+                    launched = dict(operation, updated_at=now,
+                                    external_ids=dict(operation.get("external_ids") or {},
+                                                      launch_attempts=attempts + 1))
+                    schemas.validate("operation", launched)
+                    operations[launched["operation_id"]] = launched
+                    res.stage("operations", launched)
+                    res.report["dev_pr_requests"].append({
+                        "operation_id": launched["operation_id"], "contribution_id": cid,
+                        "attempt": attempts + 1,
+                    })
+                    break
     for cid, c in list(by_id.items()):
         if not policy.get("destination_writes", False):
             break
@@ -506,38 +554,41 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             break
         if len(res.report["dev_pr_requests"]) >= 1:
             break
-        fork = c.get("fork") or {}
-        artifact = c.get("proposal_artifact") or {}
-        pubop = operations.get(c.get("publication_operation_id"))
-        if c["phase"] != "development" or c.get("paused") or c.get("blocked_reason") \
-                or c.get("active_operation_id") or fork.get("pr_number") is not None \
-                or not fork.get("repository_id") or not fork.get("head_sha") \
-                or fork.get("head_sha") == c["upstream"].get("base_sha") \
-                or artifact.get("outcome") != "published" or not artifact.get("result_commit") \
-                or not c.get("dossier_evidence_id") or not c.get("scope_paths") \
-                or not pubop or pubop.get("status") != "confirmed":
+        if cid in skip:
             continue
-        marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{fork['head_sha']} -->"
-        op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_create",
-                           policy_version=policy["policy_version"],
-                           reason_ids=[c["dossier_evidence_id"], str(artifact["result_commit"])],
-                           target={"repository": fork["name"], "repository_id": fork["repository_id"],
-                                   "ref": "riscv64", "expected_head": fork["head_sha"],
-                                   "base_sha": c["upstream"]["base_sha"]},
-                           proposed={"marker": marker, "content_digest": artifact["digest"]}, now=now)
-        if op["operation_id"] in operations:
-            continue
-        op = dict(op, external_ids={"launch_attempts": 1})
-        schemas.validate("operation", op)
-        res.stage("operations", op)
-        changed = compat.legacy_update(c, "controller.plan_development_pr",
-                                       active_operation_id=op["operation_id"],
-                                       activity="waiting_capacity", updated_at=now)
-        by_id[cid] = changed
-        res.stage("contributions", changed)
-        res.report["dev_pr_requests"].append({
-            "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
-        })
+        with isolation.contribution(cid, "development_pr"):
+            fork = c.get("fork") or {}
+            artifact = c.get("proposal_artifact") or {}
+            pubop = operations.get(c.get("publication_operation_id"))
+            if c["phase"] != "development" or c.get("paused") or c.get("blocked_reason") \
+                    or c.get("active_operation_id") or fork.get("pr_number") is not None \
+                    or not fork.get("repository_id") or not fork.get("head_sha") \
+                    or fork.get("head_sha") == c["upstream"].get("base_sha") \
+                    or artifact.get("outcome") != "published" or not artifact.get("result_commit") \
+                    or not c.get("dossier_evidence_id") or not c.get("scope_paths") \
+                    or not pubop or pubop.get("status") != "confirmed":
+                continue
+            marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{fork['head_sha']} -->"
+            op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_create",
+                               policy_version=policy["policy_version"],
+                               reason_ids=[c["dossier_evidence_id"], str(artifact["result_commit"])],
+                               target={"repository": fork["name"], "repository_id": fork["repository_id"],
+                                       "ref": "riscv64", "expected_head": fork["head_sha"],
+                                       "base_sha": c["upstream"]["base_sha"]},
+                               proposed={"marker": marker, "content_digest": artifact["digest"]}, now=now)
+            if op["operation_id"] in operations:
+                continue
+            op = dict(op, external_ids={"launch_attempts": 1})
+            schemas.validate("operation", op)
+            res.stage("operations", op)
+            changed = compat.legacy_update(c, "controller.plan_development_pr",
+                                           active_operation_id=op["operation_id"],
+                                           activity="waiting_capacity", updated_at=now)
+            by_id[cid] = changed
+            res.stage("contributions", changed)
+            res.report["dev_pr_requests"].append({
+                "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
+            })
 
     # Bootstrap CI once for an already recorded PR. This separate operation is
     # needed when GitHub registered no inherited workflows at PR creation time.
@@ -546,176 +597,188 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             break
         if len(res.report["dev_pr_requests"]) >= 1:
             break
-        fork = c.get("fork") or {}
-        artifact = c.get("proposal_artifact") or {}
-        if c["phase"] != "development" or c.get("paused") or c.get("blocked_reason") \
-                or c.get("active_operation_id") or fork.get("pr_number") is None \
-                or c.get("last_ci_evidence_id") or artifact.get("outcome") != "published":
+        if cid in skip:
             continue
-        created_at_head = any(op["contribution_id"] == cid and op["kind"] == "dev_pr_create"
-                              and op["status"] == "confirmed"
-                              and op["target"].get("expected_head") == fork.get("head_sha")
-                              for op in operations.values())
-        if not created_at_head:
-            continue  # later patch pushes already emit pull_request:synchronize
-        reason = f"ci-bootstrap-event-v2:{fork['head_sha']}"
-        prior = [op for op in operations.values() if op["contribution_id"] == cid \
-                 and op["kind"] == "dev_pr_update" and reason in op["reason_ids"] \
-                 and op["target"].get("expected_head") == fork.get("head_sha")]
-        if any(op["status"] in recovery.OPEN | {"confirmed"} for op in prior):
-            continue
-        op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_update",
-                           policy_version=policy["policy_version"], reason_ids=[reason],
-                           target={"repository": fork["name"], "repository_id": fork["repository_id"],
-                                   "ref": "riscv64", "expected_head": fork["head_sha"],
-                                   "base_sha": c["upstream"]["base_sha"]},
-                           proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
-                                     "content_digest": artifact["digest"]}, now=now)
-        op = dict(op, external_ids={"launch_attempts": 1})
-        schemas.validate("operation", op)
-        res.stage("operations", op)
-        changed = compat.legacy_update(c, "controller.plan_ci_bootstrap",
-                                       active_operation_id=op["operation_id"],
-                                       activity="waiting_capacity", updated_at=now)
-        by_id[cid] = changed
-        res.stage("contributions", changed)
-        res.report["dev_pr_requests"].append({
-            "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
-        })
+        with isolation.contribution(cid, "development_pr"):
+            fork = c.get("fork") or {}
+            artifact = c.get("proposal_artifact") or {}
+            if c["phase"] != "development" or c.get("paused") or c.get("blocked_reason") \
+                    or c.get("active_operation_id") or fork.get("pr_number") is None \
+                    or c.get("last_ci_evidence_id") or artifact.get("outcome") != "published":
+                continue
+            created_at_head = any(op["contribution_id"] == cid and op["kind"] == "dev_pr_create"
+                                  and op["status"] == "confirmed"
+                                  and op["target"].get("expected_head") == fork.get("head_sha")
+                                  for op in operations.values())
+            if not created_at_head:
+                continue  # later patch pushes already emit pull_request:synchronize
+            reason = f"ci-bootstrap-event-v2:{fork['head_sha']}"
+            prior = [op for op in operations.values() if op["contribution_id"] == cid \
+                     and op["kind"] == "dev_pr_update" and reason in op["reason_ids"] \
+                     and op["target"].get("expected_head") == fork.get("head_sha")]
+            if any(op["status"] in recovery.OPEN | {"confirmed"} for op in prior):
+                continue
+            op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_update",
+                               policy_version=policy["policy_version"], reason_ids=[reason],
+                               target={"repository": fork["name"], "repository_id": fork["repository_id"],
+                                       "ref": "riscv64", "expected_head": fork["head_sha"],
+                                       "base_sha": c["upstream"]["base_sha"]},
+                               proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
+                                         "content_digest": artifact["digest"]}, now=now)
+            op = dict(op, external_ids={"launch_attempts": 1})
+            schemas.validate("operation", op)
+            res.stage("operations", op)
+            changed = compat.legacy_update(c, "controller.plan_ci_bootstrap",
+                                           active_operation_id=op["operation_id"],
+                                           activity="waiting_capacity", updated_at=now)
+            by_id[cid] = changed
+            res.stage("contributions", changed)
+            res.report["dev_pr_requests"].append({
+                "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
+            })
 
     # A pre-fork proposal is immutable worker output. Once provisioning is
     # independently confirmed, launch the trusted publication path without a
     # second model call and fence duplicate worker selection durably.
     res.report["proposal_publications"] = []
     for cid, c in list(by_id.items()):
-        artifact = c.get("proposal_artifact") or {}
-        fork = c.get("fork") or {}
-        if (not policy.get("destination_writes", False)
-                or c["phase"] != "development"
-                or compat.stopped(c)
-                or artifact.get("outcome") != "proposal"
-                or not artifact.get("run_id")
-                or not fork.get("repository_id")
-                or c.get("pending_publication")
-                or c.get("publication_operation_id")):
+        if cid in skip:
             continue
-        pending = {
-            "worker_run_id": str(artifact["run_id"]),
-            "attempts": 1,
-            "last_reason": "verified pre-fork proposal awaiting trusted publication",
-            "next_attempt_at": now,
-            "exhausted": False,
-        }
-        changed = compat.legacy_update(c, "controller.publish_pre_fork_proposal",
-                                       pending_publication=pending,
-                                       activity="waiting_capacity", updated_at=now)
-        by_id[cid] = changed
-        res.stage("contributions", changed)
-        res.report["proposal_publications"].append({
-            "contribution_id": cid,
-            "worker_run_id": str(artifact["run_id"]),
-            "attempt": 1,
-        })
-        break
+        with isolation.contribution(cid, "proposal_publication"):
+            artifact = c.get("proposal_artifact") or {}
+            fork = c.get("fork") or {}
+            if (not policy.get("destination_writes", False)
+                    or c["phase"] != "development"
+                    or compat.stopped(c)
+                    or artifact.get("outcome") != "proposal"
+                    or not artifact.get("run_id")
+                    or not fork.get("repository_id")
+                    or c.get("pending_publication")
+                    or c.get("publication_operation_id")):
+                continue
+            pending = {
+                "worker_run_id": str(artifact["run_id"]),
+                "attempts": 1,
+                "last_reason": "verified pre-fork proposal awaiting trusted publication",
+                "next_attempt_at": now,
+                "exhausted": False,
+            }
+            changed = compat.legacy_update(c, "controller.publish_pre_fork_proposal",
+                                           pending_publication=pending,
+                                           activity="waiting_capacity", updated_at=now)
+            by_id[cid] = changed
+            res.stage("contributions", changed)
+            res.report["proposal_publications"].append({
+                "contribution_id": cid,
+                "worker_run_id": str(artifact["run_id"]),
+                "attempt": 1,
+            })
+            break
 
     # 8-10. Select bounded work, honouring capacity and one worker.
     candidates = []
     for c in by_id.values():
-        if c["contribution_id"] in source_blocked:
+        if c["contribution_id"] in skip:
             continue
-        kind = _actionable(c)
-        if kind is None:
-            continue
-        if c["contribution_id"] in blocked_by_op:
-            rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
-            continue
-        if kind in WRITE_KINDS:
-            why = (
-                lifecycle.proposal_admission(c)
-                if kind == "development_patch" and not c.get("fork")
-                else lifecycle.write_admission(c)
-            )
-            if why:
-                rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
+        with isolation.contribution(c["contribution_id"], "work_selection"):
+            if c["contribution_id"] in source_blocked:
                 continue
-        candidates.append((PRIORITY[kind], c["updated_at"], kind, c))
+            kind = _actionable(c)
+            if kind is None:
+                continue
+            if c["contribution_id"] in blocked_by_op:
+                rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
+                continue
+            if kind in WRITE_KINDS:
+                why = (
+                    lifecycle.proposal_admission(c)
+                    if kind == "development_patch" and not c.get("fork")
+                    else lifecycle.write_admission(c)
+                )
+                if why:
+                    rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
+                    continue
+            candidates.append((PRIORITY[kind], c["updated_at"], kind, c))
     candidates.sort(key=lambda x: (x[0], x[1]))
     slots = policy["concurrency"]["coding_workers"] - sum(
         1 for c in by_id.values() if c["activity"] == "agent_running" or c.get("active_work"))
     pressure = inputs.pressure
     for _p, _t, kind, c in candidates:
-        if slots <= 0:
-            rep["deferred"].append({"contribution": c["contribution_id"], "why": "no worker slot"})
+        if c["contribution_id"] in skip:
             continue
-        if kind in WRITE_KINDS:
-            ok, why = capacity.admit_expensive(
-                pressure or capacity.Pressure(ok=False, reason="no usage data"),
-                reserved=capacity.reserved_jobs(operations.values()), estimated_jobs=1, policy=policy)
-            if not ok:
-                rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
+        with isolation.contribution(c["contribution_id"], "work_selection"):
+            if slots <= 0:
+                rep["deferred"].append({"contribution": c["contribution_id"], "why": "no worker slot"})
                 continue
-        slots -= 1
-        reason_ids = []
-        if kind in ("development_repair", "upstream_revision"):
-            reason_ids = list(dict.fromkeys(
-                (c.get("pending_feedback_evidence_ids") or [])
-                + ([c["last_ci_evidence_id"]] if c.get("last_ci_evidence_id") else [])
-                + ([c["dossier_evidence_id"]] if c.get("dossier_evidence_id") else [])))
-        if not reason_ids and c.get("dossier_evidence_id"):
-            reason_ids = [c["dossier_evidence_id"]]
-        work = {
-            "type": "submit_work",
-            "dedupe_key": f"{c['contribution_id']}@{c['revision']}:{kind}",
-            "contribution_id": c["contribution_id"],
-            "revision": c["revision"],
-            "expected_head": (c.get("fork") or {}).get("head_sha"),
-            "task": kind,
-            "reason_ids": reason_ids,
-            "effect_contract": (
-                {"kind": "none"}
-                if kind == "investigation"
-                else {"kind": "proposal_artifact"}
-                if kind == "development_patch" and not c.get("fork")
-                else {
-                    "kind": "fork_branch",
-                    "repository": (c.get("fork") or {}).get("name"),
-                    "ref": "riscv64",
-                }
-            ),
-        }
-        res.requested_effects.append(work)
-        rep["selected"].append({"contribution": c["contribution_id"], "task": kind})
-        # Record the request in the same state commit, so the next tick does
-        # not request it again. Cleared by the task's outcome or by timeout.
-        from datetime import timedelta
-        claimed = compat.legacy_update(
-            c, "controller.select_work", activity="agent_running", updated_at=now,
-            phase="investigation" if kind == "investigation" and c["phase"] == "queued"
-            else c["phase"],
-            active_work={
-            "dedupe_key": work["dedupe_key"], "task": kind, "revision": c["revision"], "attempt": 1,
-            "requested_at": now,
-            "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
-            "dispatched_run_id": None, "reason_ids": reason_ids})
-        frozen_issue = c["tracking_issue"]
-        if all(
-            key in frozen_issue
-            for key in ("id", "number", "url", "description", "description_digest")
-        ):
-            claimed["active_work"]["tracking_issue"] = {
-                key: frozen_issue[key]
-                for key in ("id", "number", "url", "description", "description_digest")
+            if kind in WRITE_KINDS:
+                ok, why = capacity.admit_expensive(
+                    pressure or capacity.Pressure(ok=False, reason="no usage data"),
+                    reserved=capacity.reserved_jobs(operations.values()), estimated_jobs=1, policy=policy)
+                if not ok:
+                    rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
+                    continue
+            slots -= 1
+            reason_ids = []
+            if kind in ("development_repair", "upstream_revision"):
+                reason_ids = list(dict.fromkeys(
+                    (c.get("pending_feedback_evidence_ids") or [])
+                    + ([c["last_ci_evidence_id"]] if c.get("last_ci_evidence_id") else [])
+                    + ([c["dossier_evidence_id"]] if c.get("dossier_evidence_id") else [])))
+            if not reason_ids and c.get("dossier_evidence_id"):
+                reason_ids = [c["dossier_evidence_id"]]
+            work = {
+                "type": "submit_work",
+                "dedupe_key": f"{c['contribution_id']}@{c['revision']}:{kind}",
+                "contribution_id": c["contribution_id"],
+                "revision": c["revision"],
+                "expected_head": (c.get("fork") or {}).get("head_sha"),
+                "task": kind,
+                "reason_ids": reason_ids,
+                "effect_contract": (
+                    {"kind": "none"}
+                    if kind == "investigation"
+                    else {"kind": "proposal_artifact"}
+                    if kind == "development_patch" and not c.get("fork")
+                    else {
+                        "kind": "fork_branch",
+                        "repository": (c.get("fork") or {}).get("name"),
+                        "ref": "riscv64",
+                    }
+                ),
             }
-        else:
-            # Compatibility for records created before intake-level freezing.
-            issue = inputs.tracking_issues.get(c["tracking_issue"]["number"]) or next(
-                (i for i in inputs.issues if i["number"] == c["tracking_issue"]["number"]), None)
-            if issue is not None:
-                claimed["active_work"]["tracking_issue"] = collect.tracking_issue_context(
-                    issue, c["tracking_issue"]
-                )
-        by_id[c["contribution_id"]] = claimed
-        res.stage("contributions", claimed)
+            res.requested_effects.append(work)
+            rep["selected"].append({"contribution": c["contribution_id"], "task": kind})
+            # Record the request in the same state commit, so the next tick does
+            # not request it again. Cleared by the task's outcome or by timeout.
+            from datetime import timedelta
+            claimed = compat.legacy_update(
+                c, "controller.select_work", activity="agent_running", updated_at=now,
+                phase="investigation" if kind == "investigation" and c["phase"] == "queued"
+                else c["phase"],
+                active_work={
+                "dedupe_key": work["dedupe_key"], "task": kind, "revision": c["revision"], "attempt": 1,
+                "requested_at": now,
+                "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
+                "dispatched_run_id": None, "reason_ids": reason_ids})
+            frozen_issue = c["tracking_issue"]
+            if all(
+                key in frozen_issue
+                for key in ("id", "number", "url", "description", "description_digest")
+            ):
+                claimed["active_work"]["tracking_issue"] = {
+                    key: frozen_issue[key]
+                    for key in ("id", "number", "url", "description", "description_digest")
+                }
+            else:
+                # Compatibility for records created before intake-level freezing.
+                issue = inputs.tracking_issues.get(c["tracking_issue"]["number"]) or next(
+                    (i for i in inputs.issues if i["number"] == c["tracking_issue"]["number"]), None)
+                if issue is not None:
+                    claimed["active_work"]["tracking_issue"] = collect.tracking_issue_context(
+                        issue, c["tracking_issue"]
+                    )
+            by_id[c["contribution_id"]] = claimed
+            res.stage("contributions", claimed)
 
     if policy["read_only"]:
         rep["note"] = "read-only: requested effects are reported, not executed"
@@ -726,6 +789,17 @@ def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
     return tuple(sorted(op["operation_id"] for op in operations.values()
                         if op["contribution_id"] == record["contribution_id"]
                         and op["status"] in recovery.OPEN))
+
+
+def _command_target(decision, by_id: dict, operations: dict) -> str | None:
+    """The contribution a command comment concerns, or ``None``: the one its
+    operation belongs to for ``resolve-operation``, else the one tracked by
+    the issue the comment was posted on."""
+    cmd = decision.command
+    if cmd is not None and cmd.verb == "resolve-operation":
+        return (operations.get(cmd.args.get("operation")) or {}).get("contribution_id")
+    rec = intake.contribution_for_issue(by_id.values(), decision.receipt.get("issue_number"))
+    return rec["contribution_id"] if rec else None
 
 
 def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,

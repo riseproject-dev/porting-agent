@@ -244,7 +244,8 @@ TRIGGER_DESCRIPTIONS = {
                     "usage in the events.",
     Trigger.OPERATION: "A trusted remote operation receipt and its exact readback.",
     Trigger.TICK: "A controller decision without new input: Work allocation, a budget charge "
-                  "or exhaustion, or a deadline.",
+                  "or exhaustion, a deadline, or the stop after an unexpected error while one "
+                  "contribution was processed.",
 }
 
 KIND_DESCRIPTIONS = {
@@ -490,6 +491,13 @@ _REFRESH_EFFECTS = _E(
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
             "pending_human_action", "publication_operation_id"))
 _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
+# The guard of the controller's stop after a processing error, and the stops
+# set by the controller whose reason the caller states: the engine refuses
+# such a stop without one. Every other controller stop names its reason in
+# the table.
+PROCESSING_ERROR = ("an unexpected error while the controller processed this contribution in "
+                    "the tick")
+CALLER_REASONS = ("pause_on_processing_error",)
 # A stop clears the pending publication together with the requested Work: the
 # Result held for publication is invalidated, and a branch its worker run
 # already pushed is recorded by head observation. A stop is a transition that
@@ -1316,12 +1324,14 @@ FLAGS: dict[str, Flag] = {
         "paused",
         "A stop of new Work and writer admission, with its reason and who set it (a human or "
         "the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; "
-        "a pause set by the controller always records one. Setting it clears the requested "
+        "a pause set by the controller always records one: `pause_on_identity_change` names "
+        "it in the table, and `pause_on_processing_error` records the error. Setting it clears "
+        "the requested "
         "Work, the pending publication, and a held proposal that is not published, and "
         "records `paused_at`; nothing held is published after the stop, and no publish retry "
         "is launched while paused. Phase, "
         "activity, evidence, and pending feedback are kept. "
-        "The one exception: `pause` in an `agent_running` state leads to the state in which the "
+        "The one exception: setting it in an `agent_running` state leads to the state in which the "
         "Work is due again, `investigation.idle`, `development.fix_needed`, or "
         "`upstream_review.fix_needed`. "
         "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
@@ -1343,6 +1353,17 @@ FLAGS: dict[str, Flag] = {
                                        "paused_reason=upstream_identity_changed",
                                        "paused_by=controller"),
                   clears=_HELD)),
+            "pause_on_processing_error": Transition(
+                _K, None,
+                (NOT_PAUSED, "not terminal", PROCESSING_ERROR),
+                _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=controller"),
+                  clears=_HELD),
+                description="Everything the tick staged for the contribution and every effect "
+                            "it requested for it are discarded first, so the stop is taken on "
+                            "the record as it was committed before the tick. `paused_reason` "
+                            "states the error class, the bounded and sanitized message, and the "
+                            "run id. The tick continues with the other contributions. A "
+                            "contribution that is already paused is not paused again."),
         },
         {
             "resume_pause": Transition(
@@ -1908,11 +1929,13 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("development.waiting_ci", "development.waiting_ci+paused"),
                 (("development.waiting_ci", "pause"),
                  ("development.waiting_ci", "pause_on_identity_change"),
+                 ("development.waiting_ci", "pause_on_processing_error"),
                  ("development.waiting_ci+paused", "resume_pause")),
                 start="development.waiting_ci",
                 text="There is one flag, `paused`, with its reason and who set it. A human sets it "
                      "with `pause`, with an optional reason; the controller sets it when the "
-                     "upstream identity changes and always records the reason. `resume_pause` "
+                     "upstream identity changes, and after an unexpected error while it "
+                     "processed the contribution, and always records the reason. `resume_pause` "
                      "bumps the revision. An effect that passed its final "
                      "publication check before the pause may finish and is reconciled normally."),
             Diagram(
@@ -2624,8 +2647,18 @@ def _check_flags(problems: list[str]) -> None:
             reason = [s for s in t.effects.sets if _field_name(s) == f"{f.field}_reason"]
             if not reason:
                 problems.append(f"{where}: does not set {f.field}_reason")
-            elif t.trigger != Trigger.COMMAND and "=" not in reason[0]:
+            elif t.trigger != Trigger.COMMAND and "=" not in reason[0] \
+                    and verb not in CALLER_REASONS:
                 problems.append(f"{where}: a stop set by the controller must record its reason")
+            by = f"{f.field}_by=" + ("human" if t.trigger == Trigger.COMMAND else "controller")
+            if by not in t.effects.sets:
+                problems.append(f"{where}: does not set {by}")
+            if verb in CALLER_REASONS and (t.trigger == Trigger.COMMAND or (reason and "=" in reason[0])):
+                problems.append(f"{where}: a stop whose reason the caller states is set by the "
+                                "controller and names no reason in the table")
+        for verb in CALLER_REASONS:
+            if name == "paused" and verb not in f.set_by:
+                problems.append(f"flag {name}: {verb} is not a set verb")
         for verb, t in f.cleared_by.items():
             where = f"flag {name} {verb}"
             if t.trigger != Trigger.COMMAND:

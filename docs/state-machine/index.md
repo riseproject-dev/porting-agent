@@ -448,10 +448,11 @@ flowchart TB
     start_1(( )) --> development_waiting_ci
     development_waiting_ci -->|pause<br/>/upstreaming pause| development_waiting_ci_paused
     development_waiting_ci -->|pause_on_identity_change| development_waiting_ci_paused
+    development_waiting_ci -->|pause_on_processing_error| development_waiting_ci_paused
     development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
 ```
 
-There is one flag, `paused`, with its reason and who set it. A human sets it with `pause`, with an optional reason; the controller sets it when the upstream identity changes and always records the reason. `resume_pause` bumps the revision. An effect that passed its final publication check before the pause may finish and is reconciled normally.
+There is one flag, `paused`, with its reason and who set it. A human sets it with `pause`, with an optional reason; the controller sets it when the upstream identity changes, and after an unexpected error while it processed the contribution, and always records the reason. `resume_pause` bumps the revision. An effect that passed its final publication check before the pause may finish and is reconciled normally.
 
 ### Success case 2: pause while Work is requested
 
