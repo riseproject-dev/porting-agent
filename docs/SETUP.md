@@ -1,3 +1,9 @@
+---
+title: Repository setup
+nav_order: 3
+permalink: /setup/
+---
+
 # Repository setup
 
 The reviewed repository settings are declared in `.github/repository-settings.json`. `scripts/audit_repository_settings.py` compares a normalized read-only settings snapshot with that declaration. Local tests use the deterministic snapshot in `tests/fixtures/repository-settings.json`; a live audit is a separate read-only operation after the first commit reaches GitHub.

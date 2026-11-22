@@ -3,6 +3,7 @@
 """Milestone 3 deterministic recovery, trigger isolation, and security gates."""
 
 import copy
+import re
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -177,8 +178,12 @@ class TestStatusSite(unittest.TestCase):
                 "contents": "read",
                 "pages": "write",
                 "id-token": "write",
+                "pull-requests": "read",
             },
         )
+        self.assertEqual(website["name"], "Website")
+        self.assertEqual(website["concurrency"]["group"], "github-pages")
+        self.assertNotIn("status site", (WORKFLOWS / "website.yml").read_text().lower())
         deploy = website["jobs"]["deploy"]
         self.assertEqual(deploy["environment"]["name"], "github-pages")
         uses = [step.get("uses", "") for step in deploy["steps"]]
@@ -197,6 +202,113 @@ class TestStatusSite(unittest.TestCase):
         self.assertIn("pages_artifact.py discover", discovery["run"])
         self.assertIn("--attempts 6", discovery["run"])
         self.assertFalse(any("peaceiris" in item for item in uses))
+
+
+class TestDocsSite(unittest.TestCase):
+    def test_just_the_docs_theme_search_and_mermaid(self):
+        config = yaml.safe_load((ROOT / "docs/_config.yml").read_text())
+        self.assertRegex(config["remote_theme"], r"^just-the-docs/just-the-docs@v\d+\.\d+\.\d+$")
+        self.assertNotIn("theme", config)
+        self.assertIn("jekyll-remote-theme", config["plugins"])
+        self.assertTrue(config["search_enabled"])
+        self.assertRegex(config["mermaid"]["version"], r"^\d+\.\d+\.\d+$")
+        self.assertEqual(config["baseurl"], "/porting-agent")
+        inventories = {path.name for path in (ROOT / "docs").glob("*.json")}
+        self.assertTrue(inventories)
+        self.assertLessEqual(inventories, set(config["exclude"]))
+
+    def test_every_docs_page_has_navigation_front_matter(self):
+        orders = []
+        for path in sorted((ROOT / "docs").rglob("*.md")):
+            text = path.read_text()
+            self.assertTrue(text.startswith("---\n"), path)
+            front = yaml.safe_load(text.split("---\n", 2)[1])
+            self.assertIsInstance(front.get("title"), str, path)
+            if front.get("parent") is None:
+                self.assertIsInstance(front.get("nav_order"), int, path)
+                orders.append(front["nav_order"])
+        self.assertEqual(len(orders), len(set(orders)), orders)
+
+
+    def test_rendered_pages_do_not_mention_implementation_milestones(self):
+        rendered = [path.read_text() for path in sorted((ROOT / "docs").rglob("*.md"))]
+        rendered.append(generate_doc.render([]))
+        rendered.append((ROOT / "scripts/generate_doc.py").read_text())
+        for text in rendered:
+            self.assertIsNone(re.search(r"(?i)\bmilestones?\b|\bM[0-9]+\b", text))
+
+
+class TestDocsPreviews(unittest.TestCase):
+    def setUp(self):
+        self.text = (WORKFLOWS / "website.yml").read_text()
+        self.website = yaml.safe_load(self.text)
+        self.jobs = self.website["jobs"]
+
+    def steps(self):
+        return [step for job in self.jobs.values() for step in job.get("steps", [])]
+
+    def test_pull_request_target_is_limited_to_docs_changes(self):
+        on = self.website[True]
+        self.assertEqual(
+            on["pull_request_target"],
+            {"types": ["opened", "synchronize", "reopened", "closed"], "paths": ["docs/**"]},
+        )
+        self.assertNotIn("pull_request", on)
+        self.assertIn("workflow_dispatch", on)
+
+    def test_pull_request_code_is_never_checked_out_or_executed(self):
+        checkouts = [s for s in self.steps() if s.get("uses", "").startswith("actions/checkout@")]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(checkouts[0]["with"]["ref"], "${{ github.sha }}")
+        self.assertFalse(checkouts[0]["with"]["persist-credentials"])
+        self.assertNotIn("github.event.pull_request.head.sha", self.text)
+        self.assertNotIn("github.event.pull_request.head.ref", self.text)
+        self.assertNotIn("git checkout", self.text)
+        self.assertNotIn("git switch", self.text)
+        fetch = next(s for s in self.steps() if s.get("name", "").startswith("Fetch docs"))
+        self.assertIn('"+refs/pull/$number/head:$ref"', fetch["run"])
+        self.assertIn('git archive --format=tar "$ref" docs |', fetch["run"])
+        self.assertIn('find "$dest" -type l -delete', fetch["run"])
+        # Every interpreter call runs a script from the main checkout (or inline
+        # trusted code); preview trees are only ever arguments or Jekyll input.
+        runs = "\n".join(step.get("run", "") for step in self.steps())
+        interpreters = re.findall(r"uv run --locked python (\S+)", runs)
+        self.assertTrue(interpreters)
+        for target in interpreters:
+            self.assertRegex(target, r"^(scripts/[a-z_]+\.py|-)$")
+        build = next(s for s in self.steps() if s.get("id") == "previews")
+        self.assertIn('"$JEKYLL_BUILD_PAGES_IMAGE"', build["run"])
+        self.assertIn("-e INPUT_TOKEN= ", build["run"])
+        image = self.website["env"]["JEKYLL_BUILD_PAGES_IMAGE"]
+        self.assertRegex(image, r"^ghcr\.io/actions/jekyll-build-pages:v1\.0\.13@sha256:[0-9a-f]{64}$")
+        self.assertIn(
+            "uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13",
+            self.text,
+        )
+
+    def test_previews_only_for_same_repository_pull_requests(self):
+        same_repo = "github.event.pull_request.head.repo.full_name == github.repository"
+        self.assertIn(same_repo, " ".join(self.jobs["deploy"]["if"].split()))
+        self.assertIn(same_repo, " ".join(self.jobs["preview-comment"]["if"].split()))
+        self.assertIn("github.ref == 'refs/heads/main'", self.jobs["deploy"]["if"])
+        fetch = next(s for s in self.steps() if s.get("name", "").startswith("Fetch docs"))
+        self.assertIn('select(.head.repo.full_name == \\"$GITHUB_REPOSITORY\\")', fetch["run"])
+        self.assertIn("pulls?state=open", fetch["run"])
+
+    def test_preview_path_and_comment(self):
+        build = next(s for s in self.steps() if s.get("id") == "previews")
+        self.assertIn('INPUT_DESTINATION="_site/pr/$1"', build["run"])
+        self.assertIn('"/porting-agent/pr/$1"', build["run"])
+        comment = self.jobs["preview-comment"]
+        self.assertEqual(comment["permissions"], {"pull-requests": "write"})
+        self.assertEqual(comment["needs"], "deploy")
+        script = comment["steps"][0]
+        self.assertTrue(script["uses"].startswith("actions/github-script@"))
+        source = script["with"]["script"]
+        self.assertIn("pr/${number}/", source)
+        self.assertIn("<!-- porting-agent-docs-preview -->", source)
+        self.assertIn("updateComment", source)
+        self.assertNotIn("${{", source)
 
 
 if __name__ == "__main__":

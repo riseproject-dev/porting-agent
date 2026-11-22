@@ -1,7 +1,19 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-name: Build and deploy status site
+name: Website
 
+# One workflow builds and deploys the whole site: the docs pages, the status
+# page and the pull-request previews. GitHub Pages deployed through Actions
+# hosts one site, so every run builds the main site and a preview for each
+# open same-repository pull request that changes docs/, combines them under one
+# _site (previews at _site/pr/<number>/) and deploys once. A closed pull request is not rebuilt, so its preview
+# disappears on that deploy.
+#
+# pull_request_target runs in the base-branch context that the github-pages
+# environment accepts. It never executes pull-request code: every script runs
+# from the checked-out main commit, and each pull-request head is fetched only as
+# data. Its docs/ tree is extracted and rendered by the GitHub Pages Jekyll image
+# in safe mode, with no token.
 on:
   push:
     branches: [main]
@@ -10,6 +22,10 @@ on:
       - 'docs/**'
       - 'scripts/generate_doc.py'
       - '.github/workflows/website.yml'
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - 'docs/**'
   workflow_dispatch:
 
 concurrency:
@@ -21,18 +37,34 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  pull-requests: read
+
+env:
+  PREVIEW_ROOT: .previews
+  # Same image as the pinned actions/jekyll-build-pages v1.0.13 action below.
+  JEKYLL_BUILD_PAGES_IMAGE: ghcr.io/actions/jekyll-build-pages:v1.0.13@sha256:6791ebfd912185ed59bfb5fb102664fa872496b79f87ff8b9cfba292a7345041
 
 jobs:
   deploy:
-    if: github.ref == 'refs/heads/main'
+    name: Build and deploy the website
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'pull_request_target' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    outputs:
+      page-url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
+      previews: ${{ steps.previews.outputs.previews }}
     steps:
+      # Always the base commit (github.sha is main for every trigger, including
+      # pull_request_target). Pull-request heads are never checked out.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
@@ -44,6 +76,86 @@ jobs:
         with:
           source: ./docs
           destination: ./_site
+      - name: Fetch docs of open same-repository pull requests as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREVIEW_ROOT"
+          : > "$PREVIEW_ROOT/heads.txt"
+          numbers="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
+            --jq ".[] | select(.head.repo.full_name == \"$GITHUB_REPOSITORY\") | .number")"
+          for number in $numbers; do
+            if ! [[ "$number" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::warning::Skipping an unexpected pull request number"
+              continue
+            fi
+            if ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$number/files?per_page=100" \
+                --jq '.[].filename' | grep '^docs/' > /dev/null; then
+              continue
+            fi
+            # Fetched as data only: never checked out, installed, or executed.
+            ref="refs/previews/$number"
+            if ! git fetch --quiet --no-tags --depth=1 origin "+refs/pull/$number/head:$ref"; then
+              echo "::warning::Could not fetch pull request #$number; skipping its preview"
+              continue
+            fi
+            if [ "$(git cat-file -t "$ref:docs" 2>/dev/null)" != tree ]; then
+              echo "::warning::Pull request #$number has no docs/ tree; skipping its preview"
+              continue
+            fi
+            dest="$PREVIEW_ROOT/$number"
+            mkdir -p "$dest"
+            git archive --format=tar "$ref" docs | tar -x -C "$dest" --no-same-owner
+            find "$dest" -type l -delete
+            printf '%s %s\n' "$number" "$(git rev-parse "$ref")" >> "$PREVIEW_ROOT/heads.txt"
+          done
+          echo "Pull requests with previews: $(cut -d' ' -f1 "$PREVIEW_ROOT/heads.txt" | xargs)"
+      - name: Build previews into the combined site
+        id: previews
+        run: |
+          set -euo pipefail
+          prepare() {
+            # Trusted main code rewrites the copy's baseurl to /porting-agent/pr/<number>.
+            uv run --locked python - "$PREVIEW_ROOT/$1/docs/_config.yml" "/porting-agent/pr/$1" <<'PY'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          path, baseurl = Path(sys.argv[1]), sys.argv[2]
+          config = yaml.safe_load(path.read_text()) if path.is_file() else None
+          config = config if isinstance(config, dict) else {}
+          config["baseurl"] = baseurl
+          path.write_text(yaml.safe_dump(config, sort_keys=False))
+          PY
+          }
+          build() {
+            # The GitHub Pages builder image runs Jekyll in safe mode with only the
+            # allowed plugins. No token is passed to preview builds.
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/github/workspace" \
+              -e GITHUB_WORKSPACE=/github/workspace \
+              -e INPUT_SOURCE="$PREVIEW_ROOT/$1/docs" \
+              -e INPUT_DESTINATION="_site/pr/$1" \
+              -e INPUT_BUILD_REVISION="$2" \
+              -e INPUT_VERBOSE=true \
+              -e INPUT_FUTURE=false \
+              -e INPUT_TOKEN= \
+              -e GITHUB_REPOSITORY \
+              -e GITHUB_API_URL \
+              "$JEKYLL_BUILD_PAGES_IMAGE"
+          }
+          built='{}'
+          while read -r number head; do
+            if prepare "$number" < /dev/null && build "$number" "$head" < /dev/null; then
+              built="$(jq -c --arg n "$number" --arg h "$head" '. + {($n): $h}' <<<"$built")"
+            else
+              echo "::warning::Preview build for pull request #$number failed"
+              sudo rm -rf "_site/pr/$number"
+            fi
+          done < "$PREVIEW_ROOT/heads.txt"
+          echo "previews=$built" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         id: pages-upload
         with:
@@ -73,3 +185,50 @@ jobs:
         if: steps.deployment.outcome == 'failure'
         id: deployment-retry
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+  preview-comment:
+    name: Link the pull-request preview
+    needs: deploy
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post or update the preview comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PAGE_URL: ${{ needs.deploy.outputs.page-url }}
+          PREVIEWS: ${{ needs.deploy.outputs.previews }}
+        with:
+          script: |
+            const marker = '<!-- porting-agent-docs-preview -->';
+            const number = context.payload.pull_request.number;
+            const base = (process.env.PAGE_URL || 'https://riseproject-dev.github.io/porting-agent/').replace(/\/?$/, '/');
+            const url = `${base}pr/${number}/`;
+            const previews = JSON.parse(process.env.PREVIEWS || '{}');
+            const head = previews[String(number)];
+            let body;
+            if (context.payload.action === 'closed') {
+              body = `${marker}\nThe documentation preview for this pull request was removed when it was closed.`;
+            } else if (head) {
+              body = `${marker}\nDocumentation preview: ${url}\n\nBuilt from \`${head}\`. It is rebuilt whenever this pull request or \`main\` changes, and removed when the pull request is closed.`;
+            } else {
+              body = `${marker}\nNo documentation preview is available for the current head. See the website workflow run for details.`;
+            }
+            const { owner, repo } = context.repo;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: number, per_page: 100,
+            });
+            const existing = comments.find(
+              (comment) => comment.user?.type === 'Bot' && comment.body?.includes(marker),
+            );
+            if (existing) {
+              if (existing.body !== body) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              }
+            } else if (context.payload.action !== 'closed') {
+              await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+            }

@@ -1,7 +1,21 @@
 title: RISE porting agent
+description: Trusted control plane for AI-assisted RISC-V porting work
 url: https://riseproject-dev.github.io
 baseurl: /porting-agent
-theme: jekyll-theme-minimal
+remote_theme: just-the-docs/just-the-docs@v0.10.1
+plugins:
+  - jekyll-remote-theme
+search_enabled: true
+heading_anchors: true
+mermaid:
+  version: "11.4.1"
+aux_links:
+  "GitHub repository":
+    - "https://github.com/riseproject-dev/porting-agent"
+aux_links_new_tab: false
+back_to_top: true
+back_to_top_text: "Back to top"
+footer_content: "Generated from <a href=\"https://github.com/riseproject-dev/porting-agent\">riseproject-dev/porting-agent</a>. Available under the MIT License."
 exclude:
   - migration-inventory.json
   - test-deferrals.json
