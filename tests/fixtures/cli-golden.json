@@ -11,7 +11,9 @@
     "triggers.audit": {
       "exit": 0,
       "json": {
-        "changed_paths": ["README.md"],
+        "changed_paths": [
+          "README.md"
+        ],
         "workflows_scanned": 0,
         "triggered": [],
         "workflow_run_consumers": [],
@@ -25,7 +27,9 @@
       "json": {
         "ok": true,
         "verb": "pause",
-        "args": {"reason": "maintenance"}
+        "args": {
+          "reason": "maintenance"
+        }
       },
       "stderr": "",
       "files": []
@@ -38,7 +42,12 @@
         "running": 0,
         "pending": 1,
         "oldest_pending_seconds": 300,
-        "per_entity": {"riseproject-dev": {"running": 0, "pending": 1}},
+        "per_entity": {
+          "riseproject-dev": {
+            "running": 0,
+            "pending": 1
+          }
+        },
         "admit_expensive": true,
         "why": "within thresholds",
         "note": "pressure observation, not free capacity"
@@ -61,14 +70,17 @@
         "dev_pr_requests": [],
         "note": "read-only: requested effects are reported, not executed",
         "would_stage": [],
-        "requested_effects": []
+        "requested_effects": [],
+        "canary_recovery_requests": []
       },
       "stderr": "",
       "files": []
     },
     "work.plan": {
       "exit": 0,
-      "json": {"selected": []},
+      "json": {
+        "selected": []
+      },
       "stderr": "",
       "files": []
     },
@@ -91,7 +103,8 @@
           "deferred": [],
           "alerts": [],
           "provision_requests": [],
-          "dev_pr_requests": []
+          "dev_pr_requests": [],
+          "canary_recovery_requests": []
         },
         "requested_effects": [],
         "provision_requests": [],

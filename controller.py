@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import canary
 import capacity
 import collect
 import intake
@@ -158,6 +159,71 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         projects[project_id] = proj
         res.stage("projects", proj)
 
+    # Recover only the exact canonical canary defect that was committed before
+    # agent workflows existed. Intent is durable before the trusted issue edit;
+    # an exact live readback finalizes state in a second fast-forward commit.
+    rep["canary_recovery_requests"] = []
+    canary_blocked: set[str] = set()
+    for cid, record in list(by_id.items()):
+        if not canary.is_target(record):
+            continue
+        matching = [
+            operation
+            for operation in operations.values()
+            if operation.get("kind") == canary.OPERATION_KIND
+            and operation.get("contribution_id") == canary.CONTRIBUTION_ID
+        ]
+        if len(matching) == 1 and matching[0].get("status") == "confirmed":
+            try:
+                canary.validate_operation(matching[0])
+                if not canary.has_expected_tracking(record):
+                    raise canary.CanaryError(
+                        "confirmed canary operation has mismatched tracking state"
+                    )
+            except canary.CanaryError as error:
+                canary_blocked.add(cid)
+                rep["alerts"].append({
+                    "contribution": cid,
+                    "alert": f"canonical canary recovery blocked: {error}",
+                })
+            continue
+        if canary.is_repaired(record):
+            continue
+        canary_blocked.add(cid)
+        issue = inputs.tracking_issues.get(record["tracking_issue"]["number"])
+        try:
+            if issue is None:
+                raise canary.CanaryError("canonical canary live issue is unavailable")
+            if len(matching) > 1:
+                raise canary.CanaryError("multiple canonical canary recovery intents")
+            if matching:
+                operation = matching[0]
+                canary.validate_operation(operation)
+                canary.validate_mismatch(record, operation_id=operation["operation_id"])
+                current_digest = canary.validate_issue(
+                    issue, {canary.INCOMPLETE_DIGEST, canary.EXPECTED_DIGEST}
+                )
+            else:
+                canary.validate_mismatch(record, operation_id=None)
+                current_digest = canary.validate_issue(issue, {canary.INCOMPLETE_DIGEST})
+                operation = canary.operation_for(record, policy=policy, now=now)
+                record = canary.bind_operation(record, operation, now)
+                operations[operation["operation_id"]] = operation
+                by_id[cid] = record
+                res.stage("operations", operation)
+                res.stage("contributions", record)
+                res.stage("events", canary.planned_event(record, operation, now))
+            rep["canary_recovery_requests"].append({
+                "operation_id": operation["operation_id"],
+                "contribution_id": cid,
+                "observed_body_digest": current_digest,
+            })
+        except canary.CanaryError as error:
+            rep["alerts"].append({
+                "contribution": cid,
+                "alert": f"canonical canary recovery blocked: {error}",
+            })
+
     # Removing the intake label cancels only an accepted request that has not
     # requested any Work yet. Once active_work exists, explicit lifecycle
     # commands are required so an unlabeled event cannot silently stop work.
@@ -187,7 +253,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # Bind initially unspecified source identities/bases from trusted API data,
     # never from the model's dossier. Already-bound bases remain immutable.
-    source_blocked = set()
+    source_blocked = set(canary_blocked)
     for cid, c in list(by_id.items()):
         snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
         if snapshot is None:

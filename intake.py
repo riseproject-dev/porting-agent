@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
+import canary
 import commands
 from common import CONTROL_REPO, INTAKE_LABEL, normalize_distribution, sha256_text
 
@@ -174,6 +175,10 @@ def parse_request(issue: dict, policy: dict) -> Request:
     body = issue.get("body") or ""
     if len(body.encode("utf-8")) > policy["intake"]["max_request_bytes"]:
         raise IntakeError("request too large")
+    try:
+        canary.validate_intake(issue, body)
+    except canary.CanaryError as error:
+        raise IntakeError(str(error)) from error
     form = parse_issue_form(body)
     if not form:
         # Explicit compatibility for pre-form package requests: accept only

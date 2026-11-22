@@ -93,6 +93,20 @@ class TestWorkflowContracts(unittest.TestCase):
         )
         self.assertGreater(reconcile["steps"].index(complete), publish_index)
 
+    def test_canary_effect_uses_issue_token_then_state_token(self):
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        repair = next(
+            step for step in steps if step.get("name") == "Repair the exact canonical canary request"
+        )
+        confirm = next(
+            step for step in steps if step.get("name") == "Publish exact canary repair receipt state"
+        )
+        self.assertEqual(repair["env"]["GH_TOKEN"], "${{ steps.issue-token.outputs.token }}")
+        self.assertIn("python -m canary_recovery", repair["run"])
+        self.assertEqual(confirm["env"]["GH_TOKEN"], "${{ steps.state-token.outputs.token }}")
+        self.assertIn("python -m state_commit", confirm["run"])
+        self.assertLess(steps.index(repair), steps.index(confirm))
+
     def test_milestone_three_has_no_agent_or_destination_writer(self):
         self.assertEqual(
             {path.name for path in WORKFLOWS.iterdir()},

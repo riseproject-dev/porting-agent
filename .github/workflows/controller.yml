@@ -166,6 +166,32 @@ jobs:
           repositories: porting-agent
           permission-contents: read
           permission-issues: write
+      # The one canonical canary repair has a durable operation intent in the
+      # first state commit. The trusted issue edit is exact-resource scoped and
+      # a second state-only commit records exact GET readback. A lost response
+      # is discovered on the next scheduled tick; the PATCH is not replayed.
+      - name: Repair the exact canonical canary request
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          count=$(jq '.controller.canary_recovery_requests | length' report.json)
+          [ "$count" -le 1 ] || { echo "multiple canary recovery requests"; exit 1; }
+          [ "$count" -eq 1 ] || exit 0
+          operation=$(jq -r '.controller.canary_recovery_requests[0].operation_id' report.json)
+          uv run --locked python -m canary_recovery --operation-id "$operation" \
+            --out canary-recovery/receipt.json
+      - name: Publish exact canary repair receipt state
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.state-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          [ -f canary-recovery/receipt.json ] || exit 0
+          [ "$(jq -r .state_changed canary-recovery/receipt.json)" = true ] || exit 0
+          uv run --locked python -m state_commit \
+            --message "porting-agent: confirm canonical canary repair (run ${GITHUB_RUN_ID})"
       # These projections run only after durable state publication. Each scans
       # committed receipts/events and is idempotent, so a later tick repairs a
       # failure between the state commit and its human-facing projection.
@@ -196,6 +222,7 @@ jobs:
           name: porting-control-receipts
           path: |
             report.json
+            canary-recovery/receipt.json
             status-ledger/receipts.json
             command-feedback/receipts.json
             command-reactions/receipts.json

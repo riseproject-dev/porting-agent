@@ -43,6 +43,7 @@
         "branch_delete",
         "fork_archive",
         "issue_close",
+        "issue_body_repair",
         "fork_provision"
       ]
     },

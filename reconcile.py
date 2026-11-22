@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import canary
 import capacity
 import collect
 import controller
@@ -481,6 +482,12 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     timed_out = []
     for key, c in list(contributions.items()):
         aw = c.get("active_work")
+        tracking = c.get("tracking_issue") or {}
+        if (canary.is_target(c)
+                and tracking.get("description_digest") == canary.INCOMPLETE_DIGEST):
+            # The exact pre-dispatch canary defect is owned by its durable
+            # recovery operation, never by generic timeout/hand-unblock logic.
+            continue
         if aw and datetime.fromisoformat(aw["deadline_at"]) <= now:
             new = dict(c, active_work=None, activity="waiting_human", updated_at=iso,
                        pending_human_action={"kind": "task_without_outcome", "requested_at": iso,
