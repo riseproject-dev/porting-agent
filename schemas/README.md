@@ -1,3 +1,3 @@
 # Schemas
 
-Control-plane JSON schemas move here with the root Python modules in Milestone 2. Milestone 1 intentionally contains no runtime schemas.
+These JSON schemas are the migrated contracts for policy, lifecycle state, evidence, dossiers, proposals, operations, commands, projects, and events. Root modules resolve them relative to the repository root, independent of the process working directory.

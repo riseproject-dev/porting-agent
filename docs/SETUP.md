@@ -4,4 +4,4 @@ The reviewed repository settings are declared in `.github/repository-settings.js
 
 Required bootstrap resources include the `upstreaming-request` label, Pages through Actions, read-only default workflow permissions, squash-only merges, automatic head-branch deletion, the `protect-main-history` ruleset, branch-scoped `state` and reviewed `publish` environments, selected organization secrets and variables, and the two-App installation boundary.
 
-The canonical `ciso8601` request must be created only after the issue form is present on remote `main`. Its frozen expected input and rendered-body digest are recorded in `tests/fixtures/ciso8601-request.json`. Local bootstrap validation does not create the issue or perform any other remote write.
+The canonical [`ciso8601` request](https://github.com/riseproject-dev/porting-agent/issues/1) was created after the issue form reached remote `main`. Its verified rendered-body SHA-256 is `9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb`; the frozen input and receipt are recorded in `tests/fixtures/ciso8601-request.json`. Local validation performs no remote write.

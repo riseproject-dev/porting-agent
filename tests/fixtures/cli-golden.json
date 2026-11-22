@@ -1,0 +1,106 @@
+{
+  "sourceRepository": "riseproject-dev/python-wheels",
+  "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
+  "captures": {
+    "state.validate": {
+      "exit": 0,
+      "stdout": "projects: 0 valid\ncontributions: 0 valid\noperations: 0 valid\ncommands: 0 valid\nevents: 0 valid\nevidence: 0 valid\n",
+      "stderr": "",
+      "files": []
+    },
+    "triggers.audit": {
+      "exit": 0,
+      "json": {
+        "changed_paths": ["README.md"],
+        "workflows_scanned": 0,
+        "triggered": [],
+        "workflow_run_consumers": [],
+        "classification": "code"
+      },
+      "stderr": "",
+      "files": []
+    },
+    "commands.parse": {
+      "exit": 0,
+      "json": {
+        "ok": true,
+        "verb": "pause",
+        "args": {"reason": "maintenance"}
+      },
+      "stderr": "",
+      "files": []
+    },
+    "capacity.observe": {
+      "exit": 0,
+      "json": {
+        "observation_ok": true,
+        "reason": null,
+        "running": 0,
+        "pending": 1,
+        "oldest_pending_seconds": 300,
+        "per_entity": {"riseproject-dev": {"running": 0, "pending": 1}},
+        "admit_expensive": true,
+        "why": "within thresholds",
+        "note": "pressure observation, not free capacity"
+      },
+      "stderr": "",
+      "files": []
+    },
+    "controller.observe": {
+      "exit": 0,
+      "jsonWithoutAt": {
+        "policy_version": "2026-11-18.1-proposed",
+        "read_only": true,
+        "commands": [],
+        "intake": [],
+        "operations": [],
+        "selected": [],
+        "deferred": [],
+        "alerts": [],
+        "provision_requests": [],
+        "dev_pr_requests": [],
+        "note": "read-only: requested effects are reported, not executed",
+        "would_stage": [],
+        "requested_effects": []
+      },
+      "stderr": "",
+      "files": []
+    },
+    "work.plan": {
+      "exit": 0,
+      "json": {"selected": []},
+      "stderr": "",
+      "files": []
+    },
+    "reconcile": {
+      "exit": 0,
+      "jsonWithoutAt": {
+        "development_prs": [],
+        "provisions": [],
+        "publications": [],
+        "timed_out_work": [],
+        "dispatch_recovery": [],
+        "dispatch_relaunch": [],
+        "controller": {
+          "policy_version": "2026-11-18.1-proposed",
+          "read_only": false,
+          "commands": [],
+          "intake": [],
+          "operations": [],
+          "selected": [],
+          "deferred": [],
+          "alerts": [],
+          "provision_requests": [],
+          "dev_pr_requests": []
+        },
+        "requested_effects": [],
+        "provision_requests": [],
+        "dev_pr_requests": [],
+        "publication_retries": [],
+        "written": []
+      },
+      "stderr": "",
+      "files": []
+    }
+  }
+}

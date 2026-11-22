@@ -71,17 +71,20 @@ class TestMigrationInventory(unittest.TestCase):
         digest = hashlib.sha256(("\n".join(sorted(sources)) + "\n").encode()).hexdigest()
         self.assertEqual(digest, inventory["sourceTreeSha256"])
         for entry in entries:
-            self.assertIn(entry["action"], {"move", "remove", "split"})
+            self.assertIn(entry["action"], {"move", "remove", "split", "defer"})
             self.assertIn(entry["milestone"], range(1, 11))
             self.assertTrue(entry["rationale"])
             if entry["action"] == "remove":
                 self.assertEqual(entry["targets"], [])
             else:
                 self.assertTrue(entry["targets"])
+            if entry["action"] == "defer":
+                self.assertTrue(entry["restoringMilestones"])
+                self.assertEqual(entry["status"], "deferred")
             for target in entry["targets"]:
-                self.assertNotRegex(target, r"(^|/)(upstreaming|upstreaming-state|src)(/|$)")
+                self.assertNotRegex(target, r"(^|/)(upstreaming|.state|src)(/|$)")
         for entry in entries:
-            if entry["milestone"] == 1 and entry["action"] != "remove":
+            if entry["status"] in {"migrated", "deferred"}:
                 for target in entry["targets"]:
                     self.assertTrue((ROOT / target).exists(), target)
 
@@ -144,6 +147,11 @@ class TestIssueFormAndCanary(unittest.TestCase):
         self.assertEqual(canary["label"], "upstreaming-request")
         self.assertEqual(canary["canonicalRepository"], "riseproject-dev/porting-agent")
         self.assertEqual(
+            canary["issueUrl"],
+            "https://github.com/riseproject-dev/porting-agent/issues/1",
+        )
+        self.assertEqual(canary["issueNumber"], 1)
+        self.assertEqual(
             canary["fields"],
             {
                 "upstream-repository": "https://github.com/closeio/ciso8601",
@@ -163,6 +171,7 @@ class TestIssueFormAndCanary(unittest.TestCase):
             canary["renderedBodySha256"],
             "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
         )
+        self.assertEqual(canary["verifiedBodySha256"], canary["renderedBodySha256"])
 
 
 class TestDocumentationLinks(unittest.TestCase):

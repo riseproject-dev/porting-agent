@@ -28,3 +28,6 @@ extend-exclude = ["scripts/gh-aw-compat/tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# The migrated proven implementation intentionally retains compact fixture and
+# table formatting. Milestone 2 lint focuses on imports and executable defects.
+ignore = ["E401", "E501", "E702", "E731", "UP017", "UP033", "UP035"]

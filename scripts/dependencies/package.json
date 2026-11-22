@@ -1,7 +1,7 @@
 {
-  "name": "upstreaming-runtime-dependency-monitor",
+  "name": "porting-agent-runtime-dependency-monitor",
   "private": true,
-  "description": "Dependabot inventory for Pi and extensions used by upstreaming workflows; not project wheel dependencies.",
+  "description": "Dependabot inventory for Pi and extensions used by porting-agent workflows; not project wheel dependencies.",
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
     "pi-web-access": "0.48.0",

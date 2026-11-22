@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
+  "deferrals": [
+    {
+      "test": "tests.test_observation.TestTriggers.test_repository_state_only_push_refreshes_only_the_website",
+      "restoringMilestone": 3,
+      "prerequisite": "controller.yml and website.yml are introduced with lifecycle state and status publication"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_pipeline_push_wakeup_excludes_state_commits",
+      "restoringMilestone": 3,
+      "prerequisite": "controller.yml and website.yml exist"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_posts_append_only_app_authored_issue_ledger",
+      "restoringMilestone": 3,
+      "prerequisite": "controller.yml owns tracking-issue projection"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_explains_rejected_commands_with_issue_app_token",
+      "restoringMilestone": 3,
+      "prerequisite": "controller.yml owns command receipts and failure replies"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_reconciles_current_main_not_stale_event_sha",
+      "restoringMilestone": 3,
+      "prerequisite": "controller.yml exists"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_command_acknowledgement_is_fast_idempotent_and_not_serialized",
+      "restoringMilestone": 3,
+      "prerequisite": "controller.yml command acknowledgement job exists"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_only_investigator_unsandboxed",
+      "restoringMilestone": 4,
+      "prerequisite": "investigator.md and its generated lock are introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_completeness_gate_precedes_durable_completion",
+      "restoringMilestone": 4,
+      "prerequisite": "investigator.md and its generated lock are introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_dossier_comments_use_the_control_app_identity",
+      "restoringMilestone": 4,
+      "prerequisite": "investigator trusted post-agent publication exists"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_investigation_retry_also_publishes_verified_comment",
+      "restoringMilestone": 4,
+      "prerequisite": "investigator retry and verified comment paths exist"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_fetches_and_verifies_complete_committed_dossier",
+      "restoringMilestone": 5,
+      "prerequisite": "worker.md and its generated lock are introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_brackets_untrusted_output_with_stop_commands",
+      "restoringMilestone": 5,
+      "prerequisite": "worker.md and its generated lock are introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_prompts_require_rise_wheels_for_missing_build_and_test_dependencies",
+      "restoringMilestone": 5,
+      "prerequisite": "Python worker and investigator profile prompts are introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_forbids_unrelated_fork_ci_debug_changes",
+      "restoringMilestone": 5,
+      "prerequisite": "worker.md contains the bounded debug policy"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_development_pr_writer_is_restricted_to_one_verified_fork",
+      "restoringMilestone": 6,
+      "prerequisite": "dev-pr.yml is introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_provisioning_administration_is_restricted_to_one_verified_fork",
+      "restoringMilestone": 6,
+      "prerequisite": "provision.yml is introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_native_workers_explicitly_dispatch_controller_after_terminal_jobs",
+      "restoringMilestone": 6,
+      "prerequisite": "dispatcher, investigator, worker, and controller workflows all exist"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_destination_tokens_use_only_destination_app_credentials",
+      "restoringMilestone": 6,
+      "prerequisite": "all destination writer workflows are introduced"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_uses_publication_artifact_not_overall_run_status",
+      "restoringMilestone": 6,
+      "prerequisite": "worker publication and controller continuation paths exist"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_chains_every_pipeline_completion_and_has_schedule_fallback",
+      "restoringMilestone": 6,
+      "prerequisite": "all runtime pipeline workflows exist"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_development_writers_do_not_wait_for_environment_review",
+      "restoringMilestone": 6,
+      "prerequisite": "provision, publish retry, development PR, and worker writer jobs exist"
+    },
+    {
+      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_authored_python_ci_invocations_use_uv",
+      "restoringMilestone": 6,
+      "prerequisite": "the complete authored runtime workflow set exists"
+    }
+  ]
+}
