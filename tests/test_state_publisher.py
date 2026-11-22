@@ -222,6 +222,49 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual(event["kind"], "state_text_normalized")
         self.assertEqual(event["cause"], {"type": "migration", "id": migration.migration_id})
 
+    def test_controller_migration_report_has_no_downstream_effects(self):
+        dash = chr(0x2014)
+        evidence = {
+            "schema_version": 1,
+            "evidence_id": "legacy-rehearsal",
+            "contribution_id": self.rec["contribution_id"],
+            "kind": "rehearsal",
+            "policy_version": "test",
+            "collected_at": self.rec["created_at"],
+            "summary": f"prepared{dash}single commit",
+        }
+        path = state.record_path("evidence", evidence)
+        data = canonical_json(evidence).encode()
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        migration = state.LegacyTextMigration(
+            path=path,
+            sha256=hashlib.sha256(data).hexdigest(),
+            contribution_id=self.rec["contribution_id"],
+            migration_id="test-u2014-migration",
+        )
+        report_path = self.repo / "report.json"
+        args = SimpleNamespace(root=str(self.repo), report=str(report_path))
+        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)):
+            self.assertEqual(reconcile.cmd_reconcile(args), 0)
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["state_text_migration"]["written"], report["written"])
+        self.assertEqual(len(report["written"]), 2)
+        self.assertIn(path, report["written"])
+        event_path = next(item for item in report["written"] if item != path)
+        self.assertRegex(event_path, r"^\.state/events/.+/[0-9]{8}\.json$")
+        self.assertEqual(report["controller"], {"canary_recovery_requests": []})
+        for key in (
+            "requested_effects",
+            "dispatch_relaunch",
+            "provision_requests",
+            "proposal_publications",
+            "publication_retries",
+            "dev_pr_requests",
+        ):
+            self.assertEqual(report[key], [], key)
+
     def test_controller_migration_refuses_unrelated_state_changes(self):
         dash = chr(0x2014)
         evidence = {

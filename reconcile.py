@@ -64,6 +64,21 @@ DISPATCH_LAUNCH_GRACE_MINUTES = 15
 DISPATCHER_WORKFLOW = ".github/workflows/dispatcher.lock.yml"
 
 
+def state_text_migration_report(written: list[str]) -> dict[str, Any]:
+    """Return a no-op report for workflow effects after a migration-only tick."""
+    return {
+        "state_text_migration": {"written": written},
+        "written": written,
+        "controller": {"canary_recovery_requests": []},
+        "requested_effects": [],
+        "dispatch_relaunch": [],
+        "provision_requests": [],
+        "proposal_publications": [],
+        "publication_retries": [],
+        "dev_pr_requests": [],
+    }
+
+
 def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None,
                       queue_works: dict[str, str] | None, now: datetime, policy: dict) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
@@ -787,7 +802,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        report = {"state_text_migration": {"written": migrated}, "written": migrated}
+        report = state_text_migration_report(migrated)
         text = json.dumps(report, indent=2)
         if args.report:
             Path(args.report).write_text(text)

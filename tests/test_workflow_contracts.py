@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+import reconcile
+
 ROOT = Path(__file__).parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
 
@@ -307,6 +309,38 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn(".github/workflows/**", trigger["paths"])
         self.assertNotIn(".state/**", trigger["paths"])
         self.assertIn("github.event_name == 'push'", controller["jobs"]["filter"]["if"])
+
+    def test_migration_only_report_safely_noops_all_controller_jq_consumers(self):
+        report = reconcile.state_text_migration_report([".state/evidence/example.json"])
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        consumers = {
+            "Repair the exact canonical canary request": [
+                (".controller.canary_recovery_requests", report["controller"]["canary_recovery_requests"]),
+            ],
+            "Launch dispatcher for durable selected Work": [
+                (".requested_effects", report["requested_effects"]),
+                (".dispatch_relaunch", report["dispatch_relaunch"]),
+            ],
+            "Launch durable fork provisioning operations": [
+                (".provision_requests[]", report["provision_requests"]),
+            ],
+            "Publish verified pre-fork proposals without another model call": [
+                (".proposal_publications[]", report["proposal_publications"]),
+            ],
+            "Launch due publication retries": [
+                (".publication_retries[]", report["publication_retries"]),
+            ],
+            "Launch durable development PR operations": [
+                (".dev_pr_requests[]", report["dev_pr_requests"]),
+            ],
+        }
+        by_name = {step.get("name"): step for step in steps}
+        for name, fields in consumers.items():
+            script = by_name[name]["run"]
+            self.assertIn("report.json", script)
+            for jq_path, value in fields:
+                self.assertIn(jq_path, script)
+                self.assertEqual(value, [], f"{name}: {jq_path}")
 
     def test_controller_posts_append_only_app_authored_issue_ledger(self):
         controller = workflow("controller.yml")
