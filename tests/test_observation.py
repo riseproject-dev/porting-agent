@@ -158,12 +158,13 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         rec["pending_feedback_evidence_ids"] = ["rehearsal-closeio--ciso8601--1-r3-44982902579"]
         return rec
 
-    def observe(self, rec, snapshot, evidence=None):
+    def observe(self, rec, snapshot, evidence=None, contracts=None):
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": self.HEAD}), \
              mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
              mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
-            return observe_ci.observe(object(), contributions={"c": rec}, operations={}, contracts={},
-                                      policy=policy(), now=NOW, evidence=evidence or {})
+            return observe_ci.observe(object(), contributions={"c": rec}, operations={},
+                                      contracts=contracts or {}, policy=policy(), now=NOW,
+                                      evidence=evidence or {})
 
     @staticmethod
     def final(observation, original):
@@ -182,7 +183,14 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(selected.requested_effects, [])
 
-    def test_green_duplicate_registrations_withdraw_only_unfounded_undispatched_repair(self):
+    OBSOLETE_REASONS = {
+        "rehearsal-closeio--ciso8601--1-r3-44982902579": {
+            "kind": "rehearsal", "evidence_id": "rehearsal-closeio--ciso8601--1-r3-44982902579"},
+        "dossier-closeio--ciso8601--1-r2": {
+            "kind": "dossier", "evidence_id": "dossier-closeio--ciso8601--1-r2"},
+    }
+
+    def undispatched_repair(self):
         rec = self.record(activity="agent_running")
         rec["active_work"] = {
             "dedupe_key": "closeio--ciso8601/1@5:development_repair",
@@ -192,16 +200,18 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             "reason_ids": ["rehearsal-closeio--ciso8601--1-r3-44982902579",
                            "dossier-closeio--ciso8601--1-r2"],
         }
-        reasons = {
-            "rehearsal-closeio--ciso8601--1-r3-44982902579": {
-                "kind": "rehearsal", "evidence_id": "rehearsal-closeio--ciso8601--1-r3-44982902579"},
-            "dossier-closeio--ciso8601--1-r2": {
-                "kind": "dossier", "evidence_id": "dossier-closeio--ciso8601--1-r2"},
-        }
-        observation = self.observe(rec, self.snapshot(pending=False), evidence=reasons)
+        return rec
+
+    def test_missing_evidence_withdraws_only_unfounded_undispatched_repair(self):
+        rec = dict(self.undispatched_repair(), target_contract_id="contract-1")
+        contracts = {"contract-1": {"data": {
+            "expected_wheels": ["ciso8601-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"]}}}
+        observation = self.observe(rec, self.snapshot(pending=False),
+                                   evidence=self.OBSOLETE_REASONS, contracts=contracts)
         final = self.final(observation, rec)
         self.assertEqual(final["fork"]["head_sha"], self.HEAD)
         self.assertEqual(final["revision"], 5)
+        self.assertEqual(final["phase"], "development")
         self.assertEqual(final["activity"], "waiting_ci")
         self.assertIsNone(final["active_work"])
         self.assertIsNone(final["last_ci_evidence_id"])
@@ -213,6 +223,104 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
             inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(selected.requested_effects, [])
+
+    def test_green_duplicate_registrations_clear_unfounded_repair_and_enter_handoff(self):
+        rec = self.undispatched_repair()
+        observation = self.observe(rec, self.snapshot(pending=False), evidence=self.OBSOLETE_REASONS)
+        final = self.final(observation, rec)
+        self.assertEqual(final["revision"], 5)
+        self.assertEqual((final["phase"], final["activity"]), ("handoff", "waiting_human"))
+        self.assertIsNone(final["active_work"])
+        self.assertEqual(final["last_ci_evidence_id"], "ci-1467208233-45008094068-1")
+        self.assertEqual([event["kind"] for kind, event in observation.staged if kind == "events"],
+                         ["handoff_ready"])
+        selected = controller.tick(
+            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertEqual(selected.requested_effects, [])
+
+    def test_live_green_pr_ci_without_uploaded_artifacts_enters_handoff(self):
+        """Exact live shape: revision 5, no target contract, PR CI that never uploads."""
+        rec = self.record()
+        rec["next_poll_at"] = "2026-11-18T12:01:00+00:00"
+        self.assertIsNone(rec["target_contract_id"])
+        snapshot = self.snapshot(pending=False)
+        self.assertEqual(snapshot.artifacts_by_run, {})
+        observation = self.observe(rec, snapshot)
+        final = self.final(observation, rec)
+        evidence_id = "ci-1467208233-45008094068-1"
+        self.assertEqual((final["phase"], final["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual(final["revision"], 5)
+        self.assertEqual(final["last_ci_evidence_id"], evidence_id)
+        self.assertEqual(final["clean_head_sha"], self.HEAD)
+        self.assertEqual(final["handoff_request"],
+                         {"command_id": f"observation-{evidence_id}", "head": self.HEAD, "revision": 5})
+        self.assertEqual(final["pending_human_action"]["kind"], "approve_handoff")
+        self.assertIsNone(final["next_poll_at"])
+        self.assertEqual(final["pending_feedback_evidence_ids"], [])
+        staged_evidence = [item for kind, item in observation.staged if kind == "evidence"]
+        self.assertEqual([item["evidence_id"] for item in staged_evidence], [evidence_id])
+        self.assertEqual(staged_evidence[0]["ci"]["head_sha"], self.HEAD)
+        self.assertNotIn("no riscv64 wheel artifact was uploaded", staged_evidence[0]["limitations"])
+        jobs = {job["name"] for job in staged_evidence[0]["ci"]["jobs"]}
+        self.assertIn("Build - ubuntu-24.04-riscv (riscv64)", jobs)
+        events = [event for kind, event in observation.staged if kind == "events"]
+        self.assertEqual([event["kind"] for event in events], ["handoff_ready"])
+        self.assertEqual(events[0]["to"], {"phase": "handoff", "activity": "waiting_human"})
+        self.assertEqual(events[0]["cause"], {"type": "observation", "id": evidence_id})
+        # The ordinary controller requests no Work for the handoff wait.
+        selected = controller.tick(
+            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertEqual(selected.requested_effects, [])
+        # Repeated observation preserves handoff:waiting_human (plan 14.1),
+        # including while a rerun of the same head is pending.
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                again = self.observe(final, self.snapshot(pending=pending))
+                repeated = self.final(again, final)
+                self.assertEqual((repeated["phase"], repeated["activity"]), ("handoff", "waiting_human"))
+                self.assertEqual(repeated["handoff_request"], final["handoff_request"])
+                self.assertEqual([kind for kind, event in again.staged if kind == "events"], [])
+
+    def test_live_tick_commits_handoff_and_posts_app_authored_ledger_entry(self):
+        """reconcile.tick -> observe_ci -> durable state -> status_ledger.publish."""
+        import tempfile
+
+        import reconcile
+        import state
+        import status_ledger
+        from tests.test_status_ledger import FakeApi
+
+        rec = self.record()
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": self.HEAD}), \
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
+             mock.patch("observe_ci.collect.ci_snapshot", return_value=self.snapshot(pending=False)):
+            output = reconcile.tick(
+                object(), reconcile.Snapshot({"c": rec}, {}, {}, {}, {}), policy=policy(), now=T,
+                publications=[], pressure=capacity.Pressure(ok=True))
+        self.assertTrue(output.report["observation"][0]["handoff_ready"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = state.StateStore(root, policy())
+            for kind, item in output.staged:
+                store.stage(kind, item)
+            written = store.write_staged()
+            events = [path for path in written if path.startswith(".state/events/")]
+            self.assertEqual(len(events), 1)
+            committed = json.loads(next(path for path in (root / ".state/contributions").glob("*.json")).read_text())
+            self.assertEqual((committed["phase"], committed["activity"]), ("handoff", "waiting_human"))
+            self.assertEqual(committed["last_ci_evidence_id"], "ci-1467208233-45008094068-1")
+            api = FakeApi()
+            with mock.patch("status_ledger.Api", return_value=api):
+                receipts = status_ledger.publish(root, {"written": written}, "token",
+                                                 "https://github.com/run")
+        self.assertEqual([receipt["status"] for receipt in receipts], ["created"])
+        body = api.comment["body"]
+        self.assertTrue(body.startswith("**Upstreaming r5 · handoff/waiting_human**"))
+        self.assertIn("reached human upstream handoff", body)
+        self.assertIn(f"/upstreaming approve-handoff revision=5 head={self.HEAD}", body)
+        self.assertEqual(api.comment["user"]["login"], "riseproject-dev[bot]")
 
     def test_human_requested_or_dispatched_repairs_are_not_withdrawn(self):
         for dispatched_run_id, reason_kind in ((None, "human_relay"), ("450101", "rehearsal")):

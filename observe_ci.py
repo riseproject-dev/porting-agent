@@ -43,12 +43,17 @@ def _evidence_id(repo_id: int, run: dict) -> str:
 
 
 def contract_for(record: dict, contracts: dict[str, dict]) -> dict:
-    """The dossier target contract: required job patterns + expected wheels."""
+    """The dossier target contract: required job patterns + expected wheels.
+
+    Plan 9.2 accepts exact-head CI when every required build/test job
+    executed and passed. Uploaded workflow artifacts are not a development CI
+    requirement: many projects build and test wheels in PR CI but upload only
+    from release workflows.
+    """
     c = contracts.get(record.get("target_contract_id") or "") or {}
     data = c.get("data") or {}
     return {"required_job_patterns": data.get("required_job_patterns") or ["riscv64"],
             "expected_wheels": data.get("expected_wheels") or [],
-            "require_wheel_artifact": data.get("require_wheel_artifact", True),
             "required_runner_label": data.get("required_runner_label")}
 
 
@@ -209,13 +214,6 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
         verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
                                             expected_wheels=ctr["expected_wheels"],
                                             required_runner_label=ctr["required_runner_label"])
-        if verdict.state == "passed" and ctr["require_wheel_artifact"] \
-                and not collect.wheel_names_from_artifacts(snap):
-            # Artifact registration may lag a completed run, and some PR
-            # workflows intentionally defer upload to a trusted probe. Missing
-            # required evidence remains observable; it is not a coding defect.
-            verdict.state = "missing"
-            verdict.problems.append("no riscv64 wheel artifact was uploaded")
         entry["ci"] = {"repository": repo_for_ci, "state": verdict.state, "problems": verdict.problems[:10]}
         latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == head["head"]])
         next_poll_at = (_next_ci_observation(now, policy)
@@ -223,8 +221,11 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
         new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
                         "missing": "waiting_ci", "not_executed": "waiting_ci",
                         "access_wait": "waiting_human"}[verdict.state]
-        if verdict.state == "passed" and cur["phase"] == "handoff":
+        if cur["phase"] == "handoff" and verdict.state != "failed":
+            # Plan 14.1: repeated observation preserves handoff:waiting_human.
+            # Only an executed failure on the candidate head leaves handoff.
             new_activity = "waiting_human"
+            next_poll_at = None
         if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
             run = max(latest, key=lambda r: r["id"])
             eid = _evidence_id(snap.repository["id"], run)
@@ -259,7 +260,13 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 entry["returned_to_development"] = True
                 obs.report.append(entry)
                 continue
-            if verdict.state == "passed" and cur["phase"] == "development" and not cur.get("debug_commits"):
+            # Plan 14.1 clears only obsolete active Work. A dispatched or
+            # human-requested repair is still requested work on this head.
+            work_active = bool(cur.get("active_work")) or cur["activity"] == "agent_running"
+            if work_active and verdict.state == "passed" and cur["phase"] == "development" \
+                    and not _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"]):
+                entry["handoff_deferred"] = "requested Work is still active"
+            elif verdict.state == "passed" and cur["phase"] == "development" and not cur.get("debug_commits"):
                 before = cur
                 cur = dict(cur, phase="handoff", activity="waiting_human", active_work=None,
                            clean_head_sha=head["head"], pending_feedback_evidence_ids=[],
