@@ -2,6 +2,8 @@
 
 The porting agent separates trusted authorization and remote effects from model judgment. Lifecycle state, native Work queue state, tracking issues, and remote operation receipts have distinct ownership. Every later remote effect must bind the exact repository identity, contribution revision, Git head, and verified readback.
 
-Only `.github/workflows/validate.yml` is enabled through Milestone 2. It has read-only repository permission, does not select a deployment environment, and does not receive an App key, destination token, package credential, or state publisher credential. Root modules can execute local and read-only behavior, but no runtime workflow invokes a remote writer.
+Pull-request validation remains read-only. Milestone 3 adds `controller.yml` and `website.yml`. The controller observes with the ordinary read token, deterministically stages local records, and only then mints a control-repository App token for one validated plain fast-forward `.state/` commit. Issue projection uses a separate issues-scoped control token after state publication. The Pages workflow has only `contents: read`, `pages: write`, and `id-token: write`. Neither workflow receives a model credential or destination App credential.
 
 The reviewed workflow migration and ownership table is in `workflow-migration.json`. A runtime workflow may be added only by its owning milestone and an agentic Markdown workflow must be committed with exactly one generated `.lock.yml` file.
+
+State publication never force-pushes, deletes, merges, or uses a ruleset bypass. On a moving `main` tip it fetches, rechecks stale revision preconditions, rebuilds on the new tip, validates the complete candidate tree, and retries with a fixed bound. Human-facing ledger entries, failure replies, and terminal reactions scan durable state and hidden markers so a failure after the state commit is repaired by a later tick without duplicate comments.

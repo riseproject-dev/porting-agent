@@ -1,0 +1,8 @@
+title: RISE porting agent
+url: https://riseproject-dev.github.io
+baseurl: /porting-agent
+theme: jekyll-theme-minimal
+exclude:
+  - migration-inventory.json
+  - test-deferrals.json
+  - workflow-migration.json

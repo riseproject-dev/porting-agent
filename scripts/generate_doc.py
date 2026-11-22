@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Generate the public upstreaming status page from durable contribution state."""
+"""Generate the public porting status page from durable contribution state."""
 
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -40,21 +42,26 @@ def status_label(state: dict) -> str:
     return f"{phase} ({activity})" if activity else phase
 
 
+def escape_cell(value: str) -> str:
+    """Escape generated values for one Markdown table cell."""
+    return html.escape(value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " "))
+
+
 def markdown_link(label: str, url: str | None) -> str:
-    return f"[{label}]({url})" if url else "-"
+    safe_url = urllib.parse.quote(url, safe=":/#?&=%@+;,") if url else None
+    return f"[{escape_cell(label)}]({safe_url})" if safe_url else "-"
 
 
 def render(states: list[dict]) -> str:
     states = sorted(states, key=lambda state: state["upstream"]["full_name"].casefold())
     lines = [
         "---",
-        "title: Upstreaming",
+        "title: Porting status",
         "layout: default",
-        "nav_order: 9",
-        "permalink: /upstreaming/",
+        "permalink: /",
         "---",
         "",
-        "# Upstreaming status",
+        "# Porting status",
         "",
         "This table tracks work to contribute RISC-V support back to upstream projects. "
         "It is generated from the pipeline's durable state whenever the website is built.",
@@ -74,7 +81,7 @@ def render(states: list[dict]) -> str:
         cells = [
             markdown_link(full_name, f"https://github.com/{full_name}"),
             markdown_link(f"#{issue}", f"https://github.com/riseproject-dev/porting-agent/issues/{issue}"),
-            status_label(state),
+            escape_cell(status_label(state)),
             markdown_link(f"#{fork['pr_number']}", internal_url) if internal_url else "-",
             markdown_link(f"#{upstream_pr['number']}", upstream_pr.get("url")) if upstream_pr else "-",
             updated,
@@ -83,7 +90,7 @@ def render(states: list[dict]) -> str:
     lines.extend(
         [
             "",
-            "Status changes are recorded by the automated upstreaming pipeline. "
+            "Status changes are recorded by the automated porting pipeline. "
             "Use the tracking issue for the detailed history and available actions.",
             "",
         ]
@@ -94,7 +101,7 @@ def render(states: list[dict]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", type=Path, default=Path(".state/contributions"))
-    parser.add_argument("--output", type=Path, default=Path("docs/upstreaming.md"))
+    parser.add_argument("--output", type=Path, default=Path("docs/index.md"))
     args = parser.parse_args()
     states = [json.loads(path.read_text()) for path in args.state_dir.glob("*.json")]
     args.output.parent.mkdir(parents=True, exist_ok=True)

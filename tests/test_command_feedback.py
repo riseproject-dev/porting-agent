@@ -11,17 +11,22 @@ import command_feedback
 
 
 class FakeApi:
-    def __init__(self):
+    def __init__(self, existing=None):
+        self.existing = list(existing or [])
         self.created = None
+        self.methods = []
 
     def request(self, method, path, body=None):
+        self.methods.append(method)
         if path.endswith("?per_page=100"):
-            return []
+            return self.existing
         if path.endswith("/issues/comments/42"):
             return {"id": 42, "body": "/upstreaming force-develop revision=1",
                     "user": {"login": "luhenry", "id": 660779}}
-        if method == "POST":
-            self.created = {"id": 99, "body": body["body"], "user": {"login": "riseproject-dev[bot]"}}
+        if method in {"POST", "PATCH"}:
+            comment_id = 99 if method == "POST" else int(path.rsplit("/", 1)[1])
+            self.created = {"id": comment_id, "body": body["body"],
+                            "user": {"login": "riseproject-dev[bot]"}}
             return self.created
         return self.created
 
@@ -61,5 +66,42 @@ class TestCommandFeedback(unittest.TestCase):
         self.assertIn("@luhenry, this command was rejected", api.created["body"])
         self.assertIn("> /upstreaming force-develop revision=1", api.created["body"])
         self.assertIn("missing fields: class, paths, reason", api.created["body"])
+        self.assertIn("\n\n---\n\n**Reason:**", api.created["body"])
         self.assertIn("force-develop revision=1 class=configuration_integration", api.created["body"])
         self.assertIn("<!-- upstreaming-command-feedback:42 -->", api.created["body"])
+
+    def test_retry_edits_a_stale_marked_reply_instead_of_duplicating(self):
+        receipt = {
+            "schema_version": 1,
+            "command_id": "comment-42",
+            "command_version": 1,
+            "comment_id": 42,
+            "issue_number": 1138,
+            "actor": {"id": 660779, "login": "luhenry"},
+            "received_at": "2026-11-20T00:00:00+00:00",
+            "content_digest": "0" * 64,
+            "verb": "force-develop",
+            "args": {},
+            "contribution_id": None,
+            "revision": 1,
+            "result": "rejected",
+            "reason": "updated deterministic reason",
+        }
+        existing = [{
+            "id": 77,
+            "body": "stale\n\n<!-- upstreaming-command-feedback:42 -->",
+            "user": {"login": "riseproject-dev[bot]"},
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipts = root / ".state/commands"
+            receipts.mkdir(parents=True)
+            (receipts / "comment-42.json").write_text(json.dumps(receipt))
+            api = FakeApi(existing)
+            with patch("command_feedback.Api", return_value=api):
+                result = command_feedback.publish(root, "token")
+        self.assertEqual(result[0], {"command_id": "comment-42", "comment_id": 77,
+                                     "status": "updated"})
+        self.assertIn("PATCH", api.methods)
+        self.assertNotIn("POST", api.methods)
+        self.assertIn("updated deterministic reason", api.created["body"])

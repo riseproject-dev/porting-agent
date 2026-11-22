@@ -3,36 +3,6 @@
   "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
   "deferrals": [
     {
-      "test": "tests.test_observation.TestTriggers.test_repository_state_only_push_refreshes_only_the_website",
-      "restoringMilestone": 3,
-      "prerequisite": "controller.yml and website.yml are introduced with lifecycle state and status publication"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_pipeline_push_wakeup_excludes_state_commits",
-      "restoringMilestone": 3,
-      "prerequisite": "controller.yml and website.yml exist"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_posts_append_only_app_authored_issue_ledger",
-      "restoringMilestone": 3,
-      "prerequisite": "controller.yml owns tracking-issue projection"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_explains_rejected_commands_with_issue_app_token",
-      "restoringMilestone": 3,
-      "prerequisite": "controller.yml owns command receipts and failure replies"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_reconciles_current_main_not_stale_event_sha",
-      "restoringMilestone": 3,
-      "prerequisite": "controller.yml exists"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_command_acknowledgement_is_fast_idempotent_and_not_serialized",
-      "restoringMilestone": 3,
-      "prerequisite": "controller.yml command acknowledgement job exists"
-    },
-    {
       "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_only_investigator_unsandboxed",
       "restoringMilestone": 4,
       "prerequisite": "investigator.md and its generated lock are introduced"

@@ -11,3 +11,7 @@ Earlier implementation evidence: [the frozen `upstreaming/` tree](https://github
 The control-plane Python package is flattened into repository-root modules, schemas are rooted at `schemas/`, operational utilities are rooted at `scripts/`, and proven local/read-only tests are rooted at `tests/`. Aggregate commands moved to their owning modules; there is no replacement aggregate entry point.
 
 Workflow-dependent tests remain represented without enabling runtime workflows early. `test-deferrals.json` binds every deferred case to the milestone and workflow prerequisite that must restore it. All other proven tests run cumulatively in Milestone 2.
+
+## Milestone 3 update
+
+The control controller and Pages status workflows are now owned by `controller.yml` and `website.yml`. Lifecycle authority is `.state/`; publication is a bounded plain fast-forward under `protect-main-history`, with no bypass or force path. Tracking issue ledgers, deterministic failure replies, and terminal reactions are recoverable from durable events and command receipts. The six Milestone 3 deferrals are restored. Agent and destination workflow contracts remain deferred to their Milestone 4-6 owners.

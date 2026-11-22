@@ -8,7 +8,8 @@ import os
 import re
 from pathlib import Path
 
-from status_ledger import Api, LedgerError
+from common import CONTROL_REPO
+from status_ledger import Api, LedgerError, issue_comments
 
 TEMPLATES = {
     "force-develop": '/upstreaming force-develop revision=N class=configuration_integration paths=".github/workflows/release.yml" reason="..."',
@@ -37,7 +38,7 @@ def render(receipt: dict, original: dict) -> str:
     body = (original.get("body") or "").strip()[:8000]
     quoted = "\n".join("> " + line for line in body.splitlines())
     reason = (receipt.get("reason") or receipt.get("result") or "command rejected").strip()
-    text = f"@{login}, this command was rejected:\n\n{quoted}\n\n**Reason:** {reason}"
+    text = f"@{login}, this command was rejected:\n\n{quoted}\n\n---\n\n**Reason:** {reason}"
     verb = _verb(body, receipt)
     if reason == "already paused":
         revision = receipt.get("revision")
@@ -72,19 +73,31 @@ def publish(root: Path, token: str) -> list[dict]:
             continue
         issue = receipt["issue_number"]
         marker = f"<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
-        comments = cache.setdefault(issue, api.request("GET", f"/repos/riseproject-dev/porting-agent/issues/{issue}/comments?per_page=100"))
+        comments = cache.setdefault(issue, issue_comments(api, issue))
         existing = next((item for item in comments if marker in (item.get("body") or "")), None)
-        if existing:
-            receipts.append({"command_id": receipt["command_id"], "comment_id": existing["id"], "status": "existing"})
-            continue
-        original = api.request("GET", f"/repos/riseproject-dev/porting-agent/issues/comments/{receipt['comment_id']}")
+        original = api.request("GET", f"/repos/{CONTROL_REPO}/issues/comments/{receipt['comment_id']}")
         body = render(receipt, original)
-        comment = api.request("POST", f"/repos/riseproject-dev/porting-agent/issues/{issue}/comments", {"body": body})
-        observed = api.request("GET", f"/repos/riseproject-dev/porting-agent/issues/comments/{comment['id']}")
+        status = "created"
+        if existing:
+            if (existing.get("user") or {}).get("login") != "riseproject-dev[bot]":
+                raise LedgerError("command feedback marker is not App-authored")
+            if existing.get("body") == body:
+                receipts.append({"command_id": receipt["command_id"], "comment_id": existing["id"], "status": "existing"})
+                continue
+            comment = api.request(
+                "PATCH",
+                f"/repos/{CONTROL_REPO}/issues/comments/{existing['id']}",
+                {"body": body},
+            )
+            status = "updated"
+        else:
+            comment = api.request("POST", f"/repos/{CONTROL_REPO}/issues/{issue}/comments", {"body": body})
+        observed = api.request("GET", f"/repos/{CONTROL_REPO}/issues/comments/{comment['id']}")
         if observed.get("body") != body or (observed.get("user") or {}).get("login") != "riseproject-dev[bot]":
             raise LedgerError("command feedback readback or App author mismatch")
-        comments.append(observed)
-        receipts.append({"command_id": receipt["command_id"], "comment_id": observed["id"], "status": "created"})
+        if not existing:
+            comments.append(observed)
+        receipts.append({"command_id": receipt["command_id"], "comment_id": observed["id"], "status": status})
     return receipts
 
 

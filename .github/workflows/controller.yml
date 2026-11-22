@@ -1,0 +1,203 @@
+# SPDX-FileCopyrightText: 2026 The RISE Project
+# SPDX-License-Identifier: MIT
+# Trusted lifecycle reconciliation. No model or destination credential is used.
+name: Porting controller
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - '*.py'
+      - 'policy.json'
+      - 'pyproject.toml'
+      - 'schemas/**'
+      - 'scripts/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/**'
+  issues:
+    types: [opened, labeled, unlabeled, reopened]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  # Prompt acknowledgement is independent of serialized reconciliation.
+  acknowledge-command:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: control-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-issues: write
+      - name: Acknowledge a visible upstreaming command
+        env:
+          GH_TOKEN: ${{ steps.control-token.outputs.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          first=$(printf '%s\n' "$COMMENT_BODY" | awk 'NF { print; exit }')
+          [[ "$first" == /upstreaming\ * ]] || exit 0
+          reactions=$(gh api "/repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions?per_page=100")
+          jq -e 'any(.[]; .content == "eyes" and .user.login == "riseproject-dev[bot]")' \
+            <<<"$reactions" >/dev/null || \
+            gh api -X POST "/repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
+              -f content='eyes' >/dev/null
+
+  filter:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'issues' &&
+       (contains(github.event.issue.labels.*.name, 'upstreaming-request') ||
+        (github.event.action == 'unlabeled' && github.event.label.name == 'upstreaming-request'))) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/upstreaming '))
+    steps:
+      - run: echo "event accepted for reconciliation"
+
+  observe:
+    needs: filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      - name: Controller tick (read-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run --locked python -m controller observe > report.json
+          {
+            echo '## Porting controller report (read-only)'
+            echo '```json'
+            cat report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: porting-controller-report
+          path: report.json
+          retention-days: 30
+
+  reconcile:
+    needs: filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: porting-agent-controller
+      cancel-in-progress: false
+    environment: state
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      - name: Is the policy read-only?
+        id: policy
+        run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
+      - name: Reconcile deterministic state locally
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run --locked python -m reconcile --report report.json
+          {
+            echo '## Porting reconciliation'
+            echo '```json'
+            cat report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Mint a control-repository token for the state commit
+        id: state-token
+        if: steps.policy.outputs.read_only == 'false'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-contents: write
+      - name: Publish one validated state-only commit on main
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.state-token.outputs.token }}
+          APP_SLUG: ${{ steps.state-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          scripts/git_identity.sh
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          uv run --locked python -m state_commit \
+            --message "porting-agent: reconcile state (run ${GITHUB_RUN_ID})"
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: steps.policy.outputs.read_only == 'false'
+        id: issue-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-contents: read
+          permission-issues: write
+      # These projections run only after durable state publication. Each scans
+      # committed receipts/events and is idempotent, so a later tick repairs a
+      # failure between the state commit and its human-facing projection.
+      - name: Mark command receipts complete
+        if: steps.policy.outputs.read_only == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+        run: uv run --locked python -m command_reactions --out command-reactions/receipts.json
+      - name: Append lifecycle entries to tracking issues
+        if: steps.policy.outputs.read_only == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          uv run --locked python -m status_ledger --report report.json --run-url "$RUN_URL"
+          --out status-ledger/receipts.json
+      - name: Explain rejected commands on their tracking issues
+        if: steps.policy.outputs.read_only == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+        run: uv run --locked python -m command_feedback --out command-feedback/receipts.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: porting-control-receipts
+          path: |
+            report.json
+            status-ledger/receipts.json
+            command-feedback/receipts.json
+            command-reactions/receipts.json
+          if-no-files-found: ignore
+          retention-days: 30

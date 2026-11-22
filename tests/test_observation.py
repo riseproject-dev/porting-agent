@@ -316,13 +316,11 @@ class TestTriggers(unittest.TestCase):
         self.assertFalse(triggers.push_triggers({True: {"push": {"tags": ["v*"]}}}, ["a"])[0])
         self.assertEqual(triggers.classify_commit([".state/a", "ci_scripts/b"]), "mixed")
 
-    @unittest.skip("Milestone 3: requires website.yml and controller.yml")
     def test_repository_state_only_push_refreshes_only_the_website(self):
         root = Path(__file__).resolve().parents[1]
         findings = triggers.audit(root / ".github/workflows", [".state/contributions/x.json"])
         self.assertEqual([f.workflow for f in findings if f.triggered], ["website.yml"])
-        self.assertEqual(triggers.workflow_run_consumers(root / ".github/workflows"),
-                         ["controller.yml"])
+        self.assertEqual(triggers.workflow_run_consumers(root / ".github/workflows"), [])
 
 
 class TestTick(unittest.TestCase):

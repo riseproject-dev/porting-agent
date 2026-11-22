@@ -913,19 +913,19 @@
     },
     {
       "source": "upstreaming/tests/test_workflow_contracts.py",
-      "action": "defer",
+      "action": "split",
       "targets": [
+        "tests/test_workflow_contracts.py",
         "tests/deferred/test_workflow_contracts.py.reference"
       ],
       "milestone": 3,
-      "rationale": "Workflow contract cases return with the runtime workflow that owns each contract; exact case owners are recorded in docs/test-deferrals.json.",
+      "rationale": "Milestone 3 controller contracts are restored now; agent and destination writer cases remain referenced with exact owners in docs/test-deferrals.json.",
       "restoringMilestones": [
-        3,
         4,
         5,
         6
       ],
-      "status": "deferred"
+      "status": "partially-migrated"
     },
     {
       "source": "upstreaming/triggers.py",

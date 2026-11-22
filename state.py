@@ -163,6 +163,8 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
             continue
         if status == "M" and old_mode != new_mode:
             rep.problems.append(f"{path}: mode change")
+        if status == "M" and path.startswith(f"{STATE_ROOT}/events/"):
+            rep.problems.append(f"{path}: committed events are append-only")
         data = _git(repo, "cat-file", "blob", new_sha)
         rep.total_bytes += len(data)
         rep.problems.extend(check_blob(path, data, policy))
@@ -191,10 +193,23 @@ class StateStore:
         self.policy = policy
         self._staged: dict[str, dict] = {}
 
+    def _ensure_no_symlink(self, path: Path) -> None:
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError as error:
+            raise StateError(f"{path}: outside repository root") from error
+        current = self.root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise StateError(f"{current}: symlinked state path")
+
     def _dir(self, kind: str) -> Path:
         if kind not in STATE_KINDS:
             raise StateError(f"unknown kind {kind}")
-        return self.root / STATE_ROOT / kind
+        directory = self.root / STATE_ROOT / kind
+        self._ensure_no_symlink(directory)
+        return directory
 
     def load_all(self, kind: str) -> dict[str, dict]:
         """Load every record of a kind, validating each. Invalid state blocks
@@ -203,10 +218,16 @@ class StateStore:
         d = self._dir(kind)
         if not d.exists():
             return out
+        seen: dict[str, str] = {}
         for p in sorted(d.rglob("*.json")):
-            if p.is_symlink() or not p.is_file():
+            self._ensure_no_symlink(p)
+            if not p.is_file():
                 raise StateError(f"{p}: not a regular file")
             rel = p.relative_to(self.root).as_posix()
+            folded = rel.casefold()
+            if folded in seen and seen[folded] != rel:
+                raise StateError(f"{rel}: collides with {seen[folded]} on case-insensitive filesystems")
+            seen[folded] = rel
             problems = check_blob(rel, p.read_bytes(), self.policy)
             if problems:
                 raise StateError("; ".join(problems))
@@ -240,7 +261,9 @@ class StateStore:
         written = []
         for rel, rec in sorted(self._staged.items()):
             p = self.root / rel
+            self._ensure_no_symlink(p.parent)
             p.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_no_symlink(p)
             p.write_text(canonical_json(rec), encoding="utf-8")
             written.append(rel)
         self._staged.clear()

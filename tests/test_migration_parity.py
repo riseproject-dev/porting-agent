@@ -217,7 +217,7 @@ class TestDeferredAndWorkflowContracts(unittest.TestCase):
         deferrals = json.loads((ROOT / "docs/test-deferrals.json").read_text())["deferrals"]
         identifiers = {item["test"] for item in deferrals}
         for item in deferrals:
-            self.assertIn(item["restoringMilestone"], (3, 4, 5, 6))
+            self.assertIn(item["restoringMilestone"], (4, 5, 6))
             self.assertTrue(item["prerequisite"])
         reference = ROOT / "tests/deferred/test_workflow_contracts.py.reference"
         tree = ast.parse(reference.read_text())
@@ -233,8 +233,16 @@ class TestDeferredAndWorkflowContracts(unittest.TestCase):
             for identifier in identifiers
             if "test_workflow_contracts.py.reference" in identifier
         }
-        self.assertEqual(methods, deferred_methods)
-        self.assertIn(
+        restored_tree = ast.parse((ROOT / "tests/test_workflow_contracts.py").read_text())
+        restored_methods = {
+            node.name
+            for item in restored_tree.body
+            if isinstance(item, ast.ClassDef) and item.name == "TestWorkflowContracts"
+            for node in item.body
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+        }
+        self.assertEqual(methods, deferred_methods | (methods & restored_methods))
+        self.assertNotIn(
             "tests.test_observation.TestTriggers.test_repository_state_only_push_refreshes_only_the_website",
             identifiers,
         )

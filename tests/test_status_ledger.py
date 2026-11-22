@@ -114,3 +114,15 @@ class TestStatusLedger(unittest.TestCase):
             self.assertEqual(receipts[0]["status"], "created")
             self.assertEqual([call[0] for call in api.calls], ["GET", "POST", "GET"])
             self.assertIn("Upstreaming r1", api.comment["body"])
+
+    def test_next_tick_backfills_event_after_post_commit_projection_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.records(root)
+            api = FakeApi()
+            with patch("status_ledger.Api", return_value=api):
+                receipts = status_ledger.publish(
+                    root, {"written": []}, "token", "https://github.com/run-2"
+                )
+        self.assertEqual(receipts[0]["status"], "created")
+        self.assertIn("run-2", api.comment["body"])

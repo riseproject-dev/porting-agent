@@ -87,7 +87,7 @@ class Api:
         self.token = token
 
     def request(self, method: str, path: str, body: dict | None = None):
-        if method not in ("GET", "POST") or not path.startswith(f"/repos/{CONTROL_REPO}/issues/") or ".." in path:
+        if method not in ("GET", "POST", "PATCH", "DELETE") or not path.startswith(f"/repos/{CONTROL_REPO}/issues/") or ".." in path:
             raise LedgerError("invalid ledger API request")
         req = urllib.request.Request("https://api.github.com" + path,
             data=None if body is None else json.dumps(body).encode(), method=method,
@@ -103,10 +103,34 @@ class Api:
         return json.loads(raw) if raw else None
 
 
+def issue_comments(api: Api, number: int, max_pages: int = 20) -> list[dict]:
+    comments = []
+    for page in range(1, max_pages + 1):
+        suffix = "?per_page=100" if page == 1 else f"?per_page=100&page={page}"
+        batch = api.request("GET", f"/repos/{CONTROL_REPO}/issues/{number}/comments{suffix}")
+        if not isinstance(batch, list):
+            raise LedgerError("issue comment inventory is malformed")
+        comments.extend(batch)
+        if len(batch) < 100:
+            return comments
+    raise LedgerError("issue comment inventory exceeded pagination bound")
+
+
 def publish(root: Path, report: dict, token: str, run_url: str) -> list[dict]:
     api = Api(token)
-    paths = [Path(path) for path in report.get("written", [])
-             if re.fullmatch(r"\.state/events/[A-Za-z0-9_.-]+/[0-9]{8}\.json", path)]
+    reported = {
+        Path(path)
+        for path in report.get("written", [])
+        if re.fullmatch(r"\.state/events/[A-Za-z0-9_.-]+/[0-9]{8}\.json", path)
+    }
+    # Projection is recoverable after a failure following the state commit:
+    # every tick revisits durable events and hidden markers prevent duplicates.
+    durable = {
+        path.relative_to(root)
+        for path in (root / ".state/events").glob("*/*.json")
+        if path.is_file() and not path.is_symlink()
+    }
+    paths = sorted(reported | durable)
     receipts = []
     comment_cache: dict[int, list[dict]] = {}
     for path in sorted(paths):
@@ -115,9 +139,11 @@ def publish(root: Path, report: dict, token: str, run_url: str) -> list[dict]:
         record = json.loads((root / ".state/contributions" / f"{cid_file}.json").read_text())
         number = record["tracking_issue"]["number"]
         marker = f"<!-- upstreaming-ledger:{record['contribution_id']}:{event['sequence']} -->"
-        comments = comment_cache.setdefault(number, api.request("GET", f"/repos/{CONTROL_REPO}/issues/{number}/comments?per_page=100"))
+        comments = comment_cache.setdefault(number, issue_comments(api, number))
         existing = next((comment for comment in comments if marker in (comment.get("body") or "")), None)
         if existing:
+            if (existing.get("user") or {}).get("login") != "riseproject-dev[bot]":
+                raise LedgerError("lifecycle ledger marker is not App-authored")
             receipts.append({"event": str(path), "comment_id": existing["id"], "status": "existing"})
             continue
         body = render(event, record, run_url)

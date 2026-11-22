@@ -84,7 +84,7 @@ class TestMigrationInventory(unittest.TestCase):
             for target in entry["targets"]:
                 self.assertNotRegex(target, r"(^|/)(upstreaming|.state|src)(/|$)")
         for entry in entries:
-            if entry["status"] in {"migrated", "deferred"}:
+            if entry["status"] in {"migrated", "partially-migrated", "deferred"}:
                 for target in entry["targets"]:
                     self.assertTrue((ROOT / target).exists(), target)
 
@@ -101,7 +101,7 @@ class TestMigrationInventory(unittest.TestCase):
             self.assertTrue(item["owner"])
             self.assertIn(item["milestone"], range(1, 11))
             present = (WORKFLOWS / item["target"]).exists()
-            self.assertEqual(present, item["milestone"] == 1, item["target"])
+            self.assertEqual(present, item["milestone"] <= 3, item["target"])
         for item in workflows:
             if item["agentic"] and (WORKFLOWS / item["target"]).exists():
                 stem = item["target"].removesuffix(".md")
@@ -230,6 +230,7 @@ class TestRepositoryHygiene(unittest.TestCase):
             {
                 "scripts/check_gh_aw.sh",
                 "scripts/gh-aw-compat/check.sh",
+                "scripts/git_identity.sh",
                 "scripts/install_gh_aw.sh",
             },
         )

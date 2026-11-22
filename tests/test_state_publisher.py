@@ -75,11 +75,49 @@ class TestStateDiff(unittest.TestCase):
         rep = state.validate_state_diff(self.repo, self.base, git(self.repo, "rev-parse", "HEAD"), self.p)
         self.assertTrue(any("single commit" in p for p in rep.problems))
 
+    def test_committed_events_are_append_only(self):
+        event = {
+            "schema_version": 1,
+            "contribution_id": self.rec["contribution_id"],
+            "sequence": 0,
+            "at": self.rec["created_at"],
+            "kind": "created",
+            "from": {},
+            "to": {},
+            "cause": {"type": "observation", "id": None},
+            "revision_bumped": False,
+        }
+        path = state.record_path("events", event)
+        first = commit_files(self.repo, {path: canonical_json(event)})
+        changed = dict(event, kind="rewritten")
+        second = commit_files(self.repo, {path: canonical_json(changed)})
+        report = state.validate_state_diff(self.repo, first, second, self.p)
+        self.assertIn(f"{path}: committed events are append-only", report.problems)
+
     def test_case_collision(self):
         other = dict(self.rec, contribution_id="Example--proj/12")
         c = commit_files(self.repo, {self.path: canonical_json(self.rec),
                                      state.record_path("contributions", other): canonical_json(other)})
         self.assertTrue(any("collides" in p for p in self.check(c).problems))
+
+    def test_store_rejects_symlinked_roots_and_case_collisions(self):
+        outside = self.repo.parent / "outside"
+        outside.mkdir()
+        state_root = self.repo / ".state"
+        state_root.mkdir()
+        (state_root / "contributions").symlink_to(outside, target_is_directory=True)
+        store = state.StateStore(self.repo, self.p)
+        with self.assertRaises(state.StateError):
+            store.load_all("contributions")
+        (state_root / "contributions").unlink()
+        directory = state_root / "contributions"
+        directory.mkdir()
+        first = self.rec
+        second = dict(self.rec, contribution_id=self.rec["contribution_id"].upper())
+        (directory / "example--proj--12.json").write_text(canonical_json(first))
+        (directory / "EXAMPLE--PROJ--12.json").write_text(canonical_json(second))
+        with self.assertRaises(state.StateError):
+            store.load_all("contributions")
 
     def test_store_roundtrip_and_event_sequence(self):
         st = state.StateStore(self.repo, self.p)
