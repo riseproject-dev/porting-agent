@@ -109,7 +109,7 @@ class TestMigrationInventory(unittest.TestCase):
             self.assertTrue(item["owner"])
             self.assertIn(item["milestone"], range(1, 11))
             present = (WORKFLOWS / item["target"]).exists()
-            self.assertEqual(present, item["milestone"] <= 5, item["target"])
+            self.assertEqual(present, item["milestone"] <= 6, item["target"])
         for item in workflows:
             if item["agentic"] and (WORKFLOWS / item["target"]).exists():
                 stem = item["target"].removesuffix(".md")

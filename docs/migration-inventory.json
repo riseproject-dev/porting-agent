@@ -919,11 +919,9 @@
         "tests/deferred/test_workflow_contracts.py.reference"
       ],
       "milestone": 3,
-      "rationale": "Milestones 3-5 controller, investigator, dispatcher, and worker contracts are restored; destination writer cases remain referenced with exact owners in docs/test-deferrals.json.",
-      "restoringMilestones": [
-        6
-      ],
-      "status": "partially-migrated"
+      "rationale": "All source workflow contracts are restored across Milestones 3-6; the immutable source reference remains for parity auditing.",
+      "restoringMilestones": [],
+      "status": "migrated"
     },
     {
       "source": "upstreaming/triggers.py",

@@ -22,6 +22,17 @@ def source(name: str) -> dict:
     )
 
 
+def run_scripts(value):
+    if isinstance(value, dict):
+        if isinstance(value.get("run"), str):
+            yield value["run"]
+        for child in value.values():
+            yield from run_scripts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from run_scripts(child)
+
+
 class TestWorkflowContracts(unittest.TestCase):
     def test_only_investigator_unsandboxed(self):
         investigator = source("investigator")
@@ -162,11 +173,128 @@ class TestWorkflowContracts(unittest.TestCase):
             "to that same list",
         ):
             self.assertIn(required, text)
-        record = worker["jobs"]["record"]
-        self.assertNotIn("environment", record)
-        self.assertNotIn(
-            "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", str(worker)
+        publish = worker["jobs"]["publish"]
+        self.assertNotIn("environment", publish)
+        for boundary in (worker["pre-agent-steps"], worker["jobs"]["safe_outputs"]):
+            self.assertNotIn(
+                "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", str(boundary)
+            )
+
+    def test_development_pr_writer_is_restricted_to_one_verified_fork(self):
+        workflow_data = workflow("dev-pr.yml")
+        token = next(
+            step for step in workflow_data["jobs"]["create"]["steps"]
+            if step.get("id") == "fork-token"
         )
+        self.assertEqual(token["with"]["permission-pull-requests"], "write")
+        self.assertEqual(token["with"]["permission-contents"], "read")
+        self.assertEqual(token["with"]["permission-actions"], "write")
+        self.assertEqual(token["with"]["permission-administration"], "write")
+        self.assertEqual(token["with"]["repositories"], "${{ steps.target.outputs.fork_name }}")
+
+    def test_provisioning_administration_is_restricted_to_one_verified_fork(self):
+        provision = workflow("provision.yml")
+        token = next(
+            step for step in provision["jobs"]["provision"]["steps"]
+            if step.get("id") == "fork-token"
+        )
+        self.assertEqual(token["with"]["permission-administration"], "write")
+        self.assertEqual(token["with"]["repositories"], "${{ steps.create.outputs.fork_name }}")
+        self.assertEqual(token["with"]["owner"], "riseproject-upstreaming")
+
+    def test_native_workers_explicitly_dispatch_controller_after_terminal_jobs(self):
+        expectations = {
+            "worker": {"safe_outputs", "publish"},
+            "investigator": {"safe_outputs", "record", "notify"},
+            "dispatcher": {"safe_outputs"},
+        }
+        for profile, needs in expectations.items():
+            continuation = source(profile)["jobs"]["continuation"]
+            self.assertEqual(set(continuation["needs"]), needs)
+            self.assertEqual(continuation["if"], "always()")
+            token = next(
+                step for step in continuation["steps"] if step.get("id") == "control-token"
+            )
+            self.assertEqual(token["with"]["owner"], "riseproject-dev")
+            self.assertEqual(token["with"]["repositories"], "porting-agent")
+            self.assertEqual(token["with"]["permission-contents"], "read")
+            self.assertEqual(token["with"]["permission-actions"], "write")
+            self.assertIn("gh workflow run controller.yml", str(continuation))
+
+    def test_destination_tokens_use_only_destination_app_credentials(self):
+        paths = [
+            WORKFLOWS / "provision.yml",
+            WORKFLOWS / "dev-pr.yml",
+            WORKFLOWS / "publish-retry.yml",
+            WORKFLOWS / "worker.md",
+        ]
+        for path in paths:
+            text = path.read_text()
+            destination_blocks = re.findall(
+                r"client-id: .*?\n\s+private-key: .*?\n\s+owner: riseproject-upstreaming",
+                text,
+            )
+            self.assertTrue(destination_blocks, path.name)
+            for block in destination_blocks:
+                self.assertIn("RISEPROJECT_UPSTREAMING_APP_CLIENT_ID", block)
+                self.assertIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", block)
+                self.assertNotIn("vars.RISEPROJECT_APP_CLIENT_ID", block)
+
+    def test_controller_uses_publication_artifact_not_overall_run_status(self):
+        text = (WORKFLOWS / "controller.yml").read_text()
+        self.assertIn("actions/workflows/$workflow/runs?per_page=20", text)
+        self.assertNotIn("actions/workflows/$workflow/runs?status=completed", text)
+        self.assertIn('name == "porting-publication"', text)
+
+    def test_controller_chains_every_pipeline_completion_and_has_schedule_fallback(self):
+        controller = workflow("controller.yml")
+        triggers = controller.get("on", controller.get(True))
+        self.assertEqual(triggers["schedule"], [{"cron": "*/5 * * * *"}])
+        self.assertEqual(
+            set(triggers["workflow_run"]["workflows"]),
+            {
+                "Porting dispatcher",
+                "Porting investigator",
+                "Porting worker",
+                "Porting reproduction image",
+                "Porting fork provisioning",
+                "Porting development PR",
+                "Porting publish retry",
+            },
+        )
+        self.assertIn("workflow_run", controller["jobs"]["filter"]["if"])
+        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml"):
+            continuation = workflow(name)["jobs"]["continuation"]
+            self.assertEqual(continuation["if"], "always()")
+            self.assertIn("gh workflow run controller.yml", str(continuation))
+
+    def test_development_writers_do_not_wait_for_environment_review(self):
+        worker = source("worker")
+        self.assertNotIn("environment", worker["jobs"]["publish"])
+        for name in ("provision.yml", "publish-retry.yml", "dev-pr.yml"):
+            data = workflow(name)
+            for job in data["jobs"].values():
+                self.assertNotIn("environment", job, name)
+
+    def test_authored_python_ci_invocations_use_uv(self):
+        paths = [
+            *(
+                path for path in WORKFLOWS.glob("*.yml")
+                if not path.name.endswith(".lock.yml")
+            ),
+            *WORKFLOWS.glob("*.md"),
+        ]
+        for path in paths:
+            text = path.read_text()
+            data = yaml.safe_load(
+                text.split("---", 2)[1] if path.suffix == ".md" else text
+            )
+            for script in run_scripts(data):
+                joined = script.replace("\\\n", " ")
+                self.assertIsNone(
+                    re.search(r"(?:^|[\n;&|])\s*python(?:3)?(?:\s|$)", joined),
+                    f"{path.name}: direct Python invocation without uv",
+                )
 
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")
@@ -259,7 +387,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("python -m state_commit", confirm["run"])
         self.assertLess(steps.index(repair), steps.index(confirm))
 
-    def test_current_milestone_has_no_destination_writer(self):
+    def test_current_milestone_has_only_reviewed_destination_writers(self):
         self.assertEqual(
             {path.name for path in WORKFLOWS.iterdir() if path.is_file()},
             {
@@ -273,10 +401,27 @@ class TestWorkflowContracts(unittest.TestCase):
                 "worker.md",
                 "worker.lock.yml",
                 "image.yml",
+                "provision.yml",
+                "dev-pr.yml",
+                "publish-retry.yml",
             },
         )
         text = "\n".join(path.read_text() for path in WORKFLOWS.iterdir() if path.is_file())
-        self.assertNotIn("${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", text)
-        self.assertNotIn("${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", text)
+        non_destination = "\n".join(
+            (WORKFLOWS / name).read_text()
+            for name in (
+                "controller.yml", "dispatcher.md", "investigator.md", "image.yml",
+                "validate.yml", "website.yml",
+            )
+        )
+        self.assertNotIn(
+            "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", non_destination
+        )
         launches = set(re.findall(r"gh workflow run ([A-Za-z0-9_.-]+)", text))
-        self.assertLessEqual(launches, {"controller.yml", "dispatcher.lock.yml"})
+        self.assertLessEqual(
+            launches,
+            {
+                "controller.yml", "dispatcher.lock.yml", "provision.yml",
+                "dev-pr.yml", "publish-retry.yml",
+            },
+        )

@@ -204,10 +204,10 @@ jobs:
           enable-cache: false
       - name: Apply hash-pinned gh-aw v1.2.2 native artifact fix
         run: uv run --locked python native-artifact-compat/scripts/gh_aw_compat.py "$RUNNER_TEMP/gh-aw/actions"
-  record:
-    # No destination token and no publication. This trusted job resolves the
-    # exact native Result, validates the bounded proposal, and records it for
-    # later trusted reconstruction in Milestone 6.
+  publish:
+    # Trusted reconstruction and destination mutation occur only after the
+    # native Result, bounded worker gate, current state, fork identity, scope,
+    # and exact expected head are independently revalidated.
     needs: [safe_outputs]
     if: needs.safe_outputs.outputs.work_queue_outcome == 'completed'
     runs-on: ubuntu-latest
@@ -224,6 +224,7 @@ jobs:
         with:
           enable-cache: false
       - name: Resolve exact Result and gate the uncredentialed proposal
+        id: result
         working-directory: control
         env:
           GH_TOKEN: ${{ github.token }}
@@ -246,6 +247,10 @@ jobs:
             jq -n '{status:"infra_error", failure_class:"infrastructure", reason:"gh-aw install failed", stage:"result"}' \
               > ../in/outcome.json
           fi
+          if [ "$rc" != 0 ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$rc" = 0 ]; then
             uv run --locked python -m artifact extract ../in/proposal.zip ../in
             gate_rc=0
@@ -253,15 +258,49 @@ jobs:
               --proposal ../in/proposal.json --mbox ../in/patches.mbox \
               --out ../in/worker-gate.json || gate_rc=$?
             if [ "$gate_rc" = 0 ]; then
-              jq -n '{status:"proposal", failure_class:null, reason:null, stage:"result"}' \
-                > ../in/outcome.json
+              uv run --locked python -m fork_publish preflight \
+                --record ../in/record.json --task ../in/task.json \
+                --proposal ../in/proposal.json --out ../in/preflight.json
+              jq -r '"fork_name=" + .fork_name, "publish=" + (.publish|tostring)' \
+                ../in/preflight.json >> "$GITHUB_OUTPUT"
+              if [ "$(jq -r .publish ../in/preflight.json)" != true ]; then
+                jq '{status:(.status // "rejected"), failure_class, reason, stage:"preflight"}' \
+                  ../in/preflight.json > ../in/outcome.json
+              fi
             else
+              echo "publish=false" >> "$GITHUB_OUTPUT"
               jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
                 '{status:"rejected", failure_class:"validation", reason:$reason, stage:"worker_gate"}' \
                 > ../in/outcome.json
             fi
           fi
+          [ -f ../in/outcome.json ] && jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Mint a token for exactly this verified fork
+        id: fork-token
+        if: steps.result.outputs.publish == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ steps.result.outputs.fork_name }}
+          permission-contents: write
+          permission-workflows: write
+          permission-pull-requests: write
+      - name: Rebuild, validate and push with the exact-head lease
+        if: steps.result.outputs.publish == 'true'
+        working-directory: control
+        env:
+          UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          rc=0
+          uv run --locked python -m fork_publish publish \
+            --record ../in/record.json --task ../in/task.json \
+            --proposal ../in/proposal.json --mbox ../in/patches.mbox \
+            --result ../in/result.json --out ../in/outcome.json || rc=$?
           jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
+          exit $(( rc == 1 || rc == 3 ? 0 : rc ))
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
@@ -274,11 +313,12 @@ jobs:
             in/proposal.json
             in/patches.mbox
             in/worker-gate.json
+            in/preflight.json
             in/record.json
           if-no-files-found: ignore
           retention-days: 30
   continuation:
-    needs: [safe_outputs, record]
+    needs: [safe_outputs, publish]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

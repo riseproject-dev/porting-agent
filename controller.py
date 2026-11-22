@@ -357,8 +357,58 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # Provisioning is a trusted administrative workflow, not a model task.
     # Persist its normal operation intent before dispatch, with no second queue.
     res.report["provision_requests"] = []
+    if policy.get("destination_writes", False):
+        for cid, c in list(by_id.items()):
+            operation = operations.get(c.get("active_operation_id"))
+            if operation and operation.get("kind") == "fork_provision" \
+                    and operation.get("status") == "planned":
+                attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
+                due = attempts == 0 or (
+                    (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
+                    and attempts < 3
+                )
+                if due:
+                    launched = dict(operation, status="planned", updated_at=now,
+                                    external_ids=dict(operation.get("external_ids") or {},
+                                                      launch_attempts=attempts + 1))
+                    schemas.validate("operation", launched)
+                    operations[launched["operation_id"]] = launched
+                    res.stage("operations", launched)
+                    res.report["provision_requests"].append({
+                        "operation_id": launched["operation_id"], "contribution_id": cid,
+                        "attempt": attempts + 1,
+                    })
+                    break
+            if c.get("fork") is None and c["phase"] == "development" \
+                    and (c.get("proposal_artifact") or {}).get("outcome") == "proposal":
+                prior = [op for op in operations.values()
+                         if op.get("contribution_id") == cid and op.get("kind") == "fork_provision"]
+                if len(prior) == 1 and prior[0]["status"] == "not_launched":
+                    operation = dict(
+                        prior[0], status="planned", updated_at=now,
+                        external_ids=dict(prior[0].get("external_ids") or {}, launch_attempts=1),
+                    )
+                    changed = dict(c, phase="provisioning", activity="waiting_capacity",
+                                   active_operation_id=operation["operation_id"], updated_at=now)
+                    schemas.validate("operation", operation)
+                    schemas.validate("contribution", changed)
+                    operations[operation["operation_id"]] = operation
+                    by_id[cid] = changed
+                    res.stage("operations", operation)
+                    res.stage("contributions", changed)
+                    res.stage("events", lifecycle._event(
+                        c, changed, "destination_operation_rearmed", "policy",
+                        operation["operation_id"], now, False,
+                    ))
+                    res.report["provision_requests"].append({
+                        "operation_id": operation["operation_id"], "contribution_id": cid,
+                        "attempt": 1,
+                    })
+                    break
     for cid, c in list(by_id.items()):
         if not policy.get("destination_writes", False):
+            break
+        if res.report["provision_requests"]:
             break
         if len(res.report["provision_requests"]) >= 1:
             break
@@ -389,17 +439,46 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         if op["operation_id"] in operations:
             rep["deferred"].append({"contribution": cid, "why": "existing provisioning operation requires reconciliation"})
             continue
+        op = dict(op, status="planned", external_ids={"launch_attempts": 1})
+        schemas.validate("operation", op)
         res.stage("operations", op)
         res.stage("contributions", dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now))
         by_id[cid] = dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now)
-        res.report["provision_requests"].append({"operation_id": op["operation_id"], "contribution_id": cid})
+        res.report["provision_requests"].append({
+            "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
+        })
 
     # A published development head gets a same-fork development PR before CI
     # observation. Persist intent first; the trusted workflow creates/discovers
     # exactly riscv64 -> the frozen upstream base ref and returns a receipt.
     res.report["dev_pr_requests"] = []
+    if policy.get("destination_writes", False):
+        for cid, c in list(by_id.items()):
+            operation = operations.get(c.get("active_operation_id"))
+            if not operation or operation.get("kind") not in {"dev_pr_create", "dev_pr_update"} \
+                    or operation.get("status") != "planned":
+                continue
+            attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
+            due = attempts == 0 or (
+                (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
+                and attempts < 3
+            )
+            if due:
+                launched = dict(operation, updated_at=now,
+                                external_ids=dict(operation.get("external_ids") or {},
+                                                  launch_attempts=attempts + 1))
+                schemas.validate("operation", launched)
+                operations[launched["operation_id"]] = launched
+                res.stage("operations", launched)
+                res.report["dev_pr_requests"].append({
+                    "operation_id": launched["operation_id"], "contribution_id": cid,
+                    "attempt": attempts + 1,
+                })
+                break
     for cid, c in list(by_id.items()):
         if not policy.get("destination_writes", False):
+            break
+        if res.report["dev_pr_requests"]:
             break
         if len(res.report["dev_pr_requests"]) >= 1:
             break
@@ -424,11 +503,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                            proposed={"marker": marker, "content_digest": artifact["digest"]}, now=now)
         if op["operation_id"] in operations:
             continue
+        op = dict(op, external_ids={"launch_attempts": 1})
+        schemas.validate("operation", op)
         res.stage("operations", op)
         changed = dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now)
         by_id[cid] = changed
         res.stage("contributions", changed)
-        res.report["dev_pr_requests"].append({"operation_id": op["operation_id"], "contribution_id": cid})
+        res.report["dev_pr_requests"].append({
+            "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
+        })
 
     # Bootstrap CI once for an already recorded PR. This separate operation is
     # needed when GitHub registered no inherited workflows at PR creation time.
@@ -462,11 +545,47 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                    "base_sha": c["upstream"]["base_sha"]},
                            proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
                                      "content_digest": artifact["digest"]}, now=now)
+        op = dict(op, external_ids={"launch_attempts": 1})
+        schemas.validate("operation", op)
         res.stage("operations", op)
         changed = dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now)
         by_id[cid] = changed
         res.stage("contributions", changed)
-        res.report["dev_pr_requests"].append({"operation_id": op["operation_id"], "contribution_id": cid})
+        res.report["dev_pr_requests"].append({
+            "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
+        })
+
+    # A pre-fork proposal is immutable worker output. Once provisioning is
+    # independently confirmed, launch the trusted publication path without a
+    # second model call and fence duplicate worker selection durably.
+    res.report["proposal_publications"] = []
+    for cid, c in list(by_id.items()):
+        artifact = c.get("proposal_artifact") or {}
+        fork = c.get("fork") or {}
+        if (not policy.get("destination_writes", False)
+                or c["phase"] != "development"
+                or artifact.get("outcome") != "proposal"
+                or not artifact.get("run_id")
+                or not fork.get("repository_id")
+                or c.get("pending_publication")
+                or c.get("publication_operation_id")):
+            continue
+        pending = {
+            "worker_run_id": str(artifact["run_id"]),
+            "attempts": 1,
+            "last_reason": "verified pre-fork proposal awaiting trusted publication",
+            "next_attempt_at": now,
+            "exhausted": False,
+        }
+        changed = dict(c, pending_publication=pending, activity="waiting_capacity", updated_at=now)
+        by_id[cid] = changed
+        res.stage("contributions", changed)
+        res.report["proposal_publications"].append({
+            "contribution_id": cid,
+            "worker_run_id": str(artifact["run_id"]),
+            "attempt": 1,
+        })
+        break
 
     # 8-10. Select bounded work, honouring capacity and one worker.
     candidates = []

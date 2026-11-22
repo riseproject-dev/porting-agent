@@ -21,7 +21,14 @@ on:
   issue_comment:
     types: [created, edited]
   workflow_run:
-    workflows: [Porting dispatcher, Porting investigator, Porting worker, Porting reproduction image]
+    workflows:
+      - Porting dispatcher
+      - Porting investigator
+      - Porting worker
+      - Porting reproduction image
+      - Porting fork provisioning
+      - Porting development PR
+      - Porting publish retry
     types: [completed]
   workflow_dispatch:
 
@@ -164,13 +171,50 @@ jobs:
               fi
             done
           done
+      - name: Collect trusted provisioning receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p provisions
+          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/provision.yml/runs?status=completed&per_page=20" \
+            --jq '.workflow_runs[].id') || runs=
+          printf '%s\n' "$runs" | while read -r run; do
+            [ -n "$run" ] || continue
+            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+              --jq '[.artifacts[] | select(.name == "porting-provisioning" and (.expired | not))][0].id // empty') || continue
+            [ -n "$id" ] || continue
+            mkdir -p "provisions/$run"
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "provisions/$run/a.zip" || continue
+            unzip -q -o -j "provisions/$run/a.zip" -d "provisions/$run" || continue
+            printf '%s' "$id" > "provisions/$run/artifact-id"
+          done
+      - name: Collect trusted development PR receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p development-prs
+          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/dev-pr.yml/runs?status=completed&per_page=20" \
+            --jq '.workflow_runs[].id') || runs=
+          printf '%s\n' "$runs" | while read -r run; do
+            [ -n "$run" ] || continue
+            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+              --jq '[.artifacts[] | select(.name == "porting-development-pr" and (.expired | not))][0].id // empty') || continue
+            [ -n "$id" ] || continue
+            mkdir -p "development-prs/$run"
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "development-prs/$run/a.zip" || continue
+            unzip -q -o -j "development-prs/$run/a.zip" -d "development-prs/$run" || continue
+            printf '%s' "$id" > "development-prs/$run/artifact-id"
+          done
       - name: Reconcile deterministic state locally
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
-          uv run --locked python -m reconcile --publications publications --report report.json \
+          uv run --locked python -m reconcile --publications publications \
+            --provisions provisions --development-prs development-prs --report report.json \
             ${gh_aw:+--gh-aw "$gh_aw"}
           {
             echo '## Porting reconciliation'
@@ -297,6 +341,48 @@ jobs:
           count=$(jq '(.requested_effects | length) + (.dispatch_relaunch // [] | length)' report.json)
           [ "$count" -gt 0 ] || exit 0
           gh workflow run dispatcher.lock.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: Launch durable fork provisioning operations
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          jq -r '.provision_requests[].operation_id' report.json | while read -r operation; do
+            gh workflow run provision.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f operation-id="$operation"
+          done
+      - name: Publish verified pre-fork proposals without another model call
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          jq -r '.proposal_publications[] | "\(.worker_run_id) \(.attempt)"' report.json \
+            | while read -r run attempt; do
+              gh workflow run publish-retry.yml --repo "$GITHUB_REPOSITORY" --ref main \
+                -f worker-run-id="$run" -f attempt="$attempt"
+            done
+      - name: Launch due publication retries
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          jq -r '.publication_retries[] | "\(.worker_run_id) \(.attempt)"' report.json \
+            | while read -r run attempt; do
+              gh workflow run publish-retry.yml --repo "$GITHUB_REPOSITORY" --ref main \
+                -f worker-run-id="$run" -f attempt="$attempt"
+            done
+      - name: Launch durable development PR operations
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          jq -r '.dev_pr_requests[].operation_id' report.json | while read -r operation; do
+            gh workflow run dev-pr.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f operation-id="$operation"
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

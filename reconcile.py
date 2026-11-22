@@ -26,7 +26,7 @@ import copy
 import json
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -415,14 +415,29 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             new_op["external_ids"]["provision_run_id"] = str(receipt["provision_run_id"])
         if receipt.get("provision_artifact_id"):
             new_op["external_ids"]["provision_artifact_id"] = int(receipt["provision_artifact_id"])
-        new = dict(c, fork={"repository_id": repo["id"], "name": repo["full_name"], "head_ref": "riscv64",
-                            "head_sha": head["head"], "pr_number": None}, phase="development", activity="idle",
-                   active_operation_id=None, pending_human_action=None, revision=c["revision"] + 1, updated_at=iso)
+        has_pre_fork_proposal = (c.get("proposal_artifact") or {}).get("outcome") == "proposal"
+        new = dict(
+            c,
+            fork={"repository_id": repo["id"], "name": repo["full_name"], "head_ref": "riscv64",
+                  "head_sha": head["head"], "pr_number": None},
+            phase="development",
+            activity="waiting_capacity" if has_pre_fork_proposal else "idle",
+            active_operation_id=None,
+            pending_human_action=None,
+            revision=c["revision"] if has_pre_fork_proposal else c["revision"] + 1,
+            updated_at=iso,
+        )
         schemas.validate("contribution", new)
         contributions[key] = new
         snap.operations[op["operation_id"]] = new_op
-        out.staged.extend([("operations", new_op), ("contributions", new),
-                           ("events", lifecycle._event(c, new, "fork_provisioned", "observation", op["operation_id"], iso, True))])
+        out.staged.extend([
+            ("operations", new_op),
+            ("contributions", new),
+            ("events", lifecycle._event(
+                c, new, "fork_provisioned", "observation", op["operation_id"], iso,
+                not has_pre_fork_proposal,
+            )),
+        ])
         provision_report.append({"contribution": cid, "status": "provisioned"})
     out.report["provisions"] = provision_report
 
@@ -559,15 +574,44 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["requested_effects"] = res.requested_effects
     out.report["provision_requests"] = res.report["provision_requests"]
     out.report["dev_pr_requests"] = res.report["dev_pr_requests"]
+    out.report["proposal_publications"] = res.report["proposal_publications"]
     # 4. Publish-only retries due now (infrastructure failures; no model call).
     retries = []
-    for c in contributions.values():
+    max_launches = 1 + policy["retries"]["infrastructure_per_head_failure"]
+    for key, c in list(contributions.items()):
         pp = c.get("pending_publication")
         if pp and not pp.get("exhausted") and not c.get("paused") \
                 and c["phase"] in lifecycle.WRITE_PHASES | {"investigation"} \
                 and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
+            if pp["attempts"] >= max_launches:
+                pending = dict(pp, exhausted=True)
+                changed = dict(
+                    c,
+                    pending_publication=pending,
+                    activity="waiting_human",
+                    pending_human_action={
+                        "kind": "publication_infrastructure_failure",
+                        "requested_at": now.isoformat(),
+                        "reminded_at": None,
+                        "escalated_at": None,
+                    },
+                    updated_at=now.isoformat(),
+                )
+                contributions[key] = changed
+                out.staged.append(("contributions", changed))
+                continue
+            attempt = pp["attempts"] + 1
+            delay = RETRY_BACKOFF_MINUTES[min(attempt - 1, len(RETRY_BACKOFF_MINUTES) - 1)]
+            pending = dict(
+                pp,
+                attempts=attempt,
+                next_attempt_at=(now + timedelta(minutes=delay)).isoformat(),
+            )
+            changed = dict(c, pending_publication=pending, updated_at=now.isoformat())
+            contributions[key] = changed
+            out.staged.append(("contributions", changed))
             retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
-                            "worker_run_id": pp["worker_run_id"], "attempt": pp["attempts"] + 1})
+                            "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
     out.staged = observe_ci.dedupe(out.staged)
     return out

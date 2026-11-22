@@ -2,7 +2,7 @@
   "schema_version": 1,
   "policy_version": "2026-11-18.1-proposed",
   "read_only": false,
-  "destination_writes": false,
+  "destination_writes": true,
   "control_repo": "riseproject-dev/porting-agent",
   "fork_org": "riseproject-upstreaming",
   "dev_ref": "riscv64",

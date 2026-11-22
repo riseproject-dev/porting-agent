@@ -71,7 +71,7 @@ class TestInvestigationRecordRecovery(unittest.TestCase):
                 {project["project_id"]: project},
                 {},
             ),
-            policy=policy(read_only=False),
+            policy=policy(read_only=False, destination_writes=False),
             now=datetime.fromisoformat("2026-11-22T02:20:00+00:00"),
             publications=publications,
             pressure=capacity.Pressure(ok=False, reason="offline"),

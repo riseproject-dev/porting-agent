@@ -238,7 +238,7 @@ class TestAutomaticProposalAdmission(unittest.TestCase):
 
 
 class TestWorkerContract(unittest.TestCase):
-    def test_worker_is_uncredentialed_and_has_no_publish_job(self):
+    def test_worker_agent_is_uncredentialed_and_trusted_publish_is_separate(self):
         worker = source("worker")
         self.assertTrue(worker["strict"])
         self.assertEqual(
@@ -250,15 +250,17 @@ class TestWorkerContract(unittest.TestCase):
                 "actions": "read",
             },
         )
-        self.assertEqual(set(worker["jobs"]), {"safe_outputs", "record", "continuation"})
-        text = (WORKFLOWS / "worker.md").read_text()
-        self.assertNotIn("${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", text)
-        self.assertNotIn("${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", text)
-        self.assertNotIn("UPSTREAMING_FORK_TOKEN: ${{", text)
-        self.assertNotIn("permission-contents: write", text)
-        self.assertIn("No destination token and no publication", text)
+        self.assertEqual(set(worker["jobs"]), {"safe_outputs", "publish", "continuation"})
+        for boundary in (worker["pre-agent-steps"], worker["jobs"]["safe_outputs"]):
+            text = str(boundary)
+            self.assertNotIn("${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", text)
+            self.assertNotIn("${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", text)
+        publish = worker["jobs"]["publish"]
+        self.assertNotIn("environment", publish)
+        token = next(step for step in publish["steps"] if step.get("id") == "fork-token")
+        self.assertEqual(token["with"]["repositories"], "${{ steps.result.outputs.fork_name }}")
         continuation = worker["jobs"]["continuation"]
-        self.assertEqual(set(continuation["needs"]), {"safe_outputs", "record"})
+        self.assertEqual(set(continuation["needs"]), {"safe_outputs", "publish"})
         self.assertEqual(continuation["if"], "always()")
         self.assertIn("gh workflow run controller.yml", str(continuation))
 

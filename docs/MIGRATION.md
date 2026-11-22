@@ -31,3 +31,7 @@ Flattened artifact extraction now resolves control state through `common.reposit
 ### Milestone 5 image verification correction
 
 The published reproduction image is intentionally riscv64-only. Every Docker pull and local image inspection now passes `--platform linux/riscv64`; base-index inspection selects exactly one Linux riscv64 manifest before extracting its digest. Dockerfiles rely on that exact manifest plus Buildx `platforms: linux/riscv64`, so the redundant constant `FROM --platform` flags were removed without widening the image contract.
+
+## Milestone 6 update
+
+Destination effects are enabled only through reviewed trusted workflows. `provision.yml` separates repository-creation authority from a one-fork Administration/Actions/Contents/Workflows token and verifies fork parent, IDs, settings, workflow registration, and exact `riscv64` base. Worker and retry publication reconstruct proposals in a fresh repository, enforce scope and workflow safety, persist operation evidence, and push under an exact-head lease. `dev-pr.yml` creates or discovers one marked same-fork PR and bootstraps inherited Actions safely. The controller collects exact receipts, observes exact-head CI, and retries bounded durable launches. All source workflow-contract deferrals are restored.

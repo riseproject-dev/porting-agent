@@ -72,7 +72,8 @@
         "would_stage": [],
         "requested_effects": [],
         "canary_recovery_requests": [],
-        "deferred_destination_operations": []
+        "deferred_destination_operations": [],
+        "proposal_publications": []
       },
       "stderr": "",
       "files": []
@@ -106,13 +107,15 @@
           "provision_requests": [],
           "dev_pr_requests": [],
           "canary_recovery_requests": [],
-          "deferred_destination_operations": []
+          "deferred_destination_operations": [],
+          "proposal_publications": []
         },
         "requested_effects": [],
         "provision_requests": [],
         "dev_pr_requests": [],
         "publication_retries": [],
-        "written": []
+        "written": [],
+        "proposal_publications": []
       },
       "stderr": "",
       "files": []

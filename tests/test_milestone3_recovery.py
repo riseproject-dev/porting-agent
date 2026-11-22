@@ -126,18 +126,15 @@ class TestTrustedPublicationWorkflow(unittest.TestCase):
         self.assertIn('f"{commit}:refs/heads/{branch}"', state_source)
 
     def test_control_jobs_have_no_model_or_destination_credential(self):
-        all_workflows = "\n".join(
-            path.read_text() for path in WORKFLOWS.iterdir() if path.is_file()
-        )
         control_workflows = "\n".join(
             (WORKFLOWS / name).read_text()
             for name in ("controller.yml", "validate.yml", "website.yml")
         )
         self.assertNotIn(
-            "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", all_workflows
+            "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", control_workflows
         )
         self.assertNotIn(
-            "${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", all_workflows
+            "${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", control_workflows
         )
         self.assertNotIn("ANTHROPIC_API_KEY", control_workflows)
         self.assertEqual(CONTROL_REPO, "riseproject-dev/porting-agent")

@@ -89,7 +89,7 @@
       "milestone": 6,
       "owner": "trusted fork provisioning",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-dev-pr.yml",
@@ -97,7 +97,7 @@
       "milestone": 6,
       "owner": "development pull request",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-publish-retry.yml",
@@ -105,7 +105,7 @@
       "milestone": 6,
       "owner": "trusted publication recovery",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     }
   ]
 }

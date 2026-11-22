@@ -1,46 +1,5 @@
 {
   "schemaVersion": 1,
   "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
-  "deferrals": [
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_development_pr_writer_is_restricted_to_one_verified_fork",
-      "restoringMilestone": 6,
-      "prerequisite": "dev-pr.yml is introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_provisioning_administration_is_restricted_to_one_verified_fork",
-      "restoringMilestone": 6,
-      "prerequisite": "provision.yml is introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_native_workers_explicitly_dispatch_controller_after_terminal_jobs",
-      "restoringMilestone": 6,
-      "prerequisite": "dispatcher, investigator, worker, and controller workflows all exist"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_destination_tokens_use_only_destination_app_credentials",
-      "restoringMilestone": 6,
-      "prerequisite": "all destination writer workflows are introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_uses_publication_artifact_not_overall_run_status",
-      "restoringMilestone": 6,
-      "prerequisite": "worker publication and controller continuation paths exist"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_controller_chains_every_pipeline_completion_and_has_schedule_fallback",
-      "restoringMilestone": 6,
-      "prerequisite": "all runtime pipeline workflows exist"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_development_writers_do_not_wait_for_environment_review",
-      "restoringMilestone": 6,
-      "prerequisite": "provision, publish retry, development PR, and worker writer jobs exist"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_authored_python_ci_invocations_use_uv",
-      "restoringMilestone": 6,
-      "prerequisite": "the complete authored runtime workflow set exists"
-    }
-  ]
+  "deferrals": []
 }

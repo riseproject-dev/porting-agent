@@ -448,8 +448,15 @@ class TestTick(unittest.TestCase):
                "artifact": {"digest": "sha256:" + "0" * 64}}
         legacy = dict(pub, publication_artifact_id=2, worker_run_id="6", dossier={"legacy": "missing decision"})
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})
-        out = reconcile.tick(None, snap, policy=policy(read_only=False), now=T, publications=[legacy, pub],
-                             pressure=capacity.Pressure(ok=True), observe=False)
+        out = reconcile.tick(
+            None,
+            snap,
+            policy=policy(read_only=False, destination_writes=False),
+            now=T,
+            publications=[legacy, pub],
+            pressure=capacity.Pressure(ok=True),
+            observe=False,
+        )
         ev = [r for k, r in out.staged if k == "evidence"]
         self.assertEqual(ev[0]["kind"], "dossier")
         self.assertEqual(ev[0]["data"], dossier())
