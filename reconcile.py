@@ -774,6 +774,19 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     if migrated:
         # Keep the reviewed legacy repair in its own state-only commit. In
         # particular, do not disturb active Work while its worker is running.
+        import state_commit
+        try:
+            changed = state_commit.records_from_checkout(root, "HEAD")
+        except state_commit.PublishError as error:
+            print(f"legacy state text migration found unrelated mutation: {error}", file=sys.stderr)
+            return 1
+        if set(changed) != set(migrated):
+            unexpected = sorted(set(changed) ^ set(migrated))
+            print(
+                f"legacy state text migration found unrelated state paths: {unexpected}",
+                file=sys.stderr,
+            )
+            return 1
         report = {"state_text_migration": {"written": migrated}, "written": migrated}
         text = json.dumps(report, indent=2)
         if args.report:

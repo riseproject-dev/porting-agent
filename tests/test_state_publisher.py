@@ -7,9 +7,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import publisher
+import reconcile
 import state
 from common import canonical_json
 from tests.helpers import commit_files, contribution, git, init_repo, policy
@@ -219,6 +221,39 @@ class TestStateDiff(unittest.TestCase):
         event = next(iter(events.values()))
         self.assertEqual(event["kind"], "state_text_normalized")
         self.assertEqual(event["cause"], {"type": "migration", "id": migration.migration_id})
+
+    def test_controller_migration_refuses_unrelated_state_changes(self):
+        dash = chr(0x2014)
+        evidence = {
+            "schema_version": 1,
+            "evidence_id": "legacy-rehearsal",
+            "contribution_id": self.rec["contribution_id"],
+            "kind": "rehearsal",
+            "policy_version": "test",
+            "collected_at": self.rec["created_at"],
+            "summary": f"prepared{dash}single commit",
+        }
+        path = state.record_path("evidence", evidence)
+        data = canonical_json(evidence).encode()
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        unrelated_path = self.repo / self.path
+        unrelated_path.parent.mkdir(parents=True, exist_ok=True)
+        unrelated_path.write_text(canonical_json(self.rec))
+        migration = state.LegacyTextMigration(
+            path=path,
+            sha256=hashlib.sha256(data).hexdigest(),
+            contribution_id=self.rec["contribution_id"],
+            migration_id="test-u2014-migration",
+        )
+        report = self.repo / "report.json"
+        args = SimpleNamespace(root=str(self.repo), report=str(report))
+        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)):
+            self.assertEqual(reconcile.cmd_reconcile(args), 1)
+        self.assertFalse(report.exists())
+        self.assertIn(dash, data.decode())
+        self.assertNotIn(dash, target.read_text())
 
     def test_legacy_text_migration_fails_closed_on_any_blob_change(self):
         dash = chr(0x2014)
