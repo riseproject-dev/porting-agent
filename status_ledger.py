@@ -28,6 +28,8 @@ MESSAGES = {
     "development_review_feedback": "Recorded authorized development-PR change feedback and requested repair.",
     "development_review_inquiry": "Recorded an authorized explanation-only development-PR comment. No repair was requested; lifecycle state is unchanged.",
     "handoff_ready": "Accepted clean-head development CI and reached human upstream handoff.",
+    "worker_no_change": "Verified a no-change worker Result for the exact head. No new repair Work was requested.",
+    "worker_proposal_rejected": "Rejected the worker proposal in trusted validation.",
 }
 
 

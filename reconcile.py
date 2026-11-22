@@ -197,14 +197,56 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
 
 
+def _answers_no_request(rec: dict, pub: dict) -> bool:
+    """A non-effect outcome that arrives while development waits on CI with
+    no requested Work and no pending publication answers nothing."""
+    return (pub.get("status") not in ("published", "uncertain")
+            and rec["phase"] == "development" and rec["activity"] == "waiting_ci"
+            and not rec.get("active_work") and not rec.get("pending_publication"))
+
+
+def provably_unadmitted_work(contributions: dict[str, dict], *, runs: list[dict] | None,
+                             queue_works: dict[str, str] | None) -> set[str] | None:
+    """Dedupe keys of requested Work that no worker can be running for.
+
+    Plan 12.3: if queue or run state cannot be read, nothing is inferred.
+    Work counts only when its graph is absent from the native queue replay
+    and no dispatcher run started since the request is still in flight.
+    ``active_work.dispatched_run_id`` is not proof: it is not recorded while a
+    Claim is live, and it names finished dispatcher runs that admitted nothing.
+    """
+    import work
+    if runs is None or queue_works is None:
+        return None
+    keys = set()
+    for c in contributions.values():
+        aw = c.get("active_work")
+        if not aw or work.graph_id(aw["dedupe_key"]) in queue_works:
+            continue
+        requested = datetime.fromisoformat(aw["requested_at"])
+        if any(r.get("status") != "completed"
+               and datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) >= requested
+               for r in runs):
+            continue
+        keys.add(aw["dedupe_key"])
+    return keys
+
+
+def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
+    run = worker_run_id or (outcome.get("artifact") or {}).get("run_id")
+    return str(run) if run else None
+
+
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one publication outcome (from fork_publish / queue_result) into the record.
 
     * published / uncertain -> waiting_ci (observation confirms the head)
     * proposal              -> waiting_capacity (verified patch, no destination write yet)
-    * no_change             -> idle
-    * rejected, validation  -> fix_needed (a new agent task)
+    * no_change             -> idle (preserved; no revision bump, no repair)
+    * rejected, validation  -> fix_needed (a new agent task at a new revision),
+                               charged to the attempt budget; exhaustion waits
+                               for a human
     * rejected, stale       -> idle (the world moved; the next tick re-plans)
     * infra_error           -> keep the proposal, schedule a publish-only retry
                                of the same worker run with backoff; after
@@ -320,14 +362,41 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             rec, new, "worker_reproduction_blocked", "result", run, now, True
         )))
     elif status == "no_change":
+        # Plan 8.6: a valid exact-task no_change Result is preserved. It ends
+        # the requested Work without a revision bump or new repair Work; the
+        # unchanged exact head is then judged by ordinary CI observation.
         new["activity"] = "idle"
+        new["pending_human_action"] = None
+        staged.append(("events", lifecycle._event(
+            rec, new, "worker_no_change", "result", _result_cause(outcome, worker_run_id), now, False
+        )))
     elif status == "rejected":
         new["activity"] = "idle" if fclass == "stale" else "fix_needed"
         if fclass != "stale":
             # A failed immutable Work graph cannot be submitted again. A new
             # repair attempt gets a new revision and therefore a new graph ID.
+            # Plan 8.6 and 12.5: that repair Work is bounded, so the rejected
+            # model attempt is charged like every other attempt.
             new["revision"] += 1
             new["clean_head_sha"] = None
+            proposal = outcome.get("proposal") if isinstance(outcome.get("proposal"), dict) else {}
+            stops = []
+            if policy:
+                new["budget"], stops = capacity.charge_attempt(
+                    new["budget"], cluster=proposal.get("failure_cluster"), progress="none",
+                    policy=policy)
+            if stops:
+                new["activity"] = "waiting_human"
+                new["pending_human_action"] = {
+                    "kind": "worker_attempt_budget_exhausted",
+                    "requested_at": now,
+                    "reminded_at": None,
+                    "escalated_at": None,
+                }
+        staged.append(("events", lifecycle._event(
+            rec, new, "worker_proposal_rejected", "result", _result_cause(outcome, worker_run_id), now,
+            fclass != "stale",
+        )))
     elif status == "investigation":
         # Investigation artifacts are evidence, never patch proposals. Keeping
         # one in proposal_artifact would make base-branch CI look like patch CI
@@ -578,6 +647,13 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             out.staged.append(("contributions", rec))
             pubs_report.append({"contribution": cid, "ignored": "stale revision"})
             continue
+        if _answers_no_request(rec, pub) and not recovered_worker_blocker:
+            # Plan 8.6: a Result for Work that state no longer requests (for
+            # example an obsolete repair withdrawn while CI is observed) is
+            # stale. Only a real branch effect is still reconciled.
+            out.staged.append(("contributions", rec))
+            pubs_report.append({"contribution": cid, "ignored": "no outstanding request"})
+            continue
         rec, staged = apply_publication(rec, pub, now=iso, policy=policy, worker_run_id=pub.get("worker_run_id"))
         contributions[key] = rec
         out.staged.extend(staged)
@@ -633,7 +709,9 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         contracts = {e["evidence_id"]: e for e in snap.evidence.values() if e.get("kind") == "target_contract"}
         obs = observe_ci.observe(api, contributions=contributions, operations=snap.operations,
                                  contracts=contracts, policy=policy, now=iso,
-                                 evidence=snap.evidence)
+                                 evidence=snap.evidence,
+                                 unadmitted_work=provably_unadmitted_work(
+                                     contributions, runs=dispatcher_runs, queue_works=queue_works))
         for kind, r in obs.staged:
             if kind == "contributions":
                 contributions[by_cid[r["contribution_id"]]] = r

@@ -1,6 +1,14 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Normalize structurally valid worker infrastructure blockers for fresh retry."""
+"""Normalize worker outcomes that an earlier trusted gate misclassified.
+
+* A structurally valid infrastructure blocker becomes ``worker_blocked`` for
+  bounded fresh retry.
+* A valid exact-task ``no_change`` proposal that an earlier worker gate
+  rejected as a validation failure becomes ``no_change`` (plan 8.6). The
+  current gate and trusted preflight are re-run on the stored artifact files;
+  nothing is synthesized and no destination token is involved.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +17,7 @@ import json
 import re
 from pathlib import Path
 
+import fork_publish
 import schemas
 import worker_gate
 from common import canonical_json
@@ -40,6 +49,8 @@ def normalize(directory: Path, run_id: str) -> dict:
     if str(result.get("run_id")) != run_id or result.get("run_attempt") != 1:
         raise WorkerRecoveryError("worker Result does not match run attempt")
     schemas.validate("proposal", proposal)
+    if _misclassified_no_change(outcome, proposal):
+        return _recover_no_change(directory, run_id, task, proposal, outcome)
     if not (
         outcome.get("status") == "proposal"
         and proposal.get("outcome") == "blocked"
@@ -62,6 +73,50 @@ def normalize(directory: Path, run_id: str) -> dict:
     (directory / "recovered-worker-blocker").write_text(
         f"run_id={run_id}\nfailure_cluster={proposal['failure_cluster']}\n"
     )
+    return normalized
+
+
+def _misclassified_no_change(outcome: dict, proposal: dict) -> bool:
+    return (
+        outcome.get("status") == "rejected"
+        and outcome.get("failure_class") == "validation"
+        and outcome.get("stage") == "worker_gate"
+        and proposal.get("outcome") == "no_change"
+        and proposal.get("operation") == "none"
+    )
+
+
+def _recover_no_change(directory: Path, run_id: str, task: dict, proposal: dict,
+                       outcome: dict) -> dict:
+    """Re-run the current gate and preflight; keep the rejection otherwise."""
+    if not (directory / "record.json").is_file():
+        return outcome
+    record = _load(directory, "record.json")
+    try:
+        report = worker_gate.validate(task, proposal, directory / "patches.mbox")
+    except (worker_gate.WorkerGateError, schemas.SchemaError, ValueError):
+        return outcome
+    if report.get("status") != "accepted":
+        return outcome
+
+    def no_fork_lookup(_name: str) -> dict:
+        raise WorkerRecoveryError("no-change recovery never reads the fork")
+
+    try:
+        preflight = fork_publish.preflight(record=record, task=task, proposal=proposal,
+                                           fork_lookup=no_fork_lookup)
+    except WorkerRecoveryError:
+        return outcome
+    if preflight.get("status") != "no_change" or preflight.get("publish") is not False:
+        return outcome
+    normalized = {
+        "status": "no_change",
+        "failure_class": None,
+        "reason": preflight.get("reason"),
+        "stage": "preflight",
+    }
+    (directory / "outcome.json").write_text(canonical_json(normalized))
+    (directory / "recovered-worker-no-change").write_text(f"run_id={run_id}\n")
     return normalized
 
 

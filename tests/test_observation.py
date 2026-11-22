@@ -158,13 +158,13 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         rec["pending_feedback_evidence_ids"] = ["rehearsal-closeio--ciso8601--1-r3-44982902579"]
         return rec
 
-    def observe(self, rec, snapshot, evidence=None, contracts=None):
+    def observe(self, rec, snapshot, evidence=None, contracts=None, unadmitted_work=None):
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": self.HEAD}), \
              mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
              mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
             return observe_ci.observe(object(), contributions={"c": rec}, operations={},
                                       contracts=contracts or {}, policy=policy(), now=NOW,
-                                      evidence=evidence or {})
+                                      evidence=evidence or {}, unadmitted_work=unadmitted_work)
 
     @staticmethod
     def final(observation, original):
@@ -207,7 +207,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         contracts = {"contract-1": {"data": {
             "expected_wheels": ["ciso8601-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"]}}}
         observation = self.observe(rec, self.snapshot(pending=False),
-                                   evidence=self.OBSOLETE_REASONS, contracts=contracts)
+                                   evidence=self.OBSOLETE_REASONS, contracts=contracts,
+                                   unadmitted_work={rec["active_work"]["dedupe_key"]})
         final = self.final(observation, rec)
         self.assertEqual(final["fork"]["head_sha"], self.HEAD)
         self.assertEqual(final["revision"], 5)
@@ -226,7 +227,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
 
     def test_green_duplicate_registrations_clear_unfounded_repair_and_enter_handoff(self):
         rec = self.undispatched_repair()
-        observation = self.observe(rec, self.snapshot(pending=False), evidence=self.OBSOLETE_REASONS)
+        observation = self.observe(rec, self.snapshot(pending=False), evidence=self.OBSOLETE_REASONS,
+                                   unadmitted_work={rec["active_work"]["dedupe_key"]})
         final = self.final(observation, rec)
         self.assertEqual(final["revision"], 5)
         self.assertEqual((final["phase"], final["activity"]), ("handoff", "waiting_human"))
@@ -352,9 +354,13 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                     "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
                     "dispatched_run_id": dispatched_run_id, "reason_ids": ["reason-1"],
                 }
+                # A human reason keeps even queue-proven unadmitted Work; a
+                # dispatched repair has no queue proof (its Work is claimed).
                 observation = self.observe(
                     rec, self.snapshot(pending=False),
-                    evidence={"reason-1": {"kind": reason_kind, "evidence_id": "reason-1"}})
+                    evidence={"reason-1": {"kind": reason_kind, "evidence_id": "reason-1"}},
+                    unadmitted_work=({rec["active_work"]["dedupe_key"]}
+                                     if reason_kind == "human_relay" else set()))
                 final = self.final(observation, rec)
                 self.assertEqual(final["activity"], "agent_running")
                 self.assertIsNotNone(final["active_work"])

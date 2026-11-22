@@ -75,16 +75,23 @@ def _terminal_blocking_ci(evidence: dict | None, head_sha: str) -> bool:
 
 
 def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdict,
-                                     evidence: dict[str, dict], head_sha: str) -> bool:
+                                     evidence: dict[str, dict], head_sha: str,
+                                     unadmitted_work: set[str] | None = None) -> bool:
     """Recognize a repair request that could only have come from incomplete CI.
 
     This is deliberately narrow: the old request must still be undispatched,
     the published head must be unchanged, green required jobs must now have
     executed, and no human or terminal CI reason may support the repair.
+    Undispatched means proven by the native queue replay and dispatcher runs
+    (``unadmitted_work``). ``dispatched_run_id`` is not proof either way: it
+    stays null while the Work is claimed and its worker runs, and it names a
+    finished dispatcher run even when that run admitted nothing.
     """
     active = record.get("active_work") or {}
     artifact = record.get("proposal_artifact") or {}
-    if active.get("task") != "development_repair" or active.get("dispatched_run_id") is not None \
+    if active.get("dedupe_key") not in (unadmitted_work or set()):
+        return False
+    if active.get("task") != "development_repair" \
             or record.get("phase") != "development" or artifact.get("outcome") != "published" \
             or (record.get("fork") or {}).get("head_sha") != head_sha \
             or verdict.state not in {"passed", "missing"} or not verdict.executed_jobs:
@@ -96,7 +103,8 @@ def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdic
 
 def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dict[str, dict],
             contracts: dict[str, dict], policy: dict, now: str,
-            evidence: dict[str, dict] | None = None) -> Observation:
+            evidence: dict[str, dict] | None = None,
+            unadmitted_work: set[str] | None = None) -> Observation:
     obs = Observation()
     evidence = dict(evidence or {})
     for rec in contributions.values():
@@ -267,7 +275,8 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             # human-requested repair is still requested work on this head.
             work_active = bool(cur.get("active_work")) or cur["activity"] == "agent_running"
             if work_active and verdict.state == "passed" and cur["phase"] == "development" \
-                    and not _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"]):
+                    and not _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"],
+                                                        unadmitted_work):
                 entry["handoff_deferred"] = "requested Work is still active"
             elif verdict.state == "passed" and cur["phase"] == "development" and not cur.get("debug_commits"):
                 before = cur
@@ -284,7 +293,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 new_activity = "waiting_human"
                 entry["handoff_ready"] = True
             entry["evidence"] = eid
-        if _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"]):
+        if _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"], unadmitted_work):
             before = cur
             cur = dict(cur, active_work=None, activity="waiting_ci", next_poll_at=next_poll_at,
                        updated_at=now)

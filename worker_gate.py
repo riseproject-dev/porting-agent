@@ -66,6 +66,8 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
     if proposal.get("ref") != task.get("ref"):
         raise WorkerGateError("proposal ref does not match task")
     operation = proposal.get("operation")
+    if proposal.get("outcome") == "no_change" and operation != "none":
+        raise WorkerGateError("no-change proposal must use operation none")
     if operation not in (task.get("allowed_operations") or []):
         if not (operation == "none" and proposal.get("outcome") != "patch"):
             raise WorkerGateError("proposal operation is not allowed")
@@ -122,7 +124,11 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
         raise WorkerGateError("workflow selection or runner mapping evidence is incomplete")
     gate_status = "accepted"
     failure_class = None
-    if proposal.get("outcome") != "patch":
+    # Plan 8.6: a valid exact-task no_change Result is preserved. It is
+    # accepted here so trusted preflight records ``no_change`` without minting
+    # a destination token; it is never a validation failure that would
+    # allocate repair Work at a new revision.
+    if proposal.get("outcome") not in ("patch", "no_change"):
         cluster = str(proposal.get("failure_cluster") or "")
         gate_status = "infrastructure_blocked" if cluster.startswith(
             "reproduction-image-infrastructure"
