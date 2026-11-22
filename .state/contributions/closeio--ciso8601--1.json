@@ -1,7 +1,26 @@
 {
   "active_operation_id": null,
-  "active_work": null,
-  "activity": "waiting_ci",
+  "active_work": {
+    "attempt": 1,
+    "deadline_at": "2026-11-22T16:35:06.851927+00:00",
+    "dedupe_key": "closeio--ciso8601/1@6:development_repair",
+    "dispatched_run_id": null,
+    "reason_ids": [
+      "rehearsal-closeio--ciso8601--1-r3-44982902579",
+      "dossier-closeio--ciso8601--1-r2"
+    ],
+    "requested_at": "2026-11-22T10:35:06.851927+00:00",
+    "revision": 6,
+    "task": "development_repair",
+    "tracking_issue": {
+      "description": "### Upstream repository\n\nhttps://github.com/closeio/ciso8601\n\n### PyPI distributions\n\nciso8601 (import: ciso8601)\n\n### Upstream target branch\n\nmaster\n\n### Additional notes\n\nMigration canary based on https://github.com/riseproject-dev/python-wheels/issues/631.\nThe downstream riscv64 wheel build was added in python-wheels#625.\nThe earlier investigation found that PyPI ciso8601 2.4.1 had no riscv64 wheel,\nupstream issue closeio/ciso8601#181 requested support, and the project is a pure\nC extension using setuptools and cibuildwheel with no third-party native library.\nThe earlier proposal selected configuration_integration and these bounded paths:\n.github/workflows/build-wheels.yml, pyproject.toml, CHANGELOG.md, and tox.ini.\nThe expected topology is an ubuntu-24.04-riscv row with CIBW_ARCHS=riscv64,\nfollowing the project's existing native aarch64 row.\nThe previous implementation reached handoff/waiting_human at revision 9 and\nreported clean head 9339ec54ae594458b0b9c6039bb55e9b2b13eff7.\nTreat all previous dossier, CI, fork, PR, and head data as migration evidence.\nDo not treat it as current authorization or verified state without the migration\nand readback gates in this plan.\n",
+      "description_digest": "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
+      "id": 6536262483,
+      "number": 1,
+      "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+    }
+  },
+  "activity": "agent_running",
   "admission_class": "configuration_integration",
   "blocked_reason": null,
   "budget": {
@@ -57,20 +76,21 @@
     14736190358,
     14735532559,
     14738278252,
-    14749100233
+    14749100233,
+    14750552358
   ],
   "processed_review_comment_ids": [],
   "processed_review_ids": [],
   "project_id": "closeio--ciso8601",
   "proposal_artifact": {
-    "artifact_id": 14748243901,
-    "claim_id": "c_67438b810e45941855198bb0e45397c8f7204bb4cab191b331fe451f947450e8_1",
-    "digest": "sha256:6caa4bf77f1f29a3c5f3fce6366eb3f541fcac4c4c694090059c0f1e6ac9b5b5",
-    "name": "claim-36bc42deb7d65a0318474b19a4022fd15014408782ad46594c9f27ce439d980b-porting-out",
-    "outcome": "published",
-    "result_commit": "q_7336b4e135f4387f9f1a70a94ade661f3b79cee971037a5a48609bc46bd04a66",
-    "run_id": "45006566517",
-    "work_id": "57b6e78dfd0376f4da50f5c7648909ca1957e05b194f6ccf7a872ca88aded423"
+    "artifact_id": 14750421746,
+    "claim_id": "c_aa626cd208fbd3f1e7efdc01c7f926a90ddd50da6eae57c797acd5783593c865_1",
+    "digest": "sha256:69e355bae7a82d6f2fbbe4b8e11bd9c958ec2deafc50aa1e40d017ee06fad050",
+    "name": "claim-5deaca2a5f95fefc65a21e3b8cc03031c86a9561e9c0c2309acdd31d15c5f63f-porting-out",
+    "outcome": "rejected",
+    "result_commit": "q_4a0bb4a5e60bb68cb1a838a670638e197bee7d6c6b3d1d69e43bfb7d9da9b95e",
+    "run_id": "45010139289",
+    "work_id": "4be72b98deda7e439d0bd2006a856b7036a9cde1d1a1f4c0341acdd3e94bf8b1"
   },
   "publication_operation_id": "op-0b54d1e289a0b1bd1b4797e5",
   "queue_claim_handle": null,
@@ -79,7 +99,7 @@
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
-  "revision": 5,
+  "revision": 6,
   "schema_version": 1,
   "scope_coverage_complete": true,
   "scope_paths": [
@@ -97,7 +117,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T10:21:32.973879+00:00",
+  "updated_at": "2026-11-22T10:35:06.851927+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
