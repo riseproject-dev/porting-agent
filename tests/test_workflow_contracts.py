@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Milestone 3 controller workflow and projection security contracts."""
+"""Cumulative controller, native queue, and workflow security contracts."""
 
+import re
 import unittest
 from pathlib import Path
 
@@ -15,7 +16,78 @@ def workflow(name: str) -> dict:
     return yaml.safe_load((WORKFLOWS / name).read_text())
 
 
+def source(name: str) -> dict:
+    return yaml.safe_load(
+        (WORKFLOWS / f"{name}.md").read_text().split("---", 2)[1]
+    )
+
+
 class TestWorkflowContracts(unittest.TestCase):
+    def test_only_investigator_unsandboxed(self):
+        investigator = source("investigator")
+        self.assertFalse(investigator["strict"])
+        self.assertFalse(investigator["sandbox"]["agent"])
+        self.assertFalse(investigator["safe-outputs"]["threat-detection"])
+        self.assertEqual(investigator["permissions"]["contents"], "read")
+        self.assertNotIn("publish", investigator["jobs"])
+        self.assertEqual(
+            investigator["engine"]["extensions"],
+            ["npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"],
+        )
+        github = investigator["mcp-servers"]["github-authenticated"]
+        self.assertTrue(github["required"])
+        self.assertEqual(
+            github["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "${{ github.token }}"
+        )
+        self.assertEqual(github["env"]["GITHUB_READ_ONLY"], "1")
+        self.assertIn("issue_read", github["allowed"])
+        self.assertIn("pull_request_read", github["allowed"])
+        graph = investigator["mcp-servers"]["project-graph"]
+        self.assertTrue(graph["required"])
+        self.assertEqual(graph["allowed"], ["project_graph_query"])
+        dispatcher = source("dispatcher")
+        self.assertTrue(dispatcher["strict"])
+        self.assertNotEqual(dispatcher.get("sandbox", {}).get("agent"), False)
+
+    def test_completeness_gate_precedes_durable_completion(self):
+        lock = workflow("investigator.lock.yml")
+        steps = lock["jobs"]["safe_outputs"]["steps"]
+        names = [step.get("name") for step in steps]
+        gate = names.index("Require complete research before native queue Completion")
+        self.assertLess(gate, names.index("Reconcile work queue claim"))
+        self.assertLess(gate, names.index("Process Safe Outputs"))
+        self.assertNotIn("detection", lock["jobs"])
+        notify = lock["jobs"]["notify"]
+        self.assertEqual(set(notify["needs"]), {"safe_outputs", "record"})
+        self.assertNotIn("issues", notify["permissions"])
+        self.assertIn("python -m dossier_comment", str(notify))
+        self.assertIn("porting-publication", str(notify))
+
+    def test_dossier_comments_use_the_control_app_identity(self):
+        notify = source("investigator")["jobs"]["notify"]
+        self.assertNotIn("issues", notify["permissions"])
+        token = next(step for step in notify["steps"] if step.get("id") == "comment-token")
+        self.assertEqual(token["with"]["owner"], "riseproject-dev")
+        self.assertEqual(token["with"]["repositories"], "porting-agent")
+        self.assertEqual(token["with"]["permission-issues"], "write")
+        publish = next(
+            step for step in notify["steps"] if "dossier comment" in step.get("name", "")
+        )
+        self.assertEqual(
+            publish["env"]["GH_TOKEN"], "${{ steps.comment-token.outputs.token }}"
+        )
+        self.assertEqual(publish["env"]["PORTING_COMMENT_AUTHOR"], "riseproject-dev[bot]")
+
+    def test_investigation_retry_also_publishes_verified_comment(self):
+        investigator = source("investigator")
+        notify = investigator["jobs"]["notify"]
+        self.assertEqual(set(notify["needs"]), {"safe_outputs", "record"})
+        self.assertEqual(notify["if"], "needs.safe_outputs.outputs.work_queue_outcome == 'completed'")
+        self.assertIn("porting-publication", str(notify))
+        self.assertIn("dossier_comment", str(notify))
+        self.assertIn("exact-Result marker makes retries idempotent",
+                      (WORKFLOWS / "investigator.md").read_text())
+
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")
         trigger = controller.get("on", controller.get(True))["push"]
@@ -107,12 +179,21 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("python -m state_commit", confirm["run"])
         self.assertLess(steps.index(repair), steps.index(confirm))
 
-    def test_milestone_three_has_no_agent_or_destination_writer(self):
+    def test_current_milestone_has_no_destination_writer(self):
         self.assertEqual(
-            {path.name for path in WORKFLOWS.iterdir()},
-            {"validate.yml", "controller.yml", "website.yml"},
+            {path.name for path in WORKFLOWS.iterdir() if path.is_file()},
+            {
+                "validate.yml",
+                "controller.yml",
+                "website.yml",
+                "dispatcher.md",
+                "dispatcher.lock.yml",
+                "investigator.md",
+                "investigator.lock.yml",
+            },
         )
-        text = "\n".join(path.read_text() for path in WORKFLOWS.iterdir())
+        text = "\n".join(path.read_text() for path in WORKFLOWS.iterdir() if path.is_file())
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", text)
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_CLIENT_ID", text)
-        self.assertNotIn("gh workflow run", text)
+        launches = set(re.findall(r"gh workflow run ([A-Za-z0-9_.-]+)", text))
+        self.assertLessEqual(launches, {"controller.yml", "dispatcher.lock.yml"})

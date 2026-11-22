@@ -35,7 +35,7 @@ from common import (
     repository_root,
 )
 
-POOL = "porting"
+POOL = "default"
 # Two worker profiles in one pool: investigations (read and report, cheaper
 # model, no publish job) and patch work (stronger model, trusted publish job).
 WORKER_PROFILE = "worker"

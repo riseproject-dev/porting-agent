@@ -15,3 +15,7 @@ Workflow-dependent tests remain represented without enabling runtime workflows e
 ## Milestone 3 update
 
 The control controller and Pages status workflows are now owned by `controller.yml` and `website.yml`. Lifecycle authority is `.state/`; publication is a bounded plain fast-forward under `protect-main-history`, with no bypass or force path. Tracking issue ledgers, deterministic failure replies, and terminal reactions are recoverable from durable events and command receipts. The six Milestone 3 deferrals are restored. Agent and destination workflow contracts remain deferred to their Milestone 4-6 owners.
+
+## Milestone 4 update
+
+`dispatcher.md` and `investigator.md` now own native Work admission and authenticated read-only research. Their generated locks are compiler-owned outputs of pinned gh-aw v1.2.2. The controller can automatically select the queued canonical ciso8601 contribution, commit its immutable task, launch the dispatcher, fold only an exact verified investigation Result, and recover through explicit continuations plus schedule/workflow completion fallbacks. The four Milestone 4 workflow contract deferrals are restored; worker and destination writer contracts remain assigned to Milestones 5 and 6.

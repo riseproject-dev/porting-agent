@@ -30,7 +30,7 @@ def marker(task: dict, result: dict) -> str:
 
 
 def render(dossier: dict, task: dict, result: dict) -> str:
-    lines = ["## Upstreaming investigation result", "", _text(dossier["summary"]), ""]
+    lines = ["## Porting investigation result", "", _text(dossier["summary"]), ""]
     proposal = dossier.get("proposal") or {}
     if proposal:
         lines += ["### Proposed direction", ""]
@@ -87,7 +87,7 @@ def request(method: str, path: str, token: str, body: dict | None = None):
 def trusted_runtime(env: dict[str, str]) -> bool:
     return env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_REPOSITORY") == CONTROL_REPO \
         and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch" \
-        and env.get("GITHUB_WORKFLOW") in ("Upstreaming investigator", "Upstreaming publish retry")
+        and env.get("GITHUB_WORKFLOW") in ("Porting investigator", "Porting publish retry")
 
 
 def publish(dossier: dict, proposal: dict, task: dict, result: dict, token: str, run_id: str,
@@ -123,9 +123,9 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if not trusted_runtime(os.environ):
-        raise CommentError("dossier comments require a trusted upstreaming Result workflow")
+        raise CommentError("dossier comments require a trusted porting Result workflow")
     values = [json.loads(getattr(args, name).read_text()) for name in ("dossier", "proposal", "task", "result")]
     receipt = publish(*values, os.environ.get("GH_TOKEN", ""), os.environ["GITHUB_RUN_ID"],
-                      os.environ.get("UPSTREAMING_COMMENT_AUTHOR") or None)
+                      os.environ.get("PORTING_COMMENT_AUTHOR") or None)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(receipt, indent=2))

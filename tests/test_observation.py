@@ -320,7 +320,10 @@ class TestTriggers(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         findings = triggers.audit(root / ".github/workflows", [".state/contributions/x.json"])
         self.assertEqual([f.workflow for f in findings if f.triggered], ["website.yml"])
-        self.assertEqual(triggers.workflow_run_consumers(root / ".github/workflows"), [])
+        self.assertEqual(
+            triggers.workflow_run_consumers(root / ".github/workflows"),
+            ["controller.yml"],
+        )
 
 
 class TestTick(unittest.TestCase):

@@ -51,6 +51,14 @@ class TestRepositoryLayout(unittest.TestCase):
 
     def test_generated_workflow_files_are_expected_and_paired(self):
         manifest = json.loads((ROOT / "docs/workflow-migration.json").read_text())
+        self.assertEqual(
+            {
+                path.relative_to(ROOT).as_posix()
+                for path in (ROOT / ".github/aw").rglob("*")
+                if path.is_file()
+            },
+            {".github/aw/actions-lock.json"},
+        )
         expected_targets = {item["target"] for item in manifest["workflows"]}
         for lock in WORKFLOWS.glob("*.lock.yml"):
             self.assertIn(lock.name, expected_targets)
@@ -101,7 +109,7 @@ class TestMigrationInventory(unittest.TestCase):
             self.assertTrue(item["owner"])
             self.assertIn(item["milestone"], range(1, 11))
             present = (WORKFLOWS / item["target"]).exists()
-            self.assertEqual(present, item["milestone"] <= 3, item["target"])
+            self.assertEqual(present, item["milestone"] <= 4, item["target"])
         for item in workflows:
             if item["agentic"] and (WORKFLOWS / item["target"]).exists():
                 stem = item["target"].removesuffix(".md")
@@ -229,6 +237,7 @@ class TestRepositoryHygiene(unittest.TestCase):
             executable,
             {
                 "scripts/check_gh_aw.sh",
+                "scripts/compile_gh_aw.sh",
                 "scripts/gh-aw-compat/check.sh",
                 "scripts/git_identity.sh",
                 "scripts/install_gh_aw.sh",

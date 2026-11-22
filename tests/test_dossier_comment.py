@@ -20,7 +20,7 @@ class TestDossierComment(unittest.TestCase):
 
     def test_render_is_readable_bounded_and_exact_result_marked(self):
         body = dossier_comment.render(dossier(), self.task(), self.result())
-        self.assertIn("## Upstreaming investigation result", body)
+        self.assertIn("## Porting investigation result", body)
         self.assertIn("### Research coverage", body)
         self.assertIn("Verified native Result", body)
         self.assertIn(dossier_comment.marker(self.task(), self.result()), body)
@@ -28,7 +28,7 @@ class TestDossierComment(unittest.TestCase):
 
     def test_trusted_worker_ref_is_accepted_without_weakening_workflow_identity(self):
         env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "riseproject-dev/porting-agent",
-               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW": "Upstreaming investigator",
+               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW": "Porting investigator",
                "GITHUB_REF": "refs/heads/work-queue"}
         self.assertTrue(dossier_comment.trusted_runtime(env))
         env["GITHUB_WORKFLOW"] = "Untrusted workflow"

@@ -19,10 +19,10 @@ from tests.helpers import NOW, policy
 
 ROOT = Path(__file__).parents[1]
 LIVE_RECORD = json.loads(
-    (ROOT / ".state/contributions/closeio--ciso8601--1.json").read_text()
+    (ROOT / "tests/fixtures/canary-defect-state.json").read_text()
 )
 LIVE_EVENT = json.loads(
-    (ROOT / ".state/events/closeio--ciso8601--1/00000000.json").read_text()
+    (ROOT / "tests/fixtures/canary-defect-event.json").read_text()
 )
 LATER = "2026-11-22T02:00:00+00:00"
 

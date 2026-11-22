@@ -125,13 +125,17 @@ class TestTrustedPublicationWorkflow(unittest.TestCase):
         self.assertNotIn("force-with-lease", state_source)
         self.assertIn('f"{commit}:refs/heads/{branch}"', state_source)
 
-    def test_no_later_milestone_credential_or_dispatch_is_enabled(self):
-        all_workflows = "\n".join(path.read_text() for path in WORKFLOWS.iterdir())
+    def test_control_jobs_have_no_model_or_destination_credential(self):
+        all_workflows = "\n".join(
+            path.read_text() for path in WORKFLOWS.iterdir() if path.is_file()
+        )
+        control_workflows = "\n".join(
+            (WORKFLOWS / name).read_text()
+            for name in ("controller.yml", "validate.yml", "website.yml")
+        )
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", all_workflows)
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_CLIENT_ID", all_workflows)
-        self.assertNotIn("ANTHROPIC_API_KEY", all_workflows)
-        self.assertNotIn("gh workflow run", all_workflows)
-        self.assertNotIn("work_queue", all_workflows)
+        self.assertNotIn("ANTHROPIC_API_KEY", control_workflows)
         self.assertEqual(CONTROL_REPO, "riseproject-dev/porting-agent")
 
     def test_human_projections_follow_state_publication_and_are_retryable(self):

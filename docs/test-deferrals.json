@@ -3,26 +3,6 @@
   "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
   "deferrals": [
     {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_only_investigator_unsandboxed",
-      "restoringMilestone": 4,
-      "prerequisite": "investigator.md and its generated lock are introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_completeness_gate_precedes_durable_completion",
-      "restoringMilestone": 4,
-      "prerequisite": "investigator.md and its generated lock are introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_dossier_comments_use_the_control_app_identity",
-      "restoringMilestone": 4,
-      "prerequisite": "investigator trusted post-agent publication exists"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_investigation_retry_also_publishes_verified_comment",
-      "restoringMilestone": 4,
-      "prerequisite": "investigator retry and verified comment paths exist"
-    },
-    {
       "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_fetches_and_verifies_complete_committed_dossier",
       "restoringMilestone": 5,
       "prerequisite": "worker.md and its generated lock are introduced"

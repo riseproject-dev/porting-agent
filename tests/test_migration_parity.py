@@ -248,7 +248,16 @@ class TestDeferredAndWorkflowContracts(unittest.TestCase):
         )
 
     def test_workflow_python_commands_use_root_modules_or_scripts(self):
-        for path in (ROOT / ".github/workflows").glob("*.yml"):
+        workflow_root = ROOT / ".github/workflows"
+        paths = [
+            *(
+                path
+                for path in workflow_root.glob("*.yml")
+                if not path.name.endswith(".lock.yml")
+            ),
+            *workflow_root.glob("*.md"),
+        ]
+        for path in paths:
             text = path.read_text()
             self.assertNotIn("python -m upstreaming", text)
             self.assertNotRegex(text, r"python\s+upstreaming/")
@@ -256,4 +265,7 @@ class TestDeferredAndWorkflowContracts(unittest.TestCase):
             for invocation in re.findall(r"python\s+-m\s+([A-Za-z0-9_.-]+)", text):
                 self.assertIn(invocation, approved_modules)
             for script in re.findall(r"python\s+([^\s]+\.py)", text):
-                self.assertTrue(script.startswith("scripts/"), script)
+                self.assertTrue(
+                    script.startswith(("scripts/", "native-artifact-compat/scripts/")),
+                    script,
+                )

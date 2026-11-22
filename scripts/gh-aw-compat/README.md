@@ -47,8 +47,7 @@ of the exact patched file is idempotent. The patch uses zero-context hunks;
 application is permitted only after the exact source SHA-256 matches, and the
 runtime is replaced only after the complete output SHA-256 matches.
 
-Compiler-generated lock files are never edited by hand. The gh-aw release,
-setup action and CLI stay pinned to v1.2.2.
+Compiler-generated lock files are never edited by hand. `scripts/compile_gh_aw.sh` runs the pinned compiler and then invokes the reviewed deterministic text normalizer. gh-aw v1.2.2 emits U+2014 punctuation in compiler-owned help and error strings; the normalizer replaces only that code point with ASCII `--`, verifies the generated manifest marker, and is idempotent. `scripts/check_gh_aw.sh` recompiles through the same wrapper before byte comparison. This changes no expression, command, permission, action, image, queue contract, or control flow. The gh-aw release, setup action and CLI stay pinned to v1.2.2.
 
 ## Tests
 

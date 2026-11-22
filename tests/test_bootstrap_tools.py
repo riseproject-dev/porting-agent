@@ -103,6 +103,7 @@ class TestImportIsolation(unittest.TestCase):
             "scripts/audit_repository_settings.py",
             "scripts/dependencies/sync.py",
             "scripts/gh_aw_compat.py",
+            "scripts/normalize_gh_aw_locks.py",
         ):
             path = ROOT / relative
             spec = importlib.util.spec_from_file_location(path.stem, path)

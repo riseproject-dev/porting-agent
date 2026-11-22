@@ -2,7 +2,7 @@
 
 [`riseproject-dev/porting-agent`](https://github.com/riseproject-dev/porting-agent) is the trusted control plane for AI-assisted RISC-V porting work. The active profile helps upstream Python projects build, test, and publish Linux `riscv64` wheels through their own release processes.
 
-The repository is being migrated in reviewed milestones. Milestones 1 and 2 established the repository contract and flattened the proven control modules. Milestone 3 enables deterministic lifecycle reconciliation, validated fast-forward state publication, tracking-issue projections, durable command receipts, and the public status site. Agent Work and destination writers remain disabled.
+The repository is being migrated in reviewed milestones. Milestones 1 through 3 established the deterministic lifecycle control plane. Milestone 4 enables native Work dispatch and authenticated read-only investigation with a verified dossier Result. Patch workers and every destination writer remain disabled.
 
 ## Repository contract
 
@@ -10,7 +10,8 @@ The repository is being migrated in reviewed milestones. Milestones 1 and 2 esta
 - `.state/` is lifecycle authority. Only schema-valid state files may be published in a plain fast-forward commit on `main`.
 - Authored gh-aw workflows and generated lock workflows move together.
 - Pull-request validation is read-only and receives no App private key, destination token, package credential, or state-publisher environment.
-- The controller uses the control App only after deterministic reconciliation; model and destination credentials are absent.
+- The controller uses the control App only after deterministic reconciliation; destination credentials are absent.
+- The investigator receives only scoped read access, returns one verified artifact Result, and cannot push or mutate upstream resources.
 - Public status is generated at <https://riseproject-dev.github.io/porting-agent/> from committed state.
 - The control repository is `riseproject-dev/porting-agent`; destination forks remain in `riseproject-upstreaming`.
 

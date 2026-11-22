@@ -8,7 +8,7 @@ For a reviewed Pi or extension update after agentic workflows exist:
 
 ```sh
 uv run python scripts/dependencies/sync.py --write
-/path/to/reviewed-gh-aw compile worker investigator dispatcher --no-check-update --approve
+scripts/compile_gh_aw.sh /path/to/reviewed-gh-aw worker investigator dispatcher
 uv run python -m unittest discover -s tests -t .
 ```
 

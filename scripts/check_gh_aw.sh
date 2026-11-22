@@ -26,7 +26,7 @@ done
 if [ -n "$workflows" ]; then
     # Deliberate word splitting supplies each reviewed workflow name as one argument.
     # shellcheck disable=SC2086
-    "$aw" compile $workflows --no-check-update >/dev/null
+    scripts/compile_gh_aw.sh "$aw" $workflows >/dev/null
     for workflow in $workflows; do
         cmp -s "$tmp/$workflow.lock.yml.committed" ".github/workflows/$workflow.lock.yml" || {
             echo "$workflow.lock.yml is stale; recompile with gh-aw v1.2.2" >&2

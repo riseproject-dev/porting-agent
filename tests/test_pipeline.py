@@ -100,7 +100,7 @@ class TestPipeline(unittest.TestCase):
         node = work.node(res.requested_effects[0], self.rec, control_repo_id="123",
                          allowed_paths=[".github/workflows/*"])
         plan = work.plan([node])
-        self.assertEqual(plan["dispatch"], {"pool": "porting", "max_claims": 1, "max_dispatches": 1})
+        self.assertEqual(plan["dispatch"], {"pool": "default", "max_claims": 1, "max_dispatches": 1})
         task = node["payload"]
         self.assertEqual(task["effect_contract"]["outputs"][-1], {"type": "upload_artifact", "min": 1, "max": 1})
         self.assertEqual((task["fork_name"], task["fork_repository_id"]), ("proj", 2))

@@ -20,6 +20,9 @@ on:
     types: [opened, labeled, unlabeled, reopened]
   issue_comment:
     types: [created, edited]
+  workflow_run:
+    workflows: [Porting dispatcher, Porting investigator]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -62,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
+      github.event_name == 'push' || github.event_name == 'workflow_run' ||
       (github.event_name == 'issues' &&
        (contains(github.event.issue.labels.*.name, 'upstreaming-request') ||
         (github.event.action == 'unlabeled' && github.event.label.name == 'upstreaming-request'))) ||
@@ -110,6 +113,7 @@ jobs:
     environment: state
     permissions:
       contents: read
+      actions: read
       issues: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,12 +127,36 @@ jobs:
       - name: Is the policy read-only?
         id: policy
         run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
+      - name: Collect verified investigation outcomes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p publications
+          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/investigator.lock.yml/runs?per_page=20" \
+            --jq '.workflow_runs[].id') \
+            || { echo "investigator run inventory unavailable this tick" >&2; runs=; }
+          printf '%s\n' "$runs" | while read -r run; do
+            [ -n "$run" ] || continue
+            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+              --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))][0].id // empty') \
+              || { echo "investigation artifact inventory unavailable for $run" >&2; continue; }
+            [ -n "$id" ] || continue
+            mkdir -p "publications/$run"
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "publications/$run/a.zip" \
+              || { rm -rf "publications/$run"; continue; }
+            unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
+              || { rm -rf "publications/$run"; continue; }
+            printf '%s' "$id" > "publications/$run/artifact-id"
+          done
       - name: Reconcile deterministic state locally
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          uv run --locked python -m reconcile --report report.json
+          gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
+          uv run --locked python -m reconcile --publications publications --report report.json \
+            ${gh_aw:+--gh-aw "$gh_aw"}
           {
             echo '## Porting reconciliation'
             echo '```json'
@@ -216,6 +244,25 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.issue-token.outputs.token }}
         run: uv run --locked python -m command_feedback --out command-feedback/receipts.json
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        if: steps.policy.outputs.read_only == 'false'
+        id: dispatch-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-contents: read
+          permission-actions: write
+      - name: Launch dispatcher for durable selected Work
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          count=$(jq '(.requested_effects | length) + (.dispatch_relaunch // [] | length)' report.json)
+          [ "$count" -gt 0 ] || exit 0
+          gh workflow run dispatcher.lock.yml --repo "$GITHUB_REPOSITORY" --ref main
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

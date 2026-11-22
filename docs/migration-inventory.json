@@ -919,9 +919,8 @@
         "tests/deferred/test_workflow_contracts.py.reference"
       ],
       "milestone": 3,
-      "rationale": "Milestone 3 controller contracts are restored now; agent and destination writer cases remain referenced with exact owners in docs/test-deferrals.json.",
+      "rationale": "Milestone 3 controller and Milestone 4 dispatcher/investigator contracts are restored; worker and destination writer cases remain referenced with exact owners in docs/test-deferrals.json.",
       "restoringMilestones": [
-        4,
         5,
         6
       ],

@@ -33,7 +33,7 @@
       "milestone": 4,
       "owner": "native Work admission and dispatch",
       "agentic": true,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-dispatcher.lock.yml",
@@ -41,7 +41,7 @@
       "milestone": 4,
       "owner": "generated dispatcher lock",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-investigator.md",
@@ -49,7 +49,7 @@
       "milestone": 4,
       "owner": "verified investigation",
       "agentic": true,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-investigator.lock.yml",
@@ -57,7 +57,7 @@
       "milestone": 4,
       "owner": "generated investigator lock",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-worker.md",
