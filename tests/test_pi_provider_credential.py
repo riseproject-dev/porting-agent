@@ -4,6 +4,7 @@
 
 import base64
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -104,7 +105,10 @@ class TestGeneratedWorkerCredentialBoundary(unittest.TestCase):
             step for step in steps
             if "credential-free unsandboxed engine wrapper" in step.get("name", "")
         )["run"]
-        self.assertIn("pi_provider_credential.py", split["run"])
+        self.assertEqual(
+            split["run"],
+            'python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"',
+        )
         self.assertNotIn("unset ANTHROPIC_API_KEY", wrapper)
         for credential in (
             "GITHUB_TOKEN", "GH_AW_GITHUB_TOKEN", "RISEPROJECT_APP_PRIVATE_KEY",
@@ -126,6 +130,54 @@ class TestGeneratedWorkerCredentialBoundary(unittest.TestCase):
         self.assertEqual(execute["env"]["GH_AW_PI_COMMAND"], "/tmp/gh-aw/agent/pi-scrubbed")
         self.assertIn("/tmp/gh-aw/agent/pi-scrubbed", execute["run"])
         self.assertNotIn("awf --config", execute["run"])
+
+    def test_generated_lock_has_live_credential_and_command_isolation_order(self):
+        lock = yaml.safe_load(LOCK.read_text())
+        steps = lock["jobs"]["agent"]["steps"]
+        names = [step.get("name") for step in steps]
+        split_name = "Split Pi provider authentication from untrusted tool environment"
+        wrapper_name = "Install pinned Pi and create credential-free unsandboxed engine wrapper"
+        suspend_name = "Suspend workflow commands around untrusted agent output"
+        self.assertLess(names.index(split_name), names.index(wrapper_name))
+        self.assertLess(names.index(wrapper_name), names.index(suspend_name))
+        self.assertLess(names.index(suspend_name), names.index("Execute Pi CLI"))
+        split = steps[names.index(split_name)]
+        self.assertEqual(
+            split["run"],
+            'python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"',
+        )
+        self.assertNotIn("uv ", split["run"])
+
+    def test_generated_lock_resume_is_noop_before_suspend_and_resumes_after_it(self):
+        lock = yaml.safe_load(LOCK.read_text())
+        resume = next(
+            step
+            for step in lock["jobs"]["agent"]["steps"]
+            if step.get("name") == "Resume workflow commands after untrusted agent output"
+        )
+        environment = os.environ.copy()
+        environment["STOP_COMMANDS_TOKEN"] = ""
+        before_suspend = subprocess.run(
+            ["bash", "-c", resume["run"]],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(before_suspend.returncode, 0, before_suspend.stderr)
+        self.assertEqual(before_suspend.stdout, "")
+
+        token = "porting-stop-regression-token"
+        environment["STOP_COMMANDS_TOKEN"] = token
+        after_suspend = subprocess.run(
+            ["bash", "-c", resume["run"]],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(after_suspend.returncode, 0, after_suspend.stderr)
+        self.assertEqual(after_suspend.stdout, f"::{token}::\n")
 
 
 if __name__ == "__main__":

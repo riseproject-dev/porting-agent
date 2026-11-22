@@ -116,7 +116,7 @@ pre-agent-steps:
       chmod 0755 "$extension/gh-act"
       gh act --version
   - name: Split Pi provider authentication from untrusted tool environment
-    run: uv run --locked python scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"
+    run: python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"
   - name: Install pinned Pi and create credential-free unsandboxed engine wrapper
     run: |
       set -euo pipefail
@@ -220,8 +220,9 @@ post-steps:
       STOP_COMMANDS_TOKEN: ${{ steps.suspend_commands.outputs.token }}
     run: |
       set -euo pipefail
-      test -n "$STOP_COMMANDS_TOKEN"
-      printf '::%s::\n' "$STOP_COMMANDS_TOKEN"
+      if [ -n "$STOP_COMMANDS_TOKEN" ]; then
+        printf '::%s::\n' "$STOP_COMMANDS_TOKEN"
+      fi
 jobs:
   safe_outputs:
     pre-steps:

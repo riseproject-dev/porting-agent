@@ -51,6 +51,79 @@ class TestDispatcherAcceptedLaunchRecovery(unittest.TestCase):
         self.assertEqual((relaunch, staged, report), ([], [], []))
 
 
+class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
+    """Run 45005299790 failed before the agent and returned its Work to available."""
+
+    def setUp(self):
+        self.record = contribution(phase="development", activity="agent_running", revision=4)
+        self.record["active_work"] = {
+            "dedupe_key": "closeio--ciso8601/1@4:development_repair",
+            "task": "development_repair",
+            "revision": 4,
+            "attempt": 1,
+            "requested_at": "2026-11-22T08:55:56.948866+00:00",
+            "deadline_at": "2026-11-22T14:55:56.948866+00:00",
+            "dispatched_run_id": "45005112315",
+            "reason_ids": [
+                "rehearsal-closeio--ciso8601--1-r3-44982902579",
+                "dossier-closeio--ciso8601--1-r2",
+            ],
+        }
+        self.graph = work.graph_id(self.record["active_work"]["dedupe_key"])
+        self.runs = [
+            {
+                "id": 45005112315,
+                "status": "completed",
+                "conclusion": "success",
+                "created_at": "2026-11-22T08:56:11Z",
+            },
+            {
+                "id": 45005640838,
+                "status": "completed",
+                "conclusion": "failure",
+                "created_at": "2026-11-22T09:03:07Z",
+            },
+            {
+                "id": 45006000000,
+                "status": "completed",
+                "conclusion": "failure",
+                "created_at": "2026-11-22T09:08:00Z",
+            },
+        ]
+
+    def recover(self, dispatcher_attempts):
+        return reconcile.dispatch_recovery(
+            {"c": copy.deepcopy(self.record)},
+            runs=self.runs[:dispatcher_attempts],
+            queue_works={self.graph: "available"},
+            now=datetime.fromisoformat("2026-11-22T09:10:00+00:00"),
+            policy=policy(),
+        )
+
+    def test_run_45005299790_launches_bounded_fresh_worker_attempts(self):
+        for dispatcher_attempts, expected_attempt in ((1, 2), (2, 3)):
+            with self.subTest(dispatcher_attempts=dispatcher_attempts):
+                relaunch, staged, report = self.recover(dispatcher_attempts)
+                self.assertEqual(
+                    relaunch,
+                    [{"type": "relaunch_dispatcher", "contribution_id": self.record["contribution_id"]}],
+                )
+                self.assertIn(f"dispatch attempt {expected_attempt} of 3", report[0]["decision"])
+                staged_contributions = [item for kind, item in staged if kind == "contributions"]
+                if staged_contributions:
+                    self.assertEqual(
+                        staged_contributions[-1]["active_work"]["dedupe_key"],
+                        self.record["active_work"]["dedupe_key"],
+                    )
+
+        relaunch, staged, report = self.recover(3)
+        self.assertEqual(relaunch, [])
+        final = [item for kind, item in staged if kind == "contributions"][-1]
+        self.assertEqual((final["activity"], final["active_work"]), ("waiting_human", None))
+        self.assertEqual(final["pending_human_action"]["kind"], "dispatch_failed")
+        self.assertEqual(report[-1]["decision"], "dispatch failed; waiting for a human")
+
+
 class TestWorkerBlockedRecovery(unittest.TestCase):
     def publication(self, temporary):
         directory = Path(temporary) / RUN_ID

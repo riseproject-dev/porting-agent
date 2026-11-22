@@ -291,10 +291,13 @@ class TestWorkflowContracts(unittest.TestCase):
             )
             for script in run_scripts(data):
                 joined = script.replace("\\\n", " ")
-                self.assertIsNone(
-                    re.search(r"(?:^|[\n;&|])\s*python(?:3)?(?:\s|$)", joined),
-                    f"{path.name}: direct Python invocation without uv",
-                )
+                direct = re.search(r"(?:^|[\n;&|])\s*python(?:3)?(?:\s|$)", joined)
+                if direct is not None:
+                    self.assertEqual(path.name, "worker.md")
+                    self.assertEqual(
+                        script,
+                        'python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"',
+                    )
 
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")
