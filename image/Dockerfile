@@ -20,8 +20,12 @@
 # NOT erase the inherited bytes. If the published image must not contain the
 # runner payload at all, switch to the filtered-copy variant
 # (Dockerfile.filtered).
+# The workflow selects the unique linux/riscv64 manifest and passes its exact
+# digest while Buildx targets only linux/riscv64; a constant FROM platform is
+# therefore redundant and would trigger Dockerfile lint warning
+# FromPlatformFlagConstDisallowed.
 ARG BASE=ghcr.io/riseproject-dev/riscv-runner/runner/ubuntu-24.04:prod
-FROM --platform=linux/riscv64 ${BASE}
+FROM ${BASE}
 
 USER root
 RUN rm -rf /home/runner/actions-runner /usr/local/bin/riscv-runner-entrypoint.sh \

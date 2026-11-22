@@ -91,8 +91,11 @@ jobs:
         id: base
         run: |
           set -euo pipefail
-          digest=$(docker buildx imagetools inspect "$BASE" --format '{{json .Manifest}}' | jq -r .digest)
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "could not resolve $BASE"; exit 1; }
+          manifest=$(docker buildx imagetools inspect "$BASE" --raw)
+          count=$(jq '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "riscv64")] | length' <<<"$manifest")
+          [ "$count" -eq 1 ] || { echo "expected one linux/riscv64 base manifest"; exit 1; }
+          digest=$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "riscv64") | .digest' <<<"$manifest")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "could not resolve linux/riscv64 $BASE"; exit 1; }
           {
             echo "digest=$digest"
             echo "short=${digest:7:12}"
@@ -145,8 +148,9 @@ jobs:
           docker logout ghcr.io || true
           rm -f "$HOME/.docker/config.json"
           ref="$IMAGE@$DIGEST"
-          docker pull "$ref"
-          observed=$(docker image inspect "$ref" --format '{{index .RepoDigests 0}}')
+          docker pull --platform linux/riscv64 "$ref"
+          observed=$(docker image inspect --platform linux/riscv64 "$ref" --format '{{index .RepoDigests 0}}')
           [ "$observed" = "$ref" ] || { echo "anonymous digest readback mismatch"; exit 1; }
-          [ "$(docker run --rm --platform linux/riscv64 "$ref" uname -m)" = riscv64 ]             || { echo "published image is not riscv64"; exit 1; }
+          [ "$(docker run --rm --platform linux/riscv64 "$ref" uname -m)" = riscv64 ] \
+            || { echo "published image is not riscv64"; exit 1; }
           echo "Anonymous pull verified: $ref" >> "$GITHUB_STEP_SUMMARY"

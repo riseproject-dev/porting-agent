@@ -27,3 +27,7 @@ Flattened artifact extraction now resolves control state through `common.reposit
 ## Milestone 5 update
 
 `image.yml` and `image/` now own the exact-base, linux/riscv64 reproduction image and anonymous exact-digest verification. `worker.md` joins the native queue with its normalized generated lock, pinned QEMU setup, pinned `gh-act`, stop-command isolation, immutable dossier readback, selected build/test reproduction, and bounded proposal evidence. The trusted worker record job performs structural scope/debug/reproduction validation but has no destination token or publication path. All four Milestone 5 deferrals are restored; destination provisioning, branch publication, development PR, and exact-head CI remain Milestone 6.
+
+### Milestone 5 image verification correction
+
+The published reproduction image is intentionally riscv64-only. Every Docker pull and local image inspection now passes `--platform linux/riscv64`; base-index inspection selects exactly one Linux riscv64 manifest before extracting its digest. Dockerfiles rely on that exact manifest plus Buildx `platforms: linux/riscv64`, so the redundant constant `FROM --platform` flags were removed without widening the image contract.

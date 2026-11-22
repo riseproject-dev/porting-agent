@@ -113,6 +113,10 @@ class TestImageContract(unittest.TestCase):
             qemu["uses"],
             "docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1",
         )
+        base = next(step for step in steps if step.get("id") == "base")
+        self.assertIn('.platform.os == "linux"', base["run"])
+        self.assertIn('.platform.architecture == "riscv64"', base["run"])
+        self.assertIn("expected one linux/riscv64 base manifest", base["run"])
         build_step = next(step for step in steps if step.get("id") == "build")
         self.assertEqual(build_step["with"]["platforms"], "linux/riscv64")
         self.assertIn("BASE=${{ steps.base.outputs.ref }}", build_step["with"]["build-args"])
@@ -124,8 +128,31 @@ class TestImageContract(unittest.TestCase):
         )
         self.assertIn("docker logout ghcr.io", verify["run"])
         self.assertIn('ref="$IMAGE@$DIGEST"', verify["run"])
-        self.assertIn("--platform linux/riscv64", verify["run"])
+        self.assertIn('docker pull --platform linux/riscv64 "$ref"', verify["run"])
+        self.assertIn(
+            'docker image inspect --platform linux/riscv64 "$ref"', verify["run"]
+        )
         self.assertIn("uname -m", verify["run"])
+
+    def test_no_riscv64_only_image_path_uses_host_default_pull_or_inspection(self):
+        sources = {
+            "image workflow": (WORKFLOWS / "image.yml").read_text(),
+            "worker": (WORKFLOWS / "worker.md").read_text(),
+        }
+        for source_name, text in sources.items():
+            pull_lines = [line.strip() for line in text.splitlines() if "docker pull " in line]
+            inspect_lines = [
+                line.strip() for line in text.splitlines() if "docker image inspect " in line
+            ]
+            self.assertTrue(pull_lines, source_name)
+            self.assertTrue(inspect_lines, source_name)
+            for line in pull_lines + inspect_lines:
+                with self.subTest(source=source_name, line=line):
+                    self.assertIn("--platform linux/riscv64", line)
+        host_default_examples = ('docker pull "$ref"', 'docker image inspect "$IMAGE"')
+        for example in host_default_examples:
+            self.assertTrue(any(example not in text for text in sources.values()))
+            self.assertFalse(any(example in text for text in sources.values()))
 
     def test_image_context_removes_runner_credentials_and_bounds_local_reproduction(self):
         dockerfile = (ROOT / "image/Dockerfile").read_text()
@@ -133,6 +160,11 @@ class TestImageContract(unittest.TestCase):
         launcher = (ROOT / "image/run.sh").read_text()
         self.assertIn("rm -f /home/runner/.credentials /home/runner/.runner", dockerfile)
         self.assertIn("PORTING_REPRO=1", dockerfile)
+        self.assertNotIn("FROM --platform=linux/riscv64", dockerfile)
+        self.assertNotIn(
+            "FROM --platform=linux/riscv64",
+            (ROOT / "image/Dockerfile.filtered").read_text(),
+        )
         for credential in (
             "GITHUB_TOKEN",
             "GH_TOKEN",
@@ -235,7 +267,12 @@ class TestWorkerContract(unittest.TestCase):
         steps = worker["pre-agent-steps"]
         self.assertTrue(steps[0]["uses"].startswith("docker/setup-qemu-action@"))
         setup = steps[1]["run"]
-        self.assertIn("docker pull", setup)
+        self.assertIn(
+            'docker pull --platform linux/riscv64 "$IMAGE"', setup
+        )
+        self.assertIn(
+            'docker image inspect --platform linux/riscv64 "$IMAGE"', setup
+        )
         self.assertIn("for attempt in 1 2 3 4 5 6 7 8 9 10", setup)
         self.assertIn("image pull failed after bounded retry", setup)
         self.assertIn("--platform linux/riscv64", setup)

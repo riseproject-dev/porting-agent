@@ -81,12 +81,12 @@ pre-agent-steps:
       docker logout ghcr.io >/dev/null 2>&1 || true
       pulled=false
       for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        if docker pull "$IMAGE"; then pulled=true; break; fi
+        if docker pull --platform linux/riscv64 "$IMAGE"; then pulled=true; break; fi
         sleep $((attempt * 15))
       done
       [ "$pulled" = true ] || { echo "image pull failed after bounded retry"; exit 1; }
       repository=${IMAGE%:*}
-      resolved=$(docker image inspect "$IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+      resolved=$(docker image inspect --platform linux/riscv64 "$IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' \
         | grep "^${repository}@sha256:[0-9a-f]\{64\}$" | head -n1)
       [[ "$resolved" =~ ^ghcr\.io/riseproject-dev/porting-agent/ubuntu-24\.04-riscv@sha256:[0-9a-f]{64}$ ]] \
         || { echo "anonymous image digest resolution failed"; exit 1; }
