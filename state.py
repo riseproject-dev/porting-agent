@@ -347,14 +347,10 @@ class StateStore:
         return sum(p.stat().st_size for p in base.rglob("*") if p.is_file()) if base.exists() else 0
 
 
-def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[str]:
-    """Normalize the one reviewed legacy blob and append its migration event.
-
-    A matching path with any unexpected content fails closed. When a migration
-    is pending, callers must publish only these returned state paths before
-    doing ordinary reconciliation, so unrelated lifecycle mutation cannot ride
-    in the repair commit.
-    """
+def _pending_text_migration_records(
+    root: Path,
+) -> list[tuple[LegacyTextMigration, dict]]:
+    """Read and verify legacy blobs without changing the checkout."""
     root = Path(root)
     pending: list[tuple[LegacyTextMigration, dict]] = []
     for migration in LEGACY_TEXT_MIGRATIONS:
@@ -365,23 +361,47 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
         try:
             record = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise StateError(f"{migration.path}: legacy text migration is not valid JSON") from error
+            raise StateError(
+                f"{migration.path}: legacy text migration is not valid JSON"
+            ) from error
         if not _forbidden_state_text(record):
             continue
         digest = hashlib.sha256(data).hexdigest()
         if digest != migration.sha256:
             raise StateError(
-                f"{migration.path}: legacy text migration expected {migration.sha256}, got {digest}"
+                f"{migration.path}: legacy text migration expected "
+                f"{migration.sha256}, got {digest}"
             )
         normalized = normalize_state_text(record)
         expected_path = record_path("evidence", normalized)
-        if expected_path != migration.path or normalized.get("contribution_id") != migration.contribution_id:
+        if (
+            expected_path != migration.path
+            or normalized.get("contribution_id") != migration.contribution_id
+        ):
             raise StateError(f"{migration.path}: legacy text migration identity mismatch")
         pending.append((migration, normalized))
+    if len(pending) > 1:
+        raise StateError("multiple legacy text migrations cannot share one repair commit")
+    return pending
+
+
+def pending_text_migrations(root: Path) -> list[LegacyTextMigration]:
+    """Detect only exact, reviewed legacy blobs that are awaiting migration."""
+    return [migration for migration, _record in _pending_text_migration_records(root)]
+
+
+def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[str]:
+    """Normalize the one reviewed legacy blob and append its migration event.
+
+    A matching path with any unexpected content fails closed. When a migration
+    is pending, callers must publish only these returned state paths before
+    doing ordinary reconciliation, so unrelated lifecycle mutation cannot ride
+    in the repair commit.
+    """
+    root = Path(root)
+    pending = _pending_text_migration_records(root)
     if not pending:
         return []
-    if len(pending) != 1:
-        raise StateError("multiple legacy text migrations cannot share one repair commit")
     migration, normalized = pending[0]
     store = StateStore(root, policy)
     evidence_path = store.stage("evidence", normalized)

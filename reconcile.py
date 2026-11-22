@@ -64,10 +64,15 @@ DISPATCH_LAUNCH_GRACE_MINUTES = 15
 DISPATCHER_WORKFLOW = ".github/workflows/dispatcher.lock.yml"
 
 
-def state_text_migration_report(written: list[str]) -> dict[str, Any]:
-    """Return a no-op report for workflow effects after a migration-only tick."""
+def state_text_migration_report(
+    written: list[str], *, pending: list[str] | None = None
+) -> dict[str, Any]:
+    """Return a workflow-safe no-op report for a migration-only tick."""
+    migration = {"written": written}
+    if pending is not None:
+        migration["pending"] = pending
     return {
-        "state_text_migration": {"written": written},
+        "state_text_migration": migration,
         "written": written,
         "controller": {"canary_recovery_requests": []},
         "requested_effects": [],

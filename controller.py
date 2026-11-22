@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -737,6 +738,17 @@ def cmd_observe(args: argparse.Namespace) -> int:
 
     policy = load_policy()
     root = Path(args.root) if args.root else repository_root()
+    try:
+        pending_migrations = state.pending_text_migrations(root)
+    except state.StateError as error:
+        print(f"legacy state text migration refused: {error}", file=sys.stderr)
+        return 1
+    if pending_migrations:
+        report = reconcile.state_text_migration_report(
+            [], pending=[migration.path for migration in pending_migrations]
+        )
+        print(json.dumps(report, indent=2))
+        return 0
     store = state.StateStore(root, policy)
     contributions = dict(store.load_all("contributions"))
     operations = {
