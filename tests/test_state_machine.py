@@ -112,6 +112,41 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertIn("no open upstream PR", lc.find_edge("parked.idle", "restart_generation").transition.guard)
         self.assertEqual(lc.find_edge("parked.idle", "abandon").target, "closed.idle")
 
+    def test_every_stop_clears_the_pending_publication(self):
+        stops = dict(lc.stop_transitions())
+        for where in ("flag paused pause", "flag paused pause_on_identity_change",
+                      "development.agent_running --park_contribution-->",
+                      "development.waiting_human --park_contribution-->",
+                      "upstream_review.waiting_human --park_contribution-->",
+                      "investigation.agent_running --park_investigation-->",
+                      "investigation.agent_running --close_investigation-->",
+                      "development.fix_needed --exhaust_repair_attempts-->",
+                      "parked.idle --abandon-->"):
+            self.assertIn(lc.HELD_RESULT, stops[where].effects.clears, where)
+        for where, t in stops.items():
+            if t.effects.work == "clear" or t.trigger == lc.Trigger.COMMAND:
+                self.assertIn(lc.HELD_RESULT, t.effects.clears, where)
+        # The check reports a stop row, a rule, or a flag verb that keeps it.
+        keep = lc.Effects(work="clear", sets=("parked_reason", "previous_phase"))
+        park = lc.RULES["park_contribution"].transition
+        key = ("park_contribution", "parked.idle")
+        with mock.patch.dict(lc.LIFECYCLE["development.agent_running"].transitions,
+                             {key: dataclasses.replace(park, effects=keep)}):
+            self.assertTrue(any(
+                p.startswith("development.agent_running --park_contribution-->: a stop")
+                and lc.HELD_RESULT in p for p in lc.check_table(POLICY)))
+        abandon = lc.find_edge("parked.idle", "abandon").transition
+        with mock.patch.dict(lc.LIFECYCLE["parked.idle"].transitions, {("abandon", "closed.idle"): (
+                dataclasses.replace(abandon, effects=lc.Effects(sets=abandon.effects.sets)))}):
+            self.assertTrue(any(p.startswith("parked.idle --abandon-->: a stop")
+                                for p in lc.check_table(POLICY)))
+        pause = lc.FLAGS["paused"].set_by["pause"]
+        effects = dataclasses.replace(pause.effects, clears=())
+        with mock.patch.dict(lc.FLAGS["paused"].set_by,
+                             {"pause": dataclasses.replace(pause, effects=effects)}):
+            self.assertTrue(any(p.startswith("flag paused pause: a stop")
+                                for p in lc.check_table(POLICY)))
+
     def test_every_work_allocation_charges_work_total(self):
         allocating = [e for e in lc.table_edges() if e.transition.effects.work in ("allocate", "reallocate")]
         self.assertEqual({e.verb for e in allocating},

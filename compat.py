@@ -260,6 +260,12 @@ def record_late_effect(record: dict, *, policy: dict, now: str, cause_id: str | 
     return event
 
 
+def stopped(record: dict) -> bool:
+    """Whether a record is stopped: paused, blocked, parked, or terminal."""
+    return bool(record.get("paused") or record.get("blocked_reason")
+                or record["phase"] in TERMINAL | {"parked"})
+
+
 def _bump(rec: dict) -> None:
     rec["revision"] += 1
 
@@ -323,14 +329,16 @@ def park(rec: dict, reason: str) -> dict:
     """End the current generation in place.
 
     The completed generation is retained for audit and late-effect
-    reconciliation; only exact-revision ``resume`` restarts it. Callers own
-    revision bumps and the event."""
+    reconciliation; only exact-revision ``resume`` restarts it. A pending
+    publication ends with the generation. Callers own revision bumps and the
+    event."""
     if rec["phase"] == "handoff":
         raise TransitionError("handoff states are written by the transition engine only")
     rec["previous_phase"] = rec["phase"]
     rec["phase"] = "parked"
     rec["parked_reason"] = reason[:2000]
     rec["activity"] = "idle"
+    rec["pending_publication"] = None
     return rec
 
 
@@ -529,6 +537,14 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
                                    or rec["revision"] != record["revision"] or rec.get("blocked_reason")):
         rec["active_work"] = None
         if rec["activity"] == "agent_running":
+            rec["activity"] = "idle"
+    # A stop also clears the pending publication, as the table's stop rows
+    # do: the held Result is invalidated and its publication Result takes
+    # ``record_late_effect``. A branch the worker run already pushed is
+    # recorded by head observation.
+    if rec.get("pending_publication") and stopped(rec):
+        rec["pending_publication"] = None
+        if rec["activity"] in ("agent_running", "waiting_capacity"):
             rec["activity"] = "idle"
 
     _check_legacy_write(record, rec, "apply_command")

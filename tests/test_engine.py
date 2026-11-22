@@ -392,6 +392,59 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(second.verb, "resume_development")
         self.assertEqual(engine.state_key(second.record), "development.fix_needed")
 
+    def test_every_stop_clears_the_pending_publication(self):
+        pending = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
+                   "next_attempt_at": NOW, "exhausted": False}
+        held = contribution(phase="development", activity="agent_running",
+                            pending_publication=dict(pending))
+        park = commands.parse('/upstreaming park reason="stop"')
+        pause = commands.parse("/upstreaming pause")
+        resume = commands.parse("/upstreaming resume revision=0 reason=r")
+        self.assertEqual(
+            engine.refusal(dict(held, phase="parked", activity="idle"), "restart_generation",
+                           policy=POLICY, now=NOW, command=resume, open_operations=()),
+            "a publication is pending")
+
+        parked = engine.apply_command(held, park, policy=POLICY, now=NOW, command_id="c",
+                                      open_operations=())
+        self.assertEqual((parked.verb, engine.state_key(parked.record)),
+                         ("park_contribution", "parked.idle"))
+        self.assertIsNone(parked.record["pending_publication"])
+        self.assertEqual(parked.record["revision"], held["revision"])
+        restarted = engine.apply_command(parked.record, resume, policy=POLICY, now=NOW,
+                                         command_id="c", open_operations=())
+        self.assertEqual((restarted.verb, engine.state_key(restarted.record)),
+                         ("restart_generation", "queued.idle"))
+
+        paused = engine.apply_command(held, pause, policy=POLICY, now=NOW, command_id="c")
+        self.assertEqual((paused.verb, engine.state_key(paused.record)),
+                         ("pause", "development.fix_needed"))
+        self.assertEqual((paused.record["paused"], paused.record["pending_publication"]),
+                         (True, None))
+        # A publication whose retries are exhausted is cleared by the stop as well.
+        waiting = contribution(phase="development", activity="waiting_human",
+                               pending_publication=dict(pending, exhausted=True))
+        waiting["pending_human_action"] = {
+            "kind": "publication_infrastructure_failure", "requested_at": NOW,
+            "reminded_at": None, "escalated_at": None, "counter": "publish_recovery"}
+        for command in (pause, park):
+            out = engine.apply_command(waiting, command, policy=POLICY, now=NOW, command_id="c",
+                                       open_operations=())
+            self.assertTrue(out.accepted, out.reason)
+            self.assertIsNone(out.record["pending_publication"])
+
+        identity = engine.apply_transition(held, "pause_on_identity_change", policy=POLICY,
+                                           now=NOW, facts={"upstream_identity_changed"})
+        self.assertEqual((identity.record["paused_by"], identity.record["pending_publication"]),
+                         ("controller", None))
+        # A record parked before the stop cleared the publication is still abandoned cleanly.
+        left = contribution(phase="parked", activity="idle", parked_reason="x",
+                            previous_phase="development", pending_publication=dict(pending))
+        abandoned = engine.apply_command(left, commands.parse('/upstreaming abandon reason="x"'),
+                                         policy=POLICY, now=NOW, command_id="c")
+        self.assertEqual((engine.state_key(abandoned.record),
+                          abandoned.record["pending_publication"]), ("closed.idle", None))
+
     def test_a_long_stop_in_development_resumes_into_a_refresh(self):
         stale = contribution(phase="development", activity="fix_needed", paused=True,
                              paused_at=LONG_AGO, paused_by="human")

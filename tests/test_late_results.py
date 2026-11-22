@@ -8,6 +8,11 @@ never folded. ``park``, ``abandon``, ``pause``, and ``block`` clear the
 requested Work without a revision bump, so the Result of the Work they stopped
 carries the record's own revision. It must be recorded, change nothing, and
 never stop the tick.
+
+A stop also clears the pending publication: the Result held for publication is
+invalidated, so its publication Result is recorded like any other late Result,
+no publish retry is launched for a stopped record, and the stop never keeps a
+later resume or restart from applying.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import copy
 import io
 import itertools
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest import mock
 
 import capacity
@@ -32,6 +37,7 @@ from tests.helpers import NOW, OWNER, SHA_A, SHA_B, contribution, policy
 
 T = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
 POLICY = policy()
+WRITES = policy(destination_writes=True)
 
 
 def _dossier(decision):
@@ -89,13 +95,13 @@ def ci_snapshot(head, verdict):
 
 
 def tick(record, publications=(), *, observe=False, verdict="pending", head=SHA_A, feedback=None,
-         capacity_ok=True):
+         capacity_ok=True, policy=POLICY, now=T):
     snapshot = reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, {})
     with mock.patch("observe_ci.collect.branch_head", return_value={"head": head}), \
             mock.patch("observe_ci.collect.development_review_feedback", return_value=feedback), \
             mock.patch("observe_ci.collect.ci_snapshot", return_value=ci_snapshot(head, verdict)), \
             contextlib.redirect_stderr(io.StringIO()):
-        return reconcile.tick(object() if observe else None, snapshot, policy=POLICY, now=T,
+        return reconcile.tick(object() if observe else None, snapshot, policy=policy, now=now,
                               publications=list(publications), comments=[],
                               pressure=capacity.Pressure(ok=capacity_ok, reason="none"),
                               observe=observe,
@@ -275,6 +281,164 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                                                 "to_state": state, **details})
 
 
+ARTIFACT = {"work_id": "w", "claim_id": "c", "artifact_id": 5, "name": "n",
+            "digest": "sha256:" + "0" * 64, "run_id": "555", "result_commit": "d" * 40}
+PENDING = {"worker_run_id": "555", "attempts": 1, "last_reason": "x", "next_attempt_at": NOW,
+           "exhausted": False}
+# What the trusted publisher can return for a launched publication.
+PUBLISHER_RESULTS = ("published", "uncertain", "proposal", "no_change", "rejected_validation",
+                     "rejected_stale", "infra_error", "worker_blocked")
+RESUME = {"park": "resume", "abandon": "restart", "pause": "resume", "block": "resume"}
+
+
+def command(record, body):
+    return compat.apply_command(record, commands.parse(body), command_id="c", actor=dict(OWNER),
+                                now=NOW)
+
+
+class TestStopWithAPendingPublication(unittest.TestCase):
+    def ticks(self, record, publications, count):
+        """``count`` reconciliations of ``record``, 40 minutes apart, with the
+        same publication artifacts collected every time."""
+        outputs = []
+        for index in range(count):
+            output = tick(record, copy.deepcopy(publications), observe=True, policy=WRITES,
+                          now=T + timedelta(minutes=40 * index))
+            record = final(output, record)
+            outputs.append(output)
+        return record, outputs
+
+    def pending(self, kind):
+        """A development record whose verified Result waits for publication:
+        a held proposal, or a publish-only retry after an infrastructure error."""
+        record = running("development")
+        result = dict(publication(record, "proposal" if kind == "proposal" else "infra_error"),
+                      artifact=dict(ARTIFACT))
+        record, outputs = self.ticks(record, [result], 2)
+        self.assertEqual(record["pending_publication"]["worker_run_id"], "555")
+        self.assertIsNone(record["active_work"])
+        self.assertEqual((record["proposal_artifact"] or {}).get("outcome"),
+                         "proposal" if kind == "proposal" else None)
+        launched = [o.report["proposal_publications"] + o.report["publication_retries"]
+                    for o in outputs]
+        self.assertTrue(any(launched), "the publication is launched while the record runs")
+        return record, result
+
+    def test_stop_clears_it_and_every_publisher_result_is_recorded_once(self):
+        for kind, verb in itertools.product(("proposal", "retry"), RESUME):
+            pending, first = self.pending(kind)
+            out = command(pending, f'/upstreaming {verb} reason="stop"')
+            self.assertTrue(out.accepted, out.reason)
+            stopped_record = out.record
+            self.assertIsNone(stopped_record["pending_publication"])
+            self.assertEqual(stopped_record["revision"], pending["revision"])
+            self.assertTrue(compat.stopped(stopped_record))
+            for name in PUBLISHER_RESULTS:
+                with self.subTest(pending=kind, verb=verb, result=name):
+                    result = dict(publication(pending, name, artifact_id=1000),
+                                  artifact=dict(ARTIFACT))
+                    record, outputs = self.ticks(stopped_record, [first, result], 4)
+                    late = [e for o in outputs for e in events(o)
+                            if e["kind"] == "record_late_effect"]
+                    self.assertEqual(len(late), 1)
+                    self.assertEqual(late[0]["details"]["result_status"], result["status"])
+                    self.assertEqual([e["kind"] for e in events(outputs[0])
+                                      if e["kind"] != "activity"], ["record_late_effect"])
+                    for output in outputs:
+                        self.assertEqual(output.report["publication_retries"], [])
+                        self.assertEqual(output.report["proposal_publications"], [])
+                        self.assertEqual(output.report["requested_effects"], [])
+                        self.assertEqual([k for k, _ in output.staged
+                                          if k in ("operations", "evidence")], [])
+                    self.assertIsNone(record["pending_publication"])
+                    self.assertIsNone(record["active_work"])
+                    self.assertTrue(compat.stopped(record))
+                    self.assertEqual((record["revision"], record["budget"]),
+                                     (pending["revision"], pending["budget"]))
+                    # The stop no longer keeps the contribution from continuing.
+                    resumed = command(record, f"/upstreaming {RESUME[verb]} "
+                                              f"revision={record['revision']} reason=go")
+                    self.assertTrue(resumed.accepted, resumed.reason)
+                    self.assertEqual(resumed.record["revision"], record["revision"] + 1)
+                    self.assertFalse(compat.stopped(resumed.record))
+                    if verb in ("park", "abandon"):
+                        self.assertEqual(engine.state_key(resumed.record), "queued.idle")
+                        self.assertEqual(resumed.record["generation"], record["generation"] + 1)
+
+    def test_no_publish_retry_while_paused_or_blocked(self):
+        for kind, flag in itertools.product(("proposal", "retry"), ("paused", "blocked")):
+            with self.subTest(pending=kind, flag=flag):
+                # A record that was stopped before the stop cleared the publication.
+                pending, first = self.pending(kind)
+                record = dict(pending, paused=flag == "paused",
+                              blocked_reason="x" if flag == "blocked" else None)
+                record, outputs = self.ticks(record, [first], 6)
+                for output in outputs:
+                    self.assertEqual(output.report["publication_retries"], [])
+                    self.assertEqual(output.report["proposal_publications"], [])
+                self.assertEqual(record["pending_publication"], pending["pending_publication"])
+        # The same record, not stopped, is retried.
+        pending, first = self.pending("retry")
+        _record, outputs = self.ticks(pending, [first], 6)
+        self.assertTrue(any(o.report["publication_retries"] for o in outputs))
+
+    def test_legacy_stop_paths_outside_commands(self):
+        record = contribution(pending_publication=dict(PENDING))
+        self.assertIsNone(compat.park(copy.deepcopy(record), "x")["pending_publication"])
+        for body in ('/upstreaming park reason="x"', '/upstreaming abandon reason="x"',
+                     "/upstreaming pause", '/upstreaming block reason="x"'):
+            for activity in ("agent_running", "waiting_capacity", "waiting_ci", "waiting_human"):
+                with self.subTest(command=body, activity=activity):
+                    out = command(dict(record, activity=activity), body)
+                    self.assertIsNone(out.record["pending_publication"])
+                    self.assertNotIn(out.record["activity"], ("agent_running", "waiting_capacity"))
+                    self.assertIsNone(compat.state_problem(out.record))
+        # A command that does not stop keeps the publication.
+        kept = command(dict(record, activity="waiting_human", pending_human_action={
+            "kind": "task_without_outcome", "requested_at": NOW, "reminded_at": None,
+            "escalated_at": None}), "/upstreaming clarify revision=0 decision=x answer=x")
+        self.assertTrue(kept.accepted, kept.reason)
+        self.assertEqual(kept.record["pending_publication"], PENDING)
+
+    def test_recovered_worker_blocker_is_recorded_once(self):
+        # The rejected proposal of run 555 is recorded; its blocker report for
+        # an older revision is collected on every tick.
+        record = contribution(activity="fix_needed", revision=3, dossier_evidence_id="dossier-1",
+                              proposal_artifact=dict(ARTIFACT, outcome="rejected"))
+        blocker = dict(publication(record, "worker_blocked"),
+                       task={"contribution_id": record["contribution_id"], "revision": 2})
+        kinds = []
+        for index in range(4):
+            output = tick(record, [copy.deepcopy(blocker)], capacity_ok=False,
+                          now=T + timedelta(minutes=10 * index))
+            record = final(output, record)
+            kinds.append([e["kind"] for e in events(output)])
+            self.assertEqual([k for k, _ in output.staged if k == "evidence"], [])
+        self.assertEqual(kinds, [["record_late_effect"], [], [], []])
+        self.assertEqual((engine.state_key(record), record["revision"],
+                          record["processed_publications"]),
+                         ("development.fix_needed", 3, [999]))
+
+    def test_work_state_without_recorded_work_folds_its_own_revision_only(self):
+        for phase in ("development", "upstream_review"):
+            record = contribution(phase=phase, activity="agent_running", revision=3,
+                                  dossier_evidence_id="dossier-1")
+            if phase == "upstream_review":
+                record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
+            for name in RESULTS:
+                with self.subTest(phase=phase, result=name):
+                    older = dict(publication(record, name),
+                                 task={"contribution_id": record["contribution_id"],
+                                       "revision": 2})
+                    output = tick(record, [older], capacity_ok=False)
+                    self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
+                    self.assertEqual(dict(final(output, record), processed_publications=[]),
+                                     dict(record, processed_publications=[]))
+            output = tick(record, [publication(record, "published")], capacity_ok=False)
+            self.assertEqual([e["kind"] for e in events(output)], [])
+            self.assertEqual(final(output, record)["activity"], "waiting_ci")
+
+
 class TestNoReachableRecordStopsTheTick(unittest.TestCase):
     """Every admitted state, with and without a stop flag and requested Work,
     against every Result and every CI observation: the tick always returns
@@ -321,8 +485,54 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                                                              for k, v in kwargs.items()}):
                     after = final(tick(record, pubs, **kwargs), record)
                     self.assertIsNone(compat.state_problem(after))
+                    if compat.stopped(after):
+                        self.assertIsNone(after["pending_publication"])
                     count += 1
         self.assertGreater(count, 4000)
+
+    def test_no_stopped_state_retains_a_pending_publication(self):
+        """From every admitted state with a pending publication, every stop
+        clears it, and no later Result or publish step sets it again."""
+        stops = ('/upstreaming park reason="x"', '/upstreaming abandon reason="x"',
+                 "/upstreaming pause", '/upstreaming block reason="x"')
+        held = {"retry": {"pending_publication": dict(PENDING)},
+                "proposal": {"pending_publication": dict(PENDING),
+                             "proposal_artifact": dict(ARTIFACT, outcome="proposal")}}
+        count = 0
+        for (key, record), (kind, fields) in itertools.product(self.records(), held.items()):
+            if "|None|work=False" not in key:
+                continue
+            record = dict(record, **copy.deepcopy(fields))
+            for body in stops:
+                cmd = commands.parse(body)
+                if record["phase"] == "handoff":
+                    if engine.resolve_command(record, cmd, policy=WRITES, now=NOW,
+                                              open_operations=())[0] is None:
+                        continue
+                    out = engine.apply_command(record, cmd, policy=WRITES, now=NOW,
+                                               command_id="c", open_operations=())
+                else:
+                    out = command(record, body)
+                if not out.accepted:
+                    self.assertTrue(record["phase"] in lifecycle.TERMINAL
+                                    or out.reason == "already parked", out.reason)
+                    continue
+                stopped_record = out.record
+                with self.subTest(record=key, pending=kind, stop=cmd.verb):
+                    self.assertTrue(compat.stopped(stopped_record))
+                    self.assertIsNone(stopped_record["pending_publication"])
+                for name in RESULTS:
+                    with self.subTest(record=key, pending=kind, stop=cmd.verb, result=name):
+                        output = tick(stopped_record, [publication(record, name)], observe=True,
+                                      policy=WRITES)
+                        after = final(output, stopped_record)
+                        self.assertIsNone(compat.state_problem(after))
+                        self.assertTrue(compat.stopped(after))
+                        self.assertIsNone(after["pending_publication"])
+                        self.assertEqual(output.report["publication_retries"], [])
+                        self.assertEqual(output.report["proposal_publications"], [])
+                        count += 1
+        self.assertGreater(count, 2000)
 
 
 if __name__ == "__main__":

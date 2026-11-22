@@ -170,7 +170,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             else:
                 new = compat.legacy_update(
                     c, "reconcile.park_terminal_work", phase="parked", activity="idle",
-                    active_work=None, pending_human_action=None,
+                    active_work=None, pending_publication=None, pending_human_action=None,
                     parked_reason=f"automatic worker retries exhausted after terminal queue state {state}",
                     updated_at=iso)
                 contributions[key] = new
@@ -232,8 +232,9 @@ def _unrequested_result(rec: dict, pub: dict) -> str | None:
     A Result is folded only when it answers what the record still asks for:
     the requested Work at the Result's revision, or the trusted publication
     of the same worker run (a publish-only retry, or a verified proposal the
-    record holds). Park, abandon, pause, and block clear the Work without a
-    revision bump, so the revision alone does not prove a match.
+    record holds). Park, abandon, pause, and block clear the Work and the
+    pending publication without a revision bump, so the revision alone does
+    not prove a match.
     """
     if rec["phase"] == "handoff":
         return "late Result during handoff"
@@ -241,9 +242,10 @@ def _unrequested_result(rec: dict, pub: dict) -> str | None:
         return "late Result for a stopped contribution"
     run = str(pub.get("worker_run_id"))
     work = rec.get("active_work")
-    if rec["activity"] == "agent_running" and not work:
+    revision = (pub.get("task") or {}).get("revision")
+    if rec["activity"] == "agent_running" and not work and revision == rec["revision"]:
         return None                       # a Work state recorded before Work was tracked
-    if work and work.get("revision") == (pub.get("task") or {}).get("revision"):
+    if work and work.get("revision") == revision:
         return None
     if (rec.get("pending_publication") or {}).get("worker_run_id") == run:
         return None
@@ -681,9 +683,12 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         )
         if recovered_worker_blocker and not _may_hold_work(rec):
             recovered_worker_blocker = False      # nothing is recovered into a stopped record
-        if pid and pid in (rec.get("processed_publications") or []) and not recovered_worker_blocker:
-            continue          # already folded in by an earlier tick
-        if pid and pid not in (rec.get("processed_publications") or []):
+        seen = bool(pid) and pid in (rec.get("processed_publications") or [])
+        if seen and (not recovered_worker_blocker or _unrequested_result(rec, pub)):
+            # Already folded in by an earlier tick, or already recorded as a
+            # late effect: the audit event is written once per artifact.
+            continue
+        if pid and not seen:
             rec = dict(rec, processed_publications=((rec.get("processed_publications") or []) + [pid])[-64:])
             contributions[key] = rec
         task_revision = pub.get("task", {}).get("revision")
@@ -808,7 +813,7 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     max_launches = 1 + policy["retries"]["infrastructure_per_head_failure"]
     for key, c in list(contributions.items()):
         pp = c.get("pending_publication")
-        if pp and not pp.get("exhausted") and not c.get("paused") \
+        if pp and not pp.get("exhausted") and not compat.stopped(c) \
                 and c["phase"] in (lifecycle.WRITE_PHASES - {"handoff"}) | {"investigation"} \
                 and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
             if pp["attempts"] >= max_launches:

@@ -329,7 +329,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             changed = compat.legacy_update(
                 c, "controller.block_identity_change",
                 blocked_reason="upstream repository identity changed",
-                activity="waiting_human", updated_at=now)
+                activity="waiting_human", pending_publication=None,
+                updated_at=now)
             by_id[cid] = changed
             res.stage("contributions", changed)
             continue
@@ -592,6 +593,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         fork = c.get("fork") or {}
         if (not policy.get("destination_writes", False)
                 or c["phase"] != "development"
+                or compat.stopped(c)
                 or artifact.get("outcome") != "proposal"
                 or not artifact.get("run_id")
                 or not fork.get("repository_id")

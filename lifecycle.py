@@ -482,6 +482,12 @@ _REFRESH_EFFECTS = _E(
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
             "pending_human_action", "publication_operation_id"))
 _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
+# A stop clears the pending publication together with the requested Work: the
+# Result held for publication is invalidated, and a branch its worker run
+# already pushed is recorded by head observation. A stop is a transition that
+# sets a flag or ends the generation.
+HELD_RESULT = "pending_publication"
+STOP_KINDS = ("generation_end", "terminal")
 
 # Transitions shared by several states. The key under each state names the
 # verb and the target.
@@ -638,11 +644,11 @@ LIFECYCLE: dict[str, State] = {
             ("park_investigation", "parked.idle"): Transition(
                 _R, None,
                 ("verified dossier decision park", "no admission_override recorded"),
-                _E(work="clear", sets=("parked_reason", "previous_phase"))),
+                _E(work="clear", sets=("parked_reason", "previous_phase"), clears=(HELD_RESULT,))),
             ("close_investigation", "closed.idle"): Transition(
                 _R, None,
                 ("verified dossier decision close",),
-                _E(work="clear", sets=("terminal_reason",)),
+                _E(work="clear", sets=("terminal_reason",), clears=(HELD_RESULT,)),
                 description="A recorded `admission_override` is not applied against a decision close; the "
                 "reply states so."),
         }),
@@ -782,7 +788,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_repair_attempts", "parked.idle"): Transition(
                 _K, None,
                 (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_USED),
-                _E(work="clear", sets=("parked_reason", "previous_phase")),
+                _E(work="clear", sets=("parked_reason", "previous_phase"), clears=(HELD_RESULT,)),
                 description="Parks for `repair_attempts_cluster` and `no_progress` only, after "
                             "`refresh_on_exhaustion` is used. Exhaustion of `work_total` takes "
                             "`exhaust_work_total` first."),
@@ -1099,7 +1105,7 @@ LIFECYCLE: dict[str, State] = {
             ("abandon", "closed.idle"): Transition(
                 _C, "/upstreaming abandon",
                 ("a reason is given", ANY_REVISION),
-                _E(sets=("terminal_reason=abandoned",))),
+                _E(sets=("terminal_reason=abandoned",), clears=(HELD_RESULT,))),
         }),
     "closed.idle": State(
         "terminal", False, False,
@@ -1114,9 +1120,9 @@ RULES: dict[str, Rule] = {
         Transition(
             _C, PARK,
             ("a reason is given", ANY_REVISION, "no open operation"),
-            _E(work="clear", sets=("parked_reason", "previous_phase")),
-            description="Ends the current generation; evidence is kept for audit. Accepted "
-                        "while paused."),
+            _E(work="clear", sets=("parked_reason", "previous_phase"), clears=(HELD_RESULT,)),
+            description="Ends the current generation; evidence is kept for audit. A Result held "
+                        "for publication is not published. Accepted while paused."),
         "every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, "
         "`release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`",
         kinds=("auto_wait", "work", "human_wait", "gate", "locked"),
@@ -1198,7 +1204,9 @@ FLAGS: dict[str, Flag] = {
         "A stop of new Work and writer admission, with its reason and who set it (a human or "
         "the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; "
         "a pause set by the controller always records one. Setting it clears the requested "
-        "Work and records `paused_at`; phase, activity, evidence, and pending feedback are kept. "
+        "Work and the pending publication, and records `paused_at`; a Result held for "
+        "publication is not published, and no publish retry is launched while paused. Phase, "
+        "activity, evidence, and pending feedback are kept. "
         "The one exception: `pause` in an `agent_running` state leads to the state in which the "
         "Work is due again, `investigation.idle`, `development.fix_needed`, or "
         "`upstream_review.fix_needed`. "
@@ -1210,7 +1218,8 @@ FLAGS: dict[str, Flag] = {
             "pause": Transition(
                 _C, "/upstreaming pause",
                 (NOT_PAUSED, "not terminal", ANY_REVISION),
-                _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=human")),
+                _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=human"),
+                  clears=(HELD_RESULT,)),
                 description="A reason is optional; when given it is recorded in `paused_reason`."),
             "pause_on_identity_change": Transition(
                 _O, None,
@@ -1218,7 +1227,8 @@ FLAGS: dict[str, Flag] = {
                  "the observed upstream repository identity differs from the recorded one"),
                 _E(work="clear", sets=("paused", "paused_at",
                                        "paused_reason=upstream_identity_changed",
-                                       "paused_by=controller"))),
+                                       "paused_by=controller"),
+                  clears=(HELD_RESULT,))),
         },
         {
             "resume_pause": Transition(
@@ -1241,8 +1251,8 @@ FLAGS: dict[str, Flag] = {
                 "`resume_pause` or `resume_stale`. In a human wait a second `resume` then leaves "
                 "the wait.",
             _O: "Folded normally, including CI on the exact head.",
-            _R: "The requested Work was cleared, so a Result takes `record_late_effect`; nothing "
-                "is published.",
+            _R: "The requested Work and the pending publication were cleared, so a Result takes "
+                "`record_late_effect`; nothing is published.",
             _P: "Folded normally. The publisher's final check reads `paused`; an effect that "
                 "passed it before the pause may finish.",
             _K: "No launch, no Work allocation, no budget charge; reminders are suppressed.",
@@ -2246,6 +2256,27 @@ def _check_rules(problems: list[str]) -> None:
                         "'no open operation'")
 
 
+def stop_transitions():
+    """Yield ``(where, transition)`` for every stop: a transition that sets a
+    flag, or that enters a state in which the generation has ended."""
+    for name, flag in FLAGS.items():
+        for verb, t in flag.set_by.items():
+            yield f"flag {name} {verb}", t
+    for e in table_edges():
+        if e.source != e.target and LIFECYCLE[e.target].kind in STOP_KINDS:
+            yield f"{e.source} --{e.verb}-->", e.transition
+
+
+def _check_stops(problems: list[str]) -> None:
+    """A stop invalidates a held Result: every stop that clears the requested
+    Work, and every stop by command, also clears the pending publication."""
+    for where, t in stop_transitions():
+        if (t.effects.work == "clear" or t.trigger == Trigger.COMMAND) \
+                and HELD_RESULT not in t.effects.clears:
+            problems.append(f"{where}: a stop that clears the requested Work, or a stop by "
+                            f"command, must also clear {HELD_RESULT}")
+
+
 def _check_stale_resume(policy: dict, problems: list[str]) -> None:
     """``resume_stale`` and the other resumes of the same states carry
     complementary guards, so exactly one applies."""
@@ -2746,6 +2777,7 @@ def check_table(policy: dict | None = None) -> list[str]:
         return problems
     _check_states(problems)
     _check_rules(problems)
+    _check_stops(problems)
     _check_stale_resume(policy, problems)
     _check_flags(problems)
     _check_budgets(policy, problems)

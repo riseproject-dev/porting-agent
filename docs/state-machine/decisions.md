@@ -27,6 +27,7 @@ This page records the decisions behind the [lifecycle table]({{ '/state-machine/
 4. The dossier is refreshed after a park, and after a pause or human wait longer than 7 days in provisioning or development. It is never refreshed automatically from `handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses `/upstreaming refresh`.
 5. Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation counter, `work_total`. `lifecycle check` verifies this.
 6. Prefer a guard or a derived status over a new state or flag.
+7. Every stop that clears the requested Work also clears `pending_publication`: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
 
 ## Open items
 
@@ -38,7 +39,7 @@ No item is open.
 
 What `pause` stops, and whether `resume_pause` changes the revision.
 
-**Decision.** `pause` clears the requested Work and records `paused_at`. `resume_pause` bumps the revision, so a Result that lands during the pause no longer matches and takes `record_late_effect`. Observations, including CI on the exact head, still fold. The publisher's final check reads `paused`.
+**Decision.** `pause` clears the requested Work and the pending publication, and records `paused_at`. A Result held for publication is invalidated: it is not published, and no publish retry is launched while paused. `resume_pause` bumps the revision, so a Result that lands during the pause no longer matches and takes `record_late_effect`. Observations, including CI on the exact head, still fold. The publisher's final check reads `paused`.
 
 ```mermaid
 flowchart TB
@@ -60,7 +61,7 @@ flowchart TB
 
 How `restart_generation` knows the ended generation is quiescent, and how a late Result of that generation is kept out of the new one.
 
-**Decision.** The generation is part of the Work identity. A Result of another generation is never folded and the publisher refuses it; it takes `record_late_effect`. Work is cleared at park. Quiescence for `restart_generation` is: no open operation and no pending publication.
+**Decision.** The generation is part of the Work identity. A Result of another generation is never folded and the publisher refuses it; it takes `record_late_effect`. Work and the pending publication are cleared at park and at abandon, so a publication that was pending when the generation ended never keeps `restart_generation` from applying; a branch its worker run already pushed is recorded by head observation in the phases that observe the head. Quiescence for `restart_generation` is: no open operation and no pending publication.
 
 ```mermaid
 flowchart TB
