@@ -1,0 +1,14 @@
+{
+  "at": "2026-11-22T09:42:16.618632+00:00",
+  "cause": {
+    "id": "state-text-u2014-34572c0ac0aa",
+    "type": "migration"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "from": {},
+  "kind": "state_text_normalized",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 18,
+  "to": {}
+}
