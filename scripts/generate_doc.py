@@ -28,6 +28,8 @@ ACTIVITY_LABELS = {
     "agent_running": "agent running",
     "waiting_ci": "waiting for CI",
     "waiting_human": "waiting for human",
+    "awaiting_submission": "waiting for a human to request submission",
+    "waiting_upstream_pr": "waiting for a human to open the upstream PR",
 }
 
 

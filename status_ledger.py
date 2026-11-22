@@ -10,6 +10,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import commands
+import compat
+import engine
+import lifecycle
 import schemas
 from common import CONTROL_REPO
 
@@ -27,7 +31,18 @@ MESSAGES = {
     "development_pr_created": "Created and verified the same-fork development PR.",
     "development_review_feedback": "Recorded authorized development-PR change feedback and requested repair.",
     "development_review_inquiry": "Recorded an authorized explanation-only development-PR comment. No repair was requested; lifecycle state is unchanged.",
-    "handoff_ready": "Accepted clean-head development CI and reached human upstream handoff.",
+    "return_for_repair": ("Left the submission gate: a blocking CI failure or actionable review "
+                          "on the candidate head needs a repair."),
+    "record_head_change": "Recorded a new fork head. CI evidence and the candidate head are cleared.",
+    "record_late_effect": ("Recorded a late worker Result for audit. It does not match the "
+                           "requested Work, so it was not folded and the state is unchanged."),
+    "pause": "Paused automatic work. The lifecycle state is retained until resume.",
+    "pause_on_identity_change": ("Paused automatic work: the upstream repository identity differs "
+                                 "from the recorded one."),
+    "resume_pause": "Resumed: the pause is cleared.",
+    "park_contribution": "Parked the contribution; its evidence is kept for audit.",
+    "refresh_investigation": ("Started a refresh: a complete investigation runs again while the "
+                              "fork and development PR are kept."),
     "worker_no_change": "Verified a no-change worker Result for the exact head. No new repair Work was requested.",
     "worker_proposal_rejected": "Rejected the worker proposal in trusted validation.",
     "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "
@@ -36,10 +51,74 @@ MESSAGES = {
 }
 
 
+SUBMIT_HOLD = ("This controller does not run the submission preparation that the command "
+               "authorizes (debug cleanup, CI on the clean head, closing the development PR, and "
+               "the submission package), so for now it refuses the command and changes nothing: "
+               "the contribution stays in `handoff.awaiting_submission` with its fork, "
+               "development PR, head, and evidence.")
+
+
+def submit_command(revision: int, head: str) -> str:
+    return f"/upstreaming submit-upstream revision={revision} head={head}"
+
+
+def _submission_request(event: dict, record: dict) -> tuple[str, str] | None:
+    """The message and the command of an entry that asks for upstream
+    submission, bound to the revision and head the event recorded."""
+    details = event.get("details") or {}
+    head, revision = details.get("head"), details.get("revision")
+    if not head or revision is None:
+        return None
+    if event["kind"] == "nominate_for_handoff":
+        lead = f"Required CI passed on the exact head `{head}` of the development PR."
+    elif event["kind"] == compat.HANDOFF_WAIT_MIGRATED:
+        lead = ("Moved this contribution to the lifecycle state `handoff.awaiting_submission`. "
+                f"Its fork, development PR, head `{head}`, revision, and CI evidence are "
+                "unchanged. The earlier request to run `approve-handoff` no longer applies: "
+                "that command is retired.")
+    else:
+        return None
+    message = (f"{lead} To request upstream submission, an authorized human posts the command "
+               "below on this issue.")
+    return message, submit_command(revision, head)
+
+
+_TEMPLATES = {
+    "/upstreaming pause": '/upstreaming pause revision={revision} reason="..."',
+    "/upstreaming resume": '/upstreaming resume revision={revision} reason="..."',
+    "/upstreaming park": '/upstreaming park revision={revision} reason="..."',
+    "/upstreaming refresh": '/upstreaming refresh revision={revision} reason="..."',
+    "/upstreaming abandon": '/upstreaming abandon revision={revision} reason="..."',
+    "/upstreaming submit-upstream": "/upstreaming submit-upstream revision={revision} head={head}",
+}
+
+
+def _table_command_lines(record: dict) -> list[str]:
+    """The commands the lifecycle table offers in the record's state."""
+    state = engine.state_key(record)
+    paused = bool(record.get("paused"))
+    offered = [t.command for flag in lifecycle.FLAGS.values()
+               for t in (flag.cleared_by if paused else flag.set_by).values() if t.command]
+    for edge in lifecycle.state_edges(state):
+        command = edge.transition.command
+        if not command or command in offered:
+            continue
+        if paused and command not in engine.PAUSED_COMMANDS:
+            continue
+        if command == lifecycle.RESUME and edge.verb == "resume_stale":
+            continue
+        offered.append(command)
+    head = (record.get("handoff_request") or {}).get("head") or record.get("clean_head_sha")
+    return [_TEMPLATES[c].format(revision=record["revision"], head=head) for c in offered
+            if c in _TEMPLATES and c.split()[-1] in commands.GRAMMAR]
+
+
 def _command_lines(record: dict) -> list[str]:
     revision = record["revision"]
     lines = []
     phase = record["phase"]
+    if phase == "handoff":
+        return _table_command_lines(record)
     if phase not in ("released", "abandoned", "superseded", "no_work", "already_released"):
         if not record.get("paused"):
             lines.append(f'/upstreaming pause revision={revision} reason="..."')
@@ -47,7 +126,7 @@ def _command_lines(record: dict) -> list[str]:
                   f'/upstreaming abandon revision={revision} reason="..."']
     if record.get("paused") or record.get("blocked_reason") or phase == "parked":
         lines.append(f'/upstreaming resume revision={revision} reason="..."')
-    if phase in ("development", "handoff") and (record.get("fork") or {}).get("pr_number"):
+    if phase == "development" and (record.get("fork") or {}).get("pr_number"):
         lines.append(f'/upstreaming refresh revision={revision} reason="..."')
     if phase == "abandoned":
         lines.append(f'/upstreaming restart revision={revision} reason="..."')
@@ -55,8 +134,6 @@ def _command_lines(record: dict) -> list[str]:
         paths = ",".join(record.get("scope_paths") or [".github/workflows/*"])
         admission = record.get("admission_class") or "configuration_integration"
         lines.append(f'/upstreaming force-develop revision={revision} class={admission} paths="{paths}" reason="..."')
-    if phase == "handoff" and record.get("clean_head_sha"):
-        lines.append(f'/upstreaming approve-handoff revision={revision} head={record["clean_head_sha"]}')
     return lines
 
 
@@ -76,11 +153,22 @@ def render(event: dict, record: dict, run_url: str) -> str:
     elif kind == "command:pause":
         pending = underlying_activity.replace("_", " ")
         message = f"Paused automatic work. Pending lifecycle activity `{pending}` is retained until resume."
+    request = _submission_request(event, record)
+    if request:
+        message = request[0]
     visible = f"**Upstreaming r{revision} · {phase}/{activity}** -- {message} [Workflow run]({run_url})"
-    commands = _command_lines(record)
+    held = "submit-upstream" in engine.HELD_COMMANDS
+    if request:
+        visible += f"\n\n```text\n{request[1]}\n```"
+        if held:
+            visible += f"\n\n{SUBMIT_HOLD}"
+    lines = _command_lines(record)
     details = ""
-    if commands:
-        details = "\n\n<details>\n<summary>Possible next commands</summary>\n\n```text\n" + "\n".join(commands) + "\n```\n</details>"
+    if lines:
+        details = "\n\n<details>\n<summary>Possible next commands</summary>\n\n```text\n" + "\n".join(lines) + "\n```\n"
+        if held and any(line.startswith("/upstreaming submit-upstream ") for line in lines):
+            details += "\n`submit-upstream` is refused for now and changes nothing.\n"
+        details += "</details>"
     marker = f"<!-- upstreaming-ledger:{record['contribution_id']}:{event['sequence']} -->"
     return visible + details + "\n\n" + marker
 

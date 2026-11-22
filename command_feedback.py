@@ -8,12 +8,16 @@ import os
 import re
 from pathlib import Path
 
+import engine
 from common import CONTROL_REPO
 from status_ledger import Api, LedgerError, issue_comments
 
 TEMPLATES = {
     "force-develop": '/upstreaming force-develop revision=N class=configuration_integration paths=".github/workflows/release.yml" reason="..."',
-    "approve-handoff": "/upstreaming approve-handoff revision=N head=FULL_SHA",
+    "submit-upstream": "/upstreaming submit-upstream revision=N head=FULL_SHA",
+    "request-handoff": "/upstreaming submit-upstream revision=N head=FULL_SHA",
+    "approve-handoff": "/upstreaming submit-upstream revision=N head=FULL_SHA",
+    "register-upstream-pr": "/upstreaming submit-upstream revision=N head=FULL_SHA",
     "pause": '/upstreaming pause revision=N reason="..."',
     "park": '/upstreaming park revision=N reason="..."',
     "block": '/upstreaming block revision=N reason="..."',
@@ -50,8 +54,15 @@ def render(receipt: dict, original: dict) -> str:
     if reason == "not paused" and verb == "resume":
         text += "\n\n**No action is needed:** the contribution is already active."
         return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
+    if reason in engine.HELD_COMMANDS.values():
+        text += ("\n\n**Nothing was changed.** The command was well-formed; no other form of it "
+                 "is accepted.")
+        return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
     template = TEMPLATES.get(verb)
     if template:
+        head = re.search(r"(?:^|\s)head=([0-9a-f]{40})(?:\s|$)", body)
+        if head:
+            template = template.replace("head=FULL_SHA", f"head={head.group(1)}")
         revision = receipt.get("revision")
         if revision is None:
             match = re.search(r"(?:^|\s)revision=(\d+)(?:\s|$)", body)

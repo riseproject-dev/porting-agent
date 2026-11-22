@@ -48,6 +48,11 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
                                                     "paused": True}),
                          "Paused (Development)")
 
+    def test_submission_gate_names_the_human_step(self):
+        self.assertEqual(
+            generate_doc.status_label({"phase": "handoff", "activity": "awaiting_submission"}),
+            "Ready for upstream (waiting for a human to request submission)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,7 +58,7 @@ State validation applies the same rule to committed records: a contribution is i
 
 ## Requesting upstream submission
 
-`handoff.awaiting_submission` is the gate at which a human requests upstream submission, with the command:
+`handoff.awaiting_submission` is the gate at which a human requests upstream submission. The tracking-issue entry for `nominate_for_handoff` states the exact head on which CI passed and shows the command to post:
 
 ```text
 /upstreaming submit-upstream revision=N head=<full head SHA>
@@ -66,7 +66,7 @@ State validation applies the same rule to committed records: a contribution is i
 
 The grammar requires the revision and the full 40-character head. The engine accepts the command exactly as the table defines `submit_upstream`: the revision is the current one, the head is the candidate head recorded in `handoff_request` and still the fork head, and the contribution is not paused. A resume from a pause bumps the revision and keeps the candidate head, so the command then names the new revision and the same head.
 
-`submit_upstream` leads to `handoff.cleaning_debug` and authorizes the deterministic handoff preparation: debug cleanup, CI on the clean head, closing the development PR, and the submission package. The controller does not run those operations. A contribution taken into `handoff.cleaning_debug` would stay there, so the controller holds the command (`engine.HELD_COMMANDS`): it checks the command against the table, so a wrong revision or head gets its precise reason, and then rejects it with the statement that nothing was changed. The contribution stays in `handoff.awaiting_submission` with its fork, development PR, head, and evidence.
+`submit_upstream` leads to `handoff.cleaning_debug` and authorizes the deterministic handoff preparation: debug cleanup, CI on the clean head, closing the development PR, and the submission package. The controller does not run those operations. A contribution taken into `handoff.cleaning_debug` would stay there, so the controller holds the command (`engine.HELD_COMMANDS`): it checks the command against the table, so a wrong revision or head gets its precise reason, and then rejects it with the statement that nothing was changed. The tracking-issue entry that asks for the command says so, and the contribution stays in `handoff.awaiting_submission` with its fork, development PR, head, and evidence.
 
 The commands `request-handoff`, `approve-handoff`, and `register-upstream-pr` are retired. Each is rejected with a message that names `submit-upstream`.
 
@@ -78,6 +78,8 @@ Before the lifecycle table, passing CI moved a contribution to the phase `handof
 - The new record is what `nominate_for_handoff` gives for the same CI evidence: `handoff.awaiting_submission`, the pending action `submit_upstream`, and no clean head (the clean head is produced by the debug cleanup). The revision, the fork, the development PR, the head, the dossier, the CI evidence, the budgets, and the replay fences are kept.
 - The record and one appended event of kind `handoff_wait_migrated` are the only paths of that state commit; the tick requests no effect. The state publisher's final check accepts the commit and refuses any commit that writes the old shape again.
 - The migration is idempotent: a migrated record is in a table state and is not selected again.
+
+The tracking-issue entry for the migration event states that the fork, development PR, head, revision, and CI evidence are unchanged, that the earlier request to run `approve-handoff` no longer applies, and shows the `submit-upstream` command for the exact revision and head.
 
 ## Checks
 
