@@ -813,6 +813,16 @@
         "spent_estimate_usd_cents": {
           "type": "integer",
           "minimum": 0
+        },
+        "reruns": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["head_sha", "flaky", "interrupted"],
+          "properties": {
+            "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+            "flaky": {"type": "integer", "minimum": 0},
+            "interrupted": {"type": "integer", "minimum": 0}
+          }
         }
       }
     },
@@ -996,6 +1006,11 @@
             },
             "exhausted": {
               "type": "boolean"
+            },
+            "feedback_evidence_ids": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {"type": "string", "maxLength": 200}
             }
           }
         }
@@ -1075,6 +1090,11 @@
             "reason_ids": {
               "type": "array",
               "maxItems": 16,
+              "items": {"type": "string", "maxLength": 200}
+            },
+            "feedback_evidence_ids": {
+              "type": "array",
+              "maxItems": 64,
               "items": {"type": "string", "maxLength": 200}
             },
             "tracking_issue": {

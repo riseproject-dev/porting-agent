@@ -170,9 +170,9 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             else:
                 new = compat.legacy_update(
                     c, "reconcile.park_terminal_work", phase="parked", activity="idle",
-                    active_work=None, pending_publication=None, pending_human_action=None,
+                    active_work=None, pending_human_action=None,
                     parked_reason=f"automatic worker retries exhausted after terminal queue state {state}",
-                    updated_at=iso)
+                    updated_at=iso, **compat.held_cleared(c))
                 contributions[key] = new
                 schemas.validate("contribution", new)
                 staged.extend([("contributions", new),

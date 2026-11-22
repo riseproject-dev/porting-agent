@@ -58,7 +58,7 @@ class Outcome:
     event: dict[str, Any] | None
     verb: str | None = None
     # Budgets charged whose counter lives outside the record (an operation's
-    # attempts, dispatcher runs, reruns of a head); the caller persists them.
+    # attempts, dispatcher runs); the caller persists them.
     charged: tuple[str, ...] = ()
     # The counter a resume started again: {"counter", "count"}.
     restarted: dict[str, Any] | None = None
@@ -286,18 +286,35 @@ def _reminder_due(ctx: Context) -> str | None:
     return "the reminder is not due"
 
 
-def _has_repair_reason(record: dict) -> bool:
-    return bool(record.get("last_ci_evidence_id") or record.get("pending_feedback_evidence_ids"))
+def failing_job(ctx: Context) -> str | None:
+    """The failing CI job recorded for the head: the caller names it in
+    ``cluster``, from the CI evidence the record points at. Without recorded
+    CI evidence there is none."""
+    return ctx.cluster if ctx.cluster and ctx.record.get("last_ci_evidence_id") else None
 
 
-@_record(lc.PATCH_DUE, "patch_due")
-def _patch_due(ctx: Context) -> str | None:
-    return "CI evidence or feedback is recorded" if _has_repair_reason(ctx.record) else None
+@_record(lc.FAILING_JOB, "failing_job_recorded")
+def _failing_job(ctx: Context) -> str | None:
+    return None if failing_job(ctx) else "no failing CI job is recorded for the head"
 
 
-@_record(lc.REPAIR_DUE, "repair_due")
-def _repair_due(ctx: Context) -> str | None:
-    return None if _has_repair_reason(ctx.record) else "no CI evidence and no feedback are recorded"
+@_record(lc.NO_FAILING_JOB, "no_failing_job_recorded")
+def _no_failing_job(ctx: Context) -> str | None:
+    return "a failing CI job is recorded for the head" if failing_job(ctx) else None
+
+
+def carried_feedback(record: dict) -> list[str]:
+    """The pending feedback the requested Work carries: the ids present when
+    it was allocated. A Result held for publication carries those of its Work."""
+    for holder in (record.get("active_work"), record.get("pending_publication")):
+        if holder and holder.get("feedback_evidence_ids"):
+            return list(holder["feedback_evidence_ids"])
+    return []
+
+
+@_record(lc.WORK_WITHOUT_FEEDBACK, "work_without_feedback")
+def _work_without_feedback(ctx: Context) -> str | None:
+    return "the Work carries feedback" if carried_feedback(ctx.record) else None
 
 
 @_record(lc.REFRESH_UNUSED, "automatic_refresh_unused")
@@ -354,13 +371,6 @@ def _write_admission(ctx: Context) -> str | None:
     return lc.write_admission(ctx.record)
 
 
-@_record("proposal or write admission", "proposal_or_write_admission")
-def _proposal_or_write_admission(ctx: Context) -> str | None:
-    if ctx.record.get("fork"):
-        return lc.write_admission(ctx.record)
-    return lc.proposal_admission(ctx.record)
-
-
 @_record("the upstream PR head is the controlled fork ref", "upstream_pr_on_controlled_ref")
 def _upstream_pr_on_controlled_ref(ctx: Context) -> str | None:
     pr, fork = ctx.record.get("upstream_pr") or {}, ctx.record.get("fork") or {}
@@ -415,12 +425,34 @@ def budget_count(name: str, ctx: Context) -> int | None:
         return int((record.get("active_work") or {}).get("attempt", 1))
     if name == "publish_recovery":
         return int((record.get("pending_publication") or {}).get("attempts", 0))
+    if name in RERUN_COUNTERS:
+        return int(head_reruns(record)[RERUN_COUNTERS[name]])
     return None
+
+
+# The rerun budgets and their count in ``budget.reruns``.
+RERUN_COUNTERS = {"flaky_reruns": "flaky", "interrupted_reruns": "interrupted"}
+
+
+def fresh_reruns(record: dict) -> dict:
+    """Rerun counts that start again for the head the record names."""
+    return {"head_sha": (record.get("fork") or {}).get("head_sha"), "flaky": 0, "interrupted": 0}
+
+
+def head_reruns(record: dict) -> dict:
+    """The rerun counts of the current head. Counts recorded for another
+    head, or none at all, are counts of zero for this one."""
+    reruns = (record.get("budget") or {}).get("reruns")
+    fresh = fresh_reruns(record)
+    if not reruns or reruns.get("head_sha") != fresh["head_sha"]:
+        return fresh
+    return dict(reruns)
 
 
 # Budgets whose counter is a field of the contribution record.
 RECORD_COUNTERS = ("work_total", "no_progress", "investigation_attempts",
-                   "repair_attempts_cluster", "work_recovery", "publish_recovery")
+                   "repair_attempts_cluster", "work_recovery", "publish_recovery",
+                   *RERUN_COUNTERS)
 
 
 def remains(name: str, ctx: Context) -> bool | None:
@@ -469,15 +501,26 @@ _register(lc.REPAIR_BUDGETS_REMAIN, "repair_budgets_remain", "record",
           _remain("repair_attempts_cluster", "no_progress"))
 _register(lc.REVISION_BUDGETS_REMAIN, "revision_budgets_remain", "record",
           _remain("repair_attempts_cluster", "no_progress", "work_total"))
-_register(lc.REVISION_BUDGET_EXHAUSTED, "revision_budget_exhausted", "record",
-          _any_exhausted("repair_attempts_cluster", "no_progress", "work_total"))
+_register(lc.REVIEW_REVISION_BUDGETS_REMAIN, "review_revision_budgets_remain", "record",
+          _remain("no_progress", "work_total"))
+
+
+def _cluster_exhausted(ctx: Context) -> bool:
+    """``repair_attempts_cluster`` counts only for a recorded failing CI job."""
+    return bool(failing_job(ctx)) and remains("repair_attempts_cluster", ctx) is False
+
+
+@_record(lc.REVISION_BUDGET_EXHAUSTED, "revision_budget_exhausted")
+def _revision_budget_exhausted(ctx: Context) -> str | None:
+    if remains("no_progress", ctx) is False or remains("work_total", ctx) is False \
+            or _cluster_exhausted(ctx):
+        return None
+    return "no_progress, work_total, and repair_attempts_cluster remain"
 
 
 @_record(lc.REPAIR_BUDGET_EXHAUSTED, "repair_budget_exhausted")
 def _repair_budget_exhausted(ctx: Context) -> str | None:
-    if remains("no_progress", ctx) is False:
-        return None
-    if remains("repair_attempts_cluster", ctx) is False and _has_repair_reason(ctx.record):
+    if remains("no_progress", ctx) is False or _cluster_exhausted(ctx):
         return None
     return "no_progress and repair_attempts_cluster remain"
 
@@ -490,13 +533,12 @@ def _provisioning_needs_intervention(ctx: Context) -> str | None:
     return "provisioning is not blocked and operation_launch remains"
 
 
-@_record("the proposal is rejected for the current revision, the worker reports it is blocked, "
-         "or the worker reports a failure not caused by the patch and flaky_reruns is exhausted",
-         "development_proposal_rejected")
+@_record(lc.DEVELOPMENT_PROPOSAL_REJECTED, "development_proposal_rejected")
 def _development_proposal_rejected(ctx: Context) -> str | None:
     if _asserted(ctx, "proposal_rejected_or_blocked"):
         return None
-    if _asserted(ctx, "failure_not_caused_by_patch") and remains("flaky_reruns", ctx) is False:
+    if _asserted(ctx, "failure_not_caused_by_patch") and (
+            remains("flaky_reruns", ctx) is False or carried_feedback(ctx.record)):
         return None
     return "the proposal is not rejected and the worker is not blocked"
 
@@ -517,6 +559,7 @@ for _guard, _name in (
      "or close", "dossier_rejected"),
     ("the Result has no usable dossier", "no_usable_dossier"),
     (lc._ADMISSION, "development_admitted"),
+    (lc.PATCH_SCOPE_COMPLETE, "patch_scope_complete"),
     ("no refresh recorded, or the recorded fork or development PR no longer matches",
      "fresh_fork_required"),
     ("the recorded fork and development PR still match", "recorded_fork_matches"),
@@ -535,8 +578,8 @@ for _guard, _name in (
      "development_pr_mismatch"),
     ("every required CI job executed and passed on the exact head", "ci_passed_on_head"),
     ("no pending actionable feedback", "no_pending_actionable_feedback"),
-    ("an executed blocking failure or actionable review on the candidate head",
-     "candidate_head_needs_repair"),
+    (lc.CANDIDATE_FAILED, "candidate_head_failed"),
+    (lc.CANDIDATE_NOT_FAILED, "candidate_head_not_failed"),
     ("the observed fork head differs from the candidate head", "candidate_head_changed"),
     ("the lease write or its readback failed with an infrastructure error",
      "cleanup_infrastructure_error"),
@@ -585,6 +628,9 @@ _register("for pr_closed_unmerged, the upstream PR is observed open again",
 # Facts read by a record predicate in addition to the fact predicates above.
 EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked"})
 FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") | EXTRA_FACTS
+# Facts that state the opposite of each other; a caller that asserts both has
+# established neither.
+CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),)
 
 
 def table_guards() -> set[str]:
@@ -606,9 +652,12 @@ PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
 # Verbs that pipeline code takes through ``apply_transition``, with the module
 # that takes them.
 PIPELINE_VERBS: dict[str, str] = {
-    # Entering and leaving the submission gate, by observation.
+    # Entering and leaving the submission gate, by observation, and the
+    # review comments observed at the gate.
     "nominate_for_handoff": "observe_ci",
     "return_for_repair": "observe_ci",
+    "record_actionable_review": "observe_ci",
+    "record_explanation": "observe_ci",
     "record_head_change": "observe_ci",
     # A worker Result that matches no request of the record, in any state.
     "record_late_effect": "compat",
@@ -689,6 +738,9 @@ def refusal(record: dict, verb: str, *, policy: dict, now: str, command: Command
     unknown = set(facts) - FACT_NAMES
     if unknown:
         raise TransitionError(f"unknown facts: {', '.join(sorted(unknown))}")
+    for pair in CONTRADICTORY_FACTS:
+        if set(pair) <= set(facts):
+            raise TransitionError(f"contradictory facts: {' and '.join(pair)}")
     masked = _mask(ctx, verb, t)
     if masked:
         return masked
@@ -720,6 +772,8 @@ def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
     return False, None
 
 
+# ``sets`` entries the engine always derives; the caller gives no value.
+ENGINE_VALUES = (lc.WORK_FEEDBACK, lc.RERUNS)
 # ``sets`` entries whose value the caller may omit.
 OPTIONAL_VALUES = frozenset({"admission_override", "paused_reason", lc.PENDING_COUNTER})
 # ``sets`` entries filled from the command's reason when no value is given.
@@ -775,6 +829,7 @@ def reset_generation(record: dict) -> dict:
     })
     rec["budget"] = {"policy_id": record["budget"]["policy_id"], "attempts_used": 0,
                      "no_progress_streak": 0, "clusters": {}, "investigation_attempts": 0,
+                     "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                      "spent_estimate_usd_cents": 0}
     return rec
 
@@ -789,6 +844,8 @@ def _restart_counter(rec: dict, name: str) -> None:
         budget["investigation_attempts"] = 0
     elif name == "repair_attempts_cluster":
         budget["clusters"] = {}
+    elif name in RERUN_COUNTERS:
+        budget["reruns"] = dict(head_reruns(rec), **{RERUN_COUNTERS[name]: 0})
 
 
 def _charge(rec: dict, name: str, ctx: Context) -> bool:
@@ -812,16 +869,35 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
     elif name == "publish_recovery":
         before = int((ctx.record.get("pending_publication") or {}).get("attempts", 0))
         rec["pending_publication"] = dict(rec["pending_publication"], attempts=before + 1)
+    elif name in RERUN_COUNTERS:
+        # Counted for the current head: counts of another head start again.
+        reruns, key = head_reruns(rec), RERUN_COUNTERS[name]
+        budget["reruns"] = dict(reruns, **{key: int(reruns[key]) + 1})
     else:
         return False
     return True
+
+
+def _clear(rec: dict, before: dict, name: str) -> None:
+    """Clear a field, or the part of it a qualified clear names."""
+    if name == lc.HELD_PROPOSAL:
+        if (before.get("proposal_artifact") or {}).get("outcome") == "proposal":
+            rec["proposal_artifact"] = None
+    elif name == lc.CARRIED_FEEDBACK:
+        carried = set(carried_feedback(before))
+        rec["pending_feedback_evidence_ids"] = [
+            i for i in before.get("pending_feedback_evidence_ids") or [] if i not in carried]
+    elif name in lc.QUALIFIED_CLEARS:
+        raise TransitionError(f"the qualified clear {name!r} is not implemented")
+    else:
+        _put(rec, name, copy.deepcopy(_EMPTY.get(name)))
 
 
 def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                    values: dict[str, Any]) -> tuple[dict, tuple[str, ...], dict | None]:
     e = t.effects
     before = ctx.record
-    declared = {lc._field_name(s) for s in e.sets}
+    declared = {lc._field_name(s) for s in e.sets} - set(ENGINE_VALUES)
     if e.work in ("allocate", "reallocate"):
         declared.add("active_work")
     extra = set(values) - declared
@@ -842,14 +918,19 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     if restarted:
         _restart_counter(rec, restarted["counter"])
 
+    carried = carried_feedback(before)
     for name in e.clears:
-        _put(rec, name, copy.deepcopy(_EMPTY.get(name)))
+        _clear(rec, before, name)
     if e.work == "clear":
         rec["active_work"] = None
     elif e.work in ("allocate", "reallocate"):
         if not isinstance(values.get("active_work"), dict):
             raise TransitionError(f"{verb} allocates Work; active_work is required")
         rec["active_work"] = copy.deepcopy(values["active_work"])
+        rec["active_work"].pop("feedback_evidence_ids", None)
+        if e.work == "reallocate" and carried:
+            # A fresh graph for the same task carries the same feedback.
+            rec["active_work"]["feedback_evidence_ids"] = carried
 
     pending_kind = None
     counter: Any = None
@@ -868,6 +949,11 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         if literal:
             _put(rec, name, value)
             continue
+        if name == lc.WORK_FEEDBACK:
+            _put(rec, name, list(before.get("pending_feedback_evidence_ids") or []))
+            continue
+        if name == lc.RERUNS:
+            continue  # derived below, from the head the row records
         derived, derived_value = _derived(name, ctx)
         if name in values:
             _put(rec, name, copy.deepcopy(values[name]))
@@ -889,6 +975,12 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                                        "counter": counter}
     elif counter_declared:
         raise TransitionError(f"{verb} names a counter without a pending human action")
+    if lc.RERUNS in e.sets:
+        rec["budget"] = dict(rec["budget"], reruns=fresh_reruns(rec))
+    if "pending_publication" in values and carried and rec.get("pending_publication"):
+        # A Result held for publication carries the feedback of its Work.
+        rec["pending_publication"] = dict(rec["pending_publication"],
+                                          feedback_evidence_ids=carried)
 
     charged_elsewhere = tuple(name for name in t.charges if not _charge(rec, name, ctx))
     rec["phase"], rec["activity"] = target.split(".", 1)

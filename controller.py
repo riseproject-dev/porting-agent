@@ -329,8 +329,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             changed = compat.legacy_update(
                 c, "controller.block_identity_change",
                 blocked_reason="upstream repository identity changed",
-                activity="waiting_human", pending_publication=None,
-                updated_at=now)
+                activity="waiting_human", updated_at=now, **compat.held_cleared(c))
             by_id[cid] = changed
             res.stage("contributions", changed)
             continue

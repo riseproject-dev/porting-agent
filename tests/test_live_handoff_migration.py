@@ -472,23 +472,53 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual((after["handoff_request"], after["pending_human_action"],
                           after["clean_head_sha"]), (None, None, None))
         self.assertEqual(after["dossier_evidence_id"], record["dossier_evidence_id"])
+        # The row records the evidence of the failure, and no feedback.
+        self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
+        self.assertEqual(after["pending_feedback_evidence_ids"], [])
 
-    def test_an_actionable_review_on_the_candidate_head_returns_for_repair(self):
+    REVIEW = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [],
+              "reviews": [{"id": 77, "body": "Please drop the tox change."}],
+              "comments": [], "conversation_comments": [],
+              "inquiry_comment_ids": [], "inquiry_conversation_comment_ids": [],
+              "inquiry_comments": [], "inquiry_conversation_comments": []}
+
+    def test_an_actionable_review_on_the_candidate_head_is_recorded_by_its_row(self):
         record = migrated()
-        feedback = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [],
-                    "reviews": [{"id": 77, "body": "Please drop the tox change."}],
-                    "comments": [], "conversation_comments": [],
-                    "inquiry_comment_ids": [], "inquiry_conversation_comment_ids": [],
-                    "inquiry_comments": [], "inquiry_conversation_comments": []}
-        output = self.tick(record, feedback=feedback, pressure=False)
+        for snapshot in (self.passed(), self.passed(status="in_progress")):
+            with self.subTest(status=snapshot.runs[0]["status"]):
+                output = self.tick(record, feedback=self.REVIEW, snapshot=snapshot,
+                                   pressure=False)
+                after = self.final(output, record)
+                self.assertEqual(self.events(output), ["record_actionable_review"])
+                self.assertEqual(engine.state_key(after), "development.fix_needed")
+                # One transition, one revision.
+                self.assertEqual(after["revision"], 7)
+                self.assertEqual(after["fork"], FORK)
+                self.assertEqual(after["processed_review_ids"], [77])
+                self.assertEqual(after["pending_feedback_evidence_ids"],
+                                 ["review-1467208233-1-77"])
+                self.assertEqual((after["handoff_request"], after["pending_human_action"],
+                                  after["clean_head_sha"]), (None, None, None))
+                # The CI evidence of the candidate head is kept.
+                self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
+                self.assertIn("review-1467208233-1-77",
+                              [e["evidence_id"] for kind, e in output.staged if kind == "evidence"])
+                event = next(e for kind, e in output.staged if kind == "events")
+                self.assertEqual((event["revision_bumped"], event["details"]["from_state"],
+                                  event["details"]["to_state"]),
+                                 (True, "handoff.awaiting_submission", "development.fix_needed"))
+
+    def test_a_ci_failure_takes_precedence_over_a_review_in_the_same_observation(self):
+        record = migrated()
+        output = self.tick(record, feedback=self.REVIEW,
+                           snapshot=self.passed(conclusion="failure"), pressure=False)
         after = self.final(output, record)
-        self.assertEqual(self.events(output), ["return_for_repair", "development_review_feedback"])
-        self.assertEqual(engine.state_key(after), "development.fix_needed")
-        self.assertEqual(after["revision"], 8)
-        self.assertEqual(after["fork"], FORK)
-        self.assertEqual(after["processed_review_ids"], [77])
-        self.assertEqual(len(after["pending_feedback_evidence_ids"]), 1)
-        self.assertEqual((after["handoff_request"], after["pending_human_action"]), (None, None))
+        self.assertEqual(self.events(output), ["return_for_repair"])
+        self.assertEqual((engine.state_key(after), after["revision"]), ("development.fix_needed", 7))
+        # The review is not consumed: it is read again on the development record.
+        self.assertEqual(after["processed_review_ids"], record["processed_review_ids"])
+        self.assertEqual(after["pending_feedback_evidence_ids"], [])
+        self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
 
     def test_an_explanation_only_comment_keeps_the_gate(self):
         record = migrated()
@@ -499,11 +529,32 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                     "inquiry_conversation_comments": [{"id": 88, "body": "Why riscv64 only?"}]}
         output = self.tick(record, feedback=feedback)
         after = self.final(output, record)
+        self.assertEqual(self.events(output), ["record_explanation"])
         self.assertEqual(engine.state_key(after), "handoff.awaiting_submission")
         self.assertEqual((after["revision"], after["handoff_request"], after["pending_human_action"]),
                          (6, record["handoff_request"], record["pending_human_action"]))
+        self.assertEqual((after["fork"], after["last_ci_evidence_id"]), (FORK, CI_EVIDENCE))
         self.assertEqual(after["processed_pr_conversation_comment_ids"], [88])
         self.assertEqual(output.report["requested_effects"], [])
+        self.assertEqual(output.report["controller"]["selected"], [])
+        event = next(e for kind, e in output.staged if kind == "events")
+        self.assertEqual((event["revision_bumped"], event["cause"]["type"]), (False, "observation"))
+        self.assertIn("inquiry-1467208233-1-88",
+                      [e["evidence_id"] for kind, e in output.staged if kind == "evidence"])
+        # The same comment is not recorded twice.
+        again = self.tick(after)
+        self.assertEqual(self.events(again), [])
+
+    def test_an_explanation_and_a_review_in_one_observation_take_both_rows(self):
+        record = migrated()
+        feedback = dict(self.REVIEW, inquiry_conversation_comment_ids=[88],
+                        inquiry_conversation_comments=[{"id": 88, "body": "Why riscv64 only?"}])
+        output = self.tick(record, feedback=feedback, pressure=False)
+        after = self.final(output, record)
+        self.assertEqual(self.events(output), ["record_explanation", "record_actionable_review"])
+        self.assertEqual((engine.state_key(after), after["revision"]), ("development.fix_needed", 7))
+        self.assertEqual((after["processed_review_ids"],
+                          after["processed_pr_conversation_comment_ids"]), ([77], [88]))
 
     def test_a_late_worker_result_is_recorded_and_never_folded(self):
         record = migrated()

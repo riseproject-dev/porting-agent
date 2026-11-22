@@ -31,8 +31,14 @@ MESSAGES = {
     "development_pr_created": "Created and verified the same-fork development PR.",
     "development_review_feedback": "Recorded authorized development-PR change feedback and requested repair.",
     "development_review_inquiry": "Recorded an authorized explanation-only development-PR comment. No repair was requested; lifecycle state is unchanged.",
-    "return_for_repair": ("Left the submission gate: a blocking CI failure or actionable review "
-                          "on the candidate head needs a repair."),
+    "return_for_repair": ("Left the submission gate: a blocking CI failure on the candidate "
+                          "head needs a repair. The evidence of the failure is recorded."),
+    "record_actionable_review": ("Recorded authorized change feedback on the development PR. "
+                                 "A repair is due; the feedback stays pending until a patch "
+                                 "that carries it is published."),
+    "record_explanation": ("Recorded an authorized explanation-only comment on the development "
+                           "PR. No Work was requested and nothing is answered automatically; "
+                           "the revision, the candidate head, and the CI evidence are unchanged."),
     "record_head_change": "Recorded a new fork head. CI evidence and the candidate head are cleared.",
     "record_late_effect": ("Recorded a late worker Result for audit. It does not match the "
                            "requested Work, so it was not folded and the state is unchanged."),
@@ -81,6 +87,17 @@ def _submission_request(event: dict, record: dict) -> tuple[str, str] | None:
     message = (f"{lead} To request upstream submission, an authorized human posts the command "
                "below on this issue.")
     return message, submit_command(revision, head)
+
+
+def _quoted_comments(event: dict) -> str:
+    """The comments an explanation event recorded, for the tracking issue."""
+    lines = []
+    for item in (event.get("details") or {}).get("comments") or []:
+        body = " ".join(str(item.get("body") or "").split())
+        body = body.replace("<!--", "").replace("-->", "").replace("`", "'")[:300]
+        url = item.get("url")
+        lines.append(f"\n> {body}" + (f" ([comment]({url}))" if url else ""))
+    return ("\n" + "".join(lines) + "\n\n") if lines else ""
 
 
 _TEMPLATES = {
@@ -153,6 +170,8 @@ def render(event: dict, record: dict, run_url: str) -> str:
     elif kind == "command:pause":
         pending = underlying_activity.replace("_", " ")
         message = f"Paused automatic work. Pending lifecycle activity `{pending}` is retained until resume."
+    if kind == "record_explanation":
+        message += _quoted_comments(event)
     request = _submission_request(event, record)
     if request:
         message = request[0]

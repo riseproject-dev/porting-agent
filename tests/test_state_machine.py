@@ -123,9 +123,18 @@ class TestLifecycleTable(unittest.TestCase):
                       "development.fix_needed --exhaust_repair_attempts-->",
                       "parked.idle --abandon-->"):
             self.assertIn(lc.HELD_RESULT, stops[where].effects.clears, where)
+            self.assertIn(lc.HELD_PROPOSAL, stops[where].effects.clears, where)
         for where, t in stops.items():
             if t.effects.work == "clear" or t.trigger == lc.Trigger.COMMAND:
                 self.assertIn(lc.HELD_RESULT, t.effects.clears, where)
+                self.assertIn(lc.HELD_PROPOSAL, t.effects.clears, where)
+        # A stop that clears the pending publication but keeps a held proposal is reported.
+        pause = lc.FLAGS["paused"].set_by["pause"]
+        only_result = dataclasses.replace(pause.effects, clears=(lc.HELD_RESULT,))
+        with mock.patch.dict(lc.FLAGS["paused"].set_by,
+                             {"pause": dataclasses.replace(pause, effects=only_result)}):
+            self.assertTrue(any(p.startswith("flag paused pause: a stop")
+                                and lc.HELD_PROPOSAL in p for p in lc.check_table(POLICY)))
         # The check reports a stop row, a rule, or a flag verb that keeps it.
         keep = lc.Effects(work="clear", sets=("parked_reason", "previous_phase"))
         park = lc.RULES["park_contribution"].transition
@@ -147,11 +156,94 @@ class TestLifecycleTable(unittest.TestCase):
             self.assertTrue(any(p.startswith("flag paused pause: a stop")
                                 for p in lc.check_table(POLICY)))
 
+    def mutated(self, state, verb, **changes):
+        """The problems the check reports when one row is changed."""
+        edge = lc.find_edge(state, verb)
+        key = next(k for k in lc.LIFECYCLE[state].transitions if k[0] == verb)
+        t = edge.transition
+        effects = dataclasses.replace(t.effects, **{k: v for k, v in changes.items()
+                                                    if k in ("sets", "clears")})
+        row = dataclasses.replace(t, effects=effects, **{k: v for k, v in changes.items()
+                                                         if k in ("guard", "charges")})
+        with mock.patch.dict(lc.LIFECYCLE[state].transitions, {key: row}):
+            return lc.check_table(POLICY)
+
+    def without(self, entries, *names):
+        return tuple(e for e in entries if e not in names)
+
+    def test_the_check_holds_the_feedback_rules(self):
+        patch = lc.find_edge("development.fix_needed", "request_patch").transition
+        published = lc.find_edge("development.agent_running", "record_publish_success").transition
+        rerun = lc.find_edge("development.agent_running", "request_ci_rerun").transition
+        resume = lc.find_edge("development.waiting_human", "resume_development").transition
+        cases = (
+            ("development.fix_needed", "request_patch",
+             {"sets": self.without(patch.effects.sets, lc.WORK_FEEDBACK)}, lc.WORK_FEEDBACK),
+            ("development.agent_running", "record_publish_success",
+             {"clears": self.without(published.effects.clears, lc.CARRIED_FEEDBACK)},
+             "rows that record a published Result"),
+            ("development.agent_running", "request_ci_rerun",
+             {"guard": self.without(rerun.guard, lc.WORK_WITHOUT_FEEDBACK)},
+             "a CI rerun without the guard"),
+            ("development.waiting_human", "resume_development",
+             {"clears": (*resume.effects.clears, "pending_feedback_evidence_ids")},
+             "clears pending_feedback_evidence_ids"),
+        )
+        for state, verb, change, expected in cases:
+            with self.subTest(verb=verb):
+                problems = self.mutated(state, verb, **change)
+                self.assertTrue(any(p.startswith(f"{state} --{verb}-->") and expected in p
+                                    for p in problems), problems)
+        for verb in ("reject_patch_proposal", "replan_development"):
+            clears = lc.find_edge("development.agent_running", verb).transition.effects.clears
+            self.assertFalse({"pending_feedback_evidence_ids", lc.CARRIED_FEEDBACK} & set(clears))
+        self.assertEqual(lc.FEEDBACK_ANSWERED_BY, ("resume_upstream_review",))
+
+    def test_the_check_holds_the_rerun_counts_and_the_cluster_charge(self):
+        head = lc.find_edge("development.waiting_ci", "record_head_change").transition
+        review = lc.find_edge("upstream_review.fix_needed", "request_review_revision").transition
+        patch = lc.find_edge("development.fix_needed", "request_patch").transition
+        admit = lc.find_edge("investigation.agent_running", "admit_development").transition
+        gate = lc.find_edge("handoff.awaiting_submission", "record_actionable_review").transition
+        cases = (
+            ("development.waiting_ci", "record_head_change",
+             {"sets": self.without(head.effects.sets, lc.RERUNS)}, lc.RERUNS),
+            ("upstream_review.fix_needed", "request_review_revision",
+             {"charges": ("repair_attempts_cluster", "work_total"),
+              "guard": (*review.guard, "repair_attempts_cluster remains")},
+             "repair_attempts_cluster is charged exactly when"),
+            ("development.fix_needed", "request_patch",
+             {"guard": tuple("proposal or write admission" if g == "write admission" else g
+                             for g in patch.guard)}, "proposal admission guard"),
+            ("development.fix_needed", "request_patch",
+             {"guard": self.without(patch.guard, lc.NO_PROGRESS_REMAINS)},
+             "without requiring that no_progress remains"),
+            ("investigation.agent_running", "admit_development",
+             {"guard": self.without(admit.guard, lc.PATCH_SCOPE_COMPLETE)},
+             lc.PATCH_SCOPE_COMPLETE),
+        )
+        for state, verb, change, expected in cases:
+            with self.subTest(verb=verb, expected=expected):
+                problems = self.mutated(state, verb, **change)
+                self.assertTrue(any(expected in p for p in problems), problems)
+        problems = self.mutated("handoff.awaiting_submission", "record_actionable_review",
+                                guard=self.without(gate.guard, lc.CANDIDATE_NOT_FAILED))
+        self.assertIn("handoff.awaiting_submission: return_for_repair and "
+                      "record_actionable_review can apply together; their guards are not "
+                      "exclusive", problems)
+        self.assertEqual(
+            {e.verb for e in lc.table_edges() if "repair_attempts_cluster" in e.transition.charges},
+            {"request_repair", "request_upstream_revision"})
+        self.assertEqual(lc.BUDGETS["flaky_reruns"].counter.split(",")[0], "`budget.reruns.flaky`")
+        self.assertEqual(lc.BUDGETS["interrupted_reruns"].counter.split(",")[0],
+                         "`budget.reruns.interrupted`")
+
     def test_every_work_allocation_charges_work_total(self):
         allocating = [e for e in lc.table_edges() if e.transition.effects.work in ("allocate", "reallocate")]
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_investigation", "request_patch", "request_repair",
-                          "request_upstream_revision", "allocate_work_retry"})
+                          "request_upstream_revision", "request_review_revision",
+                          "allocate_work_retry"})
         for e in allocating:
             self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
 
@@ -202,8 +294,11 @@ class TestLifecycleTable(unittest.TestCase):
         patch = lc.find_edge("development.fix_needed", "request_patch")
         repair = lc.find_edge("development.fix_needed", "request_repair")
         self.assertEqual(patch.target, repair.target)
-        self.assertIn("no CI evidence for the head and no feedback recorded", patch.transition.guard)
-        self.assertIn("CI evidence for the head or feedback recorded", repair.transition.guard)
+        self.assertIn("no failing CI job is recorded for the head", patch.transition.guard)
+        self.assertIn("a failing CI job is recorded for the head", repair.transition.guard)
+        # Patch Work needs the fork: write admission only, and no proposal before it.
+        self.assertIn("write admission", patch.transition.guard)
+        self.assertFalse(any("proposal" in g for g in patch.transition.guard))
         self.assertEqual([e.source for e in lc.table_edges() if e.verb == "exhaust_repair_attempts"],
                          ["development.fix_needed", "upstream_review.fix_needed"])
         self.assertEqual([e.source for e in lc.table_edges() if e.verb == "refresh_investigation"],
@@ -365,7 +460,7 @@ class TestLifecycleTable(unittest.TestCase):
     def test_first_patch_after_a_rejected_proposal(self):
         patch = lc.find_edge("development.fix_needed", "request_patch").transition
         self.assertEqual(patch.charges, ("work_total",))
-        self.assertIn("no CI evidence for the head and no feedback recorded", patch.guard)
+        self.assertIn(lc.NO_FAILING_JOB, patch.guard)
         self.assertTrue(any("no_progress" in g and "remain" in g for g in patch.guard))
         self.assertNotIn("feedback", " ".join(
             lc.find_edge("development.agent_running", "reject_patch_proposal").transition.effects.sets))
@@ -850,7 +945,7 @@ class TestDiagrams(unittest.TestCase):
         for d in (*DECISIONS, *FURTHER_CHANGES):
             self.assertTrue(d.text and not d.options and not d.candidates, d.title)
             self.assertTrue(d.operations or d.highlighted, d.title)
-        self.assertEqual(len(SETTLED_OPEN_ITEMS), 18)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 24)
         self.assertEqual(OPEN_ITEMS, ())
         for d in SETTLED_OPEN_ITEMS:
             self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)

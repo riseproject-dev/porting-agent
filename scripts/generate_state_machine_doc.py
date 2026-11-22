@@ -236,7 +236,16 @@ def render_index() -> str:
         "- every state of kind `gate`, `human_wait`, or `locked` has a reminder from the rule, "
         "and a late Result is recorded in every state without changing it;",
         "- `handoff.waiting_upstream_pr` has exactly its three exits;",
-        "- a stop set by the controller records its reason;",
+        "- a stop set by the controller records its reason, and every stop clears the pending "
+        "publication and a held proposal that is not published;",
+        "- every row that allocates patch or revision Work carries the pending feedback, only a "
+        "published Result clears the feedback its Work carried, and Work that carries feedback "
+        "takes no CI rerun;",
+        "- patch Work is requested only from a `fix_needed` state under write admission, "
+        "`repair_attempts_cluster` is charged exactly when a failing CI job is recorded for the "
+        "head, and the rows that apply when Work is due exclude each other;",
+        "- exactly the rows that record a new head start the rerun counts of `budget.reruns` "
+        "again, and a CI failure and a review at the submission gate exclude each other;",
         "- the operation table has the same structure, and every state, transition, rule, and "
         "flag is drawn below and every decision slice uses table entries.", "",
         "A state is `phase.activity`. Each arrow is a transition verb of the table, labelled with "
@@ -318,6 +327,11 @@ def render_table(policy: dict) -> str:
         lines.append(f"| `{key}` | `{s.kind}` | {'yes' if s.launches else 'no'} | "
                      f"{'yes' if s.writes else 'no'} | {len(s.transitions) - ruled} + {ruled} | "
                      f"{cell(s.description)} |")
+    lines += ["", "## Partial clears", "",
+              "An effect normally clears a whole field. These entries clear a part of one.", "",
+              "| Entry | Field | What is cleared |", "|:------|:------|:----------------|"]
+    lines += [f"| `{entry}` | `{name}` | {cell(meaning)} |"
+              for entry, (name, meaning) in lc.QUALIFIED_CLEARS.items()]
     lines += ["", "## Rules", "",
               "A rule is a transition that applies in many states. It is written once and "
               "expanded into one row per state; the rows appear under each state below, marked "

@@ -91,6 +91,36 @@ class TestStatusLedger(unittest.TestCase):
         self.assertIn("No repair was requested", body)
         self.assertNotIn("requested repair", body)
 
+    def test_gate_review_rows_render_what_they_did(self):
+        import engine
+        from tests.helpers import awaiting_submission, policy
+        gate = awaiting_submission()
+        explained = engine.apply_transition(
+            gate, "record_explanation", policy=policy(), now=NOW, cause_id="inquiry-1",
+            facts={"explanation_inquiry"},
+            values={"processed_review_ids": [], "processed_review_comment_ids": [],
+                    "processed_pr_conversation_comment_ids": [88]},
+            details={"comments": [{"url": "https://github.com/o/r/pull/1#issuecomment-88",
+                                   "body": "Why `riscv64` only? <!-- x -->"}]})
+        body = status_ledger.render(dict(explained.event, sequence=24), explained.record,
+                                    "https://github.com/run")
+        self.assertTrue(body.startswith("**Upstreaming r0 · handoff/awaiting_submission**"))
+        self.assertIn("explanation-only", body)
+        self.assertIn("nothing is answered automatically", body)
+        self.assertIn("> Why 'riscv64' only?", body)
+        self.assertIn("([comment](https://github.com/o/r/pull/1#issuecomment-88))", body)
+        self.assertEqual(body.count("<!--"), 1)   # only the ledger marker
+        self.assertIn("/upstreaming submit-upstream revision=0", body)
+        reviewed = engine.apply_transition(
+            gate, "record_actionable_review", policy=policy(), now=NOW, cause_id="review-1",
+            facts={"actionable_review", "candidate_head_not_failed"},
+            values={"pending_feedback_evidence_ids": ["review-1"]})
+        body = status_ledger.render(dict(reviewed.event, sequence=25), reviewed.record,
+                                    "https://github.com/run")
+        self.assertTrue(body.startswith("**Upstreaming r1 · development/fix_needed**"))
+        self.assertIn("Recorded authorized change feedback", body)
+        self.assertNotIn(chr(0x2014), body)
+
     def test_development_pr_ledger_offers_dossier_refresh(self):
         record = contribution(phase="development", activity="fix_needed", revision=7)
         event = lifecycle._event(record, record, "activity", "observation", None, NOW, False)

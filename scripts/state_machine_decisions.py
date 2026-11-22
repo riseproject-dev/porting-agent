@@ -58,9 +58,9 @@ RULES_BEHIND: tuple[str, ...] = (
     "Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation "
     "counter, `work_total`. `lifecycle check` verifies this.",
     "Prefer a guard or a derived status over a new state or flag.",
-    "Every stop that clears the requested Work also clears `pending_publication`: the flag set "
-    "verbs, `park_contribution`, `abandon`, and every other transition that ends the "
-    "generation. `lifecycle check` verifies this.",
+    "Every stop that clears the requested Work also clears `pending_publication` and a held "
+    "proposal that is not published: the flag set verbs, `park_contribution`, `abandon`, and "
+    "every other transition that ends the generation. `lifecycle check` verifies this.",
 )
 
 DECISIONS: tuple[Item, ...] = (
@@ -388,7 +388,8 @@ DECISIONS: tuple[Item, ...] = (
         "The repair worker classifies. A Result reporting a failure not caused by the patch takes "
         "`request_ci_rerun` from `development.agent_running` to `development.waiting_ci` and "
         "charges `flaky_reruns`; it replaces `record_no_change`. When `flaky_reruns` is "
-        "exhausted, the outcome counts as `reject_patch_proposal`. The collector reruns on its "
+        "exhausted, or the Work carries feedback, the outcome counts as "
+        "`reject_patch_proposal`. The collector reruns on its "
         "own only jobs that were cancelled or lost their runner, in `development.waiting_ci` and "
         "`handoff.waiting_ci`, within `interrupted_reruns` per head. Upstream CI is never rerun.",
         ("development.agent_running", "development.waiting_ci", "development.fix_needed",
@@ -589,8 +590,8 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "Merge `development.idle` and `development.fix_needed`",
         "Whether the two states in which development Work is due become one.",
         "One state, `development.fix_needed`: development Work is due. `confirm_provisioning` "
-        "enters it. `request_patch` applies while the head has no CI evidence and no feedback "
-        "is recorded; `request_repair` applies once CI evidence or feedback is recorded. "
+        "enters it. `request_repair` applies while a failing CI job is recorded for the head; "
+        "`request_patch` applies otherwise. "
         "`development.idle` and its own exhaustion row are removed, also from the states that "
         "accept `refresh_investigation`.",
         ("provisioning.idle", "development.fix_needed", "development.agent_running",
@@ -814,7 +815,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "The first patch after a rejected proposal",
         "Which verb requests Work when a proposal was rejected before the head had any CI "
         "evidence.",
-        "`request_patch`: a rejected proposal is neither CI evidence nor recorded feedback. "
+        "`request_patch`: a rejected proposal records no failing CI job for the head. "
         "`request_patch` charges `work_total` and requires that `no_progress` remains; it does "
         "not charge `repair_attempts_cluster`.",
         ("development.fix_needed", "development.agent_running", "queued.idle", "parked.idle"),
@@ -893,6 +894,124 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         highlighted=(("development.fix_needed", "exhaust_work_total"),
                      ("development.fix_needed", "exhaust_repair_attempts"),
                      ("development.waiting_human", "resume_development")),
+    ),
+    Item(
+        "Pending feedback and the Work that answers it",
+        "Which row clears `pending_feedback_evidence_ids` in development and upstream review.",
+        "The Work request carries the pending feedback ids present at allocation, in "
+        "`active_work.feedback_evidence_ids`. `record_publish_success` clears exactly those "
+        "ids, and `record_revision_publish_success` does the same in upstream review; feedback "
+        "recorded while the Work ran stays pending. `reject_patch_proposal`, "
+        "`replan_development`, every resume that requests Work again, and both refresh verbs "
+        "keep the pending feedback; `resume_upstream_review` still clears it after a human "
+        "answered the reviewer. A fresh Work graph and a publish retry carry the same ids. Work "
+        "that carries feedback cannot take `request_ci_rerun`: that outcome counts as "
+        "`reject_patch_proposal`. The check verifies each of these.",
+        ("development.fix_needed", "development.agent_running", "development.waiting_ci"),
+        edges=(("development.waiting_ci", "record_actionable_review"),
+               ("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair"),
+               ("development.agent_running", "record_publish_success"),
+               ("development.agent_running", "reject_patch_proposal"),
+               ("development.agent_running", "replan_development"),
+               ("development.agent_running", "request_ci_rerun")),
+        highlighted=(("development.agent_running", "record_publish_success"),
+                     ("development.agent_running", "request_ci_rerun"),
+                     ("development.agent_running", "reject_patch_proposal")),
+    ),
+    Item(
+        "An actionable review at the submission gate",
+        "How a review on the candidate head is recorded when it leaves "
+        "`handoff.awaiting_submission`.",
+        "By its own row. `record_actionable_review` leads from `handoff.awaiting_submission` "
+        "to `development.fix_needed`: it bumps the revision once, sets "
+        "`pending_feedback_evidence_ids`, and clears `clean_head_sha`, `handoff_request`, and "
+        "`pending_human_action`. `return_for_repair` from the gate keeps the CI failure cause "
+        "only and sets `last_ci_evidence_id`. The two guards are exclusive: a CI failure on "
+        "the candidate head applies first, and the review is then recorded when CI is "
+        "observed again in development.",
+        ("handoff.awaiting_submission", "development.fix_needed", "development.agent_running"),
+        edges=(("handoff.awaiting_submission", "return_for_repair"),
+               ("handoff.awaiting_submission", "record_actionable_review"),
+               ("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair")),
+        highlighted=(("handoff.awaiting_submission", "return_for_repair"),
+                     ("handoff.awaiting_submission", "record_actionable_review")),
+    ),
+    Item(
+        "An explanation-only comment at the submission gate",
+        "What an explanation-only comment on the development PR does while the contribution "
+        "waits for `submit-upstream`.",
+        "`record_explanation` is a row of `handoff.awaiting_submission` that keeps the state: "
+        "the comment is recorded and surfaced on the tracking issue. No Work is requested and "
+        "nothing is answered automatically; the revision, the candidate head, and the CI "
+        "evidence are kept, so the pending `submit-upstream` request stays valid.",
+        ("handoff.awaiting_submission", "handoff.cleaning_debug"),
+        edges=(("handoff.awaiting_submission", "record_explanation"),
+               ("handoff.awaiting_submission", "submit_upstream")),
+        highlighted=(("handoff.awaiting_submission", "record_explanation"),),
+    ),
+    Item(
+        "Where the rerun counts of a head are kept",
+        "Which record field holds the counts of `flaky_reruns` and `interrupted_reruns`.",
+        "`budget.reruns = {head_sha, flaky, interrupted}`, for the current head only. It starts "
+        "again whenever the recorded head changes: on `record_publish_success`, "
+        "`record_head_change`, and `confirm_clean_head`. `request_ci_rerun` counts `flaky`, "
+        "`rerun_interrupted_ci` counts `interrupted`, and `resume_ci` starts `interrupted` "
+        "again. Counts recorded for another head are counts of zero for the current one.",
+        ("development.agent_running", "development.waiting_ci", "development.waiting_human",
+         "handoff.cleaning_debug", "handoff.waiting_ci"),
+        edges=(("development.agent_running", "record_publish_success"),
+               ("development.agent_running", "request_ci_rerun"),
+               ("development.waiting_ci", "record_head_change"),
+               ("development.waiting_ci", "rerun_interrupted_ci"),
+               ("development.waiting_ci", "exhaust_interrupted_reruns"),
+               ("development.waiting_human", "resume_ci"),
+               ("handoff.cleaning_debug", "confirm_clean_head"),
+               ("handoff.waiting_ci", "rerun_interrupted_ci")),
+        highlighted=(("development.agent_running", "record_publish_success"),
+                     ("development.waiting_ci", "record_head_change"),
+                     ("handoff.cleaning_debug", "confirm_clean_head")),
+    ),
+    Item(
+        "The budget of a repair driven only by review feedback",
+        "Which cluster a repair charges when no CI job failed.",
+        "None: `repair_attempts_cluster` is charged only when a failing CI job is recorded for "
+        "the head. In development, `request_repair` is guarded by that, and `request_patch` by "
+        "its complement: it covers the first patch, a rejected proposal, and a repair driven "
+        "only by feedback, and charges `work_total` only. In upstream review, "
+        "`request_upstream_revision` keeps the failing-job guard and the cluster charge, and "
+        "`request_review_revision` covers a revision driven only by feedback and charges "
+        "`work_total` only. All four require that `no_progress` remains. Exhaustion of "
+        "`repair_attempts_cluster` applies only while a failing CI job is recorded, so in each "
+        "state exactly one of the rows applies; the check verifies it.",
+        ("development.fix_needed", "development.agent_running", "upstream_review.fix_needed",
+         "upstream_review.agent_running", "upstream_review.waiting_human"),
+        edges=(("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair"),
+               ("upstream_review.fix_needed", "request_upstream_revision"),
+               ("upstream_review.fix_needed", "request_review_revision"),
+               ("upstream_review.fix_needed", "exhaust_repair_attempts")),
+        highlighted=(("development.fix_needed", "request_patch"),
+                     ("upstream_review.fix_needed", "request_review_revision")),
+    ),
+    Item(
+        "A proposal before the fork exists",
+        "Whether patch Work can be requested before `confirm_provisioning`.",
+        "It cannot. Patch Work is requested only from `development.fix_needed`, which is "
+        "entered after `confirm_provisioning`. The guard of `request_patch` is write admission "
+        "only. The checks on `scope_paths` and `scope_coverage_complete` are a guard of "
+        "`admit_development`, so an incomplete patch scope is refused before a fork is "
+        "provisioned. A stop also clears a proposal that is held and not published, together "
+        "with the pending publication, so nothing is published after a stop.",
+        ("investigation.agent_running", "provisioning.idle", "development.fix_needed",
+         "development.agent_running", "development.fix_needed+paused"),
+        edges=(("investigation.agent_running", "admit_development"),
+               ("provisioning.idle", "confirm_provisioning"),
+               ("development.fix_needed", "request_patch"),
+               ("development.agent_running", "pause")),
+        highlighted=(("investigation.agent_running", "admit_development"),
+                     ("development.fix_needed", "request_patch")),
     ),
 )
 

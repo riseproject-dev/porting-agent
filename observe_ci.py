@@ -12,7 +12,11 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * record an evidence record and move ``activity`` to ``waiting_ci``,
   ``fix_needed`` (failed) or ``waiting_human`` (approval/access), and
   take ``nominate_for_handoff`` to ``handoff.awaiting_submission`` with
-  ``last_ci_evidence_id`` set (passed, plan 14.1).
+  ``last_ci_evidence_id`` set (passed, plan 14.1);
+* at ``handoff.awaiting_submission``, take the table's rows for what is
+  observed on the candidate head: ``record_explanation`` for an
+  explanation-only comment, then ``return_for_repair`` for a CI failure, or
+  else ``record_actionable_review`` for an actionable review.
 
 Returns staged records for the state publisher. Never writes remotely.
 """
@@ -103,6 +107,38 @@ def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdic
                    or _terminal_blocking_ci(reason, head_sha) for reason in reasons)
 
 
+def _record_gate_review(obs: Observation, entry: dict, cur: dict, eid: str, ev: dict,
+                        feedback: dict, *, policy: dict, now: str) -> dict:
+    """Take ``record_actionable_review`` at the submission gate.
+
+    The row records the review as pending feedback and returns the
+    contribution to ``development.fix_needed``; the CI evidence of the
+    candidate head is kept. The ids of the comments are added to the replay
+    fences of the same record, so the same comments are not read again."""
+    recorded = engine.apply_transition(
+        cur, "record_actionable_review", policy=policy, now=now, cause_id=eid,
+        facts={"actionable_review", "candidate_head_not_failed"},
+        values={"pending_feedback_evidence_ids": list(dict.fromkeys(
+            (cur.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:]},
+        details={"evidence_id": eid})
+    if not recorded.accepted:
+        entry["review_feedback_deferred"] = recorded.reason
+        return cur
+    new = dict(
+        recorded.record,
+        processed_review_ids=((cur.get("processed_review_ids") or [])
+                              + feedback["review_ids"])[-256:],
+        processed_review_comment_ids=((cur.get("processed_review_comment_ids") or [])
+                                      + feedback["comment_ids"])[-512:],
+        processed_pr_conversation_comment_ids=(
+            (cur.get("processed_pr_conversation_comment_ids") or [])
+            + feedback["conversation_comment_ids"])[-512:])
+    schemas.validate("contribution", new)
+    obs.staged.extend([("evidence", ev), ("contributions", new), ("events", recorded.event)])
+    entry.update(review_feedback=eid, returned_to_development=True)
+    return new
+
+
 def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dict[str, dict],
             contracts: dict[str, dict], policy: dict, now: str,
             evidence: dict[str, dict] | None = None,
@@ -160,6 +196,8 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             entry["note"] = "awaiting initial development patch"
             obs.report.append(entry)
             continue
+        at_gate = engine.state_key(cur) == "handoff.awaiting_submission"
+        gate_review: tuple[str, dict, dict] | None = None
         if not cur.get("active_work") and cur["activity"] != "agent_running":
             feedback = collect.development_review_feedback(
                 api, cur, policy["command_authority"]["actor_ids"])
@@ -181,19 +219,38 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                                   "data": inquiry_data, "digests": {"head": head["head"]}}
                     schemas.validate("evidence", inquiry_ev)
                     before_inquiry = cur
-                    cur = dict(cur,
-                               processed_review_comment_ids=(
-                                   (cur.get("processed_review_comment_ids") or [])
-                                   + feedback["inquiry_comment_ids"])[-512:],
-                               processed_pr_conversation_comment_ids=(
-                                   (cur.get("processed_pr_conversation_comment_ids") or [])
-                                   + feedback["inquiry_conversation_comment_ids"])[-512:],
-                               updated_at=now)
-                    schemas.validate("contribution", cur)
-                    obs.staged.extend([("evidence", inquiry_ev), ("contributions", cur),
-                                       ("events", lifecycle._event(
-                                           before_inquiry, cur, "development_review_inquiry",
-                                           "observation", inquiry_id, now, False))])
+                    processed = {
+                        "processed_review_ids": list(cur.get("processed_review_ids") or []),
+                        "processed_review_comment_ids": (
+                            (cur.get("processed_review_comment_ids") or [])
+                            + feedback["inquiry_comment_ids"])[-512:],
+                        "processed_pr_conversation_comment_ids": (
+                            (cur.get("processed_pr_conversation_comment_ids") or [])
+                            + feedback["inquiry_conversation_comment_ids"])[-512:]}
+                    if at_gate:
+                        # The gate's own row: the comment is recorded and the
+                        # gate, the candidate head, and the CI evidence are kept.
+                        explained = engine.apply_transition(
+                            cur, "record_explanation", policy=policy, now=now,
+                            cause_id=inquiry_id, facts={"explanation_inquiry"}, values=processed,
+                            details={"evidence_id": inquiry_id,
+                                     # Shown on the tracking issue by the ledger.
+                                     "comments": [{"url": item.get("url"),
+                                                   "body": item["body"][:500]}
+                                                  for item in inquiry_items[:8]]})
+                        if not explained.accepted:
+                            raise lifecycle.TransitionError(
+                                f"record_explanation refused at the gate: {explained.reason}")
+                        cur = explained.record
+                        obs.staged.extend([("evidence", inquiry_ev), ("contributions", cur),
+                                           ("events", explained.event)])
+                    else:
+                        cur = dict(cur, **processed, updated_at=now)
+                        schemas.validate("contribution", cur)
+                        obs.staged.extend([("evidence", inquiry_ev), ("contributions", cur),
+                                           ("events", lifecycle._event(
+                                               before_inquiry, cur, "development_review_inquiry",
+                                               "observation", inquiry_id, now, False))])
                     entry["review_inquiry"] = inquiry_id
                 ids = feedback["review_ids"] + feedback["comment_ids"] + feedback["conversation_comment_ids"]
                 if ids:
@@ -205,38 +262,36 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                           "collected_at": now, "summary": "\n\n".join(summaries)[:8000],
                           "limitations": [], "data": feedback, "digests": {"head": head["head"]}}
                     schemas.validate("evidence", ev)
-                    if cur["phase"] == "handoff":
-                        # The table leaves the gate first; the feedback is
-                        # then recorded on the development record.
-                        returned = engine.apply_transition(
-                            cur, "return_for_repair", policy=policy, now=now, cause_id=eid,
-                            facts={"candidate_head_needs_repair"})
-                        cur = returned.record
-                        obs.staged.extend([("contributions", cur), ("events", returned.event)])
-                        entry["returned_to_development"] = True
-                    before = cur
-                    cur = compat.legacy_update(
-                               cur, "observe_ci.review_feedback",
-                               revision=cur["revision"] + 1, phase="development", activity="fix_needed",
-                               active_work=None, active_operation_id=None, clean_head_sha=None,
-                               handoff_request=None, handoff_approval=None, pending_human_action=None,
-                               last_ci_evidence_id=eid,
-                               processed_review_ids=((cur.get("processed_review_ids") or []) + feedback["review_ids"])[-256:],
-                               processed_review_comment_ids=((cur.get("processed_review_comment_ids") or [])
-                                                             + feedback["comment_ids"])[-512:],
-                               processed_pr_conversation_comment_ids=(
-                                   (cur.get("processed_pr_conversation_comment_ids") or [])
-                                   + feedback["conversation_comment_ids"])[-512:],
-                               pending_feedback_evidence_ids=list(dict.fromkeys(
-                                   (cur.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:],
-                               updated_at=now)
-                    schemas.validate("contribution", cur)
-                    obs.staged.extend([("evidence", ev), ("contributions", cur),
-                                       ("events", lifecycle._event(before, cur, "development_review_feedback",
-                                                                   "observation", eid, now, True))])
-                    entry["review_feedback"] = eid
-                obs.report.append(entry)
-                continue
+                    if at_gate:
+                        # At the gate the review is recorded by the table's
+                        # row, once CI on the candidate head is read: a CI
+                        # failure there takes `return_for_repair` instead.
+                        gate_review = (eid, ev, feedback)
+                    else:
+                        before = cur
+                        cur = compat.legacy_update(
+                                   cur, "observe_ci.review_feedback",
+                                   revision=cur["revision"] + 1, phase="development", activity="fix_needed",
+                                   active_work=None, active_operation_id=None, clean_head_sha=None,
+                                   handoff_request=None, handoff_approval=None, pending_human_action=None,
+                                   last_ci_evidence_id=eid,
+                                   processed_review_ids=((cur.get("processed_review_ids") or []) + feedback["review_ids"])[-256:],
+                                   processed_review_comment_ids=((cur.get("processed_review_comment_ids") or [])
+                                                                 + feedback["comment_ids"])[-512:],
+                                   processed_pr_conversation_comment_ids=(
+                                       (cur.get("processed_pr_conversation_comment_ids") or [])
+                                       + feedback["conversation_comment_ids"])[-512:],
+                                   pending_feedback_evidence_ids=list(dict.fromkeys(
+                                       (cur.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:],
+                                   updated_at=now)
+                        schemas.validate("contribution", cur)
+                        obs.staged.extend([("evidence", ev), ("contributions", cur),
+                                           ("events", lifecycle._event(before, cur, "development_review_feedback",
+                                                                       "observation", eid, now, True))])
+                        entry["review_feedback"] = eid
+                if not at_gate:
+                    obs.report.append(entry)
+                    continue
         # A requested repair must reach the controller before another CI poll
         # can reclassify the same unchanged head as waiting for a human.
         if cur["activity"] == "fix_needed":
@@ -278,7 +333,8 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 # Only an executed failure on the candidate head leaves the gate.
                 returned = engine.apply_transition(
                     cur, "return_for_repair", policy=policy, now=now, cause_id=eid,
-                    facts={"candidate_head_needs_repair"})
+                    facts={"candidate_head_failed"}, values={"last_ci_evidence_id": eid},
+                    details={"evidence_id": eid})
                 cur = returned.record
                 obs.staged.extend([("contributions", cur), ("events", returned.event)])
                 entry.update(activity="fix_needed", returned_to_development=True)
@@ -330,7 +386,9 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 obs.staged.append(("contributions", cur))
             entry["evidence"] = eid
         if cur["phase"] == "handoff":
-            # Repeated observation of the candidate head keeps the gate.
+            if gate_review and verdict.state != "failed":
+                cur = _record_gate_review(obs, entry, cur, *gate_review, policy=policy, now=now)
+            # Otherwise repeated observation of the candidate head keeps the gate.
             obs.report.append(entry)
             continue
         if _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"], unadmitted_work):

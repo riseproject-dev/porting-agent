@@ -22,7 +22,10 @@ The contribution lifecycle is defined by one table in `lifecycle.py`. That table
 - every budget exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, every resume from that wait starts exactly that counter again, and no other transition starts a counter again;
 - every state of kind `gate`, `human_wait`, or `locked` has a reminder from the rule, and a late Result is recorded in every state without changing it;
 - `handoff.waiting_upstream_pr` has exactly its three exits;
-- a stop set by the controller records its reason;
+- a stop set by the controller records its reason, and every stop clears the pending publication and a held proposal that is not published;
+- every row that allocates patch or revision Work carries the pending feedback, only a published Result clears the feedback its Work carried, and Work that carries feedback takes no CI rerun;
+- patch Work is requested only from a `fix_needed` state under write admission, `repair_attempts_cluster` is charged exactly when a failing CI job is recorded for the head, and the rows that apply when Work is due exclude each other;
+- exactly the rows that record a new head start the rerun counts of `budget.reruns` again, and a CI failure and a review at the submission gate exclude each other;
 - the operation table has the same structure, and every state, transition, rule, and flag is drawn below and every decision slice uses table entries.
 
 A state is `phase.activity`. Each arrow is a transition verb of the table, labelled with its `/upstreaming` command when a command triggers it; the other transitions are taken on a Result, an observation, an operation receipt, or a controller tick, as the table records.
@@ -115,6 +118,8 @@ flowchart TB
     handoff_closing_internal_pr -->|confirm_internal_pr_closed| handoff_preparing_submission
     handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
     handoff_waiting_upstream_pr -->|verify_upstream_pr| upstream_waiting_ci
+    handoff_awaiting_submission -->|record_actionable_review| development_fix_needed
+    handoff_awaiting_submission -->|record_explanation| handoff_awaiting_submission
     handoff_cleaning_debug -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
     handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
@@ -122,6 +127,7 @@ flowchart TB
     upstream_waiting_ci -->|record_actionable_review| upstream_fix_needed
     upstream_waiting_ci -->|record_explanation| upstream_waiting_ci
     upstream_fix_needed -->|request_upstream_revision| upstream_agent_running
+    upstream_fix_needed -->|request_review_revision| upstream_agent_running
     upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
     upstream_waiting_ci -->|record_pr_closed_unmerged| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
@@ -136,7 +142,7 @@ flowchart TB
     closed_idle --> end_3(( ))
 ```
 
-On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; on the upstream PR it is recorded and surfaced on the tracking issue, and nothing is posted upstream. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
+On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and surfaced on the tracking issue, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
 
 ## Investigation and provisioning failure cases
 
@@ -272,7 +278,7 @@ flowchart TB
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
 ```
 
-`development.fix_needed` is the one state in which development Work is due. `request_patch` applies while the head has no CI evidence and no feedback is recorded; `request_repair` applies otherwise. Every applicable build and test job must execute and pass on the exact head.
+`development.fix_needed` is the one state in which development Work is due, and it is entered only after `confirm_provisioning`: no patch is proposed before the fork exists. `request_repair` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster` for that job; `request_patch` applies otherwise (the first patch, a rejected proposal, a repair driven only by review feedback) and charges `work_total` only. Both need write admission. Every applicable build and test job must execute and pass on the exact head.
 
 ### Failure case 1: patch proposal, dispatch, or Work failure
 
@@ -296,7 +302,7 @@ flowchart TB
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
-Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development.
+Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development. A rejected proposal, a replan, and a resume keep the pending feedback.
 
 ### Failure case 2: trusted publication failure
 
@@ -348,7 +354,7 @@ flowchart TB
     development_waiting_ci -->|record_pr_mismatch| development_waiting_human
 ```
 
-Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, which reruns the jobs. Explanation-only comments do not bump the revision, invalidate CI, or request repair.
+Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, which reruns the jobs. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair.
 
 ### Failure case 4: a repair budget is exhausted
 
@@ -378,7 +384,7 @@ flowchart TB
     development_fix_needed -->|exhaust_repair_attempts| parked_idle
 ```
 
-Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs a complete investigation again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains.
+Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs a complete investigation again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains. `repair_attempts_cluster` counts only while a failing CI job is recorded for the head.
 
 ### Failure case 5: the Work budget is exhausted
 
@@ -428,7 +434,7 @@ flowchart TB
 
 ## Pause, waiting-human, and park cases
 
-Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and resume from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work.
+Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and resume from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work. A stop therefore clears the requested Work, the pending publication, and a held proposal that is not published, so nothing is published after it.
 
 ### Success case 1: temporary pause and resume
 
@@ -595,6 +601,8 @@ flowchart TB
     handoff_cleaning_debug -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|rerun_interrupted_ci| handoff_waiting_ci
     handoff_awaiting_submission -->|return_for_repair| development_fix_needed
+    handoff_awaiting_submission -->|record_actionable_review| development_fix_needed
+    handoff_awaiting_submission -->|record_explanation| handoff_awaiting_submission
     handoff_awaiting_submission -->|record_head_change| development_waiting_ci
     handoff_cleaning_debug -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
@@ -604,7 +612,7 @@ flowchart TB
     handoff_waiting_upstream_pr -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
 ```
 
-Before the package is posted, a changed head, cleanup validation, an exact-head lease conflict, or blocking CI on the clean head returns to development. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_investigation` leave it.
+Before the package is posted, a changed head, cleanup validation, an exact-head lease conflict, or blocking CI on the clean head returns to development. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_investigation` leave it.
 
 ### Failure case 2: a handoff operation fails repeatedly
 
@@ -677,6 +685,7 @@ flowchart TB
     upstream_waiting_ci -->|record_actionable_review| upstream_fix_needed
     upstream_waiting_ci -->|record_explanation| upstream_waiting_ci
     upstream_fix_needed -->|request_upstream_revision| upstream_agent_running
+    upstream_fix_needed -->|request_review_revision| upstream_agent_running
     upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
     upstream_agent_running -->|reject_patch_proposal| upstream_fix_needed
     upstream_agent_running -->|require_reviewer_answer| upstream_waiting_human
@@ -685,7 +694,7 @@ flowchart TB
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
 
-Automated upstream revisions require that the upstream PR head is the controlled fork ref. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without requesting Work. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and CI run. Upstream CI is never rerun by the pipeline.
+Automated upstream revisions require that the upstream PR head is the controlled fork ref. `request_upstream_revision` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster`; `request_review_revision` applies to a revision driven only by review feedback and charges `work_total` only. A published revision clears exactly the feedback its Work carried. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without requesting Work. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and CI run. Upstream CI is never rerun by the pipeline.
 
 ### Failure case 4: revision Work or its publication fails
 

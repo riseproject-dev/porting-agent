@@ -159,6 +159,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "release_acceptance": None,
         "budget": {"policy_id": policy_id, "attempts_used": 0, "no_progress_streak": 0,
                    "clusters": {}, "investigation_attempts": 0,
+                   "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                    "spent_estimate_usd_cents": 0},
         "pending_human_action": None,
         "follows": follows,
@@ -171,7 +172,13 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
 
 
 def proposal_admission(record: dict) -> str | None:
-    """Gate uncredentialed patch proposal Work before any fork exists."""
+    """Gate uncredentialed patch proposal Work before any fork exists.
+
+    The lifecycle table has no such Work: patch Work is requested only from
+    ``development.fix_needed``, under ``write_admission``, and the scope
+    checks made here are a guard of ``admit_development``. Only the
+    ``destination_writes=false`` path of the controller, registered in
+    ``compat.LEGACY_SITES``, still calls this."""
     if not record.get("admission_class"):
         return "admission class not approved"
     if not record.get("dossier_evidence_id"):
@@ -269,7 +276,8 @@ class Effects:
     fences. ``work`` is what happens to the requested Work (``active_work``):
     ``keep``, ``clear``, ``allocate`` (new Work for this state) or
     ``reallocate`` (a fresh Work graph for the same task). ``sets`` and
-    ``clears`` name record fields; ``field=value`` names the value set.
+    ``clears`` name record fields; ``field=value`` names the value set. A
+    clear in ``QUALIFIED_CLEARS`` clears only the part of a field it names.
     ``restarts`` names the budgets whose counter the transition may start
     again: it starts exactly the one named in ``pending_human_action.counter``,
     and none when no counter is named.
@@ -488,6 +496,32 @@ _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
 # sets a flag or ends the generation.
 HELD_RESULT = "pending_publication"
 STOP_KINDS = ("generation_end", "terminal")
+# Clears that take only a part of a field, as (field, the part cleared).
+# A stop also clears a proposal the record holds without having published
+# it, so nothing is published after the stop; a published proposal is kept.
+# A published Result clears exactly the feedback its Work carried.
+HELD_PROPOSAL = "held proposal_artifact"
+CARRIED_FEEDBACK = "carried pending_feedback_evidence_ids"
+QUALIFIED_CLEARS: dict[str, tuple[str, str]] = {
+    HELD_PROPOSAL: (
+        "proposal_artifact",
+        "cleared only while it holds a proposal that is not published (its `outcome` is "
+        "`proposal`); a published proposal is kept"),
+    CARRIED_FEEDBACK: (
+        "pending_feedback_evidence_ids",
+        "exactly the ids in `active_work.feedback_evidence_ids`, the pending feedback present "
+        "when the Work was allocated; feedback recorded later stays pending"),
+}
+# What every stop clears beside the requested Work.
+_HELD = (HELD_RESULT, HELD_PROPOSAL)
+# The pending feedback a Work request carries: the ids present at allocation.
+# A fresh Work graph for the same task and a publish retry of its Result carry
+# the same ids.
+WORK_FEEDBACK = "active_work.feedback_evidence_ids"
+# Rerun counts of the current head. They start again whenever the recorded
+# head changes: on every row of ``RERUN_RESTART_VERBS``.
+RERUNS = "budget.reruns"
+RERUN_RESTART_VERBS = ("record_publish_success", "record_head_change", "confirm_clean_head")
 
 # Transitions shared by several states. The key under each state names the
 # verb and the target.
@@ -510,30 +544,52 @@ _EXHAUST_DISPATCH_RECOVERY = Transition(
 # lists the combinations that cannot hold together.
 WORK_TOTAL_REMAINS = "work_total remains"
 WORK_TOTAL_EXHAUSTED = "work_total exhausted"
-PATCH_DUE = "no CI evidence for the head and no feedback recorded"
-REPAIR_DUE = "CI evidence for the head or feedback recorded"
+# ``repair_attempts_cluster`` counts repairs per failing CI job, so it is
+# charged, and its exhaustion applies, only while a failing CI job is recorded
+# for the head. Work that is due without one (the first patch, a rejected
+# proposal, a repair driven only by review feedback) charges ``work_total``
+# only.
+FAILING_JOB = "a failing CI job is recorded for the head"
+NO_FAILING_JOB = "no failing CI job is recorded for the head"
 NO_PROGRESS_REMAINS = "no_progress remains"
 REPAIR_BUDGETS_REMAIN = "repair_attempts_cluster and no_progress remain"
 REPAIR_BUDGET_EXHAUSTED = ("no_progress is exhausted, or repair_attempts_cluster is exhausted "
-                           "and CI evidence for the head or feedback is recorded")
+                           "and a failing CI job is recorded for the head")
 REFRESH_UNUSED = "the automatic refresh is unused in this generation"
 REFRESH_USED = "the automatic refresh is used in this generation"
 REVISION_BUDGETS_REMAIN = "repair_attempts_cluster, no_progress, and work_total remain"
-REVISION_BUDGET_EXHAUSTED = "repair_attempts_cluster, no_progress, or work_total is exhausted"
+REVIEW_REVISION_BUDGETS_REMAIN = "no_progress and work_total remain"
+REVISION_BUDGET_EXHAUSTED = ("no_progress or work_total is exhausted, or repair_attempts_cluster "
+                             "is exhausted and a failing CI job is recorded for the head")
+# What leaves the submission gate for repair: a CI failure on the candidate
+# head takes ``return_for_repair``; an actionable review takes
+# ``record_actionable_review`` only when no such failure is observed.
+CANDIDATE_FAILED = "an executed blocking failure on the candidate head"
+CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
+# Work that carries feedback is never answered by a CI rerun.
+WORK_WITHOUT_FEEDBACK = "the Work carries no feedback"
 EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((WORK_TOTAL_REMAINS,), (WORK_TOTAL_EXHAUSTED,)),
-    ((PATCH_DUE,), (REPAIR_DUE,)),
-    ((PATCH_DUE, NO_PROGRESS_REMAINS), (REPAIR_BUDGET_EXHAUSTED,)),
+    ((NO_FAILING_JOB,), (FAILING_JOB,)),
+    ((NO_FAILING_JOB, NO_PROGRESS_REMAINS), (REPAIR_BUDGET_EXHAUSTED,)),
     ((REPAIR_BUDGETS_REMAIN,), (REPAIR_BUDGET_EXHAUSTED,)),
     ((REFRESH_UNUSED,), (REFRESH_USED,)),
     ((REVISION_BUDGETS_REMAIN,), (REVISION_BUDGET_EXHAUSTED,)),
+    ((NO_FAILING_JOB, REVIEW_REVISION_BUDGETS_REMAIN), (REVISION_BUDGET_EXHAUSTED,)),
+    ((CANDIDATE_FAILED,), (CANDIDATE_NOT_FAILED,)),
 )
+# States in which two observations could apply to the same input; their
+# guards are exclusive, so the order of observation never decides.
+EXCLUSIVE_OBSERVATIONS = {
+    "handoff.awaiting_submission": ("return_for_repair", "record_actionable_review"),
+}
 
 _ALLOCATE_WORK_RETRY = Transition(
     _K, None,
     ("the Work graph is terminal without a usable Result", "work_recovery and work_total remain"),
     _E(revision="bump", work="reallocate"), ("work_recovery", "work_total"),
-    description="A terminal Work graph is never submitted again; a fresh graph is allocated.")
+    description="A terminal Work graph is never submitted again; a fresh graph is allocated. It "
+                "carries the same feedback ids.")
 _EXHAUST_WORK_RECOVERY = Transition(
     _K, None,
     ("the Work graph is terminal without a usable Result", "work_recovery or work_total exhausted"),
@@ -544,7 +600,8 @@ _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
     ("publication failed with an infrastructure error", "publish_recovery remains"),
     _E(work="clear", sets=("pending_publication",)), ("publish_recovery",),
-    "The same verified Result is published again; no new Work is requested.")
+    "The same verified Result is published again; no new Work is requested. The pending "
+    "publication carries the feedback ids of its Work.")
 _EXHAUST_PUBLISH_RECOVERY = Transition(
     _R, None,
     ("publish_recovery exhausted",),
@@ -567,8 +624,13 @@ _EXHAUST_INTERRUPTED_RERUNS = Transition(
     _E(sets=("pending_human_action=ci_interrupted", f"{PENDING_COUNTER}=interrupted_reruns")))
 _RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
 _RESUME_CI_NOTE = ("Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` "
-                   "again for the head.")
-_RETURN_FOR_REPAIR = _E(revision="bump", clears=("clean_head_sha", "handoff_request", "pending_human_action"))
+                   "(`budget.reruns.interrupted`) again for the head.")
+_LEAVE_HANDOFF = ("clean_head_sha", "handoff_request", "pending_human_action")
+_RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
+_PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
+                  "processed_pr_conversation_comment_ids")
+_FEEDBACK_NOTE = (" The Work request carries the pending feedback ids present at allocation "
+                  "(`active_work.feedback_evidence_ids`).")
 _RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
 _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts again the one "
                  "counter named in `pending_human_action.counter`, and no other. The event "
@@ -578,8 +640,14 @@ _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts ag
 def _resume_restarting(*budgets: str) -> Effects:
     """The effects of the resume of a human wait that one exhausted budget caused."""
     return _E(revision="bump", clears=("pending_human_action",), restarts=budgets)
+DEVELOPMENT_PROPOSAL_REJECTED = (
+    "the proposal is rejected for the current revision, the worker reports it is blocked, or the "
+    "worker reports a failure not caused by the patch and either flaky_reruns is exhausted or "
+    "the Work carries feedback")
 _ADMISSION = ("verified dossier decision develop, or verified dossier decision park and a "
               "recorded admission_override")
+PATCH_SCOPE_COMPLETE = ("the verified dossier names `scope_paths`, and `scope_coverage_complete` "
+                        "holds")
 
 
 LIFECYCLE: dict[str, State] = {
@@ -628,11 +696,13 @@ LIFECYCLE: dict[str, State] = {
                                        f"{PENDING_COUNTER}=investigation_attempts"))),
             ("admit_development", "provisioning.idle"): Transition(
                 _R, None,
-                (_ADMISSION,
+                (_ADMISSION, PATCH_SCOPE_COMPLETE,
                  "no refresh recorded, or the recorded fork or development PR no longer matches"),
                 _E(revision="bump", work="clear",
                   sets=("dossier_evidence_id", "admission_class", "scope_paths"),
-                  clears=("refresh", "admission_override"))),
+                  clears=("refresh", "admission_override")),
+                description="The scope of the patch is checked here, before a fork exists: "
+                            "no patch Work is requested before `confirm_provisioning`."),
             ("readmit_development", "development.fix_needed"): Transition(
                 _R, None,
                 (_ADMISSION,
@@ -644,11 +714,11 @@ LIFECYCLE: dict[str, State] = {
             ("park_investigation", "parked.idle"): Transition(
                 _R, None,
                 ("verified dossier decision park", "no admission_override recorded"),
-                _E(work="clear", sets=("parked_reason", "previous_phase"), clears=(HELD_RESULT,))),
+                _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD)),
             ("close_investigation", "closed.idle"): Transition(
                 _R, None,
                 ("verified dossier decision close",),
-                _E(work="clear", sets=("terminal_reason",), clears=(HELD_RESULT,)),
+                _E(work="clear", sets=("terminal_reason",), clears=_HELD),
                 description="A recorded `admission_override` is not applied against a decision close; the "
                 "reply states so."),
         }),
@@ -708,24 +778,29 @@ LIFECYCLE: dict[str, State] = {
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
                 ("the Result is published, or uncertain and later confirmed",),
-                _E(work="clear", sets=("proposal_artifact", "publication_operation_id"))),
+                _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
+                  clears=(CARRIED_FEEDBACK,)),
+                description="The published patch answers exactly the feedback its Work "
+                            "carried; feedback recorded while the Work ran stays pending."),
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
-                ("the proposal is rejected for the current revision, the worker reports it is "
-                 "blocked, or the worker reports a failure not caused by the patch and "
-                 "flaky_reruns is exhausted",
-                 "no_progress remains"),
-                _E(revision="bump", work="clear", clears=("clean_head_sha",)), ("no_progress",)),
+                (DEVELOPMENT_PROPOSAL_REJECTED, "no_progress remains"),
+                _E(revision="bump", work="clear", clears=("clean_head_sha",)), ("no_progress",),
+                "The pending feedback is kept."),
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
-                _E(revision="bump", work="clear")),
+                _E(revision="bump", work="clear"),
+                description="The pending feedback is kept."),
             ("request_ci_rerun", "development.waiting_ci"): Transition(
                 _R, None,
-                ("the worker reports a failure not caused by the patch", "flaky_reruns remains"),
+                ("the worker reports a failure not caused by the patch", WORK_WITHOUT_FEEDBACK,
+                 "flaky_reruns remains"),
                 _E(work="clear", clears=("last_ci_evidence_id",)), ("flaky_reruns",),
                 "The repair worker classifies the failure; the failed jobs are rerun on the exact "
-                "head, and the head and revision are kept."),
+                "head, and the head and revision are kept. A rerun answers no feedback, so Work "
+                "that carries feedback never takes this row: the same outcome counts as "
+                "`reject_patch_proposal`."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
         }),
@@ -748,7 +823,8 @@ LIFECYCLE: dict[str, State] = {
             ("record_head_change", SELF): Transition(
                 _O, None,
                 ("the observed fork head differs from the recorded head",),
-                _E(revision="bump", sets=("fork.head_sha",), clears=("last_ci_evidence_id",))),
+                _E(revision="bump", sets=("fork.head_sha", RERUNS),
+                  clears=("last_ci_evidence_id",))),
             ("record_pr_mismatch", "development.waiting_human"): Transition(
                 _O, None,
                 ("the observed development PR does not match the recorded fork, ref, or PR",),
@@ -765,18 +841,23 @@ LIFECYCLE: dict[str, State] = {
         "auto_wait", True, True,
         "Development Work is due: the fork is ready for a first patch, or a CI failure, "
         "actionable review, rejected proposal, refreshed dossier, or a resume needs a bounded "
-        "repair.",
+        "repair. It is the only state in which patch Work is requested, so none is requested "
+        "before `confirm_provisioning`.",
         transitions={
             ("request_patch", "development.agent_running"): Transition(
                 _K, None,
-                (PATCH_DUE, "proposal or write admission", "worker slot free",
+                (NO_FAILING_JOB, "write admission", "worker slot free",
                  "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS, NOT_PAUSED),
-                _E(work="allocate"), ("work_total",)),
+                _E(work="allocate", sets=(WORK_FEEDBACK,)), ("work_total",),
+                "Covers the first patch, the patch after a rejected proposal, and a repair "
+                "driven only by review feedback." + _FEEDBACK_NOTE),
             ("request_repair", "development.agent_running"): Transition(
                 _K, None,
-                (REPAIR_DUE, "write admission", "worker slot free", "capacity available",
+                (FAILING_JOB, "write admission", "worker slot free", "capacity available",
                  REPAIR_BUDGETS_REMAIN, WORK_TOTAL_REMAINS, NOT_PAUSED),
-                _E(work="allocate"), ("repair_attempts_cluster", "work_total")),
+                _E(work="allocate", sets=(WORK_FEEDBACK,)),
+                ("repair_attempts_cluster", "work_total"),
+                "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
             ("refresh_on_exhaustion", "queued.idle"): Transition(
                 _K, None,
                 (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_UNUSED, NOT_PAUSED),
@@ -788,7 +869,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_repair_attempts", "parked.idle"): Transition(
                 _K, None,
                 (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_USED),
-                _E(work="clear", sets=("parked_reason", "previous_phase"), clears=(HELD_RESULT,)),
+                _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD),
                 description="Parks for `repair_attempts_cluster` and `no_progress` only, after "
                             "`refresh_on_exhaustion` is used. Exhaustion of `work_total` takes "
                             "`exhaust_work_total` first."),
@@ -813,10 +894,10 @@ LIFECYCLE: dict[str, State] = {
             ("resume_development", "development.fix_needed"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, pending_is_not("ci_interrupted"), QUIESCENT, NOT_STALE),
-                _E(revision="bump", clears=("pending_human_action", "pending_publication"),
+                _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery")),
                 description="Fresh Work is requested; a Result held for publication is not "
-                            "reused. " + _RESTART_NOTE),
+                            "reused. The pending feedback is kept. " + _RESTART_NOTE),
             ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
     "handoff.awaiting_submission": State(
@@ -831,12 +912,29 @@ LIFECYCLE: dict[str, State] = {
                             "handoff preparation."),
             ("return_for_repair", "development.fix_needed"): Transition(
                 _O, None,
-                ("an executed blocking failure or actionable review on the candidate head",),
-                _RETURN_FOR_REPAIR),
+                (CANDIDATE_FAILED,),
+                _E(revision="bump", sets=("last_ci_evidence_id",), clears=_LEAVE_HANDOFF),
+                description="Only a CI failure takes this row; the evidence of the failure "
+                            "is recorded. An actionable review takes `record_actionable_review`."),
+            ("record_actionable_review", "development.fix_needed"): Transition(
+                _O, None,
+                ("authorized actionable review feedback", CANDIDATE_NOT_FAILED),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",),
+                  clears=_LEAVE_HANDOFF),
+                description="The review is recorded as pending feedback, and the CI evidence "
+                            "of the candidate head is kept. When CI also failed on the candidate "
+                            "head, `return_for_repair` applies instead, and the review is "
+                            "recorded once CI is observed again."),
+            ("record_explanation", SELF): Transition(
+                _O, None, ("authorized explanation-only inquiry",),
+                _E(sets=_PROCESSED_IDS),
+                description="The comment is recorded and surfaced on the tracking issue. No "
+                            "Work is requested and nothing is answered automatically; the "
+                            "revision, the candidate head, and the CI evidence are kept."),
             ("record_head_change", "development.waiting_ci"): Transition(
                 _O, None,
                 ("the observed fork head differs from the candidate head",),
-                _E(revision="bump", sets=("fork.head_sha",),
+                _E(revision="bump", sets=("fork.head_sha", RERUNS),
                   clears=("last_ci_evidence_id", "handoff_request", "pending_human_action"))),
             ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
@@ -852,7 +950,7 @@ LIFECYCLE: dict[str, State] = {
             ("confirm_clean_head", "handoff.waiting_ci"): Transition(
                 _P, None,
                 ("the lease write and ref readback match",),
-                _E(sets=("clean_head_sha", "fork.head_sha"))),
+                _E(sets=("clean_head_sha", "fork.head_sha", RERUNS))),
             ("return_for_repair", "development.fix_needed"): Transition(
                 _P, None,
                 ("the cleanup is invalid, or the exact-head lease conflicts",),
@@ -987,7 +1085,8 @@ LIFECYCLE: dict[str, State] = {
                 _O, None,
                 ("the upstream PR head changed and the pipeline did not publish the change",),
                 _E(revision="bump",
-                  sets=("upstream_pr.head_sha", "pending_human_action=upstream_head_changed"),
+                  sets=("upstream_pr.head_sha", "pending_human_action=upstream_head_changed",
+                        RERUNS),
                   clears=("last_ci_evidence_id",))),
             ("record_pr_closed_unmerged", "upstream_review.waiting_human"): Transition(
                 _O, None,
@@ -1004,9 +1103,18 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("request_upstream_revision", "upstream_review.agent_running"): Transition(
                 _K, None,
-                ("the upstream PR head is the controlled fork ref", "worker slot free",
-                 REVISION_BUDGETS_REMAIN, NOT_PAUSED),
-                _E(work="allocate"), ("repair_attempts_cluster", "work_total")),
+                ("the upstream PR head is the controlled fork ref", FAILING_JOB,
+                 "worker slot free", REVISION_BUDGETS_REMAIN, NOT_PAUSED),
+                _E(work="allocate", sets=(WORK_FEEDBACK,)),
+                ("repair_attempts_cluster", "work_total"),
+                "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
+            ("request_review_revision", "upstream_review.agent_running"): Transition(
+                _K, None,
+                ("the upstream PR head is the controlled fork ref", NO_FAILING_JOB,
+                 "worker slot free", REVIEW_REVISION_BUDGETS_REMAIN, NOT_PAUSED),
+                _E(work="allocate", sets=(WORK_FEEDBACK,)), ("work_total",),
+                "A revision driven only by review feedback; it charges no "
+                "`repair_attempts_cluster`." + _FEEDBACK_NOTE),
             ("exhaust_repair_attempts", "upstream_review.waiting_human"): Transition(
                 _K, None,
                 (REVISION_BUDGET_EXHAUSTED,),
@@ -1021,13 +1129,17 @@ LIFECYCLE: dict[str, State] = {
             ("record_revision_publish_success", "upstream_review.waiting_ci"): Transition(
                 _R, None,
                 ("the revision is published to the upstream PR head",),
-                _E(work="clear", sets=("proposal_artifact", "publication_operation_id"))),
+                _E(work="clear", sets=("proposal_artifact", "publication_operation_id"),
+                  clears=(CARRIED_FEEDBACK,)),
+                description="The published revision answers exactly the feedback its Work "
+                            "carried."),
             ("reject_patch_proposal", "upstream_review.fix_needed"): Transition(
                 _R, None,
                 ("the proposal is rejected for the current revision, or the worker reports it is "
                  "blocked",
                  "no_progress remains"),
-                _E(revision="bump", work="clear"), ("no_progress",)),
+                _E(revision="bump", work="clear"), ("no_progress",),
+                "The pending feedback is kept."),
             ("require_reviewer_answer", "upstream_review.waiting_human"): Transition(
                 _R, None,
                 ("the worker reports that no change is needed",),
@@ -1060,11 +1172,11 @@ LIFECYCLE: dict[str, State] = {
                 (EXACT_REVISION,
                  pending_is("dispatch_failed", "work_failed", "publication_infrastructure_failure",
                             "repair_budget_exhausted")),
-                _E(revision="bump", clears=("pending_human_action", "pending_publication"),
+                _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("repair_attempts_cluster", "no_progress", "work_total",
                             "dispatch_recovery", "work_recovery", "publish_recovery")),
                 description="Only when revision Work failed: dispatch, Work, publication, or a "
-                            "budget. " + _RESTART_NOTE),
+                            "budget. The pending feedback is kept. " + _RESTART_NOTE),
         }),
     "release_wait.idle": State(
         "auto_wait", False, False,
@@ -1105,7 +1217,7 @@ LIFECYCLE: dict[str, State] = {
             ("abandon", "closed.idle"): Transition(
                 _C, "/upstreaming abandon",
                 ("a reason is given", ANY_REVISION),
-                _E(sets=("terminal_reason=abandoned",), clears=(HELD_RESULT,))),
+                _E(sets=("terminal_reason=abandoned",), clears=_HELD)),
         }),
     "closed.idle": State(
         "terminal", False, False,
@@ -1120,9 +1232,10 @@ RULES: dict[str, Rule] = {
         Transition(
             _C, PARK,
             ("a reason is given", ANY_REVISION, "no open operation"),
-            _E(work="clear", sets=("parked_reason", "previous_phase"), clears=(HELD_RESULT,)),
+            _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD),
             description="Ends the current generation; evidence is kept for audit. A Result held "
-                        "for publication is not published. Accepted while paused."),
+                        "for publication and a held proposal are not published. Accepted while "
+                        "paused."),
         "every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, "
         "`release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`",
         kinds=("auto_wait", "work", "human_wait", "gate", "locked"),
@@ -1204,8 +1317,9 @@ FLAGS: dict[str, Flag] = {
         "A stop of new Work and writer admission, with its reason and who set it (a human or "
         "the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; "
         "a pause set by the controller always records one. Setting it clears the requested "
-        "Work and the pending publication, and records `paused_at`; a Result held for "
-        "publication is not published, and no publish retry is launched while paused. Phase, "
+        "Work, the pending publication, and a held proposal that is not published, and "
+        "records `paused_at`; nothing held is published after the stop, and no publish retry "
+        "is launched while paused. Phase, "
         "activity, evidence, and pending feedback are kept. "
         "The one exception: `pause` in an `agent_running` state leads to the state in which the "
         "Work is due again, `investigation.idle`, `development.fix_needed`, or "
@@ -1219,7 +1333,7 @@ FLAGS: dict[str, Flag] = {
                 _C, "/upstreaming pause",
                 (NOT_PAUSED, "not terminal", ANY_REVISION),
                 _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=human"),
-                  clears=(HELD_RESULT,)),
+                  clears=_HELD),
                 description="A reason is optional; when given it is recorded in `paused_reason`."),
             "pause_on_identity_change": Transition(
                 _O, None,
@@ -1228,7 +1342,7 @@ FLAGS: dict[str, Flag] = {
                 _E(work="clear", sets=("paused", "paused_at",
                                        "paused_reason=upstream_identity_changed",
                                        "paused_by=controller"),
-                  clears=(HELD_RESULT,))),
+                  clears=_HELD)),
         },
         {
             "resume_pause": Transition(
@@ -1276,7 +1390,8 @@ BUDGETS: dict[str, Budget] = {
         "`budget.investigation_attempts`", ("exhaust_investigation_recovery",)),
     "repair_attempts_cluster": Budget(
         "retries.patch_attempts_per_cluster", 0,
-        "one CI-driven repair Work allocation for one failing CI job",
+        "one repair or revision Work allocation for one failing CI job; Work that is due "
+        "without a failing CI job charges none",
         "`budget.clusters[<job>]`, started again by `refresh_on_exhaustion`",
         ("refresh_on_exhaustion", "exhaust_repair_attempts")),
     "no_progress": Budget(
@@ -1288,11 +1403,14 @@ BUDGETS: dict[str, Budget] = {
     "flaky_reruns": Budget(
         "retries.flaky_reruns", 0,
         "one rerun of the failed CI jobs on the exact head, requested by the repair worker",
-        "reruns recorded for the head", ("reject_patch_proposal",)),
+        "`budget.reruns.flaky`, counted for the head in `budget.reruns.head_sha` and started "
+        "again whenever the recorded head changes", ("reject_patch_proposal",)),
     "interrupted_reruns": Budget(
         INFRASTRUCTURE_KEY, 0,
         "one rerun by the collector of CI jobs that were cancelled or lost their runner",
-        "reruns recorded for the head", ("exhaust_interrupted_reruns",), infrastructure=True),
+        "`budget.reruns.interrupted`, counted for the head in `budget.reruns.head_sha` and "
+        "started again whenever the recorded head changes and by `resume_ci`",
+        ("exhaust_interrupted_reruns",), infrastructure=True),
     "dispatch_recovery": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one dispatcher run that ended with the requested Work absent or unclaimed",
@@ -1550,6 +1668,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
                 ("handoff.preparing_submission", "confirm_submission_package"),
                 ("handoff.waiting_upstream_pr", "verify_upstream_pr"),
+                ("handoff.awaiting_submission", "record_actionable_review"),
+                ("handoff.awaiting_submission", "record_explanation"),
                 ("handoff.cleaning_debug", "return_for_repair"),
                 ("handoff.waiting_ci", "return_for_repair"),
                 ("handoff.waiting_upstream_pr", "retract_submission"),
@@ -1557,6 +1677,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("upstream_review.waiting_ci", "record_actionable_review"),
                 ("upstream_review.waiting_ci", "record_explanation"),
                 ("upstream_review.fix_needed", "request_upstream_revision"),
+                ("upstream_review.fix_needed", "request_review_revision"),
                 ("upstream_review.agent_running", "record_revision_publish_success"),
                 ("upstream_review.waiting_ci", "record_pr_closed_unmerged"),
                 ("upstream_review.waiting_human", "resume_upstream_review"),
@@ -1571,9 +1692,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 text="On both the development PR and the upstream PR, a CI failure keeps the "
                      "contribution in its phase while a bounded repair is prepared and tested, and "
                      "an actionable review comment is included in the next repair. An "
-                     "explanation-only comment is answered on the development PR; on the upstream "
-                     "PR it is recorded and surfaced on the tracking issue, and nothing is posted "
-                     "upstream. Transitions that apply in many states (`park_contribution`, "
+                     "explanation-only comment is answered on the development PR; at the "
+                     "submission gate and on the upstream PR it is recorded and surfaced on the "
+                     "tracking issue, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, "
                      "`resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, "
                      "under the rules below."),
         ),
@@ -1660,10 +1781,14 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.agent_running", "record_publish_success"),
                  ("development.waiting_ci", "nominate_for_handoff")),
                 start="development.fix_needed",
-                text="`development.fix_needed` is the one state in which development Work is due. "
-                     "`request_patch` applies while the head has no CI evidence and no feedback is "
-                     "recorded; `request_repair` applies otherwise. Every applicable build and "
-                     "test job must execute and pass on the exact head."),
+                text="`development.fix_needed` is the one state in which development Work is due, "
+                     "and it is entered only after `confirm_provisioning`: no patch is proposed "
+                     "before the fork exists. `request_repair` applies while a failing CI job is "
+                     "recorded for the head and charges `repair_attempts_cluster` for that job; "
+                     "`request_patch` applies otherwise (the first patch, a rejected proposal, a "
+                     "repair driven only by review feedback) and charges `work_total` only. Both "
+                     "need write admission. Every applicable build and test job must execute and "
+                     "pass on the exact head."),
             Diagram(
                 "Failure case 1: patch proposal, dispatch, or Work failure",
                 ("development.fix_needed", "development.agent_running",
@@ -1679,7 +1804,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_human", "resume_development")),
                 start="development.fix_needed",
                 text="Dispatch recovery and bounded repair are automatic. Dispatch and Work "
-                     "exhaustion wait for a human in development."),
+                     "exhaustion wait for a human in development. A rejected proposal, a replan, "
+                     "and a resume keep the pending feedback."),
             Diagram(
                 "Failure case 2: trusted publication failure",
                 ("development.agent_running", "development.fix_needed", "development.waiting_human",
@@ -1715,8 +1841,12 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only "
                      "jobs that were cancelled or lost their runner, within `interrupted_reruns` "
                      "per head; after that a human resumes with `resume_ci`, which reruns the "
-                     "jobs. Explanation-only comments do not bump the revision, invalidate CI, or "
-                     "request repair."),
+                     "jobs. Both rerun counts are kept for the current head in `budget.reruns` "
+                     "and start again whenever the recorded head changes. The Work request "
+                     "carries the pending feedback present at allocation, and "
+                     "`record_publish_success` clears exactly that feedback. Work that carries "
+                     "feedback never takes `request_ci_rerun`. Explanation-only comments do not "
+                     "bump the revision, invalidate CI, or request repair."),
             Diagram(
                 "Failure case 4: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",
@@ -1732,7 +1862,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`repair_attempts_cluster` or `no_progress` is exhausted in a generation, "
                      "`refresh_on_exhaustion` runs a complete investigation again on the existing "
                      "fork. After that, `exhaust_repair_attempts` parks. Both apply only while "
-                     "`work_total` remains."),
+                     "`work_total` remains. `repair_attempts_cluster` counts only while a failing "
+                     "CI job is recorded for the head."),
             Diagram(
                 "Failure case 5: the Work budget is exhausted",
                 ("development.fix_needed", "development.agent_running",
@@ -1768,7 +1899,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
         "when a specific failure or external prerequisite needs operator action. Park means the "
         "approach is not working or a human said stop; it ends the current generation, and resume "
         "from parked performs a clean reset. A Result is reused only while the pipeline ran "
-        "continuously: after a pause, a human wait, or a park, the next step is fresh Work.",
+        "continuously: after a pause, a human wait, or a park, the next step is fresh Work. A "
+        "stop therefore clears the requested Work, the pending publication, and a held proposal "
+        "that is not published, so nothing is published after it.",
         (
             Diagram(
                 "Success case 1: temporary pause and resume",
@@ -1869,6 +2002,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.cleaning_debug", "confirm_clean_head"),
                  ("handoff.waiting_ci", "rerun_interrupted_ci"),
                  ("handoff.awaiting_submission", "return_for_repair"),
+                 ("handoff.awaiting_submission", "record_actionable_review"),
+                 ("handoff.awaiting_submission", "record_explanation"),
                  ("handoff.awaiting_submission", "record_head_change"),
                  ("handoff.cleaning_debug", "return_for_repair"),
                  ("handoff.waiting_ci", "return_for_repair"),
@@ -1879,7 +2014,12 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 start="handoff.awaiting_submission",
                 text="Before the package is posted, a changed head, cleanup validation, an "
                      "exact-head lease conflict, or blocking CI on the clean head returns to "
-                     "development. `handoff.waiting_upstream_pr` is locked: only "
+                     "development. At the gate, a CI failure on the candidate head takes "
+                     "`return_for_repair` and records the failing evidence; an actionable review "
+                     "takes `record_actionable_review` and records the feedback; the guards are "
+                     "exclusive, and the failure applies first. An explanation-only comment takes "
+                     "`record_explanation` and keeps the gate. "
+                     "`handoff.waiting_upstream_pr` is locked: only "
                      "`verify_upstream_pr`, `retract_submission`, and `refresh_investigation` "
                      "leave it."),
             Diagram(
@@ -1924,6 +2064,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("upstream_review.waiting_ci", "record_actionable_review"),
                  ("upstream_review.waiting_ci", "record_explanation"),
                  ("upstream_review.fix_needed", "request_upstream_revision"),
+                 ("upstream_review.fix_needed", "request_review_revision"),
                  ("upstream_review.agent_running", "record_revision_publish_success"),
                  ("upstream_review.agent_running", "reject_patch_proposal"),
                  ("upstream_review.agent_running", "require_reviewer_answer"),
@@ -1932,7 +2073,11 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("upstream_review.waiting_human", "resume_upstream_revision")),
                 start="upstream_review.waiting_ci",
                 text="Automated upstream revisions require that the upstream PR head is the "
-                     "controlled fork ref. A rejected proposal is repaired within `no_progress`. "
+                     "controlled fork ref. `request_upstream_revision` applies while a failing "
+                     "CI job is recorded for the head and charges `repair_attempts_cluster`; "
+                     "`request_review_revision` applies to a revision driven only by review "
+                     "feedback and charges `work_total` only. A published revision clears "
+                     "exactly the feedback its Work carried. A rejected proposal is repaired within `no_progress`. "
                      "When the worker reports that no change is needed, a human answers the "
                      "reviewer; `resume_upstream_review` then clears the pending feedback and "
                      "returns to `upstream_review.waiting_ci` without requesting Work. After a "
@@ -2035,6 +2180,8 @@ LOCKED_EXITS = {"handoff.waiting_upstream_pr": ("verify_upstream_pr", "retract_s
                                                 "refresh_investigation")}
 # Phases from which only a command may end the generation.
 NO_AUTOMATIC_PARK = ("upstream_review",)
+# The one resume that clears pending feedback: a human answered it.
+FEEDBACK_ANSWERED_BY = ("resume_upstream_review",)
 
 
 def _field_name(entry: str) -> str:
@@ -2268,13 +2415,142 @@ def stop_transitions():
 
 
 def _check_stops(problems: list[str]) -> None:
-    """A stop invalidates a held Result: every stop that clears the requested
-    Work, and every stop by command, also clears the pending publication."""
+    """A stop invalidates what is held: every stop that clears the requested
+    Work, and every stop by command, also clears the pending publication and
+    a held proposal that is not published. No transition clears one of the
+    two without the other."""
     for where, t in stop_transitions():
-        if (t.effects.work == "clear" or t.trigger == Trigger.COMMAND) \
-                and HELD_RESULT not in t.effects.clears:
-            problems.append(f"{where}: a stop that clears the requested Work, or a stop by "
-                            f"command, must also clear {HELD_RESULT}")
+        if t.effects.work != "clear" and t.trigger != Trigger.COMMAND:
+            continue
+        for held in _HELD:
+            if held not in t.effects.clears:
+                problems.append(f"{where}: a stop that clears the requested Work, or a stop by "
+                                f"command, must also clear {held}")
+    flag_rows = [(f"flag {n} {v}", t) for n, f in FLAGS.items()
+                 for v, t in (*f.set_by.items(), *f.cleared_by.items())]
+    for where, t in (*((f"{e.source} --{e.verb}--> {e.target}", e.transition)
+                       for e in table_edges()), *flag_rows):
+        clears = t.effects.clears
+        if (HELD_RESULT in clears) != (HELD_PROPOSAL in clears):
+            problems.append(f"{where}: {HELD_RESULT} and {HELD_PROPOSAL} are cleared together")
+
+
+def _is_patch_work(edge: Edge) -> bool:
+    """Whether ``edge`` allocates Work that writes the fork."""
+    return edge.transition.effects.work == "allocate" and LIFECYCLE[edge.source].writes
+
+
+def _check_feedback(problems: list[str]) -> None:
+    """Pending feedback: a Work request carries the ids present at
+    allocation, a published Result clears exactly those, and nothing else
+    clears pending feedback but the resume after a human answered it. Work
+    that carries feedback is never answered by a CI rerun."""
+    field = QUALIFIED_CLEARS[CARRIED_FEEDBACK][0]
+    for e in table_edges():
+        where = f"{e.source} --{e.verb}--> {e.target}"
+        t, effects = e.transition, e.transition.effects
+        carries = WORK_FEEDBACK in effects.sets
+        if carries != _is_patch_work(e):
+            problems.append(f"{where}: exactly the rows that allocate patch or revision Work "
+                            f"set {WORK_FEEDBACK}")
+        published = t.trigger == Trigger.RESULT and "proposal_artifact" in effects.sets
+        if published != (CARRIED_FEEDBACK in effects.clears):
+            problems.append(f"{where}: exactly the rows that record a published Result clear "
+                            f"the {CARRIED_FEEDBACK}")
+        if field in effects.clears and e.verb not in FEEDBACK_ANSWERED_BY:
+            problems.append(f"{where}: clears {field}; only a published Result clears the "
+                            f"feedback its Work carried, and {_one_of(FEEDBACK_ANSWERED_BY)} "
+                            "clears feedback a human answered")
+        if "flaky_reruns" in t.charges:
+            if WORK_WITHOUT_FEEDBACK not in t.guard:
+                problems.append(f"{where}: a CI rerun without the guard {WORK_WITHOUT_FEEDBACK!r}")
+            if not any("the Work carries feedback" in g for x in state_edges(e.source)
+                       if x.verb in BUDGETS["flaky_reruns"].exhaustion_verbs
+                       for g in x.transition.guard):
+                problems.append(f"{where}: no row of {e.source} takes the same outcome of Work "
+                                "that carries feedback")
+    for entry, (name, meaning) in QUALIFIED_CLEARS.items():
+        if not entry.endswith(f" {name}") or not meaning.strip():
+            problems.append(f"qualified clear {entry!r}: must end with its field and state "
+                            "what it clears")
+        if not any(entry in e.transition.effects.clears for e in table_edges()):
+            problems.append(f"qualified clear {entry!r}: no transition uses it")
+
+
+def _check_reruns(problems: list[str]) -> None:
+    """Rerun counts are kept for the current head: exactly the rows that
+    record a new head start them again, and both rerun budgets count there."""
+    for e in table_edges():
+        if (RERUNS in e.transition.effects.sets) != (e.verb in RERUN_RESTART_VERBS):
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: exactly the rows of "
+                            f"{_one_of(RERUN_RESTART_VERBS)} set {RERUNS}")
+    verbs = {e.verb for e in table_edges()}
+    for verb in RERUN_RESTART_VERBS:
+        if verb not in verbs:
+            problems.append(f"{RERUNS}: {verb} is not a table verb")
+    for name in ("flaky_reruns", "interrupted_reruns"):
+        budget = BUDGETS.get(name)
+        if budget is None or f"`{RERUNS}." not in budget.counter:
+            problems.append(f"budget {name}: its counter is not a field of {RERUNS}")
+
+
+def _check_patch_work(problems: list[str]) -> None:
+    """Patch and revision Work is requested only where Work is due on an
+    existing fork, under write admission; ``repair_attempts_cluster`` is
+    charged only for a failing CI job; every such request requires that
+    ``no_progress`` remains. The patch scope is checked at admission."""
+    for e in table_edges():
+        if not _is_patch_work(e):
+            if "repair_attempts_cluster" in e.transition.charges:
+                problems.append(f"{e.source} --{e.verb}-->: charges repair_attempts_cluster "
+                                "without allocating patch Work")
+            continue
+        where = f"{e.source} --{e.verb}--> {e.target}"
+        guard = e.transition.guard
+        source = LIFECYCLE[e.source]
+        if not (source.kind == "auto_wait" and source.launches and e.source.endswith(".fix_needed")):
+            problems.append(f"{where}: patch Work is requested only from a fix_needed state")
+        if state_phase(e.source) == "development" and "write admission" not in guard:
+            problems.append(f"{where}: patch Work without the guard 'write admission'")
+        charged = "repair_attempts_cluster" in e.transition.charges
+        if charged != (FAILING_JOB in guard) or charged == (NO_FAILING_JOB in guard):
+            problems.append(f"{where}: repair_attempts_cluster is charged exactly when the "
+                            f"guard is {FAILING_JOB!r}; the other requests state "
+                            f"{NO_FAILING_JOB!r}")
+        if not any("no_progress" in g and "remain" in g for g in guard):
+            problems.append(f"{where}: requests Work without requiring that no_progress remains")
+    for e in table_edges():
+        if any("proposal" in g and "admission" in g for g in e.transition.guard):
+            problems.append(f"{e.source} --{e.verb}-->: a proposal admission guard; no patch is "
+                            "proposed before the fork exists")
+        if e.verb == "admit_development" and PATCH_SCOPE_COMPLETE not in e.transition.guard:
+            problems.append(f"{e.source} --{e.verb}-->: without the guard "
+                            f"{PATCH_SCOPE_COMPLETE!r}")
+    if not any(e.verb == "admit_development" for e in table_edges()):
+        problems.append("admit_development: missing")
+    # The first entry into development is the confirmed fork.
+    first = [e for e in table_edges() if state_phase(e.source) == "provisioning"
+             and state_phase(e.target) == "development"]
+    if not first or any(e.transition.trigger != Trigger.OPERATION or "fork" not in
+                        e.transition.effects.sets for e in first):
+        problems.append("development is entered from provisioning only by a confirmed fork "
+                        "operation that records the fork")
+
+
+def _check_exclusive_observations(problems: list[str]) -> None:
+    for key, verbs in EXCLUSIVE_OBSERVATIONS.items():
+        try:
+            edges = [find_edge(key, verb) for verb in verbs]
+        except KeyError as exc:
+            problems.append(f"exclusive observations: {exc.args[0]}")
+            continue
+        for i, a in enumerate(edges):
+            if a.transition.trigger != Trigger.OBSERVATION:
+                problems.append(f"{key} --{a.verb}-->: is not an observation")
+            for b in edges[i + 1:]:
+                if not excluded(a.transition, b.transition):
+                    problems.append(f"{key}: {a.verb} and {b.verb} can apply together; their "
+                                    "guards are not exclusive")
 
 
 def _check_stale_resume(policy: dict, problems: list[str]) -> None:
@@ -2778,6 +3054,10 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_states(problems)
     _check_rules(problems)
     _check_stops(problems)
+    _check_feedback(problems)
+    _check_reruns(problems)
+    _check_patch_work(problems)
+    _check_exclusive_observations(problems)
     _check_stale_resume(policy, problems)
     _check_flags(problems)
     _check_budgets(policy, problems)

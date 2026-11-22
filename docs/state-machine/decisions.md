@@ -27,7 +27,7 @@ This page records the decisions behind the [lifecycle table]({{ '/state-machine/
 4. The dossier is refreshed after a park, and after a pause or human wait longer than 7 days in provisioning or development. It is never refreshed automatically from `handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses `/upstreaming refresh`.
 5. Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation counter, `work_total`. `lifecycle check` verifies this.
 6. Prefer a guard or a derived status over a new state or flag.
-7. Every stop that clears the requested Work also clears `pending_publication`: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
+7. Every stop that clears the requested Work also clears `pending_publication` and a held proposal that is not published: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
 
 ## Open items
 
@@ -500,7 +500,7 @@ flowchart TB
 
 How a CI failure is classified before a rerun.
 
-**Decision.** The repair worker classifies. A Result reporting a failure not caused by the patch takes `request_ci_rerun` from `development.agent_running` to `development.waiting_ci` and charges `flaky_reruns`; it replaces `record_no_change`. When `flaky_reruns` is exhausted, the outcome counts as `reject_patch_proposal`. The collector reruns on its own only jobs that were cancelled or lost their runner, in `development.waiting_ci` and `handoff.waiting_ci`, within `interrupted_reruns` per head. Upstream CI is never rerun.
+**Decision.** The repair worker classifies. A Result reporting a failure not caused by the patch takes `request_ci_rerun` from `development.agent_running` to `development.waiting_ci` and charges `flaky_reruns`; it replaces `record_no_change`. When `flaky_reruns` is exhausted, or the Work carries feedback, the outcome counts as `reject_patch_proposal`. The collector reruns on its own only jobs that were cancelled or lost their runner, in `development.waiting_ci` and `handoff.waiting_ci`, within `interrupted_reruns` per head. Upstream CI is never rerun.
 
 ```mermaid
 flowchart TB
@@ -613,7 +613,7 @@ flowchart TB
 
 Whether the two states in which development Work is due become one.
 
-**Decision.** One state, `development.fix_needed`: development Work is due. `confirm_provisioning` enters it. `request_patch` applies while the head has no CI evidence and no feedback is recorded; `request_repair` applies once CI evidence or feedback is recorded. `development.idle` and its own exhaustion row are removed, also from the states that accept `refresh_investigation`.
+**Decision.** One state, `development.fix_needed`: development Work is due. `confirm_provisioning` enters it. `request_repair` applies while a failing CI job is recorded for the head; `request_patch` applies otherwise. `development.idle` and its own exhaustion row are removed, also from the states that accept `refresh_investigation`.
 
 ```mermaid
 flowchart TB
@@ -927,7 +927,7 @@ flowchart TB
 
 Which verb requests Work when a proposal was rejected before the head had any CI evidence.
 
-**Decision.** `request_patch`: a rejected proposal is neither CI evidence nor recorded feedback. `request_patch` charges `work_total` and requires that `no_progress` remains; it does not charge `repair_attempts_cluster`.
+**Decision.** `request_patch`: a rejected proposal records no failing CI job for the head. `request_patch` charges `work_total` and requires that `no_progress` remains; it does not charge `repair_attempts_cluster`.
 
 ```mermaid
 flowchart TB
@@ -1025,6 +1025,147 @@ flowchart TB
     development_fix_needed ==>|exhaust_work_total| development_waiting_human
     development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
+```
+
+### O19. Pending feedback and the Work that answers it
+
+Which row clears `pending_feedback_evidence_ids` in development and upstream review.
+
+**Decision.** The Work request carries the pending feedback ids present at allocation, in `active_work.feedback_evidence_ids`. `record_publish_success` clears exactly those ids, and `record_revision_publish_success` does the same in upstream review; feedback recorded while the Work ran stays pending. `reject_patch_proposal`, `replan_development`, every resume that requests Work again, and both refresh verbs keep the pending feedback; `resume_upstream_review` still clears it after a human answered the reviewer. A fresh Work graph and a publish retry carry the same ids. Work that carries feedback cannot take `request_ci_rerun`: that outcome counts as `reject_patch_proposal`. The check verifies each of these.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+
+    development_waiting_ci -->|record_actionable_review| development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
+    development_fix_needed -->|request_repair| development_agent_running
+    development_agent_running ==>|record_publish_success| development_waiting_ci
+    development_agent_running ==>|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|replan_development| development_fix_needed
+    development_agent_running ==>|request_ci_rerun| development_waiting_ci
+```
+
+### O20. An actionable review at the submission gate
+
+How a review on the candidate head is recorded when it leaves `handoff.awaiting_submission`.
+
+**Decision.** By its own row. `record_actionable_review` leads from `handoff.awaiting_submission` to `development.fix_needed`: it bumps the revision once, sets `pending_feedback_evidence_ids`, and clears `clean_head_sha`, `handoff_request`, and `pending_human_action`. `return_for_repair` from the gate keeps the CI failure cause only and sets `last_ci_evidence_id`. The two guards are exclusive: a CI failure on the candidate head applies first, and the review is then recorded when CI is observed again in development.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+
+    handoff_awaiting_submission ==>|return_for_repair| development_fix_needed
+    handoff_awaiting_submission ==>|record_actionable_review| development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
+    development_fix_needed -->|request_repair| development_agent_running
+```
+
+### O21. An explanation-only comment at the submission gate
+
+What an explanation-only comment on the development PR does while the contribution waits for `submit-upstream`.
+
+**Decision.** `record_explanation` is a row of `handoff.awaiting_submission` that keeps the state: the comment is recorded and surfaced on the tracking issue. No Work is requested and nothing is answered automatically; the revision, the candidate head, and the CI evidence are kept, so the pending `submit-upstream` request stays valid.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+        handoff_cleaning_debug["handoff.cleaning_debug"]
+    end
+
+    handoff_awaiting_submission ==>|record_explanation| handoff_awaiting_submission
+    handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_cleaning_debug
+```
+
+### O22. Where the rerun counts of a head are kept
+
+Which record field holds the counts of `flaky_reruns` and `interrupted_reruns`.
+
+**Decision.** `budget.reruns = {head_sha, flaky, interrupted}`, for the current head only. It starts again whenever the recorded head changes: on `record_publish_success`, `record_head_change`, and `confirm_clean_head`. `request_ci_rerun` counts `flaky`, `rerun_interrupted_ci` counts `interrupted`, and `resume_ci` starts `interrupted` again. Counts recorded for another head are counts of zero for the current one.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph handoff["handoff"]
+        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+    end
+
+    development_agent_running ==>|record_publish_success| development_waiting_ci
+    development_agent_running -->|request_ci_rerun| development_waiting_ci
+    development_waiting_ci ==>|record_head_change| development_waiting_ci
+    development_waiting_ci -->|rerun_interrupted_ci| development_waiting_ci
+    development_waiting_ci -->|exhaust_interrupted_reruns| development_waiting_human
+    development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
+    handoff_cleaning_debug ==>|confirm_clean_head| handoff_waiting_ci
+    handoff_waiting_ci -->|rerun_interrupted_ci| handoff_waiting_ci
+```
+
+### O23. The budget of a repair driven only by review feedback
+
+Which cluster a repair charges when no CI job failed.
+
+**Decision.** None: `repair_attempts_cluster` is charged only when a failing CI job is recorded for the head. In development, `request_repair` is guarded by that, and `request_patch` by its complement: it covers the first patch, a rejected proposal, and a repair driven only by feedback, and charges `work_total` only. In upstream review, `request_upstream_revision` keeps the failing-job guard and the cluster charge, and `request_review_revision` covers a revision driven only by feedback and charges `work_total` only. All four require that `no_progress` remains. Exhaustion of `repair_attempts_cluster` applies only while a failing CI job is recorded, so in each state exactly one of the rows applies; the check verifies it.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_agent_running["upstream_review.agent_running"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    development_fix_needed ==>|request_patch| development_agent_running
+    development_fix_needed -->|request_repair| development_agent_running
+    upstream_fix_needed -->|request_upstream_revision| upstream_agent_running
+    upstream_fix_needed ==>|request_review_revision| upstream_agent_running
+    upstream_fix_needed -->|exhaust_repair_attempts| upstream_waiting_human
+```
+
+### O24. A proposal before the fork exists
+
+Whether patch Work can be requested before `confirm_provisioning`.
+
+**Decision.** It cannot. Patch Work is requested only from `development.fix_needed`, which is entered after `confirm_provisioning`. The guard of `request_patch` is write admission only. The checks on `scope_paths` and `scope_coverage_complete` are a guard of `admit_development`, so an incomplete patch scope is refused before a fork is provisioned. A stop also clears a proposal that is held and not published, together with the pending publication, so nothing is published after a stop.
+
+```mermaid
+flowchart TB
+    subgraph investigation["investigation"]
+        investigation_agent_running["investigation.agent_running"]
+    end
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_fix_needed_paused["development.fix_needed, paused=true"]
+    end
+
+    investigation_agent_running ==>|admit_development| provisioning_idle
+    provisioning_idle -->|confirm_provisioning| development_fix_needed
+    development_fix_needed ==>|request_patch| development_agent_running
+    development_agent_running -->|pause<br/>/upstreaming pause| development_fix_needed_paused
 ```
 
 ## Further settled changes

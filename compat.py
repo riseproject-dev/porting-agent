@@ -266,6 +266,16 @@ def stopped(record: dict) -> bool:
                 or record["phase"] in TERMINAL | {"parked"})
 
 
+def held_cleared(record: dict) -> dict[str, Any]:
+    """The fields a stop clears beside the requested Work, as the table's
+    stop rows do: the pending publication, and a proposal the record holds
+    without having published it. A published proposal is kept."""
+    fields: dict[str, Any] = {"pending_publication": None}
+    if (record.get("proposal_artifact") or {}).get("outcome") == "proposal":
+        fields["proposal_artifact"] = None
+    return fields
+
+
 def _bump(rec: dict) -> None:
     rec["revision"] += 1
 
@@ -330,15 +340,15 @@ def park(rec: dict, reason: str) -> dict:
 
     The completed generation is retained for audit and late-effect
     reconciliation; only exact-revision ``resume`` restarts it. A pending
-    publication ends with the generation. Callers own revision bumps and the
-    event."""
+    publication and a held proposal end with the generation. Callers own
+    revision bumps and the event."""
     if rec["phase"] == "handoff":
         raise TransitionError("handoff states are written by the transition engine only")
     rec["previous_phase"] = rec["phase"]
     rec["phase"] = "parked"
     rec["parked_reason"] = reason[:2000]
     rec["activity"] = "idle"
-    rec["pending_publication"] = None
+    rec.update(held_cleared(rec))
     return rec
 
 
@@ -538,13 +548,19 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
         rec["active_work"] = None
         if rec["activity"] == "agent_running":
             rec["activity"] = "idle"
-    # A stop also clears the pending publication, as the table's stop rows
-    # do: the held Result is invalidated and its publication Result takes
-    # ``record_late_effect``. A branch the worker run already pushed is
-    # recorded by head observation.
-    if rec.get("pending_publication") and stopped(rec):
-        rec["pending_publication"] = None
-        if rec["activity"] in ("agent_running", "waiting_capacity"):
+    # A stop also clears the pending publication and a held proposal that is
+    # not published, as the table's stop rows do: what is held is invalidated
+    # and its publication Result takes ``record_late_effect``. A branch the
+    # worker run already pushed is recorded by head observation. The command
+    # that ends a stop clears them too, so nothing held is published after a
+    # stop that began before this rule.
+    if stopped(rec) or stopped(record):
+        cleared = held_cleared(rec)
+        waited_on_held = bool(rec.get("pending_publication")) or (
+            "proposal_artifact" in cleared and rec["phase"] == "development"
+            and not rec.get("active_operation_id"))
+        rec.update(cleared)
+        if waited_on_held and rec["activity"] in ("agent_running", "waiting_capacity"):
             rec["activity"] = "idle"
 
     _check_legacy_write(record, rec, "apply_command")

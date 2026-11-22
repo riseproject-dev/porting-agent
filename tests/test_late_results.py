@@ -331,6 +331,8 @@ class TestStopWithAPendingPublication(unittest.TestCase):
             self.assertTrue(out.accepted, out.reason)
             stopped_record = out.record
             self.assertIsNone(stopped_record["pending_publication"])
+            # A held proposal is cleared with it; nothing is left to publish.
+            self.assertIsNone(stopped_record["proposal_artifact"])
             self.assertEqual(stopped_record["revision"], pending["revision"])
             self.assertTrue(compat.stopped(stopped_record))
             for name in PUBLISHER_RESULTS:
@@ -364,6 +366,44 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                     if verb in ("park", "abandon"):
                         self.assertEqual(engine.state_key(resumed.record), "queued.idle")
                         self.assertEqual(resumed.record["generation"], record["generation"] + 1)
+
+    def test_nothing_held_is_published_after_a_stop(self):
+        """A proposal that is held and not published does not survive a stop:
+        after the resume no publication is launched for it, and its
+        publication Result is late. A published proposal is kept."""
+        held = dict(ARTIFACT, result_commit=None, outcome="proposal")
+        for verb in ("pause", "block"):
+            with self.subTest(verb=verb):
+                record = contribution(phase="development", activity="waiting_capacity",
+                                      proposal_artifact=dict(held))
+                out = command(record, f'/upstreaming {verb} reason="stop"')
+                self.assertIsNone(out.record["proposal_artifact"])
+                resumed = command(out.record, "/upstreaming resume revision=0 reason=go").record
+                self.assertEqual((resumed["proposal_artifact"], resumed["pending_publication"],
+                                  resumed["activity"]), (None, None, "idle"))
+                result = dict(publication(record, "published", artifact_id=1000),
+                              artifact=dict(ARTIFACT))
+                after, outputs = self.ticks(resumed, [result], 3)
+                for output in outputs:
+                    self.assertEqual(output.report["proposal_publications"], [])
+                    self.assertEqual(output.report["publication_retries"], [])
+                self.assertEqual([e["kind"] for o in outputs for e in events(o)
+                                  if e["kind"] == "record_late_effect"], ["record_late_effect"])
+                self.assertIsNone(after["proposal_artifact"])
+        # A record that was stopped before stops cleared the proposal: the
+        # resume clears it.
+        old = contribution(phase="development", activity="waiting_capacity", paused=True,
+                           proposal_artifact=dict(held))
+        self.assertIsNone(command(old, "/upstreaming resume revision=0 reason=go")
+                          .record["proposal_artifact"])
+        parked = compat.park(contribution(phase="development", activity="waiting_capacity",
+                                          proposal_artifact=dict(held)), "stop")
+        self.assertIsNone(parked["proposal_artifact"])
+        published = dict(held, outcome="published")
+        kept = command(contribution(phase="development", activity="waiting_ci",
+                                    proposal_artifact=dict(published)),
+                       '/upstreaming pause reason="stop"').record
+        self.assertEqual(kept["proposal_artifact"], published)
 
     def test_no_publish_retry_while_paused_or_blocked(self):
         for kind, flag in itertools.product(("proposal", "retry"), ("paused", "blocked")):
