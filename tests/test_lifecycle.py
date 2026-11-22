@@ -99,8 +99,17 @@ class TestPauseParkResume(unittest.TestCase):
         with self.assertRaises(lifecycle.TransitionError):
             lifecycle.transition(rec, "development", cause_type="observation", cause_id=None, now=NOW)
         out = apply(rec, f"/upstreaming resume contribution={CID} revision=0 reason=\"new evidence\"")
-        self.assertEqual(out.record["phase"], "investigation")  # dossier revalidation
+        # Plan 3.3.4 failure case 2 and 3.5: a clean generation at queued:idle.
+        self.assertEqual((out.record["phase"], out.record["activity"]), ("queued", "idle"))
+        self.assertEqual(out.record["generation"], rec["generation"] + 1)
         self.assertEqual(out.record["revision"], 1)
+        self.assertIsNone(out.record["parked_reason"])
+
+    def test_resume_from_parked_requires_quiescence(self):
+        rec = apply(contribution(), f"/upstreaming park contribution={CID} revision=0 reason=evidence").record
+        busy = dict(rec, active_operation_id="op-1")
+        out = apply(busy, f"/upstreaming resume contribution={CID} revision=0 reason=r")
+        self.assertFalse(out.accepted)
 
     def test_paused_blocks_ordinary_work_not_merge(self):
         rec = contribution(phase="upstream_review", paused=True)

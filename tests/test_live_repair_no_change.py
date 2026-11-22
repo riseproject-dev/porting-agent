@@ -25,6 +25,8 @@ from pathlib import Path
 from unittest import mock
 
 import capacity
+import commands
+import lifecycle
 import reconcile
 import work
 import worker_gate
@@ -291,10 +293,44 @@ class TestLiveR6SelfHeals(unittest.TestCase):
             policy=policy(read_only=False, destination_writes=True), worker_run_id=R6_RUN)
         self.assertEqual(new["revision"], 7)
         self.assertEqual(new["budget"]["attempts_used"], 2)
-        self.assertEqual(new["activity"], "waiting_human")
-        self.assertEqual(new["pending_human_action"]["kind"], "worker_attempt_budget_exhausted")
+        # Plan 3.3.3 development failure case 1: exhaustion enters parked.
+        self.assertEqual((new["phase"], new["activity"]), ("parked", "idle"))
+        self.assertEqual(new["previous_phase"], "development")
+        self.assertIn("repair-attempt budget exhausted", new["parked_reason"])
+        self.assertIn("rejected in trusted validation", new["parked_reason"])
+        self.assertIsNone(new["pending_human_action"])
+        self.assertIsNone(new["active_work"])
         self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
-                         ["worker_proposal_rejected"])
+                         ["repair_attempts_exhausted"])
+
+    def test_parked_rejection_exhaustion_allocates_no_work_and_resumes_clean(self):
+        record = load("contribution-r6.json")
+        rejected = {"status": "rejected", "failure_class": "validation", "reason": "patch digest mismatch",
+                    "stage": "worker_gate", "proposal": dict(load("proposal.json"), outcome="patch")}
+        parked, _staged = reconcile.apply_publication(
+            record, rejected, now="2026-11-22T11:20:00+00:00",
+            policy=policy(read_only=False, destination_writes=True), worker_run_id=R6_RUN)
+        output = tick(parked, queue_works={}, runs=self.RUNS, now="2026-11-22T11:30:00+00:00")
+        result = final(output, parked)
+        self.assertEqual((result["phase"], result["activity"]), ("parked", "idle"))
+        self.assertIsNone(result["active_work"])
+        self.assertEqual(output.report["requested_effects"], [])
+        self.assertEqual(output.report["dispatch_relaunch"], [])
+        # Plan 3.3.4 failure case 2 and 3.5: exact-revision resume starts a
+        # clean generation at queued:idle with a fresh retry budget.
+        resumed = lifecycle.apply_command(
+            parked, commands.parse(f"/upstreaming resume revision={parked['revision']} reason=r"),
+            command_id="comment-1", actor={"login": "owner", "id": 1}, now="2026-11-22T11:40:00+00:00")
+        self.assertTrue(resumed.accepted)
+        out = resumed.record
+        self.assertEqual((out["phase"], out["activity"]), ("queued", "idle"))
+        self.assertEqual(out["generation"], parked["generation"] + 1)
+        self.assertEqual(out["revision"], parked["revision"] + 1)
+        self.assertEqual(out["budget"]["attempts_used"], 0)
+        self.assertIsNone(out["parked_reason"])
+        self.assertIsNone(out["fork"])
+        self.assertIsNone(out["dossier_evidence_id"])
+        self.assertEqual(out["processed_publications"], parked["processed_publications"])
 
 
 if __name__ == "__main__":

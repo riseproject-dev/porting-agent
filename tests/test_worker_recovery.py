@@ -241,10 +241,34 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
             record["budget"]["clusters"]["reproduction-image-infrastructure-docker-unavailable"],
             2,
         )
-        self.assertEqual(record["activity"], "waiting_human")
+        # Plan 3.3.3 development failure case 1: exhaustion enters parked.
+        self.assertEqual((record["phase"], record["activity"]), ("parked", "idle"))
+        self.assertEqual(record["previous_phase"], "development")
+        self.assertIn("repair-attempt budget exhausted", record["parked_reason"])
+        self.assertIn("worker reproduction blocked", record["parked_reason"])
+        self.assertIsNone(record["pending_human_action"])
+        self.assertIsNone(record["active_work"])
         self.assertEqual(
-            record["pending_human_action"]["kind"], "worker_attempt_budget_exhausted"
+            [item["kind"] for kind, item in _staged if kind == "events"],
+            ["repair_attempts_exhausted"],
         )
+        # Parked contributions allocate no Work.
+        _record, operations, project = self.state()
+        output = reconcile.tick(
+            None,
+            reconcile.Snapshot({"c": record}, operations, {}, {project["project_id"]: project}, {}),
+            policy=policy(read_only=False, destination_writes=True),
+            now=datetime.fromisoformat("2026-11-22T05:40:00+00:00"),
+            publications=[],
+            pressure=capacity.Pressure(ok=True),
+            issues=[],
+            comments=[],
+            observe=False,
+        )
+        final = ([item for kind, item in output.staged if kind == "contributions"] or [record])[-1]
+        self.assertEqual(final["phase"], "parked")
+        self.assertIsNone(final["active_work"])
+        self.assertEqual(output.report.get("requested_effects", []), [])
 
     def test_other_blocked_or_mutated_proposals_are_not_reclassified(self):
         with tempfile.TemporaryDirectory() as temporary:

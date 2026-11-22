@@ -30,6 +30,9 @@ MESSAGES = {
     "handoff_ready": "Accepted clean-head development CI and reached human upstream handoff.",
     "worker_no_change": "Verified a no-change worker Result for the exact head. No new repair Work was requested.",
     "worker_proposal_rejected": "Rejected the worker proposal in trusted validation.",
+    "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "
+                                  "Correct the recorded cause, then `resume` at the current revision starts a "
+                                  "clean generation at `queued:idle`."),
 }
 
 
@@ -42,7 +45,7 @@ def _command_lines(record: dict) -> list[str]:
             lines.append(f'/upstreaming pause revision={revision} reason="..."')
         lines += [f'/upstreaming park revision={revision} reason="..."',
                   f'/upstreaming abandon revision={revision} reason="..."']
-    if record.get("paused") or record.get("blocked_reason"):
+    if record.get("paused") or record.get("blocked_reason") or phase == "parked":
         lines.append(f'/upstreaming resume revision={revision} reason="..."')
     if phase in ("development", "handoff") and (record.get("fork") or {}).get("pr_number"):
         lines.append(f'/upstreaming refresh revision={revision} reason="..."')

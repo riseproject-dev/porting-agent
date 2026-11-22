@@ -237,6 +237,16 @@ def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
     return str(run) if run else None
 
 
+def _park_exhausted(new: dict, stops: list, last: str) -> None:
+    """Plan 3.3.3 development failure case 1: repair-attempt exhaustion
+    enters ``parked``. Exact-revision resume then starts a clean generation
+    at ``queued:idle`` (plan 3.3.4 failure case 2 and 3.5)."""
+    new["pending_human_action"] = None
+    new["active_work"] = None
+    lifecycle.park(new, f"repair-attempt budget exhausted ({', '.join(map(str, stops))}) "
+                        f"after the last attempt: {last}")
+
+
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one publication outcome (from fork_publish / queue_result) into the record.
@@ -245,8 +255,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     * proposal              -> waiting_capacity (verified patch, no destination write yet)
     * no_change             -> idle (preserved; no revision bump, no repair)
     * rejected, validation  -> fix_needed (a new agent task at a new revision),
-                               charged to the attempt budget; exhaustion waits
-                               for a human
+                               charged to the attempt budget; exhaustion parks
+                               (plan 3.3.3 development failure case 1)
     * rejected, stale       -> idle (the world moved; the next tick re-plans)
     * infra_error           -> keep the proposal, schedule a publish-only retry
                                of the same worker run with backoff; after
@@ -347,19 +357,13 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             policy=policy or {},
         )
         new["budget"] = budget
+        new["activity"] = "fix_needed"
+        new["pending_human_action"] = None
         if stops:
-            new["activity"] = "waiting_human"
-            new["pending_human_action"] = {
-                "kind": "worker_attempt_budget_exhausted",
-                "requested_at": now,
-                "reminded_at": None,
-                "escalated_at": None,
-            }
-        else:
-            new["activity"] = "fix_needed"
-            new["pending_human_action"] = None
+            _park_exhausted(new, stops, "worker reproduction blocked")
         staged.append(("events", lifecycle._event(
-            rec, new, "worker_reproduction_blocked", "result", run, now, True
+            rec, new, "repair_attempts_exhausted" if stops else "worker_reproduction_blocked",
+            "result", run, now, True
         )))
     elif status == "no_change":
         # Plan 8.6: a valid exact-task no_change Result is preserved. It ends
@@ -372,6 +376,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         )))
     elif status == "rejected":
         new["activity"] = "idle" if fclass == "stale" else "fix_needed"
+        stops = []
         if fclass != "stale":
             # A failed immutable Work graph cannot be submitted again. A new
             # repair attempt gets a new revision and therefore a new graph ID.
@@ -380,22 +385,15 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             new["revision"] += 1
             new["clean_head_sha"] = None
             proposal = outcome.get("proposal") if isinstance(outcome.get("proposal"), dict) else {}
-            stops = []
             if policy:
                 new["budget"], stops = capacity.charge_attempt(
                     new["budget"], cluster=proposal.get("failure_cluster"), progress="none",
                     policy=policy)
             if stops:
-                new["activity"] = "waiting_human"
-                new["pending_human_action"] = {
-                    "kind": "worker_attempt_budget_exhausted",
-                    "requested_at": now,
-                    "reminded_at": None,
-                    "escalated_at": None,
-                }
+                _park_exhausted(new, stops, "worker proposal rejected in trusted validation")
         staged.append(("events", lifecycle._event(
-            rec, new, "worker_proposal_rejected", "result", _result_cause(outcome, worker_run_id), now,
-            fclass != "stale",
+            rec, new, "repair_attempts_exhausted" if stops else "worker_proposal_rejected",
+            "result", _result_cause(outcome, worker_run_id), now, fclass != "stale",
         )))
     elif status == "investigation":
         # Investigation artifacts are evidence, never patch proposals. Keeping

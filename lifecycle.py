@@ -196,6 +196,19 @@ def _restart_generation(record: dict, now: str) -> dict:
     return rec
 
 
+def park(rec: dict, reason: str) -> dict:
+    """End the current generation in place (plan 3.3.4 failure case 2).
+
+    The completed generation is retained for audit and late-effect
+    reconciliation; only exact-revision ``resume`` restarts it. Callers own
+    revision bumps and the event."""
+    rec["previous_phase"] = rec["phase"]
+    rec["phase"] = "parked"
+    rec["parked_reason"] = reason[:2000]
+    rec["activity"] = "idle"
+    return rec
+
+
 def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, now: str,
                   verified_pr: dict | None = None, provisioning: dict | None = None,
                   backup_user: dict | None = None) -> Outcome:
@@ -240,10 +253,15 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
         rec["activity"] = "waiting_human"
     elif v == "resume":
         if phase == "parked":
-            # Explicit resumption only; revalidate the dossier.
-            rec["phase"] = "investigation"
-            rec["parked_reason"] = None
-            rec["activity"] = "idle"
+            # Plan 3.3.4 failure case 2 and 3.5: resume from parked needs
+            # quiescence and starts a clean generation at queued:idle, so the
+            # next generation cannot bypass a complete verified dossier.
+            if record.get("active_work"):
+                return _reject(record, "cannot resume from parked while Work is active")
+            if record.get("active_operation_id") or record.get("pending_publication"):
+                return _reject(record, "cannot resume from parked while a writer operation is active")
+            rec = _restart_generation(record, now)
+            bumped = True
         elif rec["paused"] or rec.get("blocked_reason"):
             rec["paused"] = False
             rec["blocked_reason"] = None
@@ -251,15 +269,13 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
                 rec["activity"] = "idle"
         else:
             return _reject(record, "nothing to resume")
-        _bump(rec)
-        bumped = True
+        if not bumped:
+            _bump(rec)
+            bumped = True
     elif v == "park":
         if phase == "parked":
             return _reject(record, "already parked")
-        rec["previous_phase"] = phase
-        rec["phase"] = "parked"
-        rec["parked_reason"] = a["reason"]
-        rec["activity"] = "idle"
+        park(rec, a["reason"])
     elif v == "abandon":
         rec["phase"] = "abandoned"
         rec["terminal_reason"] = a["reason"]

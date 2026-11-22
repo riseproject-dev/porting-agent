@@ -97,6 +97,16 @@ class TestStatusLedger(unittest.TestCase):
         body = status_ledger.render(event, record, "https://github.com/run")
         self.assertIn('/upstreaming refresh revision=7 reason="..."', body)
 
+    def test_repair_exhaustion_park_renders_and_offers_resume(self):
+        before = contribution(phase="development", activity="fix_needed", revision=7)
+        record = lifecycle.park(dict(before, revision=8), "repair-attempt budget exhausted")
+        event = lifecycle._event(before, record, "repair_attempts_exhausted", "result", "1", NOW, True)
+        event["sequence"] = 9
+        body = status_ledger.render(event, record, "https://github.com/run")
+        self.assertIn("r8 · parked/idle", body)
+        self.assertIn("Exhausted the bounded repair-attempt budget and parked the contribution", body)
+        self.assertIn('/upstreaming resume revision=8 reason="..."', body)
+
     def test_abandoned_ledger_offers_same_issue_restart(self):
         record = contribution(phase="abandoned", activity="idle", revision=8,
                               terminal_reason="restart requested")
