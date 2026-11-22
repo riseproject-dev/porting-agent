@@ -88,6 +88,86 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("exact-Result marker makes retries idempotent",
                       (WORKFLOWS / "investigator.md").read_text())
 
+    def test_worker_fetches_and_verifies_complete_committed_dossier(self):
+        worker = source("worker")
+        checkout = next(
+            step
+            for step in worker["pre-agent-steps"]
+            if step.get("name") == "Check out the contribution fork at the expected head (read-only)"
+        )
+        script = checkout["run"]
+        self.assertEqual(checkout["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertIn(".state/evidence/", script)
+        self.assertIn("application/vnd.github.raw+json", script)
+        self.assertIn("sha256sum /tmp/gh-aw/agent/dossier.json", script)
+        self.assertIn("dossier digest mismatch", script)
+        self.assertIn('.kind == "dossier" and .evidence_id == $id', script)
+        prompt = (WORKFLOWS / "worker.md").read_text()
+        self.assertIn("identifies the latest verified dossier", prompt)
+        self.assertIn("data` is only its queue-safe index", prompt)
+        self.assertIn("read the latest verified dossier", prompt)
+
+    def test_worker_brackets_untrusted_output_with_stop_commands(self):
+        worker = source("worker")
+        before = next(
+            step
+            for step in worker["pre-agent-steps"]
+            if step.get("id") == "suspend_commands"
+        )
+        self.assertIn("openssl rand -hex 32", before["run"])
+        self.assertIn('echo "token=$token" >> "$GITHUB_OUTPUT"', before["run"])
+        self.assertIn("::stop-commands::%s", before["run"])
+        after = worker["post-steps"][0]
+        self.assertEqual(after["if"], "always()")
+        self.assertEqual(
+            after["env"]["STOP_COMMANDS_TOKEN"],
+            "${{ steps.suspend_commands.outputs.token }}",
+        )
+        self.assertIn("printf '::%s::", after["run"])
+
+    def test_prompts_require_rise_wheels_for_missing_build_and_test_dependencies(self):
+        investigator = (WORKFLOWS / "investigator.md").read_text()
+        worker = (WORKFLOWS / "worker.md").read_text()
+        for text in (investigator, worker):
+            self.assertIn("PIP_EXTRA_INDEX_URL=https://pypi.riseproject.dev/simple", text)
+            self.assertIn("PIP_PREFER_BINARY=true", text)
+            self.assertIn("public PyPI", text)
+        self.assertIn("CIBW_ENVIRONMENT", worker)
+        self.assertIn("CIBW_TEST_ENVIRONMENT", worker)
+        skill = (ROOT / "skills/python-project-porting/SKILL.md").read_text()
+        self.assertIn(
+            "Do not source-build a dependency when a compatible RISE wheel exists",
+            skill,
+        )
+        self.assertIn("PIP_PREFER_BINARY=true", skill)
+
+    def test_worker_forbids_unrelated_fork_ci_debug_changes(self):
+        worker = source("worker")
+        github = worker["mcp-servers"]["github-authenticated"]
+        self.assertEqual(github["env"]["GITHUB_READ_ONLY"], "1")
+        self.assertTrue(github["required"])
+        text = (WORKFLOWS / "worker.md").read_text()
+        for required in (
+            "do not add `push: riscv64`",
+            "do not broaden conditions",
+            "`inputs.upload`",
+            "rejected/superseded approaches",
+            "RISC-V GitHub Runners [1]",
+            "credentialless",
+            "configured external OIDC trust",
+            "Do not change or",
+            "disable `id-token: write`",
+            "publication should fail out of the box",
+            "add `riscv64`",
+            "to that same list",
+        ):
+            self.assertIn(required, text)
+        record = worker["jobs"]["record"]
+        self.assertNotIn("environment", record)
+        self.assertNotIn(
+            "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", str(worker)
+        )
+
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")
         trigger = controller.get("on", controller.get(True))["push"]
@@ -190,10 +270,13 @@ class TestWorkflowContracts(unittest.TestCase):
                 "dispatcher.lock.yml",
                 "investigator.md",
                 "investigator.lock.yml",
+                "worker.md",
+                "worker.lock.yml",
+                "image.yml",
             },
         )
         text = "\n".join(path.read_text() for path in WORKFLOWS.iterdir() if path.is_file())
-        self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", text)
-        self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_CLIENT_ID", text)
+        self.assertNotIn("${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", text)
+        self.assertNotIn("${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", text)
         launches = set(re.findall(r"gh workflow run ([A-Za-z0-9_.-]+)", text))
         self.assertLessEqual(launches, {"controller.yml", "dispatcher.lock.yml"})

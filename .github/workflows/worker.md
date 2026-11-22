@@ -1,0 +1,522 @@
+---
+# SPDX-FileCopyrightText: 2026 The RISE Project
+# SPDX-License-Identifier: MIT
+name: Porting worker
+description: Bounded riscv64 porting task (patch, repair or revise one contribution)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: read
+engine:
+  id: pi
+  version: "1.5.0"
+model: anthropic/claude-opus-5-5
+concurrency:
+  job-discriminator: ${{ github.run_id }}
+network:
+  allowed:
+    - defaults
+    - python
+    - github
+tools:
+  work-queue:
+    require-assignment: true
+    worker: true
+  bash:
+    - "*"
+  edit:
+mcp-servers:
+  github-authenticated:
+    # Read-only, job-token authenticated history research without the pinned
+    # gateway's incompatible cross-server source-integrity labels.
+    container: "ghcr.io/github/github-mcp-server:v2.1.0"
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${{ github.token }}"
+      GITHUB_READ_ONLY: "1"
+      GITHUB_TOOLSETS: "context,repos,issues,pull_requests,actions"
+      GITHUB_FEATURES: "fields_param"
+    allowed:
+      - get_commit
+      - get_file_contents
+      - get_pull_request
+      - get_pull_request_comments
+      - get_pull_request_diff
+      - get_pull_request_files
+      - get_pull_request_review_comments
+      - get_pull_request_reviews
+      - get_pull_request_status
+      - issue_read
+      - list_commits
+      - list_issues
+      - list_pull_requests
+      - pull_request_read
+      - search_code
+      - search_issues
+      - search_pull_requests
+      - actions_list
+    required: true
+safe-outputs:
+  upload-artifact:
+    max-uploads: 1
+    retention-days: 30
+    max-size-bytes: 4194304
+    allowed-paths:
+      - porting-out/*
+  noop:
+    report-as-issue: false
+pre-agent-steps:
+  - name: Register pinned riscv64 QEMU binfmt
+    uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+    with:
+      platforms: riscv64
+  - name: Resolve anonymous reproduction image and install pinned gh-act
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMAGE: ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv:latest
+    run: |
+      set -euo pipefail
+      docker logout ghcr.io >/dev/null 2>&1 || true
+      pulled=false
+      for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if docker pull "$IMAGE"; then pulled=true; break; fi
+        sleep $((attempt * 15))
+      done
+      [ "$pulled" = true ] || { echo "image pull failed after bounded retry"; exit 1; }
+      repository=${IMAGE%:*}
+      resolved=$(docker image inspect "$IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+        | grep "^${repository}@sha256:[0-9a-f]\{64\}$" | head -n1)
+      [[ "$resolved" =~ ^ghcr\.io/riseproject-dev/porting-agent/ubuntu-24\.04-riscv@sha256:[0-9a-f]{64}$ ]] \
+        || { echo "anonymous image digest resolution failed"; exit 1; }
+      arch=$(docker run --rm --platform linux/riscv64 "$resolved" uname -m)
+      [ "$arch" = riscv64 ] || { echo "reproduction image is not riscv64"; exit 1; }
+      printf '%s' "$resolved" > /tmp/gh-aw/agent/reproduction-image
+      extension="$HOME/.local/share/gh/extensions/gh-act"
+      mkdir -p "$extension" "$RUNNER_TEMP/gh-act-download"
+      gh release download v0.2.98 --repo nektos/gh-act --pattern linux-amd64 \
+        --dir "$RUNNER_TEMP/gh-act-download" --clobber
+      echo '34849b32013cb8ac63a1e74015e63602a3374ba3b43df952525739ad15abed7f  '$RUNNER_TEMP'/gh-act-download/linux-amd64' \
+        | sha256sum -c -
+      install -m 0755 "$RUNNER_TEMP/gh-act-download/linux-amd64" "$extension/gh-act.real"
+      cat > "$extension/gh-act" <<'SH'
+      #!/bin/sh
+      unset GITHUB_TOKEN GH_TOKEN ANTHROPIC_API_KEY RISEPROJECT_APP_PRIVATE_KEY \
+        RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY UPSTREAMING_FORK_TOKEN \
+        ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN AWS_ACCESS_KEY_ID \
+        AWS_SECRET_ACCESS_KEY SSH_AUTH_SOCK
+      exec "$(dirname "$0")/gh-act.real" "$@"
+      SH
+      chmod 0755 "$extension/gh-act"
+      gh act --version
+  - name: Suspend workflow commands around untrusted agent output
+    id: suspend_commands
+    run: |
+      set -euo pipefail
+      token="porting-stop-$(openssl rand -hex 32)"
+      echo "token=$token" >> "$GITHUB_OUTPUT"
+      printf '::stop-commands::%s\n' "$token"
+  - name: Check out the contribution fork at the expected head (read-only)
+    env:
+      GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
+      GH_TOKEN: ${{ github.token }}
+    run: |
+      set -euo pipefail
+      node <<'JS'
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const { normalizeAssignment } = require(path.join(process.env.GH_AW_ACTIONS_DIR, "work_queue_claim_scope.cjs"));
+      const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+      const a = normalizeAssignment(JSON.parse(event.inputs.work_queue_assignment));
+      if (a.claims.length !== 1) throw new Error("porting worker takes exactly one Claim");
+      const w = a.claims[0].work;
+      fs.mkdirSync("/tmp/gh-aw/agent", { recursive: true });
+      fs.writeFileSync("/tmp/gh-aw/agent/task.json", JSON.stringify(w, null, 2));
+      JS
+      task=/tmp/gh-aw/agent/task.json
+      dossier_count=$(jq '[.context.reason_evidence[]? | select(.kind == "dossier" and .reference)] | length' "$task")
+      [ "$dossier_count" -le 1 ] || { echo "multiple dossier references"; exit 1; }
+      if [ "$dossier_count" -eq 1 ]; then
+        repository=$(jq -r '.context.reason_evidence[] | select(.kind == "dossier").reference.repository' "$task")
+        ref=$(jq -r '.context.reason_evidence[] | select(.kind == "dossier").reference.ref' "$task")
+        path=$(jq -r '.context.reason_evidence[] | select(.kind == "dossier").reference.path' "$task")
+        expected=$(jq -r '.context.reason_evidence[] | select(.kind == "dossier").reference.sha256' "$task")
+        evidence_id=$(jq -r '.context.reason_evidence[] | select(.kind == "dossier").evidence_id' "$task")
+        [ "$repository" = "riseproject-dev/porting-agent" ] || { echo "bad dossier repository"; exit 1; }
+        [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "bad dossier ref"; exit 1; }
+        [[ "$path" =~ ^\.state/evidence/[A-Za-z0-9._-]+\.json$ ]] || { echo "bad dossier path"; exit 1; }
+        [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "bad dossier digest"; exit 1; }
+        gh api -H 'Accept: application/vnd.github.raw+json' \
+          "/repos/$repository/contents/$path?ref=$ref" > /tmp/gh-aw/agent/dossier.json
+        actual=$(sha256sum /tmp/gh-aw/agent/dossier.json | cut -d' ' -f1)
+        [ "$actual" = "$expected" ] || { echo "dossier digest mismatch"; exit 1; }
+        jq -e --arg id "$evidence_id" '.kind == "dossier" and .evidence_id == $id' \
+          /tmp/gh-aw/agent/dossier.json >/dev/null
+        echo "verified complete dossier $evidence_id at /tmp/gh-aw/agent/dossier.json"
+      fi
+      fork=$(jq -r '.fork // empty' "$task")
+      upstream=$(jq -r '.upstream' "$task")
+      head=$(jq -r '.expected_head // empty' "$task")
+      base=$(jq -r '.base_sha // empty' "$task")
+      [[ "$upstream" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "bad upstream"; exit 1; }
+      mkdir -p "$GITHUB_WORKSPACE/fork"
+      cd "$GITHUB_WORKSPACE/fork"
+      git init -q
+      git remote add upstream "https://github.com/$upstream.git"
+      if [ -n "$fork" ]; then
+        [[ "$fork" =~ ^riseproject-upstreaming/[A-Za-z0-9_.-]+$ ]] || { echo "bad fork"; exit 1; }
+        git remote add origin "https://github.com/$fork.git"
+      fi
+      if [ -n "$base" ]; then git fetch -q --no-tags --depth=200 upstream "$base"; fi
+      if [ -n "$head" ]; then
+        git fetch -q --no-tags --depth=200 origin "$head"
+        git checkout -q -B riscv64 "$head"
+      elif [ -n "$base" ]; then
+        git checkout -q -B riscv64 "$base"
+      else
+        git fetch -q --no-tags --depth=200 upstream HEAD
+        git checkout -q -B riscv64 FETCH_HEAD
+      fi
+      git config user.name "riseproject-upstreaming[bot]"
+      git config user.email "359135081+riseproject-upstreaming[bot]@users.noreply.github.com"
+      echo "checked out $(git rev-parse HEAD) into ./fork"
+post-steps:
+  - name: Resume workflow commands after untrusted agent output
+    if: always()
+    env:
+      STOP_COMMANDS_TOKEN: ${{ steps.suspend_commands.outputs.token }}
+    run: |
+      set -euo pipefail
+      test -n "$STOP_COMMANDS_TOKEN"
+      printf '::%s::\n' "$STOP_COMMANDS_TOKEN"
+jobs:
+  safe_outputs:
+    pre-steps:
+      - name: Check out trusted native artifact compatibility patch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: native-artifact-compat
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - name: Apply hash-pinned gh-aw v1.2.2 native artifact fix
+        run: uv run --locked python native-artifact-compat/scripts/gh_aw_compat.py "$RUNNER_TEMP/gh-aw/actions"
+  record:
+    # No destination token and no publication. This trusted job resolves the
+    # exact native Result, validates the bounded proposal, and records it for
+    # later trusted reconstruction in Milestone 6.
+    needs: [safe_outputs]
+    if: needs.safe_outputs.outputs.work_queue_outcome == 'completed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          path: control
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - name: Resolve exact Result and gate the uncredentialed proposal
+        working-directory: control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSIGNMENT: ${{ inputs.work_queue_assignment }}
+          WORKFLOW_PATH: .github/workflows/worker.lock.yml
+        run: |
+          set -euo pipefail
+          mkdir -p ../in
+          printf '%s' "$ASSIGNMENT" > ../in/assignment.json
+          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/task.json
+          [ "$(jq -r .task ../in/task.json)" != investigation ] \
+            || { echo "investigations run in investigator"; exit 1; }
+          rc=0
+          gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || rc=3
+          if [ "$rc" = 0 ]; then
+            uv run --locked python -m queue_result --gh-aw "$gh_aw" \
+              --assignment ../in/assignment.json --run-id "$GITHUB_RUN_ID" \
+              --workflow "$WORKFLOW_PATH" --repo "$GITHUB_REPOSITORY" --out ../in || rc=$?
+          else
+            jq -n '{status:"infra_error", failure_class:"infrastructure", reason:"gh-aw install failed", stage:"result"}' \
+              > ../in/outcome.json
+          fi
+          if [ "$rc" = 0 ]; then
+            uv run --locked python -m artifact extract ../in/proposal.zip ../in
+            gate_rc=0
+            uv run --locked python -m worker_gate --task ../in/task.json \
+              --proposal ../in/proposal.json --mbox ../in/patches.mbox \
+              --out ../in/worker-gate.json || gate_rc=$?
+            if [ "$gate_rc" = 0 ]; then
+              jq -n '{status:"proposal", failure_class:null, reason:null, stage:"result"}' \
+                > ../in/outcome.json
+            else
+              jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
+                '{status:"rejected", failure_class:"validation", reason:$reason, stage:"worker_gate"}' \
+                > ../in/outcome.json
+            fi
+          fi
+          jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: porting-publication
+          path: |
+            in/assignment.json
+            in/task.json
+            in/result.json
+            in/outcome.json
+            in/proposal.json
+            in/patches.mbox
+            in/worker-gate.json
+            in/record.json
+          if-no-files-found: ignore
+          retention-days: 30
+  continuation:
+    needs: [safe_outputs, record]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: control-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-contents: read
+          permission-actions: write
+      - name: Continue reconciliation after the worker is terminal
+        env:
+          GH_TOKEN: ${{ steps.control-token.outputs.token }}
+        run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
+timeout-minutes: 120
+max-turns: 400
+strict: true
+---
+
+# riscv64 porting worker
+
+You handle exactly one task for the RISE riscv64 Python project porting
+pipeline. The trusted pre-agent step wrote the immutable task to
+`/tmp/gh-aw/agent/task.json` and checked out the contribution's `riscv64`
+branch in `./fork`. The task's
+`plan` field says what to do; `reason_ids` and `context` say why. For repair and
+revision tasks, read every entry in `context.reason_evidence` before researching
+or editing. A `dossier` evidence entry identifies the latest verified dossier.
+Its complete authoritative record is committed at the immutable `reference`;
+`data` is only its queue-safe index. The trusted pre-agent step fetches that
+exact-ref file, verifies its SHA-256 and evidence identity, and writes it to
+`/tmp/gh-aw/agent/dossier.json`. You MUST read the latest verified dossier from
+that complete local file when it exists. The reference also contains its
+immutable raw GitHub URL for provenance. Treat the latest verified dossier's
+path coverage, dependency findings, architecture precedent and risks as the
+authoritative current investigation, while still validating them against
+current repository history and CI. Treat every concrete review comment,
+PR conversation comment and
+rejected-change description in every reason evidence record as a required
+repair constraint, then verify each one against repository history. A repair is
+incomplete if even one requested change is omitted.
+
+Only process the compiler-supplied `work_queue_assignment`. It has exactly
+one Claim; use its `handle` as `claim_handle` on every safe output and on
+`work_queue_claim_finish`.
+
+## Mandatory riscv64 reproduction
+
+Before editing, read the anonymously resolved exact image reference from
+`/tmp/gh-aw/agent/reproduction-image`. It MUST name
+`ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:<64 hex>`.
+Run the applicable build and test commands in that image with
+`--platform linux/riscv64`; require `uname -m` to report `riscv64`. Use the
+pinned `gh act` extension for applicable project workflows and map
+`ubuntu-24.04-riscv` to that exact image with `-P`. When the selected build or
+test job uses another Linux runner label, map only that selected label to the
+same exact image as an alternate runner mapping.
+
+Select only dossier-relevant build and test workflows/jobs. Do not run release,
+publish, deployment, signing, credentialed, or unrelated jobs. Pass no secret,
+App key, destination token, package credential, SSH agent, or host credential
+to Docker, QEMU, or `gh act`. Preserve source fallback while applying the
+reviewed public/RISE dependency resolver policy. Bound each command by the
+reviewed wall-time, memory, process, output, artifact, and log limits; a timeout
+or limit violation is a failed reproduction, not missing evidence.
+
+Capture every exact command, exit status, and bounded log SHA-256. Record the
+selected workflow, jobs, and each `-P` runner mapping. Classify image, QEMU,
+`gh act`, dependency, build, test, and model-infrastructure failures separately.
+Do not claim a patch outcome unless applicable build and test commands passed on
+riscv64; use a blocked/non-patch outcome with exact evidence otherwise.
+
+## What to produce
+
+Write these files into `porting-out/` at the top of the workspace (next
+to `fork/`, not inside it) and upload them with a single `upload_artifact`
+call: `{"path": "porting-out"}` (the native handler names the artifact
+`claim-<hash>-porting-out`):
+
+- `proposal.json`: a JSON object matching
+  `schemas/proposal.schema.json` in the control repository.
+  `contribution_id`, `expected_revision` and `expected_head` must copy the
+  task's `contribution_id`, `revision` and `expected_head`. `operation` is
+  `append` (new commits on top of `expected_head`), `rewrite` (a series on
+  top of `base_sha`, only if `allowed_operations` contains it) or `none`.
+  `changed_files` lists every path your series changes relative to
+  `expected_head` (for `rewrite`, relative to it as well). For a repair or
+  revision task, `reason_ids` must include every task `reason_ids` entry.
+  Include `reproduction` with the exact image digest, `architecture: riscv64`,
+  exact commands/exit statuses/log digests, selected workflows/jobs/runner
+  mappings, and enforced resource limits. In `diagnosis`, include a checklist
+  with one item per review or CI constraint,
+  the exact change that addresses it, and how you verified that change. Never
+  claim `no_change` while required review feedback remains unresolved. For
+  every item in human-relay `reviews`, `comments`, and `conversation_comments`,
+  add one `feedback_responses` entry with its numeric ID and a short factual
+  description of the implemented change. Trusted code posts these responses
+  only after publication and resolves inline review threads. Do not claim a
+  change was made unless it is present in the delivered series.
+  `patch_digest` is the sha256 of `patches.mbox`, or null.
+- `patches.mbox`: for `append`, run `git -C fork format-patch --stdout` from
+  `expected_head` when it is present, otherwise from `base_sha` for a pre-fork
+  proposal; for `rewrite`, use `base_sha`. Omit it
+  when `operation` is `none`.
+
+Then call `work_queue_claim_finish` with `outcome: "completed"`. If you
+cannot produce a useful result, stage `report_incomplete` explaining why and
+finish with `outcome: "cancelled"`.
+
+You cannot push, open PRs, comment or change any repository. A trusted job
+re-applies your series in a fresh repository, validates it against the
+approved scope and pushes it to `riscv64` itself. Anything outside
+`allowed_paths`, any `{debug}` commit when `upstream_facing` is true, any
+`pull_request_target`, new secret, or interpolation of untrusted event text into
+scripts is rejected. For a repair backed by authorized review feedback,
+`review_scope_extension` is true. Natural-language review feedback may require
+an exact file that the original dossier missed. Research the request, include
+that exact repository-relative path in `changed_files`, and make the requested
+change without asking the reviewer to use command syntax. The trusted publisher
+will admit only the exact changed paths in this repair and persist verified
+additions to contribution scope. This does not permit globs or unrelated files.
+Inline review comment paths are present in the human-relay evidence data.
+For contributions whose dossier predates mandatory path coverage,
+`legacy_scope_extension` is true during repair. CI evidence may then justify an
+additional exact file under the same rules. This compatibility path is absent
+for new, complete dossiers.
+
+## Mandatory change-history research
+
+Before modifying any file, extensively research whether that kind of change is
+accepted by this project. Use `github-authenticated` for all GitHub issue, PR,
+review, Actions and code queries; do not use anonymous GitHub fetching.
+
+- run `git log --follow -- <path>` and inspect the relevant commits and diffs;
+- use blame where needed to identify the decision and maintainers behind the
+  current form;
+- search and read relevant open and closed upstream issues and pull requests,
+  including reviews and rejected/superseded approaches;
+- read contribution, release and changelog policies plus recent analogous PRs;
+- cross-check the investigation dossier against current repository history.
+
+For release notes, changelogs, news fragments, generated metadata and similar
+policy-sensitive files, include a change only when commit/PR history or explicit
+project documentation shows that contributor PRs should update that exact file.
+For example, `CHANGELOG.md` being in `allowed_paths` is permission, not evidence
+that it should be edited. If convention is unclear or conflicting, omit that file
+and explain the evidence in `diagnosis` and `validation_not_performed`.
+
+Do not begin editing until this history review is complete. If required issue,
+PR, review or commit history is inaccessible, use `operation: "none"`, report the
+blocker and stop rather than guessing. Record the key URLs, commits, decisions
+and analogous changes in the proposal diagnosis.
+
+## Rules
+
+1. Change only files matching `allowed_paths`. Make the smallest change that
+   follows the nearest existing architecture pattern in the project (for
+   example an existing aarch64 or s390x wheel row). No unrelated refactors,
+   formatting or dependency changes.
+2. Follow the upstream project's existing architecture runner topology. If one
+   `ubuntu-latest` job already builds aarch64, ppc64le or other non-host Linux
+   architectures from `CIBW_ARCHS_LINUX` (typically through QEMU), add `riscv64`
+   to that same list and keep the shared runner. Do not introduce
+   `ubuntu-24.04-riscv`, runner-specific expressions, or QEMU exclusions in that
+   topology. Add a dedicated `runs-on: ubuntu-24.04-riscv` row only when the
+   project already uses separate native runner rows for its native architecture
+   builds, or when documented technical evidence proves its established
+   emulation/cross-build path cannot support riscv64. Follow the nearest existing
+   architecture precedent rather than preferring RISE runners. When required by
+   the selected topology, use `manylinux_2_39_riscv64` and
+   `musllinux_1_2_riscv64` images. Before finalizing any build or test workflow,
+   inspect its dependency declarations and CI logs for packages downloaded as
+   sdists on riscv64. Check public PyPI and the RISE simple index for compatible
+   wheels across every affected interpreter and libc. When public PyPI lacks a
+   compatible build or test dependency wheel but
+   `https://pypi.riseproject.dev/simple` has one, add both
+   `PIP_EXTRA_INDEX_URL=https://pypi.riseproject.dev/simple` and
+   `PIP_PREFER_BINARY=true` to the narrowest environment that reaches that pip
+   resolver. Use the ordinary job or step `env` for native pip, `CIBW_ENVIRONMENT`
+   for build resolution inside cibuildwheel, and `CIBW_TEST_ENVIRONMENT` for test
+   dependency resolution; set both scopes when both phases need the registry.
+   Do not use `PIP_ONLY_BINARY`: source fallback must remain available where the
+   RISE index has no matching wheel. If the project invokes uv, retain the two
+   requested `PIP_*` settings and also configure uv's corresponding extra-index
+   and index-strategy settings because uv does not read pip's index variables.
+   Record package names, versions, tags, index evidence and propagation scope in
+   `diagnosis` and verify from CI that the dependency resolves as a wheel rather
+   than an sdist.
+3. Temporary fork-only changes that let CI run on the fork (for example
+   removing `if: github.repository == 'owner/repo'`) go in a separate commit
+   whose subject starts with `{debug}`. Never when `upstream_facing` is true.
+   Debug commits enable validation only, never publication or secrets.
+   Development CI runs on the automatically opened same-fork PR from
+   `riscv64` to the frozen base. If the existing workflow already has a
+   `pull_request` trigger covering that base, do not add `push: riscv64` or any
+   other fork-only trigger. Never change unrelated event-dependent behavior,
+   upload conditions, artifact retention or release behavior solely to make fork
+   validation produce extra evidence. In particular, do not broaden conditions
+   such as `inputs.upload`, add `github.event_name == 'push'`, or otherwise alter
+   non-riscv64 behavior. If PR CI builds a wheel but intentionally does not upload
+   it, leave that policy unchanged and record the acceptance limitation for a
+   separate trusted probe. `riseproject-upstreaming` is a credentialless,
+   configuration-free shell organization used only to hold contribution forks.
+   It has no package secrets, publishing environments, repository variables or
+   configured external OIDC trust, and none will be added. Do not change or
+   disable `id-token: write`, Twine, or package-publisher actions merely because
+   they exist: publication should fail out of the box for the fork identity. A
+   successful external publication would demonstrate that the upstream relying
+   party already trusts an equivalently broad identity and must be reported, not
+   hidden with a source patch. Repository-mutating GitHub permissions and
+   `pull_request_target` remain forbidden because they can mutate the fork itself.
+   Add a separate `{debug}` trigger/guard adjustment only when no PR-compatible
+   CI trigger exists, and explain the repository history that justifies it. If
+   the project already builds riscv64 wheels upstream, a necessary `{debug}`
+   guard adjustment alone can be the whole series.
+4. Baseline code is `rv64gc`. Optional RVV only behind Linux `riscv_hwprobe`
+   (`RISCV_HWPROBE_KEY_IMA_EXT_0` / `RISCV_HWPROBE_IMA_V`) with an `rv64gc`
+   fallback. No global `-march=...v...` or `-march=native`.
+5. Never remove, skip or weaken tests to get green CI. If the failure is
+   infrastructure, permissions/approval, a missing prerequisite or unrelated,
+   say so in `diagnosis` and `blockers`, use `operation: "none"`, and stop.
+6. You may build and run tests locally in `./fork` to validate. Record what
+   you ran in `validation_performed` and what you could not run in
+   `validation_not_performed`. Your own assessment is not CI evidence.
+7. Do not ask questions upstream. If scope or maintainer intent is unclear,
+   use `outcome: "needs_clarification"` with the options and your
+   recommendation in `diagnosis`.
+8. Commit structure and history updates follow the upstream project's documented
+   and observed conventions. Never mention
+   AI tools or add AI attribution trailers. When the patch adds or relies on the
+   `ubuntu-24.04-riscv` native runner, the commit body must mention
+   `RISC-V GitHub Runners [1]` and end with this reference line exactly:
+
+   ```text
+   [1]: https://ci.riseproject.dev/
+   ```

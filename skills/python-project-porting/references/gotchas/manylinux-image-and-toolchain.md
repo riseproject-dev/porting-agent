@@ -1,0 +1,1957 @@
+# Gotchas -- The manylinux image & toolchain
+
+One thematic slice of the porting gotchas. Each entry keeps its permanent number (cited elsewhere as "gotcha N"); numbers are stable IDs, not sequential, and a few (33, 55, 56, 57) are reused across themes -- see [gotchas-index.md](../gotchas-index.md).
+
+To pull up one entry: `grep -n '^N\. ' references/gotchas/manylinux-image-and-toolchain.md`.
+
+## In this file
+
+- **26** -- The riscv64 runners ship GCC 13; some packages need GCC 14 or later.
+- **46** -- The riscv64 manylinux image ships only the minimal `perl-interpreter`, which
+- **51** -- An upstream `before-build` can name a package that only exists in EPEL -- and
+- **71** -- A vendored 3rd-party library can gate its riscv64 SIMD path on the *parent*
+- **100** -- A Rust project that generates code with prost/tonic needs `protoc` in the
+- **106** -- A `yum_install <pkg>` that "fails" may have installed exactly what you needed --
+- **124** -- A wheel whose compiled payload is a Go binary builds fine and then dies at
+- **138** -- Two more manylinux-image facts, in the vein of gotchas 46 and 51.
+- **690** -- A `CIBW_BEFORE_ALL_LINUX` that mirrors an upstream recipe's `cp -a
+  /usr/include/<pkg>-*/*` can glob-copy headers from a system `-devel` package the upstream's
+  own (different) image bakes in by default, but manylinux_riscv64 does not.
+- **139** -- RISC-V SIMD in an upstream that already supports riscv64: two traps, both invisible
+- **207** -- A vendored dependency three submodules deep can declare a `cmake_minimum_required`
+- **226** -- GCC 14 turns `-Wincompatible-pointer-types` (and `-Wimplicit-function-declaration`,
+- **235** -- The manylinux image's bundled `/opt/python/cpXY-cpXY` interpreters have
+- **377** -- Rocky's `lib64` `GNUInstallDirs` default can make a hardcoded `"lib"`
+- **378** -- A newer libstdc++ on the manylinux image can turn a project's own
+- **257** -- `CMAKE_POLICY_VERSION_MINIMUM` also works as an environment variable, not just a
+- **243** -- The `manylinux_2_39_riscv64` container's IPv6 loopback binds but can't send:
+- **252** -- Rocky 10 (the riscv64 manylinux image's base) names the Wayland client
+- **250** -- A vendored C library's strict-aliasing UB can miscompile *silently* under a
+- **267** -- A vendored C++ library's own architecture-dispatch macro (not a SIMD gate,
+- **271** -- `AVIF_CODEC_AOM_DECODE=OFF` and `-DCONFIG_AV1_HIGHBITDEPTH=0` are a normal
+- **272** -- A riscv64 project's own `getauxval(AT_HWCAP)` runtime dispatch can still
+- **289** -- A CMake `ExternalProject_Add` patch step can shell out to `wget`, which the
+- **420** -- Gotcha 139's binutils-too-old trap recurs inside a Bazel dependency's microkernel
+  library, where the fix is that dependency's own feature `--define` rather than an `-march`
+  probe -- and `--keep_going` hides it behind five hours of unrelated progress.
+  manylinux image doesn't ship (only `curl`) -- and a parallel `make -j` build hides it.
+- **294** -- An upstream CMakeLists' own `-fPIC` allowlist can name only `x86_64`/`aarch64`,
+  leaving riscv64 to link non-PIC objects into a shared library.
+- **279** -- Gotcha 272's zlib-ng `vsetvli` SIGILL recurs whenever a *second*, independent
+- **288** -- Rocky/AlmaLinux 10 dropped the classic SDL2-devel package entirely, on every
+- **327** -- A project's own `before-all`/`before-build` can already "fix" gotcha 138's
+  stale `config.guess`/`config.sub` by downloading fresh copies at build time.
+- **328** -- A vendored SIMD library with no portable/generic implementation at all can
+  still be ported to riscv64 by routing its x86-only path through SIMDe.
+- **332** -- A SIMDe SSE-emulation port can compile clean, pass its own project's
+  per-primitive unit tests, and still produce wrong full-pipeline results on riscv64.
+- **543** -- A distro `-devel` package pulled in as another package's dependency can leave a
+  stale multilib `jconfig-64.h` that shadows a from-source libjpeg-turbo's own `jconfig.h` in
+  CMake's `FindJPEG` glob.
+- **333** -- A vendored C++ library's architecture-fallback stub (unlike gotcha 267's
+  dead `#warning` branch) can have a genuinely correct no-op body that still trips
+  `-Werror=unused-parameter` on any architecture outside its named x86/ARM/PPC set.
+- **337** -- lexbor, re2 and uchardet are absent from Rocky 10's baseos/appstream/crb on
+  every arch, and `re2-devel` only resolves from EPEL -- which riscv64 does not carry.
+- **351** -- A project's own build script can gate a *sibling* vendored library's SIMD
+  macros on `platform.machine() != "ppc64le"`, silently assuming "not ppc64le" means
+  "x86 or ARM" -- the hdf5plugin/c-blosc2 case.
+- **358** -- `dnf`/`apk` installing an older cmake to satisfy gotcha 257 doesn't
+  necessarily make it the one that runs: both manylinux and musllinux riscv64 images
+  carry a pipx-installed cmake >= 4 earlier on `PATH` by default.
+- **359** -- A CMake project forked from old LLVM sources can validate the host
+  architecture through *two* independent mechanisms -- the vendored `utils/llvm-build`
+  Python tool has its own separate check and its own escape hatch.
+- **374** -- `find_package(Python3 REQUIRED COMPONENTS Interpreter Development)` fails on
+  manylinux's static-libpython CPython, on any architecture -- only `Development.Module`
+  is ever needed to build an extension module, not the `Development.Embed` half.
+- **390** -- libev is one of the `-devel` packages that *is* in Rocky 10's riscv64 repos, so an
+  upstream `yum install -y libev libev-devel` needs no replacement -- but its header is
+  `/usr/include/ev.h`.
+- **401** -- Rocky 10 riscv64 ships OpenBLAS, LAPACK and FFTW but no SuiteSparse, GSL or
+  GLPK, and a numeric package's optional-extension set has to be cut along that line.
+- **433** -- OpenBLAS built from source needs an explicit `TARGET=RISCV64_GENERIC`; its
+  `getarch` has no riscv64 autodetection to fall back on, and the `ZVL*` targets bake RVV in.
+- **435** -- There is no `libquadmath` on riscv64 (or aarch64) at all -- not a missing package,
+  a library GCC does not build for those targets.
+- **428** -- A project on the *deprecated* `find_package(PythonLibs REQUIRED)` has no
+  `Development.Module` way out of gotcha 374's static-libpython wall -- and satisfying it
+  with manylinux's non-PIC `libpython3.XX.a` only moves the failure to the final link.
+- **446** -- The image's free-threaded interpreter directory is `/opt/python/cp3XX-cp3XXt`, not
+  `cp3XXt-cp3XXt`; a hand-written loop that doubles the `t` dies with exit 127, possibly on the
+  last line of an hour-long build.
+- **447** -- A codebase whose upstream CI only ever compiles it with clang breaks under GCC one
+  translation unit at a time; look for the fix in a later upstream release, sweep the rest of
+  the bug class off-target, and batch discovery with `ninja -k`.
+- **448** -- "Genuine upstream riscv64 support" can still mean "requires RVV 1.0 hardware": a
+  12-hour build can go green, produce every wheel, and die two minutes later in the smoke test
+  with exit 132 -- and the wheel's own ELF `Tag_RISCV_arch` proves it without another runner slot.
+- **454** -- The image's LLVM is a whole toolchain *minus Clang's static libraries*:
+  `llvm-static` installs 304 `libLLVM*.a`, `clang-devel` installs none, so a project that
+  links Clang statically must build LLVM+Clang from source; plus the cmake/ninja and
+  `_GLIBCXX_USE_CXX11_ABI` facts that go with it.
+- **455** -- Rocky 10's zlib is `zlib-ng-compat` and its CMake config names a `libz.a` it never
+  installs, so a *lowercase* `find_package(zlib)` aborts the configure -- `QUIET` or not.
+
+- **460** -- An upstream Dockerfile's `apt-get install` line is a build-dependency manifest
+  nothing else in the tree declares: translate its `-dev` packages to Rocky names before the
+  first run, or the image's missing header stops the compile (the vllm `numa.h` case).
+- **485** -- CMake's `find_package(Python3 COMPONENTS Development)` fails inside the manylinux
+- **496** -- Before copying gotcha 420's XNNPACK fp16 define into an older tree, check which
+  target the gate sits in -- an old pin may compile no vector kernels at all.
+  image because PEP 513 forbids shipping `libpython`, and the fix is a zero-byte file, not a
+  build-flag change (the usd-core/OpenUSD case).
+- **499** -- `-lfoo` and `-l:libfoo.a` are different questions, and Rocky splits the two the
+  opposite way from Debian for binutils and xz; `demangle.h` also sits outside `libiberty/`.
+- **515** -- The image's minimal perl also breaks packages that shell out to perl at *runtime*,
+  not just ones that build OpenSSL from source (gotcha 46's other half).
+- **525** -- The image's GCC 14 turns three old-C sloppinesses into hard errors, and `-w` cannot
+  suppress any of them -- OpenBLAS's own `linktest.c` is the one you will hit first.
+- **526** -- An asymmetry between two upstream invocations of the same command is load-bearing
+  until proven otherwise -- normalising it is a self-inflicted bug.
+- **548** -- `-Wcast-align` under `-Werror` is a riscv64-only wall for wire-protocol casts;
+  GCC emits it only on strict-alignment targets.
+- **576** -- Rocky 10's `libjpeg-turbo-devel` CMake config declares a `turbojpeg` target whose
+  library lives in the separate CRB `turbojpeg` package, so `find_package(libjpeg-turbo)` fails
+  until you install it.
+- **586** -- An inherited `curl … .tar.lz | tar x --lzip` fails on riscv64: `lzip` is in no Rocky 10
+  repo and there is no EPEL; fetch the same GNU release's `.tar.xz` instead.
+- **617** -- An upstream Dockerfile's static `.a` built without `-fPIC` links into a `.so` only on
+  default-PIE Debian/Ubuntu gcc; on the manylinux image it fails with `R_RISCV_HI20`.
+- **599** -- `PROTOC_INCLUDE` (gotcha 100) is not free: it replaces protoc's implicit `-I.`, so a
+  `build.rs` that passes a bare `compile_protos("x.proto")` then fails "does not reside within any
+  --proto_path"; CRB protoc finds `/usr/include` on its own, so leave it unset there.
+- **608** -- `cmake` built from source as a build dependency (no riscv64 wheel yet for the
+  required version) needs `openssl-devel` installed -- its own CMake bootstrap looks for
+  OpenSSL for `cmcurl` and the image ships no dev headers by default.
+- **634** -- Zig 0.16's translate-c (Aro) predefines no RISC-V float-ABI macros, so a Zig
+  extension that translates `Python.h` fails on manylinux_riscv64 only (`unsupported FLEN`).
+---
+
+26. **The riscv64 runners ship GCC 13; some packages need GCC 14 or later.** The compiler
+    that matters is the one in the *build container*, not on the runner -- a cibuildwheel
+    build against the manylinux_riscv64 image gets a newer toolchain for free. A project
+    that builds directly on the runner does not: if it needs GCC 14+, either move the build
+    into the container or provision a newer toolchain explicitly.
+
+46. **The riscv64 manylinux image ships only the minimal `perl-interpreter`, which
+    breaks any dependency that builds OpenSSL from source (the confluent-kafka case).**
+    Upstreams whose from-source path compiles its own OpenSSL (librdkafka's mklove
+    `--install-deps --source-deps-only`, and anything else vendoring openssl) install a
+    couple of perl modules in their manylinux script -- confluent-kafka's
+    `tools/build-manylinux.sh` does `yum install perl-IPC-Cmd perl-Pod-Html` -- because
+    the AlmaLinux 8 images carry the rest. Rocky 10 does not: `Time::Piece` and
+    **`FindBin`** are missing too, and `Configure` dies with
+    `Can't locate FindBin.pm in @INC` before printing anything useful. Install the whole
+    distribution (`dnf -y install perl`) rather than chasing modules one CI cycle at a
+    time.
+    - **Two more Rocky 10 package facts worth not rediscovering:** `zlib-devel` still
+      resolves (the preinstalled `zlib-ng-compat-devel` provides it), and `python3`,
+      `make`, `patch`, `file`, `nm`, `ar`, `autoconf`, `automake`, `libtool` and
+      `pkg-config` are all present -- so an upstream `yum install -y zlib-devel gcc-c++`
+      line can usually be left untouched.
+    - **A source-built dependency is unstripped where upstream's prebuilt one is not.**
+      librdkafka came out at 58MB against the 11MB `librdkafka.redist` upstream bundles,
+      a 19MB wheel against 4.9MB. `auditwheel repair --strip` puts it back at 9.8MB.
+      Check with `unzip -l <whl>` whenever the build compiles a dependency that upstream
+      downloads prebuilt.
+
+51. **An upstream `before-build` can name a package that only exists in EPEL -- and
+    manylinux ships no EPEL on riscv64 (the duckdb/ccache case).**
+    `docker/build_scripts/install-runtime-packages.sh` sets `EPEL=` (empty) for `i686`
+    and **`riscv64`** while installing `epel-release` everywhere else, so an inherited
+    `[tool.cibuildwheel.linux] before-build = ["yum install -y ccache"]` -- a very common
+    line, since ccache is EPEL-only on RHEL derivatives -- fails the build before it
+    starts. Rocky 10's own repos answer this in one query
+    (`dnf -q list <pkg>` in `rockylinux/rockylinux:10` under `--platform linux/riscv64`,
+    a 60MB pull versus the multi-GB manylinux image): `cmake` 3.31.8 is there,
+    **`ninja-build` and `ccache` are not**.
+    - **Override it with an empty string**, don't reimplement it:
+      `CIBW_BEFORE_BUILD: ''`. cibuildwheel's `_resolve_cascade` skips only `None`
+      values (`ignore_empty` is False for `before-build`), and the env var sits after
+      the `[tool.cibuildwheel.linux]` table in the cascade -- so `''` genuinely clears
+      it. Dropping a compiler cache costs nothing in a throwaway container.
+    - **Don't reach for `dnf` to replace it**: a scikit-build-core project pulls
+      `cmake`/`ninja` from its own build requirements, and both publish riscv64 wheels
+      on PyPI (`cmake-4.4.2-py3-none-manylinux_2_31_riscv64.whl`,
+      `ninja-1.13.0-py3-none-manylinux_2_31_riscv64.whl`), so the isolated build env
+      provisions them itself. Check `pypi.org/pypi/<tool>/json` for the arch before
+      writing an install step for a build tool.
+
+71. **A vendored 3rd-party library can gate its riscv64 SIMD path on the *parent*
+    project's dispatch probe and then re-probe with baseline flags -- a guaranteed
+    `FATAL_ERROR` (the opencv-python case; see `build-opencv-python.yml`).** OpenCV probes
+    RVV twice: once with the baseline flags (`HAVE_CPU_RVV_SUPPORT` -- **fails**, the
+    baseline is `-march=rv64gc`) and once with `-march=rv64gc_v`
+    (`HAVE_CXX_MARCH_RV64GC_V` -- **succeeds**, which is all a *dispatch* target needs).
+    `CPU_RVV_SUPPORTED` therefore ends up ON, and `3rdparty/libpng/CMakeLists.txt` takes
+    it as the default for `PNG_RISCV_RVV` -- then compiles `#include <riscv_vector.h>`
+    with the *baseline* flags, gets `COMPILER_SUPPORTS_RVV - Failed`, and calls
+    `message(FATAL_ERROR "Compiler does not support RISC-V Vector extension")`. Configure
+    dies before one object is built. Nothing is wrong with the toolchain -- the image's
+    GCC 14.3.1 does support RVV; the two probes just disagree because only one passes
+    `-march`. Distinct from gotcha 26 (a genuinely too-old compiler).
+    - **Turn the vendored dep's SIMD off; do not add `-march` globally.** Raising the
+      baseline to `rv64gcv` would make every wheel require RVV hardware. And off is the
+      only correct answer anyway: the same block appends
+      `riscv/filter_rvv_intrinsics.c` with **no** per-source `-march`, so the path could
+      not compile even if the probe had passed. `off` is libpng's own documented default.
+    - **A `scikit-build` (classic) project takes extra `-D` flags from the `CMAKE_ARGS`
+      environment variable**, so this is a one-line `CIBW_ENVIRONMENT` entry
+      (`CMAKE_ARGS=-DPNG_RISCV_RVV=off`), not a patch: `setuptools_wrap.py` prepends them
+      to the `cmake_args` passed to `setup()` and `cmaker.py` appends them to the
+      configure command line -- unless `SKBUILD_CONFIGURE_OPTIONS` is set, which wins and
+      makes `CMAKE_ARGS` a silent no-op. `scikit-build-core` reads `SKBUILD_CMAKE_ARGS`
+      instead. Check which backend `[build-system] build-backend` names before reaching
+      for either.
+    - **Grep the vendored tree for the other gates in the same pass** -- each one you miss
+      is a full CI cycle: `grep -rn --include=CMakeLists.txt --include='*.cmake' -iE
+      'riscv|rvv' 3rdparty cmake`, then look for `FATAL_ERROR` in the hits. In OpenCV
+      5.0.0 only libpng is fatal; `zlib-ng` (`set(WITH_RVV OFF)`) and `mlas` degrade
+      quietly, which is why the failure looks isolated rather than systemic.
+    - **A `cmake` *configure* under `--platform linux/riscv64` settles it in ~4 minutes**
+      (gotcha 15): copy the exact `-D` list the failing CI log printed -- skbuild echoes
+      the whole command -- add the candidate flag, and read the "Configuring done" line.
+      Cheaper than the queue wait on the shared riscv64 runners, and it prints the
+      config summary so you can also check what got disabled (`GUI: NONE`, `FFMPEG: NO`).
+
+100. **A Rust project that generates code with prost/tonic needs `protoc` in the
+    container, and the riscv64 manylinux image can supply it -- from CRB, at 3.19 (the
+    temporalio case; see `build-temporalio.yml`).** Upstreams whose cibuildwheel config
+    pulls protoc from a wheel (`pip install protoc-wheel-0`, the near-universal choice --
+    it is what `[tool.cibuildwheel] before-all` installs) hit a dead end on riscv64:
+    protoc-wheel-0 publishes **only wheels, no sdist**, and none for riscv64. Two facts
+    settle it without a CI cycle.
+    - **Rocky 10's CRB repo is *enabled* in `manylinux_2_39_riscv64`** (unlike EPEL, which
+      gotcha 51 shows is absent for this arch), and `protobuf-compiler`/`protobuf-devel`
+      live there -- so `yum install -y protobuf-compiler protobuf-devel` in
+      `CIBW_BEFORE_BUILD` is a one-line override. `dnf repolist --all` in the image is the
+      check; do not assume a package is missing because it is not in baseos/appstream.
+    - **CRB's protoc is 3.19.6, and protoc < 22 does not carry the well-known types inside
+      the binary** -- they ship as `.proto` files in `/usr/include`, so a build that worked
+      with protoc-wheel-0's 30.x dies on `google/protobuf/field_mask.proto: File not
+      found`. prost-build (checked in 0.14.4, `config.rs`) forwards `$PROTOC_INCLUDE` as an
+      extra `-I`, so `PROTOC_INCLUDE=/usr/include` in `CIBW_ENVIRONMENT` is the whole fix.
+    - **Prove the old protoc can parse the tree before trusting it**, on any host and in
+      seconds: run `protoc --descriptor_set_out` over the exact file/include lists the
+      crate's `build.rs` passes, inside `rockylinux/rockylinux:10`. `grep -rh '^syntax'
+      --include='*.proto'` first -- proto2/proto3 are fine for 3.19, an `edition = "2023"`
+      file is not. Then compile just the generating crate (`cargo build -p <protos-crate>`)
+      in the aarch64 manylinux image for end-to-end proof in under a minute.
+
+106. **A `yum_install <pkg>` that "fails" may have installed exactly what you needed --
+    check `Provides:` before adding a gotcha-46-style `dnf install` (the pyproj case).**
+    multibuild-derived dependency scripts define
+    `yum_install() { yum install -y "$1" && rpm -q "$1"; }`, and the `rpm -q` half fails
+    whenever dnf satisfied the request through a virtual provide rather than a literal
+    package name. On Rocky 10 riscv64 `dnf -y install perl-core` installs the full `perl`
+    distribution and exits 0, yet `rpm -q perl-core` reports "not installed" -- so
+    `build_perl` returns non-zero even though `FindBin` and `Time::Piece` are now present,
+    and it `touch`es its stamp unconditionally regardless. Prefixing `before-all` with
+    `dnf -y install perl` therefore fixes nothing and is exactly the redundant divergence
+    gotcha 49 warns about; gotcha 46 applies only where upstream installs *no* perl at all.
+    - **Settle it by importing the module in the real image, before and after upstream's
+      line**, rather than by reading package lists:
+      `docker run --rm --platform linux/riscv64 quay.io/pypa/manylinux_2_39_riscv64 bash -c
+      "perl -MFindBin -e1; dnf -y install perl-core; perl -MFindBin -e1"` fails, then
+      succeeds. A `dnf list` that omits the name proves nothing -- `dnf list perl-core` is
+      silent on Rocky 10 while `dnf install perl-core` succeeds.
+    - **Refines gotcha 101's aarch64 rehearsal**: the aarch64 manylinux image is
+      **AlmaLinux 10**, not the same Rocky 10 build as the riscv64 one, and the two do not
+      carry identical packages (`perl-core` is a real package on AlmaLinux and only a
+      provide on Rocky). The rehearsal still validates the recipe end to end; it does not
+      settle package availability, so probe the riscv64 image itself for that.
+    - Two invocation traps worth not rediscovering when setting the rehearsal up:
+      cibuildwheel refuses `--platform`/`--archs` alongside `--only` (the arch is computed
+      from it), and `uv run` inside the upstream checkout tries to install that checkout as
+      a project first, dying in its `setup.py` -- pass `--no-project`.
+
+124. **A wheel whose compiled payload is a Go binary builds fine and then dies at
+    `execve` with ENOENT, because Go <=1.26 hardcodes the wrong riscv64 ELF interpreter
+    (the wandb case; see `build-wandb.yml`).** Gotchas 27/35 read an all-`py3-none-*` wheel
+    set as "nothing is compiled"; the third shape is a wheel with **no** ABI tag whose
+    platform half is real *and* whose payload the build compiles from source -- wandb's
+    hatchling hook builds `wandb/bin/wandb-core` (Go, `-mod=vendor`) plus two Rust artifacts,
+    so `py3-none-<platform>` here means "one wheel for every interpreter", not "pure Python".
+    That is an ordinary port, and because the wheel is ABI-independent the matrix collapses
+    to a single build identifier (gotcha 11's collapse, reached from a different direction).
+    - **`FileNotFoundError: [Errno 2]` naming a file that is demonstrably present in the
+      wheel is the kernel reporting a missing *interpreter*, not a missing binary.** Go's
+      internal linker emits a dynamic executable even at `CGO_ENABLED=0` when any package
+      uses `//go:cgo_import_dynamic` (wandb vendors `github.com/ebitengine/purego`, whose
+      `dlfcn_nocgo_linux.go` does exactly that for `dlopen`/`dlsym`) -- and Go pins
+      `/lib/ld.so.1` as the riscv64 loader, a name no glibc distribution ships. Debian
+      trixie, Ubuntu 24.04 and `manylinux_2_39_riscv64` all carry only
+      `/lib/ld-linux-riscv64-lp64d.so.1`. That is golang/go#77209, fixed by CL 737180 after
+      go1.26.5; until the version in `core/go.mod` (or wherever the project pins Go) carries
+      the fix, pass the psABI path with the linker's `-I` flag
+      (`-ldflags="... -I /lib/ld-linux-riscv64-lp64d.so.1"`). It is a no-op wherever Go links
+      statically, so it needs no arch guard beyond the one you write for clarity. Tag it
+      `Inappropriate` -- the fix belongs in Go, not in the package.
+    - **Diagnose it in one command, on any host**: `readelf -lW <binary> | grep interpreter`.
+      A trivial `CGO_ENABLED=0` Go program has *no* `PT_INTERP`, so an interpreter line at
+      all tells you some dependency forced dynamic linking; `grep -rl cgo_import_dynamic
+      vendor/` then names it.
+    - **Put `PT_INTERP` in the wheel-content assertion**, next to gotcha 20's "the compiled
+      thing is really in there". Parsing it is ~10 lines of `zipfile` + struct offsets
+      (`e_phoff` at 0x20, `e_phentsize` at 0x36, `e_phnum` at 0x38; `PT_INTERP == 3`), and it
+      turns a two-hour build-then-fail cycle into a host step. Assert `interp in (None,
+      "/lib/ld-linux-riscv64-lp64d.so.1")` so a static binary passes too.
+    - **Cross-compile the payload on your fast host before spending the native cycle.** Go
+      cross-compiles with no toolchain install (`GOOS=linux GOARCH=riscv64 go build`), and
+      Rust workspaces cross-build in a container with `rustup target add
+      riscv64gc-unknown-linux-gnu` plus `gcc-riscv64-linux-gnu` as the linker -- 70s each here
+      against **1h45m** for the same code natively on `ubuntu-24.04-riscv`. That pre-flight
+      is also where you settle the one dependency that usually decides a Rust port:
+      `aws-lc-sys` (rustls' default provider) ships prebuilt bindings for riscv64gc, visible
+      as `src/riscv64gc_unknown_linux_gnu_crypto.rs` in the crate tarball.
+    - **A hatchling `[tool.cibuildwheel.linux] environment` table is load-bearing** -- wandb's
+      carries the `PATH` entries for Go and cargo, and upstream's own workflow comments that
+      `CIBW_ENVIRONMENT_LINUX` would replace it. Pass the registry index with
+      `CIBW_ENVIRONMENT_PASS_LINUX` plus a job-level `env:` instead of clobbering the table.
+
+138. **Two more manylinux-image facts, in the vein of gotchas 46 and 51.**
+    - **The image carries only glibc's *built-in* charset converters.** RHEL 9+ split the
+      rest into `glibc-gconv-extra`, so anything recoding through `iconv` fails for every
+      non-trivial encoding: GDAL's shapefile driver made 11 `test_non_utf8_encoding_*`
+      tests fail with a bare "Error adding field" until `dnf -y install glibc-gconv-extra`
+      went into the image. The tell is that only the non-UTF-8/non-Latin-1 cases fail.
+    - **An old autotools tarball ships a `config.guess`/`config.sub` that predates the
+      architecture.** libspatialite 5.1.0's are stamped 2009 and recognise neither riscv64
+      *nor* aarch64, so `configure` dies with `cannot guess build type; you must specify
+      one` -- on both, which is what makes it cheap to catch off-target. `--build=$(gcc
+      -dumpmachine)` does not help, because the same stale `config.sub` rejects the triplet;
+      copy automake's over instead (`cp /usr/share/automake-*/config.guess
+      /usr/share/automake-*/config.sub .`), which the manylinux image already has.
+
+139. **RISC-V SIMD in an upstream that already supports riscv64: two traps, both invisible
+    until the wheel runs (the faiss-cpu case).** Finding `-march=rv64gcv...` and
+    `impl-riscv.cpp` in a project reads as "the port is already done". It is not, and the
+    two things that go wrong are independent of each other and of the package.
+    - **The image's binutils is older than the ISA extension name the flags use.**
+      `manylinux_2_39_riscv64` is Rocky Linux 10, which ships **binutils 2.41**; `zvfhmin`
+      landed in 2.42. An old assembler rejects the **whole** `-march` string rather than
+      the one unknown extension, so every affected translation unit dies with
+      ``unknown prefixed ISA extension `zvfhmin'`` -- and the message names an ISA string
+      you never wrote, so it reads like a compiler bug. GCC itself is fine (Rocky 10 has
+      14.3.1); it is `as` that refuses. Settle it in 30 seconds, no build:
+      `docker run --rm --platform linux/riscv64 rockylinux/rockylinux:10 sh -c 'dnf -y install gcc-c++ >/dev/null; echo "int main(){}" >t.cc; g++ -march=<flags> -c t.cc'`,
+      then bisect the flag by dropping extensions. The fix is a `check_cxx_source_compiles`
+      probe with a fallback to the extension-free `-march`, not a hardcoded downgrade --
+      grep the sources for `f16`/`float16` first, since a probe that silently disables
+      something the code needs just moves the failure.
+    - **"Compiled with RVV" often means "assumes RVV", with no runtime check.** Projects
+      copy the aarch64 pattern where NEON is architecturally guaranteed, and write
+      `detected_level = RISCV_RVV` unconditionally while compiling *only* the vector
+      kernels with `-march=rv64gcv` and everything else at the rv64gc baseline. The build
+      is green, the tests pass on a runner that happens to have V, and the published wheel
+      SIGILLs on JH7110/P550-class hardware -- exactly what a `manylinux_riscv64` tag
+      promises to run on. Read the dispatch site (`getauxval`/`__riscv_hwprobe` present?)
+      before trusting a green test job; the repo's standing position is that moving the
+      baseline to `rv64gcv` "would make every wheel require RVV hardware".
+      The patch is usually a five-line mirror of the project's own SVE path --
+      `getauxval(AT_HWCAP) & (1 << ('V' - 'A'))` -- which keeps the speedup where the
+      hardware has it instead of disabling the kernels. Check the dispatcher falls back to
+      a scalar level first; QEMU reports the V bit set, so this cannot be tested by
+      emulation alone, only read.
+
+207. **A vendored dependency three submodules deep can declare a `cmake_minimum_required`
+    below CMake 4's hard floor even when the top-level project and its direct submodule
+    don't -- and only a CMake new enough to need the workaround has a riscv64 PyPI wheel
+    at all (the ctranslate2/Ruy/cpuinfo/clog case).** CTranslate2's own
+    `cmake_minimum_required(VERSION 3.7)` and Ruy's `VERSION 3.13` are both fine; the
+    failure is three levels down, in Ruy's vendored `third_party/cpuinfo/deps/clog`,
+    which CMake 4 refuses outright (`Compatibility with CMake < 3.5 has been removed`)
+    rather than warning. There is no `dnf install`-around-it either: the riscv64
+    manylinux image's own repo `cmake` is fine, but a `CIBW_BEFORE_ALL_LINUX` script that
+    does `pip install cmake` to get a version newer than whatever the image ships hits
+    this on riscv64 specifically, because the *first* riscv64 wheel on PyPI is
+    `cmake==4.1.0` -- every version old enough to predate this CMake policy change (<4.0)
+    has no riscv64 wheel to fall back to, so there is no way to sidestep the collision by
+    pinning an older `cmake` the way an x86_64/aarch64 build could.
+    - **The fix is `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` on the top-level configure line**;
+      it is a no-op for a project already declaring 3.5 or higher and unblocks the
+      deeply-vendored one three `add_subdirectory()` calls down.
+    - **Confirm exactly which vendored `CMakeLists.txt` needs it by reading the
+      "CMake Error at ..." path in the configure log**, not by guessing from the
+      top-level project's own declared minimum -- it is rarely the direct dependency.
+
+226. **GCC 14 turns `-Wincompatible-pointer-types` (and `-Wimplicit-function-declaration`,
+    `-Wimplicit-int`) from a warning into a hard error by default for C code -- a
+    toolchain-version fact, not a riscv64 one, that bites old-style C sources compiled
+    against a newer manylinux image than upstream targets (the uamqp case).** uamqp's
+    Cython-generated `c_uamqp.c` calls into the vendored `azure-uamqp-c` C API with
+    loosely-typed pointers that were always technically wrong but only warned under the
+    GCC upstream's own manylinux2014 image ships. `manylinux_2_39_riscv64` (Rocky 10)
+    carries GCC 14.3.1, so the same code hard-fails there -- refines gotcha 26 from "too
+    old to build at all" to "new enough to enforce what an old one let slide". uamqp's
+    own `pyproject.toml` already carries the fix -- `[tool.cibuildwheel.linux]
+    environment = {..., CFLAGS="-Wno-error=incompatible-pointer-types
+    -Wunused-function"}` -- for exactly this reason, presumably hit on a newer x86_64 CI
+    image at some point.
+    - **A `CIBW_ENVIRONMENT` override that adds `PIP_EXTRA_INDEX_URL` (or anything
+      else) silently drops that CFLAGS too, since `CIBW_ENVIRONMENT` replaces the whole
+      table (gotcha 107)** -- read upstream's `environment` entry before overriding and
+      carry forward anything build-relevant, not just the keys your port needed to add.
+    - Confirm it's this exact class before reaching for the flag: the compiler error
+      text names the diagnostic (`error: ... incompatible-pointer-types` in
+      `[-Wincompatible-pointer-types]`), and it appears identically on any sufficiently
+      new GCC/Clang regardless of architecture -- nothing riscv64-specific to chase.
+
+235. **The manylinux image's bundled `/opt/python/cpXY-cpXY` interpreters have
+    `sqlite3` loadable extensions disabled -- test anything using
+    `sqlite3.Connection.enable_load_extension` on the runner's own Python instead (the
+    sqlite-vec case).** These are python-build-standalone-style builds, compiled with a
+    feature set that differs from a normal distro Python -- confirmed with
+    `python3 -c "import sqlite3; print(hasattr(sqlite3.connect(':memory:'),
+    'enable_load_extension'))"` returning `False` in `/opt/python/cp312-cp312` through
+    `cp314-cp314` inside `quay.io/pypa/manylinux_2_39_riscv64`, and `True` for both
+    Rocky 10's own system `python3` (inside the same image) and Ubuntu 24.04's apt
+    `python3` on the real `ubuntu-24.04-riscv` runner target. A package whose whole
+    purpose is `conn.load_extension(...)` therefore cannot be exercised inside the
+    build container at all -- the AttributeError looks like a build problem but is a
+    property of that specific Python build, present on every architecture, not
+    riscv64-specific.
+    - **Test on the host runner, not the container, when this hits.** Since
+      `ubuntu-24.04-riscv` runs glibc 2.39 -- the same version the `manylinux_2_39_riscv64`
+      tag promises -- a wheel built inside the container installs and loads correctly
+      when tested directly on the runner afterward (outside `docker run`), which is also
+      what a real end user's environment looks like. Building in the container and
+      testing on the host is not a compromise here; it is the only combination that
+      exercises the feature at all.
+    - **Not unique to `sqlite3`** -- any stdlib module a python-build-standalone-style
+      interpreter compiles out (readline, tkinter, and others depending on the build
+      profile) will show the same "works everywhere except `/opt/python`" shape. `python3
+      -c "import <mod>"` inside `/opt/python/cpXY-cpXY` is a five-second check before
+      assuming a `CIBW_TEST_COMMAND` failure is riscv64-specific.
+
+243. **The `manylinux_2_39_riscv64` container's IPv6 loopback binds but can't send:
+    `socket.socket(AF_INET6).bind(("::1", 0))` succeeds, then any actual traffic on
+    it raises `OSError: [Errno 101] Network is unreachable`.** zeroconf's
+    `has_working_ipv6()` helper only checks the bind (plus that some adapter reports
+    an IPv6 address), so it reports IPv6 as working and every IPv6-gated test runs --
+    all but one pass; the one that actually round-trips a packet over `('::1', ...)`
+    fails, identically on cp312/cp313/cp314/cp314t. A pure bind-and-close probe is
+    not proof that IPv6 loopback is usable inside this container -- anything that
+    also sends will find out otherwise. `--deselect` the one node rather than
+    disabling IPv6 testing wholesale (upstream's own `SKIP_IPV6` knob skips far more
+    than this single failure); copy the nodeid verbatim from the `FAILED` line
+    (gotcha 144) and confirm it repeats identically across the whole interpreter
+    matrix before trusting it is not a flake.
+
+250. **A vendored C library's strict-aliasing UB can miscompile *silently* under a
+    newer GCC -- no error, no warning, just wrong output (the pyreadstat/ReadStat
+    case).** ReadStat's `readstat_writer.c` casts `void*` through
+    `readstat_variable_t**` and similar type-punning the C standard forbids; GCC 13+
+    at `-O2` exploits the type-based-aliasing assumption those casts violate and
+    optimizes away the affected value-label writes. Unlike gotcha 226's
+    `-Wincompatible-pointer-types` (a hard build-time error), this produces a wheel
+    that builds cleanly and passes any test that doesn't specifically check the
+    corrupted field -- it only shows up as wrong output, on any sufficiently new GCC,
+    nothing riscv64-specific about it. pyreadstat's own upstream CI already carries
+    the fix -- `CFLAGS=-O2 -fno-strict-aliasing` on Linux, with a comment naming the
+    exact function and GCC version -- so `manylinux_2_39_riscv64`'s GCC 14.3.1
+    qualifies and the flag has to be carried into `CIBW_ENVIRONMENT_LINUX` even
+    though nothing about the port itself triggers it. The tell, when upstream's own
+    comment isn't there to find: a project vendoring older C against a newer image
+    than it was written for is reason enough to check whether upstream's own CI sets
+    any non-default `CFLAGS`/`CXXFLAGS` before assuming a clean, warning-free build
+    means the code is safe on this compiler.
+
+252. **Rocky 10 (the riscv64 manylinux image's base) names the Wayland client
+    library's devel package differently from the Fedora/EPEL convention an
+    upstream's own CI script assumes (the glfw case).** pyGLFW's `.gitlab-ci.yml`
+    installs `libwayland-client-devel` on its manylinux2014/manylinux_2_28 jobs -- that
+    name resolves on the AlmaLinux-based x86_64/aarch64 manylinux images the same way
+    it does on Fedora/EPEL, so the line looks portable. It is not a package on Rocky
+    10: `dnf install libwayland-client-devel` reports "No matching Packages to list"
+    on `manylinux_2_39_riscv64`, even with CRB enabled. The library and its pkg-config
+    file (`wayland-client.pc`) are both present -- just under Rocky's own package name,
+    **`wayland-devel`** (`dnf -q provides '*/wayland-client.pc'` finds it in seconds
+    and is the fastest way to settle a "no matching packages" dead end without
+    guessing at synonyms). `libxkbcommon-devel` and `wayland-protocols-devel`, by
+    contrast, keep their upstream names unchanged on Rocky 10 -- only the client
+    library's package is renamed, so swap that one line rather than assuming the
+    whole dependency list needs translating.
+    - Distinct from gotcha 106 (a `yum_install` that "fails" but actually succeeded
+      under a virtual provide): here the literal name genuinely does not exist under
+      any provide, and the fix is the *correct* package name, not a Rocky-vs-AlmaLinux
+      quirk in how `rpm -q` reports success.
+
+257. **`CMAKE_POLICY_VERSION_MINIMUM` also works as an environment variable, not just a
+    `-D` cache flag -- the fix when the failing `cmake` invocation is inside a script
+    that isn't ours to add flags to (refines gotcha 207; the freetype-py case, see
+    `build-freetype-py.yml`).** Gotcha 207's fix (`-DCMAKE_POLICY_VERSION_MINIMUM=3.5`
+    on the configure line) assumes the port controls that line -- true for a
+    `CIBW_BEFORE_ALL_LINUX` we write ourselves, false when a project's own `setup.py`
+    shells out to a fixed `cmake ...` command string, as freetype-py's
+    `setup-build-freetype.py` does to build the FreeType (`cmake_minimum_required(VERSION
+    3.0)`) and HarfBuzz it bundles. There is no argument to inject without patching the
+    script. CMake reads `CMAKE_POLICY_VERSION_MINIMUM` from the process environment with
+    the same effect as the cache variable, so setting it in `CIBW_ENVIRONMENT` (which
+    `subprocess.run(..., shell=True)` inherits by default, with no explicit `env=`
+    needed) reaches every `cmake` invocation the script makes, however many, without
+    touching its source.
+    - **Same value, same reasoning as gotcha 207**: pick the CMake-4 floor (`3.5`) rather
+      than matching the project's own declared minimum exactly -- it is a no-op for
+      anything already at or above 3.5 and unblocks whichever vendored piece is below it,
+      including ones three directory levels down that a top-level patch would miss.
+    - **Confirm locally before spending a riscv64 CI cycle**: reproduce the bare
+      `CMake Error ... Compatibility with CMake < 3.5 has been removed` on any host with a
+      CMake ≥4 (`brew`/`apt` current versions qualify), then re-run with
+      `CMAKE_POLICY_VERSION_MINIMUM=3.5` exported and confirm configure proceeds -- no
+      container or cross-compile needed, since the error is a CMake-version fact, not an
+      architecture one.
+
+267. **A vendored C++ library's own architecture-dispatch macro (not a SIMD gate, gotcha
+    71's case) can have no riscv64 branch at all, and its harmless catch-all `#warning`
+    still kills the build under `-Werror` (the awslambdaric case).** aws-lambda-cpp
+    vendors `backward-cpp` for enhanced crash stack traces; its signal handler picks the
+    faulting instruction pointer out of `ucontext_t` with an `#if defined(__aarch64__)
+    ... #elif defined(__arm__) ...` chain that has no riscv64 arm at all, so it falls into
+    the `#else` branch: a bare `#warning` plus a now-unused `ucontext_t*` local. Neither
+    is a real defect -- the fallback just leaves the address unset, so the crash handler
+    still fires and unwinds, only without pinpointing the instruction -- but the vendoring
+    project's own `-Wall -Wextra -Werror` (set unconditionally in its `CMakeLists.txt`,
+    not gated by build type) turns both into hard compile errors before the extension
+    that actually matters is ever reached.
+    - **Fix at the point the port controls, not inside the vendored source.** The
+      library's C++ sources ship inside a tarball vendored *inside the package's own git
+      tree* (`deps/aws-lambda-cpp-0.2.6.tar.gz`), not as plain files -- patching its
+      `CMakeLists.txt` or `backward.h` textually means unpacking, patching and re-packing
+      a binary blob, which `git apply` cannot do. The package's own build script that
+      invokes `cmake` (`scripts/preinstall.sh`, a plain text file in the checkout) is the
+      patchable surface: append `-Wno-error=cpp -Wno-error=unused-variable` to the
+      `-DCMAKE_CXX_FLAGS` it already passes. Order relative to the target's own
+      `-Werror` (added later, via `target_compile_options`) does not matter -- GCC treats
+      a named `-Wno-error=<diag>` as more specific than the blanket `-Werror` regardless
+      of which comes first on the effective command line.
+    - **Confirm it's this class before reaching for the flag**: the diagnostic name is
+      right there in the error (`[-Werror=cpp]` for the `#warning`, `[-Werror=unused-
+      variable]` for the dead local) -- same read as gotcha 226, different toolchain
+      trigger (an unrecognized target architecture, not a newer GCC's stricter C
+      defaults).
+    - **Verify locally before burning a riscv64 CI cycle**: `docker run --rm --platform
+      linux/riscv64 quay.io/pypa/manylinux_2_39_riscv64 sh -c '<vendored cmake
+      invocation>'` reproduces the exact error via QEMU in under a minute once the
+      library's own build dependencies are unpacked, and confirms the `-Wno-error=`
+      fix turns the same two lines into warnings without touching anything else.
+
+271. **`AVIF_CODEC_AOM_DECODE=OFF` and `-DCONFIG_AV1_HIGHBITDEPTH=0` are a normal libavif
+    combination (upstream's own `wheelbuild/config.sh` passes both); on riscv64 it hits a
+    real, still-unfixed bug in libaom's CMake, not a config mistake (the
+    pillow-avif-plugin case).** libavif vendors libaom via `FetchContent` at a pinned tag
+    (`v3.14.1` for libavif 1.4.2), and a `-D` flag on the *outer* libavif cmake invocation
+    becomes a normal cache variable that libaom's own `set_aom_config_var`/
+    `set_aom_option_var` macros (`cmake/util.cmake`) explicitly refuse to override --
+    that's how `CONFIG_AV1_HIGHBITDEPTH=0` from the command line actually reaches aom.
+    But `av1/av1.cmake`'s `AOM_AV1_COMMON_INTRIN_RVV` list unconditionally includes
+    `highbd_convolve_rvv.c`, `highbd_compound_convolve_rvv.c` and
+    `highbd_wiener_convolve_rvv.c` -- unlike the equivalent x86 lists a few lines down,
+    which wrap their highbd-only files in `if(CONFIG_AV1_HIGHBITDEPTH)`. With
+    highbitdepth off, `av1_rtcd_defs.pl` never declares `av1_highbd_convolve_{x,y,2d}_sr`
+    or their `_c` fallbacks, so the RVV file's calls to `av1_highbd_convolve_y_sr_c` etc.
+    become undeclared-function errors (`-Wimplicit-function-declaration` promoted to
+    `-Werror` by aom's own flags). Confirmed against both the pinned `v3.14.1` tag and
+    current aom `main` (still present as of 2026-09) -- this is not a stale-version issue
+    a bump would fix.
+    - **Fix: add `-DENABLE_RVV=0` to the same outer cmake invocation.** `ENABLE_RVV`
+      (`cmake/aom_config_defaults.cmake`) is a plain `option()`-backed cache var subject
+      to the same command-line-wins rule, and `cmake/cpu.cmake` gates *all* of aom's RVV
+      object-library creation on it (`if(ENABLE_RVV) ... else() ... --disable-rvv`) -- so
+      it removes the broken translation unit instead of papering over one symbol, and
+      the RTCD generator stops emitting `_rvv` dispatch entries entirely. aom is encoder-
+      only here (`AVIF_CODEC_AOM_DECODE=OFF`), so the cost is slower (portable-C) AV1
+      encode, not a functional loss; same trade as gotcha 71's `PNG_RISCV_RVV=off`.
+    - **Verify before spending a CI cycle**: this is a from-source C dependency build
+      (gotcha 15's territory), so a `docker run --rm --platform linux/riscv64
+      quay.io/pypa/manylinux_2_39_riscv64` QEMU rehearsal of the *exact* `cmake -S ... -B
+      ...` / `cmake --build ...` pair -- pip-installing `ninja` first, since the image has
+      none -- reproduces the failure verbatim and then confirms the fix actually links
+      `libavif.so`, not just that configure succeeds.
+
+272. **A riscv64 project's own `getauxval(AT_HWCAP)` runtime dispatch can still SIGILL,
+    because the "is this instruction safe" probe is itself one of the instructions being
+    probed for (the zlib-ng case; see `build-zlib-ng.yml`).** Unlike gotcha 139's
+    "compiled with RVV, no runtime check at all" failure, zlib-ng's
+    `riscv_check_features()` does gate its RVV-accelerated deflate/inflate paths on
+    `getauxval(AT_HWCAP) & ISA_V_HWCAP` first -- a textbook-correct guard. But once that
+    passes, it *also* runs an inline `vsetvli`/`csrr` asm probe to double-check vector
+    length and tail/mask-agnostic mode before trusting the kernel's HWCAP report. On this
+    repo's `ubuntu-24.04-riscv` runner hardware, HWCAP reports V present, and the very
+    first `vsetvli` that probe executes raises `Fatal Python error: Illegal instruction`
+    -- crashing every process that imports the extension, before a single deflate/inflate
+    call. (Confirmed at `zng_deflateInit2`, reached at Python import time via
+    `zlib.compressobj()` in the test module.)
+    - **QEMU cannot reproduce or falsify this** -- same caveat as gotcha 139's closing
+      line. TCG implements `vsetvli` correctly, so a `docker run --platform linux/riscv64`
+      rehearsal of the *unpatched* wheel passes its entire test suite locally with no
+      SIGILL. A local rehearsal here can only prove a patch doesn't break the (RVV-free)
+      code path, never that it fixes the crash -- only a real run on the self-hosted
+      riscv64 runner settles that.
+    - **The fix is the project's own `--without-rvv` configure flag, not a CMake flag,
+      even though the vendored tree ships a CMakeLists.txt** -- that CMake path is
+      Windows-only; the Linux build (`setup.py`) drives zlib-ng's autoconf-style
+      `./configure && make` directly and exposes no environment-variable hook for extra
+      configure args, so the flag has to be added by patching `setup.py` itself, guarded
+      on `platform.machine() in ("riscv64", "riscv32")` so other platforms are unaffected.
+    - Distinct from gotcha 139 (no runtime check at all) and gotcha 71 (a *build-time*
+      compiler-flag probe mismatch, not a runtime SIGILL): this is a runtime check that
+      is present and correctly gated on HWCAP, and still unsafe, because confirming an
+      instruction's availability by executing that same instruction assumes the one
+      fact being tested.
+
+279. **Gotcha 272's zlib-ng `vsetvli` SIGILL recurs whenever a *second*, independent
+    port vendors the same library -- and this repo's own queue notes from a QEMU-only
+    rehearsal are not evidence it is fixed (gemmi's `FETCH_ZLIB_NG=ON` CMake
+    `FetchContent`, vs. zlib-ng's own autoconf `setup.py` build; see
+    `build-gemmi.yml`).** gemmi's `CMakeLists.txt` fetches the same zlib-ng project via
+    `FetchContent`/`add_subdirectory` rather than the autoconf `./configure && make`
+    path gotcha 272 patched, and hits the identical failure on the identical
+    `ubuntu-24.04-riscv` hardware: the wheel builds, installs, and runs cleanly right
+    up until the first test that touches real deflate/inflate (`test_align.py`'s
+    `test_assign_best_sequences`, reading a gzip-compressed `.pdb.gz`), which dies with
+    `Illegal instruction (core dumped)`. Before landing on RVV, disabling project-wide
+    LTO first (a nearby, unrelated `CMakeLists.txt` comment about LTO corrupting
+    zlib-ng specifically) reproduced the identical crash unchanged, ruling that out
+    fast rather than assuming it was the fix because it touched the same subsystem.
+    - **A QEMU-validated port is not evidence the same library is safe elsewhere** --
+      gotcha 272 already establishes that QEMU's `vsetvli` never reproduces this SIGILL
+      (TCG implements it correctly; only the real runner hardware doesn't), so an
+      *other* port's "verified under QEMU, N passed" note is not proof this build shape
+      avoids the crash -- it proves only that nobody ran it on real riscv64 hardware yet.
+      Treat such a note as untested for this purpose, not as a green light.
+    - **The CMake embedding is the one place this is cheaper than gotcha 272's fix**:
+      the vendored `CMakeLists.txt` already exposes a normal `option(WITH_RVV ...)`,
+      so `-DWITH_RVV=OFF` in `SKBUILD_CMAKE_ARGS` falls back to zlib-ng's portable C
+      kernels with a one-line `CIBW_ENVIRONMENT` change -- no `setup.py` patch, no
+      `platform.machine()` guard, because the CMake path (Windows-only for zlib-ng's
+      *own* build) is the one gemmi actually drives.
+
+288. **Rocky/AlmaLinux 10 dropped the classic SDL2-devel package entirely, on every
+    arch -- not a riscv64 gap (the pygame case; see `build-pygame.yml`).** `dnf list
+    SDL2-devel` finds nothing: SDL2 now ships only as `sdl2-compat`, a runtime-only
+    shim (`libSDL2-2.0.so.0`) implemented on top of SDL3, with no headers, no
+    unversioned `libSDL2.so`, and no `sdl2.pc`. `SDL3-devel` exists instead
+    (`appstream`/`crb`), but a project whose build genuinely needs SDL2 (`sdl2-config`,
+    `pkg-config sdl2`) has to build it from source regardless of target arch -- this
+    is a base-image fact, not gotcha 51's EPEL-on-riscv64 gap. It cascades: EPEL's
+    prebuilt `SDL2_image-devel`/`SDL2_mixer-devel`/`SDL2_ttf-devel` all declare
+    `Requires: pkgconfig(sdl2) >= 2.0.9`, so `dnf install SDL2_image-devel` fails
+    outright with "nothing provides pkgconfig(sdl2)" even where EPEL is enabled --
+    those three have to be built from source too, not just SDL2 itself. Their own
+    from-source builds are unaffected: `./configure --enable-png --disable-png-shared
+    ...` etc. happily link the ordinary `libpng-devel`/`libjpeg-turbo-devel`/
+    `libwebp-devel`/`libtiff-devel`/`mpg123-devel`/`flac-devel`/`libvorbis-devel`/
+    `opus-devel` packages Rocky 10 still ships normally -- only the SDL-family
+    packages themselves are gone.
+    - **`portmidi-devel`, `libmodplug-devel` and `fluidsynth-devel` are EPEL-only**
+      (gotcha 51), so on riscv64 (no EPEL) portmidi has to be built from source
+      (a plain `cmake . && make && make install`) and SDL2_mixer's mod/fluidsynth-midi
+      backends have to be dropped (`--disable-music-mod-modplug
+      --disable-music-midi-fluidsynth`) rather than built -- a reasonable trim when the
+      port's own test suite already excludes music-playback tests.
+    - **A from-source SDL2 stack's full licence closure is bigger than the upstream
+      project's own `docs/licenses/` folder** (gotcha 137's warning generalizes past
+      auditwheel-vendored *distro* libraries): pygame's own reference licences cover
+      SDL2/SDL2_image/SDL2_mixer/portmidi/freetype/libpng/libjpeg/etc., but building
+      SDL2_ttf pulls in its bundled `external/harfbuzz` (MIT, its own `COPYING`) as a
+      *separate* vendored `.so`, and
+      `libtiff-devel`/`libwebp-devel` transitively pull in `liblerc` (Apache-2.0),
+      `libzstd`, `jbigkit-libs` (GPL-2.0-or-later) and `brotli` -- none of which
+      upstream's own docs folder ships a licence text for, because upstream never
+      builds this exact dependency graph. Verify the final vendored set with
+      `auditwheel show`/`unzip -l` before trusting a project's own bundled licence
+      folder is complete for *your* build.
+    - **Rocky 10 riscv64 *does* ship `harfbuzz-devel` (appstream, 8.4.0) and
+      `wavpack-devel` (crb) -- verified in the image, correcting an earlier claim here that
+      no riscv64 `harfbuzz-devel` exists.** Using SDL_ttf's vendored harfbuzz is still the
+      better choice, but for a licence reason rather than an availability one: the
+      distro's `libharfbuzz.so.0` links `libglib-2.0`, `libgraphite2` and `libpcre2-8`, so
+      `-DSDL2TTF_HARFBUZZ=1 -DSDL2TTF_VENDORED=0` hands auditwheel two more copyleft
+      libraries to vendor and the `gpl_sources` job two more source archives to carry.
+      `dnf --enablerepo=crb list --available <pkg>` inside the image settles any such
+      "does riscv64 have it?" question in about a minute; do that rather than trust a
+      note (this one, or gotcha 51's EPEL rule, which only covers EPEL-only packages).
+
+289. **A CMake `ExternalProject_Add` patch step can shell out to `wget`, which the
+    manylinux image doesn't ship (only `curl`) -- and a parallel `make -j` build hides
+    the real failure point behind unrelated targets that keep building for tens of
+    minutes (the casadi/metis-external case; see `build-casadi.yml`).** CasADi's
+    top-level build vendors METIS via `ExternalProject_Add(metis-external ...)`, whose
+    patch step invokes upstream's own patch-fetch script -- which calls `wget`, not
+    `curl`, to download a patch file. `quay.io/pypa/manylinux_2_39_riscv64` has no
+    `wget` binary, so the step fails immediately (`Utility wget not found in your
+    PATH`) at only ~2% into the build. But `cmake --build build -j "$(nproc)"` is a
+    parallel `make`, and `metis-external` is just one of many external-project/library
+    targets scheduled concurrently with casadi's own core -- `gmake` keeps building
+    everything else (including "Built target casadi" itself) and only reports the
+    overall failure once every *other* scheduled job finishes, tens of minutes later.
+    - **`gh run view --log-failed` truncates to the tail of the log and shows only the
+      late, unrelated-looking failure summary near the end** (e.g. "43% ... Error 2");
+      it does not show the real error 20+ minutes earlier. Pull the full raw job log --
+      `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs --allow-escape-sequences`
+      -- and search near the *start* of the build output, not the end, for a build that
+      fails "late" despite a fast, early root cause.
+    - **The fix is a one-line system-package install**, not a build-flag change: add
+      `wget` alongside the image's other missing packages in the same `dnf install`
+      (or `apk add` on a musllinux leg, guarded by `matrix.libc` where one exists) --
+      no need to disable the ExternalProject or switch fetch tools.
+    - Don't confuse this with an *unrelated* real fix already in place on the same
+      workflow: casadi separately had to switch its CMake generator from Ninja to Unix
+      Makefiles because its `ExternalProject_Add` calls don't declare `BYPRODUCTS`,
+      which Ninja's stricter build-graph check rejects. That fix stays -- this gotcha's
+      `wget` failure is a second, independent blocker that only surfaces once the
+      generator issue is already resolved and the build reaches the external-project
+      patch step at all.
+
+294. **An upstream CMakeLists' own `-fPIC` allowlist can name only `x86_64`/`aarch64`,
+    leaving riscv64 to link non-PIC objects into a shared library -- which riscv64's `ld`
+    rejects outright, unlike some other architectures (the casadi/casadi-sundials case;
+    see `build-casadi.yml`).** CasADi's top-level `CMakeLists.txt` has a `-fPIC` section
+    guarded by `if("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86_64" OR
+    "${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64")` before appending `-fPIC` to
+    `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`/`CMAKE_Fortran_FLAGS` -- riscv64 falls through with
+    no `-fPIC` at all. Its vendored `casadi-sundials` static library (a plain
+    `add_subdirectory`, not an `ExternalProject_Add`) then compiles without it, and
+    linking it into `libcasadi_sundials_common.so`/`libcasadi_rootfinder_kinsol.so` fails
+    with `relocation R_RISCV_JAL against 'KINProcessError' which may bind externally can
+    not be used when making a shared object; recompile with -fPIC`. The build gets much
+    further than gotcha 289's `wget` failure (~49 minutes vs. ~2%) before dying here,
+    because everything upstream builds via `ExternalProject_Add` with its own autotools/
+    libtool sub-build (IPOPT, MUMPS, METIS) already defaults to PIC objects for its own
+    shared-library targets independently of the top-level flags -- only a plain in-tree
+    CMake static-library target inherits the arch-gated flags, and only riscv64 is
+    excluded from them.
+    - **Fix from the workflow, not a source patch: pass
+      `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`** on the outer `cmake -B...` configure
+      line. This CMake variable initializes the `POSITION_INDEPENDENT_CODE` target
+      property on every target in the project (static libraries included), independent
+      of whatever the project's own hand-written `CMAKE_*_FLAGS` logic does -- it adds
+      `-fPIC`, it does not need to replace or conflict with an existing arch check.
+      Confirmed no upstream `CMakeLists.txt` override of this variable exists for the
+      main build (only inside a few unrelated `ExternalProject_Add(... CMAKE_ARGS
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON ...)` calls for *other* sub-dependencies,
+      which don't touch the outer project's own variable).
+    - **The error text names the exact riscv64 relocation type** (`R_RISCV_JAL`) and is
+      unambiguous once you see it -- but `gh run view --log-failed`/a truncated tail can
+      still land you mid-build output rather than at the true `ld` error; grep the full
+      raw log (gotcha 289) for `recompile with -fPIC` rather than trusting where the
+      log happens to end.
+    - **Don't assume this is riscv64-specific to relocations in general** -- `x86_64`/
+      `aarch64` tolerate certain non-PIC-into-.so link patterns that riscv64's linker
+      does not for this particular relocation kind, which is exactly why an
+      arch-allowlist written against only those two targets silently breaks on a third.
+
+327. **A project's own `before-all`/`before-build` can already "fix" gotcha 138's stale
+    `config.guess`/`config.sub` by downloading fresh copies from an external mirror at
+    build time -- and that download can itself 404 from inside the riscv64 container even
+    though the identical URL succeeds from a laptop or any other network (the
+    python-mecab-ko case).** `scripts/install_mecab_ko.py` fetches
+    `http://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.guess;hb=HEAD`
+    with plain `urllib.request.urlopen` -- no special headers, no proxy -- and it 404s only
+    from the CI job (confirmed via `gh api .../jobs/<id>/logs --allow-escape-sequences`,
+    gotcha 144-style raw-log reading), while the same request from outside CI returns 200.
+    Like gotcha 243's IPv6 loopback, this is a container/runner network quirk that no
+    amount of local rehearsal on a dev machine will reproduce -- only the actual job log
+    proves it. The fix is the one already in gotcha 138: patch the script to copy
+    `/usr/share/automake-*/config.guess`/`config.sub` (already current enough for
+    riscv64) instead of reaching the network at all, rather than trying to debug *why*
+    the external mirror is unreachable from that specific runner.
+
+328. **A vendored SIMD library with genuinely no portable/generic implementation at all
+    (not even a slow reference one wired to the same public API) can still be ported to
+    riscv64 by routing its x86-only path through SIMDe, as long as the actual intrinsics
+    used stay within what SIMDe covers (the pyhmmer/HMMER case; see `build-pyhmmer.yml`).**
+    HMMER3's fast filters (MSVFilter, ViterbiFilter, the striped Forward/Backward) exist
+    only as hand-written SSE/NEON/VMX kernels operating on `P7_OPROFILE`/`P7_OMX`, and
+    `CMakeLists.txt`'s own detection cascade hard `FATAL_ERROR`s when none of the three
+    is found. Unlike gotcha 276's isal case, there is no `_base`/generic C implementation
+    of the *optimized* pipeline sitting in the "always built" source list -- the
+    `generic_*.c` files are a separate, unoptimized reference algorithm used only for
+    calibration/testing, not something `Pipeline` can fall back to. Two checks settle
+    whether SIMDe is even viable before writing anything: `grep -ohE '_mm_[a-zA-Z0-9_]+'`
+    over every file the SSE backend compiles, filtered to actual call sites (not comments
+    -- one hit here was `_mm_hadd_ps` named only in a comment explaining why the code
+    avoids it) to see how far up the SSE/SSE2/SSE3/SSSE3/SSE4.1/AVX ladder the code
+    actually reaches (SIMDe supports all of these, but the deeper the ISA, the larger the
+    portable-fallback compile cost), and grepping for the corresponding `esl*ENABLE_SSE4`
+    (or equivalent) build-time toggle to confirm any deeper-ISA calls are already gated
+    off when that toggle is unset -- HMMER's own `eslENABLE_SSE4` gate around its one
+    SSE4.1 use (`_mm_max_epi8`/`_mm_blendv_ps`, both with an SSE2 fallback already coded)
+    meant the riscv64 path only ever needs `simde/x86/sse3.h`.
+    - **Route the redirect through a build-time header shim, not a source patch, when the
+      project carries its own line-number-based patch mechanism against those same
+      files.** pyhmmer's `src/hmmer/CMakeLists.txt` applies `patches/impl_sse/*.c.patch`
+      against the vendored sources at build time via a custom `apply_patch.py` that seeks
+      by the diff's absolute `-`-side line numbers with **no context verification** --
+      inserting even one line above the patched hunk (e.g. wrapping
+      `#include <emmintrin.h>` in an `#ifdef`) silently shifts every subsequent hunk onto
+      the wrong lines and corrupts the file without erroring. Two of the twelve
+      SSE-backend files here (`p7_omx.c`, `p7_oprofile.c`) are exactly the ones pyhmmer's
+      own patches touch. The fix that avoids the whole class of bug: generate a small
+      include directory at CMake configure time (`file(WRITE ...)`) containing stub files
+      literally named `xmmintrin.h`/`emmintrin.h`/`pmmintrin.h`/`x86intrin.h`, each just
+      `#define SIMDE_ENABLE_NATIVE_ALIASES` + `#include <simde/x86/sse3.h>`, and
+      `include_directories(BEFORE <that dir> <simde source dir>)` only on the
+      no-native-SIMD branch -- every vendored file's own `#include <xmmintrin.h>` line
+      resolves to the shim without a single byte of the vendored tree changing, so
+      pyhmmer's own patches keep applying at their original, correct line numbers.
+    - **A build's own runtime CPU-feature detection can assume "this vector backend
+      implies real x86", which breaks independently of the SIMD redirect itself.**
+      Easel's `esl_cpu.c` compiles `cpu_run_id()`/`cpu_has_sse()` -- raw
+      `__asm__("cpuid" ...)` -- whenever `eslENABLE_SSE` is defined, because historically
+      that could only be true on real x86/x86-64 hardware. Turning `eslENABLE_SSE` on for
+      the SIMDe/riscv64 path breaks that assumption and the inline asm fails to
+      assemble; grep for who actually *calls* the corresponding `esl_cpu_has_*()`
+      function before patching (here: nobody in the compiled sources), so the fix is
+      just gating the asm-bearing internals on an additional "are we really on x86"
+      macro rather than reimplementing a CPUID equivalent for riscv64.
+    - **Confirm the wheel doesn't build a wrong `HMMER_IMPL`/`eslENABLE_*`-keyed dispatch
+      dead -- grep the Cython/pybind layer for its own copy of the same dispatch,** not
+      just the C headers. pyhmmer's `.pxd` files gate `libhmmer.impl_sse` vs `impl_neon`
+      vs `impl_vmx` on a literal `HMMER_IMPL` string Cython constant piped in from the
+      *same* CMake variable (`cython_extension(... DIRECTIVES -E HMMER_IMPL=${HMMER_IMPL})`)
+      -- reusing `"SSE"` (rather than inventing a new `"SIMDE"` value) for the riscv64
+      branch is what keeps this second, easy-to-miss dispatch pointed at the right impl
+      directory without a matching Cython-side change.
+
+332. **A SIMDe SSE-emulation port (gotcha 328) can compile clean, pass its own project's
+    per-primitive/per-function unit tests, and still produce wrong results at the
+    full-pipeline level on riscv64 specifically -- and the wrongness does not reproduce
+    on any other host you can test locally, including one exercising the exact same
+    "portable, no native ISA" SIMDe fallback (the pyhmmer/HMMER MSVFilter case; PR
+    riseproject-dev/python-wheels#1497, parked rather than merged).** After landing
+    gotcha 328's SIMDe redirect for pyhmmer's `impl_sse` backend, real riscv64 CI (not
+    a QEMU rehearsal -- the actual self-hosted `ubuntu-24.04-riscv` runners) failed 60
+    of 995 tests with hit counts of `0` where real hits were expected, or under-counts
+    like `479 != 482`. That pattern -- mostly-zero with occasional near-misses, not
+    uniformly wrong -- is what actually happened when the underlying cause was
+    isolated to one specific function, `p7_MSVFilter()` in `impl_sse/msvfilter.c`.
+    - **Reproduce with a QEMU container, not Docker Desktop, if Docker is stuck**
+      behind a stalled privileged-access dialog with no way to click through it in an
+      agent session: `podman machine ssh` can itself hang for unrelated reasons, but
+      `podman run --privileged --platform linux/riscv64 <manylinux image>` on a
+      `tonistiigi/binfmt`-registered podman machine works -- the container needs
+      `--privileged` for QEMU's user-mode ptrace-based emulation even after
+      `docker/podman run --privileged docker.io/tonistiigi/binfmt --install riscv64`
+      shows the interpreter `enabled` with flags `POCF` (F/fix-binary set); without it,
+      any riscv64 container exits 139 (SIGSEGV) before your entrypoint ever runs.
+    - **The project's own per-function unit test drivers (`#ifdef pXXX_TESTDRIVE` in
+      HMMER's case, one per `impl_sse/*.c` file, comparing the SIMD-optimized filter
+      against the project's independent portable/"generic" reference implementation)
+      are exactly the right tool to bisect a SIMDe port with -- but passing all of them
+      individually does not prove the full pipeline is correct.** Every other
+      `impl_sse` component (ViterbiFilter, the Forward filter, posterior decoding,
+      optimal-accuracy alignment, null2 bias correction) and the hand-vectorized
+      `expf`/`logf` approximations in `esl_sse.c` passed their own dedicated unit
+      tests on real riscv64/GCC 14.3.1 (accuracy matching arm64 almost to the bit:
+      ~6e-9 average relative error, ~1.2e-7 max, right at float precision). Only
+      `p7_MSVFilter` failed, and it failed *hard* -- `scores differ (-21.25, -10.86)`,
+      a ~10-nat divergence, not a rounding artifact.
+    - **A deterministic, non-flaky wrong answer that reproduces identically across
+      every optimization level rules out a compiler miscompilation, not just an
+      `-O3`-specific one.** The exact same `(-21.25, -10.86)` mismatch reproduced at
+      `-O1`, `-O2` and `-O3` (test the specific translation unit at each level by
+      dropping a single freshly-compiled `.o` into a copy of the otherwise-`-O3`
+      static archive with `ar rcs` -- no need to rebuild the whole library per level).
+      A genuine GCC backend bug from register pressure/spilling would be expected to
+      be *sensitive* to optimization level, not identical across three of them.
+    - **When a filter has an internal fast-path shortcut to a related, separately
+      testable function, A/B it by force-disabling the shortcut** -- here,
+      `p7_MSVFilter()` unconditionally tries `p7_SSVFilter()` first
+      (`if (status != eslENORESULT) return status;`) before falling into its own DP
+      loop. Patching that call to `status = eslENORESULT;` (skip the shortcut,
+      guaranteed fallthrough) reproduced the *identical* wrong score. That rules out
+      `ssvfilter.c`'s control flow as the cause and points at something the two paths
+      share (most obviously the input data both read, `om->rbv`/`om->sbv`, but see
+      below) rather than either filter's own loop logic.
+    - **Every individual SIMD primitive the failing function uses can check out fine
+      in a tiny synthetic harness, and the full function can still be wrong** -- this
+      is the core, hard-won lesson. Standalone probes against real riscv64 GCC 14.3.1,
+      each run hundreds of random trials against a scalar C reference: the saturating
+      DP step (`_mm_max_epu8`/`_mm_adds_epu8`/`_mm_subs_epu8`), the byte-lane shift
+      (`_mm_slli_si128`), the horizontal-max reduction chain
+      (`_mm_shuffle_epi32`/`_mm_shufflelo_epi16`/`_mm_srli_si128`), and even the
+      `union { __m128i v; uint8_t i[16]; }` type-pun pattern the profile-conversion
+      code (`mf_conversion()` in `p7_oprofile.c`) uses to build `om->rbv` -- every one
+      of them was bit-exact correct in isolation. The bug is therefore not in any
+      single SIMDe primitive's semantics; it is in how the real function composes
+      many of them across a real loop (many live `__m128i` temporaries, `Q`-many
+      inner iterations, `L`-many outer iterations) -- something no small synthetic
+      harness reproduces, and something that would need either a real riscv64 GCC
+      debugger session stepping through the actual failing call, or upstream
+      SIMDe/HMMER maintainer input, to pin to an exact line.
+    - **Checking the "generic"/reference implementation's own internal self-consistency
+      is a cheap way to make "maybe the reference is wrong, not the SIMD path" less
+      likely, without being able to directly diff scores across architectures.**
+      `generic_viterbi.c` has its own `p7GENERIC_VITERBI_TESTDRIVE` that checks
+      `p7_GViterbi()`'s score against an independently reconstructed optimal
+      traceback's score (`p7_GTrace` + `p7_trace_Score`, tolerance `1e-6`) -- pure
+      portable C, zero SIMD/SIMDe dependency. It passed cleanly on real riscv64,
+      which doesn't *prove* the Generic score matches what x86 would compute, but
+      combined with "pure C, no architecture-specific code path exists to diverge
+      through" it's good enough evidence to stop suspecting the reference and treat
+      the ~10-nat divergence as real.
+    - **When a bisection this thorough still can't isolate the exact line within a
+      bounded budget, park the port rather than merging a function you can't explain
+      the wrongness of** -- `.queue.yml` `status: parked` with a note naming the exact
+      function, what was ruled out, and what remains (a real debugger session or
+      upstream input), and leave the PR open (not draft, not deleted) with the
+      investigation written up in its description, so the next attempt starts from
+      "here's what's already eliminated" instead of from zero.
+
+333. **A vendored C++ library's architecture-fallback stub can have a genuinely correct
+    no-op body and still trip `-Werror=unused-parameter` on any architecture outside its
+    named x86/ARM/PPC set -- unlike gotcha 267's dead `#warning` branch, there is no
+    wrong/missing code here, just an unused parameter (the pyorc/liborc case).**
+    liborc (Apache ORC's C++ core, which pyorc's `setup.py` downloads and builds from
+    source) gates its CPU-feature-detection code in `CpuInfoUtil.cc` on
+    `CPUINFO_ARCH_X86`/`CPUINFO_ARCH_ARM`/`CPUINFO_ARCH_PPC`; riscv64 matches none of
+    them, so it falls into the final `#else` branch -- a correct, intentional catch-all
+    whose `ArchParseUserSimdLevel`/`ArchVerifyCpuRequirements` bodies are genuine no-ops
+    (`return true;` and an empty body) that simply never reference their parameters.
+    liborc's own `CMakeLists.txt` defaults `STOP_BUILD_ON_WARNING` to `ON`, appending
+    `-Werror` unconditionally; upstream's CI only ever builds x86/ARM/PPC, so this branch
+    is never compiled there and the warning-turned-error never surfaces upstream.
+    - **The wrapper's own env-var plumbing can silently defeat the usual
+      `CXXFLAGS=-Wno-error=...` escape hatch -- check for it before assuming the fix is a
+      one-line `CIBW_ENVIRONMENT` addition.** pyorc's `setup.py` has a
+      `_get_build_envs()` helper that unconditionally does `env["CXXFLAGS"] = "-fPIC"`
+      (a bare assignment, not an append) right before invoking `cmake`, discarding
+      anything `CIBW_ENVIRONMENT` set. Gotcha 267's fix (append `-Wno-error=<diag>` to
+      the vendoring project's own `-DCMAKE_CXX_FLAGS`) still applies in spirit, but the
+      patchable surface has to be the wrapper's hardcoded `cmake_args` list, not the
+      environment.
+    - **A source patch is simpler here because the vendored source lands as plain
+      extracted files, not a packed blob** (contrast gotcha 267's `.tar.gz` vendored
+      inside the checkout, which `git apply` cannot reach). `setup.py` downloads and
+      extracts liborc's tarball itself at build time, so the fix patches `setup.py` to
+      add a few `str.replace()` calls on the two affected function bodies right after
+      its own `_download_source()` call -- the same shape as the existing
+      `_patch_protobuf_version` fixup already in the file, just targeting a `.cc` file
+      instead of a `.cmake` one.
+    - **Confirm it's this class before writing anything**: the diagnostic names the
+      exact parameters (`simdLevel`, `hardwareFlags`, `ci`) and the exact line numbers,
+      and the failing function names (`ArchParseUserSimdLevel`,
+      `ArchVerifyCpuRequirements`) are the tell that this is the *architecture*
+      dispatch's fallback, not a SIMD gate (gotcha 71) or a dead code path (gotcha 267).
+
+337. **lexbor, re2 and uchardet are absent from Rocky 10's baseos/appstream/crb on every
+    arch, and `re2-devel` only resolves from EPEL -- which riscv64 does not carry (refines
+    gotcha 51; the resiliparse case).** `dnf -q list lexbor-devel re2-devel uchardet-devel`
+    against a bare `rockylinux/rockylinux:10` with CRB enabled finds nothing for the first
+    and third on any arch; `re2-devel` (Fedora's naming for Google's RE2) resolves only
+    after installing `epel-release`, and gotcha 51 already established EPEL is absent on
+    riscv64. The fix is the same shape as `build-google-re2.yml`'s abseil-cpp + re2
+    pattern: build all three from source in `CIBW_BEFORE_ALL_LINUX`, with
+    `-DCMAKE_INSTALL_LIBDIR=lib` on every one of them -- GNUInstallDirs otherwise defaults
+    some of them to `lib64` on this image (gotcha in native-deps-and-linking.md), invisible
+    until the extension that needs that particular library fails to link -- and
+    `LIBRARY_PATH`/`LD_LIBRARY_PATH=/usr/local/lib` in `CIBW_ENVIRONMENT`.
+    - **A project's own vcpkg overlay port can pin a fork, not upstream.** resiliparse's
+      `.vcpkg/ports/lexbor` builds `phoerious/lexbor` at a specific commit, not
+      `lexbor/lexbor`; the fork adds DOM node reference counting the Cython bindings
+      depend on, so building vanilla upstream lexbor compiles cleanly and only misbehaves
+      (or crashes) much later, with no configure-time error to point at the real cause.
+      Diff the fork against upstream (`gh api repos/<fork>/compare/<upstream-owner>:
+      <upstream-branch>...<fork-owner>:<ref>`) before assuming any lexbor checkout is
+      interchangeable -- `status: diverged` plus a small, on-topic file list confirms it's
+      a deliberate patch set, not a stale mirror.
+    - **A monorepo sibling's `.pxd` can pull a header for a library the importing
+      extension never links.** resiliparse's `itertools.pyx` `cimport`s a type from
+      fastwarc's `legacy/warc.pxd` (copied in locally by `setup.py`, not pip-installed),
+      and that pxd's own `cdef extern from` chain reaches `<lz4hc.h>` -- so the extension
+      needs `zlib-devel lz4-devel` even though its own `Extension(..., libraries=[])`
+      names neither. `dnf install`ing the same two packages the sibling package's own
+      build already needs, in this package's `before-all` too, is cheaper than tracing
+      which cimported header pulled which system library in a `fatal error: lz4hc.h: No
+      such file or directory` from deep inside a Cython-generated `.cpp` file.
+
+351. **A project's own build script can gate a *sibling* vendored library's SIMD macros
+    on `platform.machine() != "ppc64le"`, silently assuming "not ppc64le" means "x86 or
+    ARM" -- the hdf5plugin/c-blosc2 case.** Gotcha 71 covers a vendored library gating
+    riscv64 SIMD on the *parent build's* variable; this is a step removed: hdf5plugin's
+    own `setup.py` (not c-blosc2's CMake, which gates cleanly on its own) has an
+    `if platform.machine() == "ppc64le": ... else: define_macros.append(("SHUFFLE_SSE2_
+    ENABLED", 1)) ... SHUFFLE_AVX2_ENABLED ... SHUFFLE_AVX512_ENABLED ... SHUFFLE_NEON_
+    ENABLED` block that force-enables every one of c-blosc2's shuffle SIMD backends for
+    any architecture that isn't ppc64le. Each per-ISA `.c` file (`shuffle-sse2.c`,
+    `shuffle-avx2.c`, `shuffle-neon.c`) is itself correctly gated on the *compiler's*
+    `__SSE2__`/`__AVX2__`/`__ARM_NEON__` macros and compiles to an empty translation unit
+    on riscv64 -- but `shuffle.c`'s CPU-dispatch code reads only the `SHUFFLE_*_ENABLED`
+    macros, independent of whether the paired `.c` file compiled anything. With
+    `SHUFFLE_NEON_ENABLED` force-defined, `shuffle.c`'s `#elif defined(SHUFFLE_NEON_
+    ENABLED)` branch compiles `blosc_get_cpu_features()` against `getauxval(AT_HWCAP) &
+    HWCAP_ARM_NEON` -- an ARM-only glibc hwcap constant undeclared on riscv64 -- a hard
+    compile error; even past that, `SHUFFLE_AVX512_ENABLED`/`AVX2_ENABLED` pull in
+    `is_shuffle_avx2`/`is_bshuf_AVX512` externs that `shuffle-avx2.c` never defines
+    without `__AVX2__`, an undefined-reference link error. Fix: gate on the actual
+    detected architecture (`HostConfig.ARCH` in this project, already used two lines
+    below in the same function for an `ARM_7`/`ARM_8`-only compile flag) rather than on
+    the absence of one named architecture -- `PPC_64` → Altivec, `ARM_7`/`ARM_8` → NEON,
+    `X86_32`/`X86_64` → SSE2/AVX2/AVX512, everything else (riscv64 included) → none of
+    these macros, falling back to `shuffle-generic.c`/`bitshuffle-generic.c` exactly as
+    the project's own non-force-enabled v1 blosc plugin already does. Simulating the
+    parsed architecture string against the exact dispatch logic (`_parse_arch("riscv64")`
+    from the project's own `py-cpuinfo` build dependency) before touching CI proves the
+    fix produces identical macros for x86_64/aarch64/ppc64le/armv7l and none for riscv64,
+    with no manylinux image or QEMU rehearsal needed.
+
+358. **`dnf`/`apk` installing an older cmake to satisfy gotcha 257 doesn't necessarily make
+    it the one that runs: both manylinux and musllinux riscv64 images carry a
+    pipx-installed cmake >= 4 earlier on `PATH` by default (the keystone-engine case).**
+    `dnf install -y cmake` lands `cmake-3.31.8` at `/usr/bin/cmake`; `apk add --no-cache
+    cmake` lands `cmake-3.31.7` at the Alpine equivalent -- both genuinely satisfy a
+    project whose vendored `CMakeLists.txt` calls `cmake_policy(SET CMP0051 OLD)` (whose
+    `OLD` behaviour CMake 4.0 removed outright, a harder failure than gotcha 257's
+    `cmake_minimum_required` floor -- no `CMAKE_POLICY_VERSION_MINIMUM` env var rescues
+    it). But the CI log still shows the error coming from
+    `/opt/_internal/pipx/venvs/cmake/.../cmake-4.4/Modules/...` -- the image's own
+    pre-baked cmake, installed via pipx into a directory the image puts ahead of
+    `/usr/bin` on `PATH` by design (so a plain `pip install cmake` inside `before-build`
+    hits the same shadow, not just the system package manager path).
+    - **The fix is a dedicated one-binary `PATH` entry, not `PATH=/usr/bin:$PATH`.**
+      `mkdir -p /tmp/x-cmake && ln -sf /usr/bin/cmake /tmp/x-cmake/cmake`, then
+      `CIBW_ENVIRONMENT: PATH=/tmp/x-cmake:$PATH`, shadows only `cmake` and leaves
+      cibuildwheel's own interpreter resolution alone. Prepending the whole of
+      `/usr/bin` instead breaks a *different* thing on musllinux specifically: Alpine's
+      `python3` package (a dependency of `automake`/other `apk add` packages, or already
+      present) also lands a `python` at `/usr/bin/python`, and cibuildwheel's own
+      pre-build self-check ("python available on PATH doesn't match our installed
+      instance") aborts the build before it reaches the actual compile -- a failure mode
+      that never shows up on manylinux (Rocky's base image has no bare `/usr/bin/python`
+      to collide with), so it only appears once the musllinux leg of the same matrix runs.
+
+359. **A CMake project forked from old LLVM sources can validate the host architecture
+    through *two* independent mechanisms -- the vendored `utils/llvm-build` Python tool
+    has its own separate check and its own escape hatch (the keystone-engine case).**
+    Patching `config-ix.cmake`'s `LLVM_NATIVE_ARCH` if/elseif chain to add a `riscv64`
+    branch (gotcha for the "Unknown architecture" `FATAL_ERROR` it throws otherwise) is
+    only half the fix. That chain's job is just picking a *placeholder* string -- mapping
+    to any of the project's own target names (`X86`, `ARM`, ...) or an invented one like
+    `RISCV` passes config-ix.cmake fine, since `LLVM_NATIVE_ARCH`'s only other consumer
+    there is a `list(FIND LLVM_TARGETS_TO_BUILD ...)` membership check that treats "not
+    found" as a harmless "native JIT unavailable" message. But `llvm/CMakeLists.txt`
+    separately shells out to `utils/llvm-build/llvm-build --native-target
+    "${LLVM_NATIVE_ARCH}"`, a Python tool that validates the value against real
+    `LLVMBuild.txt`-declared components and hard-errors `invalid native target: 'RISCV'
+    (not in project)` for anything that isn't one -- including an invented placeholder
+    that happened to satisfy the CMake-side check. Read `llvmbuild/main.py`'s own
+    argument handling before picking a value: it special-cases the literal string
+    `"Unknown"` to mean "no native target" (`native_target_name = None`, skipping the
+    component lookup entirely) -- the same state a real absent architecture already
+    reaches, and the only value that satisfies both checks at once.
+
+374. **`find_package(Python3 REQUIRED COMPONENTS Interpreter Development)` fails on
+    manylinux's own CPython the same way on x86_64/aarch64/riscv64 alike -- nothing
+    riscv64-specific about it (the tensordict case).** CMake's `Development` component
+    is shorthand for *both* `Development.Module` (what building a `.so` extension needs)
+    and `Development.Embed` (a linkable `libpython` for embedding Python in a C++ host).
+    manylinux images build CPython with `Py_ENABLE_SHARED=0` and ship only a static
+    `libpythonX.Y.a`, and `Development.Embed`'s `Python3_LIBRARIES` lookup does not
+    accept it -- `FindPython3` aborts with `Could NOT find Python3 (missing:
+    Python3_LIBRARIES Development Development.Embed)` before a single file compiles.
+    A pybind11/pure-C-extension project that never embeds Python only ever needs
+    `Development.Module`; requesting the wider `Development` component is the bug, not
+    the missing static lib. Confirmed by reproducing the exact configure failure on
+    `quay.io/pypa/manylinux_2_39_aarch64` (no QEMU/riscv64 needed to hit it), then
+    confirming `Development.Module` alone lets configure succeed, the extension link
+    with zero `libpython` reference in `ldd`, and the import work. Fix: patch the
+    project's `CMakeLists.txt` component list from `Development` to `Development.Module`
+    (`Upstream-Status: To upstream`, since it is a real portability bug independent of
+    riscv64) -- do not reach for a `dnf`/pip-installed shared-libpython workaround, since
+    the fix is one word and matches how manylinux extensions are meant to link anyway.
+
+377. **Rocky's `lib64` `GNUInstallDirs` default can make a hardcoded `"lib"`
+    packaging check silently drop the one file a wheel exists to ship (the mlx case;
+    see `build-mlx.yml`).** CMake's `GNUInstallDirs` defaults `CMAKE_INSTALL_LIBDIR` to
+    `lib64` on 64-bit RHEL/Rocky-family systems -- every `manylinux_2_39_*` image,
+    riscv64 included, since they are all Rocky 10 -- not the plain `lib` that
+    Debian-based hosts (upstream's own `ubuntu-22-large`/`ubuntu-22.04-arm` CI runners)
+    use. MLX splits every release into a per-interpreter `mlx` wheel and a `mlx-cpu`
+    backend wheel by classifying each installed file in `setup.py` with
+    `file.is_relative_to(Path(mlx_dir, "lib"))` (plus `"include"`/`"share"`) -- a
+    hardcoded `"lib"` that never matches `mlx/lib64/libmlx.so` on a Rocky-based build,
+    so the entire compiled compute library is deleted from the one wheel that is
+    supposed to ship it, with the build otherwise going green (`Successfully built
+    mlx_cpu-...whl`, no error, just a wheel 15x smaller than expected and missing its
+    only real payload). Passing `-DCMAKE_INSTALL_LIBDIR=lib` in `CMAKE_ARGS` sidesteps
+    the bug with no source patch, since `GNUInstallDirs` respects an already-set value.
+    - **Caught by inspecting the built wheel's file list, not a riscv64 CI failure.**
+      `unzip -l dist/*.whl | grep -i lib` on any host reproduces it identically on
+      `manylinux_2_39_aarch64`/`_x86_64` too -- it is a Rocky-vs-Debian `GNUInstallDirs`
+      difference, not an riscv64 one, so a local rehearsal (gotcha 101) catches it for
+      free before spending a CI cycle.
+    - **A packaging script that classifies files by a hardcoded path fragment is a
+      pattern to watch for generally** whenever a project splits one build into
+      multiple wheels (frontend/backend, core/GPU, etc.) -- the classification logic is
+      usually written and tested only against the author's own CI image family.
+
+378. **A newer libstdc++ on the manylinux image can turn a project's own
+    `-DCMAKE_COMPILE_WARNING_AS_ERROR=ON` CI flag into a build failure that has nothing
+    to do with riscv64 (the mlx case).** `quay.io/pypa/manylinux_2_39_riscv64`/`_aarch64`
+    ship GCC 14 (Rocky 10), whose libstdc++ marks the free-function
+    `std::atomic_load`/`atomic_store`/`atomic_exchange` overloads on `shared_ptr`
+    deprecated (superseded by `std::atomic<std::shared_ptr<T>>`, C++20). MLX's
+    `mlx/error.h` uses exactly those three calls, and upstream's own release action
+    always adds `-DCMAKE_COMPILE_WARNING_AS_ERROR=ON` for non-Windows -- a flag their own
+    `ubuntu-22-large`/`-arm` runners' older libstdc++ never trips, so it reached 0.32.2
+    unnoticed. Building the identical source under the newer toolchain turns three
+    warnings into three hard errors (`cc1plus: all warnings being treated as errors`)
+    before a single test runs. Simply not passing that one flag (CMake defaults
+    `CMAKE_COMPILE_WARNING_AS_ERROR` to `OFF`) reproduces upstream's actual
+    `CMakeLists.txt` unmodified -- the `-Werror` promotion is their CI script's opinion,
+    not the project's own baseline, so omitting it needed no patch and is not really a
+    divergence from the project being built, only from one argument in their action.
+    - **Reproduce locally first**: a plain `python -m build -w` with the flag on vs. off
+      on `manylinux_2_39_aarch64` (gotcha 101) settles which of the two is responsible
+      in minutes, and shows the exact deprecated symbols by name.
+
+390. **libev is one of the `-devel` packages that *is* in Rocky 10's riscv64 repos, so an
+    upstream `yum install -y libev libev-devel` needs no replacement -- but its header is
+    `/usr/include/ev.h`, not `/usr/include/libev/ev.h` (completes gotchas 51/337).**
+    Gotcha 51's EPEL-is-absent rule makes every inherited `yum install` line suspect, and
+    libev is EPEL-only on older RHEL derivatives, so the reflex is to build it from source
+    in `CIBW_BEFORE_ALL_LINUX` (as upstream's own `multibuild` `config.sh` does, from a
+    2016 tarball whose `config.guess` predates riscv64 and would not configure). Checked
+    instead of guessed, `libev` 4.33 is in **baseos** and `libev-devel`/`libev-source` in
+    **crb**, which the manylinux image already has enabled -- a plain `yum install -y libev
+    libev-devel` installs both on riscv64, so the upstream line ships unchanged.
+    - **Fedora/RHEL put libev's header at the include root**, while Debian/Ubuntu use
+      `/usr/include/libev/ev.h`; a project carrying a hardcoded include-path list (the
+      driver's `[tool.cassandra-driver] libev-includes`) only builds because the list also
+      contains a bare `/usr/include`. `rpm -ql libev-devel` settles it in one command and
+      `dnf -q list <pkg>` settles availability -- for the whole question offline, gotcha
+      369's repodata fetch.
+    - **The image's licence texts are dropped by `tsflags=nodocs`**, so
+      `/usr/share/licenses/libev/LICENSE` is absent until `dnf -y reinstall
+      --setopt=tsflags= libev` restores it (gotcha 137); it is byte-identical to the 4.33
+      tarball's `LICENSE`, which is the text a vendored-licence patch should carry. libev
+      is dual `BSD-2-Clause OR GPL-2.0-or-later`, so taking the BSD option means shipping
+      the notice and *no* `gpl_sources` job.
+
+401. **Rocky 10 riscv64 ships OpenBLAS, LAPACK and FFTW but no SuiteSparse, GSL or GLPK --
+    for a numeric package whose extensions are one-per-library, that split *is* the
+    feature set, so settle it before writing any YAML (the cvxopt case).** Same shape as
+    gotcha 337's lexbor/re2/uchardet gap, on the numeric side of the catalogue:
+    `openblas`/`openblas-devel` (crb -- and its `libopenblas.so.0` exports the LAPACK entry
+    points too, so `-lopenblas` covers both `CVXOPT_BLAS_LIB` and `CVXOPT_LAPACK_LIB`),
+    `lapack`/`lapack-devel` (crb), `flexiblas*` and the whole `fftw*` family (appstream)
+    are all present, while `suitesparse`, `gsl` and `glpk` are in none of
+    baseos/appstream/crb -- and there is no `epel-release` for riscv64 to fall back on,
+    which is where a RHEL-family upstream normally gets GLPK (gotcha 51). A package like
+    cvxopt, which compiles a separate extension per optional library behind
+    `CVXOPT_BUILD_<LIB>` flags, therefore keeps upstream's `fftw` module and drops
+    `glpk`/`gsl`/`dsdp`, while its *mandatory* umfpack/cholmod/amd extensions have to come
+    from a from-source SuiteSparse (gotcha 400) rather than being droppable at all.
+    - **Check it without paying for QEMU `dnf`**: `dnf repoquery` inside the riscv64 image
+      is minutes per call under emulation (and `dnf provides` re-downloads filelists), so
+      pull the three repos' primary metadata over plain HTTPS instead (gotcha 369) and
+      grep the name list once.
+    - **The musl half of the same image pair is the *opposite* -- Alpine 3.22 riscv64 has
+      all of them.** `apk search -x` inside `quay.io/pypa/musllinux_1_2_riscv64` finds
+      `openblas-dev`, `fftw-dev`, `lapack-dev` **and** `suitesparse-dev` (7.8.2),
+      `gsl-dev`, `glpk-dev`, so upstream's own `apk add` line needs no edit at all and the
+      musl wheel could carry more extensions than the glibc one. Two things still argue
+      against just enabling it: the per-libc feature asymmetry that creates within one
+      version, and the fact that **Alpine ships no `/usr/share/licenses` at all** -- so
+      gotcha 137's "copy the licence the package installed" has no source on musl and
+      every bundled library's text would have to come from somewhere else.
+    - **A metapackage's licence text is not under its own name.** `fftw`'s COPYING is
+      installed by the subpackage auditwheel actually vendors --
+      `/usr/share/licenses/fftw-libs-double/COPYING`, not `/usr/share/licenses/fftw/` -- so
+      a `cp` written from the `dnf install` name fails the whole `before-all`. `ls
+      /usr/share/licenses/` in the image once and copy from what is really there
+      (openblas does use the plain `/usr/share/licenses/openblas/LICENSE`).
+
+420. **Gotcha 139's binutils-too-old trap recurs inside a Bazel dependency's microkernel
+    library, where the fix is that dependency's own feature `--define` rather than an
+    `-march` probe -- and `--keep_going` hides it behind five hours of unrelated progress
+    (the mediapipe/XNNPACK `zvfh` case).** XNNPACK builds its `rvvfp16arith` microkernels
+    with `-march=rv64gc_zvfh`. `manylinux_2_39_riscv64` is Rocky 10 with **binutils 2.41**,
+    `zvfh` landed in **2.42**, and as in gotcha 139 `as` rejects the *whole* ISA string, so
+    every one of that target's ~71 translation units dies with ``unknown prefixed ISA
+    extension `zvfh'`` naming an ISA string nobody wrote. GCC (14.3.1) accepts the flag, so
+    it reads like a compiler bug. Applies to any port that compiles TFLite/LiteRT/XNNPACK
+    from source, not just mediapipe.
+    - **Use the dependency's feature flag, not gotcha 139's `-march` probe.** A probe is the
+      right tool for a project whose *own* CMake picks the flags; here the flags come from a
+      pinned third-party Bazel repo you don't patch. XNNPACK exposes
+      `--define=xnn_enable_riscv_fp16_vector=false`, which drops the arch from
+      `xnnpack_archs()` **and** sets `XNN_ENABLE_RISCV_FP16_VECTOR=0` so the dispatch code
+      stops referencing the kernels. Proof it is a supported configuration and not a hack:
+      XNNPACK's own `riscv_fp16_vector_enabled` alias already selects the disabled branch
+      for `//build_config:android`.
+    - **Disable only the fp16 family.** `-march=rv64gcv` (XNNPACK's plain `rvv` arch)
+      assembles fine on 2.41 -- only the `zvfh`/`zvfhmin` names are too new. Reaching for
+      `--define=xnn_enable_riscv_vector=false` too would give up all RVV for no reason.
+      Confirm which extension is actually rejected with gotcha 139's 30-second probe before
+      choosing the flag; here `rv64gc` and `rv64gcv` pass while `rv64gc_zvfh` and
+      `rv64gc_zvfhmin` fail.
+    - **`--keep_going` makes a single-cause failure look like a timeout.** The failing
+      target's errors scroll past thousands of actions before the end, Bazel then builds
+      everything else for hours, and the summary says only `Target //... failed to build` /
+      `Build did NOT complete successfully`. A 5h23m job that ends that way is *not*
+      evidence of the job timeout this kind of port is expected to strain -- read
+      `INFO: Elapsed time` and the absence of a cancellation instead.
+    - **Grep the `build.log` artifact, not the job-log tail.** The tail holds only progress
+      lines and compiler *warnings*. Pull the `if: failure()` build-log artifact and
+      `grep -c '^ERROR'` plus `grep -oE 'from target @@[^)]*' | sort -u`: one distinct
+      target and one distinct extension name is what tells you a single `--define` fixes
+      the whole run, rather than guessing from the first error you happen to see.
+
+428. **A project still on the *deprecated* `find_package(PythonLibs REQUIRED)` has no
+    `Development.Module` escape hatch from gotcha 374's static-libpython wall, and the
+    obvious way to satisfy it is a trap that only fails at the very end of the build (the
+    paddlepaddle case).** manylinux configures every interpreter it ships with
+    `--disable-shared` -- `pypa/manylinux`'s `build_scripts/build-cpython.sh`, with no
+    architecture condition -- so `/opt/python/cp3XX-cp3XX` carries `Python.h` and a
+    `libpython3.XX.a` but no `libpython3.XX.so`, and the old `FindPythonLibs` module, which
+    never consults `PYTHON_EXECUTABLE` at all, stops configure with `Could NOT find
+    PythonLibs (missing: PYTHON_LIBRARIES PYTHON_INCLUDE_DIRS)`. Two things to establish
+    before touching it:
+    - **Never point `PYTHON_LIBRARY` at the static archive to make the error go away.** It
+      configures, compiles for hours and *then* fails at the final link. CPython's
+      `configure` adds `CFLAGSFORSHARED` (i.e. `-fPIC`) only
+      `if test ! "$LIBRARY" = "$LDLIBRARY"`, which a `--disable-shared` build never
+      satisfies, so `libpython3.XX.a` holds no position-independent code and cannot be
+      linked into a shared object on any architecture. The cycle this wastes is the whole
+      build, not the configure step.
+    - **Check whether the project already refuses to link libpython, which makes the
+      `REQUIRED` vestigial.** Paddle's `cmake/generic.cmake` strips `python` out of every
+      non-Windows target's `target_link_libraries()`, keeps it only as an
+      `add_dependencies()` ordering edge and links `-Wl,-undefined,dynamic_lookup`
+      instead -- citing pybind11's own "Building manually" notes -- so `PYTHON_LIBRARIES` is
+      read only by the `cc_test()` executables that embed an interpreter (off under
+      `WITH_TESTING=OFF`) and by two dead variables. A `grep -rn '${PYTHON_LIBRARIES}'`
+      across the cmake tree is the whole audit, and it decides whether dropping the library
+      changes any link line at all.
+    The fix is to require only the headers, and to take them from the interpreter being
+    built against rather than from whatever the module finds on the host: pre-seed the
+    `PYTHON_INCLUDE_DIR` cache entry from `sysconfig.get_config_var('INCLUDEPY')`, which
+    keeps pointing at the real installation from inside a virtualenv. Pre-seeding also makes
+    a now-optional `find_package(PythonLibs)` skip its own `find_path()` and still report the
+    right `PYTHONLIBS_VERSION_STRING` out of `patchlevel.h`, so a distro build that does have
+    a shared libpython keeps behaving exactly as before. Guard the imported target too: a
+    `SHARED IMPORTED` target with an empty `IMPORTED_LOCATION` is invalid, so create
+    `add_library(<name> INTERFACE IMPORTED GLOBAL)` when no library was found.
+    **All of this rehearses locally on x86_64 in a minute, with no image pull and no QEMU**,
+    which matters when the real build is a multi-hour riscv64 job: `include()` the patched
+    `.cmake` from a throwaway CMake project, stub the project's own helper modules, and force
+    the manylinux branch with `-DCMAKE_DISABLE_FIND_PACKAGE_PythonLibs=TRUE`; then build a
+    real `.so` that calls a `Py_*` function the way the project builds its extension module,
+    and confirm `nm -D --undefined-only` reports the symbols as `U` and `readelf -d` shows no
+    `libpython` in `DT_NEEDED`.
+
+433. **A project that vendors and builds its own OpenBLAS must be told
+    `TARGET=RISCV64_GENERIC`: OpenBLAS cannot detect a riscv64 host, so a plain `make`
+    stops at `getarch.c: error: #error "This arch/CPU is not supported by OpenBLAS."`
+    however new the checkout is.** `getarch.c` reaches its riscv64 definitions only through
+    `-DFORCE_RISCV64_*`, which `Makefile.system` derives from `TARGET=` (`GETARCH_FLAGS :=
+    -DFORCE_$(TARGET)`); the `#ifdef __riscv` / `cpuid_riscv64.c` autodetect branch that
+    other architectures have arrived far later than the pins most projects carry. Projects
+    already answer this for aarch64 and nothing else -- Paddle's
+    `cmake/external/openblas.cmake` has `if(WITH_ARM) set(ARM_ARGS TARGET=ARMV8) endif()`
+    and passes `${ARM_ARGS}` to its `BUILD_COMMAND` -- so the patch is the three-line
+    riscv64 twin of a block that is already there, which is also the argument for taking it
+    upstream.
+    - **Pick `RISCV64_GENERIC`, not a vector target.** Its `TARGET_FLAGS` are `-march=rv64imafdc
+      -mabi=lp64d`, i.e. the rv64gc baseline a published wheel has to run on, while
+      `RISCV64_ZVL128B`/`RISCV64_ZVL256B` compile `-march=rv64imafdcv` and would put RVV
+      instructions into a `libopenblas.a` that gets statically linked into the extension --
+      gotcha 139's RVV wall, but discovered by a user's SIGILL instead of by CI.
+    - **Only the build step needs it.** `getarch` writes the choice into `Makefile.conf`,
+      so the `make install` step reads it back; mirror upstream's arm block rather than
+      threading `TARGET=` through every invocation.
+    - **First ask whether the project needs to build OpenBLAS at all.** Gotcha 401's Rocky
+      10 riscv64 `openblas`/`lapack`/`blas` packages are one `dnf install` away and are
+      what every other BLAS consumer in this repo links against; a from-source OpenBLAS is
+      worth it only when the project statically links it or patches it.
+
+435. **`libquadmath` does not exist on riscv64 -- GCC does not build it for that target, so
+    `dnf install libquadmath` fails with `Unable to find a match` and no
+    `libquadmath.so.0` is anywhere on the image.** It is not a gap in the distro's riscv64
+    coverage like gotcha 401's SuiteSparse; libquadmath only exists where `__float128` is a
+    type distinct from `long double`, which is true on x86-64 and not on riscv64 or aarch64.
+    Any project that pairs `libgfortran` with `libquadmath` as "the GCC Fortran runtime" and
+    copies both unconditionally is therefore broken on both architectures -- Paddle's
+    `setup.py` does exactly this with `GFORTRAN_LIB` and `GNU_RT_LIB_1`, and its released
+    aarch64 wheel only gets away with it by shipping the x86-64 `libquadmath.so.0` out of
+    gotcha 418's tarball.
+    - **The fix is to make the copy conditional, not to substitute another library.** Such a
+      project usually already has the pattern somewhere nearby -- Paddle guards its
+      `GNU_RT_LIB_2` (Windows/macOS `libgcc_s`) copy on the variable being set, so guarding
+      `GNU_RT_LIB_1` the same way is the change upstream would make, and it needs no
+      architecture flag. Do not point the variable at `libgcc_s.so.1` or at the same path as
+      `libgfortran` to keep an unconditional copy happy: the first ships a library nothing
+      asked for, the second ships the same file twice.
+    - **Do not "harden" a `dnf install` by adding runtime packages you have not confirmed.**
+      This cost a whole round: the list `lapack blas libgfortran libquadmath` was written to
+      pre-empt a missing dependency, and the two additions were the only things wrong with
+      it -- `libgfortran` was already installed, and `libquadmath` cannot be. `dnf` fails the
+      whole transaction on one unmatched argument, so a speculative package name is a build
+      failure, not insurance. Install what the build needs and let the dependency solver
+      pull the runtimes.
+
+446. **The manylinux image's free-threaded interpreter directory is
+     `/opt/python/cp3XX-cp3XXt`, not `/opt/python/cp3XXt-cp3XXt` -- the directory is
+     `<implementation tag>-<ABI tag>`, and only the ABI tag carries the `t`.** A hand-written
+     per-interpreter loop that appends the free-threaded tag to itself (`cp314t-cp314t`) names
+     a path that does not exist, `"$pybin/bin/pip"` is "No such file or directory", and `set -e`
+     ends the step with **exit 127**. This is a one-line typo with an expensive failure mode:
+     in comfy-angle's round 4 (run 35496806279) it landed on the *last* line of the container
+     script, after a 64-minute ANGLE compile had already produced the wheel and the smoke test
+     had passed on cp312/cp313/cp314 -- the log's final error says nothing about the build that
+     worked, so read *upwards* from an exit 127 before concluding the port regressed.
+     - **Derive the directory, don't write it out.** The rule is `${TAG%t}-${TAG}`, which
+       `build-onnxruntime.yml`, `build-labmaze.yml` and `build-vtk.yml` all encode as
+       `case "$PYTHON_TAG" in *t) python_dir="/opt/python/${PYTHON_TAG%t}-${PYTHON_TAG}/bin" ;;
+       *) python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}/bin" ;; esac`. A literal list is
+       fine only if every free-threaded entry is spelled `cp3XX-cp3XXt` (as
+       `build-mujoco.yml`'s matrix and `build-cryptography.yml`'s do).
+     - **Verify a `/opt/python` path off-target instead of in CI.** No container is needed:
+       `grep -rn 'opt/python' .github/workflows/` shows how every green workflow on the same
+       `MANYLINUX_RISCV64_IMAGE` spells it, and `docs/packages/<pkg>.yaml` listing a published
+       `…-cp314-cp314t-manylinux_2_39_riscv64.whl` (mujoco has two) is proof that that exact
+       directory exists on that exact image. That pair of greps is seconds against an hour.
+     - **A `py3-none` wheel still wants the free-threaded leg in the smoke test.** The
+       interpreter list here is not a build matrix (gotcha 145): one platform wheel is loaded
+       on every interpreter we ship for, so a wrong path in the list fails a job that has
+       nothing else left to do.
+
+447. **When riscv64 forces a clang-only codebase onto GCC, expect a long tail of source
+     incompatibilities, discovered one translation unit per build -- and budget for the fact
+     that each discovery costs a *whole build*.** V8 compiles its RISC-V port with clang and
+     nothing else; a riscv64 host has no prebuilt Chromium clang to run, so stpyv8's port sets
+     `is_clang=false` and gets GCC. The first run to reach the compiler spent **9h17m in ninja,
+     got 1146 of 2117 targets in** -- as far as the first translation unit that pulls in
+     `src/codegen/macro-assembler.h` -- and stopped on
+     `src/codegen/riscv/macro-assembler-riscv.h:389:13: error: explicit specialization in
+     non-namespace scope 'class v8::internal::MacroAssembler'`. `MacroAssembler::push_helper`
+     ends a variadic recursion with a one-register explicit specialization written *inside* the
+     class body; the standard allows an explicit specialization only at namespace scope, clang
+     takes the in-class one as an extension, GCC refuses it. Nothing about it is riscv64-specific
+     -- it is simply the first time that header met another compiler.
+     - **Look for the fix in a later upstream release before writing your own.** Release
+       branches are one `curl` each: `chromium.googlesource.com/…/+/refs/branch-heads/<X.Y>/
+       <path>?format=TEXT` (base64), or `raw.githubusercontent.com/<org>/<repo>/<tag>/<path>`,
+       so bisecting "when was this fixed" costs seconds. V8 13.2–13.7 still carried it and 13.8
+       replaced both specializations with an empty zero-register overload; backporting *that*
+       shape byte for byte beats inventing a fix, and the rewritten pinned header can be
+       diffed against the later release's to prove the backport is exact.
+     - **Separate the two failure classes -- only one of them is worth patching.** Warnings are
+       an unbounded tail (V8 is warning-clean under clang only: `config("chromium_code")` adds
+       `-Werror` for any compiler while `config("no_chromium_code")` restricts it to clang,
+       "GCC may emit unsuppressible warnings"), so kill the whole class with the project's own
+       knob -- for gn, `treat_warnings_as_errors=false` -- instead of one cast per day-long
+       cycle. Hard errors are the only ones that need a source patch. `grep -c Werror` over the
+       failed log tells you which regime you are in.
+     - **Sweep the rest of the bug class off-target, for the price of a `curl`.** Pull just the
+       arch-specific source directories (gitiles serves any directory as
+       `+archive/refs/tags/<tag>/<dir>.tar.gz`) and grep for the construct. Here
+       `grep -rn 'template <>'` over all nine riscv directories found 62 hits but only **two**
+       indented ones -- a `template <>` at column 0 is namespace scope and perfectly legal, and
+       only the in-class ones are the bug -- which is what makes it defensible to re-enter a
+       ten-hour build after fixing just them.
+     - **Reproduce the diagnostic in ten lines rather than ten hours.** A parse error needs no
+       cross-toolchain and no target: strip the construct to a self-contained file and compile
+       it with the host's `g++` *and* `clang++`. That confirms the divergence is real, that the
+       backported form satisfies both, and -- by printing the offsets both forms compute -- that
+       the rewrite is semantics-preserving.
+     - **Do not assume a sibling port's blockers are yours.** The mini-racer V8 build hit two
+       further GCC stoppers (`unicode.h`'s `WriteLeadingAscii` specializations, and
+       `third_party/highway` falling back to `HWY_SCALAR` so `json-stringifier.cc` asks for a
+       `FixedTag<T,16>` that does not exist). Both postdate stpyv8's pinned V8: that
+       `unicode.h` has no `WriteLeadingAscii` at all and highway is not referenced anywhere in
+       its `BUILD.gn`. Check the *pinned revision* before porting a sibling's patch -- and note
+       the converse, that mini-racer never saw *this* bug because its newer V8 already had the
+       13.8 fix.
+     - **While the class is open, make one build report everything: `ninja -k <n>`.** ninja
+       stops at the first failure by default, so a 20-hour build yields exactly one diagnostic.
+       `-k 1000` costs nothing on a green build (it only changes behaviour after a failure) and
+       converts N sequential day-long discoveries into one. mini-racer's `-k 1000` run collected
+       six failures at once; drop the flag again once the build is green, or a genuine error
+       turns a fast failure into a full-length one.
+     - **Read the log before concluding it is a wall.** This one was not gotcha 421's resource
+       ceiling: the 48h timeout was under a fifth spent, and the whole 168 KB log has no
+       `Killed`, no `out of memory`, no `internal compiler error`, no `No space left`, no signal
+       -- and exactly **one** `FAILED:` edge carrying a compiler diagnostic. One `FAILED` with a
+       diagnostic is a bug to fix; a wall looks nothing like it.
+
+448. **"Genuine upstream riscv64 support" can still mean "requires RVV 1.0 hardware" -- and the
+    wheel's own ELF attributes prove it without spending a second runner slot (the openvino
+    case; PR #2122, run 35480766550).** The shape is the expensive one: `timeout-minutes: 1440`,
+    the `Build wheels` step **succeeded** after 12h18m, all four wheels (cp312/cp313/cp314/cp314t)
+    were produced and uploaded, and the job then died **2m12s** into `Test wheels` with
+    `##[error]Process completed with exit code 132`. 132 is 128+4, i.e. **SIGILL**, and the line
+    above it names the instruction fault outright: `riscv64-build-and-test.sh: line 32: 41
+    Illegal instruction (core dumped)`. Inside the smoke script the boundary is exact --
+    `print(ov.get_version())` printed `2026.3.1-1-759c5a6ab8c`, and `print(core.available_devices)`
+    never printed -- so it died in `ov.Core()`/device enumeration, the moment the CPU plugin is
+    `dlopen`ed and constructed. No resource wall was involved: zero `Killed`/`out of memory`/
+    `No space left`/ICE anywhere, and 12h24m against a 24h budget is not a timeout either.
+    - **The proof is in the artifact, not the runner -- and it is a 30-second check.** Parse each
+      `.so`'s `.riscv.attributes` section and read `Tag_RISCV_arch`. Of the 20 libraries in the
+      wheel, exactly one carries vector:
+      `libopenvino_riscv_cpu_plugin.so` →
+      `rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_**v1p0**_zicsr2p0_zifencei2p0_zmmul1p0_zve32f1p0_zve32x1p0_zve64d1p0_zve64f1p0_zve64x1p0_**zvl128b**1p0_zvl32b1p0_zvl64b1p0`,
+      everything else plain `rv64gc`. Confirm it is real content and not an attribute artifact by
+      counting OP-V instructions (32-bit, opcode `0x57`, skipping RVC halfwords): **64,554** in the
+      plugin, **34,526** of them `vsetvl*` -- against **exactly zero** across the other 19
+      libraries' 52 MiB of `.text`, which is the control that says the scan has no false
+      positives. The RVV is confined to a contiguous ~10.7 MiB region of the plugin's 20.6 MiB
+      `.text` (44 of 83 256-KiB buckets, all adjacent), i.e. the `riscv64/` kernel/emitter
+      objects in link order -- not whole-library `-march`.
+    - **Upstream's gate is a runtime probe, and the probe is what dies.**
+      `nodes/kernels/riscv64/cpu_isa_traits.cpp` has
+      `case gv: return mayiuse(g) && cpu.hasExtension(RISCVExtension::V) && can_compile_rvv100();`,
+      and `can_compile_rvv100()`/`can_compile_zvfh()` deliberately execute the instruction under a
+      SIGILL handler. Both are visible in the binary as the only RVV *outside* the kernel region:
+      two isolated `vsetvli`+`vmv.v.i` pairs at `.text+0x10b92` (`e8, mf2, ta, ma`) and
+      `.text+0x10d7a` (`e64, m1, ta, ma`), each two instructions long with no loop and no memory
+      operand -- a shape auto-vectorisation never produces. `mf2` does not exist in RVV 0.7.1 and
+      the `vsetvli` encoding differs between 0.7.1 and 1.0, so on this fleet the probe traps
+      exactly as gotcha 272 describes (HWCAP advertises V; the first RVV-1.0 `vsetvli` is
+      illegal) -- and the process **core-dumps instead of the probe returning false**, so the
+      recovery does not hold here.
+    - **Static evidence cannot separate the two candidate proximate causes -- say so rather than
+      picking one.** Either the probe's SIGILL recovery fails, or a static initializer inside one
+      of the RVV-compiled translation units runs at `dlopen` with no `mayiuse` in front of it
+      (a guard on the *call sites* does not cover a TU's own `.init_array`). Both land at the same
+      instant in the same log line. Separating them needs a backtrace, not more reading -- which
+      is cheap, because the artifact stays downloadable for 90 days: re-run only the test leg
+      against the **existing** wheels (`LD_DEBUG=libs` to see whether the plugin finished its
+      init, or `gdb -batch -ex run -ex bt`) instead of rebuilding for 12 hours.
+    - **Why the triage missed it, and the rule that generalises.** Upstream's `linux_riscv.yml`
+      runs `ov_cpu_func_tests` only under `qemu-riscv64 -cpu rv64,v=true,vext_spec=v1.0`, and
+      `docs/dev/build_riscv64.md`'s hardware list mixes RVV 0.7.1 boards (Lichee Pi 4A) with RVV
+      1.0 ones (BPI-F3, Orange Pi RV2). So "upstream carries a real riscv64 CPU plugin with RVV
+      JIT" is evidence about an emulator with V forced on, not about baseline hardware -- and
+      gotcha 279's rule is not zlib-ng-specific: **a QEMU-validated RVV claim is untested for
+      this fleet, whoever makes it.** Price the RVV question at triage, from the artifact of the
+      first build if need be, rather than from the upstream CI's existence.
+    - **There is no off switch, unlike gotchas 279 and 71.** `src/plugins/intel_cpu/CMakeLists.txt`
+      adds `src/{emitters/plugin,emitters/snippets,nodes/kernels,nodes/executors}/riscv64/*` and
+      `XBYAK_RISCV_V=1` whenever `RISCV64`, and `intel_cpu/thirdparty/CMakeLists.txt` sets
+      `XBYAK_RISCV_V ON` plus `DNNL_TARGET_ARCH=RV64` unconditionally. No `option()` or
+      `cmake_dependent_option()` governs any of it, and `-march=rv64gcv` appears nowhere in the
+      build (only in `clang_tidy.cmake`), so there is no `-DWITH_RVV=OFF` to pass -- turning RVV
+      off is a real patch against an upstream scalar-fallback path that upstream's own CI never
+      exercises without `v=true`.
+    - **And a working RVV build still could not ship.** A `manylinux_riscv64` wheel whose CPU
+      plugin needs RVV 1.0 SIGILLs for every user on baseline rv64gc -- gotcha 139's exact
+      prohibition. That makes "make it build" and "make it shippable" two different questions,
+      and it is what turns this from a bug to fix into a decision to escalate.
+    - **Correction from a later round (PR #2122, run 35995279535, commit 16a592a0a4): the
+      disambiguation above landed on the wrong candidate, and there IS an off switch.** A
+      hardcode-the-probe-to-false patch (`can_compile_rvv100()`/`can_compile_zvfh()` -> `false`,
+      landed as this PR's `0001-...patch`) shipped believing the probe's own SIGILL recovery was
+      what failed -- it wasn't, and the crash reproduced again on the *next* build, at a different
+      point (during `compile_model()`, after `ov.Core()` now succeeded). Reproducing under QEMU
+      with `QEMU_CPU=rv64,v=false` pinned the fault to one exact instruction: `.init_array` entry
+      17/25 of `libopenvino_riscv_cpu_plugin.so`, a compiler-generated `vsetivli zero, 8, e8, mf2,
+      ta, ma` that zero-fills a global at load time, before any `mayiuse()` call runs. Its source
+      is **oneDNN**, not the plugin's own `riscv64/` kernel/emitter objects: oneDNN's own
+      `cmake/platform.cmake` adds `-march=rv64gcv` to all of oneDNN's compile flags whenever the
+      compiler *can build* RVV intrinsics, with no runtime check at all, and oneDNN links
+      statically into the plugin -- so "`-march=rv64gcv` appears nowhere in the build" above is
+      wrong; the CI log for that build states `Using RV64 march flag: -march=rv64gcv` in the
+      oneDNN sub-build. The plugin's own riscv64 JIT emitters generate vector code only at
+      runtime (never baked into a static initializer), so the "kernel/emitter objects in link
+      order" attribution above is also wrong -- the ~10.7 MiB vector region is oneDNN's, not
+      theirs. **The actual off switch is oneDNN's own `-DCAN_COMPILE_RVV_INTRINSICS=OFF`**,
+      passed to the top-level OpenVINO CMake configure step; it makes oneDNN skip the compiler
+      probe and take its existing non-RVV branch (`-march=rv64gc`, RVV sources excluded by their
+      own `#ifdef`s) -- no source patch needed for this half of the fix. The probe-hardcode patch
+      from the wrong diagnosis was kept (never rewrite a pushed PR's history over a superseded
+      finding) and given a real, narrower justification instead: `mayiuse()` builds an
+      `Xbyak_riscv::CPU` object on every call whose *constructor* JIT-runs an unguarded
+      `csrr a0, vlenb`, reachable from `compile_model()` via `mayiuse(gv)` -- a second-order call
+      site the original probe patch happens to also close (by short-circuiting `gv` before the
+      object is built), documented in this PR's `0002-...patch`. Lesson: when static ELF evidence
+      can't distinguish two hypotheses (as this entry explicitly flagged), get the backtrace
+      before landing the fix that assumes one of them -- reproducing under QEMU with vector
+      support toggled off is cheap and pins the exact instruction, which static attribute-section
+      reading cannot.
+
+454. **The image's LLVM is a whole toolchain *minus Clang's static libraries* -- `llvm-static`
+    exists, `clang-devel` ships no `.a` at all (the warp-lang case).** `build-tilelang.yml` links
+    LLVM out of the image with one `dnf --enablerepo=crb install llvm-devel` plus `llvm-config`,
+    which makes "the image already has LLVM" look like the answer for any LLVM-linking port. It
+    holds for LLVM and not for Clang. On manylinux_2_39_riscv64 (Rocky Linux 10.2),
+    `dnf --enablerepo=crb list --available 'llvm*' 'clang*'` answers
+    `llvm/llvm-devel/llvm-static/clang/clang-devel/clang-libs` all at **21.1.8** -- recent enough
+    for anything -- and:
+    - `llvm-static` installs **304** `libLLVM*.a` into `/usr/lib64`, so a *static LLVM* link is
+      available off the shelf.
+    - `clang-devel` installs **zero** `.a` files. RHEL/Fedora package Clang's C++ API only as the
+      shared `libclang-cpp.so`, so a project that statically links `libclangFrontend.a`,
+      `libclangCodeGen.a`, … has nothing to link against, and the port has to compile LLVM+Clang
+      from source the way `build-libclang.yml` does (~10h on these runners). One command prices it:
+      `dnf --enablerepo=crb repoquery -l clang-devel | grep -c '\.a$'` → `0`.
+    - Going shared instead is not just a `-L` change: the distro LLVM is built with
+      `_GLIBCXX_USE_CXX11_ABI=1`, while projects shipping a self-contained Clang follow the
+      manylinux/CentOS-7 convention and compile against it with `-D_GLIBCXX_USE_CXX11_ABI=0`
+      (warp's `build_dll.py` hardcodes it, upstream's Conan profiles say `compiler.libcxx=libstdc++`).
+      Mixing the two is an undefined-symbol wall in `std::string`, and it would also mean vendoring
+      ~180 MB of distro `.so` into a wheel upstream keeps self-contained.
+    - Two build-host facts for any from-source LLVM here: the image already carries **cmake 4.4.3
+      at `/usr/local/bin/cmake`** -- ahead of dnf's `cmake` 3.31.8 in `/usr/bin`, so installing the
+      RPM does *not* change which `cmake` runs -- and **no ninja at all**. When upstream's own
+      recipe pins them (warp's `tools/llvm/ci/build-linux.sh` pipx-installs `cmake==3.31.6` and
+      `ninja==1.11.1.4`), take the same pin from our registry, which serves `cmake 3.31.6` and
+      `ninja 1.11.1.3` for riscv64, and put it ahead of `/usr/local/bin` on `PATH`.
+
+455. **Rocky 10's zlib is `zlib-ng-compat`, and its CMake package config points at a `libz.a`
+    only the separate `-static` subpackage installs -- so a *lowercase* `find_package(zlib)`
+    aborts the configure on the riscv64 image, `QUIET` or not (the pulsar-client case; see
+    `build-pulsar-client.yml`).** This is not a "package not found" that the project's own
+    fallback branch can absorb: `/usr/lib64/cmake/ZLIB/ZLIB.cmake` declares an imported
+    `ZLIB::zlibstatic` target and CMake stops with `The imported target "ZLIB::zlibstatic"
+    references the file "/usr/lib64/libz.a" but this file does not exist`, raised from inside
+    `zlib-config.cmake`, which `QUIET` does not suppress.
+    - **The lowercase spelling is what routes it into CONFIG mode.** Module mode looks for
+      `Findzlib.cmake` and CMake ships `FindZLIB.cmake` -- a different filename on a
+      case-sensitive filesystem -- so `find_package(zlib)` skips the module that would have
+      found `libz.so` and lands on zlib-ng's config package instead. `find_package(ZLIB)` on
+      the same image is fine, so this only bites projects that wrote the name in lowercase --
+      pulsar-client-cpp's `LegacyFindPackages.cmake` does, right beside a `find_package(curl
+      QUIET)` that is harmless only because Rocky's `libcurl-devel` ships no
+      `curl-config.cmake` to find.
+    - **Fix with `-DCMAKE_DISABLE_FIND_PACKAGE_zlib=ON`, spelled in the package's own case**,
+      which sends the project down the `find_path`/`find_library` fallback it already keeps for
+      platforms where "CMake might not find curl and zlib". Installing `zlib-ng-compat-static`
+      also clears it, at the cost of a static archive that must not end up in the wheel.
+    - Reproduces identically on `rockylinux/rockylinux:10` x86_64, so a two-minute configure
+      settles it instead of a riscv64 cycle.
+
+460. **An upstream Dockerfile's `apt-get install` line is a build-dependency manifest that
+    nothing else in the tree declares -- read it and translate before the first run (the vllm
+    `numa.h` case).** A workflow mirroring a project whose only wheel build is a Dockerfile
+    inherits that Dockerfile's *Python* build requirements naturally (they are in
+    `requirements/build/*.txt` or `pyproject.toml`) and its *system* requirements not at all:
+    they exist only as a `RUN apt-get install` layer, which cibuildwheel's container never
+    replays. vLLM's `docker/Dockerfile.cpu` installs `libnuma-dev` among a dozen other
+    packages; `csrc/cpu/utils.cpp` then `#include <numa.h>` behind nothing but
+    `#ifndef VLLM_NUMA_DISABLED`, and `cmake/cpu_extension.cmake` sets `ENABLE_NUMA TRUE`
+    unconditionally (its only carve-out is Apple) and links `numa`. The first riscv64 run died
+    on `fatal error: numa.h: No such file or directory` after burning six minutes installing
+    torch -- a failure with no signal in any Python metadata.
+    - **Diff the Dockerfile's package list against the image before you push, not after.**
+      Every `-dev`/`-devel` name in it is a header the manylinux image probably lacks, and
+      each one costs a full cycle to discover serially. `libnuma-dev` → `numactl-devel` on
+      Rocky, which is in **appstream** and needs no `--enablerepo=crb` (gotcha 180's note
+      that CRB *is* enabled still applies, but is not needed here).
+    - **Confirm the name and that it carries the header you want, in the 60MB proxy container
+      rather than the multi-GB manylinux image** (gotcha 51's technique):
+      `docker run --platform linux/riscv64 quay.io/rockylinux/rockylinux:10` then
+      `dnf -q list numactl-devel` and `dnf -q repoquery -l numactl-devel`, which prints
+      `/usr/include/numa.h`, `/usr/lib64/libnuma.so`, `/usr/lib64/pkgconfig/numa.pc`. Behind
+      an egress proxy this needs `--network host` plus the proxy CA mounted into
+      `/etc/pki/ca-trust/source/anchors/` and `update-ca-trust extract`, or dnf fails the
+      mirrorlist on a self-signed chain.
+    - **Installing it is mirroring upstream, not deviating from it** (SKILL.md's goal 2), so it
+      needs no "differs from upstream" note in the PR -- the Debian and Rocky names are the same
+      dependency. What *would* be a deviation is disabling the feature (here `VLLM_NUMA_DISABLED`)
+      to route around a package the image can supply.
+    - **auditwheel then vendors the library into the wheel**, which is correct: upstream relies on
+      its image carrying `libnuma.so.1` at run time and a wheel has no image. Do not add it to
+      `--exclude` on the strength of "upstream does not ship it".
+
+485. **CMake's `find_package(Python3 COMPONENTS Development)` fails inside the manylinux image
+    because PEP 513 forbids shipping `libpython`, and the fix is a zero-byte file, not a
+    build-flag change (the usd-core/OpenUSD case; see `build-usd-core.yml`).** Every
+    `/opt/python/cpXY-cpXY` in `quay.io/pypa/manylinux_2_39_riscv64` reports
+    `LIBDIR/LDLIBRARY = /opt/_internal/cpython-3.X.Y/lib/libpython3.X.a` and **that file does
+    not exist** -- checked on cp312/cp313/cp314. PEP 513 explains why: a manylinux wheel must
+    not link libpython at all. But `FindPython`'s `Development` component validates the library
+    path before it will configure, so a CMake project that asks for `Development` dies in
+    configure even when it is about to be told not to link it.
+    - **The project's own escape hatch is the flag that makes the file irrelevant** --
+      `-DPXR_PY_UNDEFINED_DYNAMIC_LOOKUP=ON` for USD, and the equivalent
+      `-undefined dynamic_lookup`/`--allow-shlib-undefined` knob elsewhere. With it set,
+      nothing ever opens the library, so `touch`ing an empty file at the path FindPython
+      expects is sound rather than a hack that could link garbage:
+      ```bash
+      "$PY" -c "import pathlib,sysconfig; pathlib.Path(sysconfig.get_config_var('LIBDIR'), sysconfig.get_config_var('LDLIBRARY')).touch()"
+      ```
+    - **Check whether upstream already does this before inventing it.** OpenUSD's own
+      `.github/workflows/pypi.yml` carries exactly this line, with a long comment calling it a
+      "terrible, terrible hack" -- so it is not a riscv64 deviation and belongs in no "differs
+      from upstream" list. An upstream that publishes manylinux wheels from a CMake build has
+      almost certainly hit this already; grep its release workflow for `LDLIBRARY` or
+      `UNDEFINED_DYNAMIC_LOOKUP` first.
+    - **Reproduce it in seconds rather than in a CI cycle**: `docker run --rm --platform
+      linux/riscv64 $MANYLINUX_RISCV64_IMAGE` and print `os.path.exists(LIBDIR/LDLIBRARY)` for
+      each interpreter you plan to build. `False` everywhere means this gotcha applies to any
+      `Development`-requiring configure in that image.
+
+496. **Before copying gotcha 420's `--define=xnn_enable_riscv_fp16_vector=false` into an
+    older tree, check which XNNPACK *target* the gate sits in -- an old pin may compile no
+    vector kernels at all.** At the commit TensorFlow 2.14 pins (`b9d4073a`, mid-2023) the
+    riscv64 production library is scalar-only: `riscv_srcs` is
+    `src/amalgam/gen/scalar-riscv.c` / `PROD_SCALAR_RISCV_MICROKERNEL_SRCS`, while
+    `ALL_RVV_MICROKERNEL_SRCS`, the `-march=rv64gcv` copts and the `XNN_ENABLE_RISCV_VECTOR`
+    define appear only in `bench_microkernels` and `test_microkernels`, and `rvvfp16arith`
+    is not in the tree at all. Neither the `zvfh`-vs-binutils-2.41 trap (420) nor the
+    pre-0.12 RVV intrinsic spellings GCC 14 no longer accepts can fire, so the define would
+    be a deviation with nothing behind it -- the build was green without it.
+    - **Attribute each `riscv` hit to its target before concluding anything**:
+      `grep -n riscv BUILD.bazel` then, per line, `awk 'NR<=<line> && /    name = /'
+      BUILD.bazel | tail -1`. A gate inside a benchmark or test library never reaches a
+      wheel.
+    - **Read `:riscv_vector_enabled` twice**: its `explicit_false` branch resolves to the
+      *explicit_true* config_setting, which looks like a bug and is not -- with
+      `--define xnn_enable_riscv_vector=false` that setting no longer matches, so the select
+      falls through to its default and RVV is off. The off-switch works; the indirection
+      just does not read like one.
+
+499. **`-lfoo` and `-l:libfoo.a` are different questions, and Rocky splits the two the
+    opposite way from Debian for binutils and xz (the austin-dist case).** A project that
+    links its dependencies statically writes `-l:libfoo.a` on the link line while gating it
+    with an ordinary `AC_CHECK_LIB`/`-lfoo` probe. The two do not ask the same thing:
+    `-lfoo` also resolves against `libfoo.a`, so the probe passes for a static-only package,
+    while `-l:libfoo.a` fails hard when only the shared library is installed.
+    - On the riscv64 image `binutils-devel` ships `libbfd.a`, `libiberty.a` and `libsframe.a`
+      with **no** shared twin for the last two (probe passes, static link works), while
+      `xz-devel` ships `liblzma.so` with **no** archive anywhere -- there is no `xz-static`
+      for riscv64 -- so an unconditional `-l:liblzma.a` is what breaks the link:
+      `/usr/bin/ld: cannot find -l:liblzma.a`. There is no static libzstd either, and
+      `libz.a` comes from `zlib-ng-compat-static` in CRB (gotcha 455's package, a different
+      subpackage).
+    - **`binutils-devel` installs `demangle.h` at the top of `/usr/include`**, where Debian's
+      `libiberty-dev` puts it under `libiberty/`, so a `#include <libiberty/demangle.h>`
+      behind a passing `-liberty` probe stops the compile. `__has_include` picks the path
+      that exists without new autoconf plumbing.
+    - **`nm -u /usr/lib64/libbfd.a | grep -E 'ZSTD|lzma'` answers "does the archive really
+      need this" in seconds**, before you spend a cycle building the dependency from source:
+      Rocky's libbfd needs neither, so that lzma entry was vestigial rather than
+      load-bearing.
+
+515. **Gotcha 46's minimal perl bites a second, later way: a package that shells out to
+     `perl` at *runtime* fails in the **test** phase, not the build (the
+     systemrdl-compiler case; see `build-systemrdl-compiler.yml`).** Gotcha 46 is about
+     `Configure` dying while a dependency builds OpenSSL from source, so its fix lands in
+     `before-all`/`before-build`. The mirror case is a package whose own Python code runs a
+     bundled `.pl` script -- systemrdl's RDL preprocessor pipes a generated miniscript
+     through `preprocessor/ppp_runner.pl`, which opens with `use Safe` -- where the wheel
+     builds, `auditwheel` repairs it, the extension imports, and then 14 tests die with
+     `Can't locate Safe.pm in @INC (you may need to install the Safe module)`. The module
+     is part of the perl core distribution, so upstream's Ubuntu CI has it and nothing in
+     their workflow hints it is a dependency at all.
+     - **The fix is a test-phase install -- `CIBW_BEFORE_TEST: dnf -y install perl-Safe`** --
+       not a `before-all` one and not a deselect: the tests assert real product behaviour
+       that works anywhere perl is complete. `perl-Safe` is a real Rocky 10 riscv64
+       appstream package (`perl-Safe-2.46-515.el10_2`) and pulls `Opcode` in with it, so
+       gotcha 46's "install the whole distribution" is unnecessary here -- one named module
+       is the entire gap. Grep the package for `.pl` files and `subprocess`/`Popen` calls
+       naming `perl` before the first CI cycle; the `use` lines at the top of that script
+       *are* the dependency list.
+     - **Nothing about it is riscv64-specific** -- every manylinux image carries the same
+       minimal perl -- so it reproduces in the x86_64 or aarch64 image in seconds.
+     - **`dnf` probes of the image need the agent proxy's CA mounted**, or dnf fails with
+       `SSL certificate problem: self-signed certificate in certificate chain` and an
+       install of a package that *does* exist returns non-zero -- a false "no such package"
+       precisely when you are running gotcha 106's `dnf provides` check to settle the name:
+       `docker run --rm --platform linux/riscv64 -v /root/.ccr/ca-bundle.crt:/etc/pki/ca-trust/source/anchors/proxy.crt:ro <image> bash -c "update-ca-trust extract; dnf -q provides '*/Safe.pm'"`.
+
+525. **The image's GCC 14 turns three old-C sloppinesses into hard errors, and `-w` cannot
+    suppress any of them -- OpenBLAS's own `linktest.c` is the one you will hit first (the vosk
+    case; see `build-vosk.yml`).** GCC 14 promotes `implicit-function-declaration`,
+    `implicit-int` and `int-conversion` from warnings to *errors* by default. Anything C that
+    predates roughly 2023 and is built from source in the manylinux image is exposed, and the
+    failure lands at the *end* of a long build, not the start. OpenBLAS is the common victim
+    because several ports build it themselves: `exports/gensymbol` generates a `linktest.c`
+    that calls every exported symbol with **no prototype in scope**, so the `shared` target
+    dies with `error: implicit declaration of function 'cblas_ztrmv'` →
+    `[Makefile:190: ../libopenblas_<core>-r<ver>.so] Error 1`. The rule already passes `-w`,
+    which is exactly why the reflex "add `-w`" does not help: `-w` inhibits *warnings*, and
+    these are errors.
+    - **Fix it through the project's own flag knob, not `CFLAGS=`.** OpenBLAS does
+      `override CFLAGS += $(COMMON_OPT) $(CCOMMON_OPT) -I$(TOPDIR)` (`Makefile.system:1529`)
+      with `COMMON_OPT` defaulted under an `ifndef` at `:1521`, so
+      `COMMON_OPT="-O2 -Wno-error=implicit-function-declaration"` lands in `CFLAGS` cleanly and
+      `-O2` restores the default you replaced. A command-line `CFLAGS=` is the trap: make lets a
+      command-line variable override every non-`override` assignment in *every* sub-makefile, so
+      it silently drops flags those sub-makefiles meant to append.
+    - **A version bump is not the fix here.** 0.3.29's `exports/Makefile` still emits the same
+      prototype-less `linktest.c` and neither release carries any implicit-declaration handling,
+      so check the actual file before reaching for a newer tag.
+    - **Nor can you skip the shared library** when Kaldi-style `configure` scripts probe for
+      `$PREFIX/lib/libopenblas.so` even though the final link uses `-l:libopenblas.a`.
+    - **Settle it in seconds instead of at the end of a multi-hour build**: `docker run --rm -i
+      --platform linux/riscv64 <image> gcc -w -fsyntax-only` on a four-line stand-in whose calls
+      sit **inside `main()`** -- at file scope you get `-Wimplicit-int` instead and prove the
+      wrong thing. To sweep a whole old-C tree ahead of time, run
+      `gcc -fsyntax-only -Werror=implicit-function-declaration -Werror=implicit-int
+      -Werror=int-conversion -Werror=incompatible-pointer-types` over its `*.c` on any arch with
+      GCC ≥13; that cleared CLAPACK's 1896 files in under a minute and correctly predicted it
+      needed no flags. (`-Wreturn-mismatch` is GCC 14-only and errors out on GCC 13.)
+
+526. **An asymmetry between two upstream invocations of the same command is load-bearing until
+    proven otherwise -- normalising it is a self-inflicted bug (the vosk/OpenBLAS case).**
+    vosk's `Dockerfile.manylinux` and `Dockerfile.dockcross-manylinux` both pass `ONLY_CBLAS=1`
+    to `make all` and then **omit it** from `make install`. Tidying the two lines to match
+    looked like an obvious cleanup and instead removed a header: `ONLY_CBLAS=1` implies
+    `NO_LAPACKE`, and `Makefile.install:75` guards the `lapacke.h` copy with
+    `ifndef NO_LAPACKE`, while Kaldi's `matrix/kaldi-blas.h` includes `lapacke.h`
+    *unconditionally* on the `HAVE_OPENBLAS` path. The build then dies ~11 minutes in, in a
+    different project, with `fatal error: lapacke.h: No such file or directory`.
+    - **This is goal 2 in miniature**: the workflow is meant to mirror upstream, so a diff
+      against upstream's script that you cannot justify in one sentence is a defect, and
+      "the two lines now look consistent" is not a justification.
+    - **The general shape**: a flag that selects *what gets built* often also selects *what
+      gets installed*. Before dropping or adding one on an `install` line, grep the project's
+      install makefile for that flag and for whatever it implies.
+
+543. **A distro `-devel` package pulled in as another package's dependency can leave a stale
+    multilib `jconfig-64.h` that shadows a from-source libjpeg-turbo's own `jconfig.h` in
+    CMake's `FindJPEG` glob (the rawpy case).** rawpy's setup.py builds LibRaw with CMake,
+    which calls `find_package(JPEG)` to detect libjpeg's `JPEG_LIB_VERSION` and gate the DNG
+    lossy codec on `>= 80`. Rocky/Fedora's libjpeg-turbo splits that macro out of `jpeglib.h`
+    into a separate `jconfig.h` (and, on a multilib-capable RPM, an arch-specific
+    `jconfig-64.h`/`jconfig-32.h` that the *generic* `jconfig.h` is generated from) -- so CMake
+    4.4's `FindJPEG.cmake` globs `jconfig*.h` in `JPEG_INCLUDE_DIR` and reads whichever one
+    sorts first. Installing `jasper-devel` (needed for the RedCine codec) pulls in the distro's
+    own `libjpeg-turbo-devel` as a hard dependency, which drops a `jconfig-64.h` reporting the
+    distro's plain `JPEG_LIB_VERSION 62`; building libjpeg-turbo from source afterwards with
+    `-DWITH_JPEG8=ON` (to get the `>= 80` ABI upstream's own wheels use) only replaces
+    `jconfig.h`, not `jconfig-64.h`. ASCII sorts `-` (0x2D) before `.` (0x2E), so
+    `jconfig-64.h` glob-matches first and the loop `break`s there -- `JPEG_VERSION` resolves to
+    the stale `62` even though `/usr/include/jconfig.h` correctly says `80`, and the feature
+    silently downgrades with no error, just a quieter wheel.
+    - **Fix**: `rm -f /usr/include/jconfig-32.h /usr/include/jconfig-64.h` right after
+      installing the custom libjpeg-turbo build, before the project's own CMake configure runs.
+    - **Diagnose it in two commands, no wheel rebuild needed**: `rpm -qf
+      /usr/include/jconfig-64.h` names the distro package that dropped it, and a throwaway
+      `find_package(JPEG)` in a scratch `CMakeLists.txt` (or reading the real build's
+      `CMakeCache.txt` for `JPEG_INCLUDE_DIR`/`JPEG_LIBRARY_RELEASE`, then re-deriving
+      `JPEG_VERSION` by hand from each `jconfig*.h` in that directory) shows which file won.
+    - **Generalizes past libjpeg**: any project whose CMake version probe globs a config
+      header rather than reading one fixed path is exposed to the same ordering trap whenever
+      a distro package and a from-source build of the same library coexist in one include
+      directory.
+
+548. **`-Wcast-align` under `-Werror` is a latent riscv64-only wall for any C++ project that
+     decodes a wire protocol out of a byte buffer: GCC emits it only on strict-alignment
+     targets, so upstream's own x86_64 and aarch64 CI never sees it (the couchbase case).**
+     couchbase-cxx-client's warning set (`cmake/CompilerWarnings.cmake`, the cppbestpractices
+     list) enables `-Wall -Wextra … -Wcast-align` plus `-Werror`, and
+     `core/io/mcbp_session.cxx` casts a `std::array<std::byte, 24>::const_pointer` to a
+     memcached header layout inside an fmt formatter. That is silent on x86_64 and on aarch64 --
+     GCC only warns where the target is strict-alignment -- and a hard error on riscv64:
+     `error: cast from 'const std::byte*' to 'const mcbp_header_layout*' increases required
+     alignment of target type [-Werror=cast-align]`. It cost a full 38-minute build leg to
+     discover, after an unrelated `#error` gate had already cost one.
+     - **Fix in the project's own idiom.** That same file already demotes four warnings asio
+       trips (`-Wno-error=null-dereference`, `-Wno-error=array-bounds`, …), so adding
+       `-Wno-error=cast-align` beside `-Werror` matches the surrounding style and keeps every
+       other warning fatal -- better than `-DWARNINGS_AS_ERRORS=OFF`, which the project also
+       offers but which would switch off diagnostics that do hold on riscv64.
+     - **`CXXFLAGS`/`CMAKE_CXX_FLAGS` cannot fix it.** Those land *before* the target's
+       `COMPILE_OPTIONS`, so the project's later `-Werror` re-arms every warning; and a project
+       whose `setup.py` rebuilds `CMAKE_COMMON_VARIABLES` from scratch (couchbase's
+       `pycbc_build_setup.py` does) gives no way to inject a `-D` either. The patch has to reach
+       the CMake file.
+     - **Predicting the next one is cheap**: `-Wcast-align` is the only alignment-sensitive
+       entry in that warning list, so demoting it closes the class -- every other warning there
+       is architecture-independent and already passes on the arches upstream builds.
+
+576. **Rocky 10's `libjpeg-turbo-devel` ships a CMake package config that is broken on its own:
+     `find_package(libjpeg-turbo)` fails until the separate `turbojpeg` package is also
+     installed (the pycolmap/OpenImageIO case).** `libjpeg-turbo-devel` (AppStream) installs
+     `/usr/lib64/cmake/libjpeg-turbo/libjpeg-turboTargets*.cmake`, which declares both
+     `libjpeg-turbo::jpeg` and `libjpeg-turbo::turbojpeg`, but `libturbojpeg.so.0.3.0` is in the
+     `turbojpeg` subpackage (CRB, enabled in the manylinux_2_39 image). CMake checks every
+     imported target's file when the config is loaded, so any `find_package(libjpeg-turbo
+     CONFIG)` stops at configure with `The imported target "libjpeg-turbo::turbojpeg"
+     references the file "/usr/lib64/libturbojpeg.so.0.3.0" but this file does not exist`,
+     even when the project only links `libjpeg-turbo::jpeg`. OpenImageIO 3.x does exactly that
+     find, and pycolmap's dependency build hit it 53 minutes in, after glog, SuiteSparse and
+     Ceres. Projects that use CMake's `FindJPEG` module or pkg-config are not affected.
+     - **Fix**: add `turbojpeg` (or `turbojpeg-devel`) next to `libjpeg-turbo-devel` in the
+       `dnf install`. It is a runtime library only, so auditwheel grafts it only if something
+       actually links it.
+     - **Reproduce it in seconds on any arch**: in `rockylinux/rockylinux:10`, `dnf install
+       libjpeg-turbo-devel cmake gcc`, then configure a three-line `CMakeLists.txt` holding
+       `find_package(libjpeg-turbo CONFIG REQUIRED)`; `dnf install --enablerepo=crb turbojpeg`
+       makes it pass.
+     - **Same build, next trap: OpenImageIO 3.1.14.0's `OpenImageIO_BUILD_MISSING_DEPS` pystring
+       build clones pystring's `master` and checks it against a fixed commit**, which broke
+       once master moved on to pystring v1.2.0 (`pystring: Tag master resolved to commit …,
+       but expected …`). OpenImageIO 3.1.14.1 changes only that pin, to the v1.2.0 tag. Any from-source
+       dependency whose build verifies a *branch* against a hard-coded commit breaks over time
+       with no change on our side: take the upstream patch release that re-pins it rather than
+       `-D<Project>_DEPENDENCY_BUILD_ALLOW_UNVERIFIED_TAGS=ON`, which builds whatever the branch
+       holds that day.
+
+586. **An upstream `before-all` that unpacks a GNU release as `.tar.lz` (`yum install epel-release
+     lzip` … `| tar x --lzip`) cannot run on riscv64: `lzip` is in none of Rocky 10's
+     baseos/appstream/crb and manylinux installs no EPEL there (gotcha 51) -- swap the
+     download for the same release's `.tar.xz`, which the image already unpacks (the chiavdf
+     case; see `build-chiavdf.yml`).** GNU publishes every release as `.tar.gz`/`.tar.xz` next
+     to the `.tar.lz`, so the fix changes only the extension and the `tar` flag; `xz` is in the
+     image's runtime packages. Checked against the repodata (gotcha 369), not guessed.
+     - **Fetch it on the host and checksum it** (`sha256sum -c`) rather than `curl | tar` in the
+       container: the same file then feeds licence staging (GMP's `COPYING.LESSERv3` +
+       `COPYINGv3` to `LICENSE.gmp` at the checkout root) and the `gpl_sources` job, and
+       `before-all` just runs `tar xJf` from `/project`.
+     - **GMP's `./configure --enable-fat` needs no edit on riscv64.** Fat binaries exist only
+       for x86/x86_64 in GMP's `configure.ac`; on any other host `fat_path` stays empty and
+       it builds the normal `mpn/riscv/64` assembly path. GMP 6.2.1 builds with the image's
+       GCC 14, is installed to `/usr/local/lib` (already in the image's `ld.so.conf`), and
+       auditwheel grafts `libgmp`/`libgmpxx` without help.
+     - **Leave upstream's other `yum install` names alone once checked**: `boost-devel` is in
+       AppStream on riscv64; only `epel-release` and `lzip` had to go.
+
+599. **`PROTOC_INCLUDE=/usr/include` (gotcha 100) can itself break a prost/tonic build: it
+     turns off protoc's implicit `-I.`, which a crate that compiles a bare file name relies
+     on (the databricks-zerobus-ingest-sdk case; see `build-databricks-zerobus-ingest-sdk.yml`).**
+     `tonic_prost_build::compile_protos("zerobus_service.proto")` derives its include dir
+     as the file's `parent()`, which is the empty path. prost-build (0.14.4 `config.rs`) drops
+     any include that fails `.exists()`, and `""` fails it, so no `-I` is passed for the
+     crate's own directory, while `$PROTOC_INCLUDE` is still appended as a `-I`. protoc only
+     falls back to `-I.` when **no** `--proto_path` was given (`command_line_interface.cc`,
+     v3.19.6), so the one `-I /usr/include` makes the input unresolvable:
+     `zerobus_service.proto: File does not reside within any path specified using --proto_path`.
+     The vendored protoc works on x86/aarch64 only because nothing sets `PROTOC_INCLUDE` there.
+     - **CRB's protoc does not need `PROTOC_INCLUDE` to find the well-known types.**
+       `AddDefaultProtoPaths` adds `<protoc dir>/../include` when it contains
+       `google/protobuf/descriptor.proto`, so `/usr/bin/protoc` with `protobuf-devel`
+       installed resolves `import "google/protobuf/duration.proto"` by itself. The zerobus
+       build proved it: unset, the proto imported `duration.proto` and compiled first time.
+     - **Choose by the crate's `build.rs`, not by habit.** If it passes explicit, existing
+       include dirs (nemo-relay's `&["proto"]`), `PROTOC_INCLUDE` is harmless. If it passes a
+       bare file name, or `compile_protos(path)` with a parentless path, leave it unset.
+       Setting it cost one ~35-minute riscv64 cycle, spent compiling ~300 crates before
+       `build.rs` ran.
+
+606. **Pre-generating protobuf output on the host before cibuildwheel copies the checkout
+     in (gotcha 201) does not exempt the per-interpreter container from needing `protoc`
+     too -- a `setup.py` command can gate on the tool's mere *presence* in `PATH` even
+     when that command never calls it (the valkey-glide-sync case; see
+     `build-valkey-glide-sync.yml`).** glide-sync's custom `build_py.run()` does
+     `shutil.which("protoc")` and raises `RuntimeError: Failed to find protoc in PATH` if
+     it is missing, unconditionally, before ever checking whether the `.proto`-derived
+     `.py` files already exist -- its own vendoring step (`vendor_dependencies()`) is a
+     plain `shutil.copytree`, not a `protoc` invocation. Generating those files on the
+     host with `docker run` against the same manylinux image (so gotcha 100's
+     `protobuf-compiler` package is proven installable) is not enough: cibuildwheel still
+     builds the wheel in a *fresh* per-interpreter container that never ran that step, and
+     `python -m build` fails in `build_py` before reaching any vendoring logic. The fix is
+     gotcha 100's `yum install -y protobuf-compiler` again, but in `CIBW_BEFORE_ALL_LINUX`
+     this time (not `CIBW_BEFORE_BUILD`, which upstream's own pyproject.toml leaves empty
+     on unsupported architectures) -- `protobuf-devel` is not needed since nothing in the
+     container actually invokes `protoc`, only checks for it. Read a build script's tool
+     gate all the way through before assuming a host-side pre-step satisfies it: a
+     presence check and an actual invocation impose different requirements on where the
+     tool has to live.
+
+608. **`cmake` built from source as a `pip`-installed build dependency needs `openssl-devel`
+     installed in the container -- its own bootstrap looks for OpenSSL for `Utilities/cmcurl`,
+     and the manylinux_riscv64 image ships no development headers by default (the executorch
+     case; see `build-executorch.yml`).** cibuildwheel resolves `cmake` (a declared
+     `build-system.requires`) from our registry first; when no riscv64 wheel is published for
+     the pinned version, pip falls back to building CMake's own sdist from source, and that
+     build runs CMake's bundled bootstrap CMakeLists, not the project's. That bootstrap's
+     `find_package(OpenSSL)` fails with `Could not find OpenSSL … (missing:
+     OPENSSL_CRYPTO_LIBRARY OPENSSL_INCLUDE_DIR)` at `Utilities/cmcurl/CMakeLists.txt` -- the
+     image carries `openssl-libs` (the runtime `.so`) but not the `-devel` headers/archive
+     `find_package` needs, the same shape as gotcha 46/51 for other host tooling gaps.
+     - **The fix is a one-line `CIBW_BEFORE_ALL_LINUX: dnf -y install openssl-devel`**,
+       independent of anything the *project's own* `pyproject.toml` sets for its own build --
+       this OpenSSL gap belongs to `cmake`'s bootstrap, not to executorch's extensions.
+     - **This is different from gotcha 207**: 207 is a CMake new enough to enforce a policy
+       floor a vendored dependency's `cmake_minimum_required` violates; this is CMake itself
+       having no riscv64 wheel to install and needing to compile, which pulls in its own
+       unrelated native dependency (OpenSSL) that the image doesn't have by default. Check
+       which failure you have from the CMake **configure** log path before reaching for either
+       fix: `Utilities/cmcurl/CMakeLists.txt` (this gotcha) vs a vendored third-party
+       `CMakeLists.txt` three levels down (207).
+
+617. **An upstream Dockerfile that hand-builds a static dependency for a `.so` can omit
+    `-fPIC` and still link on x86_64/aarch64 only because Debian/Ubuntu's gcc defaults to PIE;
+    the manylinux image's gcc does not, so the same recipe fails at the final `.so` link on
+    riscv64 (the runai-model-streamer-s3 case).** Run:ai's `.devcontainer/Dockerfile` builds
+    OpenSSL, curl, zlib and the AWS SDK as `.a` archives that `libstreamers3.so` links
+    statically. curl gets `CFLAGS="-fPIC"`, the AWS SDK `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`
+    and OpenSSL compiles PIC itself, but zlib's `./configure --static --shared` passes nothing,
+    so `libz.a`'s objects come out in whatever the compiler's default code model is. On
+    Ubuntu (default-PIE gcc, cross compilers included) that is PC-relative and links into a
+    shared object. Transcribed as-is into the manylinux_riscv64 image, the link of the final
+    `.so` fails with `relocation R_RISCV_HI20 against '_length_code' can not be used when
+    making a shared object; recompile with -fPIC` for every `libz.a` member, and `ld` then
+    segfaults. That is 45 minutes of dependency build plus the Bazel compile before the
+    error appears.
+    - **Audit every `.a` in the recipe before the first run, not just the ones gotcha 294's
+      CMake allowlist would miss.** Any static dependency built with plain `./configure`/`make`
+      and no `-fPIC` has the problem. The fix is the same one-liner upstream already uses for
+      its sibling libraries: `CFLAGS="-fPIC" ./configure ...`.
+    - **Key a cached dependency prefix on the recipe, not just the versions.** If the cache
+      key is only `<dep>-<version>` pairs, the broken non-PIC `libz.a` is restored on the next
+      run and the fix never reaches the link. Keying on
+      `hashFiles('<checkout>/.github/workflows/build-<pkg>.yml')` rebuilds the prefix whenever
+      the recipe changes.
+
+634. **Zig 0.16's `translate-c` predefines no RISC-V float-ABI macros, so a Zig extension
+    that translates `Python.h` builds on musllinux_riscv64 and fails on manylinux_riscv64
+    (the zttp case).** Since 0.16, Zig's `translate-c`/`addTranslateC`/`@cImport` runs on
+    Aro, not clang, and Aro's RISC-V predefines stop at `__riscv`/`__riscv_xlen` -- no
+    `__riscv_flen`, no `__riscv_float_abi_double`. glibc's riscv `bits/setjmp.h` (reached
+    via `pthread.h` from `Python.h`) requires one of the `__riscv_float_abi_*` macros, so the
+    translation dies with `/usr/include/bits/setjmp.h:35:3: error: unsupported FLEN`; musl's
+    headers don't test it, so the musllinux legs of the same matrix go green. Zig's own
+    bundled glibc headers carry the same check, so it reproduces on x86 in seconds with
+    `zig translate-c -lc -target riscv64-linux-gnu.2.39 -I <python include> <header>` -- no
+    riscv runner needed. Fixed on Zig master (`ziglang/zig` b46a7f3a25a6, Sept 2026,
+    unreleased at the time). Workaround while the project pins Zig 0.16: patch `build.zig`
+    to `defineCMacro("__riscv_flen", "64")` and `defineCMacro("__riscv_float_abi_double",
+    "1")` on the translate step when `target.result.cpu.arch.isRISCV()` and the target has
+    the `d` feature (what clang defines for lp64d). For a hatch-vcs project, the patched
+    tree then needs gotcha 31's `SETUPTOOLS_SCM_PRETEND_VERSION` (plain, not `_FOR_<PKG>`,
+    is the safe spelling under hatch-vcs) and `fetch-depth: 0` can go. The `ziglang` PyPI
+    wheel itself ships `manylinux_2_31_riscv64.musllinux_1_1_riscv64`, so a hatch-ziglang
+    build needs no toolchain setup on either image.
+
+690. **A `CIBW_BEFORE_ALL_LINUX` that mirrors an upstream recipe's `cp -a /usr/include/<pkg>-*/*`
+    can glob-copy headers from a system `-devel` package the upstream's own (different) image
+    bakes in by default, but manylinux_riscv64 does not (the netgen-mesher case).** Netgen's
+    GitLab recipe stages MPI headers into neutral `/opt/openmpi/include` and `/opt/mpich/include`
+    directories (so CMake can find either variant without an arch-suffixed path) by copying out
+    of `/usr/include/openmpi-*/` and `/usr/include/mpich-*/` - on upstream's own manylinux image
+    those directories exist because `openmpi-devel`/`mpich-devel` are preinstalled. The generic
+    `quay.io/pypa/manylinux_2_39_riscv64` image (Rocky 10) has neither package, so under
+    `set -eux` the unglobbed, literal path reaches `cp` as `/usr/include/openmpi-*/*` and fails
+    with `cp: cannot stat '/usr/include/openmpi-*/*': No such file or directory` - a `dnf`-shaped
+    problem disguised as a `cp` error, 3+ minutes into `before_all` after the image pull and the
+    unrelated `tcl-devel`/`tk-devel`/`ninja-build` install already succeeded. Fix: `dnf install`
+    the same `openmpi-devel mpich-devel` the recipe assumes, same line as the other `-devel`
+    packages (`build-mpi4py.yml` and `build-lalsuite.yml` already install one or the other on
+    this image, confirming both are available risc64 CRB/AppStream packages). More generally:
+    every bare `cp -a <glob>` in a transcribed `before-all` is a silent assumption that
+    something upstream's own container provides for free - check the glob resolves (`dnf -q
+    list <pkg>` per gotcha 51, or just inspect `/usr/include` after the install line) before
+    trusting a mirrored recipe on this image.
+
+712. **`ld.lld` linking GCC-compiled C++ with `--gc-sections` (on by default for LLVM's own
+    Release-build CMake settings) can fail on riscv64 with `relocation refers to a symbol in
+    a discarded section: .LEHBnn`/`.LFBnnnn`/`.LEHEnn` on exception-table-heavy translation
+    units - a riscv64-specific interaction between GCC's `.eh_frame` relocation ordering and
+    linker relaxation that confuses lld's section garbage collection (the iree-base-compiler
+    case, building LLVM/MLIR/clang/lld from source with `IREE_ENABLE_LLD=ON`; also tracked as
+    binutils bug 28709, "`[RISC-V] a unused section can't be removed with -gc-sections`", and
+    discussed on the matching lld-side LLVM bug thread). It is not specific to lld-as-chosen-
+    linker, IREE, or even this repo's image - any sufficiently large GCC-compiled C++ codebase
+    with exceptions, linked with lld and `--gc-sections`, on riscv64, can hit it; it also is
+    not fixed by switching `CC`/`CXX` to clang, since upstream's own CI uses the same
+    GCC+lld pairing successfully on other architectures (aarch64) - this is riscv64-relaxation-
+    specific, not a GCC/lld-compiler-mismatch problem. Workaround: pass `-mno-relax` via
+    `CFLAGS`/`CXXFLAGS` (disables the RISC-V linker relaxation that interacts badly with
+    `--gc-sections`'s EH-section stripping) rather than disabling `--gc-sections` or lld
+    wholesale - cheaper to reason about on a build this large, since changing linker flags
+    alone (vs. compiler identity) only risks invalidating cached *link* commands, not every
+    compiled object, if the build system is ever made resumable. Confirm from the log: the
+    failure lands at the very final link of a large binary/shared-object target, specifically
+    naming compiler-generated EH labels (`.LEHB*`/`.LFB*`/`.LEHE*`/local numeric `.L*`
+    symbols) as the discarded-section references, not an undefined external symbol.

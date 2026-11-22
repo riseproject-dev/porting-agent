@@ -7,6 +7,7 @@
     "schema_version",
     "policy_version",
     "read_only",
+    "destination_writes",
     "control_repo",
     "fork_org",
     "dev_ref",
@@ -29,6 +30,9 @@
       "type": "string"
     },
     "read_only": {
+      "type": "boolean"
+    },
+    "destination_writes": {
       "type": "boolean"
     },
     "control_repo": {

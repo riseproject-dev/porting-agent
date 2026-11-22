@@ -1,0 +1,814 @@
+# Gotchas -- Licensing & GPL sources
+
+One thematic slice of the porting gotchas. Each entry keeps its permanent number (cited elsewhere as "gotcha N"); numbers are stable IDs, not sequential, and a few (33, 55, 56, 57) are reused across themes -- see [gotchas-index.md](../gotchas-index.md).
+
+To pull up one entry: `grep -n '^N\. ' references/gotchas/licensing-and-gpl.md`.
+
+## In this file
+
+- **32** -- Vendored C libraries are the usual licensing gap -- and upstream often has the fix
+- **44** -- Naming a vendored dependency's licence `LICENSE.<dep>` at the project root
+- **53** -- A dependency that is *downloaded and compiled at build time* is invisible from
+- **57** -- An explicit `license_files=[...]` turns off setuptools' default glob, so gotcha 44's
+- **66** -- A wheel that vendors the image's `libgomp` is the standard GPL-sources trigger --
+- **86** -- A monorepo's Python package builds from a subdirectory, so the project's *own*
+- **105** -- A `[project] license-files` list has no default glob behind it, so gotcha 44's
+- **123** -- gotcha 44 is not setuptools-specific -- PEP 639 gave every backend the same default
+- **130** -- A REUSE-compliant vendored dependency ships a whole `LICENSES/` directory -- declaring
+- **137** -- Ship the licence of everything auditwheel vendors without hand-listing it.
+- **140** -- The `gpl_sources` job must run on the riscv64 runner, and RHEL 10 dropped
+- **153** -- A `dist-info/sboms/*.cyclonedx.json` is not a licence notice -- and the notice
+- **146** -- maturin auto-globs licence files only next to `pyproject.toml`, so a monorepo
+- **161** -- A vendored prebuilt stack can be GPL while every library in it reports LGPL -- read
+- **162** -- A sibling build repo pins every source by URL and SHA-256, which makes the GPL/LGPL
+- **165** -- Three ways gotcha 137's licence sweep silently under-collects, and one image fact that
+- **255** -- A project's own build hook that hand-parses a *build-time* dependency's dist-info
+- **301** -- Gotcha 146's licence auto-glob only fires for a `pyproject.toml` with a `[project]`
+- **309** -- A wrapper's own permissive licence (LGPL, MIT, ...) does not launder a vendored
+- **320** -- gotcha 123's PEP 639 default license glob is not implemented by meson-python --
+- **349** -- The legacy `[project.license]` table form (`{file = "..."}`) not only suppresses
+- **409** -- The `gpl_sources` trigger can come from the *musllinux* leg alone: auditwheel's
+  musllinux policy does not allowlist the GCC runtime.
+- **491** -- Collecting the licences of auditwheel-grafted system libraries from RPMs has
+  three failure modes
+- **533** -- A GitLab `-/archive/` tarball is not byte-stable, so gotcha 162's pinned-SHA-256
+  source collection flakes at random -- retry, don't relax the check.
+- **538** -- scikit-build-core's `wheel.license-files` is overridable from the environment, so
+  an explicit list that leaves the vendored notices out needs no patch.
+- **578** -- setuptools resolves `license_files` against the *working directory* at
+  `bdist_wheel` time, so a `setup.py` whose cmdclass `os.chdir()`s breaks a relative entry.
+- **590** -- gotcha 538's `SKBUILD_WHEEL_LICENSE_FILES` override is refused when the project
+  declares PEP 639 `project.license-files`; widen that list with a patch instead.
+- **609** -- `check_patch.py`'s `Upstream-Status: Inappropriate [...]` regex only reads the
+  first physical line of the tag, so a reason wrapped across multiple commit-message lines
+  fails the check even though it looks bracketed.
+- **637** -- a nanobind extension's musllinux wheel vendors no GCC runtime, so gotcha 409's
+  `gpl_sources` job is not needed; and gotcha 538's override takes subdirectory paths as-is.
+- **694** -- a cgo build on the bare self-hosted riscv64 runner, with gcc from `apt` rather than
+  the manylinux image, needs no `gpl_sources` job at all.
+
+---
+
+32. **Vendored C libraries are the usual licensing gap -- and upstream often has the fix
+    already.** The Licensing section's "does the wheel carry the licences of what it links"
+    check almost always fails the same way: the wheel ships the *wrapper's* LICENSE while a
+    bundled C tree (`lz4libs/`, a vendored zlib/zstd/xxHash) is compiled straight into the
+    extension under its own BSD/MIT terms, whose binary-redistribution clause requires the
+    copyright notice to travel with the binary. Two-command check on any host:
+    ```bash
+    unzip -l <wheel> | grep -i licen     # what actually ships
+    ls <vendored-dir>                    # what got linked in
+    ```
+    setuptools only globs `LICEN[CS]E*` etc. at the **project root**, so a licence file
+    inside the vendored subdir is *not* picked up automatically -- it needs an explicit
+    `license_files=[...]` listing every file, the wrapper's own included, or you drop the
+    original while adding the new ones.
+    - **Search upstream before writing anything**: `gh search issues --repo <upstream>
+      license --include-prs`. python-lz4 had both an open issue *and* an open PR fixing
+      exactly this; carrying that PR turned a hand-rolled patch into
+      `Upstream-Status: Submitted [url]` -- the strongest tag available, and it drops out
+      cleanly when upstream merges. Refresh it onto the tag you build (theirs was anchored
+      on a `license=` line added after the release) and note the refresh in the commit
+      message.
+    - **Reproduce the copyright notice the vendored source actually carries**, not the one
+      in the dependency's current `LICENSE` -- the bundled copy is usually several releases
+      old and the year range differs.
+
+44. **Naming a vendored dependency's licence `LICENSE.<dep>` at the project root
+    needs no packaging change at all (refines gotcha 32).** Gotcha 32's fix is an
+    explicit `license_files=[...]`, which is only necessary when the file lives inside
+    the vendored subdirectory. setuptools' *default* `license_files` glob is
+    `LICEN[CS]E*`/`COPYING*`/`NOTICE*`/`AUTHORS*` **at the root**, so a file added there
+    as `LICENSE.libyaml` is picked up automatically and lands in
+    `dist-info/licenses/` beside the project's own -- a one-file patch with no
+    `setup.cfg`/`setup.py` edit, and no way to accidentally drop the original by
+    replacing the default glob with a hand-written list.
+    - **Make the patch self-verifying**, since a licence patch that silently stops
+      applying still produces a green build: assert it from the test command via the
+      installed metadata rather than eyeballing the wheel --
+      `[p for p in importlib.metadata.files('<dist>') if '.dist-info/licenses/' in str(p)]`
+      compared against the expected set. Check it fails on an unpatched wheel before
+      trusting it.
+
+53. **A dependency that is *downloaded and compiled at build time* is invisible from
+    the checkout -- but it still has to have its licence in the wheel (extends gotchas
+    32/44).** Gotcha 32's two-command check (`ls <vendored-dir>`) only finds statically
+    linked code that upstream committed into the tree. The commoner packaging shape for
+    a C client library is a `dev/build.py`-style script, run from
+    `[tool.cibuildwheel] before-all`, that curls an upstream release tarball, configures
+    it `--enable-static --disable-shared`, and links the resulting `.a` into the
+    extension. Nothing about that is visible in `git ls-files`, so the licence gap reads
+    as "no vendored deps" if you only look at the checkout. pymssql builds FreeTDS
+    (LGPL v2 `libsybdb`) this way -- the wheel is 4 MB of FreeTDS and ships only
+    pymssql's own `LICENSE`.
+    - **Find it in the build config, not the tree**: a `[tool.freetds]
+      version_for_pypi_wheels = "1.4.27"`-style pin plus a `before-all` that runs a
+      download script is the tell; the pinned version tells you exactly which release
+      tarball to pull the licence text out of.
+    - **Then it is gotcha 44's one-file patch** -- drop the dependency's own
+      `COPYING*`/`LICENSE*` at the *project* root as `LICENSE.<dep>` so setuptools'
+      default `LICEN[CS]E*` glob lands it in `dist-info/licenses/` with no packaging
+      change, and assert it from `CIBW_TEST_COMMAND` via
+      `importlib.metadata.files('<dist>')` so the patch cannot silently stop applying.
+    - **`git apply` then triggers gotcha 31** -- the patched tree is dirty, so a
+      `setuptools_scm` project renames the wheel `X.Y.(Z+1).dev0+g…`. Add
+      `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<PKG>` in the same change and drop any
+      `fetch-depth: 0` that existed only to make the tag reachable.
+
+57. **An explicit `license_files=[...]` turns off setuptools' default glob, so gotcha 44's
+    drop-a-file-at-the-root trick silently does nothing (the gevent case).** Gotcha 44 leans
+    on the default `LICEN[CS]E*`/`COPYING*`/`NOTICE*`/`AUTHORS*` glob at the project root. A
+    project that names its licence explicitly -- gevent's `setup(..., license_files=['LICENSE'])`
+    -- has *replaced* that glob, so a `LICENSE.<dep>` dropped beside it is not picked up: the
+    build stays green and the wheel still ships one licence. The patch has to extend the list.
+    - **Point at the vendored file in place; don't copy its text into the patch.** setuptools
+      (PEP 639, >= 77) preserves each entry's path relative to the project root, so
+      `'deps/libev/LICENSE'` lands as `dist-info/licenses/deps/libev/LICENSE`. That keeps the
+      patch to a few lines and lets it track the dep when upstream re-vendors it, where a
+      root-level copy freezes the text at whatever version you happened to read.
+    - **A vendored tree may carry no licence file at all**, only per-file headers -- gevent's
+      `deps/c-ares` is a partial copy with the MIT notice solely in each `.c`. Restore the file
+      the dependency itself ships, at the path it ships it at (`deps/c-ares/LICENSE.md` from
+      c-ares 1.34.5, the version in `include/ares_version.h`), rather than inventing a name.
+    - **`NOTICE` is a licence file too once the default glob is off.** gevent's carries the PSF
+      licence covering the stdlib test files copied into `gevent/tests` and a third-party
+      copyright for `gevent/libuv/_corecffi_*.c`, both of which ship in the wheel; the explicit
+      list had dropped it along with everything else.
+    - Verify the way gotcha 44 does -- assert the expected set from
+      `importlib.metadata.files('<dist>')` in the test command, and confirm it fails on an
+      unpatched wheel first.
+
+66. **A wheel that vendors the image's `libgomp` is the standard GPL-sources trigger --
+    and there is no live example left in the tree to copy (the scikit-learn case).**
+    The Licensing section says to add a `gpl_sources` job when the build links GPL
+    components that come from *our* build environment, and names `build-numpy.yml` as
+    the complete example. It no longer is: #178 removed that job (numpy's GPL concern
+    was openblas, which upstream ships prebuilt), leaving only a dangling comment on
+    `MANYLINUX_RISCV64_IMAGE`, and **zero** of the 43 build workflows on `main` use
+    `actions/collect-gpl-sources` today. So the shape has to be reconstructed from
+    `git show 1c45d16 -- .github/workflows/build-numpy.yml`. Reconstruct it rather than
+    skipping -- an OpenMP-using project is the commonest case and the check is two
+    commands on an artifact you already have:
+    ```bash
+    gh run download <run-id> -n <pkg>-<ver>-<tag>-manylinux_riscv64 -D whl
+    unzip -l whl/*.whl | grep -E '\.libs/|\.dylibs/'   # auditwheel's vendored-lib dir
+    ```
+    `<pkg>.libs/libgomp-<hash>.so.1.0.0` means the image's GCC OpenMP runtime is being
+    redistributed by us. GPLv3 **with** the GCC Runtime Library Exception still carries
+    the source-distribution obligation for the runtime library itself -- the exception
+    only permits the *combination* with non-GPL modules -- so the sources must be
+    published, not just the notice shipped.
+    - **The job runs natively, on `ubuntu-24.04-riscv`, not `ubuntu-latest`.**
+      `collect-gpl-sources` does `docker run` on the riscv64 manylinux image, which on
+      an x86 runner needs binfmt that isn't registered there.
+    - **Its artifact must not match the publish job's `artifact-pattern`.** Name it
+      `<pkg>-<ver>-gpl-sources` and keep the pattern anchored on `*-manylinux_riscv64`,
+      then pass it separately via `gpl-sources-artifact`/`-release-tag`/`-description`;
+      `_publish-wheel.yml` attaches it to a GitHub Release and renders the URL as the
+      version's docs `comment:`.
+    - **Upstream usually tells you first.** A project shipping a
+      `build_tools/wheels/LICENSE_*.txt` (or any "this binary distribution also bundles"
+      notice) that names `libgomp*`/`libgfortran*` has already done the audit for you --
+      and a `check_license.py`-style test asserting the notice made it into
+      `dist-info/licenses/` is worth inheriting unchanged, since it fails loudly if the
+      before-build step that appends it ever stops running.
+
+86. **A monorepo's Python package builds from a subdirectory, so the project's *own*
+    LICENSE never reaches the wheel (the thrift case; see `build-thrift.yml`).** Gotchas
+    32/44/57 are all about a *vendored dependency's* licence going missing. The plainer
+    failure is upstream shipping none of its own: when `setup.py` lives in a subdirectory of
+    a multi-language repo (`lib/py`, `python/`, `bindings/python/`), setuptools' default
+    `LICEN[CS]E*`/`COPYING*`/`NOTICE*`/`AUTHORS*` glob runs against **that** directory, not
+    the repo root where the licence actually sits -- so every wheel upstream publishes carries
+    only a `License:` metadata string. apache/thrift's `manylinux2014_x86_64` wheel has no
+    `LICENSE` and no `NOTICE` entry at all, while Apache-2.0 sections 4(a) and 4(d) require
+    both to travel with a binary redistribution. RISE distributes these wheels, so the gap is
+    ours to close, and it is worth sending upstream since it affects every architecture.
+    - **The fix needs no patch file, because the files are already in the checkout.** One
+      workflow step -- `cp LICENSE NOTICE <subdir>/` before cibuildwheel -- puts them where the
+      default glob looks, and `dist-info/licenses/` is populated with no `setup.py` or
+      `pyproject.toml` edit. Cheaper and more upstreamable than a `patches/<pkg>/<ver>/` diff
+      that would have to embed the whole licence text, and it cannot trip gotcha 57 by
+      replacing the default glob with a hand-written list.
+    - **Diagnose on the *published* wheel, not the one you build**:
+      `unzip -l <pypi-wheel> | grep -iE 'licen|notice'` returning nothing is the whole
+      finding, and it is what proves this is upstream's gap rather than something your build
+      dropped. One `curl` of the PyPI file list settles it before any checkout.
+    - **`auditwheel repair` adds a `dist-info/licenses/` *directory* entry that a plain
+      `bdist_wheel` does not**, so gotcha 44's self-verifying set-equality check built from
+      `zipfile.namelist()` picks up an extra `""` after `rsplit("/", 1)` and fails -- and only
+      on the riscv64 job, because the wheel from a local `python -m build` has no such entry.
+      Subtract `{""}`, and validate the assertion against a *repaired* wheel rather than the
+      one your host produced.
+
+105. **A `[project] license-files` list has no default glob behind it, so gotcha 44's
+    drop-a-file-at-the-root trick never applies to a PEP 621 backend.** Gotcha 57 frames the
+    explicit-list case as setuptools' default `LICEN[CS]E*` glob being *turned off* by
+    `license_files=[...]`. With scikit-build-core, hatchling or flit the list lives in
+    `[project]` (PEP 639) and there was never a glob to turn off -- lightgbm's
+    `license-files = ["LICENSE"]` is the entire rule -- so extending the list is the only
+    possible patch, and a `LICENSE.<dep>` added at the root would be silently ignored.
+    - Two greps settle which world you are in before writing anything:
+      `grep -n build-backend pyproject.toml` and `grep -n 'license.files' pyproject.toml setup.py setup.cfg`.
+    - The list entries keep their relative paths, so point at the vendored files in place
+      (`external_libs/nanoarrow/NOTICE.txt` lands as
+      `dist-info/licenses/external_libs/nanoarrow/NOTICE.txt`) -- gotcha 57's advice, and here
+      it also means the patch is confined to `pyproject.toml`.
+    - **A build script that assembles the sdist is where you find what got vendored** (a third
+      route past gotcha 32's `ls <vendored-dir>` and gotcha 53's `before-all` download).
+      lightgbm's `build-python.sh` copies a curated subset of `external_libs/` -- including
+      each dependency's `LICENSE*` -- into the staging tree, so the licences are already in
+      the sdist and only the metadata list is missing them.
+
+123. **gotcha 44 is not setuptools-specific -- PEP 639 gave every backend the same default
+    licence glob, and a patched-in *untracked* file still reaches the sdist (the
+    levenshtein case; see `build-levenshtein.yml`).** Gotcha 44 credits setuptools'
+    default `license_files` glob for making a root `LICENSE.<dep>` land in
+    `dist-info/licenses/` with no packaging change. That reasoning is backend-agnostic:
+    PEP 639 makes `["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]` the default whenever
+    `pyproject.toml` carries no `license-files` key, and scikit-build-core (checked in
+    1.0.3) implements it -- so a Levenshtein-style project whose wheel ships only its own
+    GPL `LICENSE` while `CMakeLists.txt` `add_subdirectory`s a bundled MIT header-only
+    library (`extern/rapidfuzz-cpp`) is fixed by the same one-file patch, with no
+    `[tool.scikit-build]` edit.
+    - **The `git apply` step leaves the file untracked, and that is fine.** The obvious
+      worry -- that a backend building an sdist inside a git checkout uses `git ls-files`
+      and would silently drop it -- does not hold: scikit-build-core walks the tree and
+      filters through `.gitignore`, so an untracked, unignored file is packaged. Settle it
+      in one command rather than by reading backend source: `python -m build --sdist` after
+      the patch, then `tar tzf dist/*.tar.gz | grep -i licen`.
+    - **Check the version mechanism before worrying about gotcha 31.** Patching dirties the
+      tree, which renames the wheel only under `setuptools_scm`. A project reading its
+      version out of source -- `[tool.scikit-build.metadata.version]` with the
+      `scikit_build_core.metadata.regex` provider, here over `src/Levenshtein/__init__.py`
+      -- is immune, so no `PRETEND_VERSION` is needed.
+    - Related, and the reason this port was three steps instead of ten: **an upstream whose
+      own wheel jobs already pass their sdist tarball to cibuildwheel as `package-dir` hands
+      you the whole recipe.** Levenshtein's sdist job cythonises `.pyx` → `.cxx` and applies
+      its own `tools/sdist.patch` (which drops Cython from `build-system.requires`), so the
+      riscv64 container compiles generated C++ with no Cython at all, and `test-requires` /
+      `test-command` are inherited from the sdist's `[tool.cibuildwheel]` table. Mirroring
+      that split is both closer to upstream and cheaper than a build-from-checkout rewrite.
+
+130. **A REUSE-compliant vendored dependency ships a whole `LICENSES/` directory -- declaring
+    it wholesale puts GPL text in your wheel (the pycares/c-ares case).** Gotchas 44/57/105
+    settle *how* to get a bundled dependency's licence into `dist-info/licenses/`; this is
+    about *which* files to name. A dependency following the REUSE spec keeps one text per
+    SPDX identifier its repository needs, covering build tooling as much as code, so
+    c-ares' `LICENSES/` holds `GPL-3.0-or-later.txt` and `LGPL-2.1-or-later.txt` for
+    imported autoconf m4 macros that no wheel ever contains. A convenient
+    `license-files = [..., "deps/c-ares/LICENSES/*.txt"]` therefore publishes a wheel whose
+    metadata advertises GPL -- a licence claim every downstream scanner will act on, and an
+    immediate objection on the upstream PR.
+    - **Count SPDX tags over exactly the sources that get compiled**, which is one command
+      and also tells you nothing was missed:
+      `grep -rhno "SPDX-License-Identifier:.*" src/lib include | sed 's/.*SPDX/SPDX/' | sort | uniq -c`
+      → 140 MIT + 1 BSD-3-Clause for c-ares 1.34.6. Declare those, plus any licence covering
+      a platform-gated source the *other* platforms' wheels compile (c-ares'
+      `src/lib/thirdparty/apple/dnsinfo.h` is APSL-2.0 and only builds on macOS) so the patch
+      is correct for upstream as a whole, not just for riscv64.
+    - **The dependency's own root `LICENSE`/`AUTHORS` still belong in the list** -- c-ares'
+      `LICENSE.md` names `AUTHORS` for the contributor copyright holders, so shipping one
+      without the other leaves the notice incomplete.
+    - Say in the commit message which texts you left out and why. That sentence is what turns
+      a list that looks arbitrary into a reviewable decision.
+
+137. **Ship the licence of everything auditwheel vendors without hand-listing it.**
+    Gotchas 32/44/53 each add *one* known dependency's licence. When the extension links a
+    library as large as GDAL, auditwheel vendors its entire shared-library closure -- 42
+    `.so`s here, most of them pulled in transitively by libcurl (krb5, openldap, libssh,
+    nghttp2, libpsl, brotli, OpenSSL) -- and hand-listing them is both tedious and silently
+    wrong the moment a dependency's own deps change. Compute it instead, in the build image,
+    and have `CIBW_BEFORE_BUILD` stage the result at the project root where setuptools'
+    default `LICEN[CS]E*` glob picks it up (gotcha 44):
+    ```bash
+    mapfile -t libs < <(ldd /usr/local/lib/lib<dep>.so | tr ' ' '\n' | grep '^/' | sort -u)
+    mapfile -t pkgs < <(rpm -qf --qf '%{NAME}\n' "${libs[@]}" 2>/dev/null \
+        | grep -E '^[A-Za-z0-9._+-]+$' | sort -u | grep -vE '^(glibc|libgcc|libstdc\+\+|gcc)$')
+    ```
+    `ldd` is transitive, so one call covers the whole closure, and libraries you built from
+    source come back "not owned by any package" -- copy their `COPYING`/`LICENSE` at build
+    time instead. Three traps, all of which cost a cycle each:
+    - **`rpm -qf` writes `file X is not owned by any package` to *stdout*, not stderr**, so
+      `2>/dev/null` does not filter it and the words end up in your package list. Keep only
+      lines that are a bare package name (`grep -E '^[A-Za-z0-9._+-]+$'`).
+    - **A subpackage may carry no licence of its own** -- `pcre2` leaves it to `pcre2-syntax`.
+      Fall back to the siblings sharing its `%{SOURCERPM}`
+      (`rpm -qa --qf '%{SOURCERPM} %{NAME}\n' | awk -v s="$srpm" '$1==s{print $2}'`).
+    - **Some packages genuinely ship none** (`sqlite-libs`, public domain), and a few mark
+      the licence `%doc`, which the image's `tsflags=nodocs` drops -- `dnf -y reinstall
+      --setopt=tsflags= <pkg>` restores those. For the rest, record `%{LICENSE}` from the
+      rpm metadata rather than failing the build or inventing a licence text.
+    Then assert from `CIBW_TEST_COMMAND` that the from-source ones are present via
+    `importlib.metadata.files()` (gotcha 44), so the whole mechanism cannot silently stop.
+
+140. **The `gpl_sources` job must run on the riscv64 runner, and RHEL 10 dropped
+    libunwind (the memray case).** Two separate facts, both cheap to get wrong:
+    - **`collect-gpl-sources` does a `docker run` of the riscv64 manylinux image**, so the
+      job that uses it has to sit on `ubuntu-24.04-riscv` like `build-mysql-connector-python.yml`
+      does. On a GitHub-hosted `ubuntu-latest` there is no binfmt for riscv64 and the step
+      dies instantly with `exec /usr/local/bin/manylinux-entrypoint: exec format error`
+      (preceded by docker's "requested image's platform ... does not match" warning) -- a
+      confusing failure for a job that only downloads source RPMs. The action's own `dnf`
+      work is trivial, so the riscv runner costs nothing; it is the *emulation* that is
+      missing, not permissions.
+    - **`libunwind` is not in Rocky 10 at all** -- RHEL 10 moved it to EPEL, and manylinux
+      sets `EPEL=` empty for riscv64 (gotcha 51), so `yum install -y libunwind-devel`
+      inherited from an upstream `before-all` fails outright. Build it from source instead:
+      1.8.3 has had riscv64 support since 1.7.0 (`src/riscv/`), configures and installs a
+      working `libunwind.pc` with a plain
+      `./configure --prefix=/usr --libdir=/usr/lib64 --disable-documentation --disable-tests
+      --disable-minidebuginfo --disable-zlibdebuginfo`, and `unw_backtrace()` returns real
+      frames. Note `--libdir=/usr/lib64` is load-bearing: autotools defaults to `/usr/lib`,
+      which is not on the riscv64 linker/pkg-config path.
+    - **The rest of an AlmaLinux-8-era `before-all` is usually dead weight on riscv64.**
+      Upstreams pinned to `manylinux_2_28` build curl, zstd and elfutils from source purely
+      because AlmaLinux 8 is old; Rocky 10 packages curl 8, zstd 1.5.5 and **elfutils 0.194**
+      (with `elfutils-debuginfod-client-devel` shipping a real `libdebuginfod.pc`). Replacing
+      three source builds with one `dnf install` is closer to what upstream *means*, not
+      further from it -- say so in a comment so a reviewer reads it as a base-image
+      difference rather than a customisation.
+    - **`rockylinux/rockylinux:10` under `--platform linux/riscv64` is the cheap oracle for
+      all of this** (gotcha 51's trick, extended): it is a 60MB pull against the multi-GB
+      manylinux image, shares the same repos, and is big enough to run a real
+      `cmake -S . -B build` of the project once you `pip3 install cython ninja` -- memray's
+      full configure, including all three `pkg_check_modules`, finished in ~12s there and
+      would otherwise have cost a queued multi-hour riscv64 CI cycle. Use
+      `dnf -y download --source` in the same container to prove every package name you pass
+      to `collect-gpl-sources` actually resolves.
+
+153. **A `dist-info/sboms/*.cyclonedx.json` is not a licence notice -- and the notice
+    inventory an upstream generates is often shipped only in the sdist (the burner-redis
+    case; see `build-burner-redis.yml`).** maturin (>= 1.9) writes a CycloneDX SBOM into
+    every wheel, listing each Rust crate with an SPDX *expression* (`"licenses":
+    [{"expression": "MIT OR Apache-2.0"}]`) and no licence text or copyright line. That
+    reads like the third-party obligations are handled; they are not -- MIT requires the
+    copyright notice to travel with binary redistribution and Apache-2.0 4(a) requires a
+    copy of the License. Meanwhile the project usually *does* have the full inventory: a
+    `cargo-about`-style `THIRDPARTY.yml`/`about.hbs`/`LICENSE-THIRD-PARTY` at the repo
+    root, complete with texts. burner-redis' release workflow even asserts the file is in
+    the sdist (`tar -tzf … | grep -Fx "…/THIRDPARTY.yml"`) -- and never puts it in the
+    wheel, on any architecture.
+    - **Two commands find both halves**: `unzip -l <upstream wheel> | grep -iE 'licen|sbom'`
+      (what actually ships) and `ls <checkout> | grep -iE 'thirdparty|third-party|notice'`
+      (what upstream already generated). A wheel with an SBOM and a single `LICENSE`, next
+      to a repo carrying a half-megabyte notice file, is the signature.
+    - **The fix is gotcha 44/146's one-file move, with no patch**: maturin's auto-discovery
+      globs (`LICEN[CS]E*`, `COPYING*`, `NOTICE*`, `AUTHORS*` at the pyproject directory,
+      used only when `[project] license-files` is absent -- checked in maturin 1.15.0
+      `src/metadata.rs`) will pick the inventory up under a `NOTICE*` name, so a
+      `cp THIRDPARTY.yml NOTICE.THIRDPARTY.yml` workflow step before cibuildwheel is the
+      whole change. It logs `📦 Including license file …`, which is the cheapest
+      confirmation it fired.
+    - **Assert the resulting *set*, and subtract the empty basename** -- `auditwheel repair`
+      adds a bare `dist-info/licenses/` directory entry that a plain maturin wheel has not
+      got, so a `zipfile.namelist()` check built on `rsplit("/", 1)[1]` picks up a `''`
+      and fails only on the repaired (i.e. CI) wheel (gotcha 86, reached from the maturin
+      side).
+
+146. **maturin auto-globs licence files only next to `pyproject.toml`, so a monorepo
+    layout drops the repo-root LICENSE from every wheel (extends gotcha 44).** Gotcha 44
+    is setuptools' default `LICEN[CS]E*` glob at the *project root*; maturin implements the
+    same default set (`LICEN[CS]E*`, `COPYING*`, `NOTICE*`, `AUTHORS*` -- `src/metadata.rs`,
+    used only when `[project] license-files` is absent) rooted at the **pyproject
+    directory**. A project whose packaging lives in `python/` while `LICENSE` sits at the
+    repository root therefore publishes wheels carrying *no licence file at all*:
+    magika 1.0.3's `dist-info/` holds only `METADATA`, `WHEEL`, `RECORD` and an SBOM,
+    despite the binary statically linking an entire ONNX Runtime. `license-files =
+    ["../LICENSE"]` is not the fix -- maturin runs `check_pep639_glob`, which rejects `..`.
+    Copy the files into the pyproject directory in the build step instead; maturin then
+    writes them to `dist-info/licenses/`, and naming a bundled dependency's files
+    `LICENSE.<dep>` / `NOTICE.<dep>` makes the default globs pick those up too.
+    - **Prove it on any host in a minute**: `maturin build --release` on macOS or x86 and
+      `unzip -l` the wheel. Nothing about this is arch-specific, so it never needs a CI cycle.
+    - **A dependency compiled from source at build time is gotcha 53's shape, and its
+      licence files exist only after upstream's own script fetches it** (here ONNX
+      Runtime's `LICENSE` and `ThirdPartyNotices.txt`), so this is a workflow `cp`, not a
+      patch under `patches/`.
+    - **Assert it from the test command** (gotcha 44), matching on `.dist-info/` rather
+      than `.dist-info/licenses/` so the check survives either packaging layout:
+      `{p.name for p in importlib.metadata.files("<dist>") if ".dist-info/" in str(p)}`.
+
+161. **A vendored prebuilt stack can be GPL while every library in it reports LGPL -- read
+    `DT_NEEDED`, not the licence string (the av case; see `build-av.yml`).** Gotcha 98 says a
+    dependency bundle fetched from upstream's own sibling build repo is an ordinary port. The
+    licensing half needs its own look, because the sibling repo may carry a patch that changes
+    what the bundle *is*. pyav-ffmpeg patches FFmpeg's `configure` to move `libx264`/`libx265`
+    out of `EXTERNAL_LIBRARY_GPL_LIST` into `EXTERNAL_LIBRARY_VERSION3_LIST`, so FFmpeg builds
+    without `--enable-gpl` and every `libav*.so` answers `license: LGPL version 3 or later` --
+    while `libavcodec` still has `DT_NEEDED` on `libx264.so.165` and `libx265.so.216`, both
+    GPL-2.0-or-later, both shipped in `av.libs/`. Reading the version string, or the
+    `configure` line embedded in the binary (which shows no `--enable-gpl`), gives the wrong
+    answer twice over.
+    - **Settle it from the ELF, on any host, off the wheel you already built**: pyelftools
+      ships with abi3audit, so
+      `ELFFile(open(so,'rb')).get_section_by_name('.dynamic').iter_tags('DT_NEEDED')` over the
+      biggest bundled library names every GPL dependency in one call. Do this before writing
+      the PR's **License** section for any wheel whose `.libs/` holds more than a couple of
+      files -- `ls` of the vendored directory tells you the names, not the terms.
+    - **`dist-info/sboms/auditwheel.cdx.json` splits the vendored set for free.** auditwheel
+      (>= 6.8) writes a CycloneDX SBOM naming each bundled library's origin: `pkg:rpm/rocky/...`
+      for the ones it pulled out of the build *image*, and the project's own purl for the rest.
+      One `json.load` separates "our build environment's obligation" (the `gpl_sources` job of
+      gotcha 66) from "upstream's vendored tree" (this one) instead of guessing -- here exactly
+      `libxcb`, `libXau`, `libdrm`, all MIT, and no gcc runtime at all.
+
+162. **A sibling build repo pins every source by URL and SHA-256, which makes the GPL/LGPL
+    source release mechanical (extends gotchas 53/66/98).** Gotcha 66's `gpl_sources` job only
+    knows how to fetch source RPMs from the manylinux image; a bundle built by upstream's own
+    `<pkg>-ffmpeg`-style repo has no RPMs, but it does have a pin table --
+    pyav-ffmpeg's `scripts/pkg.py` is importable on its own (`dataclasses` + `platform` only),
+    so `exec`ing it yields `name`, `source_url` and `sha256` for all 17 dependencies. A job on
+    `ubuntu-latest` (gotcha 4 -- sources are arch-independent) downloads each tarball, verifies
+    the pin, and hands the result to `_publish-wheel.yml`' `gpl-sources-artifact` as
+    `gpl-sources.tar`, which is the same mechanism `collect-gpl-sources` feeds.
+    - **The build repo itself is part of the corresponding source.** It carries the configure
+      arguments and, usually, patches against the dependencies (pyav-ffmpeg patches FFmpeg,
+      GMP, LAME and libvpx) -- pristine upstream tarballs alone are *not* the source the binary
+      was built from. Add its release tarball to the same archive.
+    - **The same tarballs are also where the licence texts come from**, so collect both in one
+      pass: glob `COPYING*`/`LICEN[CS]E*`/`NOTICE*` at the top two levels of each archive
+      (x265 keeps its sources under `source/`, gnutls its texts under `doc/`), concatenate per
+      dependency into `LICENSE.<name>`, and stage those at the checkout root where the PEP 639
+      default glob ships them (gotchas 44/123 -- PyAV declares `license = "BSD-3-Clause"` and no
+      `license-files`, so the default applies). Verify the glob in 60 seconds with a throwaway
+      `pyproject.toml` + `LICENSE.x264` rather than by inspecting a three-hour wheel.
+    - **Derive the dependency set from the build script's platform conditions, not from the
+      whole pin table** -- `use_libvpl`/`use_cuda`/`is_arm32` gate which packages a given arch
+      builds, and shipping a licence for something the wheel does not contain is its own kind
+      of wrong.
+
+165. **Three ways gotcha 137's licence sweep silently under-collects, and one image fact that
+    makes it matter far more on riscv64 (the memray case).** Gotcha 137's `ldd` + `rpm -qf`
+    recipe is right, and pyproj proved it -- but each of these fails *quietly*, producing a
+    green build and a wheel that is short a notice.
+    - **`ldd` does not list the libraries you pass it.** Running it over the project's direct
+      link dependencies gets the transitive closure and misses the roots themselves, so exactly
+      the libraries you were thinking about are the ones absent. Add `readlink -f` of each root
+      to the list. In memray's case that silently dropped `lz4-libs` and
+      `elfutils-debuginfod-client` -- and the `-devel` symlink you ldd is owned by a different
+      package than the runtime `.so.N` the wheel ships, so resolve before querying rpm.
+    - **`%license` survives `tsflags=nodocs`; `%doc` does not.** Gotcha 137 says to
+      `dnf reinstall --setopt=tsflags=`, but after doing so the file is still invisible to
+      `rpm -q --licensefiles` -- it was never marked `%license`. `lz4-libs` ships
+      `/usr/share/doc/lz4-libs/LICENSE` this way. The third fallback tier is
+      `rpm -qd "$pkg" | grep -iE '/(LICEN[CS]E|COPYING|NOTICE)'` after the reinstall.
+    - **Exclude only what auditwheel's allowlist actually covers.** glibc, the gcc runtime,
+      libstdc++ and **zlib** (`zlib-ng-compat` on Rocky 10) are on the manylinux policy
+      allowlist and never vendored, so collecting licences for them is noise; everything else
+      in the closure does land in the wheel. Cross-check the finished list against
+      `unzip -l <whl> | grep '\.libs/'` -- that is the only proof the sweep was complete.
+    - **The riscv64 manylinux image ships full `libcurl`, not `libcurl-minimal`.** Anything
+      linking libcurl -- `libdebuginfod` is the common route, via elfutils -- therefore drags in
+      krb5, openldap, libssh, libfido2, libcbor, libsasl2, libidn2, libunistring, systemd's
+      libudev, pcre2 and brotli. memray's riscv64 wheel vendors **33** shared libraries where
+      upstream's `manylinux_2_28` wheels vendor 9, so a licence gap that is minor upstream is
+      substantial for us, and the `gpl_sources` package list has to grow to match (keyutils,
+      libcap, libidn2, libssh, libunistring, libxcrypt, libzstd, lz4, pcre2, systemd on top of
+      gcc and elfutils). `dnf download --source` resolves all of them by binary package name
+      and dedupes to one SRPM each; validate the names on the aarch64 image first, since source
+      RPMs are arch-independent.
+    - **scikit-build-core applies the same default glob setuptools does, even behind a legacy
+      `license = {text = "..."}` table** -- `wheel.py` runs `Path().glob("LICEN[CS]E*")` (plus
+      `COPYING*`/`NOTICE*`/`AUTHORS*`) from the build cwd when neither `project.license-files`
+      nor `tool.scikit-build.wheel.license-files` is set. So gotcha 44's drop-a-file-at-the-root
+      trick works here with no patch: stage `LICENSE.<pkg>.<file>` into `{project}` from
+      `before-all` and it lands in `dist-info/licenses/`. `{project}` is substituted in
+      `before-all` (`platforms/linux.py` calls `prepare_command(..., project=..., package=...)`),
+      so the collector can be a script checked out beside the workflow.
+
+255. **A project's own build hook that hand-parses a *build-time* dependency's dist-info
+    for its LICENSE can be broken outright by that dependency adopting PEP 639's
+    `licenses/` subdirectory -- a hard build failure, not the missing-license gap gotchas
+    44/123 describe (the coincurve case; see `build-coincurve.yml`).** coincurve's
+    `hatch_build.py` bundles cffi's compiled `_cffi_backend` extension straight into the
+    wheel (so cffi is not a runtime dependency) and copies cffi's own LICENSE alongside
+    it, locating it with `f.parent.name.endswith(".dist-info")` -- true only when LICENSE
+    sits directly in the dist-info root. cffi >=2.0.0 (like every project that adopted
+    `license-files`) ships it one level deeper as `<dist>.dist-info/licenses/LICENSE`, so
+    `f.parent.name` is `"licenses"`, the scan finds zero files, and the build raises
+    `RuntimeError: Expected exactly one LICENSE file in cffi distribution, got 0` for any
+    build resolving a current cffi -- reproduced identically against upstream's own
+    official x86_64 wheel, so it is not riscv64-specific, and already open upstream
+    (ofek/coincurve#187, #223).
+    - **Search the exact error text in upstream's issue tracker before patching blind.**
+      `gh api "search/issues?q=repo:<owner>/<repo>+is:issue+<key phrase>"` found this
+      already reported and already fixed on master (`get_cffi_distribution_license_files()`,
+      PR #188 -- checks `f.parts[0]` instead, the dist-info directory itself, matching
+      both layouts) -- merged, but not in any tagged release. That makes the patch a
+      straight backport (`git format-patch` off the PR's diff) instead of a guess, and
+      settles the `Upstream-Status` tag: `Submitted`, not `Backport` -- no *release* carries
+      the fix yet, so it still needs carrying until one does.
+    - **A build-time-only dependency is not exempt.** coincurve declares no runtime
+      dependency on cffi at all -- the whole point of bundling `_cffi_backend.so` is that
+      users need not install cffi -- yet the bug hits every build, because the scan runs
+      against the *build environment's* installed cffi, not against coincurve's own
+      runtime metadata.
+
+301. **Gotcha 146's licence auto-glob only fires for a `pyproject.toml` with a `[project]`
+    table; a maturin crate whose metadata comes straight from Cargo.toml needs an
+    explicit `license-file` key instead (the minify-html-python case; see
+    `build-minify-html.yml`).** maturin's `metadata.rs` has two separate code paths: one
+    for a PEP 621 `[project]` table, which falls back to globbing `LICEN[CS]E*` /
+    `COPYING*` / `NOTICE*` / `AUTHORS*` next to `pyproject.toml` when `license-files` is
+    absent (gotcha 146); a second, entirely different one for a bare
+    `[build-system] build-backend = "maturin"` with **no** `[project]` table at all, which
+    reads metadata straight from `cargo_metadata` and does no directory scanning
+    whatsoever -- it bundles a licence file only when Cargo's own `[package] license-file
+    = "..."` key names one. minify-html-python's `pyproject.toml` is the second shape
+    (`[build-system]`/`[tool.maturin]` only), and its Cargo.toml has `license = "MIT"`
+    (an SPDX expression) but no `license-file`, so copying a `LICENSE` next to
+    `pyproject.toml` alone -- gotcha 146's fix -- changed nothing: the built wheel's
+    `dist-info/` still had no licence file, confirmed by installing it and asserting
+    `importlib.metadata.files()` in `CIBW_TEST_COMMAND`.
+    - **The fix is a second `Cargo.toml` edit, not a different file location.** Copy the
+      licence into the crate directory as before, then add `license-file = "LICENSE"`
+      to `[package]` alongside the existing `license = "..."` key -- Cargo happily
+      accepts both set at once (only `cargo publish`, which this crate disables via
+      `publish = false`, would ever complain), and `cargo metadata` immediately reports
+      it: `"license":"MIT","license_file":"LICENSE"`. Verify locally with `cargo
+      metadata --manifest-path <crate>/Cargo.toml --no-deps` before spending a riscv64
+      cycle on it -- this needs no maturin install, just the `cargo` already on the host.
+    - **Tell the two shapes apart from `pyproject.toml` alone**: a `[project]` table
+      (even a minimal one with just `name`/`dynamic`) means gotcha 146 applies; only
+      `[build-system]` and `[tool.maturin]` means this one does.
+
+309. **A wrapper's own permissive licence (LGPL, MIT, ...) does not launder a vendored
+    C library's own, more restrictive terms -- read the vendored source's licence text
+    directly, not just `pyproject.toml`'s `license` key (the `triangle` package).**
+    PyPI's `triangle` (`github.com/drufat/triangle`) declares `license = { text =
+    'LGPL-3.0' }`, but its `setup.py` compiles `c/triangle.c` -- a submodule pulling
+    Jonathan Shewchuk's original Triangle mesh generator (`github.com/drufat/triangle-c`)
+    straight in as the extension's actual functional core, not an optional or
+    system-linked dependency. That C file's own `c/README` carries Shewchuk's
+    homegrown, non-OSI licence: freely redistributable for private/research/institutional
+    use with copyright notices intact, but **"Distribution of this code as part of a
+    commercial system is permissible ONLY BY DIRECT ARRANGEMENT WITH THE AUTHOR"** and
+    redistribution generally requires "no compensation is received". This is the exact
+    clause that keeps Shewchuk's Triangle out of Debian main (non-free only), and
+    `meshpy`'s own FAQ -- another Triangle wrapper -- confirms commercial redistribution
+    needs Shewchuk's explicit permission.
+    - **Publishing a wheel to a public package index is redistribution, not private use** --
+      pypi.riseproject.dev serving a wheel that statically links this code is exactly the
+      case the clause gates, so shipping it without first contacting Shewchuk is legally
+      questionable. Parked rather than patched: there is no build-time or patch-time fix
+      for a licence term on code that must be compiled in to make the extension work at
+      all (unlike gotcha 32's swappable vendored libs, where using the system package
+      sidesteps the vendor's terms entirely).
+    - **Check the vendored/git-submodule source's own licence file whenever the top-level
+      `pyproject.toml`/`setup.cfg` licence looks unusually permissive for what the
+      extension does** -- a thin Cython/ctypes wrapper claiming a simple permissive licence
+      while compiling in someone else's non-trivial C library is a signal to go read that
+      library's own README/LICENSE before trusting the package metadata.
+
+320. **gotcha 123's PEP 639 default license glob is not implemented by meson-python --
+    check the built wheel, don't assume it is backend-agnostic (the memory-allocator
+    case).** meson-python's `mesonpy/__init__.py` only ever writes
+    `dist-info/licenses/<f>` for files present in `self._metadata.license_files`, which it
+    gets straight from `pyproject_metadata`'s parse of `[project] license-files` -- and that
+    library's `get_license_files()` returns `None` outright when the key is absent from
+    `pyproject.toml`, with no fallback glob of its own. Gotcha 123 verified the PEP 639
+    default (`LICEN[CS]E*`/`COPYING*`/`NOTICE*`/`AUTHORS*`) for scikit-build-core, which
+    layers that default on top of the same `pyproject_metadata` library; meson-python has
+    no equivalent layer, so the two backends behave differently from an identical
+    `pyproject.toml`. Concretely: sagemath/memory_allocator declares
+    `license = "GPL-3.0-or-later"` with no `license-files` key, and every wheel it
+    publishes on PyPI -- verified against the real
+    `memory_allocator-0.2.0-cp312-cp312-macosx_10_13_x86_64.whl` -- ships zero LICENSE
+    files. The fix is the same one-line patch as gotcha 105
+    (`license-files = ["LICENSE"]`), but the trigger condition is backend identity, not
+    the key alone -- for a meson-python project, treat `license-files` as *always*
+    required, never assume the PEP 639 default covers you. Settle it in one command rather
+    than reading backend source: `uv build --wheel && unzip -l dist/*.whl | grep -i licen`.
+
+349. **The legacy `[project.license]` table form (`{file = "..."}`) not only suppresses
+    setuptools' PEP 639 default glob (gotcha 105/123) -- combining it with an explicit
+    `license-files` key is a hard error on recent setuptools (the pyopengl-accelerate
+    case).** pyopengl-accelerate's `pyproject.toml` sets `license = {file =
+    "license.txt"}`; a wheel built from it as-is ships no `dist-info/licenses/` file at
+    all -- confirmed against the real published PyPI wheel too, same gap -- because
+    setuptools folds the table form's file content straight into the `License:`
+    METADATA field instead of copying it as a licence file, the pre-639 behaviour.
+    Adding `license-files = ["license.txt"]` *alongside* the unchanged `license =
+    {file = ...}` line does not layer the two: setuptools 82 raises
+    `InvalidConfigError: project.license must be string` at metadata-generation time,
+    because a `license-files` key requires `project.license` to already be the PEP 639
+    SPDX string form. The fix is gotcha 44's one-line patch plus a second edit:
+    `license = "BSD-3-Clause"` (pick the identifier the licence text actually matches,
+    not the loose `License :: OSI Approved :: ...` classifier) and drop that classifier
+    -- setuptools also rejects an OSI licence classifier once `project.license` is an
+    SPDX expression (`License classifiers have been superseded by license expressions`).
+    Verify by building locally (`pip wheel . --no-deps --no-build-isolation` from the
+    patched checkout) and asserting `dist-info/licenses/<file>` is present before
+    trusting a CI cycle to catch it -- same self-verifying spirit as gotcha 44's
+    `importlib.metadata.files()` check, cheaper as a plain `zipfile.namelist()` scan
+    since the build already ran locally.
+    - **The zip's own directory entry can poison a naive `dist-info/licenses/`
+      check.** A `n.rsplit("/", 1)[1]` scan without excluding entries ending in `/`
+      picks up the `dist-info/licenses/` directory listing itself alongside the real
+      file, splitting to an empty string and turning `{"license.txt"}` into
+      `{"", "license.txt"}`. cibuildwheel's Linux build produces that directory entry;
+      a local macOS/`--no-build-isolation` build did not, so this only surfaced in CI.
+      Filter with `and not n.endswith("/")` before comparing the set.
+
+409. **The `gpl_sources` trigger can come from the *musllinux* leg alone: auditwheel's
+     musllinux policy does not allowlist the GCC runtime, so any C++ extension's musl wheel
+     vendors `libstdc++`/`libgcc_s` even when its manylinux sibling vendors nothing from the
+     image (the leidenalg case).** Gotcha 66 frames `libgomp` as "the standard GPL-sources
+     trigger" and tells you to grep the vendored-lib dir of the artifact you already have --
+     but a `libc: [manylinux, musllinux]` matrix produces *two* wheels with different
+     vendored sets, and checking only the manylinux one answers "nothing from the image, no
+     job needed" while the musl wheel ships the GCC runtime. manylinux's policy allowlists
+     `libstdc++.so.6` and `libgcc_s.so.1`, musllinux's does not, so for a C++ project the
+     asymmetry is structural, not incidental:
+     ```
+     leidenalg.libs/libigraph-*.so.4.0.0  liblibleidenalg-*.so.0.11.1              # manylinux
+     leidenalg.libs/libgcc_s-*.so.1  libstdc++-*.so.6.0.33  libigraph-*  lib…      # musllinux
+     ```
+     GPLv3-with-GCC-Runtime-Library-Exception still carries the source obligation for the
+     runtime itself (gotcha 66), so the wheel pair needs the `packages: gcc` job.
+     - **Check every libc leg's wheel, not one of them**, and do it on the real artifacts:
+       `unzip -l <whl> | grep '\.libs/'` per libc. The published
+       `igraph-1.0.0-cp39-abi3-musllinux_1_2_riscv64.whl` is the in-repo precedent -- it
+       vendors `libgcc_s`, `libgomp`, `libstdc++`, `liblzma` and `libxml2` -- and
+       `build-igraph.yml`'s `gpl_sources` job is the shape to copy.
+     - **The job still points `collect-gpl-sources` at the *manylinux* image**, because the
+       action is dnf-based and the musl image is Alpine; that is what the igraph port
+       shipped, and the `gpl-sources-description: gcc` input is what `_publish-wheel.yml`
+       renders next to the release.
+     - **Not every C++ musl wheel vendors it** -- a project that links the C++ runtime
+       statically, or whose extension needs no out-of-line C++ symbols, comes back with an
+       empty `.libs/` (the published `ruckig-0.19.4-cp312-cp312-musllinux_1_2_riscv64.whl`
+       does). So this is a per-wheel check, not an inference from "the project is C++".
+
+491. **Collecting the licences of auditwheel-grafted system libraries from RPMs has three
+    failure modes, and `rpm -ql <pkg>` alone walks into all of them (the eckitlib case).**
+    Driving the collection off `dist-info/sboms/auditwheel.cdx.json` (gotcha 161) gives the
+    exact `pkg:rpm/<distro>/<name>` set -- 22 packages for a wheel that links nothing but
+    libcurl and liblz4 -- but turning each name into a licence text is not one command.
+    - **A split-out runtime subpackage can ship no `%license` file at all.** `rpm -ql
+      lz4-libs` lists four `.so` paths and nothing else; the text lives in the base `lz4`
+      package, which the manylinux image does not install. Recover it by `dnf install`-ing the
+      name derived from `%{SOURCERPM}` (`sed -E 's/-[^-]+-[^-]+\.src\.rpm$//'`).
+    - **Or the text can sit in a *different* subpackage of the same source RPM.** Rocky's
+      `pcre2` carries no `%license` either, but its already-installed sibling `pcre2-syntax`
+      does (`/usr/share/licenses/pcre2-syntax/{COPYING,LICENCE}`). Scanning every installed
+      package whose `%{SOURCERPM}` matches finds it without installing anything:
+      `rpm -qa --qf '%{SOURCERPM} %{NAME}\n'`.
+    - **And the distro's licence directory can hold the *wrong* text for the library you
+      bundled.** `/usr/share/licenses/lz4/` holds only the GPLv2 `COPYING` covering lz4's CLI
+      tools, while the grafted `liblz4.so.1` is BSD-2-Clause -- a text no RPM carries at all.
+      Fetch it from the project (`lz4/lz4/v<version>/lib/LICENSE`), which is exactly why
+      ECMWF's own `pre-compile.sh` downloads it. Read what you copied; a directory named after
+      the package does not promise it describes the `.so` in the wheel.
+    - **The same SBOM sizes the `gpl_sources` job (gotcha 66).** Of those 22 the copyleft ones
+      are `keyutils-libs`, `libcap`, `libidn2`, `libssh`, `libunistring`, `libxcrypt`, `pcre2`
+      and `systemd-libs`; `libselinux` is public domain, `openssl-libs` Apache-2.0, and
+      `krb5-libs`/`libcurl`/`libcom_err`/`libbrotli`/`libnghttp2`/`libpsl`/`libcbor`/
+      `libevent`/`libfido2`/`cyrus-sasl-lib`/`openldap` permissive. `rpm -q --qf '%{LICENSE}'`
+      over the set is the whole audit, and `%{SOURCERPM}` confirms every name resolves to a
+      real source package before the job runs.
+    - **auditwheel's `$ORIGIN` fixup is already done.** ECMWF's `post-build.sh` unzips the
+      repaired wheel just to `patchelf --add-rpath '$ORIGIN' <pkg>.libs/*`; auditwheel 6.x sets
+      it itself, which is why the released wheels read `RUNPATH [$ORIGIN:$ORIGIN]`. Skipping
+      that re-zip keeps a valid `RECORD` instead.
+
+533. **A GitLab `-/archive/` tarball is not byte-stable, so gotcha 162's pinned-SHA-256
+    source collection flakes on a schedule nobody controls (the decord2/pyav-ffmpeg case).**
+    Two of pyav-ffmpeg's seventeen pinned dependencies -- dav1d and x264 -- come from
+    `code.videolan.org/videolan/<p>/-/archive/<ref>/<p>-<ref>.tar.bz2`, which GitLab
+    *generates on request*. When the cached artifact has expired the bytes differ from the
+    copy the pin was taken against, and the collector dies on the first offender:
+    `dav1d: sha256 mismatch … expected e099f532… got de41d4a3…`. It is the server, not the
+    transfer: three attempts produced three different digests (`cc5358fd…`, `de41d4a3…`,
+    `c7d5a813…`) before one matched the pin, and an immediately repeated `curl` of the same
+    URL then returned the pinned bytes twice in a row.
+    - **Retry on the mismatch; never relax the check.** Re-download up to five times with a
+      short sleep and fail only if every attempt disagrees -- one retry sufficed every time it
+      was seen, locally and in CI. `curl --retry` does not help: the bad response is an
+      ordinary HTTP 200.
+    - **It reproduces off CI in seconds on any host** -- `curl` the archive URL twice and
+      compare `sha256sum`. Do not spend a CI cycle confirming it, and do not read the first
+      mismatch as a tampered or truncated download.
+    - **Every workflow that copies gotcha 162's collector inherits this**, so a green run of
+      the port you copied from is no evidence that the fetch is stable.
+
+538. **scikit-build-core's `wheel.license-files` is overridable from the environment, so
+    gotcha 105's "an explicit list has no default glob behind it" costs no patch there (the
+    pyslang case).** A project that hardcodes `[tool.scikit-build] wheel.license-files =
+    ["LICENSE"]` ships its own notice and nothing else, while the extension statically links
+    a FetchContent'd fmt (MIT) and pybind11 (BSD-3-Clause) and compiles vendored
+    `BS_thread_pool.hpp` (MIT) and `boost_unordered.hpp`/`expected.hpp` (BSL-1.0) headers.
+    Every scikit-build-core setting is also read from `SKBUILD_<SECTION>_<KEY>`, and
+    list-valued ones split on `;`, so
+    `CIBW_ENVIRONMENT: 'SKBUILD_WHEEL_LICENSE_FILES="LICENSE;LICENSE.fmt;..."'` replaces the
+    list for the wheel build alone -- no patch, nothing to rebase on the next version bump.
+    - **The env source outranks `pyproject.toml`** (scikit-build-core chains its `EnvSource`
+      ahead of the TOML one) and the entries are glob patterns, so `LICENSE.<dep>` files
+      staged at the checkout root land in `dist-info/licenses/` exactly as gotcha 44's
+      setuptools default glob would. Naming the project's own `LICENSE` first is mandatory --
+      the override *replaces* the list, it does not extend it.
+    - **Confirm the semicolons survive cibuildwheel's `bashlex` parser off-CI**, in one line:
+      `python -c "from cibuildwheel.environment import parse_environment;
+      print(parse_environment('X=\"a;b\"').as_dictionary(prev_environment={}))"`. A
+      double-quoted value keeps them; an unquoted one would not.
+    - **BSL-1.0 exempts object-code-only redistribution** ("unless such copies ... are solely
+      in the form of machine-executable object code"), so a Boost-licensed *header* compiled
+      into the extension does not strictly require its text in the wheel. Shipping it costs
+      nothing and matches what the rest of the repo does; the MIT and BSD-3-Clause ones are
+      the mandatory half.
+
+578. **setuptools resolves `license_files` against the working directory when `bdist_wheel`
+    copies them, not against `setup.py`'s directory, so a licence patch on a `setup.py` whose
+    cmdclass `os.chdir()`s passes every check until the last step (the dynet38 case).**
+    DyNet's `build_py.run()` does `os.chdir(BUILD_DIR + "/python")` (a CMake build tree) and
+    never changes back. A patch that fixed `license_files=("../LICENSE.txt",)` to
+    `("LICENSE.txt", "LICENSE.eigen-mpl2")` compiled libdynet and `_dynet` for ~40 minutes
+    per interpreter. `egg_info` even logged `adding license file 'LICENSE.txt'`. Then all three
+    jobs died in `bdist_wheel` with `error: [Errno 2] No such file or directory:
+    'LICENSE.txt'`. The pattern is globbed from the source root when `setup()` runs, but
+    the file is copied from the relative path later, under whatever cwd the build left.
+    - **Absolute paths are not an escape hatch.** setuptools >= 77 rejects them with
+      `InvalidConfigError: Pattern '/…/LICENSE.txt' should be relative and must not start
+      with '/'`. And `../` is exactly the upstream bug that matched nothing.
+    - **Copy the files into the directory the cmdclass switched to**, straight after its
+      `chdir`: `copyfile(os.path.join(SCRIPT_DIR, f), f)` for each entry, reusing one
+      `LICENSE_FILES` tuple for both the copy and `license_files=`.
+    - **Reproduce it in seconds before a CI cycle.** Build a ten-line `setup.py` with the
+      same `build_py` `chdir` and the same `license_files`, using `uv build --wheel`
+      (current setuptools). It fails with the identical `Errno 2` without the copy and ships
+      both files under `dist-info/licenses/` with it. Grep the upstream `setup.py` for
+      `os.chdir` whenever you touch its `license_files`.
+
+590. **Gotcha 538's environment override does not work when the project declares PEP 639
+    `[project] license-files` -- scikit-build-core refuses to build (the cantera case).**
+    `scikit_build_core/build/wheel.py` checks `if metadata.license_files is not None and
+    settings.wheel.license_files:` and raises `Both project.license-files and
+    tool.scikit-build.wheel.license-files are set, use only one`, and the
+    `SKBUILD_WHEEL_LICENSE_FILES` env source feeds exactly that setting. So check which key the
+    project uses before reaching for 538: `[tool.scikit-build] wheel.license-files` → env
+    override, no patch; `[project] license-files = ["License.txt"]` → a one-line patch.
+    - **Make the patched entry a glob that the sdist alone still satisfies**
+      (`["License*"]`, next to staged `License.<dep>.txt` files). PEP 639 requires every pattern
+      to match at least one file, and the sdist is built before `before-all` stages anything, so
+      a separate `licenses/*` pattern fails the sdist build while `License*` matches
+      `License.txt` there and the dependency notices in the wheel build.
+    - **When `pyproject.toml` is generated** (cantera renders
+      `interfaces/python_sdist/pyproject.toml.in` in `scons sdist`), patch the template in the
+      upstream checkout before the sdist is built, not the extracted sdist.
+
+609. **`check_patch.py`'s `Upstream-Status: Inappropriate [...]` regex only reads the first
+    physical line of the tag, so a reason wrapped across multiple commit-message lines fails
+    the check even though it looks bracketed on inspection (the executorch case).** The
+    script matches the tag line with `re.MULTILINE` but no `re.DOTALL`, so `^Upstream-Status:
+    *(.*)$` stops at the first `\n`; a value like `Inappropriate [only relevant to a
+    distributor …` that closes its `]` two lines further down never reaches the
+    `^\[.+\]$` check against the *whole* reason -- only its first line is tested, which has
+    no closing bracket at all, so it fails as "Incorrect format" even though every other
+    detail (the type name, the brackets once joined) is correct.
+    - **Keep the entire bracketed reason on the tag's own line.** Every other `Inappropriate`
+      patch in this repo (`grep -rn 'Upstream-Status: Inappropriate' patches/`) does this;
+      wrap the surrounding commit-message prose instead, and only fold the reason itself if
+      it still fits `Upstream-Status: Inappropriate [...]` as one line.
+    - **Reproduce locally before a CI cycle**: paste the patch's commit message through the
+      same two `re.search` calls `check_upstream_status()` uses -- a one-line repro is faster
+      than waiting on `check_patches` to fail again.
+
+637. **A nanobind extension's musllinux wheel carries no `<pkg>.libs/libstdc++`, so gotcha 409's
+    musl-only `gpl_sources` trigger does not fire (the pydemumble case).** nanobind's
+    `nanobind_add_module` calls `nanobind_musl_static_libcpp`, which adds
+    `-static-libstdc++ -static-libgcc` whenever `$AUDITWHEEL_PLAT` matches `musllinux` (set in
+    every cibuildwheel musllinux container), unless the project passes `MUSL_DYNAMIC_LIBCPP`.
+    The runtime is linked into the extension as Target Code under the GCC Runtime Library
+    Exception rather than redistributed as a library, so there is nothing for
+    `collect-gpl-sources` to cover -- the same outcome as gotcha 409's ruckig case.
+    - **Settle it without downloading the CI artifact** (the session `gh` cannot follow the
+      blob redirect): `pip download` upstream's own `musllinux_1_2_x86_64` wheel and run
+      `readelf -d` on the `.so` -- only `libc.musl-*.so.1` is `NEEDED`, no `.libs/` dir. Our
+      riscv64 musl wheel landing within a few kB of upstream's x86_64 one (673 kB vs 662 kB,
+      about 3x the manylinux wheel) is the matching CI-side signal.
+    - **Gotcha 538's `SKBUILD_WHEEL_LICENSE_FILES` accepts submodule paths directly** -- no
+      `LICENSE.<dep>` staging at the root. `src/nanobind/LICENSE;src/third_party/llvm/LICENSE.txt`
+      lands as `dist-info/licenses/src/nanobind/LICENSE` etc. (scikit-build-core 1.1.1 keeps the
+      relative path), and a project with no `license-files` key at all (default PEP 639 glob,
+      root `LICENSE` only) is the cheapest case: the env override, listing `LICENSE` first.
+
+694. **A cgo build on the bare self-hosted riscv64 runner, with gcc from `apt` rather than the
+    manylinux image, needs no `gpl_sources` job at all (the enola-cli case).** The Licensing
+    section's `gpl_sources` rule names "the gcc baked into the manylinux_riscv64 image" as the
+    usual trigger, and every current example (`build-austin-dist.yml`, `build-bitsandbytes.yml`,
+    `build-runai-model-streamer-gcs.yml`, ...) builds with `docker run ... "$MANYLINUX_RISCV64_IMAGE"`.
+    A plain `CGO_ENABLED=1` Go build needs a C toolchain too, but several ported packages
+    (`build-dbmate-bin.yml`'s sqlite cgo, this one's tree-sitter grammars) get it by running
+    `runs-on: ubuntu-24.04-riscv` directly and `apt-get install gcc libc6-dev` on the bare
+    runner -- no `docker run`, no `MANYLINUX_RISCV64_IMAGE` anywhere in the job. Neither carries a
+    `gpl_sources` job, and that is correct, not an oversight: `apt`'s gcc is Ubuntu's own package,
+    already covered by Ubuntu's own source availability (`apt-get source gcc-14`/`dpkg --
+    source` on Launchpad), the same way nobody tracks GPL sources for the compiler a laptop's
+    own package manager installed. The manylinux image is different only because `quay.io/pypa`
+    builds its own gcc from a pinned source tree as part of assembling that image -- a build
+    this repo's own CI reproduces by running inside it -- so *that* gcc's source isn't already
+    sitting in a public distro archive the way Ubuntu's is. Before adding a `gpl_sources` job to
+    a cgo-using Go/C port, check which gcc is actually in the job: `apt`/the runner's own distro
+    package needs none; `docker run`/`podman run` against a pinned `MANYLINUX_RISCV64_IMAGE`
+    does.

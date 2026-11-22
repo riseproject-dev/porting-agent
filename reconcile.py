@@ -181,6 +181,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     """Fold one publication outcome (from fork_publish / queue_result) into the record.
 
     * published / uncertain -> waiting_ci (observation confirms the head)
+    * proposal              -> waiting_capacity (verified patch, no destination write yet)
     * no_change             -> idle
     * rejected, validation  -> fix_needed (a new agent task)
     * rejected, stale       -> idle (the world moved; the next tick re-plans)
@@ -241,6 +242,9 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         new["activity"] = "waiting_ci"
     elif status == "uncertain":
         new["activity"] = "waiting_ci"   # discovery happens in observe_ci
+    elif status == "proposal":
+        new["activity"] = "waiting_capacity"
+        new["pending_human_action"] = None
     elif status == "no_change":
         new["activity"] = "idle"
     elif status == "rejected":
@@ -294,7 +298,11 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
                                                        str(worker_run_id or eid), now, True)))
         else:
             new["activity"] = "fix_needed" if refresh else "idle"
-            new["phase"] = "development" if refresh else "provisioning"
+            new["phase"] = (
+                "development"
+                if refresh or not (policy or {}).get("destination_writes", False)
+                else "provisioning"
+            )
             new["admission_class"] = dossier["proposal"]["admission_class"]
             new["scope_paths"] = list(dossier["proposal"]["allowed_paths"])
             new["scope_coverage_complete"] = True

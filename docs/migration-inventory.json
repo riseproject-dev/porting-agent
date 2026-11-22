@@ -349,7 +349,7 @@
       ],
       "milestone": 5,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming/image/Dockerfile.filtered",
@@ -359,7 +359,7 @@
       ],
       "milestone": 5,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming/image/entrypoint.sh",
@@ -369,7 +369,7 @@
       ],
       "milestone": 5,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming/image/run.sh",
@@ -379,7 +379,7 @@
       ],
       "milestone": 5,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming/install_gh_aw.sh",
@@ -919,9 +919,8 @@
         "tests/deferred/test_workflow_contracts.py.reference"
       ],
       "milestone": 3,
-      "rationale": "Milestone 3 controller and Milestone 4 dispatcher/investigator contracts are restored; worker and destination writer cases remain referenced with exact owners in docs/test-deferrals.json.",
+      "rationale": "Milestones 3-5 controller, investigator, dispatcher, and worker contracts are restored; destination writer cases remain referenced with exact owners in docs/test-deferrals.json.",
       "restoringMilestones": [
-        5,
         6
       ],
       "status": "partially-migrated"

@@ -109,7 +109,7 @@ class TestProvisioning(unittest.TestCase):
     def test_create_and_exact_base_without_project_execution(self):
         rec, op = request()
         api = Api(exists=False)
-        plan = provisioning.preflight(api, rec, op, policy(read_only=False))
+        plan = provisioning.preflight(api, rec, op, policy(read_only=False, destination_writes=True))
         self.assertTrue(plan["create"])
         plan = provisioning.create_or_reuse(api, api, plan)
         self.assertTrue(plan["created"])
@@ -128,7 +128,7 @@ class TestProvisioning(unittest.TestCase):
     def test_existing_fork_is_adopted_not_claimed_as_created(self):
         rec, op = request()
         api = Api(head=SHA_C)
-        plan = provisioning.preflight(api, rec, op, policy(read_only=False))
+        plan = provisioning.preflight(api, rec, op, policy(read_only=False, destination_writes=True))
         self.assertFalse(plan["create"])
         plan = provisioning.create_or_reuse(api, None, plan)
         self.assertFalse(plan["created"])
@@ -138,18 +138,18 @@ class TestProvisioning(unittest.TestCase):
     def test_collision_and_unexpected_work_rejected_before_write(self):
         rec, op = request()
         api = Api(head=SHA_B)
-        plan = provisioning.preflight(api, rec, op, policy(read_only=False))
+        plan = provisioning.preflight(api, rec, op, policy(read_only=False, destination_writes=True))
         with self.assertRaises(provisioning.ProvisionError):
             provisioning.initialize(api, plan)
         self.assertEqual(api.writes, [])
         api.parent = 99
         with self.assertRaises(provisioning.ProvisionError):
-            provisioning.preflight(api, rec, op, policy(read_only=False))
+            provisioning.preflight(api, rec, op, policy(read_only=False, destination_writes=True))
 
     def test_permissions_or_missing_scope_never_use_a_fallback(self):
         rec, op = request()
         api = Api()
-        plan = provisioning.preflight(api, rec, op, policy(read_only=False))
+        plan = provisioning.preflight(api, rec, op, policy(read_only=False, destination_writes=True))
         api.defaults["default_workflow_permissions"] = "write"
         api.deny_settings = True
         with self.assertRaises(provisioning.ProvisionError):
@@ -157,7 +157,7 @@ class TestProvisioning(unittest.TestCase):
         self.assertIsNone(api.head)
         for changed in (dict(rec, paused=True), dict(rec, phase="investigation"), dict(rec, dossier_evidence_id=None)):
             with self.assertRaises(provisioning.ProvisionError):
-                provisioning.preflight(api, changed, op, policy(read_only=False))
+                provisioning.preflight(api, changed, op, policy(read_only=False, destination_writes=True))
         with self.assertRaises(provisioning.ProvisionError):
             provisioning.preflight(api, rec, op, policy(read_only=True))
 
@@ -165,7 +165,7 @@ class TestProvisioning(unittest.TestCase):
         rec, _ = request()
         rec["active_operation_id"] = None
         rec["owners"] = {"primary": None, "backup": None, "submitter": None, "handoff_reviewer": None}
-        args = dict(operations={}, consumed={}, projects={}, policy=policy(read_only=False),
+        args = dict(operations={}, consumed={}, projects={}, policy=policy(read_only=False, destination_writes=True),
                     inputs=controller.Inputs(now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True)))
         tick = controller.tick(contributions={"c": rec}, **args)
         self.assertEqual(tick.requested_effects, [])
@@ -180,10 +180,10 @@ class TestProvisioning(unittest.TestCase):
     def test_verified_setup_advances_and_admits_initial_patch_without_base_ci(self):
         rec, op = request()
         api = Api(exists=False)
-        plan = provisioning.create_or_reuse(api, api, provisioning.preflight(api, rec, op, policy(read_only=False)))
+        plan = provisioning.create_or_reuse(api, api, provisioning.preflight(api, rec, op, policy(read_only=False, destination_writes=True)))
         receipt = provisioning.initialize(api, plan)
         snap = reconcile.Snapshot({"c": rec}, {op["operation_id"]: op}, {}, {}, {})
-        result = reconcile.tick(api, snap, policy=policy(read_only=False), now=datetime.fromisoformat(NOW), publications=[],
+        result = reconcile.tick(api, snap, policy=policy(read_only=False, destination_writes=True), now=datetime.fromisoformat(NOW), publications=[],
                                 pressure=capacity.Pressure(ok=True), provisions=[receipt])
         self.assertEqual(result.report["provisions"][0]["status"], "provisioned")
         self.assertEqual(result.report["requested_effects"][0]["task"], "development_patch")
@@ -203,7 +203,7 @@ class TestProvisioning(unittest.TestCase):
         rec["upstream"]["base_ref"] = None
         rec["upstream"]["base_sha"] = None
         source = {"repository_id": 1, "base_ref": "main", "base_sha": SHA_C}
-        args = dict(contributions={"c": rec}, operations={}, consumed={}, projects={}, policy=policy(read_only=False),
+        args = dict(contributions={"c": rec}, operations={}, consumed={}, projects={}, policy=policy(read_only=False, destination_writes=True),
                     inputs=controller.Inputs(now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True), upstream_snapshots={UP: source}))
         tick = controller.tick(**args)
         bound = [r for k, r in tick.staged if k == "contributions"][-1]

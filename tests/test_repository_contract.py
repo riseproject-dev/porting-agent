@@ -109,7 +109,7 @@ class TestMigrationInventory(unittest.TestCase):
             self.assertTrue(item["owner"])
             self.assertIn(item["milestone"], range(1, 11))
             present = (WORKFLOWS / item["target"]).exists()
-            self.assertEqual(present, item["milestone"] <= 4, item["target"])
+            self.assertEqual(present, item["milestone"] <= 5, item["target"])
         for item in workflows:
             if item["agentic"] and (WORKFLOWS / item["target"]).exists():
                 stem = item["target"].removesuffix(".md")
@@ -236,6 +236,8 @@ class TestRepositoryHygiene(unittest.TestCase):
         self.assertEqual(
             executable,
             {
+                "image/entrypoint.sh",
+                "image/run.sh",
                 "scripts/check_gh_aw.sh",
                 "scripts/compile_gh_aw.sh",
                 "scripts/gh-aw-compat/check.sh",

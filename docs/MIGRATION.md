@@ -23,3 +23,7 @@ The control controller and Pages status workflows are now owned by `controller.y
 ### Milestone 4 live recovery corrections
 
 Flattened artifact extraction now resolves control state through `common.repository_root()` rather than package-depth arithmetic. Trusted controller collection can recover an investigation record job interrupted after exact queue Result resolution by revalidating the partial trusted publication; it does not reset or resubmit Work. Pages deployment now waits for exact current-run artifact readback and retries the official deploy action once after bounded rediscovery.
+
+## Milestone 5 update
+
+`image.yml` and `image/` now own the exact-base, linux/riscv64 reproduction image and anonymous exact-digest verification. `worker.md` joins the native queue with its normalized generated lock, pinned QEMU setup, pinned `gh-act`, stop-command isolation, immutable dossier readback, selected build/test reproduction, and bounded proposal evidence. The trusted worker record job performs structural scope/debug/reproduction validation but has no destination token or publication path. All four Milestone 5 deferrals are restored; destination provisioning, branch publication, development PR, and exact-head CI remain Milestone 6.

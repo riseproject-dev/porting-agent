@@ -71,7 +71,8 @@
         "note": "read-only: requested effects are reported, not executed",
         "would_stage": [],
         "requested_effects": [],
-        "canary_recovery_requests": []
+        "canary_recovery_requests": [],
+        "deferred_destination_operations": []
       },
       "stderr": "",
       "files": []
@@ -104,7 +105,8 @@
           "alerts": [],
           "provision_requests": [],
           "dev_pr_requests": [],
-          "canary_recovery_requests": []
+          "canary_recovery_requests": [],
+          "deferred_destination_operations": []
         },
         "requested_effects": [],
         "provision_requests": [],

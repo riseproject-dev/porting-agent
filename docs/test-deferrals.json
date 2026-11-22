@@ -3,26 +3,6 @@
   "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
   "deferrals": [
     {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_fetches_and_verifies_complete_committed_dossier",
-      "restoringMilestone": 5,
-      "prerequisite": "worker.md and its generated lock are introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_brackets_untrusted_output_with_stop_commands",
-      "restoringMilestone": 5,
-      "prerequisite": "worker.md and its generated lock are introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_prompts_require_rise_wheels_for_missing_build_and_test_dependencies",
-      "restoringMilestone": 5,
-      "prerequisite": "Python worker and investigator profile prompts are introduced"
-    },
-    {
-      "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_worker_forbids_unrelated_fork_ci_debug_changes",
-      "restoringMilestone": 5,
-      "prerequisite": "worker.md contains the bounded debug policy"
-    },
-    {
       "test": "tests/deferred/test_workflow_contracts.py.reference::TestWorkflowContracts.test_development_pr_writer_is_restricted_to_one_verified_fork",
       "restoringMilestone": 6,
       "prerequisite": "dev-pr.yml is introduced"

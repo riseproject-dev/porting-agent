@@ -49,10 +49,10 @@ class TestNativeQueueContracts(unittest.TestCase):
             self.assertEqual(len(setup), 1)
             self.assertEqual(setup[0]["version"], "v1.2.2")
 
-    def test_dispatcher_policy_admits_only_current_investigator(self):
+    def test_dispatcher_policy_admits_only_current_profiles(self):
         dispatcher = source("dispatcher")
         dispatch = dispatcher["safe-outputs"]["dispatch-workflow"]
-        self.assertEqual(dispatch["workflows"], ["investigator"])
+        self.assertEqual(dispatch["workflows"], ["investigator", "worker"])
         self.assertEqual(dispatch["max"], 1)
         lock = workflow("dispatcher.lock.yml")
         policies = []
@@ -64,12 +64,16 @@ class TestNativeQueueContracts(unittest.TestCase):
         self.assertTrue(policies)
         for policy in policies:
             pool = policy["pools"]["default"]
-            self.assertEqual(set(pool["profiles"]), {"investigator"})
+            self.assertEqual(set(pool["profiles"]), {"investigator", "worker"})
             self.assertEqual(
                 pool["profiles"]["investigator"]["workflow"],
                 ".github/workflows/investigator.lock.yml",
             )
-            self.assertEqual(pool["profiles"]["investigator"]["max_claims"], 1)
+            self.assertEqual(
+                pool["profiles"]["worker"]["workflow"],
+                ".github/workflows/worker.lock.yml",
+            )
+            self.assertTrue(all(profile["max_claims"] == 1 for profile in pool["profiles"].values()))
 
     def test_current_queued_canary_is_selected_without_manual_intervention(self):
         contribution = json.loads(
@@ -202,9 +206,15 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
         triggers = controller_workflow.get("on", controller_workflow.get(True))
         self.assertEqual(
             set(triggers["workflow_run"]["workflows"]),
-            {"Porting dispatcher", "Porting investigator"},
+            {
+                "Porting dispatcher",
+                "Porting investigator",
+                "Porting worker",
+                "Porting reproduction image",
+            },
         )
-        self.assertIn("investigator.lock.yml/runs?per_page=20", controller_text)
+        self.assertIn("for workflow in investigator.lock.yml worker.lock.yml", controller_text)
+        self.assertIn("actions/workflows/$workflow/runs?per_page=20", controller_text)
         self.assertIn('name == "porting-publication"', controller_text)
         self.assertIn("gh workflow run dispatcher.lock.yml", controller_text)
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", controller_text)

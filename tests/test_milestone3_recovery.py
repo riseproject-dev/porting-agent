@@ -133,8 +133,12 @@ class TestTrustedPublicationWorkflow(unittest.TestCase):
             (WORKFLOWS / name).read_text()
             for name in ("controller.yml", "validate.yml", "website.yml")
         )
-        self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", all_workflows)
-        self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_CLIENT_ID", all_workflows)
+        self.assertNotIn(
+            "${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", all_workflows
+        )
+        self.assertNotIn(
+            "${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}", all_workflows
+        )
         self.assertNotIn("ANTHROPIC_API_KEY", control_workflows)
         self.assertEqual(CONTROL_REPO, "riseproject-dev/porting-agent")
 

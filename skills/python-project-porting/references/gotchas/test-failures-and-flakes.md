@@ -1,0 +1,2260 @@
+# Gotchas -- Test failures, flakes & arch-specific bugs
+
+One thematic slice of the porting gotchas. Each entry keeps its permanent number (cited elsewhere as "gotcha N"); numbers are stable IDs, not sequential, and a few (33, 55, 56, 57) are reused across themes -- see [gotchas-index.md](../gotchas-index.md).
+
+To pull up one entry: `grep -n '^N\. ' references/gotchas/test-failures-and-flakes.md`.
+
+## In this file
+
+- **14** -- torch-dependent tests flake two ways on the riscv runner -- deselect, don't chase.
+- **33** -- One green interpreter beside identically-failing others is a CPython feature
+- **37** -- pytest-xdist's controller can SIGSEGV under the free-threaded interpreter;
+- **38** -- A slow runner turns a latent test race into a hard failure -- simulate the
+- **60** -- A SIGSEGV in a port's test run is usually an ordinary upstream refcount bug --
+- **61** -- A callback that stays armed past the assertion fires again during teardown (the
+- **115** -- A SIGSEGV that will not reproduce off the runner: get the native backtrace *in CI*
+- **379** -- A test asserting a specific cross-thread ordering (a `gc.collect()`-on-one-thread-
+- **120** -- Hypothesis' `too_slow` health check is a wall-clock budget on *input generation*,
+- **718** -- A single-occurrence SIGSEGV in a brand-new upstream code path (finufft's
+  `execute_adjoint`) that a byte-for-byte rebuild of the identical Release config no longer
+  reproduces is upstream's own immaturity, not a riscv64 or optimizer defect -- check
+- **164** -- A test helper with a per-architecture syscall table falls back to a fixed sleep on
+- **166** -- The riscv64 runners' libgomp faults on the `dynamic` and `guided` OpenMP
+- **167** -- A riscv64-only intermittent SIGSEGV: climb the control ladder before you debug
+- **719** -- A minimal duck-typed graph object in a `CIBW_TEST_COMMAND` can fail every single
+  leg identically, not with an infra blip or a per-leg divergence, when the compiled
+  extension does a hard `isinstance` check a sibling binding's extension does not.
+- **168** -- Running a diagnostic on the riscv64 runner: drive it from `CIBW_TEST_COMMAND`, and
+- **169** -- `astral-sh/setup-uv` hands you a python-build-standalone interpreter, and PBS links
+- **170** -- `np.linalg.eig` on a symmetric matrix returns *real* eigenvalues on x86_64 and
+- **205** -- A follow-up commit that fixes a broken `Upstream-Status:` line does not clear
+- **282** -- A matplotlib `image_comparison` test failing only on riscv64 is a font-rendering
+- **614** -- A cp314-only segfault deep inside a pybind11/proto binding after a from-source
+  Bazel build is upstream not shipping/testing that interpreter yet, not a riscv64 bug.
+- **283** -- A `cp314t`-only `PicklingError` from a `multiprocessing.Process(target=<local
+- **286** -- A vendored-ARPACK eigensolver test failing only on musllinux, not manylinux, can
+- **297** -- A test harness's own unbounded `readline()`-until-marker wait turns any slow or
+- **304** -- A hardcoded exact-equality assertion on a neural-network/matmul-heavy
+- **316** -- A hardcoded timing threshold on a metric that measures raw wall-clock
+- **317** -- A pure-Python, allocation-heavy test suite running ~8x slower on musllinux
+- **323** -- Gotcha 127's GIL-reenable safety net only rules out concurrency races -- a
+  single-phase-init C extension can still segfault on cp314t with no threading involved.
+- **362** -- A `multiprocessing.Process().join()` regression test for a native threadpool's
+  fork safety can hang the full length of its `pytest.mark.timeout` deterministically,
+  not flakily, on the riscv64 runner.
+- **416** -- A conftest-time `ImportError` is reported by pytest *without* the exception
+  chain, so a `dlopen` failure reaches the log stripped of its cause.
+- **414** -- A native RNG seeded from `time(NULL)` makes a stochastic test a wall-clock
+  lottery: replay consecutive epoch seconds through the library's own seed setter to
+  measure the real failure rate instead of re-running the suite.
+- **502** -- One binary of a multi-binary wheel can be unshippable while the others are
+  perfect: price the variant, not the package, and let upstream's own reduced builds be the
+  precedent.
+- **504** -- A discrete wrong count, not a ULP, can still be float: `-ffp-contract=fast`
+  fuses `a*b+c` into an FMA on riscv64 and shifts quantised coordinates into other buckets;
+  reproduce it on x86 with `-march=haswell`.
+- **507** -- A segfault from a hand-written `ctypes` smoke test is usually the test's own
+  declaration (`c_char_p.in_dll` on a char array, missing `restype`), not the wheel.
+- **519** -- A mass test failure is upstream's, not the port's, when the vendor's own
+  released x86_64 wheel fails the same suite -- prove it with one `pip install`, then ship a
+  functional smoke test instead of a half-suite deselect list.
+- **699** -- Gotcha 504's class extends to a boolean: a trivially feasible instance coming back
+  `is_proven_infeasible` on riscv64 only, with no exact-equality assertion in sight, is still
+  an architecture float divergence inside a vendored exact solver, not a wrong build.
+- **535** -- A release tag can ship tests its own source does not satisfy -- diff the failing
+  test against upstream's post-release `master` and cherry-pick the fix as a `Backport`
+  patch, before blaming the architecture.
+- **545** -- A source-only root-cause theory that reads convincingly is still a theory:
+  confirm it against a fresh CI run before calling it fixed -- a plausible padding/`memcmp()`
+  bug, reasoned entirely from source, turned out not to even apply to the failing line
+  (retracted; see 552 for the real cause).
+- **552** -- Docker's default seccomp profile blocks `pidfd_getfd(2)` with `EPERM` unless the
+  container has `CAP_SYS_PTRACE`, even for a process duplicating a fd of its own -- a
+  test-environment gap, not a library bug.
+- **553** -- A SIGBUS in a doubly-nested tracking-provider pool stack's aligned-allocation
+  path is real but unresolved on riscv64 without hardware to reproduce interactively --
+  confirmed not threading-specific (it crashes both the single- and multi-threaded variant
+  of the same helper), diagnosis stops there honestly.
+- **568** -- A subprocess-exit self-test's own hardcoded `TIMEOUT` failing only on `cp314t`,
+  only on one version, with byte-identical test source across versions, is free-threading
+  tipping an existing margin, not a new bug -- patch the timeout with real headroom rather
+  than skip the test.
+- **570** -- A hardcoded `sys.getrefcount()` baseline is an interpreter-version contract:
+  CPython 3.14's `LOAD_FAST_BORROW` can lower it by one per affected call site -- branch the
+  expected value on `sys.version_info`, don't skip the test. Plus: a cache key over a whole
+  patches directory rebuilds on changes it can't have affected -- key it on only the files
+  the cached step reads.
+- **580** -- A job that "ran 4 hours then failed" may have failed in hour two: a test that
+  abandons a non-daemon thread keeps the interpreter alive after pytest's summary line until
+  the thread finishes -- read the summary's timestamp, not the job duration. Plus: a
+  cancellation flag reset when execution starts swallows an interrupt sent during a slow
+  compile (gotcha 38's shape).
+- **583** -- A test failing on riscv64 only because our registry carries a newer dependency than
+  upstream's lock file is drift, not an arch bug: reproduce it on x86_64 with PyPI's wheels of
+  both versions. mink's `solve_ik` tests fail against daqp 0.9.x (all arches) and pass on
+  upstream's locked 0.8.5 -- pin the lock's version in `CIBW_TEST_REQUIRES`, even from sdist.
+- **593** -- cp314/cp314t-only `ValueError: cannot resize an array that may be referenced by
+  another object` is NumPy >= 2.4's Python 3.14 `ndarray.resize` refcheck, which a Cython caller
+  always trips; same numpy on every leg, so not gotcha 583's drift -- backport upstream's fix.
+- **594** -- A C++ (doctest) load-generator test that compares request counters against
+  wall-clock sleeps flakes on the busy riscv64 runner: prove it with a pass on an earlier
+  run of the same sources, a logged snapshot that satisfies the failed check, and the
+  deterministic arithmetic's own passing tests -- then `--subcase-exclude` the narrowest name.
+- **596** -- `cannot open shared object file: No such file or directory` for a file that exists
+  is glibc's ENOENT for a foreign-machine ELF: a platform-string fallback mapped riscv64 to
+  `amd64` and downloaded x86-64 plugins (ladybug `INSTALL json`) -- patch it, deselect the tests.
+- **616** -- A tool that introspects a *target* process's native call stack (pystack) can find
+  every CPython version's eval-loop/GC frame on riscv64 except 3.13+, where the exact same 28
+  tests fail identically on 3.13, 3.14 *and* 3.14t while 3.12 is fully green -- deselect per
+  interpreter, don't skip the whole suite.
+- **645** -- Gotcha 616's gap recurs per-feature, not just per-version: pystack 1.7.2's new
+  signal-frame-unwind tests fail on riscv64 on every interpreter (not just 3.13+), because
+  elfutils has no riscv64 unwind backend at all -- deselect both unconditionally.
+- **598** -- A single long build-then-test job gives its test step whatever is left of the
+  job's `timeout-minutes`, so a hang holds the runner for hours (openvino cp314t: 11h22m, then
+  `cancelled`): put a step-level `timeout-minutes` on the test step and upload wheels before it.
+- **571** -- On free-threaded CPython (cp314t), an object whose last reference is dropped on
+  a native (non-Python) thread isn't freed there and then -- freeing is deferred to whichever
+  thread next runs Python bytecode. A test that drops the last reference on a native
+  callback thread and then blocks the main thread in a call that only returns once that
+  object is freed (e.g. waiting for a socket the object still owns to close) can deadlock
+  forever under free-threading while working fine under the GIL, intermittently, because it
+  depends on which thread gets there first (awscrt's `test_stream_lives_until_complete_*`).
+- **572** -- This fleet's riscv64 cores are Sv39-only, which caps a single process's virtual
+  address space at 256GB -- a hardcoded multi-TB mmap reservation (a database/allocator
+  defaulting to "reserve huge, use little") fails outright here, not just slowly (kuzu's
+  `max_db_size` defaulting to 8TB: `Database()` fails immediately with
+  `Mmap for size 8796093022208 failed`). Reproduces on x86 too under `ulimit -v 256GB`, so
+  it's not riscv64-specific hardware weirdness, just the first arch in this fleet whose real
+  ceiling is below what upstream assumed safe to over-reserve. Fix: shrink the reservation
+  (halving on an mmap failure until it fits) rather than hardcoding 256GB, since Sv48 riscv64
+  hardware exists and a hardcoded cap would under-provision there.
+- **589** -- A library with its own runtime CPU dispatch and an override knob reproduces a
+  riscv64-only test failure on x86_64 in minutes: force its non-SIMD path with upstream's own
+  wheel (kiwipiepy's `KIWI_ARCH_TYPE=none`).
+- **602** -- A tool that introspects a *target* process's native call stack (pystack) can find
+  every CPython version's eval-loop/GC frame on riscv64 except 3.13+, where the exact same 28
+  tests fail identically on 3.13, 3.14 *and* 3.14t while 3.12 is fully green -- deselect per
+  interpreter, don't skip the whole suite.
+- **613** -- A torch multiprocessing test's `RuntimeError: ... No space left on device (28)`
+  pickling tensors through `_share_fd_cpu_()` is `/dev/shm` exhaustion from Docker's 64MB
+  default, not disk space or a riscv64 bug -- raise it with `CIBW_CONTAINER_ENGINE`'s
+  `create_args` (same knob as gotcha 552) rather than deselecting an addressable failure.
+- **626** -- Since numpy 2.5, `np.linalg.eig` returns complex eigenvectors on *every* arch, even
+  for a diagonal matrix: gotcha 170's dtype trap is no longer riscv64-only, so a released
+  package calling `eig` on a symmetric matrix fails everywhere -- look for upstream's `eigh` fix.
+- **628** -- Tests that hardcode x86 SIMD alignment (16/32 bytes) or read `/proc/cpuinfo`'s
+  `flags` fail as a fixed, countable set on every non-x86 arch; an upstream that `test-skip`s
+  the whole suite on aarch64 for "N failing tests" is usually this -- match N, deselect only those.
+- **630** -- OpenUSD's riscv64 `ArchWarn: ARCH_CACHE_LINE_SIZE != Arch_ObtainCacheLineSize()`
+  goes to the stderr of every `pxr` process and breaks every exact-stderr test (5 in
+  usd-exchange, across 2 helpers). Gate the check on `!ARCH_CPU_RISCV` in one OpenUSD patch;
+  skipping tests one by one failed two CI rounds in a row.
+
+---
+
+14. **torch-dependent tests flake two ways on the riscv runner -- deselect, don't chase.**
+    torch is usually gated `python_version < '3.14'`, so these bite your `cp312`/abi3
+    build but not `cp314t` -- a tell it's torch, not your wheel. (a) torch's libcpuinfo
+    can't parse this runner's `/sys/.../core_id` (reads `-1`) and writes
+    `Error in cpuinfo: failed to parse … core_id` to **stderr**, so any test asserting a
+    subprocess's `stderr == ""` fails nondeterministically -- deselect the whole module.
+    (b) tests spawning many workers under a hard timeout (16 subprocesses,
+    `wait(timeout=60)`) blow it on the slower runner. To drop tests, override
+    `CIBW_TEST_COMMAND` with **`--ignore <abspath>`** (whole module) and
+    **`-k "not <name>"`** (single test) -- *not* path-based `--deselect {package}/…`,
+    which silently no-ops because pytest reports collected nodeids relative to its
+    rootdir while your path is absolute. Verify locally by running pytest from a
+    different cwd and checking the deselected count is non-zero.
+
+33.  **One green interpreter beside identically-failing others is a CPython feature
+    gate, not a build bug (the debugpy case).** When a per-interpreter matrix comes back
+    with cp314 fully green while cp312 and cp313 each fail the *same* N tests, suspect a
+    runtime capability that newer CPython provides natively and older ones reach through
+    arch-specific native code that has no riscv64 build. debugpy attaches to a running
+    process by injecting a shim from a prebuilt per-arch library --
+    `pydevd_attach_to_process/add_code_to_python_process.py` accepts only
+    `arm64/amd64/x86/x86_64/i386` -- but on 3.14 it goes through **`sys.remote_exec()`
+    (PEP 768)** and needs no shim, so the 100 `attach_pid` failures were riscv64-real on
+    3.12/3.13 and genuinely absent on 3.14.
+    - **Read the failure *set* before any failure text.**
+      `grep -oE 'FAILED [^ ]+' <log> | sort -u` then count how many carry the suspect
+      parametrisation -- 100 of 100 is a gate, a scattered mix is not. That one command
+      separates "upstream doesn't support this on riscv64" from "our wheel is broken",
+      and it costs nothing next to re-reading tracebacks.
+    - **Deselect per matrix entry, not globally.** Derive a per-entry filter from
+      `matrix.python` (`-k "${{ matrix.python != 'cp314' && 'not feature' || '' }}"`; in
+      an unconverted workflow, turn `python: [cp312, ...]` into `include:` entries with a
+      `pytest_k` key) and interpolate it into the test command, so the interpreter that *can* exercise the
+      feature keeps testing it -- dropping it everywhere would have thrown away 105
+      real tests on cp314. `-k ""` is a valid no-op filter, so the unrestricted entry
+      needs no second command shape.
+    - **Free-threading is settled by upstream signals, not by debugging the crashes.**
+      Three cheap checks decide whether `cp314t` belongs in the matrix at all: does PyPI
+      list a `cp3XXt` wheel, does `tox.ini`/upstream CI carry a free-threaded env, do the
+      classifiers mention free threading. debugpy answers no to all three, and its cp314t
+      job crashed 40 pytest-xdist workers spread evenly over *every* test module --
+      breakage of that shape means the configuration is unsupported, not that one feature
+      is broken. Shipping it would give riscv64 a build upstream ships nowhere; drop the
+      entry and say why in a one-line comment. (A *coherent subset* of failures would
+      mean the opposite -- keep digging.)
+
+37. **pytest-xdist's controller can SIGSEGV under the free-threaded interpreter;
+    `-n 0` sidesteps it (the snowflake-connector-python case).** A suite that runs
+    green on `cp312`/`cp313`/`cp314` can kill the **cp314t** job with
+    `Fatal Python error: Segmentation fault`, and the traceback is entirely
+    *pure-Python execnet frames* -- `gateway_base._read_int4` →
+    `_thread_receiver`, under `<Cannot show all threads while the GIL is
+    disabled>`, with `OSError: cannot send (already closed?)` from the workers
+    trailing behind it. No project code on the stack, no `.so` involved, and it
+    is **intermittent**: the same job on the same tree completed the whole suite
+    on an earlier run. That is xdist's own gateway machinery, which only exists
+    when `-n` is on, so the fix is to take execnet out of the picture for that
+    one interpreter rather than to chase the crash.
+    - **`-n 0` is the clean off switch, not `-p no:xdist`.** xdist's
+      `pytest_cmdline_main` special-cases it: `numprocesses == 0` forces
+      `dist = "no"` and `tx = []`, so no gateway is created and no receiver
+      thread spawns -- while the plugin stays loaded, so `pytest.mark.xdist_group`
+      is still a registered marker (`-p no:xdist` deregisters it and trips
+      `--strict-markers`). It also overrides an inherited `--dist loadfile`, so
+      the flag can stay in a shared command string.
+    - **Vary it per matrix entry, not globally** -- serial costs real time (30min
+      vs 18min here), so keep upstream's `-n auto` on the GIL-ful interpreters.
+      Switch the matrix from a bare `python:` list to `include:` entries carrying
+      the flags, and interpolate `${{ matrix.pytest_dist }}` into
+      `CIBW_TEST_COMMAND`.
+    - Distinct from gotchas 21 and 25, which are about what the xdist *workers*
+      import. This one is the **controller** process crashing outright, and no
+      amount of `PYTHONNOUSERSITE`/`test-sources` touches it.
+
+323. **Gotcha 127's GIL-reenable safety net only rules out concurrency races --
+     a single-phase-init C extension can still segfault on cp314t with no
+     threading involved at all (the mwparserfromhell case).** mwparserfromhell's
+     tokenizer extension calls `PyModule_Create` (no `Py_mod_gil` slot), so by
+     gotcha 127 it should be immune: CPython re-enables the GIL at import and
+     warns, which is supposed to serialize every call into it. It still
+     segfaulted deterministically inside `Tokenizer_parse`, on a plain
+     single-worker `pytest` run (no `-n`, no xdist frames on the stack, no
+     concurrency of any kind) -- proof this was never a race gotcha 127's
+     safety net could have caught. Confirmed by an open upstream tracking
+     issue (`earwig/mwparserfromhell#343`, "Enable mwparserfromhell for use
+     with thread-free Python releases") rather than by chasing the C bug:
+     free-threading support is genuinely unimplemented, not a build artifact,
+     and PyPI itself ships no `cp314`/`cp314t` wheel for the package either.
+     Don't treat "no `Py_mod_gil` slot" as proof cp314t is safe to ship -- it
+     only means races get serialized, not that the extension behaves
+     correctly under the free-threaded build's other differences. Drop the
+     interpreter and cite the upstream issue in a one-line matrix comment,
+     same as gotcha 14's "settled by upstream signals, not by debugging the
+     crashes" rule.
+
+38. **A slow runner turns a latent test race into a hard failure -- simulate the
+    slowness on your fast host instead of guessing.** Test suites are full of
+    timing assumptions that hold on the x86 CI upstream sizes them for. Three
+    shapes showed up in one port, all of them *arch-independent bugs* that only
+    riscv64 was slow enough to reach:
+    - **A fixed timeout constant sized for fast hardware** -- a wiremock
+      standalone server given 12s to answer `/__admin/health` while four xdist
+      workers each boot their own JVM; a `platform_detection_timeout_seconds=1`
+      budget that a first `boto3.client("sts", …)` service-model load overshoots.
+      Both are the playbook's "artificial test limitation" patch case: raise the
+      ceiling, note that the wait returns early so faster hardware pays nothing.
+    - **A thread the code under test deliberately abandons.** The nastiest one:
+      `Auth.authenticate()` runs its MFA wait in a daemon `Thread` and gives up
+      with `t.join(timeout=…)`, so the request mock keeps running after the call
+      returns -- and reaches its trailing `mock_cnt += 1` ~9s later, inside the
+      *next* sub-case, which has already reset that global to stage its own
+      response. Result: a wrong branch and a `KeyError` instead of the expected
+      exception. Fix the mock to complete its mutation of shared state **before**
+      it sleeps (read-and-advance in one step at the top), leaving branch
+      selection unchanged -- not to widen the assertion.
+    - **Reproduce it on any host by inserting the delay yourself.** Find the
+      window the failure needs and `time.sleep()` it open -- here, an 11s sleep
+      right after the next sub-case's counter reset reproduced the exact CI
+      `KeyError` on macOS/arm64, and the patch flipped it to green. Same
+      30-second, no-QEMU discipline as gotchas 23/25/29, applied to timing: it
+      proves the bug is upstream's rather than the port's, and it is the evidence
+      that justifies the patch in review.
+    - **Look for upstream's own admission.** A `skipif(IS_WINDOWS, reason="…race
+      condition issues with the global …")` on the very test that fails is
+      upstream telling you the race is known and merely platform-dependent --
+      quote it in the commit message and tag the patch `To upstream`, not
+      `Inappropriate`.
+    - **Keep `Upstream-Status:` on ONE physical line.** `ci_scripts/check_patch.py`
+      matches `^Upstream-Status: *(.*)$` and then validates the bracketed comment
+      with `^(\[.*\])?$` -- a bracket wrapped across two lines leaves the value
+      unbalanced and fails `check_patches`, costing a push. Verify before pushing
+      with `uv run --python 3.13 python ci_scripts/check_patch.py origin/main HEAD`
+      (the script needs ≥3.12 for its nested-quote f-strings).
+
+60. **A SIGSEGV in a port's test run is usually an ordinary upstream refcount bug --
+    reproduce it on your own host's interpreter before blaming riscv64 (the
+    confluent-kafka case).** A cp314 job died with `Fatal Python error: Segmentation
+    fault` whose Python traceback was entirely stdlib and pytest --
+    `re/_compiler.py:_generate_overlap_table` compiling the literal pattern in
+    `ex.match('expected configuration dict')` -- with no project frame anywhere. The
+    same crash, same file and same line, reproduced on macOS/arm64 under CPython
+    3.14.7 against upstream's **released** wheel in about a second.
+    - **faulthandler names the frame that was running when the fault was *hit*, not the
+      code that caused it.** A traceback made only of stdlib/pytest frames is the
+      signature of heap corruption committed earlier; mining it for a cause is wasted
+      time. Read the test *ordering* instead -- here the fault landed on the first
+      statement of the first test of the module that ran immediately after
+      `tests/test_Admin.py`.
+    - **One job red and the others green is not gotcha 33's feature gate when the
+      failure is a fault.** Gotcha 33's "read the failure set" separates a CPython
+      capability gate from a broken wheel, and it assumes *test failures*. A
+      use-after-free only manifests when the freed allocation happens to be reused, so
+      which interpreter dies is a lottery -- cp313 passing the identical tree is
+      evidence *for* corruption, not against it.
+    - **Reproduce on the host before anything else.** `uv python list --only-installed`
+      usually already has the interpreter, `pip install <pkg>==<ver>` gets upstream's
+      released wheel, and running the two adjacent test modules costs seconds. No QEMU,
+      no rebuild -- and if it reproduces, the bug is upstream's and arch-independent,
+      which is the whole finding.
+    - **Bisect twice.** First over the test ids (`--collect-only`, then `head -n N` of
+      that list); then over the *body* of the offending test -- truncate the function at
+      line N and append `pass`. That narrowed 4600 tests to one statement,
+      `admin.delete_records([TopicPartition("topic", 0, 10)])`.
+    - **Prove the mechanism against the released wheel with `sys.getrefcount`**, holding
+      a second strong reference so the over-decref cannot actually free the object:
+      3 before the call, 2 after ⇒ the function drops a reference it does not own.
+      `PyArg_ParseTuple*`'s `O` targets are **borrowed**; `Admin_delete_records()` never
+      `Py_INCREF`ed `topic_partition_offsets` and `Py_XDECREF`ed it on both the success
+      and the `err:` path. The fix is deleting the two decrefs.
+    - **Sweep for siblings before writing the patch.** ~20 lines of Python over the
+      extension's `.c` files, pairing each `PyArg_ParseTuple*` target with a
+      `Py_(X)DECREF` of that same name and no matching `Py_INCREF`, found exactly one
+      real hit -- the others decref `future`, which those functions deliberately
+      `Py_INCREF` because the options struct hands it to a background callback. Say so
+      in the commit message; it is what makes the patch obviously right.
+    - **`python repro.py | head` swallows the evidence.** stdout is block-buffered when
+      piped and a SIGSEGV loses the buffer, so the script looks like it crashed *before*
+      its first `print` and faulthandler prints `<no Python frame>`. Run it with `-u`;
+      the real story was that the script completed and faulted during interpreter
+      shutdown, which is itself the tell that the damage was done earlier.
+
+61. **A callback that stays armed past the assertion fires again during teardown (the
+    event-API sub-shape of gotcha 38).** Gotcha 38's shapes are a fixed timeout
+    constant, an abandoned thread reaching a trailing mutation, and "insert the delay
+    yourself". A fourth recurs in wrappers around C event loops: the test registers a
+    callback that *always* raises, asserts the exception surfaces out of the one call it
+    cares about, then closes the handle **with the callback still registered**. The
+    native library keeps queueing that event for the object's lifetime and `close()`
+    dispatches whatever is queued, so the callback raises a second time and the
+    exception escapes `close()` instead of the call under test.
+    confluent-kafka's `test_callback_exception_no_system_error` does it with a
+    `stats_cb` at `statistics.interval.ms=100` and an `error_cb` on the broker-resolve
+    retry backoff: the handful of statements between the assertion and `close()` cost
+    under 100ms on x86 and more than that on the riscv64 runner, so one interpreter's
+    job fails while another's passes on the identical tree.
+    - **Fix it with "raise once"** -- guard the callback on its own accumulator
+      (`if called: return`) -- not by widening the assertion. Every assertion in the test
+      stays untouched and only the redundant later raises disappear.
+    - **Reproduce with gotcha 38's delay trick on the *real* test**, not a hand-written
+      excerpt: copy the module, insert `time.sleep(1.2)` before each `close()`, run it
+      against upstream's released wheel. Fails unpatched, passes patched, on any host,
+      in seconds -- and that is the evidence a reviewer wants for the patch.
+
+115. **A SIGSEGV that will not reproduce off the runner: get the native backtrace *in CI*
+    with a throwaway gdb commit (the lightgbm case, and the other half of gotcha 60).**
+    Gotcha 60's rule is to reproduce a fault on your own host before blaming riscv64, and when
+    it works it is the whole diagnosis. When it does not -- the same tree runs clean under QEMU
+    and on aarch64 -- the next cheapest evidence is still a *native* backtrace, and CI is the
+    only place to get one. Two settings make it possible and are worth knowing before you spend
+    the cycle:
+    - **The wheel is stripped by default**, so a backtrace is addresses only. scikit-build-core
+      strips via `install.strip`; override both it and the build type from `CIBW_ENVIRONMENT`:
+      `SKBUILD_CMAKE_BUILD_TYPE=RelWithDebInfo SKBUILD_INSTALL_STRIP=false` (setuptools
+      projects: `CFLAGS=-g` and a `CIBW_REPAIR_WHEEL_COMMAND` without `--strip`).
+    - **gdb works inside the cibuildwheel container on the real runner** (`dnf -y install gdb`
+      in `CIBW_BEFORE_TEST_LINUX`) but **not under QEMU**, where it dies with
+      `ptrace: Function not implemented` -- so do not spend time debugging the emulated case.
+    Then stage a loop as the test command, because an intermittent fault needs several attempts
+    (lightgbm's took 4 of 6, ~2 min each):
+    ```bash
+    for i in 1 2 3 4 5 6; do
+      gdb -batch -ex run -ex "thread apply all bt 25" --args python -m pytest -q -x <the tests> \
+        > /tmp/gdb-$i.log 2>&1
+      grep -q SIGSEGV /tmp/gdb-$i.log && { tail -120 /tmp/gdb-$i.log; exit 1; }
+    done
+    ```
+    Commit it, read the trace, then `git reset --hard` back and force-push so the PR keeps a
+    clean history -- the debug commit must not be named `revertme`/`DO NOT MERGE`, which
+    `pr-checks.yml` rejects outright.
+    - **`thread apply all bt` is the point, not `bt`.** The faulting thread's own frame is often
+      inside the OpenMP runtime (`gomp_iter_guided_next`) and says nothing; the *sibling*
+      threads show which parallel region and which loop body were live, and the main thread
+      shows the C API entry point and its `parameters` string -- which is what identifies the
+      failing call from Python.
+    - **Before concluding "toolchain bug", exhaust the cheap instrumented rebuilds under QEMU**,
+      since they detect latent corruption even when the crash itself does not reproduce:
+      `-D_GLIBCXX_ASSERTIONS` (bounds-checks `std::vector::operator[]`, the usual suspect when a
+      loop indexes a per-thread buffer by `omp_get_thread_num()`) costs one rebuild. **ASan is
+      not an option on riscv64 today** -- it aborts in its own allocator with
+      `CHECK failed: sanitizer_allocator_primary32.h:292 "((res)) < ((kNumPossibleRegions))"`
+      before running any user code, so don't budget for it.
+
+120. **Hypothesis' `too_slow` health check is a wall-clock budget on *input generation*,
+    and a slow runner trips it (a fourth shape for gotcha 38).** `@settings(deadline=None)`,
+    which such suites apply liberally, does **not** cover it: `FailedHealthCheck: Input
+    generation is slow: Hypothesis only generated N valid inputs after X seconds` fires
+    before any assertion runs. time-machine's culprit was `st.timezones()` -- each example
+    constructs a `ZoneInfo`, and the first construction per key parses a TZif file off disk,
+    ~0.37s per draw on the riscv64 runners against microseconds on upstream's x86 CI. It
+    surfaced on `cp314t` alone, and on the one test in the module carrying no `@settings`
+    at all, which reads like a free-threading bug and is not.
+    - **The failure output names the scope for you**: it prints a per-argument table of
+      slowest draws, so you can see which strategy is slow. Patch every test whose
+      strategies can reach it (here `zoneinfos` directly, plus the composite that mixes it
+      with UTC) -- patching only the one that failed leaves the same flake to reappear
+      elsewhere next run.
+    - **Scope the suppression to those tests, not the module:**
+      `@settings(suppress_health_check=[HealthCheck.too_slow])`, leaving `deadline` and
+      `max_examples` untouched, so it is a no-op on hardware fast enough never to trip it.
+      There is no env var for this -- Hypothesis profiles have to be registered from a
+      `conftest.py` -- so it is a patch, `Upstream-Status: Inappropriate [native runner
+      specific]`.
+
+164. **A test helper with a per-architecture syscall table falls back to a fixed sleep on
+    riscv64 -- and riscv64's numbers are aarch64's (the memray case).** Test suites that need
+    "wait until the child is actually blocked" commonly poll `/proc/<pid>/syscall` against a
+    hardcoded table, with an `else: time.sleep(1.0)  # hope for the best` arm for unknown
+    architectures. That arm is gotcha 38's fixed-timeout shape in disguise, and it is the only
+    one riscv64 ever reaches: memray's `_wait_until_process_blocks` gave the `memray live`
+    client one second to reach its `connect()`, the runner needed longer, and the SIGINT the
+    test then sent hit the default handler -- `assert -2 == 0`, on every interpreter, with
+    nothing about the wheel at fault.
+    - **riscv64 uses the unified `scripts/syscall.tbl` (abi `64`/`common`), the same table
+      aarch64 uses, so adding `riscv64` to the existing aarch64 branch is the whole patch** --
+      nanosleep 101, clock_nanosleep 115, accept 202, connect 203. Confirm rather than assert
+      it: `curl -s https://raw.githubusercontent.com/torvalds/linux/v6.12/scripts/syscall.tbl`,
+      then `dnf install linux-libc-dev`/`apt-get install linux-libc-dev` in a riscv64 container
+      and grep `/usr/include` for `__NR_*`. Both take seconds and the second one is the real
+      header the kernel ships.
+    - **Widening the branch is safer than widening the sleep.** These loops have no timeout, so
+      a wrong number hangs the job until the workflow's `timeout-minutes` -- check the arch
+      selects `HAVE_ARCH_TRACEHOOK` (riscv does, so `/proc/<pid>/syscall` is populated) before
+      trusting the poll at all.
+    - Grep for it while reading the suite: `platform.machine()` or `uname -m` next to a literal
+      number table is the tell, and the same shape shows up wherever a project maps arch →
+      syscall/ABI constants (seccomp filters, ptrace helpers, `libc` fallbacks).
+
+166. **The riscv64 runners' libgomp faults on the `dynamic` and `guided` OpenMP
+    schedules -- `static` is unaffected (the lightgbm case; see `patches/lightgbm/4.7.0/0002-*`).**
+    A 40-line C program that allocates nothing in the loop body segfaults 3 times out of 3
+    under `schedule(guided)` and `schedule(dynamic)`, on the bare `ubuntu-24.04-riscv` runner
+    with GCC 13.3.0 *and* inside `manylinux_2_39_riscv64` with GCC 14.3.1, while
+    `schedule(static)` on the same program and 30M concurrent `malloc`/`free` per thread are
+    clean. The identical binaries pass under QEMU riscv64 and on `manylinux_2_39_aarch64` at
+    4, 16 and 64 threads. Tracked as riseproject-dev/python-wheels#617.
+    - **So an OpenMP-heavy port can fail with a SIGSEGV that has nothing to do with the
+      package.** The signature is a fault *inside* libgomp -- `gomp_iter_guided_next()` or
+      `gomp_iter_dynamic_next()` at frame #0 with the project's `._omp_fn.N` at #1 -- hitting
+      the packages that run a very large number of small parallel regions. lightgbm reaches
+      it once per boosting iteration through the ranking objective and once per sparse
+      dataset through `FeatureGroup::FinishLoad`.
+    - **Two env vars separate it from a bug in the package, in minutes on the runner**:
+      `OMP_NUM_THREADS=1` and `OMP_WAIT_POLICY=passive GOMP_SPINCOUNT=0` each take it from
+      9/10 failures to 0/10. A codegen bug would not care about the wait policy, and a race
+      in the package would not be reproduced by a C program containing none of it.
+    - **`grep -rho 'schedule([a-z]*' src include | sort | uniq -c` prices the workaround
+      before you write it.** LightGBM asks for dynamic or guided in 13 of ~230 parallel
+      regions, so a patch moving those to static is small and costs only load balancing on
+      loops whose iterations differ in cost. Tag it `Inappropriate` with the issue link and
+      say to revert it when the toolchain is fixed -- it is our infrastructure's defect, not
+      upstream's.
+    - **Confirmed again on a second, unrelated code path in the same PR -- this is a per-loop
+      risk across a whole vendored tree, not one function.** healpy's PR
+      riseproject-dev/python-wheels#2430 hit the identical libgomp fault twice, in two
+      different vendored subtrees. First in libsharp's four `schedule(dynamic,*)` loops --
+      `map2phase`, `phase2map`, the alm/coefficient loop in `sharp_execute_job` (all in
+      `sharp.c`), and `sharp_legendre_roots.c`'s root finder (`patches/healpy/1.20.0/0002-*`).
+      Then, independently, in `cextern/healpix`'s own `Healpix_cxx` code: `mask_tools.cc`'s
+      `dist2holes()` (`schedule(dynamic,10000)` and `schedule(dynamic)`) and
+      `healpix_map.h`'s `Healpix_Map::swap_scheme()` (`schedule(dynamic,1)`)
+      (`patches/healpy/1.20.0/0003-*`). Same signature both times -- a segfault inside
+      libgomp, specific to the riscv64 runners, gone once the loop is `schedule(static)` --
+      but a different function each time. So when a fresh segfault in a package that vendors
+      OpenMP-using C/C++ code matches this signature, don't assume the fix is confined to
+      whichever function crashed first: `grep -rn 'schedule(dynamic\|schedule(guided'` across
+      the *whole* vendored tree and convert every hit, not just the one in the backtrace.
+
+167. **A riscv64-only intermittent SIGSEGV: climb the control ladder before you debug
+    anything.** Gotcha 60 says to reproduce a fault on your own host before blaming the
+    architecture, and gotcha 115 gets a native backtrace from CI when that fails. Between
+    them sit three controls that say *architecture, toolchain, or code* -- none needs the
+    runner, and each costs minutes:
+    - **QEMU riscv64 executes the same instructions but serialises atomics**, so a
+      *miscompile* reproduces there and a *race* does not. lightgbm's whole suite ran green
+      under QEMU while the same tree faulted on the runner -- that alone ruled out codegen.
+    - **`manylinux_2_39_aarch64` on an arm64 host is real parallelism on a weakly-ordered
+      machine** (gotcha 101's rehearsal used as a race control). Oversubscribe it --
+      `OMP_NUM_THREADS` at 4, 16 and 64 -- and loop the failing tests. 36 clean runs there
+      put the fault on riscv64 rather than on the code's threading.
+    - **Then a standalone C reproducer of whatever the backtrace names**, run on the bare
+      runner *and* in the manylinux image. Whether a 40-line `#pragma omp parallel for`
+      faults on its own is the whole difference between "our wheel is broken" and "the
+      toolchain is", and it is a two-minute job that needs no wheel build.
+    **ThreadSanitizer is not one of the controls.** GCC's libgomp carries no TSan
+    annotations, so its barriers are invisible and every cross-region access is reported:
+    lightgbm produced 80 warnings, all of them allocator reuse. The tell is that *every*
+    `SUMMARY:` line names `operator new`/`delete`/`memcpy`/`memmove`/`memset`/`free` rather
+    than a project line -- check with `grep '^SUMMARY: ThreadSanitizer' tsan.out | sed
+    's|.*data race ||' | sort | uniq -c` before reading a single report. It is usable only
+    with an annotated runtime (LLVM libomp + Archer), and the aarch64 manylinux image ships
+    no clang.
+
+168. **Running a diagnostic on the riscv64 runner: drive it from `CIBW_TEST_COMMAND`, and
+    never leave the branch in that state.** Gotcha 115 commits a throwaway gdb loop; the
+    same shape carries any experiment that needs the real hardware -- a rebuild at another
+    optimisation level, `MALLOC_CHECK_=3`, an instrumented library swapped over the
+    installed one. Five mechanics, each of which cost a cycle to learn:
+    - **A maintainer can merge while you are mid-experiment.** #481 was merged with the
+      probe job still in the workflow and an `if:` guard switching the build off, so `main`
+      briefly carried a workflow that built nothing. Gotcha 115's "reset and force-push
+      afterwards" is not enough -- between pushes the branch head *is* the deliverable. Keep
+      diagnostics to the shortest possible window, and check the PR is still open before
+      pushing the next one.
+    - **A bare `podman run` on `ubuntu-24.04-riscv` dies with `could not find slirp4netns,
+      the network namespace can't be configured` (exit 127)** unless you pass
+      `--network=host`, as `build-cryptography.yml` and `build-orjson.yml` do. It also
+      re-pulls the manylinux image under podman even though cibuildwheel already has it --
+      nine minutes, for nothing.
+    - **Stage helper scripts into the workspace root with a `run:` heredoc before the
+      cibuildwheel step** (gotcha 7) and reach them as `{project}/diag.sh`. `{project}` is
+      the whole checkout inside the container even when `test-sources` has emptied the test
+      cwd (gotcha 5), so an extracted sdist at `{project}/dist/<pkg>-<ver>` is right there
+      to re-run `cmake` against. End the script `exit 0` so a red experiment still lets the
+      job finish.
+    - **Verify the path you are swapping the rebuilt library into.** A wrong path makes
+      `cp` create a file nothing loads, and the experiment silently re-measures the
+      original -- a whole "rebuild at -O1" round was wasted that way. Ask the package where
+      it loads from (`python -c 'from <pkg>.libpath import _find_lib_path; print(...)'`)
+      rather than guessing, and print `ls -l` before and after.
+    - **Rebuilding at another optimisation level needs `CMAKE_CXX_FLAGS_RELEASE`, not
+      `CMAKE_CXX_FLAGS`**, when the project appends `-O3` to the latter itself: per-config
+      flags land after `CMAKE_CXX_FLAGS` and the last `-O` wins. And **put anything that
+      needs no wheel in its own job** -- a libgomp probe answers in ten minutes instead of
+      queueing behind a multi-hour build.
+
+662. **When gotcha 115's own diagnostic rebuild is what makes the SIGSEGV go away, that *is*
+    the finding -- ship it as `SKBUILD_CMAKE_BUILD_TYPE=RelWithDebInfo`, not as a deeper dig
+    (the robust-laplacian case).** All four interpreter legs crashed identically at
+    `CIBW_TEST_COMMAND` with no Python-level traceback under scikit-build-core's default
+    Release config (`-O3 -DNDEBUG`). The gotcha 115 gdb-backtrace rebuild
+    (`SKBUILD_CMAKE_BUILD_TYPE=RelWithDebInfo SKBUILD_INSTALL_STRIP=false`, gdb installed via
+    `CIBW_BEFORE_TEST_LINUX`) ran clean -- no crash, so no backtrace either, which is itself
+    the signal that the fault is sensitive to the optimisation level (`-O2` vs `-O3`), the
+    classic shape of UB the optimiser is free to miscompile at one level and not the other.
+    - **Don't chase a backtrace that a clean run cannot produce.** Gotcha 168's "never leave
+      the branch in that state" is about the gdb/strip scaffolding, which exists only to read
+      symbols -- once the rebuild itself is the fix, strip it back out (`SKBUILD_INSTALL_STRIP`
+      left at its default `true`, `CIBW_BEFORE_TEST_LINUX` and the gdb test wrapper removed,
+      matrix restored) and keep only `SKBUILD_CMAKE_BUILD_TYPE=RelWithDebInfo` in
+      `CIBW_ENVIRONMENT` as the actual behaviour change, same mechanism as gotcha 46's
+      constrained-arch `-O0`/`-O1` downgrades.
+    - **This is weaker evidence than gotcha 166/167's fully-isolated toolchain bugs** -- there
+      is no standalone reproducer, no named faulting function, and no proof the same tree is
+      clean on another architecture at the same optimisation level -- so comment the rebuild's
+      reason in the workflow and cite this gotcha rather than asserting a specific bug; a
+      future porter hitting the identical "all legs crash, no traceback" shape on an
+      Eigen/geometry-central-style header-heavy numeric C++ dependency tree should try the
+      same rebuild before spending hours on gotcha 167's fuller isolation ladder.
+
+719. **A minimal duck-typed graph object in a `CIBW_TEST_COMMAND` can fail every single leg
+    identically, not with an infra blip or a per-leg divergence, when the compiled
+    extension does a hard `isinstance` check a sibling binding's extension does not (the
+    passagemath-graphs/boost_graph case).** `sage/graphs/bliss.pyx`'s `canonical_form` and
+    `sage/graphs/mcqd.pyx`'s `mcqd` both accept a bare `type('G', (object,), {...})` mock
+    with just the handful of methods they call -- no sibling check against a real Sage
+    class. `sage/graphs/base/boost_graph.pyx` does not: both
+    `boost_graph_from_sage_graph` and `boost_weighted_graph_from_sage_graph` (the latter
+    used internally by `eccentricity_DHV`, `eccentricity`, and every other boost_graph
+    entry point) open with `if not isinstance(g_sage, GenericGraph): raise
+    TypeError("the input must be a Sage graph")`, which no duck-typed object can ever
+    satisfy regardless of which methods it defines. A smoke test copy-pasting the
+    bliss/mcqd shape onto a boost_graph call fails with `TypeError: the input must be a
+    Sage graph` on every single build leg, every single time, with an identical traceback
+    and no timing variance -- the strongest possible real-log signal that this is one
+    deterministic Python-level bug in the test command itself, not 10 different per-leg
+    build problems and not transient CI/registry infra (which would show HTTP-error or
+    timeout signatures, not a clean `TypeError` three frames into application code).
+    - **Fix by constructing a real (minimal) instance of the package's own graph class,
+      not by patching the duck-typed mock's attribute set.** No amount of adding methods
+      to the `type(...)` mock clears an `isinstance` check; `Graph([(0,1),(1,2),(2,3),
+      (3,4),(4,0)])` from `sage.graphs.graph` (a `GenericGraph` subclass) is both simpler
+      and correct here, and needs nothing beyond the extension's own already-declared
+      hard dependencies (passagemath-categories supplies the `sage.structure`/`sage.rings`
+      base `Graph.__init__` needs for a plain, unweighted, integer-labelled graph).
+    - **A fix landing in the same push that first makes the real CI run complete can look
+      like a regression across every leg when it is actually the pre-existing bug finally
+      being observed everywhere.** A prior run that *appeared* to show only a handful of
+      legs failing was not evidence the rest would have passed if the superseding fix
+      commit's own build got cancelled (matrix `fail-fast: false` plus a 45-70 minute
+      per-leg wall-clock) by a follow-up push before the slower legs finished -- compare
+      each leg's own job conclusion (`cancelled` vs `failure`) and completion timestamp,
+      not just the run's rolled-up `total failing` count, before concluding a broader
+      failure set must have a broader cause.
+
+169. **`astral-sh/setup-uv` hands you a python-build-standalone interpreter, and PBS links
+    statically what a distro ships as shared -- which fails tests that assert on module
+    *kind* or bundle system libraries (the pyinstaller case).** The Anatomy section mandates
+    setup-uv because setup-python has no riscv64 support, and gotcha 117 notes it silently
+    reuses the runner's system CPython when the versions match. The other half of the same
+    fact is what PBS *builds*: from **3.13** on, `_ctypes` is compiled into the interpreter
+    (`'_ctypes' in sys.builtin_module_names`) rather than shipped as `lib-dynload/_ctypes*.so`,
+    and PBS's **Linux** builds carry no `libtcl*.so`/`libtk*.so` at all -- Tcl/Tk is linked
+    into `_tkinter.so`, while the macOS builds ship them as dylibs. Suites that introspect
+    the interpreter fail on those facts with nothing wrong in the wheel: PyInstaller's
+    `test_extension` asserts `_ctypes` is a `modulegraph.Extension`, and its splash-screen
+    tests die with `Could not determine the path to Tcl and/or Tk shared library`.
+    - **The tell is a matrix where the older interpreters pass and the newer ones fail
+      identically** -- the inverse of gotcha 33's shape, and it points at the interpreter
+      *build*, not at a CPython feature gate. PBS 3.12 passes both here because it has
+      `_ctypes` as a shared module and no `_tkinter` at all (so the splash tests skip).
+    - **Settle it on any host in under a minute, no QEMU and no riscv64.**
+      `uv run --no-project --python 3.13 python -c "import sys; print('_ctypes' in sys.builtin_module_names)"`
+      answers the first, and for the second, untar the PBS **linux-x86_64** asset and look
+      for `lib/libtcl*`: absent there too, so the failure is arch-independent. Both
+      reproduced on macOS/arm64 before a single CI cycle was spent.
+    - **Deselect per matrix entry** (gotcha 33), so the interpreter whose PBS build does not
+      trip the assertion keeps running it -- an unset `include:` key interpolates to the
+      empty string, so the unaffected entries need no second command shape.
+
+170. **`np.linalg.eig` on a symmetric matrix returns *real* eigenvalues on x86_64 and
+    aarch64 and *complex* ones on riscv64 -- a numeric-port trap with no numeric symptom
+    (the statsmodels case).** LAPACK's general `dgeev` computes an imaginary part for every
+    eigenvalue and numpy returns a `float64` array only when all of them are exactly zero.
+    For a matrix that is symmetric by construction (`exog.T @ exog`) the x86_64 and aarch64
+    OpenBLAS kernels land on exact zeros; the `riscv64_generic` ones do not, so the same
+    call returns `complex128` and the failure surfaces far away as
+    `_UFuncOutputCastingError: Cannot cast ufunc 'multiply' output from dtype('complex128')
+    to dtype('float64')` on an in-place multiply several functions later. Nothing about the
+    numbers is wrong -- the imaginary parts are ~1e-17 -- so it reads like a broken wheel.
+    - **Grep the traceback's call chain for `linalg.eig(` before reading any values.** A
+      complex dtype arriving where the code assumes real is the whole finding; `eigh`
+      (`dsyevd`) is real by construction on every platform and agreed with `eig` to 3e-15 on
+      the same inputs here. That makes it a genuine upstream bug rather than a riscv64
+      workaround -- statsmodels still calls `eig` on `main`.
+    - **Reproduce the *mechanism*, not the failure**, since the failure needs the riscv64
+      BLAS: instrument the function on any host and print `ev.dtype` alongside `evmin`. It
+      printed `float64` on aarch64, which is the evidence that the divergence is the dtype
+      and not the arithmetic.
+    - **The neighbouring failure in the same job may be unrelated and needs the opposite
+      treatment.** A maximum-likelihood fit that upstream itself logs as non-convergent
+      (`ConvergenceWarning`) but that is asserted to `atol=1e-4` lands at 1.9e-3 here
+      against 2.4e-8 on aarch64 -- gotcha 38's artificial-test-limitation shape. Loosening
+      that tolerance only uncovers the next assertion in the same test (`res.mae < 1e-6`),
+      so drop the one parametrisation and keep the sibling that is exact.
+
+205. **A follow-up commit that fixes a broken `Upstream-Status:` line does not clear
+    `check_patches` -- it checks the patch file's content at *every* commit that
+    touched it, not just the final diff (extends gotcha 38's single-line rule).**
+    `check_patch.py`'s `main()` walks `git rev-list start..end`, and for each commit
+    re-extracts and re-validates every `.patch` file that commit added or modified
+    (`git show <commit>:<path>`). A commit that adds a patch with the wrapped
+    `Upstream-Status:` line, followed by a second commit that rewraps it onto one
+    line, still fails: the first commit's snapshot is still broken, and the job
+    replays it as its own check.
+    - **Squash instead of appending a fix commit.** `git reset --soft` to the
+      merge-base, recommit once with the corrected patch, then
+      `git push --force-with-lease` -- the PR isn't reviewed yet, so rewriting its
+      own history is normal, not the "don't rewrite shared history" case the repo's
+      git safety rules guard against.
+    - **Run the exact CI invocation locally first**, on the full commit range, not
+      just the working tree: `git log --oneline origin/main..HEAD` shows every
+      commit `check_patches` will separately replay.
+
+282. **A matplotlib `image_comparison` test failing only on riscv64 is a font-rendering
+    divergence, not a logic bug -- deselect that one test, don't touch the module (the
+    igraph case).** python-igraph's `test_labels` renders vertex labels with matplotlib
+    and diffs the PNG against a bundled baseline via `image_comparison(tol=4.0)`; on the
+    riscv64 manylinux image the failure is `ImageComparisonFailure: images not close (RMS
+    6.084)` with every other test in the module (522 of them) passing. `remove_text=True`
+    strips titles/ticks but deliberately leaves "more deliberate" text like vertex labels
+    in the diff, so any FreeType/fontconfig difference between the image that produced the
+    baseline and the manylinux riscv64 image's font stack pushes the RMS over the
+    tolerance. Upstream's own CI doesn't special-case this on aarch64 either -- its
+    aarch64 runners just happen to anti-alias close enough to the baseline.
+    - **Confirm it's pixel-diff, not a crash or wrong-value assertion**, before treating it
+      as cosmetic: the traceback should bottom out in
+      `matplotlib.testing.exceptions.ImageComparisonFailure`, not an `AssertionError` on
+      igraph's own output.
+    - **Fix with a targeted `--deselect` in `CIBW_TEST_COMMAND`**, e.g. `--deselect
+      tests/drawing/matplotlib/test_graph.py::GraphTestRunner::test_labels`, with a
+      one-line comment naming the mechanism (font-rendering divergence, not a functional
+      bug). Do not skip the whole `test_graph.py` module or drop matplotlib from the test
+      extras -- every other image-comparison test in the same file (`test_basic`, etc.)
+      passes and stays covered.
+
+283. **A `cp314t`-only `PicklingError` from a `multiprocessing.Process(target=<local
+    function>)` can be a side effect of an *earlier* `--ignore`, not a free-threading bug
+    in the target itself (the thriftpy2 case).** CPython 3.14 changed the default
+    multiprocessing start method on POSIX from `fork` to `forkserver` (all interpreter
+    builds, GIL or free-threaded) specifically to avoid multithreaded fork
+    incompatibilities; unlike `fork`'s copy-on-write child, `forkserver` (like `spawn`)
+    must pickle the `Process` target to hand it to the forkserver, so a locally-defined
+    closure passed as `target=` now fails with
+    `_pickle.PicklingError: Can't pickle local object <function ...>`. thriftpy2's suite
+    only stays on `fork` because one test module
+    (`test_all_protocols_binary_field.py`) calls `multiprocessing.set_start_method('fork')`
+    at import time, which -- since `set_start_method` has no per-module scope -- pins
+    `fork` for the rest of that pytest **session**. Deselecting that whole module on
+    `cp314t` (to dodge an unrelated fork-race flake) means its
+    `set_start_method('fork')` never runs there, so CPython's own new `forkserver`
+    default takes over and a sibling file's `test_client` (building `Process(target=` a
+    local `run_server()` closure that captures a local `Handler` class) starts failing --
+    on `cp314t` only, since `cp312`/`cp313`/`cp314` still import the skipped module and
+    inherit its `fork` override.
+    - **Diagnose by reading the multiprocessing frames in the traceback, not just the
+      final `PicklingError`.** `popen_fork.py` never calls `reduction.dump`/pickle at all
+      (the child inherits everything via COW); `popen_forkserver.py`/`popen_spawn_posix.py`
+      do, and `_launch: reduction.dump(process_obj, buf)` is exactly where this
+      `PicklingError` originates -- that frame confirms it's a start-method question, not
+      "this object is fundamentally unpicklable so the library is broken."
+    - **Confirm the trigger is test selection, not the interpreter**: grep every
+      module your `--ignore`/`--deselect` list drops for
+      `multiprocessing.set_start_method(` or `get_context(`. If one of them sets the
+      process-wide default and the combination of *that module being skipped* plus
+      *CPython 3.14's new forkserver default* is what breaks a sibling test, it isn't a
+      genuine `cp314t` compatibility bug in the library worth reporting upstream.
+    - **Fix scope**: `--deselect` just the parametrized cases whose target is a local
+      closure -- but get the nodeid from `--collect-only -q`, not from the `-v` live
+      progress line or the `FAILED ...` short summary. Both of those print a path
+      relative to the invocation *cwd*, while `--deselect` (like `--collect-only`)
+      matches the nodeid relative to pytest's **rootdir** -- which is a *parent* of
+      `{project}/tests` whenever the project ships a `setup.py`/`pyproject.toml`
+      up there (thriftpy2 does), so the real nodeid is
+      `tests/test_apache_json.py::test_client[server_func0]`, not the bare
+      `test_apache_json.py::test_client[server_func0]` the `-v` output showed. A
+      `--deselect` built from the wrong one silently no-ops -- the run still reports
+      the deselected count as 0 and the test still executes and fails. Leave alone any
+      test that already requests `get_context("fork")` explicitly (unaffected by the
+      default) or whose target is a module-level function/bound method (pickles fine
+      under any start method).
+
+285. **A heap-corruption abort in a vendored C++ library's concurrent stress test can
+    resist every reproduction attempt except the plain CI run -- gdb/ptrace's own timing
+    perturbation can hide the race that trips it (the chroma-hnswlib case).**
+    `bindings_test_stress_mt_replace` (100 iterations of `add_items(..., replace_deleted=True)`
+    fanned across 50 real OS threads via a raw `std::thread` pool, not GIL-serialized) died
+    with `malloc(): mismatching next->prev_size (unsorted)` / SIGABRT, identically on both
+    `cp314` and `cp314t`, 2 runs out of 2 (runs 34024763240 and 34025375096) -- `cp312`/`cp313`
+    on the same tree passed every time. That split alone is not gotcha 33's feature-gate
+    signature: gotcha 60 already establishes that a use-after-free/heap-corruption bug is a
+    *lottery* over which interpreter's allocator layout happens to reuse the clobbered bytes,
+    so "only the newest interpreters die" is evidence *for* real corruption, not a `cp314`-only
+    code path.
+    - **Upstream never exercises the failing configuration at all.** `chroma-core/hnswlib`'s
+      `test.yml` matrix is `python-version: ["3.7", "3.8", "3.9", "3.10"]` on
+      `ubuntu-latest`/`windows-latest` only -- no 3.11+, no free-threaded build, no non-x86
+      architecture. Neither `nmslib/hnswlib` (the upstream this forked from) nor
+      `chroma-core/hnswlib`'s issue trackers have any report of this test flaking anywhere,
+      which is consistent with nobody having run it under conditions that reach the race.
+    - **gotcha 115's gdb-loop technique can fail to reproduce a real race, not just a
+      toolchain bug.** Two rounds of the throwaway-commit probe both came back clean: round 1
+      ran the one failing test in isolation, fresh process, 5 attempts × 2 interpreters -- no
+      repro. Round 2 (suspecting gotcha 60's "corruption committed earlier, detected later")
+      ran the *entire* `bindings_test*.py` sequence (matching the real failure's shape) under
+      `gdb -batch -ex run -ex "thread apply all bt 30"`, 2 attempts × 2 interpreters -- still no
+      repro, despite the un-instrumented sequence failing 2/2 times before. `ptrace` overhead
+      changes thread scheduling enough that a narrow interleaving-dependent race can vanish
+      under the very tool meant to catch it -- a real "no repro under the debugger" heisenbug,
+      distinct from gotcha 115/167's "reproduces cleanly, just needed the right tool."
+    - **Reading the code narrows the suspect but doesn't prove it without hardware access.**
+      `HierarchicalNSW::addPoint(..., replace_deleted=true)` pops a free slot from
+      `deleted_elements` under `deleted_elements_lock`, then calls `setExternalLabel`,
+      mutates `label_lookup_`, `unmarkDeletedInternal`, and `updatePoint` on that slot with
+      **no lock held across the sequence** -- the code's own comment says "we assume that
+      there are no concurrent operations on deleted element," i.e. upstream knows this path
+      leans on an assumption rather than a proof. Whether riscv64's weaker memory ordering is
+      what turns that assumption false (vs. it always being false and x86/TSO usually hiding
+      it) could not be confirmed without a native backtrace, which two rounds of
+      instrumentation failed to capture.
+    - **The sanctioned fallback, not a source patch, when a stress test can't be
+      instrumented into reproducing.** Given (a) upstream never validates this
+      configuration, (b) the test is explicitly named/shaped as a concurrency stress test
+      (50 threads over a 1000-2000 element index -- deliberately adversarial, not a
+      correctness regression test), and (c) no working native backtrace could be obtained
+      after a reasonable diagnostic budget, patching the vendored C++ concurrency logic
+      blind was judged too risky to land unverified. Deselect just that one test file from
+      `CIBW_TEST_COMMAND` (`unittest discover` has no `--deselect`; delete the file from the
+      staged `tests/python/` copy before `discover` runs, matching gotcha 25/168's
+      shortest-diagnostic-window discipline -- leave everything else covered) and document why
+      with a comment naming the run IDs and the mechanism, instead of loosening the test
+      pattern or dropping test coverage more broadly.
+    - **Reset every diagnostic commit before the PR is finalized.** Both throwaway probes
+      (narrowed matrix, `CIBW_BEFORE_TEST_LINUX: dnf -y install gdb`, `CFLAGS=-g CXXFLAGS=-g`,
+      gdb-wrapped `CIBW_TEST_COMMAND`) were `git reset --hard` off the branch tip and
+      force-pushed per gotcha 115, so the merged history carries only the real fix.
+
+286. **A vendored-ARPACK eigensolver test failing only on musllinux, not manylinux, can
+    be upstream's own known random-starting-vector convergence flake, not a riscv64 bug
+    (the igraph case).** `test_atlas.py::GraphAtlasTests::testHubScore` failed on
+    `cp39-abi3-musllinux_riscv64` only (manylinux, identical tree, passed) with
+    `igraph._igraph.InternalError: Error at src/linalg/arpack.c:1025: No shifts could be
+    applied during a cycle of the Implicitly restarted Arnoldi iteration` for one specific
+    atlas graph. igraph's own maintainers have already triaged this exact test/error on
+    other platforms: `igraph/python-igraph#379` is the identical `testHubScore` ARPACK
+    error on Nix/Python 3.9 (x86_64, glibc), and the maintainer's own diagnosis is that
+    ARPACK seeds hub/authority-score calculations with a small random starting vector it
+    gives callers no way to control, so convergence failure is an inherent, non-deterministic
+    property of the algorithm that "depends heavily on whether you are using an external or
+    a vendored ARPACK library" -- not a platform bug; `igraph/python-igraph#728` reports the
+    same error recurring on Debian/amd64, and `igraph/igraph#1469` shows the same ARPACK
+    convergence class (`igraph_eigenvector_centrality`) failing on a *third* non-x86
+    architecture (mips64el) via Debian's build. None of the three reports name musl or
+    Alpine specifically, but together they establish the failure mode is a libc/arch-
+    independent numerical fragility in the vendored solver, not something to chase as a
+    riscv64 regression.
+    - **Confirm musllinux-only, not riscv64-wide**, before treating it as acceptable to
+      deselect: read both legs' logs (`gh api .../actions/jobs/<id>/logs`) and check the
+      identical tree passes on manylinux -- a failure on *both* libcs would instead point at
+      something riscv64-specific in codegen or in the vendored ARPACK/BLAS build, which is
+      not this case.
+    - **Fix with a per-libc `--deselect` in `CIBW_TEST_COMMAND`**, gated on
+      `matrix.libc == 'musllinux'` the same way the extras selector already is, not a
+      blanket deselect that would also drop manylinux's coverage of the same test (it
+      passes there and should stay tested).
+
+290. **A `NameError` in an e2e test for a name the package genuinely exports is a
+    broken test file at that pinned tag, not an arch or extension-export problem (the
+    html-to-markdown case).** `test_options_preprocessing_{aggressive,minimal}` failed
+    with `NameError: name 'PreprocessingPreset' is not defined` on riscv64, 2 of 283
+    tests, identically deterministic (not flaky). Reading `packages/python/html_to_markdown/__init__.py`
+    at `v3.12.0` showed `PreprocessingPreset` re-exported from the compiled extension in
+    both the `from ._html_to_markdown import (...)` block and `__all__` -- the built
+    wheel genuinely provides it -- while `e2e/python/tests/test_options.py`'s own
+    top-level `from html_to_markdown import (...)` line simply omits it, even though two
+    tests further down use it. Diffing the tagged test file against upstream's `main`
+    confirmed the import list there already includes `PreprocessingPreset`: the bug was
+    fixed after `v3.12.0` was cut, just not yet in a tagged release. A failure this
+    narrow (one name, two tests, everything else in the module green) that traces to a
+    plain unimported symbol is a strong prior for "test file bug at this tag," worth
+    checking against upstream's default branch before assuming a build or export defect.
+    - **Confirm both halves before treating it as a test bug**: grep the test file's
+      import list for the missing name (absent) *and* the package's `__init__.py`/`__all__`
+      for the same name (present) -- only the *combination* proves it's the test, not the
+      export, that's wrong. If the extension itself didn't export the name, the fix would
+      be a real compatibility issue to raise upstream, not a test deselect.
+    - **Fix with `-k "not <name>"` per test, not a path-based `--deselect`** (gotcha
+      14/283): a plain name-based `-k` sidesteps the rootdir-relative-nodeid trap
+      entirely, which matters here too since `CIBW_TEST_SOURCES` stages
+      `e2e/python/{conftest.py,pyproject.toml,tests}` and the staged `pyproject.toml`'s
+      own `[tool.pytest.ini_options]` puts pytest's rootdir one level away from the
+      `e2e/python/tests` path the `-v`/`FAILED` output displays.
+    - **Deselect in the workflow, don't patch the test file.** The test file is
+      upstream's own generated e2e suite (`# This file is auto-generated by alef -- DO
+      NOT EDIT`) and the bug is already fixed on `main`; patching
+      `patches/<pkg>/<version>/` to hand-fix a file upstream has already corrected
+      would just be reverted by the next version bump. A `CIBW_TEST_COMMAND` comment
+      citing the exact `NameError` and noting upstream's fix is unreleased documents the
+      divergence for whoever reviews or re-triggers the workflow later.
+
+297. **A test harness's own unbounded `readline()`-until-marker wait turns any slow or
+    crashed child process into a permanent CI-timeout hang instead of a fast failure --
+    and when the underlying blocker is a vendored per-arch binary with no riscv64
+    variant and no source, the fix is deselecting the test, not building the binary
+    (the viztracer case; see `build-viztracer.yml` and `patches/viztracer/1.1.1/`).**
+    viztracer's own test helpers wait for a child process to print a specific line with
+    a plain `while True: line = pipe.readline(); if marker in line: break` -- no
+    timeout, and no handling for the pipe hitting EOF. Two different tests hung
+    identically (zero output, killed only by GitHub's 60-minute job timeout) for two
+    unrelated reasons: `test_trace_self` self-traces `vizviewer`'s heavier
+    argparse/socketserver import graph and never reaches the print in practical time
+    (a bounded `timeout 120 viztracer --trace_self -c "print(1)"` smoke test completed
+    in ~1s, ruling out "self-tracing is always this slow" and narrowing it to the
+    heavier scenario); `test_use_external_processor` shells out to Perfetto's
+    `trace_processor` launcher, whose prebuilt-binary manifest lists only x86_64/aarch64
+    machines, so it raises and exits immediately on riscv64 -- but `readline()` on an
+    already-closed pipe returns `""` forever instead of raising, turning the child's
+    fast crash into a silent, permanent busy-loop in the *parent* test process.
+    - **Isolate "slow" from "stuck" with a bounded smoke test before deselecting**,
+      cheap enough to run inside the real `CIBW_TEST_COMMAND` on the same PR: wrap the
+      suspect command in `timeout N` and echo start/exit/end timestamps ahead of the
+      real test run. A clean, fast exit narrows the cause; a `124` (timeout) exit
+      confirms it hangs rather than merely running long, without burning the job's
+      whole timeout budget to find out.
+    - **A vendored per-arch prebuilt with no source and no riscv64 entry (gotcha 157's
+      `vendored-binary` pattern, here scoped to one optional feature rather than the
+      whole package) is not something a build patch can fix** -- grep the vendoring
+      directory for a source file matching the missing binary's name before concluding
+      this; its absence (only prebuilt blobs, e.g. `attach_linux_amd64.so` with no
+      `attach_linux_amd64.c`) confirms there is nothing to compile for riscv64 either.
+      Skip only the specific tests that exercise that one feature (`@unittest.skip` on
+      the exact methods) -- sibling tests exercising the same module's other, non-vendored
+      code paths (viztracer's `test_install`/`test_attach_script` use an in-process
+      SIGUSR/API mechanism, not the vendored `.so`) are unaffected and stay covered.
+    - **A hang can mask an unrelated, real, fixable bug further down the same file** --
+      after deselecting the hang, `test_combine` failed for a completely different
+      reason (`ValueError: .../example/json/multithread.json does not exist`): the test
+      reaches outside `tests/` via `os.path.join(os.path.dirname(__file__), "../",
+      "example/json")`, and `CIBW_TEST_SOURCES: tests` never staged that sibling
+      directory. Add the extra path to `CIBW_TEST_SOURCES` (gotcha 36) rather than
+      deselecting -- this one is a genuine test-staging gap, not a platform limitation.
+
+304. **A hardcoded exact-equality assertion on a neural-network/matmul-heavy
+    computation failing only on riscv64, at the last couple of ULP, is an
+    architecture float-rounding difference, not a bug (the correctionlib/lwtnn
+    case).** `test_lwtnn_example` calls `corr.evaluate(...)`, which runs an Eigen-based
+    dense-matrix feed-forward network (`lwt::LightweightNeuralNetwork::compute`,
+    vendored from the `lwtnn` submodule -- "for sanity we use Eigen" per its own
+    header), then asserts `sf == 0.95186825355646787` -- a Python `==` on a `double`,
+    not `pytest.approx`. On riscv64 it evaluates to `0.9518682535564676` (relative
+    difference ~3e-16, i.e. within a few ULP of a `double`): vectorized matmul/FMA
+    instruction selection and accumulation order differ across architectures, and a
+    multi-layer network chains enough floating-point ops for that to surface in the
+    last significant digit. This is architecture-generic, not riscv64-specific:
+    upstream hit the *identical* failure on `manylinux_aarch64` first
+    (`cms-nanoAOD/correctionlib#348`, "we see small floating point rounding
+    discrepancies in lwtnn on this platform") and responded by skipping this
+    package's *entire* test suite on aarch64 via `test-skip`.
+    - **Confirm the mechanism before treating it as cosmetic**: check that the
+      assertion is exact-equality (`==`, not `approx`/`isclose`) on a value produced
+      by dense linear algebra or another SIMD/FMA-sensitive code path, and that the
+      difference is at the ULP level (a handful of units in the last place), not a
+      difference in a leading digit -- the latter would be a real bug.
+    - **Fix scope: deselect just the one test**, not the whole suite the way upstream
+      did for aarch64 -- unlike aarch64 (fully covered by upstream's own CI), riscv64
+      has no other CI leg exercising this package's tests, so blanket-skipping would
+      drop coverage upstream never had a copy of. `--deselect
+      {package}/tests/test_lwtnn.py::test_lwtnn_example` in `CIBW_TEST_COMMAND`, with
+      a comment citing the exact asserted vs. observed values, keeps
+      `test_validate_lwtnn`/`test_lwtnn_bad_opaque` (same file) and the rest of the
+      suite covered.
+    - **Do not patch the test's assertion to `pytest.approx`** -- that file is
+      upstream's, and patching it here would be a larger, harder-to-justify
+      divergence (patching-and-licensing.md) than a one-line `CIBW_TEST_COMMAND`
+      deselect for a difference upstream has already publicly acknowledged.
+    - **Distinct from gotcha 170** (an eigensolver returning a different *dtype*,
+      `complex128` vs `float64`, which breaks a *downstream* cast far from the call
+      site) and **gotcha 282** (a pixel-diff `ImageComparisonFailure` from font
+      rendering) -- same family of "arch-specific numeric divergence is not
+      necessarily a bug," different failure shape (here, the value itself is off by
+      a few ULP, and the failure is directly at the assertion).
+
+316. **A hardcoded timing threshold on a metric that measures raw wall-clock
+    GIL-acquire latency (not literal lock contention) inflates under a busy shared
+    CI host, in either direction depending on which side of the range the workload
+    sits on (the gilknocker case).** `test_knockknock_available_gil` asserts
+    `contention_metric < 0.2` for a workload (`a_little_gil`: four threads doing
+    NumPy FFT work, expected to mostly release the GIL). On this repo's shared
+    riscv64 runners -- which routinely run many other build jobs concurrently -- it
+    instead lands at 0.27-0.49, 12/12 samples across cp312/cp313/cp314 with
+    pytest-rerunfailures retries, never once under the ceiling.
+    `contention_metric` is computed from `Python::with_gil(move |_| start.elapsed())`:
+    the elapsed time from *deciding* to acquire the GIL to actually running inside
+    it, which bundles genuine lock contention with plain OS thread-scheduling
+    latency for the sampling thread itself -- a busier host inflates the metric even
+    when no other Python thread is really holding the GIL for long. Upstream's own
+    test file already hedges every one of its four assertions with a per-platform
+    comment ("usually ~0.9, but sometimes ~0.6 on Mac", "usually ~0.002, but can be
+    up to ~0.15 on windows") and has an open, unresolved issue
+    (milesgranger/gilknocker#36) for the same class of hardware-dependent flake in
+    the sibling `test_knockknock_some_gil` test, on a *fast* Mac landing anomalously
+    low instead of high -- same mechanism, opposite direction.
+    - **Verify with real CI logs across every interpreter in the matrix, not one
+      job** -- a single failing job could be a one-off scheduler hiccup; three
+      interpreters each failing the same assertion at similar magnitudes across
+      three retries apiece is a host characteristic, not noise.
+    - **Reproducing the mechanism locally doesn't need the failing package's own
+      optional test dependency** -- build the crate directly with `cargo build
+      --release` (no maturin needed) and load the resulting `.so` under an
+      `__init__.py` shim, per gotcha 314's shape, to get a working import without
+      installing anything. A *real* multi-threaded GIL-contention scenario (several
+      pure-Python CPU-bound threads) reproduces near-1.0 contention identically with
+      and without a `docker run --cpus=` quota, confirming the harness measures
+      genuine contention correctly; an *idle* scenario (no other thread wants the
+      GIL) stays near-zero even under heavy host CPU oversubscription (`yes` loops)
+      or a cgroup CPU quota -- the elevated CI readings are specific to the *mixed*
+      NumPy-releases-then-reacquires pattern this test exercises, not reproducible
+      from host load alone without the actual optional numpy dependency.
+    - **Fix scope: raise the threshold, cite the evidence, don't skip the test** --
+      this is the "artificial test limitation" patch case
+      (patching-and-licensing.md). Use `Upstream-Status: Inappropriate`, since the
+      cause is this repo's shared-runner load, not an upstream bug -- and this
+      repo's own policy against filing anything on a package's own upstream repo
+      makes `Issue` unavailable regardless. Pick a ceiling with real headroom above
+      every observed sample, not just clearing the worst one.
+
+317. **A pure-Python, allocation-heavy test suite running ~8x slower on musllinux
+    than manylinux (or its own free-threaded sibling) is musl's malloc, not a
+    riscv64 regression -- check the GIL-vs-free-threaded split before raising the
+    timeout again (the stream-inflate case; see `build-stream-inflate.yml`).**
+    stream-inflate's Cython extension is a thin wrapper around plain byte-slicing
+    generator loops; its `test_stream_inflate.py` fuzzes 1956 parametrized cases up
+    to 8MB of data, byte-chunked. `cp312`/`cp313`/`cp314`-`musllinux_riscv64` each
+    ran the identical suite to only ~43-44% inside a 240-minute budget, reproducibly,
+    twice -- while every `manylinux_riscv64` job (same four interpreters) and
+    `cp314t`-`musllinux_riscv64` finished cleanly in under 2h15m. The 2x2 pattern
+    (glibc: fast regardless of GIL; musl: fast only when free-threaded) is the tell.
+    - **PEP 703 explains the split.** CPython's free-threaded build replaces pymalloc
+      with mimalloc precisely because pymalloc "is not thread-safe without the GIL";
+      every other interpreter keeps pymalloc, which delegates allocations above its
+      small-object threshold straight to the platform `malloc()`. musl's allocator is
+      well known to be markedly slower than glibc's for churn-heavy workloads, and a
+      byte-chunking fuzz loop with `input_size`/`output_size` down to 1 is exactly
+      that; mimalloc's own arenas sidestep the platform allocator almost entirely, so
+      only the free-threaded build escapes the penalty.
+    - **Confirm it's not riscv64-wide first** (mirrors gotcha 286): read the manylinux
+      leg's log for the same interpreter -- a suite that's merely slow everywhere, or
+      failing outright rather than timing out mid-suite, points elsewhere. Here the
+      manylinux jobs ran the same 1956 cases to completion at a normal pace.
+    - **No workflow-level fix exists** -- this isn't a flag, a constraint file, or a
+      `before-all` step; it's musl's allocator on the exact allocation pattern this
+      suite exercises. Raising `timeout-minutes` further only delays the same result
+      (43-44% was consistent at both 60 and 240 minutes) and ties up scarce
+      self-hosted riscv64 runners for hours to prove a known-slow path eventually
+      finishes. Per this skill's own guidance, drop musllinux from the matrix
+      (`build-stream-inflate.yml` ships manylinux-only) rather than keep paying for it.
+
+330. **A manylinux image's system library can be years newer than what upstream ever
+    tested against, and the resulting test failures are data-version drift (CLDR/
+    tzdata), not code bugs -- deselect, don't patch (the pyicu-binary/ICU case; see
+    `build-pyicu-binary.yml`).** setup.py prints `ICU_MAX_MAJOR_VERSION = '69'` and the
+    bundled test suite's own `if ICU_VERSION < '68.0':` branches show upstream last
+    tested around ICU 69, but `manylinux_2_39_riscv64`'s `libicu-devel` (Rocky 10
+    AppStream) is 74.2 - five major ICU releases later, each carrying a newer CLDR/
+    tzdata snapshot. Four of the package's own tests assert exact locale-formatted
+    strings or a specific timezone transition and fail once linked against 74.2: a
+    French `SimpleDateFormat` pattern the test already branches on for ICU<68 vs
+    >=68 renders differently again at 74; an `en_US` time format gains CLDR's
+    narrow-no-break-space (` `) before AM/PM; a French long timezone name gains
+    a `nord-américain` qualifier; and `Pacific/Fiji`'s next DST transition after 2021
+    comes back `None` because 74's newer tzdata has no further scheduled transition
+    for it. None of this is riscv64-specific or a real defect in the wrapped code.
+    - **Confirm before deselecting by building against the *exact* system version the
+      manylinux image ships**, not whatever ICU a dev machine happens to have -
+      `dnf -q list libicu-devel` in the image (or `rockylinux/rockylinux:10
+      --platform linux/riscv64` per gotcha 51's cheap-image trick) gives the version;
+      a newer one still (e.g. a package manager's latest) can show *different*
+      drifted tests than CI will hit, and an older one can hide failures CI will see.
+      Building ICU4C from its own release tarball on any host settles it without a
+      container: `./runConfigureICU <platform> --prefix=<scratch>/install
+      --disable-tests --disable-samples && make -j && make install`, then point
+      `PYICU_INCLUDES`/`PYICU_CFLAGS`/`PYICU_LFLAGS` (or the equivalent env vars for
+      another ICU-linking project) at the scratch prefix.
+    - **Deselect by exact test id in `CIBW_TEST_COMMAND`**, not `-k`, and cite what
+      changed and why in a one-line comment - this is the same family as gotcha 304's
+      ULP-divergence and gotcha 282's pixel-diff cases (environment divergence isn't
+      a bug), except the axis here is the *library's own bundled data version*, not
+      architecture or timing.
+
+362. **A `multiprocessing.Process().join()` regression test for a native threadpool's
+    fork safety can hang the full length of its `pytest.mark.timeout` deterministically,
+    not flakily, on the riscv64 runner (the vesin case).** vesin's
+    `test_fork_during_calculations` loads the C++ library, starts a background thread
+    that keeps hammering the (mutex-guarded) threadpool, forks a child via
+    `multiprocessing.set_start_method("fork")`, and asserts the child's `join()` returns
+    inside 10s (`@pytest.mark.timeout(10)`) -- a real regression test for the library's
+    `pthread_atfork` handlers, not an artificial limit. It hit the full 10.0s wall twice
+    in a row (2/2, run 34600349160, including a rerun of the identical commit) rather
+    than completing a little late, the signature of a genuine deadlock rather than
+    gotcha 38's "just slow" -- and upstream's own CI (`ubuntu-24.04`/`macos-15`/
+    `windows-2022`) never runs it under riscv64's different fork/threading timing at all,
+    so there is no signal that it passes anywhere in that configuration.
+    - **A rerun-in-place is the fast way to tell "deadlock" from "flake" before
+      spending a diagnostic budget.** Since nothing about the test or the code changed
+      between the two runs, `gh run rerun <id> --failed` (safe here specifically because
+      no fix was being validated, unlike gotcha 357's caution against it) re-executes the
+      exact same build+test; identical failure both times is strong evidence for a real,
+      reproducible race rather than scheduler noise that a second attempt would dodge.
+    - **Deselect with `-k "not <name>"`, not a path-based `--deselect`** (gotcha 14):
+      `pytest` reports collected nodeids relative to its rootdir
+      (`/project/python/vesin` here) while `{project}` in `CIBW_TEST_COMMAND` is the
+      absolute checkout root (gotcha 5), so a `--deselect {project}/…` string silently
+      matches nothing and the "deselected" test still runs.
+    - **Patching the vendored C++ `pthread_atfork` logic blind was out of scope** --
+      same call as gotcha 285's chroma-hnswlib case: one deselected test with a comment
+      naming the run id and the mechanism beats an unverified fix to native concurrency
+      code neither upstream nor this port's diagnostic budget can confirm.
+
+379. **A test asserting a specific cross-thread ordering (a `gc.collect()`-on-one-thread-
+    finalizes-an-object-another-thread-observes shape) can fail deterministically, only
+    on `cp314t`, with no riscv64 or correctness bug behind it (the mlx case; see
+    `build-mlx.yml`).** MLX 0.32 made its JIT compile cache `thread_local`, with a
+    `weak_ptr` cross-thread erase path so a function traced on one thread and released
+    on another still invalidates correctly (`ml-explore/mlx#4377`). Its own test,
+    `test_compile_release_on_another_thread`, traces a function on a worker thread, then
+    the main thread clears its only other reference and calls `gc.collect()`, then the
+    worker re-compiles the same callable and the test asserts a second trace happened
+    (`self.assertEqual(len(traces), 2)`) -- this reproduced as `AssertionError: 1 != 2`
+    on **every** run on the riscv64 cp314t leg (twice, ~9.5 minutes apart, same test,
+    same assertion), while cp312/cp313/cp314 (GIL-serialized) passed the identical
+    tree cleanly every time. Free-threaded CPython's biased/deferred reference counting
+    does not guarantee that a `gc.collect()` call on one thread synchronously reconciles
+    and finalizes an object whose refcount was primarily manipulated on another thread
+    the way GIL-serialized refcounting does -- the test's ordering assumption, not MLX's
+    cache logic, is what breaks.
+    - **Confirm determinism before deselecting anything** -- rerun the single failing
+      leg once (`gh run rerun <run-id> --failed` once every sibling leg is terminal,
+      gotcha 65/357's polling discipline) rather than assume a one-off flake; an
+      identical failure at both the same test and roughly the same wall-clock point is
+      the signal, a passing rerun would instead point at a genuine race worth chasing.
+    - **Check upstream's own issue tracker for the subsystem the test exercises before
+      deciding it's a test-design gap** (`gh api "search/issues?q=repo:<owner>/<repo>+
+      is:issue+<keyword>"`, read-only) -- finding the maintainers' own design writeup for
+      the exact mechanism under test (here, the thread_local+weak_ptr redesign) is much
+      stronger evidence than guessing from the assertion alone, and upstream's own CI
+      matrix already covering `cp314t`/`cp313t` (check their release workflow) means a
+      *deterministic* failure would likely already be known/fixed there -- pointing
+      toward a timing-window difference on this runner class, not a universal break.
+    - **Deselect the one test for the free-threaded leg only, with a comment
+      naming the mechanism and the evidence**, not a blanket skip of the file/class --
+      mirrors the same pattern used for other packages' `cp314t`-only test-design gaps
+      elsewhere in this repo's build workflows: keep the exact assertion and thread
+      choreography in the comment so a future upstream fix (or disproof) is easy to
+      recognize, and note that it was reproduced deterministically rather than assumed
+      flaky.
+
+414. **A stochastic test whose native RNG is seeded from `time(NULL)` is a wall-clock
+    lottery, not an arch or libc difference -- find the seed line in the C/C++ dependency,
+    then replay consecutive epoch seconds through the library's own seed setter to measure
+    the real failure rate (the leidenalg case).** `leidenalg`'s musllinux leg failed one
+    test out of 688 (`test_Bipartite`, `AssertionError: 2 != 1`) while the manylinux leg of
+    the same run was green and a full local QEMU rehearsal of *both* legs had passed -- the
+    shape that invites "musl-specific edge" or "Alpine drift". It was neither:
+    `libleidenalg`'s `Optimiser::Optimiser()` does `igraph_rng_seed(&rng, time(NULL))`, so
+    every optimisation run is seeded by the *second* at which the object was constructed,
+    and the test seeds nothing.
+    - **A loop that re-runs the operation back-to-back proves nothing** and is the trap
+      here: 400 iterations inside the same second all get the same seed and return the
+      identical answer, which reads as "deterministic, so the failure must be
+      environmental". Likewise a passing suite rerun -- 20 green full-suite runs only buy
+      20 samples, one per run, because the test runs once per suite.
+    - **Drive the seed directly.** Most such libraries expose the setter the constructor
+      bypasses (`Optimiser.set_rng_seed(value)` here). Construct the object, set the seed
+      to `int(time.time()) + i` for a few thousand `i`, and count the bad outcomes: that
+      replays the exact space the constructor samples from, thousands of samples in the
+      time one suite run takes. leidenalg: **7/1000 consecutive seconds fail (0.7%)**.
+    - **Run the same replay on a glibc/x86_64 install of the *upstream released wheel*.**
+      If it reports the identical failing seeds -- it did here, the same 7 epoch seconds on
+      `manylinux_2_28_x86_64` as on the CI-built `musllinux_1_2_riscv64` wheel -- the flake
+      is upstream's and platform-independent, and the port has nothing to answer for. This
+      is a cheap control that needs no riscv64 emulation.
+    - **Then re-run the job and change nothing.** Deselecting a test upstream itself ships
+      green 99.3% of the time would diverge from upstream's CI for no defect (SKILL.md's
+      goal 2); at ~0.7% per suite run and four interpreters retesting one abi3 wheel per
+      leg, expect a hit on roughly 3% of jobs and roughly 6% of two-libc runs, which is
+      quite enough to explain "one leg red, its twin green".
+    - **The distinguishing question is "what varies between the two legs?", not "what is
+      different about musl?"** Contrast gotcha 286, where a musllinux-only eigensolver
+      failure really did track a vendored dependency, and gotcha 379/362, where the
+      failure reproduced *deterministically*. Wall-clock seeding fails that test: nothing
+      about the wheel, the libc or the arch enters the seed.
+
+416. **pytest reports a conftest-time `ImportError` without the exception chain, so a
+    `dlopen` failure arrives in the CI log stripped of the one line that diagnoses it (the
+    torchcodec case).** The whole evidence four failed jobs produced was
+    `OSError: Could not load this library: .../libtorchcodec_image.so` -- which names the
+    file and says nothing about why. The cause is that loaders wrap the real error:
+    torch's `torch.ops.load_library` does `except Exception as e: raise OSError(f"Could
+    not load this library: {path}") from e`, and pytest's `ConftestImportFailure` renders
+    only the final exception, dropping the `__cause__` that carries ld.so's message
+    (`undefined symbol: ...` or `cannot open shared object file`).
+    - **Re-run the import outside pytest -- `python -c "import <pkg>"` prints the full
+      chain**, including the `The above exception was the direct cause of...` section with
+      the symbol name. Under a reproduction you control, `ctypes.CDLL("<path>.so")` on the
+      offending library is even more direct: it is exactly what the loader does, minus the
+      wrapping.
+    - **A conftest that imports the package under test turns any load failure into a
+      collection error**, so this shape recurs for every wheel whose test suite has a
+      `conftest.py` doing `from <pkg> import ...` -- the failure looks like a test-harness
+      problem and is really a link-time one.
+
+472. **A project's own test runner can swallow the identity of a hanging or crashing
+    test: it buffers each module's output and prints it only when the module ends, so a
+    hang or a SIGSEGV loses everything the module had produced (the pygame-ce case).**
+    `pygame.tests`' runner captures each module into an `io.StringIO()` and prints the
+    block once the module finishes, and it defaults to single-process mode
+    (`usesubprocess=False`) where its own `--time_out` option is never applied. A test
+    that never returns therefore ran three matrix legs into `timeout-minutes` with no
+    output naming a module, and once that hang was skipped a segfault in the *same*
+    module produced a bare `Segmentation fault` and nothing else.
+    - **`python -u` buys you the module name and nothing more.** Unbuffering stdout makes
+      the runner's own `loading <module>` line appear before the stall, which is what
+      localises the failure to one module -- but the per-test lines are inside the
+      `StringIO`, so `-u` cannot name the test.
+    - **Bypass the project runner to get the test.** `python -u -X faulthandler -m
+      unittest -v <module>` prints each test id as it starts and, on a fault, the
+      faulthandler traceback with the exact source line. For pygame-ce that turned
+      `Segmentation fault` into `draw_test.py:7313 in test_arc__surface_clip` in one run.
+    - **Then sweep every test id in its own interpreter** -- load the module with
+      `unittest.TestLoader().loadTestsFromName()`, flatten the suite to ids, and
+      `subprocess.run([sys.executable, "-m", "unittest", "-q", id], timeout=N)` each one,
+      printing the non-zero ones. 252 tests took under three minutes and proved exactly
+      two were bad, which is what makes a two-test skip defensible instead of a guess.
+    - **Do all of this from `CIBW_TEST_COMMAND` in a `run:` heredoc** (gotcha 7, gotcha
+      168): one job, one 30-minute window, no committed helper script.
+
+473. **A per-test watchdog that kills the process on the first hang tells you nothing
+    about the tests defined *after* it, so "everything else in the module passes" is
+    unproven -- and the next run finds the second bug in the same module.**
+    `faulthandler.dump_traceback_later(N, exit=True)` aborts the interpreter, so a loop
+    that arms it around each test in turn stops at the first offender. Reading that run as
+    a clean bill of health for the rest of the module cost a full CI cycle here: the arc
+    test that hung was skipped, and the very next run segfaulted in a *different* test of
+    the same class, which the watchdog run had never reached.
+    - **Prefer a subprocess-per-test sweep** (gotcha 472) whenever the question is "which
+      tests are bad", not "why is this one bad": a crash confined to a child process lets
+      the sweep continue and enumerate *all* of them in one job.
+    - **When two failures land in the same C entry point, say so in one patch** rather
+      than shipping two unrelated-looking skips. A hang and an out-of-bounds write in the
+      same rasteriser are one defect with two symptoms, and describing it that way is what
+      tells a reviewer the skip set is complete.
+
+474. **Before patching out tests that fail because your build omits an optional backend,
+    grep upstream's test suite for the marker it already uses for system-dependency
+    builds -- it usually exists, and using it is a far smaller divergence than a skip.**
+    pygame-ce honours `PG_DEPS_FROM_SYSTEM`, which its own `run-ubuntu-checks.yml`,
+    `build-ubuntu-sdist.yml`, `dev-check.yml` and `build-sdl3.yml` set, and which its
+    tests consult to skip the wavpack music cases and the PNG-saving cases whose backend
+    it cannot assume. Setting that one variable in `CIBW_ENVIRONMENT` is exactly what a
+    from-source SDL stack linked against distro libraries should do, and it only ever
+    *adds* skips -- nothing in the build reads it.
+    - **Look for the marker by name, not by grepping for `skipIf`**: `grep -rn
+      '<PROJECT>_.*FROM_SYSTEM\|SYSTEM_DEPS\|USE_SYSTEM' test/ .github/` finds it, and the
+      project's own system-deps CI workflow is the other place it always appears.
+    - **The marker is usually incomplete**, because upstream added it for the one backend
+      that bit them. pygame-ce guards `house_lo.wv` with it but leaves `house_lo.opus` and
+      `surfonasinewave.xm` unguarded two lines above, in the same list. Extending an
+      existing marker to its siblings is a genuinely upstreamable three-line patch;
+      inventing a new skip condition is not.
+    - **Check which tests the marker costs you.** Here it also skips three PNG-saving
+      tests that were passing, because upstream cannot assume libpng is the backend. That
+      is the right trade when the alternative is asserting a capability the wheel does not
+      have, but it should be a decision, not a surprise.
+
+502. **One binary of a multi-binary wheel can be unshippable while the rest are perfect --
+    price the variant, not the package (the austin-dist case).** austin-dist's glibc wheels
+    carry two programs: `austin`, which samples a Python process through `/proc/<pid>/mem`,
+    and `austinp`, which also unwinds native stacks with libunwind. On riscv64 every austin
+    test passed and all six austinp tests died with `returncode -11`. Two distinct crashes,
+    both from core dumps of an unstripped build (gotcha 498):
+    - `mojo_event_handler__handle_new_frame` at `events.c:83` reads `frame->scope->key`
+      through `UNKNOWN_SCOPE`, the `(cached_string_t*)1` sentinel every *other* consumer
+      tests for -- a latent upstream bug that riscv64 makes deterministic because libunwind
+      fails to name frames it names elsewhere. Fixing it (give the unresolved scope a real
+      cached string) moved the suite from 34 to 36 passes.
+    - `_Uelf64_lookup_symbol_from_dynamic` ← `_UPT_get_proc_name` ← `_Uriscv_get_proc_name`
+      faults **inside libunwind's own riscv64 symbol lookup**, which is not the port's to
+      fix; with the sampler dying mid-write the consumer then reports a truncated stream
+      (`MojoParseError: Invalid byte sequence at offset 8195`).
+    **Ship the subset upstream already ships somewhere.** austin's own musllinux wheels
+    contain `austin` alone, so dropping `austinp` on riscv64 is a shape upstream defined, not
+    an invention -- the same call this repo made for py-spy, whose riscv64 wheel loses
+    `--native`. Dropping the variant also retires every patch and dependency it needed
+    (libunwind from source, binutils archives, two toolchain patches), so the port gets
+    smaller rather than more special; record the crashes in the PR and the version's
+    `warning:` so the gap is documented rather than silent.
+
+504. **A test failing on riscv64 with a *discrete* wrong count -- not a last-ULP value -- can
+    still be pure floating point: GCC's default `-ffp-contract=fast` fuses `a*b+c` into one
+    FMA on every ISA that has one, and riscv64's baseline `rv64gc` does (the
+    cmeel-octomap/octomap case).** octomap 1.10.0's `test_color_tree` builds a `ColorOcTree`
+    from points computed as `(float) x*0.05f+0.01f` and asserts
+    `EXPECT_EQ(initialSize, 1034)` on the pruned node count. On riscv64 it gets **3431** --
+    a 3x difference in an integer, which reads like a broken build rather than rounding.
+    It is rounding: the contracted multiply-add keeps more precision than the two rounded
+    operations, so a handful of endpoints land in a different voxel, and `prune()` then
+    collapses a different number of leaves.
+    - **Reproduce it on x86 before blaming the architecture -- one compiler flag does it.**
+      Rebuild just the failing test translation unit (octomap's coordinate-to-key math is
+      inline in the headers, so it compiles into the test) with
+      `g++ -O3 -march=haswell -ffp-contract=fast`, linking the library you already built:
+      x86 then prints the *identical* `test failed: 3431!=1034`. Plain `-O3` on x86 prints
+      1034 because baseline SSE2 has no FMA to contract into. Seconds, no riscv64 hardware,
+      no QEMU cycle -- and it converts "riscv64 miscompiles this" into "this assertion is
+      not portable to any FMA target", which is a different conversation with upstream.
+    - **Distinct from gotcha 304**, where the divergence is a few ULP *in the asserted value
+      itself*. Here the float is never compared: it is bucketed into an integer voxel key,
+      so an arbitrarily small difference is amplified into a large discrete one. Treat "the
+      number is wildly wrong" as compatible with a rounding cause whenever the quantity is a
+      count, a bucket index, or anything else derived by quantising float coordinates.
+    - **Fix scope: whatever upstream already does, and here it already does something.**
+      cmeel-octomap's `release.yml` sets `CMEEL_RUN_TESTS="false"` in `CIBW_ENVIRONMENT` for
+      every platform it ships, so the port inherits that rather than deselecting one test or
+      forcing `-ffp-contract=off`. The flag is the tempting fix and the wrong one: it would
+      make the riscv64 wheel's own code differ from the wheel every other architecture gets,
+      to satisfy an assertion upstream runs nowhere.
+    - **A cmeel `run-tests` knob is load-bearing, not cosmetic.** cmeel runs the project's
+      `ctest` suite during `build_wheel` unless `[tool.cmeel] run-tests = false` or
+      `CMEEL_RUN_TESTS=false` says otherwise, and a failing test aborts the *build* inside
+      `prepare_metadata_for_build_wheel` -- no wheel, a PEP 517 traceback, and nothing that
+      looks like a test report. Copy that env var across with the rest of the recipe.
+
+699. **Gotcha 504's class extends past buckets and counts to a boolean: a trivially feasible
+    one-item instance coming back `is_proven_infeasible` on riscv64 only, with no exact-equality
+    assertion anywhere in sight, is still an architecture floating-point divergence, not a wrong
+    build (the packingsolver case).** `test_feasible` packs one 6x6 item into a 10x10 bin and
+    asserts `not output.is_proven_infeasible` -- only `rectangle`/`rectangleguillotine`'s
+    `BinPacking`/`Feasibility` combinations failed it on riscv64, not `box`/`boxstacks`/
+    `irregular` nor the `Knapsack`/`VariableSizedBinPacking` objectives. `rectangle::optimize()`
+    relaxes the 2D instance to a 1D one keyed on exact bin/item *area* (an integer -- 100 and 36
+    here, so nothing rounds at that step) and hands it to the full `onedimensional::optimize()`
+    (dichotomic search over a vendored, `FetchContent`-built HiGHS for the exact per-bin-count
+    solve), under the rule "the relaxation is infeasible ⇒ so is the real instance." A one-line
+    floating-point tolerance misfire inside that inner exact solve -- crossing HiGHS's own
+    primal-feasibility epsilon differently under riscv64's `rv64gc` FMA baseline than under a
+    baseline x86_64 build with no FMA to contract into (same mechanism as gotcha 504, one layer
+    removed) -- reports the relaxation infeasible and the geometry solver believes it.
+    - **A day-long `FetchContent` build (nine vendored repos plus HiGHS) makes the gotcha
+      504/304 move of reproducing on x86 with one extra compiler flag impractical here**: there
+      is no isolated translation unit to rebuild the way octomap's inline header math was.
+      Diagnose from the source path instead -- trace which problem types/objectives actually
+      reach the inner exact solve for a small instance (`number_of_item_types() < 100`) versus
+      a cheap closed-form bound, and let the *shape* of the pass/fail split (two related
+      problem types out of five, two objectives out of four, both only through the one code
+      path that calls the vendored solver) stand in for the byte-for-byte repro.
+    - **Fix scope: deselect, don't patch.** Nothing here is wrong with this repo's build -- no
+      upstream bug report exists to attach a patch to, and forcing a global `-ffp-contract=off`
+      would (as gotcha 504 warns) make the riscv64 wheel's own codegen diverge from what
+      upstream never tests on any architecture. `CIBW_TEST_COMMAND`'s `-k`, not `--deselect`
+      (gotcha 14/283's path-mismatch trap applies to any non-default test invocation, not just
+      a staged `{package}` copy).
+    - **A `-k` expression over `BinPacking`/`VariableSizedBinPacking`/`BinPackingWithLeftovers`
+      needs the substring collision handled, not assumed away.** All three objective names
+      contain `BinPacking`; so does `rectangleguillotine` contain `rectangle`. Write the
+      expression to require the substring *and* exclude the longer names that also carry it
+      (`BinPacking and not Variable and not Leftovers`), rather than one bare keyword that
+      silently pulls in parametrizations that still pass.
+
+507. **A SIGSEGV out of a hand-written `ctypes` smoke test is almost always the test's own
+    declaration, not the wheel -- reproduce the same line against the local x86 build before
+    believing riscv64 broke (the cmeel-qhull case).** A `has-sitelib = false` cmeel/CMake
+    distribution ships a `.so` and no Python at all, so the smoke test has to be written by
+    hand, and `ctypes` will happily misread a symbol rather than refuse.
+    - `ctypes.c_char_p.in_dll(lib, "qh_version")` on a C `const char qh_version[] = "…"`
+      takes the *array's first eight bytes as a pointer* and dereferences it: an immediate
+      segfault, identically in QEMU and on the runner, on a library that is perfectly fine.
+      The correct read of a char array is
+      `ctypes.string_at(ctypes.addressof(ctypes.c_char.in_dll(lib, "qh_version")))`.
+    - **Declare `restype`/`argtypes` for every function the test calls.** Without them
+      `ctypes` assumes `int` and passes unconverted objects, so a
+      `coordT qh_pointdist(pointT *, pointT *, int)` that returns `13.0` reads back as
+      garbage -- which looks like gotcha 170's arch-specific numeric divergence and is not.
+    - The rehearsal is where this costs seconds instead of a CI cycle: the same three lines
+      against the locally built x86 wheel say whether the *test* or the *port* is wrong.
+      Prefer a real computation over a bare `CDLL()` load -- loading proves linkage, not that
+      the library computes -- and keep it to context-free entry points so no opaque handle
+      has to be faked.
+
+519. **Before deselecting, patching or replacing a failing upstream test suite, run it
+    against the *vendor's own released wheel* on x86_64 -- a suite that fails there too is
+    upstream's defect, not the port's, and the only remaining question is what to test
+    instead (the fasttext-numpy2 case).** A mass failure that looks arch-specific
+    (41 of 83 tests erroring out of a C++ extension, the count changing between runs) is
+    cheap to attribute wrongly: the obvious suspects -- a SIMD fallback, uninitialised
+    aligned allocations, a compiler difference -- each cost a build cycle to rule out, and
+    all three were wrong here.
+    - The decisive experiment is one `pip install --only-binary :all: <pkg>==<ver>` into a
+      clean venv plus the same test invocation. Identical failures against the wheel the
+      upstream maintainer published means nothing you do to the workflow can fix it.
+    - Bisect *across distributions*, not just commits: the same suite on the
+      predecessor/sibling distribution (fastText 0.9.2 via `fasttext-wheel`) passing on
+      the same data pins the regression to the fork's own tree and dates it.
+    - Then ship a functional smoke test rather than a deselect list -- a deselect list that
+      covers half the suite is not a test run. Exercise the path the distribution exists
+      for (here: load a pretrained model, predict, check the numpy return type), and prove
+      the arch-specific code while you are there: comparing a deliberately scalar-only
+      local build against the SIMD one showed the riscv64 fallback path is bit-identical,
+      which is the assertion worth writing into the test command.
+
+535. **A release *tag* can ship tests its own source does not satisfy -- before blaming the
+    architecture, diff the failing test against upstream's post-release `master` and look
+    for the fix that landed after the tag was cut (the scylla-driver 3.29.11 case).** Two
+    unit tests failed on all four riscv64 legs (`test_set_keyspace_for_all_pools_reports_all_errors`,
+    `test_wait_for_schema_agreement_rejects_unknown_scope`) with assertion errors that read
+    like environment sensitivity -- a callback receiving `[]` instead of a dict, a
+    `DID NOT RAISE ValueError` -- the exact shape that invites "mock ordering under QEMU" or
+    "thread scheduling". Neither was: `Session._set_keyspace_for_all_pools()` called back
+    with the last pool's error list instead of the accumulated dict, and
+    `Session.wait_for_schema_agreement()` documented `ValueError` for an unknown `scope`
+    but never validated it. Both are plain logic bugs in `cassandra/cluster.py`, failing
+    identically on x86_64.
+    - **The tests and the source disagree *inside the same tag*, which is why this is not
+      a `CIBW_TEST_SOURCES` shadowing problem (gotcha 18's family) and not a version skew
+      between wheel and checkout.** A feature merged with its tests, a follow-up commit
+      fixed the implementation, and the release was cut in between -- here the tag is
+      15 June and the two fixes are 18 and 29 June. Upstream's own CI is green on `master`,
+      so nobody upstream sees it; only a port that builds *the tag* does.
+    - **Two cheap commands settle it.** `git log --oneline -S '<the exact buggy line>'
+      origin/master -- <file>` finds the fix commit, and `git merge-base --is-ancestor
+      <fix> <tag>` proves it is not in what you are building. If both land, the patch
+      writes itself: `git cherry-pick -x` each fix onto the tag and `git format-patch`,
+      which gives you `Upstream-Status: Backport [<commit url>]` with upstream's authorship
+      and a `(cherry picked from commit ...)` trailer intact -- a far better artefact than a
+      hand-rolled diff or a deselect.
+    - **Reproduce on x86_64 first, but force the event loop.** Here the whole `SessionTest`
+      class `SkipTest`s itself when libev is absent, so a naive local run reports
+      `2 skipped` and looks like it disproves the hypothesis. `EVENT_LOOP_MANAGER=asyncio`
+      (plus `CASS_DRIVER_NO_EXTENSIONS=1`) selects a reactor that needs no C extension and
+      reproduces both failures in 0.1s. A suite that gates its tests on an optional native
+      dependency will do this to you: check the skip *count* against CI's, not just the
+      pass count.
+
+545. **[RETRACTED -- see gotcha 552 for the real cause.] A source-only root-cause theory
+    that reads convincingly is still a theory: confirm it against a fresh CI run on the
+    target architecture before calling it fixed (the umf 1.1.0 IPC case).**
+    `test_provider_os_memory`'s ctest failed 8 of 50 gtest cases under
+    `osProviderTest/umfIpcTest.*/disjoint_w_params_0_OS_HostMemoryAccessor` on riscv64,
+    including the *non-concurrent* `BasicFlow`, `AllocFreeAllocTest` and
+    `openInTwoIpcHandlers` -- not just the concurrency-stress variants -- ruling out a plain
+    timing flake:
+    ```
+    /work/test/ipcFixtures.hpp:543: Failure
+    Expected equality of these values:
+      ret
+        Which is: 3          // UMF_RESULT_ERROR_INVALID_ARGUMENT
+      UMF_RESULT_SUCCESS
+        Which is: 0
+    [FATAL UMF] umfMemoryProviderCloseIPCHandle: UMF check failed: (ptr != NULL)
+    ```
+    - **What this entry originally claimed:** the failing line was the *second* of two
+      `umfOpenIPCHandle()` calls onto the same coarse-grain allocation, meant to be served
+      from `provider_tracking.c`'s opened-handle cache -- and that cache's key struct (two
+      pointers plus an `int`, 4 bytes of trailing padding on LP64) was hashed/`memcmp()`'d by
+      uthash over its full `sizeof()` including padding, while being built with
+      `= {0}` and persisted with a plain struct assignment, neither of which the C standard
+      guarantees touches padding. Patched with `memset()`/`memcpy()`
+      (`patches/umf/1.1.0/0001-...-incl-pad.patch`), validated on x86_64 (50/50 plus every
+      IPC-adjacent suite, no regression), and pushed as `Upstream-Status: To upstream` with
+      an explicit note that the riscv64 fix was unconfirmed pending a fresh CI run.
+    - **Why it was wrong.** The fresh riscv64 CI run on the patched commit reproduced the
+      *exact same* 8 failures, unchanged. Re-reading `ipcFixtures.hpp` showed the failing
+      line in `BasicFlow` is the *first* of its two `umfOpenIPCHandle()` calls, not the
+      cache-hit second lookup the theory depended on -- so the padding/cache-miss theory
+      never even applied to this failure. The patch was reverted.
+    - **The real cause** is Docker's default seccomp profile blocking `pidfd_getfd(2)`
+      without `CAP_SYS_PTRACE` -- see gotcha 552.
+    - **Lesson kept for its own sake:** a hypothesis this specific, reasoned entirely from
+      source, cross-checked with `strace` on x86_64, and validated with a clean local
+      rehearsal, can still simply be about the wrong code path. None of that rigor
+      substitutes for reading the *exact* failing line against the theory one more time, or
+      for the target-architecture CI run that actually confirms a fix closes the failure --
+      this is the same family as gotcha 519/535 in spirit, just the case where doing all the
+      right things still didn't catch it before a wasted CI cycle.
+
+552. **Docker's default seccomp profile blocks `pidfd_getfd(2)` with `EPERM` unless the
+    container has `CAP_SYS_PTRACE`, even for a process duplicating a fd of its own (the umf
+    1.1.0 IPC case; supersedes the disproven theory in gotcha 545).** UMF's
+    `os_open_ipc_handle()` anonymous-fd path calls `utils_duplicate_fd()` →
+    `pidfd_getfd(2)` to duplicate an allocation's fd so it can be handed across the IPC
+    boundary. Under Docker's default seccomp profile this syscall returns `EPERM`, which
+    `utils_errno_to_umf_result()` maps to `UMF_RESULT_ERROR_INVALID_ARGUMENT` (ret=3) --
+    surfacing as 8/50 riscv64 gtest failures in `test_provider_os_memory`, every one of them
+    calling `umfOpenIPCHandle()` (every IPC test that doesn't call it passes), plus a
+    `FATAL "ptr != NULL"` abort at pool teardown from freeing a cache entry that was never
+    actually opened. Matches upstream issue oneapi-src/unified-memory-framework#979. **Fix:**
+    add `--cap-add=SYS_PTRACE` to the test container's `docker run`, which also lifts the
+    Yama `ptrace_scope` restriction the same syscall is subject to -- no UMF source change
+    needed, this is a test-environment gap, not a library bug. Confirmed by a green riscv64
+    CI run with only this flag added and no source patch.
+
+553. **A SIGBUS in a doubly-nested tracking-provider pool stack's aligned-allocation path is
+    real but unresolved on riscv64 without hardware to reproduce interactively (the umf
+    1.1.0 case) -- say so plainly instead of over-scoping a skip to match one crash log.**
+    `test_provider_tracking_fixture_tests`'s `TrackingProviderPoolTest/umfPoolTest` suite (a
+    proxy pool over a `provider_from_pool` that itself wraps a proxy pool over a file-backed
+    provider -- two nested tracking providers) crashes with `Bus error` inside
+    `pow2AlignedAllocHelper` (`test/poolFixtures.hpp`, which drives aligned allocations from
+    1 byte up to 4 MiB). A first riscv64 CI run crashed while running the *multi-threaded*
+    `multiThreadedpow2AlignedAlloc` case, which looked like a concurrency bug and was skipped
+    via `GTEST_FILTER` on that name alone. A later CI run on the same commit crashed instead
+    in the plain *single-threaded* `pow2AlignedAlloc` case -- both call the identical helper,
+    so the crash is not threading-specific and the first skip was scoped too narrowly; it is
+    in the shared aligned-allocation path itself, through this specific doubly-nested
+    provider stack. No seccomp/docker-environment explanation was found (unlike gotcha 552),
+    and no single obvious bug was identified in `provider_tracking.c`'s atomics, `critnib`'s
+    tagged-pointer bit or `provider_file_memory.c`'s coarse suballocator locking without
+    riscv64 hardware to reproduce and debug interactively -- **do not treat this as
+    diagnosed.** Every other test on the same fixture (non-aligned alloc/free, both
+    single-threaded and multi-threaded) passes. Skipped via `GTEST_FILTER` excluding both
+    `TrackingProviderPoolTest/umfPoolTest.pow2AlignedAlloc/*` and
+    `.../multiThreadedpow2AlignedAlloc/*`, flagged for anyone with riscv64 hardware access to
+    pick up, rather than blocking the rest of the port on an unreproducible bug.
+
+    Update: a third CI run crashed on yet another case on the same fixture,
+    `TrackingProviderPoolTest/umfPoolTest.malloc_compliance/*` -- not an aligned-allocation or
+    threading case at all, so the crash is not scoped to `pow2AlignedAllocHelper` either; it
+    looks like the doubly-nested tracking-provider-over-proxy-pool stack itself is unreliable
+    on riscv64, surfacing on whichever parameterization the CI runner happens to schedule
+    first. Widened the filter to also exclude `malloc_compliance`. If a fourth case crashes,
+    the pragmatic fix is excluding the whole `TrackingProviderPoolTest/umfPoolTest.*` fixture
+    rather than continuing to chase individual parameterizations.
+
+566. **A from-source build's compiled binary segfaulting on *every* invocation, not just one
+    test scenario, is real and unresolved on riscv64 without hardware to reproduce and
+    debug interactively (the pgserver 0.1.4 `initdb` case) -- check the full failure set
+    before assuming the failing test's name (or its data) is the cause.** pgserver compiles
+    PostgreSQL 16.2 from source; its own `initdb` binary died with `SIGSEGV` in *every* CI
+    run across three independent riscv64 runners (cp312/cp313/cp314, three different
+    `runner_name`s) and both interpreters exercised, always on the *first* call `initdb`
+    makes in the suite (`test_get_server`, not the `test_reuse_deleted_datadir_short` whose
+    name suggests a short-path/buffer edge case -- that test only happens to be the one
+    running when the crashed child's unbounded wait turns into the hang gotcha 565 bounds).
+    Every later test's `initdb` call segfaults identically, so this is not scenario-specific
+    and not one flaky machine -- it reproduced across every runner instance that ran it.
+    Ruled out already: `configure` on this manylinux_2_39_riscv64 image detects real
+    `__sync`/`__atomic` builtin int32/int64 support (no fallback-spinlock path), and the
+    build passes no `-march`/aggressive flags -- plain `-O2`, GCC 14.3.1 (Red Hat 14.3.1-4).
+    The signal is on the direct `initdb` child itself (Python's `subprocess.run` only
+    reports the *direct* child's signal), so the fault is in `initdb`'s own code before or
+    during its exec of `postgres --boot`, not inside the bootstrap backend. This matches an
+    open, still-unresolved pgsql-hackers thread on riscv64 buildfarm animals producing
+    "weird memory-related failures" on recent GCC -- but that thread's failures are
+    sporadic in random queries, while this one is 100% deterministic in `initdb`, so treat
+    it as a related-but-distinct, equally undiagnosed data point, not the same bug.
+    **Do not treat this as diagnosed** -- no riscv64 hardware or working QEMU
+    user-mode emulation was available to this session (`docker run --platform=linux/riscv64`
+    on the amd64 host used to investigate this hit `exec format error`; the sandbox's
+    `binfmt_misc` isn't writable to register a riscv64 QEMU interpreter, unlike gotcha 115's
+    real-runner case) to get a native backtrace or bisect the GCC/PostgreSQL versions
+    involved. Next steps for whoever picks this up with riscv64 access: `gdb`/core dump on
+    the built `initdb` (gotcha 115's technique) to see whether the fault is in `initdb.c`
+    itself or in something it links against; try a newer PostgreSQL point release; try an
+    older/newer GCC than 14.3.1 in the manylinux image.
+
+568. **A subprocess-exit self-test with its own hardcoded wall-clock `TIMEOUT` can fail only
+    on `cp314t`, only on one version, with no code change behind it -- free-threading's extra
+    per-object overhead tips an existing margin, it doesn't create a new bug (the awscrt
+    0.37.0 `test_appexit` case).** awscrt's `test_appexit.TestAppExit.test_http` runs
+    `test/appexit_http.py` as a subprocess once per teardown stage and asserts each exits 0;
+    every wait in that script (HTTP connect, body callback, connection-shutdown future, both
+    `ClientBootstrap`/`EventLoopGroup` `shutdown_event.wait()` calls) shares one hardcoded
+    `TIMEOUT = 30.0`. On this repo's riscv64 runners, only the `cp314-cp314t` leg of 0.37.0
+    failed, at the `ClientBootstrapDone` stage, with `AssertionError: 0 != 1` from
+    `subprocess.Popen(...).returncode` -- while the same leg of the immediately preceding
+    0.36.3/0.36.4 (built in the very same PR run) and the 0.37.0 cp311/cp313 legs all passed.
+    - **Rule out a version-specific regression before treating a fixed-timeout failure as a
+      real bug**: `git diff <old-tag> <new-tag> -- test/appexit_http.py test/test_appexit.py`
+      found *zero* diff across three released versions, and the only source changes at all
+      were trivial submodule bumps (`aws-c-common`, `aws-c-s3`, `aws-lc`) that don't touch
+      `aws-c-io`'s bootstrap/event-loop/host-resolver shutdown path. Byte-identical test
+      files plus an unchanged code path rules out "new test hit a new bug" and "this
+      version broke something" -- the margin already existed.
+    - **Distinguish a hang from a timing margin by reading what the background threads were
+      doing when the timeout fired, not just that it fired.** The subprocess's own
+      `awscrt.io.init_logging(Trace, 'stdout')` output shares the same fd the test harness
+      captures, so on this repo's shared runners a concurrent native thread's writes land
+      byte-interleaved with the Python traceback (literally splitting one log line, e.g.
+      `...cache due to shutdown` becoming `...caTraceback...` then resuming
+      `...he due to shutdown`). Reading past the corruption showed the DNS resolver's own
+      maintenance loop re-resolving the request host roughly once a second for ~24 of the
+      30-second budget before it decided to kill its background thread, and only then did
+      the channel-bootstrap-release / event-loop-destroy sequence that fires
+      `shutdown_event` begin -- all of it clean, no error, just late. That is a margin
+      problem (under 6s left for the rest of native teardown to reach Python), not a
+      deadlock.
+    - **Fix scope: patch the hardcoded timeout with `Upstream-Status: Inappropriate` and
+      real headroom, don't skip the test** -- this is gotcha 316's "artificial test
+      limitation, not a real defect" case again, and patching-and-licensing.md lists a fixed
+      timeout as an explicitly justified patch reason. Skipping `test_appexit` outright would
+      have cost the one test in the suite that actually proves the package's native
+      extension doesn't crash the interpreter on process exit -- the exact thing worth
+      shipping a wheel to verify. Tripling `TIMEOUT` (30s → 90s) keeps that coverage while
+      giving a busy shared riscv64 runner driving a free-threaded (no-GIL) interpreter --
+      whose per-object atomic refcounting adds measurable overhead to native-callback-into-
+      Python teardown chains like this one -- comfortable room, and it still fails well
+      inside the job's own timeout if the shutdown genuinely never completes.
+
+570. **A hardcoded `sys.getrefcount()` baseline in a test is an interpreter-version
+    contract, not a fixed constant -- CPython 3.14's `LOAD_FAST_BORROW` optimization can
+    lower it by exactly one per affected call site (stpyv8 13.1.201.22's
+    `test_Wrapper.py::TestWrapper::testReferenceCount`, cp314 only).** The test hardcodes
+    expected `sys.getrefcount(obj)` values of 2 and 4 at two call sites. CPython 3.14 added
+    a `LOAD_FAST_BORROW` bytecode that skips the incref a call argument used to take
+    whenever the compiler can prove the local's frame slot still owns the reference
+    afterward -- true at both sites here, since `obj` is read again later in the function --
+    so both baselines are one lower on 3.14+ than on cp312/cp313, which still emit the old
+    `LOAD_FAST`. This is a documented, interpreter-wide behavior change (also hit by e.g.
+    root-project/root#18988 and pandas-dev/pandas#61368), not anything specific to this
+    package or to riscv64. Fix: branch the expected baseline on
+    `sys.version_info >= (3, 14)` rather than skipping or patching away the assertion --
+    the test still proves the same refcounting invariant on every interpreter, just with
+    the version-correct expected value.
+    - **A second, unrelated lesson from the same round: a cache key over a whole directory
+      is only as precise as the files that actually affect the cached artifact.** This
+      port's `build_v8` job caches the ~23h V8 monolith build keyed on
+      `hashFiles(patches/stpyv8/**)`, but three of its patches (0001-0003) touch the
+      `checkout_v8`/`build_v8` steps while the rest (settings.py's link line, the test
+      suite) are read only by `build_wheel`, which `--skip-build-v8` never reaches. Keying
+      on the whole `patches/stpyv8/**` glob meant a wheel-only or test-only patch -- like
+      this round's baseline fix -- changed the key and forced a full V8 rebuild it could
+      never have affected. Narrowing the `hashFiles()` glob to just the patches a given
+      cached step actually reads (0001-0003, not `**`) is a one-time cache-key-format
+      change (itself paying one last rebuild, since the key differs from every prior
+      round's), but every purely wheel-side iteration after it hits the cache instead of
+      repeating the ~24h build.
+
+571. **A test that hangs only on free-threaded CPython (cp314t), intermittently, and only
+    on some releases of the same package, is a deferred-object-freeing race in the test
+    itself, not a riscv64 or version regression (awscrt's
+    `test_stream_lives_until_complete_http`/`..._async_http`/`..._https`/`..._async_https`,
+    seen hanging on 0.36.3 and 0.36.4's cp314t legs, never on the same versions' other
+    interpreters, and not on every run).** Each test drops its last reference to an HTTP
+    stream object, then calls the local test server's `shutdown()`, which blocks until the
+    client socket closes -- and that socket only closes when the stream object (which owns
+    it) is freed. Under the GIL, dropping the last reference on awscrt's native completion-
+    callback thread frees the object immediately, right there, on that thread. Under
+    free-threading, CPython instead *defers* freeing an object whose last reference was
+    dropped on a thread that isn't currently running Python bytecode -- the free only
+    happens the next time some thread runs Python code and processes the deferred-free
+    queue. If the main thread is already blocked inside `shutdown()` when this happens,
+    nothing is left running Python code to process the queue, so the object is never freed,
+    the socket never closes, and `shutdown()` blocks forever. Whether it hangs depends on
+    which thread reaches its blocking point first, which is why it reproduces intermittently
+    and moved between package versions rather than being tied to one release. Confirmed with
+    a minimal reproducer against upstream's own published wheel (hangs 3/3 on cp314t, returns
+    in <1s 3/3 on cp314) and by patching the same deferred-free wait into a standalone repro
+    (0/3 hangs after). Fix: patch the test to keep a weak reference to the stream and poll
+    until it is actually freed (bounded by the test's own timeout) *before* calling
+    `shutdown()`, rather than dropping the reference and immediately blocking on its side
+    effect -- `Upstream-Status: To upstream`, since this is a latent bug in the test itself
+    that would eventually hang on any free-threaded build, not something riscv64-specific.
+    Do not "fix" this by dropping cp314t from the affected version's matrix: free-threading
+    support is real in these releases (it shipped in awscrt v0.32.0, with a related race fix
+    in v0.33.0), so excluding the interpreter would hide a genuine, reportable upstream bug
+    behind a riscv64-only workaround instead of fixing the actual race.
+
+572. **A database/allocator that reserves a huge address-space range up front and only
+    touches a little of it can fail outright on this fleet, not just underperform -- the
+    riscv64 cores here are Sv39-only, a real ~256GB ceiling on one process's virtual address
+    space (kuzu 0.11.3's default `Database()` reserving 8TB via a single `mmap`).** The
+    Python API's `max_db_size` defaults to 8TB (`8796093022208` bytes) on the theory that
+    reserving virtual address space is free until pages are actually touched -- true on
+    Sv48/Sv57 (x86_64, most aarch64) but not on Sv39, where 8TB simply doesn't exist in the
+    process's address space and the `mmap` call fails immediately:
+    `Mmap for size 8796093022208 failed`. Confirmed this isn't riscv64-hardware-specific
+    weirdness by reproducing the identical failure on x86_64 under `ulimit -v 256GB` with the
+    real published wheel -- it's a ceiling this fleet happens to hit first, not a riscv64 bug
+    in kuzu. Fix: on an mmap failure, retry with a halved reservation until one succeeds
+    (verified 8TB -> ... -> 128GB/64GB/32GB across three `Database()` calls in the same
+    process) rather than hardcoding a 256GB cap -- some riscv64 hardware (and any future
+    Sv48 board) has more address space than Sv39, and a hardcoded cap would under-provision
+    there for no reason. `Upstream-Status: To upstream` doesn't apply here (kuzudb/kuzu is
+    archived, 0.11.3 was the final release) but would otherwise be the right call: this is a
+    real bug in the library's own assumption, not a test artifact. Generalizes beyond kuzu:
+    any port of a database, allocator, or `mmap`-based cache with a multi-TB default
+    reservation is worth a quick `Database()`/`open()`-with-defaults smoke test on this
+    fleet before trusting a build that only exercised small reservations.
+
+580. **A job that "ran for 4 hours, then failed" may have failed after two: a failed test
+    that leaves a non-daemon `threading.Thread` running keeps the interpreter alive *after*
+    pytest prints its summary, until that thread finishes -- so compare the summary line's
+    timestamp with the step's end before hunting for a late compile error, an OOM, or a
+    runner timeout (kuzu 0.11.3, `test_connection_interrupt`).** Both `cp312` and `cp313`
+    printed `1 failed, 211 passed ... in 338s` at 18:41, then sat silent until 20:36, when the
+    abandoned thread's own traceback (`DID NOT RAISE RuntimeError`) appeared and the step
+    failed. The 4h20m job was ~2h of compile, ~6 min of tests and ~1h55m of the interpreter
+    waiting at exit for a query nobody was watching. The failure itself is gotcha 38's shape
+    in a C++ engine: the test starts `UNWIND RANGE(1,1000000) ... UNWIND RANGE(1,1000000)
+    ... RETURN COUNT(...)` on a thread, sleeps 5s, calls `conn.interrupt()` **once**, and
+    joins for 100s. Kuzu's binder constant-folds each `RANGE()` into a million-element list
+    literal (and names it by its `toString()`), and `ClientContext::executeNoLock()` calls
+    `resetActiveQuery()` -- clearing the interrupted flag -- only once compilation is done. On
+    the riscv64 runner that compile outlasts the 5s sleep, so the interrupt lands mid-compile,
+    is wiped, and the query runs to completion. The tell that it was *lost*, not *slow*: the
+    thread eventually returned normally ("DID NOT RAISE") instead of raising late; an
+    interrupt that reached the executing operators would have been honoured at the next
+    `getNextTuple()`. Fix: patch the test to re-issue the interrupt every second until the
+    thread ends, inside the same 100s budget (unchanged on fast hosts, where the first one
+    sticks) -- not a deselect. Two generalisations: (1) any "set a cancel flag, then the
+    worker resets it when it starts" API races a single fixed-delay cancel on a slow host;
+    re-signal in a bounded loop. (2) When `CIBW_TEST_SOURCES` copies the tests from a
+    separate checkout (not the sdist), a test patch applied only to the sdist is a silent
+    no-op: also `git apply --include='<tests dir>/*'` the series to that checkout.
+    - **The same lost interrupt can surface as a segfault in the *next* test** (ladybug
+      0.19.1, the kuzu fork, `build-ladybug.yml`). There the `conn_db_readwrite` fixture's
+      teardown closes the database, and close waits for the running query with the GIL held,
+      so `test_connection_interrupt FAILED` was only printed ~4h later, when the query ended;
+      the abandoned thread then crashed freeing its `FactorizedTable` into the closed buffer
+      manager while `test_database_close` ran (exit 139, `MemoryBuffer::~MemoryBuffer` on top
+      of the C stack). Read the faulthandler dump for *which* thread faulted: a
+      `run_long_query` thread under a later test means the previous test's cleanup, not the
+      later test, is the bug. The kuzu patch carries over unchanged, and it reproduces on
+      x86-64 with upstream's wheel by shortening the sleep below the compile time. When the
+      tests sit in a git submodule the liblbug build does not initialise, apply the series
+      with `--exclude='<tests dir>/*'` there and `--include` in the test job.
+
+583. **A test failing on riscv64 only because our registry carries a newer dependency
+    than upstream's lock file is version drift, not an arch bug -- reproduce it on
+    x86_64 before blaming the port (see `build-mink.yml`).** mink 1.3.0's
+    `test_solve_ik.py::test_trivial_solution` and
+    `test_exceeding_limits_without_safety_break_does_not_throw` failed on riscv64 with
+    `NoSolutionFound: QP solver daqp failed to find a solution` (260 other tests
+    green). Both call `solve_ik` with no tasks, so the QP Hessian is just mink's
+    Levenberg-Marquardt damping, `1e-12 * I`, with `q = 0`. `pip install daqp==X numpy`
+    on x86_64 and one `daqp.solve(np.eye(6)*1e-12, np.zeros(6), ...)` call per
+    version shows `exitflag` -5 (`DAQP_EXIT_NONCONVEX`) on **every** arch for 0.9.0
+    and 0.9.1 (and 0.8.2/0.8.3), and 1 (optimal) for 0.7.2, 0.8.4 and 0.8.5. Upstream
+    CI is green only because it runs `uv run pytest` against `uv.lock`, which pins
+    daqp **0.8.5**. Our registry only has 0.9.1, so our test env drifted.
+    - **Root cause (upstream daqp, `ef97920` "Improve DAQP-PROX", #168, first in
+      0.9.0):** the diagonal-Hessian branch of `daqp_update_Rinv` now adds the
+      proximal shift only when `H_ii <= zero_tol * hessian_scale` (relative; 1e-23
+      here), but still rejects `H_ii <= zero_tol` (absolute, 1e-11) as nonconvex. A
+      uniformly tiny diagonal is never shifted, so it is always rejected. In 0.8.5 the
+      shift trigger and the rejection used the same absolute `zero_tol`.
+    - **Fix in the test env, not a daqp patch:** the bug is not riscv64-specific, and
+      patching our daqp would make it diverge from PyPI's. Pin upstream's lock
+      version in `CIBW_TEST_REQUIRES` (`daqp==0.8.5`) and take `daqp` out of
+      `PIP_ONLY_BINARY` so pip builds that version from its sdist (setuptools + Cython,
+      no CMake; seconds on riscv64). This is gotcha 25's rule (take test-dep
+      versions from upstream's lock) applied to a *compiled runtime* dependency that
+      has no older riscv64 wheel.
+    - **The bisect is the proof that deselecting would be wrong:** if an older version
+      of the dependency passes on the same arch, the test is fine and the environment
+      is not.
+
+589. **A library that does its own runtime CPU dispatch usually exposes an override knob,
+    and that knob reproduces a riscv64-only test failure on x86_64 with upstream's own
+    wheel -- no QEMU, no rebuild (the kiwipiepy `KIWI_ARCH_TYPE=none` case).** riscv64 has
+    no SIMD tier in most such libraries, so it lands on the generic path, which upstream's
+    CI never exercises on x86_64/aarch64 because the dispatcher always picks SSE/AVX/NEON
+    there. kiwipiepy 0.23.2 built cleanly and passed 66/68 tests on riscv64;
+    `test_space_issue_189` (`'담아 1 팩 무료'` for `'담아 1팩 무료'`) and `test_template`
+    (`'묻인다'` for `'묻는다'`) failed on both the abi3 and cp314t legs.
+    - **The check:** `pip install <pkg>==<ver>` (upstream's x86_64 wheel) plus its runtime
+      deps into a scratch venv, then run just the failing tests once per dispatch level.
+      Kiwi reads `KIWI_ARCH_TYPE` (`none`, `balanced`, `sse2`, `sse4_1`, `avx2`, ...):
+      `none` fails the same two tests with the same strings, every other level passes.
+      Same output on x86_64 as on riscv64 means an upstream bug in the portable path, not
+      a porting or toolchain bug. Look for the knob with
+      `grep -rn getenv` near the dispatcher (`getBestArch`, `cpu_features`, `get_cpu_*`).
+    - **Grep how the non-SIMD path is chosen before assuming "scalar == reference".** Kiwi
+      has *two* portable tiers: `none` (what `getBestArch()` returns when cpuinfo finds no
+      x86/ARM feature, so riscv64 gets it) and `balanced` (never auto-selected, but passes
+      the whole suite). They differ at least in their sorted-key search (`search.cpp`), so
+      "the generic path is the same code upstream tests" was false here.
+    - **Deselect, don't patch, when the reproduction is upstream's wheel:** the wheel we
+      ship behaves exactly like upstream's own under the same dispatch level, so name the
+      tests in `--deselect` with a one-line reason and say which knob reproduces it in the
+      PR. Flipping the riscv64 default to another tier would be a behavioural patch nobody
+      upstream has reviewed.
+    - **It costs a cheap rehearsal, not a CI cycle:** each kiwipiepy leg spends ~75 min
+      compiling and ~37 min per interpreter in the suite on the riscv runner; the x86_64
+      check took two minutes.
+
+593. **A cp314/cp314t-only wall of `ValueError: cannot resize an array that may be referenced
+    by another object` is NumPy >= 2.4 meeting Python 3.14, not riscv64 and not registry drift
+    (the cantera case).** cantera 3.2.0 failed 59 tests + 64 errors on cp314 and cp314t (every
+    `gas["H2", "O2"]` / `SolutionArray` slice) while cp312/cp313 passed -- all four legs had
+    installed the *same* numpy 2.5.3, so gotcha 583's "newer dependency than upstream tested"
+    check alone (compare the installed versions) rules drift in or out in one grep.
+    - **The mechanism:** `PyArray_Resize` with `refcheck=True` tests `Py_REFCNT(self) > 2`
+      through numpy 2.3.x, but from 2.4 on a Python >= 3.14 build requires
+      `PyUnstable_Object_IsUniquelyReferenced(self)` (3.14's borrowed stack references make the
+      old count unreliable). A call from Cython (`self._attr.resize(n)`) holds the attribute's
+      reference plus a temporary one, so it fails *every* time; 2.5 only rewords the error to
+      "It is possible that this is a false positive." Any extension calling `.resize()` on a
+      numpy array from C/Cython and released before numpy 2.4 (Dec 2025) is exposed on cp314.
+    - **Reproduce on x86_64 in a minute with upstream's own PyPI wheel**, all under
+      `.git/pw-scratch/<pkg>` (`UV_CACHE_DIR`/`UV_PYTHON_INSTALL_DIR` pointed there):
+      `uv run --no-project --python 3.14 --with <pkg>==<ver> --with numpy==2.5.3 python repro.py`
+      fails, `numpy==2.3.5` passes, and `--python 3.13` with 2.5.3 passes.
+    - **Backport, don't pin.** Upstream usually has the fix already (cantera#2063 replaced the
+      `resize` with a fresh `np.ndarray`; others pass `refcheck=False`). Pinning `numpy<2.4` in
+      the test env would turn the jobs green while publishing a cp314 wheel that breaks for every
+      user on the numpy pip installs by default -- the test failure is a real user-facing bug.
+
+594. **A C++ unit test that counts requests against a wall-clock sleep flakes on the busy
+    riscv64 runner; three cheap checks separate it from an arch bug before you pay for
+    another multi-hour rebuild (the perf-analyzer case).** perf_analyzer's
+    `perf_analyzer_unit_tests` (doctest) passed 145/146 on the first run (the one failure a
+    deterministic RapidJSON error-code assertion) and 144/146 on the second with the same
+    sources: `concurrency_sequence` (`CHECK( 522 == Approx( 600.0 ) )`, ±10%, from 500 ms of
+    sleep over mocked 10 ms requests) and `custom_load_sequences` (`Sequence request counts
+    were not balanced: 15,13,15,13,15,13,15,13,14,`).
+    - **Same sources passed before.** A timing test that passed on an earlier run of the
+      identical build, then failed with counts short by 1-2 of dozens (or ~13% of a
+      throughput target), is the runner, not riscv64 arithmetic. Read which test the "first
+      run's one failure" actually was before calling it a flake: here it was deterministic.
+    - **A logged snapshot that satisfies the failed check proves a live read.**
+      `CheckSequenceBalance()` iterates the mock's `std::map` of per-sequence counts without
+      its mutex while the workers are still sending (the test sleeps 20 ms, checks, *then*
+      stops the threads -- the sibling `request_rate_serial_sequences` pauses first). The
+      second failure logged `45,44,44`, which passes the n/n+1 rule: the counters moved
+      between the comparison and the message.
+    - **Find the deterministic tests of the arithmetic you suspect.** The split of sequences
+      and schedule slots across threads (`num_seqs / threads`, remainder to the first threads)
+      has its own unit tests (`request rate manager - Configure threads`, `Calculate thread
+      ids`); both passed on riscv64, which rules out a division/rounding difference.
+    - **doctest filters are whole-name wildcards, comma-separated, case-insensitive.**
+      `--subcase-exclude="invalid json,serial_sequences"` drops exactly the subcase named
+      `serial_sequences` (not `not serial_sequences`, not another file's `serial_sequences
+      on`), and an excluded subcase is never registered, so its sibling runs in the same pass
+      -- the test body never runs with the excluded branch's setup missing. Prove a filter in
+      a minute by compiling a stub `TEST_CASE` against the project's vendored `doctest.h`.
+      Use `--test-case-exclude` only when the timing assertion is in the test's shared body,
+      as in `concurrency_sequence`.
+
+596. **`cannot open shared object file: No such file or directory` for a file that exists is
+    glibc rejecting an ELF built for another machine -- look for a platform-string fallback
+    that maps riscv64 to `amd64` (ladybug 0.19.1, see `build-ladybug.yml`).** Four
+    `test_json.py` tests run `INSTALL json; LOAD json;`, which downloads a prebuilt extension
+    from upstream's server into `~/.lbdb/extension/<ver>/<platform>/`, and `LOAD` failed on
+    riscv64 with `Failed to load library: .../linux_amd64/json/libjson.lbug_extension ...
+    cannot open shared object file: No such file or directory`. The path names the wrong
+    platform: `getArch()` starts from `"amd64"` and only overrides it for x86 and arm64, so
+    riscv64 downloads the x86-64 build. `dlopen` then reports ENOENT, not "wrong ELF class",
+    because glibc's `open_verify` sets ENOENT for an `e_machine` mismatch so a search can
+    move on; `ctypes.CDLL()` on an aarch64 `.so` gives the same message on x86-64, a
+    one-minute proof. Two separate fixes: patch the fallback so riscv64 names its own
+    platform (the download then 404s cleanly instead of caching foreign binaries), and
+    deselect the tests that need a downloaded plugin upstream does not publish for riscv64
+    (kuzu's `test_extension.py` ignore is the same call). Grep any plugin/extension
+    downloader for `amd64`/`x86_64` defaults before trusting its `<os>_<arch>` string.
+
+598. **In a single job that builds for many hours and then tests, the test step inherits
+    whatever is left of the job's `timeout-minutes`, so a test hang holds the runner for
+    that remainder -- give the test step its own `timeout-minutes` (the openvino 2026.3.1
+    case, PR #2122).** `build-openvino.yml` builds the C++ world once (12-16.5h) and then
+    runs a `Test wheels` step, all under `timeout-minutes: 1440` sized for the build. On
+    run 36145686942 the cp312/cp313/cp314 test legs took ~3 min each, then cp314t's pytest
+    hung after `test_async_infer_request.py::test_start_async[True]` (a Python callback run
+    on an inference worker thread) and printed nothing for 11h22m. The runner stopped it at
+    24h, and the job was reported `cancelled` (gotcha 456's signature), not failed at the
+    test that hung.
+    - **Fix: a step-level cap.** `timeout-minutes: 60` on the `Test wheels` step, sized from
+      upstream's own test job (openvino's `job_python_api_tests.yml` caps at 30) and the
+      measured green legs, with margin for the slower runner. The runner enforces it no
+      matter what hung (pytest, a native deadlock, `pip`, the container), so it fails the
+      step that stalled after an hour, not after the rest of the day.
+    - **Why not gotcha 565's `pytest-timeout`:** it adds a test dependency, only covers
+      pytest, and its default `signal` method needs the main thread to return to the
+      interpreter. A main thread parked in a native wait with the GIL released (e.g. a C++
+      `request.wait()`) never does. The two are complementary: `pytest-timeout` names the
+      test, and the step cap bounds everything else.
+    - **Upload the wheels artifact *before* the test step** (as this workflow does), so a
+      hung or capped test step does not discard a 12h build. The hang can then be
+      reproduced against the artifact with `python -X faulthandler` and
+      `faulthandler.dump_traceback_later` (gotcha 473), with no rebuild.
+    - **Narrowing the hung leg is a stop-gap, not a verdict.** Here cp314t is still built,
+      published and smoke-tested (it imports, enumerates `CPU` and runs an inference). Only
+      its pytest run is skipped, because at a 12h+ build per round the root cause is cheaper
+      to find from the artifact than from CI. If the frame turns out to be a test-side
+      free-threading race, gotcha 571's advice applies: patch the test, don't drop the
+      interpreter.
+
+602. **A test matrix over *target* interpreter versions (not the interpreter running the
+    tests) shows the same gotcha-33/169 shape, one level removed: pystack's own test suite
+    launches a separate Python (`astral-sh/setup-uv`, i.e. a python-build-standalone build)
+    and inspects *its* process, and every native-frame-dependent assertion fails identically
+    on riscv64 for that target being 3.13, 3.14 or 3.14t, while 3.12 passes clean (pystack
+    1.7.1, `build-pystack.yml`).** 28 of the same tests fail, byte-for-byte identical FAILED
+    list, on all three newer targets: `test_core_analyzer.py::test_single_thread_stack` /
+    `test_multiple_thread_stack_native` (every `method=` variant), `test_gather_stacks.py`'s
+    native variants, both `test_gc.py::test_gc_status_is_reported_when_garbage_collecting_*`,
+    `test_subinterpreters.py`'s `*_with_native` tests, and the relocated-core/shim-frame
+    tests -- every one of them asserts it can classify a *native* frame from the target's own
+    unwind as the CPython eval loop or the GC collector, via `pystack.types.frame_type()` /
+    `is_eval_frame()` matching the literal substring `_PyEval_EvalFrameDefault` (or, on 3.14+
+    tail-call builds, `_TAIL_CALL_*.llvm.*`). On the riscv64 target build for 3.13+, that
+    native unwind never turns up a frame `is_eval_frame()` recognizes, so `eval_frames` comes
+    back `[]`/`0` instead of the upstream-asserted `1` -- a real, upstream-documented class of
+    gap in per-arch native/signal-frame unwinding support (pystack itself had to ship an
+    `elfutils-aarch64-signal-frame.patch` for AArch64 alone as of 1.7.2, bloomberg/pystack
+    #341/#348 -- riscv64 has no equivalent patch), not a defect in the wheel under test: the
+    wheel that's running the analysis is the *same* cp312/cp314t abi3 build across the whole
+    matrix, only the target interpreter varies. Confirm the shape before touching anything --
+    `grep -oE 'FAILED [^ ]+' <log> | sort` on each failing job and diff them; identical sets
+    across 3.13/3.14/3.14t plus a clean 3.12 is the tell, not a scattered mix. Fix it the
+    gotcha-33 way: deselect exactly those tests, generated once in the `run:` step from
+    `matrix.python_version` (`if [ "$v" != "3.12" ]; then deselect+=(--deselect ...); fi`) so
+    3.12 keeps exercising all of them and the list isn't tripled across the matrix.
+
+613. **A torch multiprocessing test failing with `RuntimeError: unable to allocate shared
+    memory(shm) ... No space left on device (28)` is `/dev/shm` exhaustion, not disk space
+    or an riscv64-specific bug -- raise the container's shm size, don't deselect first (the
+    spacy-transformers 1.4.0 `test_multiprocessing` case).** `Language.pipe(texts,
+    n_process=2, ...)` spawns worker processes and torch's default `file_descriptor` sharing
+    strategy pickles the model's tensor storage into `/dev/shm`-backed anonymous fds
+    (`torch/multiprocessing/reductions.py::reduce_storage` → `_share_fd_cpu_()`) to hand
+    across the fork/spawn boundary. Docker containers default `/dev/shm` to 64MB regardless
+    of the host's real memory, and cibuildwheel's manylinux container is exactly that: a
+    plain `docker run` with no `--shm-size` override. Serializing a non-trivial transformer
+    (spacy-transformers' default is `roberta-base`, ~500MB in fp32) for two workers blows
+    through 64MB immediately -- errno 28 (`ENOSPC`) from a *tmpfs*, unrelated to the runner's
+    actual disk. Only `cp314` showed it in the first run; that is scheduling/timing luck
+    (heavier concurrent load, or a GC/allocator sweep landing badly), not evidence the other
+    interpreters are immune -- the same 64MB ceiling applies to every one of them and this
+    should reproduce on a bad enough day for any of them too. **Fix:** raise the container's
+    shm size via `CIBW_CONTAINER_ENGINE`'s `create_args` (same knob as gotcha 552, which
+    fixes a different Docker-default limitation the identical way) --
+    `CIBW_CONTAINER_ENGINE: "docker; create_args: --shm-size=2g"`. This is the *same*
+    container instance cibuildwheel uses for both the build and the test phase (one
+    `docker run`, `container.call()` for each step), so the `create_args` take effect for
+    `CIBW_TEST_COMMAND` without any separate test-container wiring. Sized at roughly 4x the
+    model's estimated footprint for headroom, not computed exactly from a live measurement.
+    Prefer this over deselecting `test_multiprocessing`: unlike gotcha 14's torch flakes
+    (an unfixable runner/libcpuinfo mismatch or a hard timeout), this failure has an
+    addressable root cause in the test environment's config, so skipping coverage here would
+    be trading a real fix for a permanent gap.
+
+614. **A cp314-only `Fatal Python error: Segmentation fault` deep inside a pybind11/proto
+    binding, arriving only after a from-source Bazel build that took hours, is not a riscv64
+    bug to chase -- check whether upstream even ships/tests that interpreter before touching
+    the C++ (the ydf 0.16.1 case; see `build-ydf.yml`).** ydf's cp314 job finally got past its
+    gcc/highway build failure (gotcha 567), compiled cleanly for ~6.5h, and then segfaulted in
+    upstream's own `examples/minimal.py` smoke test, inside `pybind11_protobuf`'s
+    `proto_caster_load_impl`/`PyProtoSerializePartialToString` (the machinery that round-trips
+    a Python proto message through C++ serialization) -- a stack shape that looks exactly like
+    gotcha 322's "native binding hasn't caught up with a newer CPython's internals" pattern.
+    Three independent upstream signals settled it without touching pybind11_protobuf's source:
+    - **PyPI ships no cp314 wheel for this release, on any platform.** `pypi.org/pypi/ydf/
+      0.16.1/json` lists cp39/cp310/cp311/cp312/cp313 wheels for both
+      `manylinux_2_27_x86_64` and `macosx_12_0_arm64` -- zero cp314 entries anywhere, not just
+      on Linux. If upstream's own x86_64/macOS builds don't run under 3.14, riscv64 was never
+      going to be the exception.
+    - **Upstream's `setup.py` classifiers stop at 3.13.** `yggdrasil_decision_forests/port/
+      python/config/setup.py`'s `classifiers=[...]` lists `Programming Language :: Python ::
+      3.9` through `3.13` and `python_requires=">=3.9"` -- 3.14 is absent, not just untested.
+    - **Upstream's own CI never exercises 3.14 either.** `.github/workflows/build_test.yml`'s
+      `python-build-test-matrix` job sets `matrix: python_version: ['3.12']  # Currently
+      unused` -- a single-entry matrix upstream itself flags as not really wired up, so there
+      is no green cp313/cp314 upstream run to diff against in the first place.
+    - **The dependency lags too, for context, not as the fix.** `port/python/MODULE.bazel`
+      pins `pybind11_protobuf` to `0.0.0-20250210-f02a2b7` (Feb 2025, months before CPython
+      3.14's October 2025 release), and pybind11_protobuf's own tracker had an open, unanswered
+      "when will you update to pybind11 3.0" issue as late as mid-2026 -- this is a slow-moving
+      dependency, not a repo that ships fixes fast enough to chase with a version bump.
+    - **Fix: drop `cp314` from this port's matrix**, the same way gotcha 149/468/542 trim a
+      matrix entry that upstream itself doesn't support, rather than opening an issue against
+      pybind11_protobuf or trying to bisect the C++ -- there is no upstream fix to pin to, and
+      the crash reproduces on any architecture, so it is not this port's bug to own. Re-add
+      `cp314` only once upstream's own release starts shipping a cp314 wheel.
+
+616. **A test matrix over *target* interpreter versions (not the interpreter running the
+    tests) shows the same gotcha-33/169 shape, one level removed: pystack's own test suite
+    launches a separate Python (`astral-sh/setup-uv`, i.e. a python-build-standalone build)
+    and inspects *its* process, and every native-frame-dependent assertion fails identically
+    on riscv64 for that target being 3.13, 3.14 or 3.14t, while 3.12 passes clean (pystack
+    1.7.1, `build-pystack.yml`).** 28 of the same tests fail, byte-for-byte identical FAILED
+    list, on all three newer targets: `test_core_analyzer.py::test_single_thread_stack` /
+    `test_multiple_thread_stack_native` (every `method=` variant), `test_gather_stacks.py`'s
+    native variants, both `test_gc.py::test_gc_status_is_reported_when_garbage_collecting_*`,
+    `test_subinterpreters.py`'s `*_with_native` tests, and the relocated-core/shim-frame
+    tests -- every one of them asserts it can classify a *native* frame from the target's own
+    unwind as the CPython eval loop or the GC collector, via `pystack.types.frame_type()` /
+    `is_eval_frame()` matching the literal substring `_PyEval_EvalFrameDefault` (or, on 3.14+
+    tail-call builds, `_TAIL_CALL_*.llvm.*`). On the riscv64 target build for 3.13+, that
+    native unwind never turns up a frame `is_eval_frame()` recognizes, so `eval_frames` comes
+    back `[]`/`0` instead of the upstream-asserted `1` -- a real, upstream-documented class of
+    gap in per-arch native/signal-frame unwinding support (pystack itself had to ship an
+    `elfutils-aarch64-signal-frame.patch` for AArch64 alone as of 1.7.2, bloomberg/pystack
+    #341/#348 -- riscv64 has no equivalent patch), not a defect in the wheel under test: the
+    wheel that's running the analysis is the *same* cp312/cp314t abi3 build across the whole
+    matrix, only the target interpreter varies. Confirm the shape before touching anything --
+    `grep -oE 'FAILED [^ ]+' <log> | sort` on each failing job and diff them; identical sets
+    across 3.13/3.14/3.14t plus a clean 3.12 is the tell, not a scattered mix. Fix it the
+    gotcha-33 way: deselect exactly those tests, generated once in the `run:` step from
+    `matrix.python_version` (`if [ "$v" != "3.12" ]; then deselect+=(--deselect ...); fi`) so
+    3.12 keeps exercising all of them and the list isn't tripled across the matrix.
+
+645. **Gotcha 616 named the shape; pystack 1.7.2 confirms it recurs per-feature, not just
+    per-version -- `test_stack_of_thread_in_signal_handler[python]` and `..._for_core[python]`
+    (new in 1.7.2, bloomberg/pystack #348) fail on riscv64 on *all four* interpreters
+    (3.12/3.13/3.14/3.14t alike), where gotcha 616's gap only hit 3.13+.** The fix that made
+    these tests pass upstream, `build_scripts/elfutils-aarch64-signal-frame.patch`, teaches
+    *only* elfutils' AArch64 backend (`backends/aarch64_unwind.c`) to recognize the Linux
+    `rt_sigreturn` vdso trampoline and pull the interrupted frame's saved registers back out
+    of the kernel's `rt_sigframe`/`sigcontext` off the stack, so CFI-based unwinding can
+    continue past the signal boundary into the frame that was actually interrupted (here, the
+    CPython eval loop that called into the native extension). elfutils ships no
+    `backends/riscv64_unwind.c` at all -- not even the frame-pointer fallback aarch64/arm/x86
+    get, let alone a signal-frame special case -- so on riscv64 the unwind simply *stops* at
+    the trampoline: the resulting `native_frames` list has the trampoline and the frames
+    inside the signal handler (confirmed consistent across logs: `__vdso_rt_sigreturn`,
+    `signalReadinessThenBlock`, `pause`), but nothing beyond it, so no frame is ever
+    classified `NativeFrame.FrameType.EVAL` and `assert eval_frames` fails with `assert []`
+    identically on every target interpreter. This is architecture-gated, not version-gated:
+    writing a correct equivalent (`riscv64_unwind.c`, from scratch, including the RISC-V
+    Linux `rt_sigframe`/`__riscv_mc_fp_state ucontext` layout and the `li a7, 139 ... ecall`
+    trampoline bytes) is a genuine upstream elfutils feature gap with no riscv64 hardware
+    available here to validate it against -- not a one-line fix to carry as our own patch.
+    Fix: deselect both tests unconditionally (all four `python_version` matrix legs), the
+    same `--deselect` mechanism gotcha 616 uses, rather than a speculative unwinder patch.
+
+626. **Since numpy 2.5, `np.linalg.eig` returns `complex128` eigenvectors on every
+    architecture, even for a real diagonal matrix -- gotcha 170's dtype trap is no longer a
+    riscv64-OpenBLAS quirk, and an older release that calls `eig` on a symmetric matrix now
+    fails on x86_64 too (the mdanalysis case).** MDAnalysis 2.10.0's
+    `Masses.principal_axes()` calls `np.linalg.eig(moment_of_inertia)`; against the registry's
+    numpy 2.5.3 the complex vectors reach `np.degrees(mdamath.angle(...))` in
+    `align_principal_axis()` and raise `TypeError: ufunc 'degrees' not supported for the
+    input types` on all three legs. On x86_64, `eig(np.diag([3., 2., 1.]))[1].dtype` is
+    `complex128` with numpy 2.5.3 and `float64` with 2.4.6 -- one line in a throwaway
+    `uv run --with numpy==2.5.3` settles which gotcha you are in before any riscv64
+    debugging.
+    - **The fix is upstream's, not a deselect or a numpy pin**: switching to `np.linalg.eigh`
+      (real by construction for symmetric input) is what both statsmodels-shaped code and
+      MDAnalysis need; MDAnalysis landed it as "Fix compatibility with numpy 2.5" (#5404) and
+      it backports cleanly onto the release. Pinning `numpy<2.5` in the test env would hide a
+      runtime break every user of the wheel hits.
+    - **Expect a second, unrelated drift failure in the same first run.** A release that
+      predates both numpy 2.5 and pytest 9.1 also tripped pytest 9.1 reading
+      `parametrize("btype,", [...])`'s trailing comma as a one-element tuple of names
+      ("the number of names (1) must be equal to the number of values (4)"), a collection
+      error that fails the whole run; upstream's one-character fix (8783f8d) backports too.
+      Read the full FAILED/ERROR list before assuming one cause.
+
+628. **An upstream `test-skip = "*aarch64"` backed by an issue that only says "N tests fail on
+    aarch64" is often x86-hardcoded SIMD-alignment tests -- run the suite on riscv64, match the
+    count, and deselect exactly that set (the pyfftw case).** pyFFTW skips its entire suite on
+    aarch64 for pyFFTW/pyFFTW#326 ("21 failing tests", no names). On riscv64 the full suite
+    (~1h on cp312) gave **exactly 21** failures, all one shape: `include/cpu.h` probes SSE/AVX
+    with `cpuid` and returns a 4-byte `simd_alignment` on any other arch, while the tests assert
+    `fft.input_alignment == 16`, `simd_aligned` on 8-byte-offset arrays, an implicit
+    `FFTW_UNALIGNED` flag, or read `/proc/cpuinfo`'s `flags` key, which riscv64 (`isa`) and
+    aarch64 (`Features`) do not have (`KeyError: 'flags'`). The other 1699 tests passed,
+    including every long-double transform (128-bit software quad on riscv64, like aarch64).
+    - **The count is the triage signal.** An identical count to upstream's aarch64 report, plus
+      a failure list that is all one theme, means a test-side arch assumption, not a riscv64
+      bug -- no need to reproduce on aarch64.
+    - **Deselect narrowly with `-k`** (gotcha 14), qualifying by class where a test name is
+      shared: here `test_alignment` also runs on the `*LongDouble*` classes and passes (16-byte
+      long double), and `test_auto_align_input` exists in a passing numpy-interface class too,
+      so `not (test_alignment and not LongDouble)` / `not (BuildersTest and
+      test_auto_align_input)`. Dry-run the expression with `pytest --collect-only -k` against a
+      stub file of `unittest.TestCase` classes carrying the real names (plain classes not named
+      `Test*` are not collected, so the stub collects nothing). Same "don't inherit the
+      arch-wide skip" reasoning as gotcha 304, different failure shape.
+
+630. **OpenUSD's riscv64 `ArchWarn: ARCH_CACHE_LINE_SIZE != Arch_ObtainCacheLineSize()`
+    lands on the stderr of every process that imports `pxr`, so it breaks every test that
+    compares a subprocess's stderr exactly. Fix it once in OpenUSD's `arch/assumptions.cpp`,
+    not test by test (the usd-exchange case, where skipping tests one at a time failed two
+    CI rounds in a row).**
+    `Arch_ValidateAssumptions()` runs when `libusd_arch` loads. It compares the hardcoded
+    `ARCH_CACHE_LINE_SIZE` (`pxr/base/arch/align.h`: 128 on Apple ARM, 64 everywhere else)
+    with `sysconf(_SC_LEVEL1_DCACHE_LINESIZE)`. On a mismatch it prints a four-line
+    `ArchWarn:` / `Function:` / `File:` / `Line: 140` block with a bare
+    `fprintf(stderr, ...)` in `arch/error.cpp`. That is below Tf, so no `PXR_*`/`TF_*` env var and no diagnostic delegate can stop it. On riscv64 the
+    comparison has no correct answer. glibc's riscv `sysconf` returns `AT_L1D_CACHEGEOMETRY &
+    0xffff` from the auxv, or -1 if that entry is missing. The kernel fills it from the
+    firmware's devicetree/ACPI cache description and writes 0 when there is none
+    (`arch/riscv/kernel/cacheinfo.c`). So any constant you pick is wrong on some boards.
+    - **Count the failures per test from the log; don't trust a summary.** Round 2 read
+      `FAILED (failures=15)` as "14 testMaterialAlgo + 1 testSettings", so its fix skipped
+      the one `testSettings.py::testEnableTranscodingSetting`. The real split was 10 + **4
+      testDiagnostics** + 1, and the 4 failed again in round 3. Grep the log for `FAIL: `
+      lines (CI adds a timestamp prefix, so don't anchor on `^`) and group them by module
+      before choosing a fix. When every
+      failure prints the same foreign stderr block, the cause is shared.
+    - **Map the blast radius by assertion style, across the whole suite.** In usd-exchange
+      3.0.0, two helpers compare stderr exactly. In `testDiagnostics.py`,
+      `assertOutputStreams()` checks `assertEqual(len(error), len(expectedStderr))` on the
+      success path, so all 4 callers fail with `7 != 3` / `4 != 0`: `testLevel`,
+      `testOutputFormatting`, `testOutputStream`, `testUtf8Diagnostics`. In
+      `testSettings.py`, `assertEnvSetting(..., expectedOutputPattern="")` checks
+      `assertEqual(result.stderr, "")`. Everything else tolerates extra lines.
+      `assertOutputStreams`' crash path (`testFatal`) uses `assertLessEqual`/`assertIn`. The
+      other `assertEnvSetting` callers use `assertRegex`, which is a search. `testCore`
+      checks `assertIn`/`assertNotIn` on strings the warning doesn't contain. `testPxr`
+      checks only the return code. `usdex.test.ScopedDiagnosticChecker` goes through a Tf
+      delegate, so it never sees the `fprintf`. Skipping tests by name chases whichever
+      callers fail today and misses any helper caller added later.
+    - **The fix is one OpenUSD source patch, gated on the CPU:** wrap only the
+      `if (ARCH_CACHE_LINE_SIZE != cacheLineSize) ARCH_WARNING(...)` in `#if
+      !defined(ARCH_CPU_RISCV)` (that define comes from gotcha 484's arch patch), with
+      `(void)cacheLineSize;` in the `#else`. That keeps it clean under `-Wall -Wextra
+      -Werror`. Leave `ARCH_CACHE_LINE_SIZE` at 64. It only sizes padding and alignment, so a
+      mismatch costs performance, never correctness. Leave the rest of
+      `Arch_ValidateAssumptions()` (the big-endian `ARCH_ERROR`, the demangler check) alone.
+      This also removes a real wart from the wheel, since the warning printed on every
+      `import pxr` for every user, not only in tests. Tag it `Upstream-Status: To upstream`
+      with the arch-support patch, because an upstream riscv64 port needs the same change.
+      Apply it from the same `git -C OpenUSD apply .../00*.patch` step as the arch patch.
+      Whatever patch you remove from the old fix, also remove its `git apply` step, because
+      an unmatched glob fails the job.
+    - **Only patch the test helper when the dependency's source is out of reach** (a
+      prebuilt vendor OpenUSD you don't compile). In that case, strip the known 4-line
+      `ArchWarn` block in each shared helper before it compares, not in each test method.
+      `python -m unittest discover` has no `-k`, so any test-side change must be a source
+      patch against the project checkout.
+    - Gotcha 484 called the warning harmless for the *build*. That still holds. This entry
+      covers the case where the project's tests read stderr. Any OpenUSD-based port
+      (usd-core, usd-exchange, a future OpenUSD consumer) built on these runners prints the
+      warning unless it carries this patch.
+
+671. **A test that compares a round-tripped float→unsigned-int cast to catch lossy
+     conversions can pass on x86_64 and genuinely fail on riscv64, because the cast's
+     overflow behavior is C99 undefined behavior that RISC-V's `fcvt.wu.s`/`fcvt.wu.d`
+     resolve differently (the pycdfpp case).** pycdfpp's `_exactly_as`/`_keeps_every_value`
+     helper (`pycdfpp/__init__.py`) decides whether a value can losslessly become a given
+     CDF numeric type by converting it and converting back (`converted.astype(values.dtype)`)
+     and comparing to the original, raising if anything changed. Its own test suite feeds it
+     `uint32` `4294967295` (`UINT32_MAX`) against `CDF_FLOAT`: `float32(4294967295)` rounds to
+     the nearest representable value, `4294967296.0` (ordinary IEEE-754 round-to-nearest-even,
+     identical on every architecture -- this is *not* the bug). The actual divergence is the
+     next step, converting that `4294967296.0` back to `uint32`, which overflows the target
+     type and is undefined behavior in C99. Installing the real upstream `pycdfpp==0.19.0`
+     wheel with the matching numpy version and running the identical cast on x86_64 gives `0`
+     (numpy's codegen truncates/wraps on overflow there), which correctly differs from the
+     original `4294967295` and makes the helper raise as the test expects. RISC-V's F/D
+     extension specifies `fcvt.wu.s`/`fcvt.wu.d` as *saturating* on overflow -- clamping to the
+     type's max representable value, `4294967295` for `uint32` -- so the round-tripped value on
+     riscv64 comes back identical to the original, the helper wrongly concludes nothing was
+     lost, and the test's expected `ValueError` never fires. Confirmed this is a real
+     architecture difference, not a flaky/pre-existing upstream test bug, before concluding
+     anything: the test passes cleanly against the genuine x86_64 wheel with the exact riscv64
+     CI's numpy version, so it is not something that was already broken upstream. Do not
+     "fix" this by patching the test to skip the assertion -- that hides a narrow but real
+     riscv64-specific correctness gap in the project's own round-trip-compare exactness check,
+     which belongs in an upstream issue/fix (e.g. an explicit bounds check instead of a
+     round-trip compare), not a deselect in this repo's CI workflow. The same shape -- any
+     project whose own correctness/exactness logic relies on a float→unsigned-integer
+     round-trip comparison around a type's max value -- can recur well beyond CDF/pycdfpp.
+
+693. **`Problem.solve(diagnostics=True)` throwing `std::bad_cast` (via nanobind's default
+     `RuntimeError` translation) on *every* call that passes it, while the identical
+     `diagnostics=False` solve of the same problem succeeds, is a riscv64 toolchain defect in
+     `std::print`/`std::format` -- not a bug reachable by patching the project's own code (the
+     sleipnirgroup-jormungandr case).** `Problem::solve()`'s `options.diagnostics` flag gates
+     nothing except calls into `print_iteration_diagnostics()`/`print_setup_diagnostics()`/
+     `print_solver_diagnostics()` (`include/sleipnir/util/print_diagnostics.hpp`), which route
+     through `slp::print()`/`slp::println()` (`include/sleipnir/util/print.hpp`), themselves
+     thin wrappers around `std::print()`/`std::println()`; no other solver logic depends on the
+     flag (checked across `ipm.hpp`/`sqp.hpp`/`newton.hpp`/`problem.hpp`). On
+     `manylinux_2_39_riscv64` (GCC 14.3.1), every one of the 34 Python tests that pass
+     `diagnostics=True` (confirmed 1:1 against `grep -rn diagnostics=True python/test`) fails
+     with `RuntimeError: std::bad_cast` the instant the print path runs; every test that omits
+     the flag, or passes `diagnostics=False`, passes. This surfaced only *after* fixing the
+     unrelated plain-pip version-skew failure (gotcha 422's pattern, `PIP_ONLY_BINARY`) that had
+     been masking it -- the test step never got far enough to hit it before.
+     - **Isolating the exact mechanism did not succeed with the tools available in a cloud
+       session (no `docker` daemon, so the real `manylinux_2_39_riscv64` image couldn't be
+       pulled to test against the actual GCC 14.3.1).** A `riscv64-linux-gnu-g++-14` (Ubuntu's
+       14.2.0 cross package) + `qemu-riscv64-static` reproduction of the identical
+       `print_diagnostics.hpp` calls -- as a static executable, and again as a `dlopen()`'d
+       `-fvisibility=hidden -fvisibility-inlines-hidden` shared object (mirroring how
+       `nanobind_add_module`'s `STABLE_ABI` links the extension), with and without
+       `-flto -pthread` -- printed correctly every time, no exception. `libstdc++`'s only
+       runtime `std::bad_cast` throw sites (`grep -rn bad_cast /usr/include/c++/14/`) are
+       `use_facet<Facet>` (gated behind the format spec's `L` flag, which none of these format
+       strings use -- checked every `{...}` spec in the file) and `basic_ios`'s facet-cache
+       check; neither is reachable from a plain `std::print`/`std::format` call with no
+       locale/`ios` object involved, going by the GCC 14.2.0 headers. The 14.2.0→14.3.1 patch
+       gap, or something specific to the real `dlopen()`+`STABLE_ABI`+riscv64-runner
+       combination, is the most likely remaining difference, but neither was reproducible here.
+     - **Workaround, not a fix: patch the Python *tests* to pass `diagnostics=False`, leaving
+       everything else (including `spy=True` in a spy test) untouched.** `spy` is an
+       independent `bool` parameter from `options.diagnostics` (`problem.hpp`'s
+       `solve(options, spy)`), and the `Spy<Scalar>` helper (`include/sleipnir/util/spy.hpp`)
+       writes through `std::ofstream`, never `std::format`/`std::print`, so `spy=True` alone
+       doesn't hit this path and the spy test still exercises its real feature. Every other
+       assertion in the patched tests (`ExitStatus`, decision-variable values) is unaffected,
+       since `diagnostics` gates no solver math -- only the diagnostic printing is skipped. Tag
+       the patch `Upstream-Status: Inappropriate`: this isn't a defect to send upstream, it's
+       our riscv64 toolchain's.
+     - **If re-investigating:** get access to the real `quay.io/pypa/manylinux_2_39_riscv64`
+       GCC 14.3.1 (`docker run --platform linux/riscv64` where a daemon is available, or a
+       riscv64 runner directly) rather than a cross-compiled approximation, and check whether
+       the failure needs the real Python/nanobind `dlopen()` + `STABLE_ABI` runtime -- not just
+       a hand-rolled `dlopen()` host -- to reproduce.
+
+708. **Widening a test's inner subprocess budget to fix gotcha 38's discovery race can
+     silently collide with a *different*, hardcoded outer kill-timeout the harness itself
+     never exposes -- the two numbers look independent until one is raised far enough to
+     meet the other (cyclonedds-python's `test_ddsls.py` watch-mode harness).**
+     `run_ddsls_watchmode()`/`run_ddsls_async_watch()` launch `ddsls --watch --runtime N`
+     as a subprocess and hand it to `run_ddsls(args, timeout=10)` -- whose `timeout` kwarg
+     has its own hardcoded default of 10s and is never passed through by the watch-mode
+     callers, so every watch-mode test's `process.communicate()` kill-timeout is a fixed
+     10s regardless of what `--runtime N` the caller asked for. While `N` stayed at the
+     original 5, this left 5s of accidental headroom for subprocess startup (interpreter
+     boot + `cyclonedds` import, before the tool's own `--runtime` clock even starts) and
+     shutdown (DDS domain-participant teardown, stdout flush, process exit) on top of the
+     watch window itself. Gotcha 38's own fix for this suite (raising `test_ddsls_qos_change`
+     and `test_ddsls_qos_change_in_verbose` from `runtime=5` to `runtime=10` to fix a
+     discovery/qos-propagation race) pushed the inner budget up to exactly the outer
+     kill-timeout's value, deleting that headroom entirely -- the next CI run then failed
+     both tests with `subprocess.TimeoutExpired` at 10s, one with a partial stdout capture
+     (the subprocess was genuinely still working, not deadlocked) and the `--lf` rerun with
+     none at all (an even busier host left zero room for even the first print).
+     - **A `TimeoutExpired` whose captured stdout is non-empty but incomplete is evidence of
+       a margin problem, not a hang** -- same read as gotcha 568's awscrt case, applied to a
+       different harness shape (an outer wrapper's own default swallowing the inner value
+       instead of a single hardcoded wall clock).
+     - **The fix is to stop treating the inner and outer timeouts as independent**: thread a
+       `timeout` through to `run_ddsls()` from `run_ddsls_async_watch()` that is always
+       `runtime` plus a fixed, comfortable headroom (20s), so any future bump to a test's
+       `runtime=` argument can never again close the gap to the harness's own default.
+       Patching only the three tests' `runtime=` values (as the first pass did) treats the
+       symptom; patching the harness function closes the whole class of collision for every
+       current and future caller in the file.
+     - **Resolving "gotcha 38" in a comment or commit message doesn't mean the fix for that
+       citation is complete** -- a correct fix for the race gotcha 38 describes can still
+       expose a second, unrelated bug (this harness's hardcoded kill-timeout) that only
+       manifests once the first fix pushes a number far enough. Re-run CI against the actual
+       head commit after a timing fix lands, rather than assuming "cited the right gotcha"
+       is the same as "green."
+
+711. **A test that caps `RLIMIT_AS` at "current VmSize + small headroom" to force a
+     `MemoryError` out of a large allocation passes under the GIL build and silently
+     passes allocation under free-threaded CPython (cp314t) instead -- this is a property
+     of cp314t's own allocator, confirmed off riscv64 and off the package's own code
+     entirely (wolfxl's `test_streaming_oom_error.py::test_allocation_failure_raises_memory_error_not_panic`).**
+     The test measures its own `VmSize` right after opening a reader, sets
+     `RLIMIT_AS` to that plus 64 MiB, then allocates well past the cap (192 MiB of
+     distinct strings) expecting `MemoryError`. `RLIMIT_AS` is a *virtual address
+     space* limit the kernel enforces only on calls that grow a process's mappings
+     (`mmap`/`brk`/`mremap`); it does nothing to memory inside a mapping a process
+     already holds. Reproduced with a ~20-line pure-stdlib script (no wolfxl, no
+     Rust, no riscv64 -- run on x86_64) that does exactly the same
+     measure-VmSize/setrlimit/allocate sequence: under CPython 3.11 (GIL), a 192 MiB
+     allocation with a 64 MiB headroom correctly raises `MemoryError`; under CPython
+     3.14 free-threaded, the identical sequence allocates all of it with no error --
+     and the free-threaded interpreter's own baseline `VmSize` at measurement time
+     was already **>1 GiB**, against ~14 MiB for the GIL build, before either process
+     touched the module under test. Free-threaded CPython's object allocator
+     (mimalloc-backed, replacing pymalloc's role for anything not tiny) reserves its
+     per-thread arenas in large chunks up front; later large allocations are carved
+     out of address space already mapped before the test ever calls `setrlimit`, so
+     they never issue the new `mmap` that `RLIMIT_AS` would have gated. This is not
+     a riscv64 bug and not a defect in the package under test's Rust/PyO3 allocation
+     path -- it is cp314t's allocator defeating this specific test technique on any
+     architecture. Do not spend more time chasing it as a build or porting bug; where
+     a port's upstream suite contains this exact RLIMIT_AS-headroom-then-allocate
+     pattern, deselect it for `cp314t` only (matrix `include:` entry adding a
+     `test_deselect` key gotcha 149 shows the shape of, interpolated into the pytest
+     invocation) with a comment citing this gotcha, and leave it running on
+     cp312/cp313/cp314. `Upstream-Status: To discuss upstream` -- the test's technique
+     is simply incompatible with a `Py_GIL_DISABLED` build, which the package may not
+     have had a cp314t leg to discover yet.
+
+718. **A single-occurrence SIGSEGV in a brand-new upstream code path that a byte-for-byte
+     rebuild of the identical Release config no longer reproduces is upstream's own
+     immaturity, not a riscv64 or optimizer defect -- check the upstream changelog for recent
+     fixes in the same area before adding any riscv64-specific workaround (finufft 2.5.1's
+     `execute_adjoint`).** A `py3-none-manylinux_riscv64` CI leg crashed with
+     `Fatal Python error: Segmentation fault` inside `execute_adjoint` (exit code 139),
+     every time, from `test_finufft3_plan` (a type-3 guru-interface plan). The patch this
+     port already carries for riscv64 (gotcha-adjacent: bounding `xsimd::make_sized_batch`'s
+     search by `xsimd::default_arch`'s own width, since riscv64 without the vector extension
+     has no native xsimd architecture) touches the exact same SIMD/padding machinery in
+     `spreadinterp.cpp`, making it the obvious first suspect -- but a second CI run with the
+     identical Release build flags (no source change at all, just re-running the same
+     checkout/patch/cibuildwheel steps) built cleanly and passed all 659 collected tests,
+     including the same `test_finufft3_plan`. A SIGSEGV that a bit-identical rebuild no
+     longer reproduces is gotcha 60's signature (an ordinary upstream bug, not a port defect)
+     with an extra twist worth checking before closing the loop: `execute_adjoint` is not
+     legacy code finufft has hardened for years -- upstream's own changelog shows "Added
+     functionality for adjoint execution of FINUFFT plans" landed in v2.5.0 (the *immediately
+     preceding* release), with v2.5.1 itself still shipping thread-safety fixes in the same
+     area ("Fix thread safety of PSWF kernel evaluation", "Add parallel
+     makeplan/setpts/execute thread-safety test"), and the *next* changelog entries (dated
+     after 2.5.1, not yet in a tagged release at port time) include "Release built folded
+     points wrongly and segfaulted" (an xsimd-reassociation bug gated specifically on Release
+     builds) and "Fixed NaN results or segfaults that could happen when running type 3
+     transform that have zero input or output points" plus a new concurrent-`execute()`
+     regression test -- i.e. upstream was still actively finding and fixing segfaults in this
+     exact type-3/adjoint/thread-safety neighborhood in the versions immediately surrounding
+     the one this port builds. Do not patch our own SIMD padding code further on the strength
+     of one crash: get a second data point first (gotcha 115 -- rerun the identical config, or
+     use `CIBW_TEST_COMMAND` with gdb per gotcha 168), and if it doesn't reproduce, treat it as
+     `Upstream-Status: Not a riscv64 defect` and let a future version bump (once a release
+     past these changelog entries exists) carry the real fix, rather than guessing at a
+     riscv64-specific patch for a bug upstream's own CI never flagged as architecture-specific.

@@ -224,6 +224,51 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "alert": f"canonical canary recovery blocked: {error}",
             })
 
+    # Before destination writers exist, a verified dossier proceeds to an
+    # uncredentialed proposal worker. Retire only an exact, never-launched fork
+    # intent created by an earlier controller; no remote resource is touched.
+    rep["deferred_destination_operations"] = []
+    destination_blocked: set[str] = set()
+    if not policy.get("destination_writes", False):
+        for cid, record in list(by_id.items()):
+            operation = operations.get(record.get("active_operation_id"))
+            if not operation or operation.get("kind") != "fork_provision":
+                continue
+            if (record.get("phase") != "provisioning" or record.get("fork") is not None
+                    or not record.get("dossier_evidence_id")):
+                continue
+            if operation.get("status") != "planned":
+                destination_blocked.add(cid)
+                rep["alerts"].append({
+                    "contribution": cid,
+                    "alert": "destination operation exists but is not provably unlaunched",
+                })
+                continue
+            retired = dict(operation, status="not_launched", updated_at=now)
+            schemas.validate("operation", retired)
+            changed = dict(
+                record,
+                phase="development",
+                activity="idle",
+                active_operation_id=None,
+                updated_at=now,
+            )
+            schemas.validate("contribution", changed)
+            operations[operation["operation_id"]] = retired
+            by_id[cid] = changed
+            res.stage("operations", retired)
+            res.stage("contributions", changed)
+            res.stage("events", lifecycle._event(
+                record,
+                changed,
+                "destination_operation_deferred",
+                "policy",
+                operation["operation_id"],
+                now,
+                False,
+            ))
+            rep["deferred_destination_operations"].append(operation["operation_id"])
+
     # Removing the intake label cancels only an accepted request that has not
     # requested any Work yet. Once active_work exists, explicit lifecycle
     # commands are required so an unlabeled event cannot silently stop work.
@@ -253,7 +298,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # Bind initially unspecified source identities/bases from trusted API data,
     # never from the model's dossier. Already-bound bases remain immutable.
-    source_blocked = set(canary_blocked)
+    source_blocked = set(canary_blocked | destination_blocked)
     for cid, c in list(by_id.items()):
         snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
         if snapshot is None:
@@ -313,6 +358,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # Persist its normal operation intent before dispatch, with no second queue.
     res.report["provision_requests"] = []
     for cid, c in list(by_id.items()):
+        if not policy.get("destination_writes", False):
+            break
         if len(res.report["provision_requests"]) >= 1:
             break
         if c["phase"] != "provisioning" or c.get("paused") or c.get("blocked_reason") \
@@ -352,6 +399,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # exactly riscv64 -> the frozen upstream base ref and returns a receipt.
     res.report["dev_pr_requests"] = []
     for cid, c in list(by_id.items()):
+        if not policy.get("destination_writes", False):
+            break
         if len(res.report["dev_pr_requests"]) >= 1:
             break
         fork = c.get("fork") or {}
@@ -384,6 +433,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # Bootstrap CI once for an already recorded PR. This separate operation is
     # needed when GitHub registered no inherited workflows at PR creation time.
     for cid, c in list(by_id.items()):
+        if not policy.get("destination_writes", False):
+            break
         if len(res.report["dev_pr_requests"]) >= 1:
             break
         fork = c.get("fork") or {}
@@ -429,7 +480,11 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
             continue
         if kind in WRITE_KINDS:
-            why = lifecycle.write_admission(c)
+            why = (
+                lifecycle.proposal_admission(c)
+                if kind == "development_patch" and not c.get("fork")
+                else lifecycle.write_admission(c)
+            )
             if why:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                 continue
@@ -466,9 +521,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             "expected_head": (c.get("fork") or {}).get("head_sha"),
             "task": kind,
             "reason_ids": reason_ids,
-            "effect_contract": ({"kind": "none"} if kind == "investigation"
-                                else {"kind": "fork_branch", "repository": (c.get("fork") or {}).get("name"),
-                                      "ref": "riscv64"}),
+            "effect_contract": (
+                {"kind": "none"}
+                if kind == "investigation"
+                else {"kind": "proposal_artifact"}
+                if kind == "development_patch" and not c.get("fork")
+                else {
+                    "kind": "fork_branch",
+                    "repository": (c.get("fork") or {}).get("name"),
+                    "ref": "riscv64",
+                }
+            ),
         }
         res.requested_effects.append(work)
         rep["selected"].append({"contribution": c["contribution_id"], "task": kind})

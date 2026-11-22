@@ -550,8 +550,21 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
     return rec
 
 
+def proposal_admission(record: dict) -> str | None:
+    """Gate uncredentialed patch proposal Work before any fork exists."""
+    if not record.get("admission_class"):
+        return "admission class not approved"
+    if not record.get("dossier_evidence_id"):
+        return "no verified dossier"
+    if not record.get("scope_paths") or record.get("scope_coverage_complete") is not True:
+        return "verified patch scope is incomplete"
+    if record["upstream"].get("base_sha") is None:
+        return "no immutable upstream base SHA in the dossier"
+    return None
+
+
 def write_admission(record: dict) -> str | None:
-    """Gate before any write-capable work is submitted for a contribution."""
+    """Gate before any destination write-capable work is submitted."""
     if not record.get("admission_class"):
         return "admission class not approved"
     if not record.get("fork") or not record["fork"].get("repository_id"):

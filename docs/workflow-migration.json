@@ -65,7 +65,7 @@
       "milestone": 5,
       "owner": "bounded patch proposal",
       "agentic": true,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-worker.lock.yml",
@@ -73,7 +73,7 @@
       "milestone": 5,
       "owner": "generated worker lock",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-image.yml",
@@ -81,7 +81,7 @@
       "milestone": 5,
       "owner": "reproduction image",
       "agentic": false,
-      "status": "planned"
+      "status": "migrated"
     },
     {
       "source": "upstreaming-provision.yml",

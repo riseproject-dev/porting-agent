@@ -50,7 +50,7 @@ class TestInvestigationRecordRecovery(unittest.TestCase):
             "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
         )
 
-    def test_ordinary_reconciliation_folds_recovered_result_without_new_work(self):
+    def test_ordinary_reconciliation_folds_recovered_result_without_replay(self):
         contribution = json.loads(
             (ROOT / "tests/fixtures/canary-investigation-active-state.json").read_text()
         )
@@ -87,7 +87,7 @@ class TestInvestigationRecordRecovery(unittest.TestCase):
         final = [record for kind, record in output.staged if kind == "contributions"][-1]
         self.assertEqual(dossier["contribution_id"], "closeio--ciso8601/1")
         self.assertEqual(final["dossier_evidence_id"], dossier["evidence_id"])
-        self.assertEqual(final["phase"], "provisioning")
+        self.assertEqual((final["phase"], final["activity"]), ("development", "idle"))
         self.assertIsNone(final["active_work"])
         self.assertEqual(output.report["controller"]["selected"], [])
 

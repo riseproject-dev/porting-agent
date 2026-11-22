@@ -141,6 +141,14 @@ def classify_failure(text: str) -> str:
     """Coarse failure class from a sanitized log excerpt. Unknown stays
     unknown and goes to bounded evidence collection or a human."""
     t = text.lower()
+    if any(s in t for s in ("manifest unknown", "no matching manifest", "image pull failed")):
+        return "image_unavailable"
+    if "qemu" in t and any(s in t for s in ("failed", "missing", "exec format error")):
+        return "qemu"
+    if any(s in t for s in ("gh act", "unsupported workflow command", "act does not support")):
+        return "act_unsupported"
+    if any(s in t for s in ("model gateway", "model infrastructure", "llm provider unavailable")):
+        return "model_infrastructure"
     if any(s in t for s in ("waiting for a runner", "no runner", "runner lost communication",
                             "the operation was canceled", "econnreset", "503 service")):
         return "infrastructure"

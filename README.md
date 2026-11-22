@@ -2,7 +2,7 @@
 
 [`riseproject-dev/porting-agent`](https://github.com/riseproject-dev/porting-agent) is the trusted control plane for AI-assisted RISC-V porting work. The active profile helps upstream Python projects build, test, and publish Linux `riscv64` wheels through their own release processes.
 
-The repository is being migrated in reviewed milestones. Milestones 1 through 3 established the deterministic lifecycle control plane. Milestone 4 enables native Work dispatch and authenticated read-only investigation with a verified dossier Result. Patch workers and every destination writer remain disabled.
+The repository is being migrated in reviewed milestones. Milestones 1 through 4 established the deterministic lifecycle and verified investigation pipeline. Milestone 5 enables an uncredentialed patch worker with exact-digest riscv64/QEMU reproduction and bounded proposal artifacts. Every destination writer remains disabled.
 
 ## Repository contract
 
@@ -12,6 +12,7 @@ The repository is being migrated in reviewed milestones. Milestones 1 through 3 
 - Pull-request validation is read-only and receives no App private key, destination token, package credential, or state-publisher environment.
 - The controller uses the control App only after deterministic reconciliation; destination credentials are absent.
 - The investigator receives only scoped read access, returns one verified artifact Result, and cannot push or mutate upstream resources.
+- The worker receives no destination credential. It reproduces selected build/test jobs in the exact riscv64 image and returns a gated proposal artifact only.
 - Public status is generated at <https://riseproject-dev.github.io/porting-agent/> from committed state.
 - The control repository is `riseproject-dev/porting-agent`; destination forks remain in `riseproject-upstreaming`.
 

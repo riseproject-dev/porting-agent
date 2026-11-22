@@ -1,0 +1,797 @@
+# Gotchas -- Testing: test-sources & shadowing
+
+One thematic slice of the porting gotchas. Each entry keeps its permanent number (cited elsewhere as "gotcha N"); numbers are stable IDs, not sequential, and a few (33, 55, 56, 57) are reused across themes -- see [gotchas-index.md](../gotchas-index.md).
+
+To pull up one entry: `grep -n '^N\. ' references/gotchas/testing-and-shadowing.md`.
+
+## In this file
+
+- **21** -- `python -s` (no-user-site) does NOT propagate to pytest-xdist workers.
+- **25** -- Build-from-checkout + pytest = the repo's source package shadows the wheel you
+- **36** -- `test-sources` preserves each path's position relative to the project root --
+- **39** -- Testing a unittest-native suite against the installed wheel: three traps past
+- **83** -- A test that asserts on a traceback's *source text* passes only inside a source
+- **87** -- A test module that force-registers a synthetic package can never test an installed
+- **104** -- `test-sources` is resolved against cibuildwheel's *cwd*, not against
+- **111** -- A build product made *inside* the container never reaches `test_cwd` -- the trap side
+- **119** -- A local `test-sources` rehearsal lies if any ancestor of your staging dir holds a
+- **148** -- The test suite lives *inside* the importable package, so `test-sources` cannot
+- **151** -- A test runner that *discovers* work by walking `<testdir>/..` fails silently, not
+- **152** -- An sdist's `tests/` directory can be a partial copy -- count the files before you
+- **174** -- A `<pkg>/` directory at the checkout root is only a shadowing hazard when it holds
+- **218** -- Gotcha 25's shadowing condition ("suite is a package") has a second, independent
+- **229** -- A test suite that calls GitPython's `Repo(..., search_parent_directories=True)`
+- **253** -- A ctypes/dlopen GUI-toolkit wrapper with no upstream pytest suite at all still has
+- **296** -- Upstream test fixtures checked in via git-lfs can't assume the self-hosted
+- **329** -- A test suite that shells out to the package's own installed CLI binaries at a
+- **347** -- A test that asserts "you're running against an editable/in-place install" can
+- **348** -- A `glcontext`-based package's `create_context(standalone=True)` defaults to the
+- **389** -- A test `.pyx` that Cython-`include`s a checkout-root-relative path can be satisfied by
+  staging just those files; a staged package dir with no `__init__.py` is a namespace
+  portion and does not shadow the wheel.
+- **501** -- A separate test job checks the upstream tree out again, so it needs the same
+  `git apply` the build job has, or the failure you just fixed comes back unchanged.
+- **513** -- The wheel ships the tests but not the test *helpers* they import -- copy the helper
+  package into the installed package from `test-command`.
+- **592** -- A profiler's own suite rewrites the pytest process it runs in: one in-process test
+  wraps `sys.executable` in a profiler launcher and every later subprocess test silently skips
+  or times out; a collected demo script can leave a repeating `SIGALRM` that kills pytest at
+  exit; `sys._base_executable` helpers escape the test venv.
+- **612** -- A same-run `importlib.metadata` check can shadow to a checkout's leftover
+  `egg-info` instead of the installed wheel, not just `import <pkg>` (extends gotcha 25).
+- **667** -- A src-layout project's pytest `pythonpath = ["src"]` ini option shadows the
+  wheel from `{project}/tests` even though the package is not at the checkout root.
+- **680** -- `--doctest-modules --pyargs <pkg>` can crash at collection on a cffi project's own
+  build helper, even though the package's real doctests are fine.
+
+---
+
+21. **`python -s` (no-user-site) does NOT propagate to pytest-xdist workers.** A
+    project whose `test-command` runs `python -s -m pytest -n4` to force importing
+    the *installed* wheel over a local source tree has a latent bug on riscv:
+    the `-s` flag sets `sys.flags.no_user_site=1` on the **controller**, but execnet
+    respawns each `-n` worker **without** it (`no_user_site=0`). SQLAlchemy's
+    `test/conftest.py` injects `{project}/lib` onto `sys.path` *unless* no_user_site
+    is set -- so on the workers pytest imports the **pure-Python source** (no `.so`),
+    not the compiled wheel. Combined with gotcha 20's `REQUIRE_*_CEXT` (whose test
+    plugin then asserts the extension is present) every worker hard-crashes at
+    `pytest_sessionstart` → `RuntimeError: Unexpectedly no active workers available`.
+    Fix: set no-user-site as the **`PYTHONNOUSERSITE=1` env var**, which xdist *does*
+    inherit into workers, and scope it to the test phase (`CIBW_TEST_ENVIRONMENT`,
+    gotcha 12) so it can't touch the build. Verify arch-independently on any host: a
+    5-line `conftest.py` that prints `sys.flags.no_user_site` from inside a test,
+    run under `python -s -m pytest -n2` -- the workers report `0`, the env var flips
+    them to `1`.
+
+25. **Build-from-checkout + pytest = the repo's source package shadows the wheel you
+    just built (the pymongo case; fix with `test-sources`).** In the
+    build-from-checkout shape the importable package sits at the **repo root**
+    (`bson/`, `pymongo/`), and cibuildwheel runs `test-command` from the checkout. If
+    the suite is a *package* (`test/__init__.py` exists -- check it), pytest's default
+    prepend import mode puts the **rootdir** on `sys.path[0]`, so `import <pkg>`
+    resolves to the source tree and never touches the installed wheel. The job goes
+    green having tested pure Python -- the exact failure gotcha 20 warns about, reached
+    by a different route (there the `.so` was never built; here it was built and then
+    not imported). Fix: `CIBW_TEST_SOURCES: test tools pyproject.toml` -- cibuildwheel
+    ≥3 copies just those paths into an empty temp cwd, so the shadowing source packages
+    aren't there. Then use **paths relative to that cwd** in `CIBW_TEST_COMMAND`
+    (`python -m pytest test/...`), not `{project}`/`{package}` (gotcha 5) -- those
+    still point at the full checkout. Stage `pyproject.toml` too or `[tool.pytest.ini_options]`
+    is lost.
+    - **Verify, don't assume** -- same rule as gotcha 20's `unzip -l | grep '\.so$'`,
+      one level up: assert the *import* is the compiled one. Many projects ship a
+      ready-made probe (pymongo: `tools/fail_if_no_c.py`, which asserts `bson.has_c()`);
+      chain it with `&&` ahead of pytest so a shadowed import is fatal.
+    - **Reproduces on any host in 30 seconds**, no QEMU: two dirs with the same package
+      name (one "SOURCE" at a fake repo root, one "INSTALLED" on `PYTHONPATH`) plus a
+      `test/__init__.py` -- run pytest from the repo root (imports SOURCE) and from a
+      staged cwd holding only `test/` (imports INSTALLED).
+    - Distinct from gotcha 21, which is about `python -s` failing to reach xdist
+      workers and a conftest that *explicitly* injects a lib dir. This one is pytest's
+      own rootdir insertion and needs no conftest cooperation at all.
+    - While you're there, **pin floating test deps the same way gotcha 23 pins build
+      tools**. A project with `filterwarnings = ["error", ...]` turns any new
+      DeprecationWarning from a freshly-resolved plugin into a hard failure -- pymongo
+      needed `pytest-asyncio==1.3.0` (upstream's `uv.lock` version) because 1.4 made
+      its own `event_loop_policy` override warn. Take the version from upstream's lock
+      file, not from "latest".
+
+36. **`test-sources` preserves each path's position relative to the project root --
+    which is what makes `__file__`-relative fixture lookups survive the staging (the
+    brotli case; see `build-brotli.yml`).** cibuildwheel (>=3, checked in 4.2.0
+    `platforms/linux.py`) runs `test-command` in an **empty** temp dir, not in the
+    checkout, and `copy_test_sources` copies each entry to `test_cwd/<same relative
+    path>`. So a suite that locates its data by walking up from its own file --
+    `project_dir = dirname(dirname(dirname(__file__)))` then `project_dir/tests/testdata`,
+    a common unittest idiom -- keeps working if you stage the sibling data at its original
+    relative path: `CIBW_TEST_SOURCES: python/tests python/bro.py tests/testdata`.
+    Stage the data under a flattened name and every lookup breaks.
+    - **Choosing what *not* to stage is the shadowing fix (cheaper than gotcha 25's).**
+      brotli's importable `brotli.py` lives in `python/` beside `python/tests/`; staging
+      only `python/tests` leaves `test_cwd/python/` without it, so `import brotli` can
+      only resolve to the wheel. Same reasoning applies to `unittest discover -s <dir>`,
+      which inserts `<dir>` at `sys.path[0]` exactly like pytest's rootdir insertion --
+      so what sits in that directory decides which copy gets imported.
+    - **`setup.py test` is gone (removed in setuptools 72), so an upstream whose CI is
+      `python setup.py test` needs translating, not copying.** Read the `test_suite`
+      entry point and reproduce it directly -- brotli's
+      `test_loader.discover("python", pattern="*_test.py")` becomes
+      `python -m unittest discover -s python -p '*_test.py'`. Closer to upstream than
+      inventing a pytest invocation, and it needs no test-requires at all.
+
+39. **Testing a unittest-native suite against the installed wheel: three traps past
+    gotcha 25 (the dulwich case; see `build-dulwich.yml`).** `CIBW_TEST_SOURCES` stops the
+    checkout's source package from shadowing the wheel, but a suite written to run against
+    an *in-place* `build_ext -i` then breaks in three new ways.
+    - **Fixture data resolved relative to the package, not the rootdir.** dulwich's
+      *shipped* `dulwich/tests/utils.py` opens `<pkg>/tests/../../testdata`, and
+      `tests/test_source.py` walks `<rootdir>/dulwich` -- with only `tests/` staged, 95
+      tests error. Staging the *installed* package into the test cwd fixes both at once
+      and still exercises the compiled wheel:
+      ```
+      cp -a "$(python -c 'import <pkg>, os; print(os.path.dirname(<pkg>.__file__))')" <pkg>
+      ```
+      Keep gotcha 20's proof beside it (`python -c "import <pkg>._ext"`) -- the copy is
+      worth nothing if it has no `.so`.
+    - **An upstream `test_suite()` callable can't be filtered, and pytest is not the way
+      out.** `python -m unittest -k` has no negation and never reaches a suite built by a
+      module-level callable. Switching to pytest as the filtering runner loses tests
+      *silently*: **pytest never collects `__init__.py`, even when you name it explicitly**
+      -- dulwich keeps 591 of its 4620 tests in `tests/porcelain/__init__.py`, and only
+      `-o python_files="test_*.py __init__.py"` sees them. Run upstream's exact suite minus
+      one test with a flatten-and-filter one-liner instead (flattening preserves order, so
+      `setUpClass` grouping survives):
+      ```
+      python -c "import sys, unittest, tests; flat = lambda s: [t for x in s for t in (flat(x) if isinstance(x, unittest.TestSuite) else [x])]; sys.exit(not unittest.TextTestRunner().run(unittest.TestSuite(t for t in flat(tests.test_suite()) if not t.id().endswith('.<test>'))).wasSuccessful())"
+      ```
+      Before switching runners at all, diff the two collections -- `comm -13` over sorted
+      test ids exposed the missing 591 in one run.
+    - **The test phase runs as root, in a container that is not upstream's CI runner.**
+      Two symptoms: a test asserting a mode-0 file is unreadable can never fail for root
+      (deselect it), and tests shelling out to CLIs the image lacks *error* rather than
+      skip -- dulwich's `test_signature` needs `ssh-keygen`/`gpgsm`. Install those in
+      `CIBW_BEFORE_TEST_LINUX` (`dnf -y install openssh-clients gnupg2-smime`) rather than
+      deselecting: upstream's runners have them, so installing is the smaller divergence.
+      And don't trust a local `docker run` of the image to settle what's present -- the
+      self-hosted riscv64 runner used an older cached `manylinux_2_39_riscv64` than a fresh
+      `docker pull`, with `gpgsm` in one and not the other.
+
+83. **A test that asserts on a traceback's *source text* passes only inside a source
+    checkout, so `test-sources` staging is what breaks it (the fastavro case).** Gotchas 25/36
+    stage a minimal test cwd precisely so the checkout cannot shadow the installed wheel. The
+    bill for that arrives here: `traceback.extract_tb()` fills `FrameSummary.line` from
+    **linecache**, and a Cython extension embeds the **relative** path of its `.pyx`
+    (`fastavro/_write.pyx`, not an absolute one) as the code object's filename. linecache
+    resolves that against the **current working directory**, so the source text is recoverable
+    only when cwd happens to be a checkout carrying those sources -- which is exactly what
+    upstream's own `build_ext --inplace` CI provides and what a staged `test_cwd` deliberately
+    does not. Against any installed wheel the frame reads back `line=''` and the assertion
+    fails, on every architecture.
+    - **Confirm the mechanism rather than the symptom, in two runs against the *released* PyPI
+      wheel on your own host.** From an empty dir the frame is
+      `filename='fastavro/_write.pyx' lineno=409 line=''`; create a decoy `fastavro/_write.pyx`
+      of 500 numbered lines at cwd and the same frame reports `line='line 409'`. A traceback
+      whose text is dictated by an unrelated file at cwd is proof the assertion is
+      cwd-dependent, not arch-dependent -- deselect it and say so.
+    - **Read the *relativeness* of the filename, not just the failure.** An absolute path in
+      the frame would survive any cwd and the test would be portable; a relative one is the
+      signal that upstream assumes an in-place build. `python -c` over the installed wheel
+      prints it in one line.
+    - Generalises past Cython to anything that assertion-checks rendered traceback text
+      (`format_exc()` output, `assert "foo = bar" in tb`) -- the source line is never carried
+      *in* the exception, it is looked up afterwards, so it is a property of the filesystem at
+      raise-render time and not of your build.
+
+87. **A test module that force-registers a synthetic package can never test an installed
+    wheel (extends gotchas 25/36).** Gotcha 25's shadowing comes from pytest's rootdir
+    insertion, and staging a minimal `test_cwd` fixes it. A stronger form is immune to that
+    fix: a test that constructs the package object itself so it can run "without a build
+    step" --
+    ```python
+    _thrift_pkg = types.ModuleType('thrift'); _thrift_pkg.__path__ = [_src_dir]
+    sys.modules.setdefault('thrift', _thrift_pkg)
+    ```
+    Under `test-sources` the relative `_src_dir` is absent and the module dies with
+    `ModuleNotFoundError: No module named '<pkg>.<sub>'`; stage the source next to it and it
+    silently exercises the pure-Python tree instead of your compiled wheel. Either way it is
+    not a wheel test -- exclude it rather than staging more paths to satisfy it.
+    - **Upstream's own test list is the arbiter, not the sdist's file list.** thrift ships
+      `test_sasl_transport.py` in its sdist but `lib/py/Makefile.am`'s `check-local` never
+      runs it -- the confirmation that it is a source-tree-only unit test rather than coverage
+      you dropped. A `Makefile.am`/`tox.ini`/`noxfile.py` target is worth reading in full
+      before deciding which shipped test files belong in `CIBW_TEST_COMMAND`.
+
+104. **`test-sources` is resolved against cibuildwheel's *cwd*, not against
+    `package-dir` -- which is what lets an sdist->bdist port run the checkout's test suite
+    (the lightgbm case; see `build-lightgbm.yml`).** Gotcha 36 says `test-sources` preserves
+    each path's position "relative to the project root". The root in question is
+    `Path.cwd()` -- `platforms/linux.py` calls `copy_test_sources(..., Path.cwd(), test_cwd)`
+    just as it calls `container.copy_into(Path.cwd(), "/project")` -- and cwd is wherever the
+    cibuildwheel action runs, *not* the directory passed as `package-dir`. So the two can be
+    different trees: check the upstream repo out at the workspace root, extract the sdist a
+    job built earlier into a subdirectory, point `package-dir` at that, and still stage the
+    checkout's `tests/`. The sdist needing to contain the tests is the constraint that made
+    protobuf build a separate `protobuftests` wheel (gotcha 6); it is not actually a
+    constraint.
+    - **Stage the sibling data at its original relative path** -- gotcha 36's rule, with a
+      second reason to matter. lightgbm's tests read their training data as
+      `Path(__file__).parents[2] / "examples" / ...`, so `CIBW_TEST_SOURCES: tests examples`
+      is what reproduces the checkout's layout inside the otherwise empty `test_cwd`.
+    - **A maturin project has a cheaper option when the only reason for a separate sdist job
+      was gotcha 10's floating-`Cargo.lock` trap** -- gotcha 325 drops the sdist job (and this
+      staging) entirely and builds from the checkout directly once `Cargo.lock` is already
+      committed to git.
+    - **Shadowing answers itself in this shape**: neither the checkout root nor the sdist's
+      importable package reaches `test_cwd`, so `import <pkg>` can only resolve to the
+      installed wheel. Nothing from gotchas 21/25 is needed.
+
+111. **A build product made *inside* the container never reaches `test_cwd` -- the trap side
+    of gotcha 104 (the JPype1 case; see `build-jpype1.yml`).** 104 reads
+    `copy_test_sources(..., Path.cwd(), test_cwd)` as an enabler: cwd is the host checkout,
+    so it need not be the tree `package-dir` points at. The same line is a trap whenever the
+    build *generates* something the suite needs, because the staging is a fresh copy of your
+    `actions/checkout` and not of the tree the build just ran in. JPype1's CMake build shells
+    out to Apache Ant to compile a Java test harness into `test/classes/`, which its conftest
+    loads as `Path(__file__).parent / '../classes'`; staged through `test-sources` the whole
+    1670-test suite cannot start a JVM. Fix: don't stage anything, and run upstream's own
+    invocation against the in-container checkout --
+    `CIBW_TEST_COMMAND: cd {project}/test && python -m pytest ...`.
+    - **`cd` into a *subdirectory* of the checkout is its own shadowing fix**, and usually
+      the one upstream already uses (jpype's azure step is commented "cd to test first, so
+      avoid to import jpype from the project working dir"). `python -m pytest` puts the cwd
+      on `sys.path[0]`, and that cwd is `{project}/test`, which does not contain the
+      importable package -- so `import jpype` can only reach the installed wheel. The proof is
+      free: the checkout's `jpype/` holds no compiled `_jpype` (scikit-build-core stages the
+      extension into the wheel, never in place), so importing the source would error the
+      suite outright rather than pass quietly. Contrast gotcha 25, where the suite sits *at*
+      the root and only an empty staged cwd can save it.
+    - **`--deselect` prefixes match the nodeid, which is relative to the pytest *rootdir*,
+      not to the directory you run from** -- the precise rule behind gotcha 14's "path-based
+      deselect silently no-ops". Running from `{project}/test` while `pyproject.toml` sits
+      at `{project}` puts rootdir at the checkout, so `--deselect jpypetest/t.py::C::x`
+      matches nothing while `--deselect test/jpypetest/t.py::C::x` deselects it -- *even
+      though the short summary prints the short form*, which is what makes the wrong
+      spelling so convincing. Never trust either without reading the `N deselected` count
+      back.
+    - **A Java-side test dependency needs the same riscv64 check as a Python one, and the
+      JDK is pinned by the base image.** jpype stages JDBC drivers with Apache Ivy
+      (`ivy.xml`, resolved by a dedicated upstream CI stage); upstream's pinned `sqlite-jdbc`
+      3.27.2.1 bundles `org/sqlite/native/Linux/<arch>/libsqlitejdbc.so` for nine arches and
+      no riscv64, so its 87 tests fail outright rather than skip -- 3.46.1.3 is the first
+      release carrying one, and `unzip -l <jar> | grep riscv64` answers it per version.
+      Rocky 10, the `manylinux_2_39_riscv64` base, packages only `java-21-openjdk-devel` plus
+      `ant` in appstream (`java-11-`/`java-17-openjdk-devel` do not resolve), so an upstream
+      recipe naming an older JDK has to be bumped -- one line in the workflow, not a patch.
+      `dnf -q list <pkg>` in `rockylinux/rockylinux:10` under `--platform linux/riscv64`
+      settles availability in a minute (gotcha 51), and a five-line JDBC `main()` under QEMU
+      proves the native library actually loads before you spend a CI cycle.
+
+119. **A local `test-sources` rehearsal lies if any ancestor of your staging dir holds a
+    config file (the time-machine case).** Gotchas 25/28 tell you *whether* to stage
+    `pyproject.toml`; this is about the local check that answers that question quietly
+    giving the wrong answer. cibuildwheel runs `test-command` in an empty `test_cwd` with
+    nothing above it, but your local mock-up sits inside a scratch tree -- and pytest's
+    rootdir search walks **up** until it finds `pyproject.toml`/`setup.cfg`/`tox.ini`, so
+    the copy of the project's own `pyproject.toml` you curled for the playbook's step-2
+    inspection, sitting one directory above, gets picked up and the run passes with config
+    the container will not have. time-machine's suite went green that way locally and then
+    failed **all four** riscv64 jobs with `fixture 'testdir' not found`, because upstream's
+    `addopts = ["-p", "pytester"]` never reached pytest in the container.
+    - **Read the session header, not just the summary line.** `rootdir:` and `configfile:`
+      are printed on every run; if `rootdir` is not the directory you staged, the rehearsal
+      is invalid and proves nothing. The same check catches an inherited `conftest.py`.
+    - **Keep downloaded upstream files out of the parent chain** -- give the inspection copy
+      its own subdirectory, or stage the test cwd somewhere with nothing above it.
+    - **`[tool.pytest]` is a real table, not a typo for `[tool.pytest.ini_options]`.**
+      pytest 9 reads the new-style `[tool.pytest]` table, so grepping a project for
+      `ini_options`, finding none, and concluding its `pyproject.toml` carries no pytest
+      config is wrong -- and that config may be the only thing loading a plugin the suite
+      needs.
+
+148. **The test suite lives *inside* the importable package, so `test-sources` cannot
+    separate them -- rename the staged package directory in the test command (the
+    fastparquet case; see `build-fastparquet.yml`).** Gotcha 36's shadowing fix is
+    choosing what *not* to stage; that only works when the suite is a sibling of the
+    importable package. When the suite is `<pkg>/test/` **and** its fixtures are resolved
+    from the working directory (`TEST_DATA = "test-data"`, joined with no `__file__`
+    anchor), you are forced to stage both `<pkg>/test` and `test-data` at their original
+    relative paths (gotcha 36) -- which recreates a `<pkg>/` directory in `test_cwd` that
+    pytest's rootdir insertion turns into a namespace package shadowing the wheel.
+    Upstream usually already has the answer in its *wheel-test* job: fastparquet's
+    `test_wheel.yaml` does `mv ./fastparquet ./fastparquet-src` before pytest, with the
+    comment "in order to avoid conflicts between the fastparquet directory and the
+    fastparquet installed module". Reproduce it verbatim in `CIBW_TEST_COMMAND`:
+    ```yaml
+    CIBW_TEST_SOURCES: fastparquet/test test-data pyproject.toml
+    CIBW_TEST_COMMAND: mv fastparquet fastparquet-src && python -m pytest fastparquet-src/test
+    ```
+    The rename keeps the relative-import package (`test/__init__.py` → `from .util import
+    tempdir`) intact, keeps `test-data` where the suite looks for it, and leaves nothing
+    named `<pkg>` on `sys.path[0]`.
+    - **Read upstream's wheel-test workflow, not only its main CI.** Projects that test
+      wheels separately (`test_wheel.yaml` beside `wheel.yml`) have already solved
+      "installed wheel vs source checkout" for you, and copying their solution is both
+      less thinking and less divergence than inventing one. Their main CI job usually
+      does `pip install -e .` and hits none of this.
+
+151. **A test runner that *discovers* work by walking `<testdir>/..` fails silently, not
+    loudly, when `test-sources` under-stages -- count the tests, don't read the exit code
+    (the biopython case; see `build-biopython.yml`).** Gotchas 25/36/39 all treat
+    `CIBW_TEST_SOURCES` as a shadowing fix and reach for minimal staging. The opposite
+    failure is quieter: biopython's `Tests/run_tests.py` builds its doctest list with
+    `setuptools.find_packages(testdir + "/..")` and resolves fixtures through `../Bio` and
+    `../Doc`, so `CIBW_TEST_SOURCES: Tests` leaves the parent directory empty, collects
+    **209** tests instead of 501, and -- because a suite of this shape *skips* whatever it
+    cannot import -- exits 0 on a subset you never chose. Staging `Tests Bio BioSQL Doc`
+    reproduces upstream's checkout layout and collects 501. Measure the count at each
+    staging choice against the released PyPI wheel (gotcha 52) and keep the number in the
+    commit message; it is the only evidence the job tests what you think it does.
+    - **Staging the *source* package alongside the tests is safe here, and is the
+      closest-to-upstream answer** -- precisely because such a runner `os.chdir`es into
+      `Tests/` and `sys.path[0]` is the script's own directory, so `import <pkg>` still
+      resolves to the wheel. That is upstream's own arrangement (`pip install .` leaves an
+      unbuilt `Bio/` at `Tests/..`), so reproducing it wholesale beats hand-picking data
+      subdirectories.
+    - **But the *directory each command runs from* decides shadowing, so put your
+      extension probe inside the same `cd`.** A `python -c "import <pkg>..."` executed at
+      the `test_cwd` root puts `''` on `sys.path[0]`, and the staged source wins --
+      biopython's probe died with `ImportError: cannot import name '_aligncore' from
+      partially initialized module`, which reads like a broken wheel and is not. Write the
+      test command as one chain, `cd Tests && python -c "<probe>" && python run_tests.py`,
+      and verify by printing `<pkg>.__file__` from that directory.
+
+152. **An sdist's `tests/` directory can be a partial copy -- count the files before you
+    pick the sdist as your test source (the geventhttpclient case).** Gotcha 6 asks whether
+    the tests ship in the sdist at all; the quieter answer is "some of them". A `MANIFEST.in`
+    that never mentions tests still yields a `tests/` entry in the tarball, because setuptools
+    auto-includes files matching `test*.py` -- and *only* those. geventhttpclient 2.3.9's sdist
+    carries all twelve `tests/test_*.py` and none of `__init__.py`, `common.py`, `conftest.py`
+    or the TLS fixtures, so every module doing `from tests.common import ...` dies at
+    collection with `ModuleNotFoundError: No module named 'tests.common'`. That reads like a
+    missing test dependency or a staging mistake (gotcha 25) and is neither.
+    - **`diff <(tar tzf sdist.tar.gz | grep tests/) <(tar tzf tag.tar.gz | grep tests/)`
+      settles it in one command**, before any venv. The signature is a residue that is exactly
+      the `test*.py` glob: no `__init__.py`, no `conftest.py`, no data files.
+    - **It also decides the port's shape**: only a checkout can run the real suite, so the
+      build-from-checkout form is mandatory even where an sdist->bdist job would otherwise be
+      natural -- and gotcha 104's "stage the checkout's tests beside an sdist `package-dir`"
+      trick is the alternative when you need both.
+    - Reach for it as the first explanation whenever gotcha 52's dry run against the released
+      PyPI wheel returns collection errors on *helper* imports while the same files run fine
+      from a git checkout.
+
+174. **A `<pkg>/` directory at the checkout root is only a shadowing hazard when it holds
+    an `__init__.py` (bounds gotchas 25/36/148).** Those three all treat a same-named
+    directory beside the tests as something to stage away from, and reach for
+    `CIBW_TEST_SOURCES` or a rename to do it. The rule is narrower than that: `PathFinder`
+    treats a directory *without* `__init__.py` as a namespace **portion**, which it records
+    and then keeps scanning `sys.path` for a concrete loader -- a real module or extension
+    found at any later entry wins, and the namespace package is only materialised when
+    nothing else matches. So a checkout root carrying `<pkg>/` purely as a typing stub
+    holder (`__init__.pyi` + `py.typed`, packaged alongside a top-level
+    `Extension("<pkg>", ...)` -- ciso8601's layout, and a common one for C extensions that
+    want inline types) cannot shadow the installed wheel, however the tests are run.
+    - **`ls <pkg>/__init__.py` is the whole check**, and it is worth doing before adding
+      staging or a rename you do not need -- both are divergence, and a rename in
+      particular breaks relative imports inside the suite.
+    - **The inverse still holds and is the common case**: gotcha 25's `test/__init__.py`
+      and gotcha 148's `<pkg>/test/` are regular packages, so the directory *is* a concrete
+      loader and does win.
+    - Confirm rather than reason about it: `python -c "import <pkg>; print(<pkg>.__file__)"`
+      from the directory in question, on any host, in one second -- and keep that as the
+      test command's first link (gotcha 20) so a regression is loud.
+
+218. **Gotcha 25's shadowing condition ("suite is a package") has a second, independent
+    trigger that survives even when it's false: `python -m pytest`/`python -c` prepend
+    the checkout root to `sys.path[0]` unconditionally; a bare `pytest` console-script
+    invocation does not (the python-crfsuite case).** python-crfsuite's importable
+    package (`pycrfsuite/`, with `__init__.py`) sits at the checkout root exactly like
+    gotcha 25's pymongo setup, but its `tests/` has **no** `__init__.py` -- so pytest's
+    own prepend-mode rootdir insertion (gotcha 25's mechanism) only adds `tests/` itself
+    to `sys.path[0]`, never the root, and `import pycrfsuite` inside the test modules is
+    free to resolve to the installed wheel. That protection is real only under upstream's
+    actual `CIBW_TEST_COMMAND: pytest {project}/tests --doctest-modules` (a bare
+    entry-point script, which re-execs as `python <venv>/bin/pytest ...` -- Python
+    prepends the *script's own dirname*, not the invoking shell's cwd). Rewriting the
+    same command as `python -m pytest {project}/tests` reintroduces the shadow from a
+    wholly different mechanism: the `-m` flag makes the interpreter prepend `''` (cwd,
+    i.e. the checkout root) to `sys.path` **before pytest ever runs**, independent of
+    whether `tests/` is a package. The result without a compiled extension in the
+    checkout is the same loud `ModuleNotFoundError` gotcha 25 describes for a silently-
+    wrong pass -- here it fails outright instead, because `pycrfsuite/_pycrfsuite` is a
+    Cython extension never built in place.
+    - **Don't "clean up" a bare `pytest {project}/tests` into `python -m pytest` when
+      copying upstream's own test-command literally** -- the two are not equivalent in
+      the build-from-checkout shape, only in an installed-and-cd'd context. Preserve
+      upstream's exact invocation form, not just its arguments.
+    - **Verify in seconds, no compile needed, on any host**: build a real wheel once,
+      `pip install` it into a venv, then from the checkout root run both
+      `<venv>/bin/pytest <testdir>` (passes, imports the wheel) and
+      `<venv>/bin/python -m pytest <testdir>` (fails if the checkout's package has no
+      in-place extension, silently imports the source otherwise) -- the divergence is the
+      proof, and it needs no riscv64/QEMU to reproduce.
+    - Distinct from gotcha 111's `cd {project}/test && python -m pytest` fix, which
+      neutralizes `-m`'s cwd-insertion by changing *what* cwd is rather than avoiding
+      `-m`; both are valid fixes; the cheaper one here is simply not switching to `-m`
+      in the first place when upstream never did.
+    - **Hits maturin/PyO3 builds too, with no cibuildwheel or upstream test-command in
+      the picture at all (the dataframely case; see `build-dataframely.yml`).** Its
+      pure-Python wrapper sits at the checkout root like pymongo's, `tests/` has no
+      `__init__.py`, and the workflow's own hand-written "Test wheel" step runs plain
+      `python -c 'import dataframely; ...'` and `python -m pytest tests ...` right
+      after `uv pip install`'ing the wheel -- gotcha 111's fix applies verbatim even
+      though there is no cibuildwheel: `cd /tmp` first (gotcha 612's idiom), then pass
+      `tests`, and any `-c`/`--ignore` path, as `${GITHUB_WORKSPACE}`-absolute so
+      pytest can still find them from the new cwd.
+
+229. **A test suite that calls GitPython's `Repo(..., search_parent_directories=True)`
+    needs `.git` staged as a `test-sources` entry, and a project with its own
+    actions/checkout-detached-HEAD shim needs `GITHUB_*` forwarded into
+    `CIBW_TEST_ENVIRONMENT` too -- cibuildwheel's test sandbox has neither by default
+    (the tach case).** cibuildwheel's isolated `test_cwd` only contains what
+    `test-sources` explicitly lists (gotcha 36); a suite whose fixtures live under a
+    `.git`-bearing checkout (upstream always runs pytest from the full clone) gets
+    `git.exc.InvalidGitRepositoryError` the moment a test walks up looking for one --
+    add `.git` itself to `CIBW_TEST_SOURCES` alongside the test dir. That's necessary
+    but not sufficient when the project *also* pre-empts the obvious next failure:
+    tach's own `git_ops.py` has an `is_github_actions()` branch specifically to avoid
+    `repo.active_branch.name` (which raises on the detached HEAD `actions/checkout`
+    always leaves), reading `GITHUB_EVENT_NAME`/`GITHUB_REF_NAME`/`GITHUB_HEAD_REF`
+    instead -- a real, working accommodation for exactly this CI shape. It doesn't help
+    here because cibuildwheel's containerized test step does not forward the *outer*
+    job's `GITHUB_*` env into the sandbox, so `is_github_actions()` reads false and the
+    code falls through to the path that crashes. Fix: set them explicitly via
+    `CIBW_TEST_ENVIRONMENT`, sourced from the workflow's own GitHub Actions context
+    (not the runner's shell env, which is what's missing) -- `GITHUB_ACTIONS=true
+    GITHUB_EVENT_NAME=<github.event_name> GITHUB_REF_NAME=<github.ref_name>
+    GITHUB_HEAD_REF=<github.head_ref>`, interpolated as workflow expressions in the
+    YAML. Each failure mode surfaces separately and in order --
+    the `.git`-staging fix must land and be reverified before the detached-HEAD one
+    becomes visible -- so budget two short CI round-trips, not one, for a suite that
+    turns out to depend on real git context.
+
+253. **A ctypes/dlopen GUI-toolkit wrapper with no upstream pytest suite at all still has
+    a real headless smoke test: call the version query, then call the init function and
+    assert it fails gracefully (the glfw case).** pyGLFW ships no `tests/` directory --
+    upstream's only CI job lints its `.pyi` stubs with `mypy.stubtest`, not something
+    that exercises the compiled library. But the wrapped C library's own contract answers
+    the question anyway: `glfwGetVersion`/`glfwGetVersionString` need no window or display
+    state at all, and `glfwInit()` on a headless runner (`DISPLAY`/`XDG_RUNTIME_DIR` unset)
+    returns `0` with a caught `GLFWError` warning rather than crashing -- confirmed by
+    running it inside `manylinux_2_39_riscv64` with no `-e DISPLAY` and no Xvfb. That
+    three-call sequence -- version query, init, assert-init-fails-cleanly -- is a real test
+    of "does the bundled `.so` load and export working symbols," not a placeholder, and
+    needs no Xvfb/EGL setup the way an actual windowed exercise would.
+    - **Don't reach for Xvfb/EGL by default.** It would make the check "prettier"
+      (`init()` succeeding), but it is unnecessary complexity: a *failing-but-not-crashing*
+      `init()` already proves the library loaded, resolved its symbols, and ran its own
+      error path correctly.
+    - Applies beyond GLFW to any ctypes/cffi wrapper around an X11/Wayland/GL library that
+      documents a non-fatal failure mode for headless environments -- check the wrapped
+      library's own init-failure contract before assuming a display is required to test
+      anything.
+
+296. **Upstream test fixtures checked in via git-lfs can't assume the self-hosted
+    riscv64 runner has a git-lfs client (the zipfile-deflate64 case; see
+    `build-zipfile-deflate64.yml`).** Upstream's own CI checks out with
+    `actions/checkout`'s `lfs: true`, which shells out to `git lfs pull` -- that needs
+    the `git-lfs` binary installed on the runner doing the checkout, and unlike the
+    manylinux *container* image (gotcha 39's `gpgsm` case), nothing establishes what's
+    on the **host** runner, and installing software there isn't an option (no
+    brew/apt/dnf on the self-hosted box). Rather than gamble a CI cycle on `lfs: true`
+    working, fetch the real blobs directly from GitHub's public media CDN in a `run:`
+    step after checkout, keyed off each LFS pointer file's own path:
+    ```
+    for f in tests/data/*; do
+      curl -sSfL "https://media.githubusercontent.com/media/<owner>/<repo>/v${VERSION}/$f" -o "$f"
+    done
+    ```
+    This needs no git-lfs client at all and works for any public repo/ref/path,
+    pointer file or not (it silently overwrites a pointer with the real blob).
+    Verify locally with a single `curl` before wiring it into the workflow -- the
+    pointer file's `size:` line is the real blob's byte count, so diffing `ls -l`
+    against it confirms the fetch, not just a 200 status.
+
+329. **A test suite that shells out to the package's own installed CLI binaries at a
+    `__file__`-relative path needs the *installed* package staged back into `test_cwd`,
+    not just the test directory (the primer3-py case).** Gotcha 25's `CIBW_TEST_SOURCES:
+    tests` stops the checkout's uncompiled `primer3/` from shadowing the wheel's Cython
+    extension, but primer3-py's `tests/wrappers.py` cross-checks the compiled bindings
+    against the same primer3 C library built as standalone CLI tools (`ntthal`,
+    `primer3_core`, ...), installed by a custom `install_lib` command into
+    `<site-packages>/primer3/src/libprimer3/`. `wrappers.py` locates them as
+    `dirname(dirname(realpath(__file__))) + '/primer3/src/libprimer3/...'` -- relative to
+    `tests/`'s own parent, never via `import primer3`. With only `tests/` staged that
+    parent is the empty `test_cwd`, and the binaries are simply missing:
+    `FileNotFoundError: primer3/src/libprimer3/ntthal`, not an import error, so gotcha
+    25's usual `.so`-import proof doesn't catch it. Gotcha 39's dulwich fix applies
+    directly even though nothing here is unittest-native: `cp -a "$(python -c 'import
+    primer3, os; print(os.path.dirname(primer3.__file__))')" primer3` before the test
+    command stages the *installed*, compiled package -- Cython `.so` and CLI binaries
+    alike -- at that same relative position, so both the import-based and the
+    subprocess-based checks exercise the actual wheel.
+    - Verify locally in seconds, no riscv64 needed: `pip wheel . && pip install *.whl`,
+      then from an empty dir `cp -a tests/ . && pytest tests/test_thermoanalysis.py -v`
+      fails with the `FileNotFoundError` above; adding the `cp -a primer3` step (copying
+      from the installed package's own `__file__`, not the checkout) makes it pass --
+      proof the staged copy, not something arch-specific, is what's needed.
+
+347. **A test that asserts "you're running against an editable/in-place install" can
+    never pass against a cibuildwheel-tested wheel, and deselecting it is correct, not
+    a workaround (the moderngl case; see `build-moderngl.yml`).** moderngl's
+    `tests/test_local.py::test_local` compares `dirname(dirname(moderngl.__file__))`
+    against `dirname(dirname(abspath(__file__)))` and asserts they match -- a canary
+    for a developer forgetting to rebuild, valid only because upstream's own
+    Containerfile runs `setup.py build_ext --inplace` first, making the compiled `.so`
+    and the test file genuine siblings. Under cibuildwheel the wheel installs into an
+    isolated venv's `site-packages` while `{project}/tests` still points at the
+    checkout -- the two paths are *supposed* to differ, since that divergence is what
+    proves the suite is exercising the built wheel rather than shadowed source
+    (gotcha 25's goal, reached correctly here). `-k "not test_local"` is the fix; the
+    other 359 of moderngl's 360 tests pass unmodified.
+
+348. **A `glcontext`-based package's `create_context(standalone=True)` defaults to the
+    platform's display backend (x11 on Linux), not EGL, so it fails with
+    `XOpenDisplay: cannot open display` on a headless runner unless the EGL backend is
+    requested explicitly (the moderngl case).** moderngl's own `create_context()`
+    calls `glcontext.default_backend()` whenever no `context=` kwarg is given; on
+    Linux that resolves to `x11`, which needs a real display even in
+    standalone/offscreen mode. Upstream's own test suite (`tests/conftest.py`) never
+    calls the bare form -- it always passes `context=glcontext.egl.create_context(
+    glversion=330, mode="standalone")`. Any CIBW_TEST_COMMAND smoke test written
+    without copying that same `context=` argument passes on a workstation with a
+    display and fails only in CI; grep the checkout's own conftest/test helpers for
+    `egl` before writing a headless smoke test from scratch.
+
+389. **A test `.pyx` that Cython-`include`s a path relative to the *checkout root* can be
+    satisfied by staging just those source files: a staged package directory with no
+    `__init__.py` is a namespace portion and does not shadow the installed wheel (the
+    cassandra-driver case).** `tests/unit/cython/types_testhelper.pyx` opens with
+    `include '../../../cassandra/ioutils.pyx'`, so `pyximport` compiling it at test time
+    needs `<test_cwd>/cassandra/ioutils.pyx` -- plus the `cython_marshal.pyx` that one
+    includes -- present on disk. Gotcha 25 forbids staging the project package beside the
+    tests, which reads as a dead end: either deselect the Cython test modules or shadow the
+    wheel. It is neither. `test-sources` accepts individual files, so
+    `CIBW_TEST_SOURCES: tests cassandra/ioutils.pyx cassandra/cython_marshal.pyx` creates a
+    `cassandra/` directory holding no `__init__.py`, and CPython's import system records
+    such a directory only as a *namespace portion* and keeps scanning the rest of
+    `sys.path` -- so `import cassandra` still binds the installed wheel's regular package in
+    `site-packages`.
+    - **Only files reached by a filesystem `include` need staging.** Every `.pxd` the
+      helper `cimport`s (`cassandra/bytesio.pxd`, `cassandra/buffer.pxd`, …) is found by
+      Cython along `sys.path`, and this project ships its `.pxd`/`.pyx` inside the wheel;
+      `cimport` and `include` resolve through different mechanisms, so grep for `include`
+      specifically.
+    - **Prove it rather than reasoning about it**: from the staging directory,
+      `python -c "import cassandra; print(cassandra.__file__)"` must print the
+      `site-packages` path, and running the whole suite that way against upstream's
+      released PyPI wheel costs two minutes on any host (gotcha 52).
+
+501. **A separate test job checks the upstream tree out again, so it needs the same
+    `git apply` step the build job has (the austin-dist case).** The build-then-test shape
+    (`build-py-spy.yml`, and any port whose tests run outside the container) has two jobs,
+    each with its own `actions/checkout` of the upstream repo. Patches applied in the build
+    job exist only in that job's workspace: the artifact carries the built binary, not the
+    patched sources. A test-suite patch -- a fixed timeout, a host assumption, a deselection
+    helper -- therefore has no effect until the test job also checks out this repo and runs
+    the same `git apply patches/<pkg>/<version>/*.patch`.
+    - **The tell is a failure that comes back byte-for-byte after you "fixed" it**, on every
+      matrix leg, with the patch verified locally and `git apply -v` green in the build job's
+      log. Check which job the failing step is in before re-reading the patch.
+    - Keep the two steps identical (checkout with `path: python-wheels`, then the same glob)
+      so the next person sees one pattern rather than two.
+
+
+513. **The wheel ships the tests but not the test *helpers* they import -- copy the helper
+    package into the installed package from `test-command` (the pytype case).** pytype's
+    `setup.cfg` excludes `pytype.tests` from `packages.find`, yet 36 of the 96 `*_test.py`
+    modules that *are* in the wheel open with `from pytype.tests import test_base`, so
+    `pytest --pyargs pytype` dies at collection with `ModuleNotFoundError: No module named
+    'pytype.tests'`. This is the mirror image of gotcha 148: there the suite sits inside the
+    importable package and shadows it, here the suite is inside the *wheel* and its helpers
+    are missing. Staging them in the test cwd cannot fix it -- they have to be importable as a
+    subpackage of the *installed* package:
+    ```yaml
+    CIBW_TEST_SOURCES: pytype/tests/__init__.py pytype/tests/test_base.py pytype/tests/test_utils.py
+    CIBW_TEST_COMMAND: >-
+      cp -r pytype/tests "$(python -c 'import pytype, os; print(os.path.dirname(pytype.__file__))')"
+      && python -m pytest --pyargs pytype ...
+    ```
+    - **Stage the helper modules only, never the whole suite directory.** Copying upstream's
+      full `<pkg>/tests/` in makes `--pyargs` collect the entire integration suite as well
+      (142 files for pytype, hours on a riscv64 runner) on top of the unit tests you wanted.
+    - **The helpers are themselves named `test_*.py`, so pytest collects them as tests**
+      (`tests/test_utils.py::test_data_file` then errors on a missing fixture); deselect them
+      (gotcha 512) rather than renaming, since the imports name them.
+    - **Diff against a source checkout before blaming the wheel or the arch.** Of the failures
+      left under `--pyargs`, `test_error_doc` and two typeshed ones read `docs/errors.md` and
+      `typeshed/tests/`, which are in neither the wheel nor the sdist, while two
+      `serialize_ast` tests fail identically in a pristine x86 `git clone --branch <tag>`
+      under plain `unittest`. Cloning the tag and dropping the built `.so` into it separates
+      "not in the wheel", "broken upstream" and "riscv64" in five minutes.
+    - **A test that asserts an operation *fails* for lack of privilege only passes as a
+      non-root user.** `tool_utils_test.TestMakeDirsOrDie.test_die` expects
+      `makedirs_or_die('/nonexistent/path')` to raise `SystemExit`; the build container runs
+      as root, where it simply creates the directory.
+
+592. **A profiler's own test suite rewrites the pytest process it runs in, so a green
+    `CIBW_TEST_COMMAND` can hide the very feature the port exists for (the scalene case).**
+    Four traps; only the timing ones are riscv64-specific:
+    - **One in-process test wraps `sys.executable` for the rest of the session.**
+      `tests/test_coverup_30.py::test_scalene_cpu_count` constructs the profiler in-process;
+      its `redirect_python` replaces `sys.executable` (and the head of `PATH`) with a
+      `/tmp/scaleneXXXX/python` launcher that re-runs everything under scalene. Every later
+      `subprocess.run([sys.executable, "-m", "scalene", ...])` then nests a profiler inside a
+      profiler. The `--memory` tests fail to start (`Failed to initialize memory profiling:
+      [Errno 2] No such file or directory: '/tmp/scalene-malloc-signal<pid>'`) and, because
+      upstream wraps them in a "suspected subprocess startup flake" retry helper, **skip** --
+      all 24 of them, on x86_64 as much as riscv64. The suite is green and proves nothing about
+      memory profiling; only `pytest -rs` shows it. On riscv64 the same nesting also pushes the
+      `--on`/`--off` integration and per-thread native-stack tests past their hard-coded 60 s
+      timeouts (5-18 s each in a clean session).
+    - **Find the polluter, don't quarantine the victims.** A throwaway `-p` plugin whose
+      `pytest_runtest_teardown` logs when `sys.executable`/`PATH[0]`/`LD_PRELOAD` change names
+      the one test in a single local run; `--deselect` it. Deselecting the victims instead
+      grows with every release and still leaves the rest of the session under the launcher.
+    - **A `test_*.py` demo script can arm a process-wide timer at import.** scalene's
+      `test/test_timers.py` has no test functions: at module level it installs a `SIGALRM`
+      handler and calls `setitimer(ITIMER_REAL, 5, 1)`, loops until ten ticks, and leaves the
+      1 s interval running. pytest imports it during collection, so the whole session ticks
+      (the tell: bare floats like `0.9997586710378528` interleaved with the progress dots and
+      one more printed after the summary). When the interpreter tears the handler down at exit,
+      the next tick takes the default action: the job fails with `exit code 142` (128 +
+      `SIGALRM`) four seconds after a fully green `448 passed` summary, which reads like the
+      next command in the `&&` chain failing. x86_64 finishes shutdown inside the one-second
+      window, riscv64 does not -- deterministic on all three interpreters. `--ignore` the file;
+      it is a manual demo, not a test.
+    - **`sys._base_executable` is outside cibuildwheel's test venv.** `test_native_stacks`
+      deliberately spawns its helpers with `sys._base_executable` (falling back to
+      `/proc/self/exe`) to dodge that same launcher; in a venv that is
+      `/opt/python/cp3XX-cp3XX/bin/python3.X`, which has no scalene installed, so every helper
+      dies `ModuleNotFoundError`. Upstream never sees it because it tests `pip install -e .`
+      into a setup-python interpreter. Keep the tests (they are the unwinder's, the most
+      architecture-sensitive in the suite) and prefix the run with
+      `PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"` --
+      same interpreter version, so the base interpreter imports the wheel's extensions fine.
+    - **Why it mattered here:** scalene gates `--memory` on a pure-Python
+      `platform.machine()` allowlist (`x86_64/amd64/arm64/aarch64`) that silently turns it off
+      elsewhere with a warning. With the memory tests skipping, the patch adding `riscv64`
+      looked unnecessary; with the polluter isolated they fail without it and pass with it.
+
+612. **A same-run `importlib.metadata` check can shadow to a checkout's leftover `egg-info`
+    instead of the installed wheel, not just `import <pkg>` (extends gotcha 25; the pyscf
+    case).** Gotcha 25's shadowing is about `import <pkg>` resolving to the source tree
+    because cwd is on `sys.path[0]`. The same trigger breaks a *metadata* check that never
+    imports the package at all: a build step's `pip wheel . --no-clean` (or any PEP 517
+    `build_wheel` invoked against a local directory -- build isolation only isolates the
+    build *environment*, not where setuptools' `egg_info` command writes) leaves
+    `<pkg>.egg-info/` sitting in the checkout root, and that checkout root is the very
+    directory a *later, separate* `docker run -w <checkout>` reuses as cwd for the test
+    step. `python -c "..."` prepends `''` (cwd) to `sys.path` unconditionally, so
+    `importlib.metadata.distribution('<pkg>')`/`.files('<pkg>')` resolves the stale
+    `egg-info` there before ever consulting the properly `pip install`ed `*.dist-info` in
+    site-packages -- and classic egg-info metadata predates PEP 639, so it has no
+    `licenses/` subdirectory at all. A licence-file assertion built the gotcha-44 way
+    (`{p.name for p in importlib.metadata.files('<pkg>') if '.dist-info/licenses/' in
+    str(p)}`) then asserts against an empty set with no exception raised -- reads exactly
+    like the licence files never made it into the wheel, when the wheel (and its
+    `auditwheel`-repaired copy, RECORD included) is fine.
+    - **Verify by relocating, not by inspecting auditwheel.** `auditwheel repair` was the
+      obvious suspect (it does rewrite `RECORD` and retag the wheel) but is not the culprit
+      here: repairing a minimal dummy wheel with a `licenses/*` glob and inspecting the
+      output directly shows the `dist-info/licenses/` files and their `RECORD` entries
+      untouched. The tell that it's shadowing instead: `importlib.metadata.distribution(
+      '<pkg>')._path` names the local `egg-info`, not the site-packages `dist-info`, and
+      the file list it returns includes checkout-only names like `setup.py`/`pyproject.toml`
+      that the installed wheel never ships.
+    - **Fix by moving the check past a `cd` to a directory with no `<pkg>` on disk** -- `/tmp`
+      inside the test container is fresh per `docker run` and already the convention this
+      same script uses one step later, before `import pyscf`, for the plainer gotcha-25
+      reason. Run the metadata check *after* that `cd`, not before it: writing the check
+      first (chronologically, before the later `import <pkg>` smoke test was added) is why
+      it alone stayed exposed.
+    - **The same shadowing happens through the *script's* directory.** Python puts the
+      directory of `python <script>` on `sys.path[0]`, whatever the cwd is. A smoke test written
+      into `{project}` for cibuildwheel to carry into the container (gotcha 7) therefore finds
+      `{project}/<pkg>.egg-info`, the in-tree build's leftover, even though cibuildwheel's
+      test cwd is a fresh temp dir (the sqlcipher3 case). `cd` doesn't help there. Run it as
+      `python -P {project}/<script>.py` (3.11+; with cp39/cp310 in the matrix use `python -I`): `-P`
+      skips that `sys.path[0]` entry, and the script itself still runs.
+
+618. **`--import-mode=importlib` does not immunize a package-nested test suite against
+    gotcha 148's shadowing -- it reaches the same in-place build by a wholly different route
+    (fixing gotcha 612 on the same script does not fix this; the pyscf case).** Gotchas
+    25/148/218 are all `sys.path`-based: `-m`/prepend-mode insertion puts the checkout
+    *root* on `sys.path[0]`, and switching to `--import-mode=importlib` (pyscf's own
+    `pytest.ini` `addopts`) is the documented way to stop that. It does not stop this,
+    because importlib mode's own package resolution never consults `sys.path` for a test
+    file that lives inside a real package: pytest's `_import_module_using_spec` (in
+    `_pytest/pathlib.py`) walks up `__init__.py` files from the test file's *own path on
+    disk* to find the top-level package, then imports every ancestor -- including that
+    top-level package -- via `importlib.util.spec_from_file_location` pointed straight at
+    that filesystem location, before the test file's own body (and its `sys.path`-based
+    imports) ever runs. Collecting `pytest /work/<pkg>/<pkg>` therefore imports `<pkg>`
+    itself from `/work/<pkg>/<pkg>/__init__.py` -- the checkout, built in place by an
+    earlier `--no-clean` build step in a *different* container that had build-only system
+    libraries installed -- never the `auditwheel`-repaired, properly-`pip install`ed wheel,
+    regardless of cwd or `PYTHONPATH`. `cd /tmp` (gotcha 612's fix, applied on this same
+    script one step earlier) does nothing here: that fix closes the cwd-insertion route,
+    but this route never used cwd at all.
+    - **The tell is a `.so` load failure whose message names a checkout path, cascading
+      into unrelated `AttributeError: module '<pkg>.<sub>' has no attribute '<name>'`s
+      across hundreds of otherwise-unconnected test files.** pyscf's `ctypes.cdll[...]`
+      failed with `OSError: libopenblas.so.0: cannot open shared object file` -- true only
+      for the checkout's raw, unrepaired `libnp_helper.so` (built where `openblas-devel`
+      was installed; the *test* container never installs an OpenBLAS runtime, relying on
+      auditwheel's vendored copy -- the one on the wheel it never actually tested). That one
+      early exception aborts `<pkg>/lib/__init__.py` partway through, so every submodule
+      import statement after the one that failed (`from pyscf.lib import diis`,
+      `load_library`, `einsum`, …) never ran, and every other file that touches those names
+      for the rest of the *same* pytest process reports them missing -- 336 collection
+      errors from what is structurally one root cause. Read the *first* traceback's file
+      paths, not the error text of the hundredth: `/work/<pkg>/<pkg>/...` in an `import`
+      frame (not just the test file's own collection-target path) is the actual signal.
+    - **Fix the same way gotcha 148 already does, for the same underlying reason (the
+      suite lives inside the package) -- `mv` the checkout's package dir to a name that
+      isn't `<pkg>` right before the pytest invocation, and repoint the collection target
+      and any `--ignore=` globs at the new name.** The rename doesn't touch file *contents*:
+      `<pkg>/__init__.py`'s own top-level `from <pkg> import lib` is an absolute import
+      Python evaluates fresh against `sys.path` when it runs -- under the new directory
+      name, pytest's on-disk resolution no longer matches `<pkg>`, so that statement (and
+      every other absolute `from <pkg> import ...` in the suite) falls through to a normal
+      import and finds the properly installed wheel. No `CIBW_TEST_SOURCES`-style staging
+      is needed, since importlib mode's failure mode isn't `sys.path` order -- just the one
+      `mv`.
+    - **Verify by checking which package a passing run actually imported, not just that it
+      passed.** A green run after the `mv` whose collection still shows any
+      `/work/<pkg>/<pkg>/...` (the *old* name) import frame would mean the rename didn't
+      take effect for that file -- e.g. a leftover `--ignore=` still pointed at the old path,
+      skipping rather than fixing it. The fix must make every collected file resolve
+      `<pkg>` to site-packages, not just quiet the ones an `--ignore=` glob already hid.
+
+667. **A src-layout project is not immune to gotcha 25: a pytest ini `pythonpath = ["src"]`
+    puts the checkout's source package ahead of the installed wheel (the munkres case; see
+    `build-munkres.yml`).** Gotchas 25/174/218 all key off a `<pkg>/` directory at the
+    checkout *root*; a `src/` layout looks safe by construction because neither rootdir
+    insertion nor `python -m`'s `''` reaches `src/`. But pytest's own `pythonpath` ini key
+    (pytest >= 7, in `[tool.pytest.ini_options]`) inserts each listed directory, resolved
+    against the rootdir, at the front of `sys.path` before collection. munkres 3.0.0 sets
+    `pythonpath = ["src"]` for its dev loop, and upstream's own cibuildwheel test-command
+    `python -m pytest {project}/tests/v3` therefore imports `src/munkres/` -- pure Python,
+    because the optional `_lapc` C kernel is only built into the wheel, never in place. The
+    188-test suite passes either way, so the whole compiled kernel goes untested; only the
+    separate `python -c "...; assert _native.available()"` probe (run from cibuildwheel's
+    empty `test_cwd`) sees the wheel.
+    - **The tell is one grep**: `grep -n pythonpath pyproject.toml pytest.ini setup.cfg
+      tox.ini` in the upstream tree. Any entry naming the directory that holds the package
+      makes `{project}/tests` a shadowed run.
+    - **Fix with gotcha 25's staging, unchanged**: `CIBW_TEST_SOURCES: tests pyproject.toml`
+      and a relative `python -m pytest tests/...`. Staging `pyproject.toml` keeps the rest
+      of the ini (`markers`, `--strict-markers`, `xfail_strict`); its `pythonpath = ["src"]`
+      then points at a directory that does not exist in `test_cwd` and is harmless.
+    - **Prove it on any host in a minute**: install a locally built wheel into a venv, drop a
+      one-line test that prints `<pkg>.__file__`, and run it once from the checkout (shows
+      `.../src/<pkg>/__init__.py`) and once from a dir holding only `tests/` +
+      `pyproject.toml` (shows site-packages).
+
+680. **`--doctest-modules --pyargs <pkg>` can crash at collection on a cffi project's own
+    build helper, even though the package's real doctests are fine (the imagequant case).**
+    A `cffi_modules` project's `*_build.py` script (e.g. `libimagequant_build.py`, which calls
+    `ffibuilder.set_source()`/`ffibuilder.cdef()`) ships inside the installed package alongside
+    `__init__.py` -- `setup.py` never excludes it, and `--pyargs <pkg>` collects every `.py`
+    file under the resolved package, not just the one with doctests. The script's own
+    top-level `ffibuilder.cdef(open("<pkg>/<header>.h").read())` call then raises
+    `FileNotFoundError`: the header it reads is build-time-only (consumed by `set_source()`
+    into the compiled extension) and is not itself shipped in the wheel, only alongside the
+    helper in the checkout. Upstream's own test session (`pytest --doctest-modules <pkg>`,
+    run from a nox/tox session) never hits this, because it collects from the **source
+    checkout**, where the header sits right next to the helper -- a cibuildwheel test step
+    collects the **installed wheel** instead, a different layout upstream's own CI never
+    exercises.
+    - **Fix by not collecting the whole package** -- target the real module file directly,
+      resolved off the *installed* location rather than the checkout, so the build helper
+      never enters collection:
+      `pytest --doctest-modules "$(python -c "import <pkg>, os; print(os.path.join(os.path.dirname(<pkg>.__file__), '__init__.py'))")"`.
+    - **The tell**: a collection-time `FileNotFoundError` naming a `.h`/build-script path
+      under the package's own `site-packages` directory, with the doctests you actually
+      wrote never getting a chance to run.

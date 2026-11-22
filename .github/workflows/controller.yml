@@ -21,7 +21,7 @@ on:
   issue_comment:
     types: [created, edited]
   workflow_run:
-    workflows: [Porting dispatcher, Porting investigator]
+    workflows: [Porting dispatcher, Porting investigator, Porting worker, Porting reproduction image]
     types: [completed]
   workflow_dispatch:
 
@@ -127,39 +127,42 @@ jobs:
       - name: Is the policy read-only?
         id: policy
         run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
-      - name: Collect verified investigation outcomes
+      - name: Collect verified investigator and worker outcomes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p publications
-          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/investigator.lock.yml/runs?per_page=20" \
-            --jq '.workflow_runs[].id') \
-            || { echo "investigator run inventory unavailable this tick" >&2; runs=; }
-          printf '%s\n' "$runs" | while read -r run; do
-            [ -n "$run" ] || continue
-            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
-              --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))][0].id // empty') \
-              || { echo "investigation artifact inventory unavailable for $run" >&2; continue; }
-            [ -n "$id" ] || continue
-            mkdir -p "publications/$run"
-            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "publications/$run/a.zip" \
-              || { rm -rf "publications/$run"; continue; }
-            unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
-              || { rm -rf "publications/$run"; continue; }
-            printf '%s' "$id" > "publications/$run/artifact-id"
-            if [ ! -f "publications/$run/outcome.json" ]; then
-              if [ -f "publications/$run/task.json" ] && [ -f "publications/$run/result.json" ] \
-                  && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/dossier.json" ]; then
-                uv run --locked python -m investigation_recovery \
-                  --directory "publications/$run" --run-id "$run" \
-                  || { echo "trusted investigation recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
-              else
-                echo "incomplete investigation publication for $run" >&2
-                rm -rf "publications/$run"
-                continue
+          for workflow in investigator.lock.yml worker.lock.yml; do
+            runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?per_page=20" \
+              --jq '.workflow_runs[].id') \
+              || { echo "$workflow run inventory unavailable this tick" >&2; runs=; }
+            printf '%s\n' "$runs" | while read -r run; do
+              [ -n "$run" ] || continue
+              id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))][0].id // empty') \
+                || { echo "publication artifact inventory unavailable for $run" >&2; continue; }
+              [ -n "$id" ] || continue
+              mkdir -p "publications/$run"
+              gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "publications/$run/a.zip" \
+                || { rm -rf "publications/$run"; continue; }
+              unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
+                || { rm -rf "publications/$run"; continue; }
+              printf '%s' "$id" > "publications/$run/artifact-id"
+              if [ ! -f "publications/$run/outcome.json" ]; then
+                task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
+                if [ "$task" = investigation ] && [ -f "publications/$run/result.json" ] \
+                    && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/dossier.json" ]; then
+                  uv run --locked python -m investigation_recovery \
+                    --directory "publications/$run" --run-id "$run" \
+                    || { echo "trusted investigation recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
+                else
+                  echo "incomplete publication for $run" >&2
+                  rm -rf "publications/$run"
+                  continue
+                fi
               fi
-            fi
+            done
           done
       - name: Reconcile deterministic state locally
         env:
