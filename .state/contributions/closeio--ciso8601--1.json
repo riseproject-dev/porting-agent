@@ -51,9 +51,9 @@
   "generation": 0,
   "handoff_approval": null,
   "handoff_request": null,
-  "last_ci_evidence_id": null,
+  "last_ci_evidence_id": "ci-1467208233-45008094068-1",
   "merge": null,
-  "next_poll_at": "2026-11-22T10:23:26.185068+00:00",
+  "next_poll_at": null,
   "owners": {
     "backup": null,
     "handoff_reviewer": null,
@@ -117,7 +117,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T10:35:06.851927+00:00",
+  "updated_at": "2026-11-22T11:00:45.818515+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
