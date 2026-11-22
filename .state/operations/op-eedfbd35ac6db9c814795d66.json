@@ -22,7 +22,7 @@
   "resolution": null,
   "revision": 3,
   "schema_version": 1,
-  "status": "planned",
+  "status": "not_launched",
   "target": {
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
     "expected_head": null,
@@ -30,5 +30,5 @@
     "repository": "riseproject-upstreaming/ciso8601",
     "repository_id": null
   },
-  "updated_at": "2026-11-22T02:33:53.701661+00:00"
+  "updated_at": "2026-11-22T03:22:20.717817+00:00"
 }
