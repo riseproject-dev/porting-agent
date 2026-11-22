@@ -12,7 +12,7 @@ The repository is being migrated in reviewed milestones. Milestones 1 through 5 
 - Pull-request validation is read-only and receives no App private key, destination token, package credential, or state-publisher environment.
 - The controller uses the control App only after deterministic reconciliation; destination credentials are absent.
 - The investigator receives only scoped read access, returns one verified artifact Result, and cannot push or mutate upstream resources.
-- The worker model receives no destination credential. A separate trusted job reconstructs and publishes only a verified proposal using a token narrowed to one fork and an exact-head lease.
+- The worker model receives no destination credential. Its operator-approved unsandboxed process reaches host Docker/QEMU only through a custom engine wrapper that strips and verifies all credentials. A separate trusted job reconstructs and publishes only a verified proposal using a token narrowed to one fork and an exact-head lease.
 - Public status is generated at <https://riseproject-dev.github.io/porting-agent/> from committed state.
 - The control repository is `riseproject-dev/porting-agent`; destination forks remain in `riseproject-upstreaming`.
 

@@ -120,8 +120,18 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
     workflows = reproduction.get("workflows") or []
     if not workflows or any(not item.get("jobs") or not item.get("runner_mappings") for item in workflows):
         raise WorkerGateError("workflow selection or runner mapping evidence is incomplete")
+    gate_status = "accepted"
+    failure_class = None
+    if proposal.get("outcome") != "patch":
+        cluster = str(proposal.get("failure_cluster") or "")
+        gate_status = "infrastructure_blocked" if cluster.startswith(
+            "reproduction-image-infrastructure"
+        ) else "blocked"
+        failure_class = "infrastructure" if gate_status == "infrastructure_blocked" else "code"
     return {
-        "status": "accepted",
+        "status": gate_status,
+        "failure_class": failure_class,
+        "reason": proposal.get("diagnosis") if gate_status != "accepted" else None,
         "changed_files": actual_paths,
         "patch_digest": proposal.get("patch_digest"),
         "image": image,

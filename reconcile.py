@@ -222,7 +222,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         return new, staged
     new["pending_publication"] = None
     art = outcome.get("artifact")
-    if outcome.get("status") != "investigation" and art \
+    if outcome.get("status") not in ("investigation", "worker_blocked") and art \
             and all(k in art for k in ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")):
         new["proposal_artifact"] = {k: art[k] for k in ("work_id", "claim_id", "artifact_id", "name",
                                                         "digest", "run_id")} | {
@@ -245,6 +245,59 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     elif status == "proposal":
         new["activity"] = "waiting_capacity"
         new["pending_human_action"] = None
+    elif status == "worker_blocked":
+        proposal = outcome.get("proposal") or {}
+        run = str(worker_run_id or (outcome.get("artifact") or {}).get("run_id") or "0")
+        evidence_id = safe_id(
+            f"rehearsal-{new['contribution_id'].replace('/', '--')}-r{new['revision']}-{run}"
+        )
+        evidence = {
+            "schema_version": 1,
+            "evidence_id": evidence_id,
+            "contribution_id": new["contribution_id"],
+            "kind": "rehearsal",
+            "policy_version": (policy or {}).get("policy_version", "unknown"),
+            "collected_at": now,
+            "summary": str(outcome.get("reason") or "worker reproduction infrastructure blocked")[:8000],
+            "limitations": list(proposal.get("validation_not_performed") or [])[:16],
+            "data": {
+                "worker_run_id": run,
+                "failure_class": outcome.get("failure_class"),
+                "failure_cluster": proposal.get("failure_cluster"),
+                "reproduction": proposal.get("reproduction"),
+            },
+            "digests": {"artifact": (outcome.get("artifact") or {}).get("digest") or ""},
+        }
+        schemas.validate("evidence", evidence)
+        staged.append(("evidence", evidence))
+        new["proposal_artifact"] = None
+        new["pending_publication"] = None
+        new["revision"] += 1
+        pending = list(new.get("pending_feedback_evidence_ids") or [])
+        if evidence_id not in pending:
+            pending.append(evidence_id)
+        new["pending_feedback_evidence_ids"] = pending[-64:]
+        budget, stops = capacity.charge_attempt(
+            new["budget"],
+            cluster=proposal.get("failure_cluster"),
+            progress=proposal.get("progress", "none"),
+            policy=policy or {},
+        )
+        new["budget"] = budget
+        if stops:
+            new["activity"] = "waiting_human"
+            new["pending_human_action"] = {
+                "kind": "worker_attempt_budget_exhausted",
+                "requested_at": now,
+                "reminded_at": None,
+                "escalated_at": None,
+            }
+        else:
+            new["activity"] = "fix_needed"
+            new["pending_human_action"] = None
+        staged.append(("events", lifecycle._event(
+            rec, new, "worker_reproduction_blocked", "result", run, now, True
+        )))
     elif status == "no_change":
         new["activity"] = "idle"
     elif status == "rejected":
@@ -477,9 +530,20 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         key = by_cid[cid]
         rec = contributions[key]
         pid = pub.get("publication_artifact_id")
-        if pid and pid in (rec.get("processed_publications") or []):
+        recovered_worker_blocker = (
+            pub.get("status") == "worker_blocked"
+            and (rec.get("proposal_artifact") or {}).get("run_id")
+            == str(pub.get("worker_run_id"))
+            and not any(
+                evidence.get("kind") == "rehearsal"
+                and (evidence.get("data") or {}).get("worker_run_id")
+                == str(pub.get("worker_run_id"))
+                for evidence in snap.evidence.values()
+            )
+        )
+        if pid and pid in (rec.get("processed_publications") or []) and not recovered_worker_blocker:
             continue          # already folded in by an earlier tick
-        if pid:
+        if pid and pid not in (rec.get("processed_publications") or []):
             rec = dict(rec, processed_publications=((rec.get("processed_publications") or []) + [pid])[-64:])
             contributions[key] = rec
         task_revision = pub.get("task", {}).get("revision")
@@ -488,7 +552,8 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             out.staged.append(("contributions", rec))
             pubs_report.append({"contribution": cid, "ignored": "superseded by exact-head handoff"})
             continue
-        if task_revision != rec["revision"] and pub.get("status") != "published":
+        if (task_revision != rec["revision"] and pub.get("status") != "published"
+                and not recovered_worker_blocker):
             out.staged.append(("contributions", rec))
             pubs_report.append({"contribution": cid, "ignored": "stale revision"})
             continue

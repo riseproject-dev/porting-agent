@@ -156,8 +156,8 @@ jobs:
               unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
                 || { rm -rf "publications/$run"; continue; }
               printf '%s' "$id" > "publications/$run/artifact-id"
+              task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
               if [ ! -f "publications/$run/outcome.json" ]; then
-                task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
                 if [ "$task" = investigation ] && [ -f "publications/$run/result.json" ] \
                     && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/dossier.json" ]; then
                   uv run --locked python -m investigation_recovery \
@@ -168,6 +168,12 @@ jobs:
                   rm -rf "publications/$run"
                   continue
                 fi
+              fi
+              if [ "$task" != investigation ] && [ -f "publications/$run/outcome.json" ] \
+                  && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/result.json" ]; then
+                uv run --locked python -m worker_recovery \
+                  --directory "publications/$run" --run-id "$run" \
+                  || { echo "trusted worker recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
               fi
             done
           done

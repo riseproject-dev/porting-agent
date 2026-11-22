@@ -13,6 +13,7 @@ permissions:
 engine:
   id: pi
   version: "1.5.0"
+  command: /tmp/gh-aw/agent/pi-scrubbed
 model: anthropic/claude-opus-5-5
 concurrency:
   job-discriminator: ${{ github.run_id }}
@@ -59,6 +60,10 @@ mcp-servers:
       - actions_list
     required: true
 safe-outputs:
+  # Operator-approved for Docker/QEMU reproduction. The model runs on the host
+  # only after the custom engine wrapper removes every credential; trusted MCP
+  # and post-processing retain their separately scoped tokens.
+  threat-detection: false
   upload-artifact:
     max-uploads: 1
     retention-days: 30
@@ -110,6 +115,31 @@ pre-agent-steps:
       SH
       chmod 0755 "$extension/gh-act"
       gh act --version
+  - name: Install pinned Pi and create credential-free unsandboxed engine wrapper
+    run: |
+      set -euo pipefail
+      npm install -g @earendil-works/pi-coding-agent@1.5.0
+      real=$(command -v pi)
+      [ -x "$real" ] || { echo "Pi installation missing"; exit 1; }
+      cat > /tmp/gh-aw/agent/pi-scrubbed <<SH
+      #!/bin/sh
+      for name in GITHUB_TOKEN GH_TOKEN ANTHROPIC_API_KEY COPILOT_GITHUB_TOKEN \
+        GH_AW_GITHUB_TOKEN GH_AW_GITHUB_MCP_SERVER_TOKEN \
+        RISEPROJECT_APP_PRIVATE_KEY RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY \
+        UPSTREAMING_FORK_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+        AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SSH_AUTH_SOCK; do
+        unset "\$name"
+      done
+      for name in \$(env | sed -n 's/^\\([^=]*TOKEN[^=]*\\)=.*/\\1/p'); do
+        unset "\$name"
+      done
+      if env | grep -Eq '^(GITHUB_TOKEN|GH_TOKEN|ANTHROPIC_API_KEY|COPILOT_GITHUB_TOKEN|GH_AW_[A-Z_]*TOKEN|RISEPROJECT_[A-Z_]*|UPSTREAMING_FORK_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|AWS_[A-Z_]+|SSH_AUTH_SOCK)='; then
+        echo "credential remained in model environment" >&2
+        exit 1
+      fi
+      exec "$real" "\$@"
+      SH
+      chmod 0755 /tmp/gh-aw/agent/pi-scrubbed
   - name: Suspend workflow commands around untrusted agent output
     id: suspend_commands
     run: |
@@ -257,7 +287,8 @@ jobs:
             uv run --locked python -m worker_gate --task ../in/task.json \
               --proposal ../in/proposal.json --mbox ../in/patches.mbox \
               --out ../in/worker-gate.json || gate_rc=$?
-            if [ "$gate_rc" = 0 ]; then
+            gate_status=$(jq -r .status ../in/worker-gate.json)
+            if [ "$gate_rc" = 0 ] && [ "$gate_status" = accepted ]; then
               uv run --locked python -m fork_publish preflight \
                 --record ../in/record.json --task ../in/task.json \
                 --proposal ../in/proposal.json --out ../in/preflight.json
@@ -267,6 +298,11 @@ jobs:
                 jq '{status:(.status // "rejected"), failure_class, reason, stage:"preflight"}' \
                   ../in/preflight.json > ../in/outcome.json
               fi
+            elif [ "$gate_rc" = 0 ] && [ "$gate_status" = infrastructure_blocked ]; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
+                '{status:"worker_blocked", failure_class:"infrastructure", reason:$reason, stage:"worker_gate"}' \
+                > ../in/outcome.json
             else
               echo "publish=false" >> "$GITHUB_OUTPUT"
               jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
@@ -340,7 +376,13 @@ jobs:
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
 timeout-minutes: 120
 max-turns: 400
-strict: true
+# Operator-approved: worker reproduction needs the host Docker/QEMU daemon.
+# The custom engine wrapper above strips and verifies model credentials first.
+strict: false
+features:
+  dangerously-disable-sandbox-agent: true
+sandbox:
+  agent: false
 ---
 
 # riscv64 porting worker

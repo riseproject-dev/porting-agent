@@ -240,7 +240,9 @@ class TestAutomaticProposalAdmission(unittest.TestCase):
 class TestWorkerContract(unittest.TestCase):
     def test_worker_agent_is_uncredentialed_and_trusted_publish_is_separate(self):
         worker = source("worker")
-        self.assertTrue(worker["strict"])
+        self.assertFalse(worker["strict"])
+        self.assertFalse(worker["sandbox"]["agent"])
+        self.assertFalse(worker["safe-outputs"]["threat-detection"])
         self.assertEqual(
             worker["permissions"],
             {
@@ -259,6 +261,16 @@ class TestWorkerContract(unittest.TestCase):
         self.assertNotIn("environment", publish)
         token = next(step for step in publish["steps"] if step.get("id") == "fork-token")
         self.assertEqual(token["with"]["repositories"], "${{ steps.result.outputs.fork_name }}")
+        wrapper = next(
+            step for step in worker["pre-agent-steps"]
+            if "credential-free unsandboxed engine wrapper" in step.get("name", "")
+        )["run"]
+        self.assertIn("credential remained in model environment", wrapper)
+        self.assertIn("exec \"$real\"", wrapper)
+        lock = (WORKFLOWS / "worker.lock.yml").read_text()
+        self.assertIn("GH_AW_PI_COMMAND: /tmp/gh-aw/agent/pi-scrubbed", lock)
+        self.assertNotIn("awf --config", lock)
+        self.assertIn("docker pull --platform linux/riscv64", lock)
         continuation = worker["jobs"]["continuation"]
         self.assertEqual(set(continuation["needs"]), {"safe_outputs", "publish"})
         self.assertEqual(continuation["if"], "always()")

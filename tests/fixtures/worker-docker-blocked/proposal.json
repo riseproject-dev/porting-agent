@@ -1,0 +1,82 @@
+{
+ "schema_version": 1,
+ "contribution_id": "closeio--ciso8601/1",
+ "expected_revision": 3,
+ "expected_head": null,
+ "ref": "riscv64",
+ "reconstruction_base": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+ "operation": "none",
+ "outcome": "blocked",
+ "progress": "none",
+ "reason_ids": [
+  "dossier-closeio--ciso8601--1-r2"
+ ],
+ "feedback_responses": [],
+ "patch_digest": null,
+ "changed_files": [],
+ "diagnosis": "Outcome: blocked (operation none). The mandatory riscv64 reproduction could not run: the Docker daemon is unreachable in this sandbox (`docker info`, `docker pull --platform linux/riscv64 <image>` and `docker run --platform linux/riscv64 ... uname -m` all exit 1 with 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock'), and /proc/sys/fs/binfmt_misc has no registered handlers. Failure class: image/container infrastructure (not QEMU, not gh act, not dependency, not build, not test, not model). `gh act` 0.2.98 is installed but cannot run any job without Docker. Per the worker rules, no patch outcome is claimed without a passing riscv64 build+test, so no series is delivered.\n\nPrepared (undelivered) series, ready for the next attempt once the reproduction environment works \u2014 single commit on base cbe05770 touching 2 files:\n1. .github/workflows/build-wheels.yml: add matrix include row `os: ubuntu-24.04-riscv`, `cibw_archs: \"riscv64\"` directly after the ubuntu-24.04-arm/aarch64 row; add `if: matrix.cibw_archs != 'riscv64'` (plus a one-line comment) to the 'Build legacy wheels' closeio/cibuildwheel@v3.4.1 step.\n2. pyproject.toml: `[tool.cibuildwheel.linux] archs = [\"x86_64\", \"aarch64\", \"riscv64\"]`.\nCommit body must cite 'RISC-V GitHub Runners [1]' and end with '[1]: https://ci.riseproject.dev/'.\n\nChecklist (dossier constraints, each verified against history):\n- Topology: project uses dedicated native runner rows (ubuntu-24.04-arm/aarch64 from #192 a897556, windows-11-arm/ARM64 from #178 4e58dc8); no shared QEMU arch list remains. Native ubuntu-24.04-riscv row follows that precedent. Verified by reading build-wheels.yml history (git log --follow) and PR #178 files via GitHub.\n- Legacy v3.4.1 step: closeio/cibuildwheel v3.4.1 action.yml runs actions/setup-python unconditionally (no riscv64 builds) -> must be skipped on riscv64. v4.3.5 action.yml only uses setup-python when runner.arch is X64/ARM64, otherwise python3 -> works on riscv64. Verified by reading both action.yml files at their tags. Consequence: no cp38/pp38 riscv64 wheels (acceptable; cibuildwheel v4 riscv64 identifiers are cp39-cp315, no PyPy).\n- pyproject linux archs: aarch64 was added to this list in 76d83de/#151, so riscv64 follows the same precedent; CI overrides via CIBW_ARCHS.\n- CHANGELOG.md: omitted. Contributor architecture PRs #151 (76d83de) and #178 (4e58dc8) did not edit CHANGELOG.md; the maintainer added the aarch64 entry in fixup aa74477, and RELEASING.md only requires the release owner to confirm an entry exists. CONTRIBUTING.md does not require contributor changelog edits. Convention is unclear, so per policy the file is left untouched.\n- Dependencies: no runtime deps; build/test deps (setuptools, wheel, build, pytz) are pure-Python py3-none-any wheels on public PyPI, so PIP_EXTRA_INDEX_URL/PIP_PREFER_BINARY are not needed (dossier dependency audit; not re-verified on riscv64 because reproduction was blocked).\n- Fork guards: none (no github.repository conditions); build-wheels.yml has a pull_request trigger on master, so no {debug} commit is needed.\n- Upload: artifacts are uploaded only when inputs.upload (release.yml workflow_call). PR CI builds and tests the riscv64 wheel but does not upload it; this policy is intentionally left unchanged (acceptance limitation for a separate trusted probe).\n- Native sources: module.c/timezone.c/isocalendar.c are portable C, no arch code; no change.\n\nKey references: https://github.com/closeio/ciso8601/issues/181 (open riscv64 request, no comments), https://github.com/closeio/ciso8601/pull/178, https://github.com/closeio/ciso8601/pull/151, https://github.com/closeio/ciso8601/pull/192, https://github.com/closeio/ciso8601/pull/190, https://github.com/closeio/cibuildwheel/blob/v4.3.5/action.yml, https://github.com/closeio/cibuildwheel/blob/v3.4.1/action.yml. No upstream riscv PR exists (search returned 0). Open PRs #196, #194, #186, #176 do not touch the matrix rows.",
+ "validation_performed": [
+  "Parsed modified build-wheels.yml (PyYAML) and pyproject.toml (tomllib) successfully.",
+  "Host x86_64 (not riscv64, not CI evidence): python -m build -w, installed wheel, python -m unittest with pytz on Python 3.14.4: 47 tests OK (log sha256 8078817537e3699009bac628a9e0706e72efb5a790508973dd5946db137ab5b5).",
+  "Read closeio/cibuildwheel action.yml at v3.4.1 and v4.3.5 to confirm setup-python behaviour on non-X64/ARM64 runners."
+ ],
+ "validation_not_performed": [
+  "riscv64 build/test in the pinned image: Docker daemon unavailable in sandbox.",
+  "gh act run of build-wheels.yml build_wheels job (ubuntu-24.04-riscv mapped to the pinned image): requires Docker.",
+  "Verification that build/test deps resolve as wheels (not sdists) on riscv64.",
+  "CHANGELOG.md intentionally not edited (no documented contributor convention)."
+ ],
+ "blockers": [
+  "Reproduction infrastructure: Docker daemon not reachable (unix:///var/run/docker.sock), so the pinned ubuntu-24.04-riscv image cannot be pulled or run with --platform linux/riscv64 and gh act cannot execute jobs. Re-run this task in an environment with a working Docker daemon and riscv64 binfmt/QEMU."
+ ],
+ "failure_cluster": "reproduction-image-infrastructure-docker-unavailable",
+ "release_effects": "Prepared change would add manylinux_2_39 riscv64 wheels (cp39-cp315) to release.yml artifacts via build-wheels.yml workflow_call; no cp38/PyPy riscv64 wheels. Nothing delivered in this attempt.",
+ "reproduction": {
+  "image": "ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:5707860212563e58290575d6488f2a02ac04312c0d23097ed039075c8f512c98",
+  "architecture": "riscv64",
+  "commands": [
+   {
+    "command": "docker info",
+    "exit_status": 1,
+    "log_sha256": "ce3bb8ff447a39a70caf430e6f35eec156c6e83a8a51207ad6f7f2313314560b"
+   },
+   {
+    "command": "docker pull --platform linux/riscv64 ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:5707860212563e58290575d6488f2a02ac04312c0d23097ed039075c8f512c98",
+    "exit_status": 1,
+    "log_sha256": "b26544c7942a085ec5c8ebaa149e6015100b0906d5b395903b5b035f6d231d35"
+   },
+   {
+    "command": "docker run --rm --platform linux/riscv64 --network none --memory 8g --pids-limit 1024 ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:5707860212563e58290575d6488f2a02ac04312c0d23097ed039075c8f512c98 uname -m",
+    "exit_status": 1,
+    "log_sha256": "b26544c7942a085ec5c8ebaa149e6015100b0906d5b395903b5b035f6d231d35"
+   },
+   {
+    "command": "gh act --version",
+    "exit_status": 0,
+    "log_sha256": "f40f967863fe46aeb6a91753a770653377c62cabd351880f1a4ba654a26b9b88"
+   }
+  ],
+  "workflows": [
+   {
+    "workflow": ".github/workflows/build-wheels.yml",
+    "jobs": [
+     "build_wheels (ubuntu-24.04-riscv, riscv64)"
+    ],
+    "runner_mappings": [
+     "-P ubuntu-24.04-riscv=ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:5707860212563e58290575d6488f2a02ac04312c0d23097ed039075c8f512c98"
+    ]
+   }
+  ],
+  "limits": {
+   "wall_seconds": 120,
+   "memory_bytes": 8589934592,
+   "pids": 1024,
+   "artifact_bytes": 0,
+   "log_bytes": 1048576
+  }
+ },
+ "work_id": "3dd14a2bd6a83a26b7229ae5d5a1797ec58de9dc8f0991d05b9ecc6c130f8949",
+ "claim_id": "c_0ef4eaae74f0bda358c42a4e0e409324089f05cc25a802b327238df5a4956ba2_1",
+ "fork_repository_id": null,
+ "proposed_tree": null
+}

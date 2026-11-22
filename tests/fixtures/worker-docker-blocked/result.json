@@ -1,0 +1,10 @@
+{
+  "work_id": "3dd14a2bd6a83a26b7229ae5d5a1797ec58de9dc8f0991d05b9ecc6c130f8949",
+  "claim_id": "c_0ef4eaae74f0bda358c42a4e0e409324089f05cc25a802b327238df5a4956ba2_1",
+  "artifact_id": 14738782255,
+  "name": "claim-ae61549f1be59ba28ae689c29c99e585ae27ef6f79b071c016b0c5e4a7334fd8-porting-out",
+  "digest": "sha256:3b601b8dfbaf6ebc2c39796642b69d9457d0aa4d9863f1f98375fdc4bd153798",
+  "run_id": "44982902579",
+  "run_attempt": 1,
+  "result_commit": "q_d42c53da7b8ecc2f107e333cf3dd0ba6a1cf351e7e1fd84b1e54c3b2b5c649b8"
+}
