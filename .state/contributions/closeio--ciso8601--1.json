@@ -1,5 +1,5 @@
 {
-  "active_operation_id": null,
+  "active_operation_id": "op-e6b6689f44d1434a6adcabcd",
   "active_work": {
     "attempt": 1,
     "deadline_at": "2026-11-22T07:09:36.980391+00:00",
@@ -81,7 +81,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T01:09:36.980391+00:00",
+  "updated_at": "2026-11-22T01:26:08.674536+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
