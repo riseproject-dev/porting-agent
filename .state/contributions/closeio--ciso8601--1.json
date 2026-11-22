@@ -1,19 +1,22 @@
 {
   "active_operation_id": null,
   "active_work": null,
-  "activity": "waiting_human",
+  "activity": "awaiting_submission",
   "admission_class": "configuration_integration",
+  "admission_override": null,
+  "automatic_refresh_used": false,
   "blocked_reason": null,
   "budget": {
     "attempts_used": 1,
     "clusters": {
       "reproduction-image-infrastructure-docker-unavailable": 1
     },
+    "investigation_attempts": 0,
     "no_progress_streak": 1,
     "policy_id": "2026-11-18.1-proposed",
     "spent_estimate_usd_cents": 0
   },
-  "clean_head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
+  "clean_head_sha": null,
   "contribution_id": "closeio--ciso8601/1",
   "created_at": "2026-11-22T01:09:36.980391+00:00",
   "debug_commits": [],
@@ -47,12 +50,16 @@
   },
   "parked_reason": null,
   "paused": false,
+  "paused_at": null,
+  "paused_by": null,
+  "paused_reason": null,
   "pending_feedback_evidence_ids": [],
   "pending_human_action": {
+    "counter": null,
     "escalated_at": null,
-    "kind": "approve_handoff",
+    "kind": "submit_upstream",
     "reminded_at": null,
-    "requested_at": "2026-11-22T11:18:21.742159+00:00"
+    "requested_at": "2026-11-22T22:54:12.110885+00:00"
   },
   "pending_publication": null,
   "phase": "handoff",
@@ -106,7 +113,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T11:18:21.742159+00:00",
+  "updated_at": "2026-11-22T22:54:12.110885+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",

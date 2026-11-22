@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-22T22:54:12.110885+00:00",
+  "cause": {
+    "id": "handoff-awaiting-submission",
+    "type": "migration"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "from_state": "handoff.waiting_human",
+    "head": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "pending_human_action": {
+      "from": "approve_handoff",
+      "to": "submit_upstream"
+    },
+    "revision": 6,
+    "to_state": "handoff.awaiting_submission",
+    "verb": "nominate_for_handoff"
+  },
+  "from": {
+    "activity": "waiting_human"
+  },
+  "kind": "handoff_wait_migrated",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 23,
+  "to": {
+    "activity": "awaiting_submission"
+  }
+}
