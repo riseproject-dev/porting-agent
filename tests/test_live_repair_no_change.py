@@ -26,7 +26,7 @@ from unittest import mock
 
 import capacity
 import commands
-import lifecycle
+import compat
 import reconcile
 import work
 import worker_gate
@@ -197,9 +197,9 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
         output = tick(record, queue_works={}, runs=DISPATCHERS[:1],
                       now="2026-11-22T10:21:30+00:00")
         result = final(output, record)
-        self.assertEqual((result["phase"], result["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))
         self.assertIsNone(result["active_work"])
-        self.assertEqual(events(output), ["handoff_ready"])
+        self.assertEqual(events(output), ["obsolete_ci_repair_withdrawn", "nominate_for_handoff"])
         self.assertEqual(output.report["dispatch_relaunch"], [])
 
 
@@ -221,7 +221,7 @@ class TestLateResultOfWithdrawnWork(unittest.TestCase):
                          [{"contribution": "closeio--ciso8601/1", "ignored": "no outstanding request"}])
         self.assertIn(R5_ARTIFACT, result["processed_publications"])
         self.assertEqual(result["revision"], 5)
-        self.assertEqual((result["phase"], result["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))
         self.assertEqual(output.report["requested_effects"], [])
 
 
@@ -267,15 +267,17 @@ class TestLiveR6SelfHeals(unittest.TestCase):
                       runs=self.RUNS, now="2026-11-22T11:20:00+00:00")
         result = final(output, record)
         self.assertEqual(result["revision"], 6)
-        self.assertEqual((result["phase"], result["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))
         self.assertIsNone(result["active_work"])
-        self.assertEqual(result["clean_head_sha"], HEAD)
+        self.assertIsNone(result["clean_head_sha"])
+        self.assertEqual(result["fork"]["head_sha"], HEAD)
+        self.assertEqual(result["pending_human_action"]["kind"], "submit_upstream")
         self.assertEqual(result["last_ci_evidence_id"], CI_EVIDENCE)
         self.assertEqual(result["handoff_request"],
                          {"command_id": f"observation-{CI_EVIDENCE}", "head": HEAD, "revision": 6})
         self.assertEqual(result["proposal_artifact"]["outcome"], "no_change")
         self.assertEqual(result["budget"], record["budget"])
-        self.assertEqual(events(output), ["worker_no_change", "handoff_ready"])
+        self.assertEqual(events(output), ["worker_no_change", "nominate_for_handoff"])
         no_change = next(item for kind, item in output.staged
                          if kind == "events" and item["kind"] == "worker_no_change")
         self.assertEqual(no_change["cause"], {"type": "result", "id": R6_RUN})
@@ -318,7 +320,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertEqual(output.report["dispatch_relaunch"], [])
         # Plan 3.3.4 failure case 2 and 3.5: exact-revision resume starts a
         # clean generation at queued:idle with a fresh retry budget.
-        resumed = lifecycle.apply_command(
+        resumed = compat.apply_command(
             parked, commands.parse(f"/upstreaming resume revision={parked['revision']} reason=r"),
             command_id="comment-1", actor={"login": "owner", "id": 1}, now="2026-11-22T11:40:00+00:00")
         self.assertTrue(resumed.accepted)

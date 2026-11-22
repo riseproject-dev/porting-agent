@@ -25,6 +25,8 @@ from typing import Any
 
 import ci_evidence
 import collect
+import compat
+import engine
 import lifecycle
 import recovery
 import schemas
@@ -129,8 +131,22 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             obs.report.append(entry)
             continue
         cur = rec
+        if rec["phase"] == "handoff" and engine.state_key(rec) != "handoff.awaiting_submission":
+            # The other handoff states belong to the handoff operations; this
+            # observation has no table row for them and changes nothing.
+            entry["note"] = f"{engine.state_key(rec)} is not observed here"
+            obs.report.append(entry)
+            continue
         if head["head"] != (rec["fork"].get("head_sha")):
-            out = lifecycle.observe_head(rec, head["head"], now=now, cause_id=f"branch:{head['head'][:12]}")
+            if rec["phase"] == "handoff":
+                out = engine.apply_transition(
+                    rec, "record_head_change", policy=policy, now=now,
+                    cause_id=f"branch:{head['head'][:12]}", facts={"candidate_head_changed"},
+                    values={"fork.head_sha": head["head"]},
+                    details={"head": head["head"]})
+            else:
+                out = compat.observe_head(rec, head["head"], now=now,
+                                          cause_id=f"branch:{head['head'][:12]}")
             cur = out.record
             obs.staged.append(("contributions", cur))
             if out.event:
@@ -189,8 +205,19 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                           "collected_at": now, "summary": "\n\n".join(summaries)[:8000],
                           "limitations": [], "data": feedback, "digests": {"head": head["head"]}}
                     schemas.validate("evidence", ev)
+                    if cur["phase"] == "handoff":
+                        # The table leaves the gate first; the feedback is
+                        # then recorded on the development record.
+                        returned = engine.apply_transition(
+                            cur, "return_for_repair", policy=policy, now=now, cause_id=eid,
+                            facts={"candidate_head_needs_repair"})
+                        cur = returned.record
+                        obs.staged.extend([("contributions", cur), ("events", returned.event)])
+                        entry["returned_to_development"] = True
                     before = cur
-                    cur = dict(cur, revision=cur["revision"] + 1, phase="development", activity="fix_needed",
+                    cur = compat.legacy_update(
+                               cur, "observe_ci.review_feedback",
+                               revision=cur["revision"] + 1, phase="development", activity="fix_needed",
                                active_work=None, active_operation_id=None, clean_head_sha=None,
                                handoff_request=None, handoff_approval=None, pending_human_action=None,
                                last_ci_evidence_id=eid,
@@ -230,13 +257,6 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
         new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
                         "missing": "waiting_ci", "not_executed": "waiting_ci",
                         "access_wait": "waiting_human"}[verdict.state]
-        if cur["phase"] == "handoff" and verdict.state != "failed" and not entry.get("head_changed"):
-            # Plan 14.1: repeated observation of the same candidate head
-            # preserves handoff:waiting_human. Plan 9.2: a new head clears old
-            # readiness, so it is observed normally. Only an executed failure
-            # on the candidate head leaves handoff.
-            new_activity = "waiting_human"
-            next_poll_at = None
         if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
             run = max(latest, key=lambda r: r["id"])
             eid = _evidence_id(snap.repository["id"], run)
@@ -255,20 +275,13 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 cur = dict(cur, last_ci_evidence_id=eid, next_poll_at=None, updated_at=now)
                 obs.staged.append(("contributions", cur))
             if verdict.state == "failed" and cur["phase"] == "handoff":
-                before = cur
-                moved = lifecycle.transition(cur, "development", cause_type="observation",
-                                             cause_id=eid, now=now)
-                status = lifecycle.observe_status(moved.record, activity="fix_needed", now=now)
-                cur = dict(status.record, last_ci_evidence_id=eid,
-                           pending_human_action=None, updated_at=now)
-                schemas.validate("contribution", cur)
-                obs.staged.append(("contributions", cur))
-                if moved.event:
-                    obs.staged.append(("events", moved.event))
-                if status.event:
-                    obs.staged.append(("events", status.event))
-                entry["activity"] = "fix_needed"
-                entry["returned_to_development"] = True
+                # Only an executed failure on the candidate head leaves the gate.
+                returned = engine.apply_transition(
+                    cur, "return_for_repair", policy=policy, now=now, cause_id=eid,
+                    facts={"candidate_head_needs_repair"})
+                cur = returned.record
+                obs.staged.extend([("contributions", cur), ("events", returned.event)])
+                entry.update(activity="fix_needed", returned_to_development=True)
                 obs.report.append(entry)
                 continue
             # Plan 14.1 clears only obsolete active Work. A dispatched or
@@ -278,25 +291,53 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                     and not _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"],
                                                         unadmitted_work):
                 entry["handoff_deferred"] = "requested Work is still active"
-            elif verdict.state == "passed" and cur["phase"] == "development" and not cur.get("debug_commits"):
-                before = cur
-                cur = dict(cur, phase="handoff", activity="waiting_human", active_work=None,
-                           clean_head_sha=head["head"], pending_feedback_evidence_ids=[],
-                           handoff_request={"command_id": f"observation-{eid}", "head": head["head"],
-                                            "revision": cur["revision"]},
-                           pending_human_action={"kind": "approve_handoff", "requested_at": now,
-                                                 "reminded_at": None, "escalated_at": None},
-                           updated_at=now)
-                schemas.validate("contribution", cur)
+            elif verdict.state == "passed" and cur["phase"] == "development" \
+                    and not cur.get("pending_publication") and not cur.get("active_operation_id"):
+                entry["evidence"] = eid
+                if cur.get("active_work"):
+                    # Proven never admitted to the queue: withdrawn before the
+                    # head it was requested for is nominated.
+                    before = cur
+                    cur = compat.legacy_update(cur, "observe_ci.withdraw_obsolete_repair",
+                                               active_work=None, activity="waiting_ci",
+                                               next_poll_at=None, updated_at=now)
+                    obs.staged.append(("events", lifecycle._event(
+                        before, cur, "obsolete_ci_repair_withdrawn", "observation", eid, now,
+                        False)))
+                    entry["obsolete_repair_withdrawn"] = True
+                elif engine.state_key(cur) != "development.waiting_ci":
+                    # The table nominates from `development.waiting_ci`, where
+                    # passing CI keeps a contribution; older paths leave it idle.
+                    cur = compat.legacy_update(cur, "observe_ci.ci_passed", activity="waiting_ci")
+                nominated = engine.apply_transition(
+                    cur, "nominate_for_handoff", policy=policy, now=now, cause_id=eid,
+                    # Unprocessed actionable feedback on the development PR is
+                    # folded above and ends this observation before CI is read.
+                    facts={"ci_passed_on_head", "no_pending_actionable_feedback"},
+                    values={"last_ci_evidence_id": eid,
+                            "handoff_request": {"command_id": f"observation-{eid}",
+                                                "head": head["head"],
+                                                "revision": cur["revision"]}},
+                    details={"head": head["head"], "revision": cur["revision"]})
+                if nominated.accepted:
+                    cur = nominated.record
+                    obs.staged.extend([("contributions", cur), ("events", nominated.event)])
+                    entry["handoff_ready"] = True
+                    obs.report.append(entry)
+                    continue
+                entry["handoff_deferred"] = nominated.reason
+                new_activity = cur["activity"]
                 obs.staged.append(("contributions", cur))
-                obs.staged.append(("events", lifecycle._event(before, cur, "handoff_ready", "observation", eid, now, False)))
-                new_activity = "waiting_human"
-                entry["handoff_ready"] = True
             entry["evidence"] = eid
+        if cur["phase"] == "handoff":
+            # Repeated observation of the candidate head keeps the gate.
+            obs.report.append(entry)
+            continue
         if _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"], unadmitted_work):
             before = cur
-            cur = dict(cur, active_work=None, activity="waiting_ci", next_poll_at=next_poll_at,
-                       updated_at=now)
+            cur = compat.legacy_update(cur, "observe_ci.withdraw_obsolete_repair",
+                                       active_work=None, activity="waiting_ci",
+                                       next_poll_at=next_poll_at, updated_at=now)
             schemas.validate("contribution", cur)
             obs.staged.extend([
                 ("contributions", cur),
@@ -305,17 +346,17 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             ])
             entry["obsolete_repair_withdrawn"] = True
         if cur["activity"] != new_activity and cur["activity"] != "agent_running":
-            out = lifecycle.observe_status(cur, activity=new_activity,
+            out = compat.observe_status(cur, activity=new_activity,
                                            next_poll_at=next_poll_at, now=now)
             if next_poll_at is None and out.record.get("next_poll_at") is not None:
                 out.record["next_poll_at"] = None
             obs.staged.append(("contributions", out.record))
             if out.event:
                 obs.staged.append(("events", out.event))
-            entry["activity"] = new_activity
+            entry.update(activity=new_activity)
         elif next_poll_at is not None and cur.get("next_poll_at") != next_poll_at \
                 and cur["activity"] != "agent_running":
-            out = lifecycle.observe_status(cur, next_poll_at=next_poll_at, now=now)
+            out = compat.observe_status(cur, next_poll_at=next_poll_at, now=now)
             obs.staged.append(("contributions", out.record))
         obs.report.append(entry)
     return obs

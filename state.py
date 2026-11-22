@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import compat
 import schemas
 from common import (
     STATE_KINDS,
@@ -171,6 +172,13 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         problems.append(f"{path}: content contains forbidden repository text U+2014")
     for e in schemas.errors(STATE_KINDS[kind], record):
         problems.append(f"{path}: {e}")
+    if kind == "contributions" and not problems:
+        # A record is in a state of the lifecycle table, in a state the
+        # compatibility paths still write, or is the one old shape that the
+        # reviewed record migration rewrites before anything else runs.
+        state_problem = compat.state_problem(record)
+        if state_problem and not compat.is_handoff_wait(record):
+            problems.append(f"{path}: {state_problem}")
     if not problems:
         try:
             if record_path(kind, record) != path:
@@ -237,7 +245,11 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
             rep.problems.append(f"{path}: committed events are append-only")
         data = _git(repo, "cat-file", "blob", new_sha)
         rep.total_bytes += len(data)
-        rep.problems.extend(check_blob(path, data, policy))
+        blob_problems = check_blob(path, data, policy)
+        rep.problems.extend(blob_problems)
+        if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
+                and compat.needs_migration(json.loads(data)):
+            rep.problems.append(f"{path}: written in a handoff shape that awaits record migration")
     if rep.total_bytes > policy["storage"]["max_commit_bytes"]:
         rep.problems.append(f"state commit is {rep.total_bytes} bytes, over the limit")
     # Case-insensitive collisions anywhere in the resulting state tree.
@@ -422,6 +434,79 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
     return written
 
 
+def _pending_record_migrations(root: Path, policy: dict, *,
+                               now: str | None = None) -> list[tuple[str, dict, dict]]:
+    """Contribution records that are in the handoff phase but not in a state
+    of the lifecycle table, each with its migrated record and event.
+
+    Reads the checkout without changing it. Every record must be
+    schema-valid, and every such record must be exactly the shape the
+    reviewed migration rewrites: anything else fails closed here, before any
+    caller acts on the state."""
+    root = Path(root)
+    directory = root / STATE_ROOT / "contributions"
+    pending: list[tuple[str, dict, dict]] = []
+    if not directory.exists():
+        return pending
+    for path in sorted(directory.glob("*.json")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink() or not path.is_file():
+            raise StateError(f"{rel}: not a regular file")
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise StateError(f"{rel}: not UTF-8 JSON ({error})") from error
+        errors = schemas.errors("contribution", record)
+        if errors:
+            raise StateError(f"{rel}: {'; '.join(errors[:5])}")
+        if not compat.needs_migration(record):
+            continue
+        evidence = None
+        evidence_id = record.get("last_ci_evidence_id")
+        if evidence_id:
+            evidence_path = root / record_path("evidence", {"evidence_id": evidence_id})
+            if evidence_path.is_file() and not evidence_path.is_symlink():
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        try:
+            migrated, event = compat.migrate_handoff_wait(
+                record, evidence=evidence, policy=policy, now=now or record["updated_at"])
+        except compat.TransitionError as error:
+            raise StateError(f"{rel}: {error}") from error
+        pending.append((rel, migrated, event))
+    return pending
+
+
+def pending_record_migrations(root: Path, policy: dict) -> list[str]:
+    """Paths of the contribution records that await the record migration."""
+    return [rel for rel, _record, _event in _pending_record_migrations(root, policy)]
+
+
+def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> list[str]:
+    """Rewrite every old handoff approval wait as ``handoff.awaiting_submission``
+    and append one migration event per record.
+
+    The migration is bound to the exact shape ``compat.migrate_handoff_wait``
+    accepts; a handoff record in any other shape fails closed. It is
+    idempotent: a migrated record is in a table state and is not selected
+    again. Callers publish only the returned paths, before any ordinary
+    reconciliation, so no other lifecycle mutation rides in the commit.
+    """
+    pending = _pending_record_migrations(root, policy, now=now)
+    if not pending:
+        return []
+    store = StateStore(Path(root), policy)
+    expected = []
+    for rel, migrated, event in pending:
+        record_rel = store.stage("contributions", migrated)
+        if record_rel != rel:
+            raise StateError(f"{rel}: record migration identity mismatch")
+        expected += [record_rel, store.stage("events", event)]
+    written = store.write_staged()
+    if sorted(written) != sorted(expected):
+        raise StateError("record migration attempted an unrelated state mutation")
+    return written
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     policy = load_policy()
     store = StateStore(Path(args.root) if args.root else repository_root(), policy)
@@ -433,6 +518,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
         except StateError as error:
             print(f"{kind}: INVALID: {error}", file=sys.stderr)
             bad += 1
+    try:
+        awaiting = pending_record_migrations(store.root, policy)
+    except StateError as error:
+        print(f"record migration: INVALID: {error}", file=sys.stderr)
+        bad += 1
+    else:
+        for path in awaiting:
+            print(f"{path}: awaits the handoff record migration by the controller")
     total = store.total_bytes()
     if total > policy["storage"]["warn_total_bytes"]:
         print(

@@ -9,8 +9,8 @@ from datetime import datetime
 import capacity
 import collect
 import commands
+import compat
 import controller
-import lifecycle
 import provisioning
 import reconcile
 import recovery
@@ -192,7 +192,7 @@ class TestProvisioning(unittest.TestCase):
     def test_bare_existing_fork_cannot_bypass_workflow_provisioning(self):
         rec, _ = request()
         facts = {"fork": FORK, "fork_id": 2, "head_sha": SHA_C, "upstream_id": 1, "base_ref": "main", "base_sha": SHA_C}
-        outcome = lifecycle.apply_command(rec, commands.parse(f"/upstreaming provision revision={rec['revision']}"),
+        outcome = compat.apply_command(rec, commands.parse(f"/upstreaming provision revision={rec['revision']}"),
                                           command_id="c", actor=rec["owners"]["primary"], now=NOW, provisioning=facts)
         self.assertFalse(outcome.accepted)
         self.assertIn("trusted upstreaming workflow", outcome.reason)

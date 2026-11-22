@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import hashlib
 
+import compat
 import recovery
 import schemas
 from common import CONTROL_REPO
@@ -280,11 +281,9 @@ def finalize(record: dict, operation: dict, now: str) -> tuple[dict, dict, dict]
         "description_digest": EXPECTED_DIGEST,
         "notes": expected_notes(),
     }
-    repaired["active_work"] = None
-    repaired["active_operation_id"] = None
-    repaired["phase"] = "queued"
-    repaired["activity"] = "idle"
-    repaired["updated_at"] = now
+    repaired = compat.legacy_update(
+        repaired, "canary.repair_mismatch", active_work=None, active_operation_id=None,
+        phase="queued", activity="idle", updated_at=now)
     schemas.validate("contribution", repaired)
 
     confirmed = copy.deepcopy(operation)

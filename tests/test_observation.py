@@ -12,6 +12,7 @@ import capacity
 import ci_evidence
 import collect
 import commands
+import compat
 import controller
 import observe_ci
 import recovery
@@ -231,21 +232,21 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                                    unadmitted_work={rec["active_work"]["dedupe_key"]})
         final = self.final(observation, rec)
         self.assertEqual(final["revision"], 5)
-        self.assertEqual((final["phase"], final["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual((final["phase"], final["activity"]), ("handoff", "awaiting_submission"))
         self.assertIsNone(final["active_work"])
         self.assertEqual(final["last_ci_evidence_id"], "ci-1467208233-45008094068-1")
         self.assertEqual([event["kind"] for kind, event in observation.staged if kind == "events"],
-                         ["handoff_ready"])
+                         ["obsolete_ci_repair_withdrawn", "nominate_for_handoff"])
         selected = controller.tick(
             contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
             inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(selected.requested_effects, [])
 
     def test_new_head_in_handoff_clears_readiness_while_ci_pending(self):
-        """Plan 9.2: a new head clears old readiness; it is not repeated observation."""
+        """A new head leaves the gate by the table's record_head_change."""
         rec = self.record()
         handoff = self.final(self.observe(rec, self.snapshot(pending=False)), rec)
-        self.assertEqual((handoff["phase"], handoff["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual((handoff["phase"], handoff["activity"]), ("handoff", "awaiting_submission"))
         new_head = "c" * 40
         snapshot = self.snapshot(pending=True)
         snapshot.head_sha = new_head
@@ -259,6 +260,14 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         final = self.final(observation, handoff)
         self.assertTrue(observation.report[0].get("head_changed"))
         self.assertEqual(final["fork"]["head_sha"], new_head)
+        self.assertEqual((final["phase"], final["activity"]), ("development", "waiting_ci"))
+        self.assertEqual(final["revision"], handoff["revision"] + 1)
+        self.assertIsNone(final["last_ci_evidence_id"])
+        self.assertIsNone(final["handoff_request"])
+        self.assertIsNone(final["pending_human_action"])
+        events = [event for kind, event in observation.staged if kind == "events"]
+        self.assertEqual([event["kind"] for event in events], ["record_head_change"])
+        self.assertTrue(events[0]["revision_bumped"])
         self.assertNotEqual(final["activity"], "waiting_human")
 
     def test_live_green_pr_ci_without_uploaded_artifacts_enters_handoff(self):
@@ -271,15 +280,17 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         observation = self.observe(rec, snapshot)
         final = self.final(observation, rec)
         evidence_id = "ci-1467208233-45008094068-1"
-        self.assertEqual((final["phase"], final["activity"]), ("handoff", "waiting_human"))
+        self.assertEqual((final["phase"], final["activity"]), ("handoff", "awaiting_submission"))
         self.assertEqual(final["revision"], 5)
         self.assertEqual(final["last_ci_evidence_id"], evidence_id)
-        self.assertEqual(final["clean_head_sha"], self.HEAD)
+        # The clean head is set by the debug cleanup, after submission is requested.
+        self.assertIsNone(final["clean_head_sha"])
+        self.assertEqual(final["fork"]["head_sha"], self.HEAD)
         self.assertEqual(final["handoff_request"],
                          {"command_id": f"observation-{evidence_id}", "head": self.HEAD, "revision": 5})
-        self.assertEqual(final["pending_human_action"]["kind"], "approve_handoff")
+        self.assertEqual(final["pending_human_action"]["kind"], "submit_upstream")
+        self.assertIsNone(final["pending_human_action"]["counter"])
         self.assertIsNone(final["next_poll_at"])
-        self.assertEqual(final["pending_feedback_evidence_ids"], [])
         staged_evidence = [item for kind, item in observation.staged if kind == "evidence"]
         self.assertEqual([item["evidence_id"] for item in staged_evidence], [evidence_id])
         self.assertEqual(staged_evidence[0]["ci"]["head_sha"], self.HEAD)
@@ -287,22 +298,27 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         jobs = {job["name"] for job in staged_evidence[0]["ci"]["jobs"]}
         self.assertIn("Build - ubuntu-24.04-riscv (riscv64)", jobs)
         events = [event for kind, event in observation.staged if kind == "events"]
-        self.assertEqual([event["kind"] for event in events], ["handoff_ready"])
-        self.assertEqual(events[0]["to"], {"phase": "handoff", "activity": "waiting_human"})
+        self.assertEqual([event["kind"] for event in events], ["nominate_for_handoff"])
+        self.assertEqual(events[0]["to"], {"phase": "handoff", "activity": "awaiting_submission"})
         self.assertEqual(events[0]["cause"], {"type": "observation", "id": evidence_id})
+        self.assertFalse(events[0]["revision_bumped"])
+        self.assertEqual(events[0]["details"]["head"], self.HEAD)
+        self.assertEqual(events[0]["details"]["revision"], 5)
         # The ordinary controller requests no Work for the handoff wait.
         selected = controller.tick(
             contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
             inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(selected.requested_effects, [])
-        # Repeated observation preserves handoff:waiting_human (plan 14.1),
+        # Repeated observation of the candidate head keeps the gate,
         # including while a rerun of the same head is pending.
         for pending in (False, True):
             with self.subTest(pending=pending):
                 again = self.observe(final, self.snapshot(pending=pending))
                 repeated = self.final(again, final)
-                self.assertEqual((repeated["phase"], repeated["activity"]), ("handoff", "waiting_human"))
+                self.assertEqual((repeated["phase"], repeated["activity"]),
+                                 ("handoff", "awaiting_submission"))
                 self.assertEqual(repeated["handoff_request"], final["handoff_request"])
+                self.assertEqual(repeated["pending_human_action"], final["pending_human_action"])
                 self.assertEqual([kind for kind, event in again.staged if kind == "events"], [])
 
     def test_live_tick_commits_handoff_and_posts_app_authored_ledger_entry(self):
@@ -331,7 +347,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             events = [path for path in written if path.startswith(".state/events/")]
             self.assertEqual(len(events), 1)
             committed = json.loads(next(path for path in (root / ".state/contributions").glob("*.json")).read_text())
-            self.assertEqual((committed["phase"], committed["activity"]), ("handoff", "waiting_human"))
+            self.assertEqual((committed["phase"], committed["activity"]),
+                             ("handoff", "awaiting_submission"))
             self.assertEqual(committed["last_ci_evidence_id"], "ci-1467208233-45008094068-1")
             api = FakeApi()
             with mock.patch("status_ledger.Api", return_value=api):
@@ -339,9 +356,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                                                  "https://github.com/run")
         self.assertEqual([receipt["status"] for receipt in receipts], ["created"])
         body = api.comment["body"]
-        self.assertTrue(body.startswith("**Upstreaming r5 · handoff/waiting_human**"))
-        self.assertIn("reached human upstream handoff", body)
-        self.assertIn(f"/upstreaming approve-handoff revision=5 head={self.HEAD}", body)
+        self.assertTrue(body.startswith("**Upstreaming r5 · handoff/awaiting_submission**"))
+        self.assertNotIn("approve-handoff", body)
         self.assertEqual(api.comment["user"]["login"], "riseproject-dev[bot]")
 
     def test_human_requested_or_dispatched_repairs_are_not_withdrawn(self):
@@ -775,13 +791,12 @@ class TestTick(unittest.TestCase):
 
     def test_refresh_dossier_returns_to_existing_pr_and_requires_worker_pass(self):
         import commands
-        import lifecycle
         import reconcile
         from tests.test_dossier_gate import dossier
         rec = contribution(revision=7, dossier_evidence_id="old-dossier",
                            scope_paths=[".github/workflows/wheels.yml"],
                            scope_coverage_complete=True)
-        refreshed = lifecycle.apply_command(
+        refreshed = compat.apply_command(
             rec, commands.parse('/upstreaming refresh revision=7 reason="audit dependencies"'),
             command_id="comment-9", actor=OWNER, now=NOW).record
         refreshed["phase"] = "investigation"

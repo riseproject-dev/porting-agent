@@ -25,7 +25,7 @@ import queue_result
 import reconcile
 import schemas
 import work
-from tests.helpers import commit_files, contribution, git, init_repo, policy
+from tests.helpers import awaiting_submission, commit_files, contribution, git, init_repo, policy
 
 WF = ".github/workflows/worker.lock.yml"
 
@@ -175,7 +175,9 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(final["publication_operation_id"], ops[-1]["operation_id"])
         self.assertTrue(final["last_ci_evidence_id"].startswith("ci-2-7-1"))
         self.assertIsNone(final["active_work"])
-        self.assertEqual(final["activity"], "waiting_human")
+        self.assertEqual((final["phase"], final["activity"]), ("handoff", "awaiting_submission"))
+        self.assertEqual(final["pending_human_action"]["kind"], "submit_upstream")
+        self.assertEqual(final["handoff_request"]["head"], new_head)
         self.assertIn("evidence", kinds)
         self.assertIn("operations", kinds)
         # Passed CI on the new head: nothing more for an agent to do right now.
@@ -249,15 +251,24 @@ class TestPublicationRetry(unittest.TestCase):
         self.assertEqual(self.final(t)["activity"], "idle")
 
     def test_late_no_change_cannot_regress_exact_head_handoff(self):
-        rec = dict(self.rec, phase="handoff", activity="waiting_human", active_work=None,
-                   clean_head_sha=self.rec["fork"]["head_sha"])
-        pub = {"status": "no_change", "task": self.task, "worker_run_id": "8",
-               "publication_artifact_id": 88, "operation": None, "artifact": None}
-        t = self.tick(rec, [pub])
-        final = self.final(t)
-        self.assertEqual((final["phase"], final["activity"]), ("handoff", "waiting_human"))
-        self.assertIn(88, final["processed_publications"])
-        self.assertEqual(t.report["publications"][0]["ignored"], "superseded by exact-head handoff")
+        rec = awaiting_submission(revision=self.rec["revision"])
+        for status in ("no_change", "rejected", "published", "infra_error"):
+            with self.subTest(status=status):
+                pub = {"status": status, "task": self.task, "worker_run_id": "8",
+                       "publication_artifact_id": 88, "operation": None, "artifact": None}
+                t = self.tick(rec, [pub])
+                final = self.final(t)
+                # Only the replay fence changes: the Result is recorded, never folded.
+                self.assertEqual(dict(final, processed_publications=[]),
+                                 dict(rec, processed_publications=[]))
+                self.assertIn(88, final["processed_publications"])
+                self.assertEqual(t.report["publications"][0]["ignored"],
+                                 "late Result during handoff")
+                events = [e for k, e in t.staged if k == "events"]
+                self.assertEqual([e["kind"] for e in events], ["record_late_effect"])
+                self.assertEqual(events[0]["from"], {})
+                self.assertEqual(events[0]["details"]["result_status"], status)
+                self.assertEqual(t.report["requested_effects"], [])
 
     def test_success_after_retry_clears_pending(self):
         rec = dict(self.rec, pending_publication={"worker_run_id": "4242", "attempts": 1, "last_reason": "x",
@@ -391,7 +402,7 @@ class TestDispatchRecovery(unittest.TestCase):
                     schemas.validate({"contributions": "contribution", "events": "event"}.get(kind, kind), staged)
 
     def test_handoff_clears_obsolete_active_work_without_dispatch(self):
-        rec = dict(self.rec, phase="handoff", activity="waiting_human")
+        rec = awaiting_submission(revision=self.rec["revision"], active_work=self.rec["active_work"])
         t = self.tick([self.drun(1)], {self.gid: "completed"}, rec=rec)
         self.assertEqual(t.report["dispatch_relaunch"], [])
         self.assertIsNone(self.final(t)["active_work"])

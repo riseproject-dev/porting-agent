@@ -5,6 +5,7 @@
 import unittest
 
 import commands
+import compat
 import lifecycle
 import schemas
 from tests.helpers import BACKUP, NOW, OWNER, SHA_A, SHA_B, SHA_C, contribution
@@ -15,7 +16,7 @@ def cmd(text):
 
 
 def apply(rec, text, **kw):
-    return lifecycle.apply_command(rec, cmd(text), command_id="comment-1", actor=OWNER, now=NOW, **kw)
+    return compat.apply_command(rec, cmd(text), command_id="comment-1", actor=OWNER, now=NOW, **kw)
 
 
 CID = "example--proj/12"
@@ -24,26 +25,26 @@ CID = "example--proj/12"
 class TestRevision(unittest.TestCase):
     def test_status_observation_does_not_bump(self):
         rec = contribution()
-        out = lifecycle.observe_status(rec, activity="waiting_ci", next_poll_at=NOW, now=NOW)
+        out = compat.observe_status(rec, activity="waiting_ci", next_poll_at=NOW, now=NOW)
         self.assertEqual(out.record["revision"], rec["revision"])
-        out2 = lifecycle.observe_status(out.record, next_poll_at="2026-11-18T13:00:00+00:00", now=NOW)
+        out2 = compat.observe_status(out.record, next_poll_at="2026-11-18T13:00:00+00:00", now=NOW)
         self.assertIsNone(out2.event)
 
     def test_head_change_bumps_and_invalidates(self):
         rec = contribution(last_ci_evidence_id="ev-1")
-        out = lifecycle.observe_head(rec, SHA_B, now=NOW)
+        out = compat.observe_head(rec, SHA_B, now=NOW)
         self.assertEqual(out.record["revision"], rec["revision"] + 1)
         self.assertIsNone(out.record["last_ci_evidence_id"])
-        self.assertIsNone(lifecycle.observe_head(out.record, SHA_B, now=NOW).event)
+        self.assertIsNone(compat.observe_head(out.record, SHA_B, now=NOW).event)
 
     def test_status_change_does_not_stale_proposal_but_head_does(self):
         rec = contribution()
-        polled = lifecycle.observe_status(rec, activity="waiting_ci", now=NOW).record
+        polled = compat.observe_status(rec, activity="waiting_ci", now=NOW).record
         polled["activity"] = "idle"
         self.assertIsNone(lifecycle.publication_check(polled, expected_revision=rec["revision"],
                                                       expected_head=SHA_A, observed_head=SHA_A,
                                                       ref="riscv64", repository="riseproject-upstreaming/proj"))
-        moved = lifecycle.observe_head(rec, SHA_B, now=NOW).record
+        moved = compat.observe_head(rec, SHA_B, now=NOW).record
         self.assertEqual(lifecycle.publication_check(moved, expected_revision=rec["revision"],
                                                      expected_head=SHA_A, observed_head=SHA_B,
                                                      ref="riscv64", repository="riseproject-upstreaming/proj"),
@@ -81,7 +82,7 @@ class TestPauseParkResume(unittest.TestCase):
         p = apply(rec, f"/upstreaming pause contribution={CID} revision=0 reason=r")
         self.assertTrue(p.accepted)
         self.assertTrue(p.record["paused"])
-        bumped = lifecycle.observe_head(p.record, SHA_B, now=NOW).record
+        bumped = compat.observe_head(p.record, SHA_B, now=NOW).record
         stale = apply(bumped, f"/upstreaming resume contribution={CID} revision=0 reason=r")
         self.assertFalse(stale.accepted)
         ok = apply(bumped, f"/upstreaming resume contribution={CID} revision=1 reason=r")
@@ -90,14 +91,12 @@ class TestPauseParkResume(unittest.TestCase):
         self.assertEqual(ok.record["revision"], 2)
 
     def test_stale_pause_still_honoured(self):
-        rec = lifecycle.observe_head(contribution(), SHA_B, now=NOW).record
+        rec = compat.observe_head(contribution(), SHA_B, now=NOW).record
         self.assertTrue(apply(rec, f"/upstreaming pause contribution={CID} revision=0 reason=r").accepted)
 
     def test_park_only_explicit_resume(self):
         rec = apply(contribution(), f"/upstreaming park contribution={CID} revision=0 reason=evidence").record
         self.assertEqual(rec["phase"], "parked")
-        with self.assertRaises(lifecycle.TransitionError):
-            lifecycle.transition(rec, "development", cause_type="observation", cause_id=None, now=NOW)
         out = apply(rec, f"/upstreaming resume contribution={CID} revision=0 reason=\"new evidence\"")
         # Plan 3.3.4 failure case 2 and 3.5: a clean generation at queued:idle.
         self.assertEqual((out.record["phase"], out.record["activity"]), ("queued", "idle"))
@@ -110,14 +109,6 @@ class TestPauseParkResume(unittest.TestCase):
         busy = dict(rec, active_operation_id="op-1")
         out = apply(busy, f"/upstreaming resume contribution={CID} revision=0 reason=r")
         self.assertFalse(out.accepted)
-
-    def test_paused_blocks_ordinary_work_not_merge(self):
-        rec = contribution(phase="upstream_review", paused=True)
-        out = lifecycle.transition(rec, "release_wait", cause_type="observation", cause_id="m", now=NOW)
-        self.assertEqual(out.record["phase"], "release_wait")
-        with self.assertRaises(lifecycle.TransitionError):
-            lifecycle.transition(contribution(phase="queued", paused=True), "investigation",
-                                 cause_type="observation", cause_id=None, now=NOW)
 
     def test_terminal_rejects(self):
         rec = contribution(phase="abandoned")
@@ -208,69 +199,44 @@ class TestRestartGeneration(unittest.TestCase):
 
 
 class TestHandoff(unittest.TestCase):
-    def test_request_needs_evidence_and_head(self):
-        rec = contribution()
-        self.assertFalse(apply(rec, f"/upstreaming request-handoff contribution={CID} revision=0 head={SHA_A}").accepted)
-        rec["last_ci_evidence_id"] = "ev-1"
-        self.assertFalse(apply(rec, f"/upstreaming request-handoff contribution={CID} revision=0 head={SHA_B}").accepted)
-        out = apply(rec, f"/upstreaming request-handoff contribution={CID} revision=0 head={SHA_A}")
-        self.assertTrue(out.accepted)
-        self.assertEqual(out.record["phase"], "handoff")
+    def test_retired_handoff_commands_name_submit_upstream(self):
+        for text in (f"/upstreaming request-handoff revision=0 head={SHA_A}",
+                     f"/upstreaming approve-handoff revision=0 head={SHA_A}",
+                     "/upstreaming register-upstream-pr revision=0 "
+                     "url=https://github.com/example/proj/pull/9"):
+            with self.subTest(text=text), self.assertRaises(commands.CommandError) as raised:
+                cmd(text)
+            self.assertIn("is retired", str(raised.exception))
+            self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
+                          str(raised.exception))
 
-    def _handoff(self):
-        rec = contribution(phase="handoff", last_ci_evidence_id="ev-1",
-                           debug_commits=[{"sha": SHA_A, "subject": "{debug} enable wheels on fork", "reason": "guard"}])
-        rec["clean_head_sha"] = SHA_B
-        rec["fork"]["head_sha"] = SHA_B
-        return rec
+    def test_legacy_paths_cannot_write_the_handoff_phase(self):
+        rec = contribution(phase="handoff", activity="awaiting_submission")
+        with self.assertRaises(lifecycle.TransitionError):
+            apply(rec, f"/upstreaming pause contribution={CID} revision=0")
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.observe_head(rec, SHA_C, now=NOW)
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.observe_status(rec, activity="waiting_human", now=NOW)
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.park(dict(rec), "reason")
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.legacy_update(rec, "reconcile.work_timeout", activity="waiting_human")
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.legacy_update(contribution(), "observe_ci.ci_passed", phase="handoff",
+                                 activity="waiting_human")
 
-    def test_approve_binds_clean_head(self):
-        rec = self._handoff()
-        self.assertFalse(apply(rec, f"/upstreaming approve-handoff contribution={CID} revision=0 head={SHA_A}").accepted)
-        out = apply(rec, f"/upstreaming approve-handoff contribution={CID} revision=0 head={SHA_B}")
-        self.assertTrue(out.accepted)
-        self.assertEqual(out.record["handoff_approval"]["head"], SHA_B)
-
-    def test_new_change_invalidates_approval(self):
-        rec = apply(self._handoff(), f"/upstreaming approve-handoff contribution={CID} revision=0 head={SHA_B}").record
-        moved = lifecycle.observe_head(rec, SHA_C, now=NOW).record
-        self.assertIsNone(moved["handoff_approval"])
-
-    def test_register_requires_verified_pr(self):
-        rec = apply(self._handoff(), f"/upstreaming approve-handoff contribution={CID} revision=0 head={SHA_B}").record
-        url = "https://github.com/example/proj/pull/9"
-        text = f"/upstreaming register-upstream-pr contribution={CID} revision=0 url={url}"
-        self.assertFalse(apply(rec, text).accepted)
-        pr = {"id": 99, "number": 9, "html_url": url, "state": "open", "base_repository": "example/proj",
-              "base_ref": "main", "head_repository": "riseproject-upstreaming/proj",
-              "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_B}
-        self.assertFalse(apply(rec, text, verified_pr=dict(pr, head_sha=SHA_C)).accepted)
-        self.assertFalse(apply(rec, text, verified_pr=dict(pr, base_repository="other/proj")).accepted)
-        out = apply(rec, text, verified_pr=pr)
-        self.assertTrue(out.accepted)
-        self.assertEqual(out.record["phase"], "upstream_review")
-        self.assertIsNone(out.record["blocked_reason"])
-        other = apply(rec, text, verified_pr=dict(pr, head_repository="someone/proj", head_ref="feature"))
-        self.assertIn("automated revisions disabled", other.record["blocked_reason"])
-        # Upstream-facing: approval survives a routine revision push.
-        pushed = lifecycle.observe_head(out.record, SHA_C, now=NOW).record
-        self.assertIsNotNone(pushed["handoff_approval"])
+    def test_legacy_write_needs_a_registered_site_and_an_admitted_state(self):
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.legacy_update(contribution(), "somewhere.else", activity="waiting_ci")
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.legacy_update(contribution(), "observe_ci.ci_passed",
+                                 activity="waiting_upstream_pr")
+        moved = compat.legacy_update(contribution(), "observe_ci.ci_passed", activity="waiting_ci")
+        self.assertEqual(moved["activity"], "waiting_ci")
 
 
 class TestMergeAndRelease(unittest.TestCase):
-    def test_merge_stops_development(self):
-        rec = contribution(phase="upstream_review", active_operation_id="op-1")
-        out = lifecycle.transition(rec, "release_wait", cause_type="observation", cause_id="merge", now=NOW)
-        self.assertIsNone(out.record["active_operation_id"])
-        self.assertIsNotNone(lifecycle.publication_check(
-            out.record, expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
-            ref="riscv64", repository="riseproject-upstreaming/proj"))
-
-    def test_no_shortcut_to_released(self):
-        with self.assertRaises(lifecycle.TransitionError):
-            lifecycle.transition(contribution(phase="upstream_review"), "released",
-                                 cause_type="observation", cause_id=None, now=NOW)
-
     def test_write_admission_is_automatic_after_dossier_and_fork(self):
         rec = contribution()
         rec["owners"] = {"primary": None, "backup": None, "submitter": None, "handoff_reviewer": None}
@@ -299,7 +265,7 @@ class TestStopEndsRequestedWork(unittest.TestCase):
                               "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None}
         for body in ("/upstreaming pause", "/upstreaming abandon reason=x", "/upstreaming park reason=x",
                      "/upstreaming block reason=x"):
-            out = lifecycle.apply_command(rec, C.parse(body), command_id="c", actor=dict(OWNER), now=NOW)
+            out = compat.apply_command(rec, C.parse(body), command_id="c", actor=dict(OWNER), now=NOW)
             self.assertTrue(out.accepted, body)
             self.assertIsNone(out.record["active_work"], body)
             self.assertNotEqual(out.record["activity"], "agent_running", body)
@@ -332,7 +298,7 @@ class TestScopeAndProvision(unittest.TestCase):
         self.rec["upstream"]["base_sha"] = None
 
     def apply(self, rec, body, **kw):
-        return lifecycle.apply_command(rec, commands.parse(body), command_id="c", actor=dict(OWNER), now=NOW, **kw)
+        return compat.apply_command(rec, commands.parse(body), command_id="c", actor=dict(OWNER), now=NOW, **kw)
 
     def test_approve_scope_then_provision(self):
         bk = dict(BACKUP)

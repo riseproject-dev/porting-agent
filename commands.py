@@ -39,13 +39,9 @@ GRAMMAR: dict[str, dict[str, str]] = {
     "pause": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     "resume": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     "park": {"contribution": _ID, "revision": _INT, "reason": _REASON},
-    "request-handoff": {"contribution": _ID, "revision": _INT, "head": _SHA},
-    "approve-handoff": {"contribution": _ID, "revision": _INT, "head": _SHA},
-    "register-upstream-pr": {
-        "contribution": _ID,
-        "revision": _INT,
-        "url": r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]{1,9}",
-    },
+    # The one submission command: it names the exact revision and the exact
+    # candidate head of `handoff.awaiting_submission`.
+    "submit-upstream": {"contribution": _ID, "revision": _INT, "head": _SHA},
     "clarify": {"contribution": _ID, "revision": _INT, "decision": _ID, "answer": _REASON},
     "revise-scope": {"contribution": _ID, "revision": _INT, "proposal": _ID},
     "block": {"contribution": _ID, "revision": _INT, "reason": _REASON},
@@ -79,6 +75,17 @@ GRAMMAR: dict[str, dict[str, str]] = {
     # Provisioning -> development: verify a human-created fork, its riscv64
     # branch and the upstream base, then record them (trusted code reads them).
     "provision": {"contribution": _ID, "revision": _INT},
+}
+
+SUBMIT_FORM = "/upstreaming submit-upstream revision=N head=FULL_SHA"
+
+# Commands the lifecycle no longer has, with what replaced them. They are
+# rejected with this message instead of being reported as unknown.
+RETIRED: dict[str, str] = {
+    verb: (f"`{verb}` is retired. Upstream submission is requested with one command, "
+           f"`{SUBMIT_FORM}`, while the contribution is in `handoff.awaiting_submission`; "
+           "the upstream pull request is then verified by observation")
+    for verb in ("request-handoff", "approve-handoff", "register-upstream-pr")
 }
 
 # Commands that stop work; processed before everything else in a tick.
@@ -152,6 +159,8 @@ def parse(body: str) -> Command:
 
     text = first[len(PREFIX):].strip()
     verb, _, tail = text.partition(" ")
+    if verb in RETIRED:
+        raise CommandError(RETIRED[verb])
     if verb not in GRAMMAR:
         raise CommandError(f"unknown command {verb!r}")
     spec = GRAMMAR[verb]

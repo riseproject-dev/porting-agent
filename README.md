@@ -48,6 +48,7 @@ python -m reconcile --offline
 - [Integration contract](docs/INTEGRATION.md)
 - [Investigation contract](docs/INVESTIGATION.md)
 - [Repository setup](docs/SETUP.md)
+- [State machine](docs/state-machine/index.md), its [lifecycle table](docs/state-machine/table.md), and the [transition engine](docs/state-machine/engine.md)
 
 Earlier implementation evidence: [`riseproject-dev/python-wheels/upstreaming`](https://github.com/riseproject-dev/python-wheels/tree/c21e458f67541af8b6e988eda7a20e30fbad201d/upstreaming) is the immutable migration reference. New control and tracking activity belongs only in this repository.
 

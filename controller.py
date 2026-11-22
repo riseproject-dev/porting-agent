@@ -27,6 +27,8 @@ from typing import Any
 import canary
 import capacity
 import collect
+import compat
+import engine
 import intake
 import lifecycle
 import recovery
@@ -247,8 +249,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             retired = dict(operation, status="not_launched", updated_at=now)
             schemas.validate("operation", retired)
-            changed = dict(
-                record,
+            changed = compat.legacy_update(
+                record, "controller.defer_destination_operation",
                 phase="development",
                 activity="idle",
                 active_operation_id=None,
@@ -281,8 +283,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             and not c.get("active_work") and not c.get("dossier_evidence_id") and not c.get("fork")
         if issue is None or INTAKE_LABEL in labels or not unprocessed:
             continue
-        changed = dict(c, phase="abandoned", activity="idle",
-                       terminal_reason=f"{INTAKE_LABEL} label removed before Work admission", updated_at=now)
+        changed = compat.legacy_update(
+            c, "controller.cancel_unlabeled_request", phase="abandoned", activity="idle",
+            terminal_reason=f"{INTAKE_LABEL} label removed before Work admission", updated_at=now)
         schemas.validate("contribution", changed)
         by_id[cid] = changed
         active.pop(c["upstream"]["full_name"], None)
@@ -311,7 +314,22 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         current = c["upstream"].get("repository_id")
         if current is not None and current != snapshot["repository_id"]:
             source_blocked.add(cid)
-            changed = dict(c, blocked_reason="upstream repository identity changed", activity="waiting_human", updated_at=now)
+            if c["phase"] == "handoff":
+                # A handoff state is written by the engine: the table verb for
+                # a changed identity sets the paused flag and keeps the state.
+                out = engine.apply_transition(
+                    c, "pause_on_identity_change", policy=policy, now=now,
+                    cause_id=f"upstream-identity-{snapshot['repository_id']}",
+                    facts={"upstream_identity_changed"})
+                if out.accepted:
+                    by_id[cid] = out.record
+                    res.stage("contributions", out.record)
+                    res.stage("events", out.event)
+                continue
+            changed = compat.legacy_update(
+                c, "controller.block_identity_change",
+                blocked_reason="upstream repository identity changed",
+                activity="waiting_human", updated_at=now)
             by_id[cid] = changed
             res.stage("contributions", changed)
             continue
@@ -338,7 +356,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             continue
         receipt = dict(d.receipt)
         if d.accepted:
-            receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now)
+            receipt = _apply(d.command, receipt, by_id, operations, inputs, res, now, policy)
         consumed[receipt["comment_id"]] = receipt
         res.stage("commands", receipt)
         rep["commands"].append({"comment": receipt["comment_id"], "result": receipt["result"],
@@ -389,8 +407,10 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                         prior[0], status="planned", updated_at=now,
                         external_ids=dict(prior[0].get("external_ids") or {}, launch_attempts=1),
                     )
-                    changed = dict(c, phase="provisioning", activity="waiting_capacity",
-                                   active_operation_id=operation["operation_id"], updated_at=now)
+                    changed = compat.legacy_update(
+                        c, "controller.rearm_provisioning", phase="provisioning",
+                        activity="waiting_capacity",
+                        active_operation_id=operation["operation_id"], updated_at=now)
                     schemas.validate("operation", operation)
                     schemas.validate("contribution", changed)
                     operations[operation["operation_id"]] = operation
@@ -443,8 +463,11 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         op = dict(op, status="planned", external_ids={"launch_attempts": 1})
         schemas.validate("operation", op)
         res.stage("operations", op)
-        res.stage("contributions", dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now))
-        by_id[cid] = dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now)
+        planned = compat.legacy_update(c, "controller.plan_provisioning",
+                                       active_operation_id=op["operation_id"],
+                                       activity="waiting_capacity", updated_at=now)
+        res.stage("contributions", planned)
+        by_id[cid] = planned
         res.report["provision_requests"].append({
             "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
         })
@@ -507,7 +530,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         op = dict(op, external_ids={"launch_attempts": 1})
         schemas.validate("operation", op)
         res.stage("operations", op)
-        changed = dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now)
+        changed = compat.legacy_update(c, "controller.plan_development_pr",
+                                       active_operation_id=op["operation_id"],
+                                       activity="waiting_capacity", updated_at=now)
         by_id[cid] = changed
         res.stage("contributions", changed)
         res.report["dev_pr_requests"].append({
@@ -549,7 +574,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         op = dict(op, external_ids={"launch_attempts": 1})
         schemas.validate("operation", op)
         res.stage("operations", op)
-        changed = dict(c, active_operation_id=op["operation_id"], activity="waiting_capacity", updated_at=now)
+        changed = compat.legacy_update(c, "controller.plan_ci_bootstrap",
+                                       active_operation_id=op["operation_id"],
+                                       activity="waiting_capacity", updated_at=now)
         by_id[cid] = changed
         res.stage("contributions", changed)
         res.report["dev_pr_requests"].append({
@@ -578,7 +605,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             "next_attempt_at": now,
             "exhausted": False,
         }
-        changed = dict(c, pending_publication=pending, activity="waiting_capacity", updated_at=now)
+        changed = compat.legacy_update(c, "controller.publish_pre_fork_proposal",
+                                       pending_publication=pending,
+                                       activity="waiting_capacity", updated_at=now)
         by_id[cid] = changed
         res.stage("contributions", changed)
         res.report["proposal_publications"].append({
@@ -658,7 +687,11 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         # Record the request in the same state commit, so the next tick does
         # not request it again. Cleared by the task's outcome or by timeout.
         from datetime import timedelta
-        claimed = dict(c, activity="agent_running", updated_at=now, active_work={
+        claimed = compat.legacy_update(
+            c, "controller.select_work", activity="agent_running", updated_at=now,
+            phase="investigation" if kind == "investigation" and c["phase"] == "queued"
+            else c["phase"],
+            active_work={
             "dedupe_key": work["dedupe_key"], "task": kind, "revision": c["revision"], "attempt": 1,
             "requested_at": now,
             "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
@@ -680,8 +713,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 claimed["active_work"]["tracking_issue"] = collect.tracking_issue_context(
                     issue, c["tracking_issue"]
                 )
-        if kind == "investigation" and claimed["phase"] == "queued":
-            claimed["phase"] = "investigation"
         by_id[c["contribution_id"]] = claimed
         res.stage("contributions", claimed)
 
@@ -690,8 +721,35 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     return res
 
 
+def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
+    return tuple(sorted(op["operation_id"] for op in operations.values()
+                        if op["contribution_id"] == record["contribution_id"]
+                        and op["status"] in recovery.OPEN))
+
+
+def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,
+                         policy: dict, now: str) -> engine.Outcome:
+    """Apply a command to a record in a table state, as the table defines it."""
+    open_ops = _open_operations(rec, operations)
+    verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now,
+                                       open_operations=open_ops)
+    if verb is None:
+        return engine.Outcome(rec, False, why, None)
+    if cmd.verb in engine.HELD_COMMANDS:
+        return engine.Outcome(rec, False, engine.HELD_COMMANDS[cmd.verb], None, verb)
+    values = {}
+    if verb == "refresh_investigation":
+        fork = rec["fork"]
+        values["refresh"] = {"command_id": receipt["command_id"], "reason": cmd.args["reason"],
+                             "from_phase": rec["phase"], "head_sha": fork["head_sha"],
+                             "pr_number": fork["pr_number"]}
+    return engine.apply_transition(rec, verb, policy=policy, now=now,
+                                   cause_id=receipt["command_id"], command=cmd, values=values,
+                                   open_operations=open_ops, actor=receipt["actor"])
+
+
 def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: Inputs,
-           res: TickResult, now: str) -> dict:
+           res: TickResult, now: str, policy: dict) -> dict:
     actor = receipt["actor"]
     if cmd.verb == "resolve-operation":
         op = operations.get(cmd.args["operation"])
@@ -714,12 +772,16 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
                     reason=f"command names {cmd.contribution}, but this issue tracks {rec['contribution_id']}")
     receipt = dict(receipt, contribution_id=rec["contribution_id"],
                    revision=cmd.revision if cmd.revision is not None else rec["revision"])
-    verified = inputs.verified_prs.get(cmd.args.get("url", "")) if cmd.verb == "register-upstream-pr" else None
     try:
-        out = lifecycle.apply_command(rec, cmd, command_id=receipt["command_id"], actor=actor,
-                                      now=now, verified_pr=verified,
-                                      provisioning=inputs.provisioning.get(rec["contribution_id"]),
-                                      backup_user=inputs.users.get(cmd.args.get("backup", "")))
+        if rec["phase"] == "handoff":
+            # Every handoff state is a state of the lifecycle table: its
+            # commands are the table's, applied by the transition engine.
+            out = _apply_table_command(rec, cmd, receipt, operations, policy, now)
+        else:
+            out = compat.apply_command(rec, cmd, command_id=receipt["command_id"], actor=actor,
+                                       now=now,
+                                       provisioning=inputs.provisioning.get(rec["contribution_id"]),
+                                       backup_user=inputs.users.get(cmd.args.get("backup", "")))
     except lifecycle.TransitionError as e:
         return dict(receipt, result="rejected", reason=str(e))
     if not out.accepted:
@@ -748,6 +810,15 @@ def cmd_observe(args: argparse.Namespace) -> int:
             [], pending=[migration.path for migration in pending_migrations]
         )
         print(json.dumps(report, indent=2))
+        return 0
+    try:
+        pending_records = state.pending_record_migrations(root, policy)
+    except state.StateError as error:
+        print(f"record migration refused: {error}", file=sys.stderr)
+        return 1
+    if pending_records:
+        print(json.dumps(reconcile.migration_report("record_migration", [],
+                                                    pending=pending_records), indent=2))
         return 0
     store = state.StateStore(root, policy)
     contributions = dict(store.load_all("contributions"))

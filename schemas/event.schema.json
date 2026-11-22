@@ -52,7 +52,9 @@
             "observation",
             "result",
             "policy",
-            "migration"
+            "migration",
+            "operation",
+            "tick"
           ]
         },
         "id": {
@@ -65,6 +67,9 @@
     },
     "revision_bumped": {
       "type": "boolean"
+    },
+    "details": {
+      "type": "object"
     }
   }
 }

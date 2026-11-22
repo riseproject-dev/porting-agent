@@ -47,6 +47,20 @@ def contribution(phase="development", **over):
     return rec
 
 
+def awaiting_submission(**over):
+    """A record in ``handoff.awaiting_submission`` as the table enters it."""
+    rec = contribution(phase="handoff", activity="awaiting_submission",
+                       last_ci_evidence_id="ci-2-7-1")
+    rec.update({
+        "handoff_request": {"command_id": "observation-ci-2-7-1", "head": rec["fork"]["head_sha"],
+                            "revision": rec["revision"]},
+        "pending_human_action": {"kind": "submit_upstream", "requested_at": NOW,
+                                 "reminded_at": None, "escalated_at": None, "counter": None},
+    })
+    rec.update(over)
+    return rec
+
+
 def comment(body, actor=OWNER, cid=1):
     return {"id": cid, "body": body, "user": dict(actor)}
 

@@ -33,7 +33,9 @@ from typing import Any
 import canary
 import capacity
 import collect
+import compat
 import controller
+import engine
 import lifecycle
 import observe_ci
 import recovery
@@ -68,11 +70,19 @@ def state_text_migration_report(
     written: list[str], *, pending: list[str] | None = None
 ) -> dict[str, Any]:
     """Return a workflow-safe no-op report for a migration-only tick."""
+    return migration_report("state_text_migration", written, pending=pending)
+
+
+def migration_report(
+    key: str, written: list[str], *, pending: list[str] | None = None
+) -> dict[str, Any]:
+    """A workflow-safe report of a tick that only migrated state: it requests
+    no effect, so every launcher of the controller workflow does nothing."""
     migration = {"written": written}
     if pending is not None:
         migration["pending"] = pending
     return {
-        "state_text_migration": migration,
+        key: migration,
         "written": written,
         "controller": {"canary_recovery_requests": []},
         "requested_effects": [],
@@ -148,8 +158,9 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                 requested_at=iso,
                                 deadline_at=(now + timedelta(hours=controller.WORK_DEADLINE_HOURS)).isoformat(),
                                 dispatched_run_id=None)
-                new = dict(c, revision=revision, activity="agent_running", active_work=fresh_aw,
-                           pending_human_action=None, updated_at=iso)
+                new = compat.legacy_update(c, "reconcile.terminal_work_retry", revision=revision,
+                                           activity="agent_running", active_work=fresh_aw,
+                                           pending_human_action=None, updated_at=iso)
                 contributions[key] = new
                 schemas.validate("contribution", new)
                 staged.extend([("contributions", new),
@@ -158,9 +169,11 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": new["contribution_id"]})
                 report.append(entry | {"decision": f"new revision for terminal Work, attempt {attempt + 1} of {limit}"})
             else:
-                new = dict(c, phase="parked", activity="idle", active_work=None, pending_human_action=None,
-                           parked_reason=f"automatic worker retries exhausted after terminal queue state {state}",
-                           updated_at=iso)
+                new = compat.legacy_update(
+                    c, "reconcile.park_terminal_work", phase="parked", activity="idle",
+                    active_work=None, pending_human_action=None,
+                    parked_reason=f"automatic worker retries exhausted after terminal queue state {state}",
+                    updated_at=iso)
                 contributions[key] = new
                 schemas.validate("contribution", new)
                 staged.extend([("contributions", new),
@@ -188,9 +201,11 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
             report.append(entry | {"decision": f"relaunch: dispatch attempt {len(after) + 1} of {limit}"})
             continue
-        new = dict(c, active_work=None, activity="waiting_human", updated_at=iso,
-                   pending_human_action={"kind": "dispatch_failed", "requested_at": iso,
-                                         "reminded_at": None, "escalated_at": None})
+        new = compat.legacy_update(
+            c, "reconcile.dispatch_exhausted", active_work=None, activity="waiting_human",
+            updated_at=iso,
+            pending_human_action={"kind": "dispatch_failed", "requested_at": iso,
+                                  "reminded_at": None, "escalated_at": None})
         contributions[key] = new
         staged.append(("contributions", new))
         report.append(entry | {"decision": "dispatch failed; waiting for a human"})
@@ -243,7 +258,7 @@ def _park_exhausted(new: dict, stops: list, last: str) -> None:
     at ``queued:idle`` (plan 3.3.4 failure case 2 and 3.5)."""
     new["pending_human_action"] = None
     new["active_work"] = None
-    lifecycle.park(new, f"repair-attempt budget exhausted ({', '.join(map(str, stops))}) "
+    compat.park(new, f"repair-attempt budget exhausted ({', '.join(map(str, stops))}) "
                         f"after the last attempt: {last}")
 
 
@@ -282,7 +297,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             "attempts": attempts, "last_reason": (outcome.get("reason") or "")[:2000],
             "next_attempt_at": (_dt.fromisoformat(now) + timedelta(minutes=delay)).isoformat(),
             "exhausted": exhausted}
-        new["activity"] = "waiting_human" if exhausted else "waiting_capacity"
+        compat.legacy_assign(new, "reconcile.publication_outcome",
+                             activity="waiting_human" if exhausted else "waiting_capacity")
         if exhausted:
             new["pending_human_action"] = {"kind": "publication_infrastructure_failure", "requested_at": now,
                                            "reminded_at": None, "escalated_at": None}
@@ -312,11 +328,11 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if status == "published":
         # The branch head itself is recorded by the next observation (head
         # change bumps revision); here we only leave agent_running.
-        new["activity"] = "waiting_ci"
+        compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_ci")
     elif status == "uncertain":
-        new["activity"] = "waiting_ci"   # discovery happens in observe_ci
+        compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_ci")   # discovery happens in observe_ci
     elif status == "proposal":
-        new["activity"] = "waiting_capacity"
+        compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_capacity")
         new["pending_human_action"] = None
     elif status == "worker_blocked":
         proposal = outcome.get("proposal") or {}
@@ -345,7 +361,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         staged.append(("evidence", evidence))
         new["proposal_artifact"] = None
         new["pending_publication"] = None
-        new["revision"] += 1
+        compat.legacy_assign(new, "reconcile.publication_outcome", revision=new["revision"] + 1)
         pending = list(new.get("pending_feedback_evidence_ids") or [])
         if evidence_id not in pending:
             pending.append(evidence_id)
@@ -357,7 +373,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             policy=policy or {},
         )
         new["budget"] = budget
-        new["activity"] = "fix_needed"
+        compat.legacy_assign(new, "reconcile.publication_outcome", activity="fix_needed")
         new["pending_human_action"] = None
         if stops:
             _park_exhausted(new, stops, "worker reproduction blocked")
@@ -369,20 +385,21 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         # Plan 8.6: a valid exact-task no_change Result is preserved. It ends
         # the requested Work without a revision bump or new repair Work; the
         # unchanged exact head is then judged by ordinary CI observation.
-        new["activity"] = "idle"
+        compat.legacy_assign(new, "reconcile.publication_outcome", activity="idle")
         new["pending_human_action"] = None
         staged.append(("events", lifecycle._event(
             rec, new, "worker_no_change", "result", _result_cause(outcome, worker_run_id), now, False
         )))
     elif status == "rejected":
-        new["activity"] = "idle" if fclass == "stale" else "fix_needed"
+        compat.legacy_assign(new, "reconcile.publication_outcome",
+                             activity="idle" if fclass == "stale" else "fix_needed")
         stops = []
         if fclass != "stale":
             # A failed immutable Work graph cannot be submitted again. A new
             # repair attempt gets a new revision and therefore a new graph ID.
             # Plan 8.6 and 12.5: that repair Work is bounded, so the rejected
             # model attempt is charged like every other attempt.
-            new["revision"] += 1
+            compat.legacy_assign(new, "reconcile.publication_outcome", revision=new["revision"] + 1)
             new["clean_head_sha"] = None
             proposal = outcome.get("proposal") if isinstance(outcome.get("proposal"), dict) else {}
             if policy:
@@ -417,39 +434,37 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         refresh = new.get("refresh")
         decision = (dossier.get("proposal") or {}).get("decision") if isinstance(dossier, dict) else None
         if not eid:
-            new["activity"] = "waiting_human"
+            compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_human")
             new["pending_human_action"] = {"kind": "investigation_without_dossier", "requested_at": now,
                                            "reminded_at": None, "escalated_at": None}
         elif decision not in ("develop", "park"):
-            new["phase"] = "investigation"
-            new["activity"] = "idle"
+            compat.legacy_assign(new, "reconcile.publication_outcome", phase="investigation", activity="idle",
+                                 revision=new["revision"] + 1)
             new["pending_human_action"] = None
-            new["revision"] += 1
             staged.append(("events", lifecycle._event(rec, new, "dossier_contract_stale", "observation",
                                                        str(worker_run_id or eid), now, True)))
         elif decision == "park":
             new["previous_phase"] = (refresh or {}).get("from_phase") or new["phase"]
-            new["phase"] = "parked"
-            new["activity"] = "idle"
+            compat.legacy_assign(new, "reconcile.publication_outcome", phase="parked", activity="idle",
+                                 revision=new["revision"] + 1)
             new["parked_reason"] = dossier["proposal"]["rationale"][:2000]
             new["pending_human_action"] = None
             new["refresh"] = None
-            new["revision"] += 1
             staged.append(("events", lifecycle._event(rec, new, "dossier_parked", "observation",
                                                        str(worker_run_id or eid), now, True)))
         else:
-            new["activity"] = "fix_needed" if refresh else "idle"
-            new["phase"] = (
-                "development"
-                if refresh or not (policy or {}).get("destination_writes", False)
-                else "provisioning"
-            )
+            compat.legacy_assign(
+                new, "reconcile.publication_outcome",
+                activity="fix_needed" if refresh else "idle",
+                phase=("development"
+                       if refresh or not (policy or {}).get("destination_writes", False)
+                       else "provisioning"),
+                revision=new["revision"] + 1)
             new["admission_class"] = dossier["proposal"]["admission_class"]
             new["scope_paths"] = list(dossier["proposal"]["allowed_paths"])
             new["scope_coverage_complete"] = True
             new["pending_human_action"] = None
             new["refresh"] = None
-            new["revision"] += 1
             kind = "dossier_refreshed" if refresh else "dossier_develop"
             staged.append(("events", lifecycle._event(rec, new, kind, "observation",
                                                        str(worker_run_id or eid), now, True)))
@@ -510,7 +525,9 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         new_op["external_ids"].update({"pr_id": int(pr["id"]), "pr_number": int(pr["number"]),
                                        "development_pr_run_id": str(receipt["development_pr_run_id"])})
         fork = dict(c["fork"], pr_number=int(pr["number"]))
-        new = dict(c, fork=fork, active_operation_id=None, activity="waiting_ci", updated_at=iso)
+        new = compat.legacy_update(c, "reconcile.confirm_development_pr", fork=fork,
+                                   active_operation_id=None, activity="waiting_ci",
+                                   updated_at=iso)
         schemas.validate("contribution", new)
         contributions[key] = new
         snap.operations[op["operation_id"]] = new_op
@@ -557,8 +574,8 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         if receipt.get("provision_artifact_id"):
             new_op["external_ids"]["provision_artifact_id"] = int(receipt["provision_artifact_id"])
         has_pre_fork_proposal = (c.get("proposal_artifact") or {}).get("outcome") == "proposal"
-        new = dict(
-            c,
+        new = compat.legacy_update(
+            c, "reconcile.confirm_provisioning",
             fork={"repository_id": repo["id"], "name": repo["full_name"], "head_ref": "riscv64",
                   "head_sha": head["head"], "pr_number": None},
             phase="development",
@@ -635,7 +652,19 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             rec = dict(rec, processed_publications=((rec.get("processed_publications") or []) + [pid])[-64:])
             contributions[key] = rec
         task_revision = pub.get("task", {}).get("revision")
-        if rec["phase"] in ("handoff", "upstream_review") and pub.get("status") != "published" \
+        if rec["phase"] == "handoff":
+            # No Work is requested in a handoff state, so no Result matches
+            # it. The table records the Result for audit and keeps the state;
+            # a branch effect it carried is seen by head observation.
+            late = engine.apply_transition(
+                rec, "record_late_effect", policy=policy, now=iso,
+                cause_id=_result_cause(pub, pub.get("worker_run_id")),
+                facts={"result_mismatch"},
+                details={"result_status": pub.get("status"), "task_revision": task_revision})
+            out.staged.extend([("contributions", rec), ("events", late.event)])
+            pubs_report.append({"contribution": cid, "ignored": "late Result during handoff"})
+            continue
+        if rec["phase"] == "upstream_review" and pub.get("status") != "published" \
                 and isinstance(task_revision, int) and task_revision <= rec["revision"]:
             out.staged.append(("contributions", rec))
             pubs_report.append({"contribution": cid, "ignored": "superseded by exact-head handoff"})
@@ -671,10 +700,12 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             # The exact pre-dispatch canary defect is owned by its durable
             # recovery operation, never by generic timeout/hand-unblock logic.
             continue
-        if aw and datetime.fromisoformat(aw["deadline_at"]) <= now:
-            new = dict(c, active_work=None, activity="waiting_human", updated_at=iso,
-                       pending_human_action={"kind": "task_without_outcome", "requested_at": iso,
-                                             "reminded_at": None, "escalated_at": None})
+        if aw and c["phase"] != "handoff" and datetime.fromisoformat(aw["deadline_at"]) <= now:
+            new = compat.legacy_update(
+                c, "reconcile.work_timeout", active_work=None, activity="waiting_human",
+                updated_at=iso,
+                pending_human_action={"kind": "task_without_outcome", "requested_at": iso,
+                                      "reminded_at": None, "escalated_at": None})
             contributions[key] = new
             out.staged.append(("contributions", new))
             timed_out.append({"contribution": c["contribution_id"], "task": aw["task"],
@@ -744,12 +775,12 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     for key, c in list(contributions.items()):
         pp = c.get("pending_publication")
         if pp and not pp.get("exhausted") and not c.get("paused") \
-                and c["phase"] in lifecycle.WRITE_PHASES | {"investigation"} \
+                and c["phase"] in (lifecycle.WRITE_PHASES - {"handoff"}) | {"investigation"} \
                 and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
             if pp["attempts"] >= max_launches:
                 pending = dict(pp, exhausted=True)
-                changed = dict(
-                    c,
+                changed = compat.legacy_update(
+                    c, "reconcile.publish_retry_exhausted",
                     pending_publication=pending,
                     activity="waiting_human",
                     pending_human_action={
@@ -782,7 +813,7 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
 
 def mark_dispatched(rec: dict, *, now: str) -> dict:
     """The dispatcher staged Work for this contribution: an agent is running."""
-    out = lifecycle.observe_status(rec, activity="agent_running", now=now)
+    out = compat.observe_status(rec, activity="agent_running", now=now)
     return out.record
 
 
@@ -886,6 +917,30 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             return 1
         report = state_text_migration_report(migrated)
         text = json.dumps(report, indent=2)
+        if args.report:
+            Path(args.report).write_text(text)
+        else:
+            print(text)
+        return 0
+    # A record the lifecycle table does not describe is migrated in its own
+    # state-only commit, before anything reads it as ordinary state.
+    try:
+        migrated = state.apply_pending_record_migrations(root, policy, now=now.isoformat())
+    except state.StateError as error:
+        print(f"record migration refused: {error}", file=sys.stderr)
+        return 1
+    if migrated:
+        import state_commit
+        try:
+            changed = state_commit.records_from_checkout(root, "HEAD")
+        except state_commit.PublishError as error:
+            print(f"record migration found unrelated mutation: {error}", file=sys.stderr)
+            return 1
+        if set(changed) != set(migrated):
+            unexpected = sorted(set(changed) ^ set(migrated))
+            print(f"record migration found unrelated state paths: {unexpected}", file=sys.stderr)
+            return 1
+        text = json.dumps(migration_report("record_migration", migrated), indent=2)
         if args.report:
             Path(args.report).write_text(text)
         else:
