@@ -25,6 +25,7 @@ A request starts as an issue labelled `upstreaming-request` in the control repos
 | [Repository setup]({{ '/setup/' | relative_url }}) | Reviewed repository settings, bootstrap resources, and the canonical request fixture. |
 | [Integration contract]({{ '/integration/' | relative_url }}) | Ownership of lifecycle state, queue state, tracking issues, and remote operation receipts. |
 | [Investigation contract]({{ '/investigation/' | relative_url }}) | What the investigator researches and how its dossier is validated. |
+| [State machine]({{ '/state-machine/' | relative_url }}) | The contribution lifecycle state machine, generated from the lifecycle table in `lifecycle.py`, with its open decisions. |
 | [Migration inventory]({{ '/migration/' | relative_url }}) | How the earlier `python-wheels` implementation maps onto this repository. |
 
 ## Contributing to these pages
