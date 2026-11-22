@@ -239,6 +239,26 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(selected.requested_effects, [])
 
+    def test_new_head_in_handoff_clears_readiness_while_ci_pending(self):
+        """Plan 9.2: a new head clears old readiness; it is not repeated observation."""
+        rec = self.record()
+        handoff = self.final(self.observe(rec, self.snapshot(pending=False)), rec)
+        self.assertEqual((handoff["phase"], handoff["activity"]), ("handoff", "waiting_human"))
+        new_head = "c" * 40
+        snapshot = self.snapshot(pending=True)
+        snapshot.head_sha = new_head
+        for r in snapshot.runs:
+            r["head_sha"] = new_head
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": new_head}), \
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
+             mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
+            observation = observe_ci.observe(object(), contributions={"c": handoff}, operations={},
+                                             contracts={}, policy=policy(), now=NOW, evidence={})
+        final = self.final(observation, handoff)
+        self.assertTrue(observation.report[0].get("head_changed"))
+        self.assertEqual(final["fork"]["head_sha"], new_head)
+        self.assertNotEqual(final["activity"], "waiting_human")
+
     def test_live_green_pr_ci_without_uploaded_artifacts_enters_handoff(self):
         """Exact live shape: revision 5, no target contract, PR CI that never uploads."""
         rec = self.record()

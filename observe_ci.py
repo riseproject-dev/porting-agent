@@ -10,8 +10,9 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * read the CI snapshot for the exact head and evaluate it against the
   dossier's required jobs and expected wheels;
 * record an evidence record and move ``activity`` to ``waiting_ci``,
-  ``fix_needed`` (failed), ``waiting_human`` (approval/access) or ``idle``
-  with ``last_ci_evidence_id`` set (passed).
+  ``fix_needed`` (failed) or ``waiting_human`` (approval/access), and
+  enter ``handoff:waiting_human`` with ``last_ci_evidence_id`` set (passed,
+  plan 14.1).
 
 Returns staged records for the state publisher. Never writes remotely.
 """
@@ -221,9 +222,11 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
         new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
                         "missing": "waiting_ci", "not_executed": "waiting_ci",
                         "access_wait": "waiting_human"}[verdict.state]
-        if cur["phase"] == "handoff" and verdict.state != "failed":
-            # Plan 14.1: repeated observation preserves handoff:waiting_human.
-            # Only an executed failure on the candidate head leaves handoff.
+        if cur["phase"] == "handoff" and verdict.state != "failed" and not entry.get("head_changed"):
+            # Plan 14.1: repeated observation of the same candidate head
+            # preserves handoff:waiting_human. Plan 9.2: a new head clears old
+            # readiness, so it is observed normally. Only an executed failure
+            # on the candidate head leaves handoff.
             new_activity = "waiting_human"
             next_poll_at = None
         if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
