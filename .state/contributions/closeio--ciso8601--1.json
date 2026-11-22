@@ -1,0 +1,92 @@
+{
+  "active_operation_id": null,
+  "active_work": {
+    "attempt": 1,
+    "deadline_at": "2026-11-22T07:09:36.980391+00:00",
+    "dedupe_key": "closeio--ciso8601/1@0:investigation",
+    "dispatched_run_id": null,
+    "reason_ids": [],
+    "requested_at": "2026-11-22T01:09:36.980391+00:00",
+    "revision": 0,
+    "task": "investigation",
+    "tracking_issue": {
+      "description": "### Upstream repository\n\nhttps://github.com/closeio/ciso8601\n\n### PyPI distributions\n\nciso8601 (import: ciso8601)\n\n### Upstream target branch\n\nmaster\n\n### Additional notes\n\n",
+      "description_digest": "4a5a584a429838e79b79c512b2bdf9f5c49df33dc046969c5d958a254d6a20c8",
+      "id": 6536262483,
+      "number": 1,
+      "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+    }
+  },
+  "activity": "agent_running",
+  "admission_class": null,
+  "blocked_reason": null,
+  "budget": {
+    "attempts_used": 0,
+    "clusters": {},
+    "no_progress_streak": 0,
+    "policy_id": "2026-11-18.1-proposed",
+    "spent_estimate_usd_cents": 0
+  },
+  "clean_head_sha": null,
+  "contribution_id": "closeio--ciso8601/1",
+  "created_at": "2026-11-22T01:09:36.980391+00:00",
+  "debug_commits": [],
+  "distributions": [
+    "ciso8601"
+  ],
+  "dossier_evidence_id": null,
+  "follows": null,
+  "fork": null,
+  "generation": 0,
+  "handoff_approval": null,
+  "handoff_request": null,
+  "last_ci_evidence_id": null,
+  "merge": null,
+  "next_poll_at": null,
+  "owners": {
+    "backup": null,
+    "handoff_reviewer": null,
+    "primary": null,
+    "submitter": null
+  },
+  "parked_reason": null,
+  "paused": false,
+  "pending_human_action": null,
+  "pending_publication": null,
+  "phase": "investigation",
+  "prerequisite_ids": [],
+  "previous_phase": null,
+  "processed_pr_conversation_comment_ids": [],
+  "processed_publications": [],
+  "processed_review_comment_ids": [],
+  "processed_review_ids": [],
+  "project_id": "closeio--ciso8601",
+  "proposal_artifact": null,
+  "publication_operation_id": null,
+  "queue_claim_handle": null,
+  "queue_result_id": null,
+  "queue_work_id": null,
+  "refresh": null,
+  "release_acceptance": null,
+  "retirement": null,
+  "revision": 0,
+  "schema_version": 1,
+  "target_contract_id": null,
+  "terminal_reason": null,
+  "tracking_issue": {
+    "description": "### Upstream repository\n\nhttps://github.com/closeio/ciso8601\n\n### PyPI distributions\n\nciso8601 (import: ciso8601)\n\n### Upstream target branch\n\nmaster\n\n### Additional notes\n\n",
+    "description_digest": "4a5a584a429838e79b79c512b2bdf9f5c49df33dc046969c5d958a254d6a20c8",
+    "id": 6536262483,
+    "notes": "",
+    "number": 1,
+    "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+  },
+  "updated_at": "2026-11-22T01:09:36.980391+00:00",
+  "upstream": {
+    "base_ref": "master",
+    "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "full_name": "closeio/ciso8601",
+    "repository_id": 20633992
+  },
+  "upstream_pr": null
+}
