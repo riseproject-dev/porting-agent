@@ -1,0 +1,79 @@
+{
+  "admission_class": null,
+  "allowed_operations": [],
+  "allowed_paths": [
+    ".github/workflows/*"
+  ],
+  "base_ref": "master",
+  "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+  "context": {
+    "reason_evidence": [],
+    "requested_at": "2026-11-22T01:26:35.052909+00:00",
+    "tracking_issue": {
+      "description": "### Upstream repository\n\nhttps://github.com/closeio/ciso8601\n\n### PyPI distributions\n\nciso8601 (import: ciso8601)\n\n### Upstream target branch\n\nmaster\n\n### Additional notes\n\nMigration canary based on https://github.com/riseproject-dev/python-wheels/issues/631.\nThe downstream riscv64 wheel build was added in python-wheels#625.\nThe earlier investigation found that PyPI ciso8601 2.4.1 had no riscv64 wheel,\nupstream issue closeio/ciso8601#181 requested support, and the project is a pure\nC extension using setuptools and cibuildwheel with no third-party native library.\nThe earlier proposal selected configuration_integration and these bounded paths:\n.github/workflows/build-wheels.yml, pyproject.toml, CHANGELOG.md, and tox.ini.\nThe expected topology is an ubuntu-24.04-riscv row with CIBW_ARCHS=riscv64,\nfollowing the project's existing native aarch64 row.\nThe previous implementation reached handoff/waiting_human at revision 9 and\nreported clean head 9339ec54ae594458b0b9c6039bb55e9b2b13eff7.\nTreat all previous dossier, CI, fork, PR, and head data as migration evidence.\nDo not treat it as current authorization or verified state without the migration\nand readback gates in this plan.\n",
+      "description_digest": "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
+      "id": 6536262483,
+      "number": 1,
+      "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+    }
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "distributions": [
+    "ciso8601"
+  ],
+  "effect_contract": {
+    "outputs": [
+      {
+        "max": 1,
+        "min": 0,
+        "type": "noop"
+      },
+      {
+        "max": 1,
+        "min": 0,
+        "type": "report_incomplete"
+      },
+      {
+        "max": 1,
+        "min": 0,
+        "type": "report_missing_tool"
+      },
+      {
+        "max": 1,
+        "min": 0,
+        "type": "report_missing_data"
+      },
+      {
+        "max": 1,
+        "min": 1,
+        "type": "upload_artifact"
+      }
+    ],
+    "version": 1
+  },
+  "expected_head": null,
+  "fork": null,
+  "fork_name": null,
+  "fork_repository_id": null,
+  "legacy_scope_extension": false,
+  "plan": "Investigate this upstream project and produce the dossier for a riscv64 wheel contribution. Read the full tracking issue description in context.tracking_issue and fetch its comments. Research upstream issues, open/closed PRs, CI/history, docs, websites, mailing lists, blogs, maintainers and their past reviews before recommending scope. Query project_graph_query for the dependency graph. Check sw-ecosystem/project-reports and extensively use any matching report, cross-checking it with current upstream sources. The dossier must satisfy schemas/dossier.schema.json, including complete research records with source URLs and findings for every category. Missing or unavailable required research is incomplete work: do not finish completed. Do not modify any repository. Return the dossier JSON as the proposal artifact.",
+  "reason_ids": [],
+  "ref": "riscv64",
+  "resource_scope": {
+    "resources": [
+      {
+        "host": "github.com",
+        "repository": "riseproject-dev/porting-agent",
+        "repository_id": "1356932403"
+      }
+    ],
+    "version": 1
+  },
+  "review_scope_extension": false,
+  "revision": 0,
+  "task": "investigation",
+  "tracking_issue": 1,
+  "upstream": "closeio/ciso8601",
+  "upstream_facing": false,
+  "upstream_repository_id": 20633992
+}

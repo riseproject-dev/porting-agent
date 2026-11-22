@@ -85,9 +85,16 @@ def request(method: str, path: str, token: str, body: dict | None = None):
 
 
 def trusted_runtime(env: dict[str, str]) -> bool:
-    return env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_REPOSITORY") == CONTROL_REPO \
-        and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch" \
-        and env.get("GITHUB_WORKFLOW") in ("Porting investigator", "Porting publish retry")
+    if env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_REPOSITORY") != CONTROL_REPO:
+        return False
+    if env.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and env.get("GITHUB_WORKFLOW") in (
+        "Porting investigator", "Porting publish retry"
+    ):
+        return True
+    return (
+        env.get("GITHUB_WORKFLOW") == "Porting controller"
+        and env.get("PORTING_DOSSIER_RECOVERY") == "1"
+    )
 
 
 def publish(dossier: dict, proposal: dict, task: dict, result: dict, token: str, run_id: str,

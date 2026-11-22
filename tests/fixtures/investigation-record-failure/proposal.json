@@ -1,0 +1,12 @@
+{
+ "schema_version": 1,
+ "contribution_id": "closeio--ciso8601/1",
+ "outcome": "investigation",
+ "expected_revision": 0,
+ "expected_head": null,
+ "operation": "none",
+ "ref": "riscv64",
+ "reconstruction_base": null,
+ "progress": "new_causal_evidence",
+ "diagnosis": "Develop recommended (configuration_integration): add ubuntu-24.04-riscv/riscv64 row to build-wheels.yml following native aarch64 precedent, riscv64 in pyproject cibuildwheel linux archs, CHANGELOG note. No native source changes, no dependency wheel gaps (setuptools, wheel, pytz are pure). Risks: runner app must be installed on closeio, no upstream riscv CI run yet, PR #176 conflicts."
+}

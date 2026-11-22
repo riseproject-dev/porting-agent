@@ -19,3 +19,7 @@ The control controller and Pages status workflows are now owned by `controller.y
 ## Milestone 4 update
 
 `dispatcher.md` and `investigator.md` now own native Work admission and authenticated read-only research. Their generated locks are compiler-owned outputs of pinned gh-aw v1.2.2. The controller can automatically select the queued canonical ciso8601 contribution, commit its immutable task, launch the dispatcher, fold only an exact verified investigation Result, and recover through explicit continuations plus schedule/workflow completion fallbacks. The four Milestone 4 workflow contract deferrals are restored; worker and destination writer contracts remain assigned to Milestones 5 and 6.
+
+### Milestone 4 live recovery corrections
+
+Flattened artifact extraction now resolves control state through `common.repository_root()` rather than package-depth arithmetic. Trusted controller collection can recover an investigation record job interrupted after exact queue Result resolution by revalidating the partial trusted publication; it does not reset or resubmit Work. Pages deployment now waits for exact current-run artifact readback and retries the official deploy action once after bounded rediscovery.

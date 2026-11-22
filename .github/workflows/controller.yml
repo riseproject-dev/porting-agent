@@ -148,6 +148,18 @@ jobs:
             unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
               || { rm -rf "publications/$run"; continue; }
             printf '%s' "$id" > "publications/$run/artifact-id"
+            if [ ! -f "publications/$run/outcome.json" ]; then
+              if [ -f "publications/$run/task.json" ] && [ -f "publications/$run/result.json" ] \
+                  && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/dossier.json" ]; then
+                uv run --locked python -m investigation_recovery \
+                  --directory "publications/$run" --run-id "$run" \
+                  || { echo "trusted investigation recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
+              else
+                echo "incomplete investigation publication for $run" >&2
+                rm -rf "publications/$run"
+                continue
+              fi
+            fi
           done
       - name: Reconcile deterministic state locally
         env:
@@ -194,6 +206,25 @@ jobs:
           repositories: porting-agent
           permission-contents: read
           permission-issues: write
+      - name: Publish comments for recovered verified investigations
+        if: steps.policy.outputs.read_only == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+          PORTING_COMMENT_AUTHOR: riseproject-dev[bot]
+          PORTING_DOSSIER_RECOVERY: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p recovered-dossier-comments
+          for marker in publications/*/recovered-investigation; do
+            [ -f "$marker" ] || continue
+            directory=${marker%/recovered-investigation}
+            run=${directory##*/}
+            uv run --locked python -m dossier_comment \
+              --dossier "$directory/dossier.json" --proposal "$directory/proposal.json" \
+              --task "$directory/task.json" --result "$directory/result.json" \
+              --out "recovered-dossier-comments/$run.json"
+          done
       # The one canonical canary repair has a durable operation intent in the
       # first state commit. The trusted issue edit is exact-resource scoped and
       # a second state-only commit records exact GET readback. A lost response
@@ -270,6 +301,7 @@ jobs:
           path: |
             report.json
             canary-recovery/receipt.json
+            recovered-dossier-comments/*.json
             status-ledger/receipts.json
             command-feedback/receipts.json
             command-reactions/receipts.json

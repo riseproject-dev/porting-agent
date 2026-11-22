@@ -18,6 +18,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+from common import repository_root
+
 ALLOWED = {"proposal.json": 256 * 1024, "patches.mbox": 4 * 1024 * 1024, "dossier.json": 256 * 1024,
            "notes.md": 64 * 1024}
 MAX_TOTAL = 5 * 1024 * 1024
@@ -79,7 +81,7 @@ def main(argv: list[str]) -> int:
         return 2
     out = Path(argv[3])
     got = extract(Path(argv[2]), out)
-    write_record(Path(__file__).resolve().parents[1], out / "task.json", out)
+    write_record(repository_root(), out / "task.json", out)
     print(json.dumps({"extracted": got}))
     return 0
 

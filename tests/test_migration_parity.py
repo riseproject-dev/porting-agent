@@ -73,6 +73,25 @@ class TestRootModuleMigration(unittest.TestCase):
             self.assertNotRegex(source, r"(?m)^\s*(from|import)\s+upstreaming\b")
             self.assertNotRegex(source, r"[\"']upstreaming/")
 
+    def test_flattened_modules_have_no_stale_package_root_arithmetic(self):
+        for path in ROOT.glob("*.py"):
+            source = path.read_text()
+            self.assertNotRegex(source, r"Path\(__file__\).*parents\[")
+            self.assertNotIn("PACKAGE_DIR", source)
+        expected_script_roots = {
+            "scripts/audit_repository_settings.py": "parents[1]",
+            "scripts/dependencies/sync.py": "parents[2]",
+        }
+        observed = {}
+        for path in ROOT.glob("scripts/**/*.py"):
+            matches = re.findall(r"parents\[[0-9]+\]", path.read_text())
+            if matches:
+                observed[path.relative_to(ROOT).as_posix()] = matches
+        self.assertEqual(
+            observed,
+            {relative: [expression] for relative, expression in expected_script_roots.items()},
+        )
+
     def test_schema_policy_and_state_resolution_ignore_process_cwd(self):
         with tempfile.TemporaryDirectory() as temporary:
             cwd = Path(temporary)

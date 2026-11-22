@@ -33,6 +33,10 @@ class TestDossierComment(unittest.TestCase):
         self.assertTrue(dossier_comment.trusted_runtime(env))
         env["GITHUB_WORKFLOW"] = "Untrusted workflow"
         self.assertFalse(dossier_comment.trusted_runtime(env))
+        env["GITHUB_WORKFLOW"] = "Porting controller"
+        self.assertFalse(dossier_comment.trusted_runtime(env))
+        env["PORTING_DOSSIER_RECOVERY"] = "1"
+        self.assertTrue(dossier_comment.trusted_runtime(env))
 
     def test_missing_result_identity_is_rejected(self):
         result = self.result(); del result["claim_id"]

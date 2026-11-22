@@ -171,12 +171,30 @@ class TestStatusSite(unittest.TestCase):
         website = yaml.safe_load((WORKFLOWS / "website.yml").read_text())
         self.assertEqual(
             website["permissions"],
-            {"contents": "read", "pages": "write", "id-token": "write"},
+            {
+                "actions": "read",
+                "contents": "read",
+                "pages": "write",
+                "id-token": "write",
+            },
         )
         deploy = website["jobs"]["deploy"]
         self.assertEqual(deploy["environment"]["name"], "github-pages")
         uses = [step.get("uses", "") for step in deploy["steps"]]
-        self.assertTrue(any(item.startswith("actions/deploy-pages@") for item in uses))
+        self.assertEqual(
+            sum(item.startswith("actions/deploy-pages@") for item in uses), 2
+        )
+        first = next(step for step in deploy["steps"] if step.get("id") == "deployment")
+        retry = next(
+            step for step in deploy["steps"] if step.get("id") == "deployment-retry"
+        )
+        self.assertTrue(first["continue-on-error"])
+        self.assertEqual(retry["if"], "steps.deployment.outcome == 'failure'")
+        discovery = next(
+            step for step in deploy["steps"] if step.get("id") == "pages-artifact"
+        )
+        self.assertIn("pages_artifact.py discover", discovery["run"])
+        self.assertIn("--attempts 6", discovery["run"])
         self.assertFalse(any("peaceiris" in item for item in uses))
 
 
