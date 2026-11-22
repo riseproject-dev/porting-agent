@@ -15,12 +15,13 @@ A request starts as an issue labelled `upstreaming-request` in the control repos
 - `.state/` on `main` is lifecycle authority. Only schema-valid state may be published, in a plain fast-forward commit.
 - Pull-request validation is read-only and receives no App private key, destination token, or package credential.
 - The investigator and the worker run as pinned agentic workflows. Neither receives a destination credential; trusted jobs verify and publish their results.
-- The public site is rebuilt from committed state whenever that state or these pages change.
+- The [status page]({{ '/status/' | relative_url }}) is regenerated from committed state whenever that state or these pages change.
 
 ## Pages
 
 | Page | Contents |
 |:-----|:---------|
+| [Status]({{ '/status/' | relative_url }}) | Current state of every contribution, generated from committed lifecycle state. |
 | [Repository setup]({{ '/setup/' | relative_url }}) | Reviewed repository settings, bootstrap resources, and the canonical request fixture. |
 | [Integration contract]({{ '/integration/' | relative_url }}) | Ownership of lifecycle state, queue state, tracking issues, and remote operation receipts. |
 | [Investigation contract]({{ '/investigation/' | relative_url }}) | What the investigator researches and how its dossier is validated. |

@@ -70,7 +70,7 @@ jobs:
         with:
           enable-cache: false
       - name: Generate status from committed lifecycle state
-        run: uv run --locked python scripts/generate_doc.py --output docs/index.md
+        run: uv run --locked python scripts/generate_doc.py --output docs/status/index.md
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:
@@ -129,6 +129,9 @@ jobs:
           config["baseurl"] = baseurl
           path.write_text(yaml.safe_dump(config, sort_keys=False))
           PY
+            # The preview gets the same status page as the main site, so links resolve.
+            uv run --locked python scripts/generate_doc.py \
+              --output "$PREVIEW_ROOT/$1/docs/status/index.md"
           }
           build() {
             # The GitHub Pages builder image runs Jekyll in safe mode with only the

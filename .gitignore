@@ -5,3 +5,4 @@ __pycache__/
 htmlcov/
 .ruff_cache/
 trigger-report.json
+docs/status/index.md

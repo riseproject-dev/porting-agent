@@ -13,7 +13,7 @@ The repository is being migrated in reviewed milestones. Milestones 1 through 5 
 - The controller uses the control App only after deterministic reconciliation; destination credentials are absent.
 - The investigator receives only scoped read access, returns one verified artifact Result, and cannot push or mutate upstream resources.
 - The worker model receives no destination credential. Its operator-approved unsandboxed process reaches host Docker/QEMU through a custom engine boundary that preserves only captured Anthropic provider authentication while stripping and verifying repository, App, destination, Actions, cloud, and SSH credentials before tools run. A separate trusted job reconstructs and publishes only a verified proposal using a token narrowed to one fork and an exact-head lease.
-- Public status is generated at <https://riseproject-dev.github.io/porting-agent/> from committed state.
+- Public status is generated at <https://riseproject-dev.github.io/porting-agent/status/> from committed state. The documentation site at <https://riseproject-dev.github.io/porting-agent/> renders `docs/`.
 - The control repository is `riseproject-dev/porting-agent`; destination forks remain in `riseproject-upstreaming`.
 
 ## Local validation

@@ -56,9 +56,9 @@ def render(states: list[dict]) -> str:
     states = sorted(states, key=lambda state: state["upstream"]["full_name"].casefold())
     lines = [
         "---",
-        "title: Porting status",
-        "layout: default",
-        "permalink: /",
+        "title: Status",
+        "nav_order: 2",
+        "permalink: /status/",
         "---",
         "",
         "# Porting status",
@@ -101,7 +101,7 @@ def render(states: list[dict]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", type=Path, default=Path(".state/contributions"))
-    parser.add_argument("--output", type=Path, default=Path("docs/index.md"))
+    parser.add_argument("--output", type=Path, default=Path("docs/status/index.md"))
     args = parser.parse_args()
     states = [json.loads(path.read_text()) for path in args.state_dir.glob("*.json")]
     args.output.parent.mkdir(parents=True, exist_ok=True)

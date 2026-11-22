@@ -158,7 +158,9 @@ class TestStatusSite(unittest.TestCase):
     def test_empty_tree_is_stable_and_project_page_is_rooted(self):
         rendered = generate_doc.render([])
         self.assertIn("# Porting status", rendered)
-        self.assertIn("permalink: /", rendered)
+        self.assertIn("permalink: /status/", rendered)
+        self.assertIn("title: Status", rendered)
+        self.assertIn("nav_order: 2", rendered)
         self.assertIn("| Project | Tracking issue |", rendered)
         self.assertNotIn("None", rendered)
 
@@ -299,6 +301,11 @@ class TestDocsPreviews(unittest.TestCase):
         build = next(s for s in self.steps() if s.get("id") == "previews")
         self.assertIn('INPUT_DESTINATION="_site/pr/$1"', build["run"])
         self.assertIn('"/porting-agent/pr/$1"', build["run"])
+        self.assertIn('--output "$PREVIEW_ROOT/$1/docs/status/index.md"', build["run"])
+        status = next(
+            s for s in self.steps() if s.get("name") == "Generate status from committed lifecycle state"
+        )
+        self.assertIn("--output docs/status/index.md", status["run"])
         comment = self.jobs["preview-comment"]
         self.assertEqual(comment["permissions"], {"pull-requests": "write"})
         self.assertEqual(comment["needs"], "deploy")
