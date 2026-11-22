@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Section 21: state publisher final-tree checks, hostile publisher inputs."""
 
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import publisher
 import state
@@ -118,6 +120,134 @@ class TestStateDiff(unittest.TestCase):
         (directory / "EXAMPLE--PROJ--12.json").write_text(canonical_json(second))
         with self.assertRaises(state.StateError):
             store.load_all("contributions")
+
+    def test_store_normalizes_all_untrusted_state_text_paths(self):
+        dash = chr(0x2014)
+        st = state.StateStore(self.repo, self.p)
+        evidence_kinds = ("dossier", "rehearsal", "ci", "human_relay")
+        paths = []
+        for index, evidence_kind in enumerate(evidence_kinds):
+            evidence = {
+                "schema_version": 1,
+                "evidence_id": f"evidence-{index}",
+                "contribution_id": self.rec["contribution_id"],
+                "kind": evidence_kind,
+                "policy_version": "test",
+                "collected_at": self.rec["created_at"],
+                "summary": f"model{dash}summary",
+                "limitations": [f"limit{dash}one"],
+                "data": {"proposal": {"diagnosis": f"proposal{dash}text"}},
+            }
+            paths.append(st.stage("evidence", evidence))
+            self.assertIn(dash, evidence["summary"], "staging must not mutate its input")
+        event_path = st.stage("events", {
+            "schema_version": 1,
+            "contribution_id": self.rec["contribution_id"],
+            "sequence": 0,
+            "at": self.rec["created_at"],
+            "kind": "receipt",
+            "from": {"detail": f"before{dash}receipt"},
+            "to": {},
+            "cause": {"type": "observation", "id": f"receipt{dash}1"},
+            "revision_bumped": False,
+        })
+        operation_path = st.stage("operations", {
+            "schema_version": 1,
+            "operation_id": "operation-1",
+            "contribution_id": self.rec["contribution_id"],
+            "revision": self.rec["revision"],
+            "kind": "notification",
+            "policy_version": "test",
+            "target": {"repository": "example/proj"},
+            "proposed": {"marker": f"proposal{dash}receipt"},
+            "status": "confirmed",
+            "discovery": [{"at": self.rec["created_at"], "result": "confirmed",
+                           "detail": f"receipt{dash}accepted"}],
+            "created_at": self.rec["created_at"],
+            "updated_at": self.rec["created_at"],
+        })
+        st.write_staged()
+        for path in paths + [event_path, operation_path]:
+            text = (self.repo / path).read_text()
+            self.assertNotIn(dash, text)
+            self.assertIn("--", text)
+
+    def test_final_tree_rejects_forbidden_text_even_when_json_escapes_it(self):
+        dash = chr(0x2014)
+        bad = dict(self.rec, blocked_reason=f"model{dash}text")
+        encoded = json.dumps(bad, ensure_ascii=True) + "\n"
+        candidate = commit_files(self.repo, {self.path: encoded})
+        problems = self.check(candidate).problems
+        self.assertTrue(any("U+2014" in problem for problem in problems), problems)
+
+    def test_reviewed_legacy_text_migration_is_exact_and_evented(self):
+        dash = chr(0x2014)
+        evidence = {
+            "schema_version": 1,
+            "evidence_id": "legacy-rehearsal",
+            "contribution_id": self.rec["contribution_id"],
+            "kind": "rehearsal",
+            "policy_version": "test",
+            "collected_at": self.rec["created_at"],
+            "summary": f"prepared{dash}single commit",
+            "limitations": [],
+            "data": {},
+        }
+        path = state.record_path("evidence", evidence)
+        data = canonical_json(evidence).encode()
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        unrelated = self.repo / ".state/projects/unrelated.json"
+        unrelated.parent.mkdir(parents=True, exist_ok=True)
+        unrelated.write_text("unchanged\n")
+        migration = state.LegacyTextMigration(
+            path=path,
+            sha256=hashlib.sha256(data).hexdigest(),
+            contribution_id=self.rec["contribution_id"],
+            migration_id="test-u2014-migration",
+        )
+        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)):
+            written = state.apply_pending_text_migration(
+                self.repo, self.p, now=self.rec["created_at"]
+            )
+        self.assertEqual(len(written), 2)
+        self.assertIn(path, written)
+        self.assertEqual(unrelated.read_text(), "unchanged\n")
+        self.assertNotIn(dash, target.read_text())
+        events = state.StateStore(self.repo, self.p).load_all("events")
+        event = next(iter(events.values()))
+        self.assertEqual(event["kind"], "state_text_normalized")
+        self.assertEqual(event["cause"], {"type": "migration", "id": migration.migration_id})
+
+    def test_legacy_text_migration_fails_closed_on_any_blob_change(self):
+        dash = chr(0x2014)
+        evidence = {
+            "schema_version": 1,
+            "evidence_id": "legacy-rehearsal",
+            "contribution_id": self.rec["contribution_id"],
+            "kind": "rehearsal",
+            "policy_version": "test",
+            "collected_at": self.rec["created_at"],
+            "summary": f"unexpected{dash}text",
+        }
+        path = state.record_path("evidence", evidence)
+        target = self.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(canonical_json(evidence))
+        migration = state.LegacyTextMigration(
+            path=path,
+            sha256="0" * 64,
+            contribution_id=self.rec["contribution_id"],
+            migration_id="test-u2014-migration",
+        )
+        with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)):
+            with self.assertRaisesRegex(state.StateError, "expected"):
+                state.apply_pending_text_migration(
+                    self.repo, self.p, now=self.rec["created_at"]
+                )
+        self.assertIn(dash, target.read_text())
+        self.assertFalse((self.repo / ".state/events").exists())
 
     def test_store_roundtrip_and_event_sequence(self):
         st = state.StateStore(self.repo, self.p)

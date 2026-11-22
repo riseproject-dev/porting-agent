@@ -21,12 +21,15 @@ reviewed publisher code are what keep the state writer inside
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import schemas
 from common import (
@@ -56,6 +59,35 @@ _ID_KEY = {
     "evidence": "evidence_id",
 }
 
+# State is rendered into the repository, whose text contract forbids this
+# punctuation. Normalize every untrusted string at the single state staging
+# boundary and reject it again during final-tree validation. The replacement is
+# deliberately ASCII and meaning-preserving rather than a broad Unicode fold.
+_FORBIDDEN_TEXT_REPLACEMENTS = {"\u2014": "--"}
+
+
+@dataclass(frozen=True)
+class LegacyTextMigration:
+    path: str
+    sha256: str
+    contribution_id: str
+    migration_id: str
+
+
+# One already-committed worker summary predates the staging boundary. This
+# reviewed, blob-bound migration is intentionally not a general repair tool.
+LEGACY_TEXT_MIGRATIONS = (
+    LegacyTextMigration(
+        path=(
+            ".state/evidence/"
+            "rehearsal-closeio--ciso8601--1-r3-44982902579.json"
+        ),
+        sha256="34572c0ac0aa1214d2d12c9ff507634307ced173a2677e70b58f649373f1a149",
+        contribution_id="closeio--ciso8601/1",
+        migration_id="state-text-u2014-34572c0ac0aa",
+    ),
+)
+
 
 class StateError(ValueError):
     pass
@@ -63,6 +95,42 @@ class StateError(ValueError):
 
 def find_secrets(text: str) -> list[str]:
     return [p.pattern for p in SECRET_PATTERNS if p.search(text)]
+
+
+def normalize_state_text(value: Any) -> Any:
+    """Return a deep copy whose strings satisfy repository text policy.
+
+    Object keys are text too. A replacement that would collapse two keys is
+    rejected rather than silently discarding either untrusted value.
+    """
+    if isinstance(value, str):
+        for forbidden, replacement in _FORBIDDEN_TEXT_REPLACEMENTS.items():
+            value = value.replace(forbidden, replacement)
+        return value
+    if isinstance(value, list):
+        return [normalize_state_text(item) for item in value]
+    if isinstance(value, dict):
+        normalized = {}
+        for key, item in value.items():
+            clean_key = normalize_state_text(key) if isinstance(key, str) else key
+            if clean_key in normalized:
+                raise StateError(f"state text normalization collides at key {clean_key!r}")
+            normalized[clean_key] = normalize_state_text(item)
+        return normalized
+    return copy.deepcopy(value)
+
+
+def _forbidden_state_text(value: Any) -> str | None:
+    if isinstance(value, str):
+        return next((char for char in _FORBIDDEN_TEXT_REPLACEMENTS if char in value), None)
+    if isinstance(value, list):
+        return next((found for item in value if (found := _forbidden_state_text(item))), None)
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found = _forbidden_state_text(key) or _forbidden_state_text(item)
+            if found:
+                return found
+    return None
 
 
 def record_path(kind: str, record: dict) -> str:
@@ -99,6 +167,8 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         return problems + [f"{path}: not UTF-8 JSON ({e})"]
     if find_secrets(text):
         problems.append(f"{path}: content matches a credential pattern")
+    if _forbidden_state_text(record):
+        problems.append(f"{path}: content contains forbidden repository text U+2014")
     for e in schemas.errors(STATE_KINDS[kind], record):
         problems.append(f"{path}: {e}")
     if not problems:
@@ -246,6 +316,9 @@ class StateStore:
         return max(existing + staged, default=-1) + 1
 
     def stage(self, kind: str, record: dict) -> str:
+        # Everything entering durable state may contain API, human, model, or
+        # receipt text. Normalize it here instead of relying on every producer.
+        record = normalize_state_text(record)
         if kind == "events":
             record = dict(record, sequence=self.next_event_sequence(record["contribution_id"]))
         schemas.validate(STATE_KINDS[kind], record)
@@ -272,6 +345,61 @@ class StateStore:
     def total_bytes(self) -> int:
         base = self.root / STATE_ROOT
         return sum(p.stat().st_size for p in base.rglob("*") if p.is_file()) if base.exists() else 0
+
+
+def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[str]:
+    """Normalize the one reviewed legacy blob and append its migration event.
+
+    A matching path with any unexpected content fails closed. When a migration
+    is pending, callers must publish only these returned state paths before
+    doing ordinary reconciliation, so unrelated lifecycle mutation cannot ride
+    in the repair commit.
+    """
+    root = Path(root)
+    pending: list[tuple[LegacyTextMigration, dict]] = []
+    for migration in LEGACY_TEXT_MIGRATIONS:
+        path = root / migration.path
+        if not path.exists():
+            continue
+        data = path.read_bytes()
+        try:
+            record = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise StateError(f"{migration.path}: legacy text migration is not valid JSON") from error
+        if not _forbidden_state_text(record):
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != migration.sha256:
+            raise StateError(
+                f"{migration.path}: legacy text migration expected {migration.sha256}, got {digest}"
+            )
+        normalized = normalize_state_text(record)
+        expected_path = record_path("evidence", normalized)
+        if expected_path != migration.path or normalized.get("contribution_id") != migration.contribution_id:
+            raise StateError(f"{migration.path}: legacy text migration identity mismatch")
+        pending.append((migration, normalized))
+    if not pending:
+        return []
+    if len(pending) != 1:
+        raise StateError("multiple legacy text migrations cannot share one repair commit")
+    migration, normalized = pending[0]
+    store = StateStore(root, policy)
+    evidence_path = store.stage("evidence", normalized)
+    event_path = store.stage("events", {
+        "schema_version": 1,
+        "contribution_id": migration.contribution_id,
+        "sequence": 0,
+        "at": now,
+        "kind": "state_text_normalized",
+        "from": {},
+        "to": {},
+        "cause": {"type": "migration", "id": migration.migration_id},
+        "revision_bumped": False,
+    })
+    written = store.write_staged()
+    if sorted(written) != sorted((evidence_path, event_path)):
+        raise StateError("legacy text migration attempted an unrelated state mutation")
+    return written
 
 
 def cmd_validate(args: argparse.Namespace) -> int:

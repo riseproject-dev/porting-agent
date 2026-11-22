@@ -38,6 +38,7 @@ import lifecycle
 import observe_ci
 import recovery
 import schemas
+import state
 from common import INTAKE_LABEL, load_policy, repository_root, safe_id
 
 
@@ -764,6 +765,22 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
     policy = load_policy()
     root = Path(args.root) if args.root else repository_root()
+    now = datetime.now(timezone.utc)
+    try:
+        migrated = state.apply_pending_text_migration(root, policy, now=now.isoformat())
+    except state.StateError as error:
+        print(f"legacy state text migration refused: {error}", file=sys.stderr)
+        return 1
+    if migrated:
+        # Keep the reviewed legacy repair in its own state-only commit. In
+        # particular, do not disturb active Work while its worker is running.
+        report = {"state_text_migration": {"written": migrated}, "written": migrated}
+        text = json.dumps(report, indent=2)
+        if args.report:
+            Path(args.report).write_text(text)
+        else:
+            print(text)
+        return 0
     store, snapshot = load_snapshot(root, policy)
     api = collect.Api()
     publications = _publication_outcomes(args.publications)
@@ -804,7 +821,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             queue = queue_result.queue_work_states(args.gh_aw, collect.CONTROL_REPO)
         except (collect.CollectError, OSError, ValueError) as error:
             print(f"dispatch recovery skipped this tick: {error}", file=sys.stderr)
-    now = datetime.now(timezone.utc)
     if args.offline:
         observed_pressure = capacity.Pressure(ok=False, reason="offline")
     else:
