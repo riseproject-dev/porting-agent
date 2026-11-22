@@ -115,6 +115,8 @@ pre-agent-steps:
       SH
       chmod 0755 "$extension/gh-act"
       gh act --version
+  - name: Split Pi provider authentication from untrusted tool environment
+    run: uv run --locked python scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"
   - name: Install pinned Pi and create credential-free unsandboxed engine wrapper
     run: |
       set -euo pipefail
@@ -123,7 +125,7 @@ pre-agent-steps:
       [ -x "$real" ] || { echo "Pi installation missing"; exit 1; }
       cat > /tmp/gh-aw/agent/pi-scrubbed <<SH
       #!/bin/sh
-      for name in GITHUB_TOKEN GH_TOKEN ANTHROPIC_API_KEY COPILOT_GITHUB_TOKEN \
+      for name in GITHUB_TOKEN GH_TOKEN COPILOT_GITHUB_TOKEN \
         GH_AW_GITHUB_TOKEN GH_AW_GITHUB_MCP_SERVER_TOKEN \
         RISEPROJECT_APP_PRIVATE_KEY RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY \
         UPSTREAMING_FORK_TOKEN ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN \
@@ -133,7 +135,7 @@ pre-agent-steps:
       for name in \$(env | sed -n 's/^\\([^=]*TOKEN[^=]*\\)=.*/\\1/p'); do
         unset "\$name"
       done
-      if env | grep -Eq '^(GITHUB_TOKEN|GH_TOKEN|ANTHROPIC_API_KEY|COPILOT_GITHUB_TOKEN|GH_AW_[A-Z_]*TOKEN|RISEPROJECT_[A-Z_]*|UPSTREAMING_FORK_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|AWS_[A-Z_]+|SSH_AUTH_SOCK)='; then
+      if env | grep -Eq '^(GITHUB_TOKEN|GH_TOKEN|COPILOT_GITHUB_TOKEN|GH_AW_[A-Z_]*TOKEN|RISEPROJECT_[A-Z_]*|UPSTREAMING_FORK_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|AWS_[A-Z_]+|SSH_AUTH_SOCK)='; then
         echo "credential remained in model environment" >&2
         exit 1
       fi
