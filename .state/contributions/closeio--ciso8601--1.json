@@ -1,7 +1,7 @@
 {
-  "active_operation_id": "op-4ec40d712ec22cc25bc303a3",
+  "active_operation_id": "op-e03bac0b61af5474b8c24727",
   "active_work": null,
-  "activity": "waiting_ci",
+  "activity": "waiting_capacity",
   "admission_class": "configuration_integration",
   "blocked_reason": null,
   "budget": {
@@ -26,7 +26,7 @@
     "head_ref": "riscv64",
     "head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
     "name": "riseproject-upstreaming/ciso8601",
-    "pr_number": null,
+    "pr_number": 1,
     "repository_id": 1467208233
   },
   "generation": 0,
@@ -97,7 +97,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T09:31:50.824111+00:00",
+  "updated_at": "2026-11-22T09:32:34.267413+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
