@@ -22,7 +22,7 @@ The control-plane Python package is flattened into repository-root modules, sche
 
 `controller.yml` owns the controller and `website.yml` owns the public site. Lifecycle authority is `.state/`; publication is a bounded plain fast-forward under `protect-main-history`, with no bypass or force path. Tracking issue ledgers, deterministic failure replies, and terminal reactions are recoverable from durable events and command receipts.
 
-Flattened artifact extraction resolves control state through `common.repository_root()` rather than package-depth arithmetic. Trusted controller collection can recover an investigation record job interrupted after exact queue Result resolution by revalidating the partial trusted publication; it does not reset or resubmit Work. Pages deployment waits for exact current-run artifact readback and retries the official deploy action once after bounded rediscovery.
+Flattened artifact extraction resolves control state through `common.repository_root()` rather than package-depth arithmetic. Trusted controller collection can recover an investigation record job interrupted after exact queue Result resolution by revalidating the partial trusted publication; it does not reset or resubmit Work. Pages deployment waits until the uploaded artifact is visible through the same Actions Results lookup the official deploy action uses, then deploys; a failed deployment is retried up to three more times after fixed waits of 15, 45 and 90 seconds, each followed by the same bounded readback, and the job fails with an explicit error after the last attempt.
 
 ## Investigation
 

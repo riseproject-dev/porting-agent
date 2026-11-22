@@ -176,7 +176,6 @@ class TestStatusSite(unittest.TestCase):
         self.assertEqual(
             website["permissions"],
             {
-                "actions": "read",
                 "contents": "read",
                 "pages": "write",
                 "id-token": "write",
@@ -188,21 +187,47 @@ class TestStatusSite(unittest.TestCase):
         self.assertNotIn("status site", (WORKFLOWS / "website.yml").read_text().lower())
         deploy = website["jobs"]["deploy"]
         self.assertEqual(deploy["environment"]["name"], "github-pages")
-        uses = [step.get("uses", "") for step in deploy["steps"]]
+        steps = deploy["steps"]
+        uses = [step.get("uses", "") for step in steps]
+        by_id = {step["id"]: step for step in steps if "id" in step}
+        deploys = [s for s in steps if s.get("uses", "").startswith("actions/deploy-pages@")]
         self.assertEqual(
-            sum(item.startswith("actions/deploy-pages@") for item in uses), 2
+            [s["id"] for s in deploys],
+            ["deployment", "deployment-2", "deployment-3", "deployment-4"],
         )
-        first = next(step for step in deploy["steps"] if step.get("id") == "deployment")
-        retry = next(
-            step for step in deploy["steps"] if step.get("id") == "deployment-retry"
-        )
-        self.assertTrue(first["continue-on-error"])
-        self.assertEqual(retry["if"], "steps.deployment.outcome == 'failure'")
-        discovery = next(
-            step for step in deploy["steps"] if step.get("id") == "pages-artifact"
-        )
-        self.assertIn("pages_artifact.py discover", discovery["run"])
-        self.assertIn("--attempts 6", discovery["run"])
+        self.assertTrue(all(s["continue-on-error"] for s in deploys))
+        self.assertNotIn("if", deploys[0])
+        # Each deployment attempt is preceded by a readback gate through the
+        # deploy-pages lookup, with a fixed increasing backoff.
+        gates = ["pages-artifact", "pages-artifact-2", "pages-artifact-3", "pages-artifact-4"]
+        waits = []
+        for index, (gate_id, attempt) in enumerate(zip(gates, deploys)):
+            gate = by_id[gate_id]
+            self.assertLess(steps.index(gate), steps.index(attempt))
+            self.assertTrue(gate["uses"].startswith("actions/github-script@"))
+            self.assertNotIn("continue-on-error", gate)
+            source = gate["with"]["script"]
+            self.assertIn("'scripts/pages_artifact.py', 'await'", source)
+            self.assertNotIn("${{", source)
+            self.assertEqual(
+                gate["env"]["ARTIFACT_ID"], "${{ steps.pages-upload.outputs.artifact_id }}"
+            )
+            waits.append(int(gate["env"]["WAIT_SECONDS"]))
+            if index:
+                condition = f"steps.{deploys[index - 1]['id']}.outcome == 'failure'"
+                self.assertEqual(gate["if"], condition)
+                self.assertEqual(attempt["if"], condition)
+        self.assertEqual(waits, [0, 15, 45, 90])
+        self.assertEqual(by_id["pages-artifact"]["env"]["ATTEMPTS"], "6")
+        final = steps[-1]
+        self.assertEqual(final["if"], "steps.deployment-4.outcome == 'failure'")
+        self.assertIn("exit 1", final["run"])
+        self.assertIn("::error::", final["run"])
+        for attempt in deploys:
+            output = f"steps.{attempt['id']}.outputs.page_url"
+            self.assertIn(output, deploy["environment"]["url"])
+            self.assertIn(output, deploy["outputs"]["page-url"])
+        self.assertNotIn("deployment-retry", (WORKFLOWS / "website.yml").read_text())
         self.assertFalse(any("peaceiris" in item for item in uses))
 
 
@@ -278,6 +303,14 @@ class TestDocsPreviews(unittest.TestCase):
         self.assertTrue(interpreters)
         for target in interpreters:
             self.assertRegex(target, r"^(scripts/[a-z_]+\.py|-)$")
+        scripts = "\n".join(
+            step["with"]["script"]
+            for step in self.steps()
+            if step.get("uses", "").startswith("actions/github-script@")
+        )
+        self.assertEqual(
+            set(re.findall(r"'python', '([^']+)'", scripts)), {"scripts/pages_artifact.py"}
+        )
         build = next(s for s in self.steps() if s.get("id") == "previews")
         self.assertIn('"$JEKYLL_BUILD_PAGES_IMAGE"', build["run"])
         self.assertIn("-e INPUT_TOKEN= ", build["run"])
