@@ -13,6 +13,7 @@ import ci_evidence
 import collect
 import commands
 import controller
+import observe_ci
 import recovery
 import release
 import triggers
@@ -21,9 +22,11 @@ from tests.helpers import NOW, OWNER, SHA_A, SHA_B, comment, contribution, polic
 T = datetime.fromisoformat(NOW)
 
 
-def run(i, sha=SHA_A, attempt=1, conclusion="success", wf=10, event="pull_request"):
-    return {"id": i, "head_sha": sha, "run_attempt": attempt, "conclusion": conclusion,
-            "workflow_id": wf, "event": event, "path": ".github/workflows/wheels.yml"}
+def run(i, sha=SHA_A, attempt=1, conclusion="success", wf=10, event="pull_request",
+        status="completed"):
+    return {"id": i, "head_sha": sha, "run_attempt": attempt, "status": status,
+            "conclusion": conclusion, "workflow_id": wf, "event": event,
+            "path": ".github/workflows/wheels.yml"}
 
 
 def job(i, name, conclusion="success", status="completed", labels=("ubuntu-24.04-riscv",)):
@@ -49,8 +52,8 @@ class TestCiEvidence(unittest.TestCase):
                 self.assertEqual(v.state, "not_executed")
 
     def test_missing_job_and_wheel(self):
-        self.assertEqual(self.ev([run(1)], {1: [job(1, "lint")]}).state, "not_executed")
-        self.assertEqual(self.ev([run(1)], {1: [job(1, "wheels riscv64")]}, produced=[]).state, "failed")
+        self.assertEqual(self.ev([run(1)], {1: [job(1, "lint")]}).state, "missing")
+        self.assertEqual(self.ev([run(1)], {1: [job(1, "wheels riscv64")]}, produced=[]).state, "missing")
 
     def test_other_head_and_approval(self):
         self.assertEqual(self.ev([run(1, sha=SHA_B)], {}).state, "missing")
@@ -72,6 +75,30 @@ class TestCiEvidence(unittest.TestCase):
         self.assertEqual(len(ci_evidence.latest_attempts(runs)), 1)
         self.assertEqual(ci_evidence.latest_attempts(runs)[0]["run_attempt"], 2)
 
+    def test_duplicate_workflow_registrations_remain_independently_relevant(self):
+        runs = [run(45007971640, wf=426522356),
+                run(45008094063, wf=426522356, status="in_progress", conclusion=None)]
+        jobs = {
+            45007971640: [job(1, "Build - ubuntu-24.04-riscv (riscv64)")],
+            45008094063: [job(2, "Build - ubuntu-24.04-riscv (riscv64)",
+                              status="in_progress", conclusion=None)],
+        }
+        self.assertEqual(len(ci_evidence.latest_attempts(runs)), 2)
+        self.assertEqual(self.ev(runs, jobs).state, "pending")
+
+    def test_incomplete_exact_head_waits_even_after_an_executed_failure(self):
+        runs = [run(1, conclusion="failure"), run(2, status="in_progress", conclusion=None, wf=11)]
+        jobs = {1: [job(1, "tests", conclusion="failure"),
+                    job(2, "wheels riscv64")],
+                2: []}
+        self.assertEqual(self.ev(runs, jobs).state, "pending")
+        runs[1] = run(2, wf=11)
+        self.assertEqual(self.ev(runs, jobs).state, "failed")
+
+    def test_absent_required_job_is_missing_evidence_not_failure(self):
+        verdict = self.ev([run(1)], {1: [job(1, "lint")]})
+        self.assertEqual(verdict.state, "missing")
+
     def test_pending_and_label(self):
         self.assertEqual(self.ev([run(1)], {1: [job(1, "wheels riscv64", status="in_progress",
                                                      conclusion=None)]}).state, "pending")
@@ -83,6 +110,142 @@ class TestCiEvidence(unittest.TestCase):
 
 
 USAGE = Path.home() / "notes/ecosystem-wg/python/python-wheels-upstreaming/research/2026-11-17-reassessment/runner-usage.json"
+
+
+class TestExactHeadCiReconciliation(unittest.TestCase):
+    HEAD = "b29a8f49374004d650cf312e9c31848953e5ae60"
+
+    @staticmethod
+    def snapshot(*, pending):
+        runs = [
+            run(45008094068, sha=TestExactHeadCiReconciliation.HEAD, wf=426522359),
+            run(45007971640, sha=TestExactHeadCiReconciliation.HEAD, wf=426522356,
+                status="in_progress" if pending else "completed",
+                conclusion=None if pending else "success"),
+            run(45008094063, sha=TestExactHeadCiReconciliation.HEAD, wf=426522356,
+                status="in_progress" if pending else "completed",
+                conclusion=None if pending else "success"),
+        ]
+        jobs = {
+            45008094068: [job(137164080131, "clang-format")],
+            45007971640: [job(137164226915, "Build - ubuntu-24.04-riscv (riscv64)",
+                                status="in_progress" if pending else "completed",
+                                conclusion=None if pending else "success")],
+            45008094063: [job(137164226916, "Build - ubuntu-24.04-riscv (riscv64)",
+                                status="in_progress" if pending else "completed",
+                                conclusion=None if pending else "success")],
+        }
+        return collect.CiSnapshot(
+            repository={"id": 1467208233, "full_name": "riseproject-upstreaming/ciso8601"},
+            head_sha=TestExactHeadCiReconciliation.HEAD,
+            runs=runs,
+            jobs_by_run=jobs,
+            artifacts_by_run={},
+        )
+
+    def record(self, activity="waiting_ci"):
+        rec = contribution(phase="development", activity=activity, revision=5,
+                           last_ci_evidence_id=None)
+        rec["fork"] = dict(rec["fork"], repository_id=1467208233,
+                           name="riseproject-upstreaming/ciso8601", head_sha=self.HEAD,
+                           pr_number=1)
+        rec["proposal_artifact"] = {
+            "work_id": "work", "claim_id": "claim", "artifact_id": 14748243901,
+            "name": "porting-out", "digest": "sha256:" + "0" * 64,
+            "run_id": "45006566517", "result_commit": "result", "outcome": "published",
+        }
+        rec["dossier_evidence_id"] = "dossier-closeio--ciso8601--1-r2"
+        rec["pending_feedback_evidence_ids"] = ["rehearsal-closeio--ciso8601--1-r3-44982902579"]
+        return rec
+
+    def observe(self, rec, snapshot, evidence=None):
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": self.HEAD}), \
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
+             mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
+            return observe_ci.observe(object(), contributions={"c": rec}, operations={}, contracts={},
+                                      policy=policy(), now=NOW, evidence=evidence or {})
+
+    @staticmethod
+    def final(observation, original):
+        records = [item for kind, item in observation.staged if kind == "contributions"]
+        return records[-1] if records else original
+
+    def test_run_45008094063_partial_snapshot_waits_without_requesting_repair(self):
+        rec = self.record()
+        observation = self.observe(rec, self.snapshot(pending=True))
+        final = self.final(observation, rec)
+        self.assertEqual(final["activity"], "waiting_ci")
+        self.assertIsNotNone(final["next_poll_at"])
+        self.assertIsNone(final["last_ci_evidence_id"])
+        selected = controller.tick(
+            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertEqual(selected.requested_effects, [])
+
+    def test_green_duplicate_registrations_withdraw_only_unfounded_undispatched_repair(self):
+        rec = self.record(activity="agent_running")
+        rec["active_work"] = {
+            "dedupe_key": "closeio--ciso8601/1@5:development_repair",
+            "task": "development_repair", "revision": 5, "attempt": 1,
+            "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
+            "dispatched_run_id": None,
+            "reason_ids": ["rehearsal-closeio--ciso8601--1-r3-44982902579",
+                           "dossier-closeio--ciso8601--1-r2"],
+        }
+        reasons = {
+            "rehearsal-closeio--ciso8601--1-r3-44982902579": {
+                "kind": "rehearsal", "evidence_id": "rehearsal-closeio--ciso8601--1-r3-44982902579"},
+            "dossier-closeio--ciso8601--1-r2": {
+                "kind": "dossier", "evidence_id": "dossier-closeio--ciso8601--1-r2"},
+        }
+        observation = self.observe(rec, self.snapshot(pending=False), evidence=reasons)
+        final = self.final(observation, rec)
+        self.assertEqual(final["fork"]["head_sha"], self.HEAD)
+        self.assertEqual(final["revision"], 5)
+        self.assertEqual(final["activity"], "waiting_ci")
+        self.assertIsNone(final["active_work"])
+        self.assertIsNone(final["last_ci_evidence_id"])
+        self.assertIsNotNone(final["next_poll_at"])
+        self.assertTrue(observation.report[0]["obsolete_repair_withdrawn"])
+        self.assertEqual([event["kind"] for kind, event in observation.staged if kind == "events"],
+                         ["obsolete_ci_repair_withdrawn"])
+        selected = controller.tick(
+            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertEqual(selected.requested_effects, [])
+
+    def test_human_requested_or_dispatched_repairs_are_not_withdrawn(self):
+        for dispatched_run_id, reason_kind in ((None, "human_relay"), ("450101", "rehearsal")):
+            with self.subTest(dispatched_run_id=dispatched_run_id, reason_kind=reason_kind):
+                rec = self.record(activity="agent_running")
+                rec["active_work"] = {
+                    "dedupe_key": "closeio--ciso8601/1@5:development_repair",
+                    "task": "development_repair", "revision": 5, "attempt": 1,
+                    "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
+                    "dispatched_run_id": dispatched_run_id, "reason_ids": ["reason-1"],
+                }
+                observation = self.observe(
+                    rec, self.snapshot(pending=False),
+                    evidence={"reason-1": {"kind": reason_kind, "evidence_id": "reason-1"}})
+                final = self.final(observation, rec)
+                self.assertEqual(final["activity"], "agent_running")
+                self.assertIsNotNone(final["active_work"])
+                self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
+
+    def test_terminal_executed_failure_records_reason_and_requests_repair(self):
+        rec = self.record()
+        snapshot = self.snapshot(pending=False)
+        snapshot.jobs_by_run[45008094063][0] = job(
+            137164226916, "Build - ubuntu-24.04-riscv (riscv64)", conclusion="failure")
+        observation = self.observe(rec, snapshot)
+        final = self.final(observation, rec)
+        self.assertEqual(final["activity"], "fix_needed")
+        self.assertIsNotNone(final["last_ci_evidence_id"])
+        selected = controller.tick(
+            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertEqual(selected.requested_effects[0]["task"], "development_repair")
+        self.assertIn(final["last_ci_evidence_id"], selected.requested_effects[0]["reason_ids"])
 
 
 class TestCapacityBudgets(unittest.TestCase):

@@ -33,11 +33,17 @@ def job_executed(job: dict) -> bool:
 
 
 def latest_attempts(runs: Iterable[dict]) -> list[dict]:
-    """Newest attempt of each workflow run (by workflow ID and event)."""
-    best: dict[tuple, dict] = {}
+    """Newest attempt of each exact workflow run.
+
+    GitHub may register the same workflow more than once for one head (for
+    example, once for a push and again when a pull request is opened). Those
+    are independent runs and all remain relevant. A rerun keeps its run ID and
+    increments ``run_attempt``.
+    """
+    best: dict[int, dict] = {}
     for r in runs:
-        k = (r["workflow_id"], r["event"])
-        if k not in best or (r["run_attempt"], r["id"]) > (best[k]["run_attempt"], best[k]["id"]):
+        k = r["id"]
+        if k not in best or r["run_attempt"] > best[k]["run_attempt"]:
             best[k] = r
     return list(best.values())
 
@@ -61,7 +67,8 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
         v.problems.append("a run needs approval; wait for the responsible human")
         return v
     all_jobs = [j for r in relevant for j in jobs_by_run.get(r["id"], [])]
-    pending = [j for j in all_jobs if j.get("status") != "completed"]
+    pending = ([r for r in relevant if r.get("status") != "completed"]
+               + [j for j in all_jobs if j.get("status") != "completed"])
     blocking_failures = [
         j for j in all_jobs
         if job_executed(j) and j.get("conclusion") != SUCCESS
@@ -94,14 +101,19 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
     missing_wheels = sorted(set(expected_wheels) - set(produced_wheels))
     if missing_wheels:
         v.problems.append(f"expected wheels not produced: {', '.join(missing_wheels)}")
-    if any("failed" in p for p in v.problems):
-        v.state = "failed"
-    elif pending:
+    # Do not launch a repair while any exact-head run is incomplete. GitHub's
+    # jobs and artifact registration are eventually consistent, so absence is
+    # missing evidence rather than a model-actionable failure. Only a terminal,
+    # executed job failure (or a terminal executed runner-contract mismatch)
+    # can produce ``failed``.
+    if pending:
         v.state = "pending"
-    elif any("did not execute" in p or "absent" in p for p in v.problems):
+    elif blocking_failures or any("failed runner-label check" in p for p in v.problems):
+        v.state = "failed"
+    elif any("did not execute" in p for p in v.problems):
         v.state = "not_executed"
     elif v.problems:
-        v.state = "failed"
+        v.state = "missing"
     else:
         v.state = "passed"
     return v

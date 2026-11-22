@@ -19,6 +19,7 @@ Returns staged records for the state publisher. Never writes remotely.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 import ci_evidence
@@ -51,9 +52,47 @@ def contract_for(record: dict, contracts: dict[str, dict]) -> dict:
             "required_runner_label": data.get("required_runner_label")}
 
 
+def _next_ci_observation(now: str, policy: dict) -> str:
+    minutes = (policy.get("recovery_minutes") or [5])[0]
+    return (datetime.fromisoformat(now) + timedelta(minutes=minutes)).isoformat()
+
+
+def _terminal_blocking_ci(evidence: dict | None, head_sha: str) -> bool:
+    if not evidence or evidence.get("kind") != "ci" or (evidence.get("ci") or {}).get("head_sha") != head_sha:
+        return False
+    for job in (evidence.get("ci") or {}).get("jobs") or []:
+        if job.get("executed") and job.get("conclusion") != ci_evidence.SUCCESS \
+                and not any(marker in job.get("name", "").lower()
+                            for marker in ci_evidence.CREDENTIALLESS_JOB_MARKERS):
+            return True
+    return any("failed runner-label check" in problem for problem in evidence.get("limitations") or [])
+
+
+def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdict,
+                                     evidence: dict[str, dict], head_sha: str) -> bool:
+    """Recognize a repair request that could only have come from incomplete CI.
+
+    This is deliberately narrow: the old request must still be undispatched,
+    the published head must be unchanged, green required jobs must now have
+    executed, and no human or terminal CI reason may support the repair.
+    """
+    active = record.get("active_work") or {}
+    artifact = record.get("proposal_artifact") or {}
+    if active.get("task") != "development_repair" or active.get("dispatched_run_id") is not None \
+            or record.get("phase") != "development" or artifact.get("outcome") != "published" \
+            or (record.get("fork") or {}).get("head_sha") != head_sha \
+            or verdict.state not in {"passed", "missing"} or not verdict.executed_jobs:
+        return False
+    reasons = [evidence.get(reason_id) for reason_id in active.get("reason_ids") or []]
+    return not any((reason or {}).get("kind") == "human_relay"
+                   or _terminal_blocking_ci(reason, head_sha) for reason in reasons)
+
+
 def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dict[str, dict],
-            contracts: dict[str, dict], policy: dict, now: str) -> Observation:
+            contracts: dict[str, dict], policy: dict, now: str,
+            evidence: dict[str, dict] | None = None) -> Observation:
     obs = Observation()
+    evidence = dict(evidence or {})
     for rec in contributions.values():
         if rec["phase"] not in WATCH_PHASES or not rec.get("fork"):
             continue
@@ -172,17 +211,21 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                                             required_runner_label=ctr["required_runner_label"])
         if verdict.state == "passed" and ctr["require_wheel_artifact"] \
                 and not collect.wheel_names_from_artifacts(snap):
-            # Green jobs without a riscv64 wheel artifact are not wheel success.
-            verdict.state = "failed"
+            # Artifact registration may lag a completed run, and some PR
+            # workflows intentionally defer upload to a trusted probe. Missing
+            # required evidence remains observable; it is not a coding defect.
+            verdict.state = "missing"
             verdict.problems.append("no riscv64 wheel artifact was uploaded")
         entry["ci"] = {"repository": repo_for_ci, "state": verdict.state, "problems": verdict.problems[:10]}
         latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == head["head"]])
+        next_poll_at = (_next_ci_observation(now, policy)
+                        if verdict.state in {"pending", "missing", "not_executed"} else None)
         new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
-                        "missing": "waiting_ci", "not_executed": "waiting_human",
+                        "missing": "waiting_ci", "not_executed": "waiting_ci",
                         "access_wait": "waiting_human"}[verdict.state]
         if verdict.state == "passed" and cur["phase"] == "handoff":
             new_activity = "waiting_human"
-        if verdict.state in ("passed", "failed", "not_executed") and latest:
+        if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
             run = max(latest, key=lambda r: r["id"])
             eid = _evidence_id(snap.repository["id"], run)
             ev = ci_evidence.evidence_record(
@@ -195,8 +238,9 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 debug_present=bool(cur.get("debug_commits")) and not upstream_facing,
                 limitations=[] if verdict.state == "passed" else ["see problems"])
             obs.staged.append(("evidence", ev))
-            if verdict.state == "passed" and cur.get("last_ci_evidence_id") != eid:
-                cur = dict(cur, last_ci_evidence_id=eid, updated_at=now)
+            evidence[eid] = ev
+            if verdict.state in {"passed", "failed"} and cur.get("last_ci_evidence_id") != eid:
+                cur = dict(cur, last_ci_evidence_id=eid, next_poll_at=None, updated_at=now)
                 obs.staged.append(("contributions", cur))
             if verdict.state == "failed" and cur["phase"] == "handoff":
                 before = cur
@@ -230,12 +274,30 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 new_activity = "waiting_human"
                 entry["handoff_ready"] = True
             entry["evidence"] = eid
+        if _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"]):
+            before = cur
+            cur = dict(cur, active_work=None, activity="waiting_ci", next_poll_at=next_poll_at,
+                       updated_at=now)
+            schemas.validate("contribution", cur)
+            obs.staged.extend([
+                ("contributions", cur),
+                ("events", lifecycle._event(before, cur, "obsolete_ci_repair_withdrawn",
+                                            "observation", entry.get("evidence"), now, False)),
+            ])
+            entry["obsolete_repair_withdrawn"] = True
         if cur["activity"] != new_activity and cur["activity"] != "agent_running":
-            out = lifecycle.observe_status(cur, activity=new_activity, now=now)
+            out = lifecycle.observe_status(cur, activity=new_activity,
+                                           next_poll_at=next_poll_at, now=now)
+            if next_poll_at is None and out.record.get("next_poll_at") is not None:
+                out.record["next_poll_at"] = None
             obs.staged.append(("contributions", out.record))
             if out.event:
                 obs.staged.append(("events", out.event))
             entry["activity"] = new_activity
+        elif next_poll_at is not None and cur.get("next_poll_at") != next_poll_at \
+                and cur["activity"] != "agent_running":
+            out = lifecycle.observe_status(cur, next_poll_at=next_poll_at, now=now)
+            obs.staged.append(("contributions", out.record))
         obs.report.append(entry)
     return obs
 

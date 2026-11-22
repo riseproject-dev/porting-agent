@@ -632,7 +632,8 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     if observe:
         contracts = {e["evidence_id"]: e for e in snap.evidence.values() if e.get("kind") == "target_contract"}
         obs = observe_ci.observe(api, contributions=contributions, operations=snap.operations,
-                                 contracts=contracts, policy=policy, now=iso)
+                                 contracts=contracts, policy=policy, now=iso,
+                                 evidence=snap.evidence)
         for kind, r in obs.staged:
             if kind == "contributions":
                 contributions[by_cid[r["contribution_id"]]] = r
