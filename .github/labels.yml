@@ -1,0 +1,4 @@
+# Declarative setup record used by repository bootstrap validation.
+- name: upstreaming-request
+  color: "5fb86d"
+  description: Starts a porting-agent request

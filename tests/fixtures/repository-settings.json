@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "repository": "riseproject-dev/porting-agent",
+  "visibility": "public",
+  "defaultBranch": "main",
+  "actions": {
+    "enabled": true,
+    "allowedActions": "all",
+    "defaultWorkflowPermissions": "read",
+    "canApprovePullRequestReviews": false
+  },
+  "mergePolicy": {
+    "allowSquashMerge": true,
+    "allowMergeCommit": false,
+    "allowRebaseMerge": false,
+    "deleteBranchOnMerge": true
+  },
+  "label": {
+    "name": "upstreaming-request",
+    "color": "5fb86d",
+    "description": "Starts a porting-agent request"
+  },
+  "pages": {
+    "buildType": "workflow",
+    "httpsEnforced": true,
+    "url": "https://riseproject-dev.github.io/porting-agent/"
+  },
+  "ruleset": {
+    "name": "protect-main-history",
+    "target": "branch",
+    "enforcement": "active",
+    "include": ["~DEFAULT_BRANCH"],
+    "rules": ["deletion", "non_fast_forward", "required_linear_history"],
+    "bypassActors": []
+  },
+  "environments": {
+    "state": {
+      "reviewers": [],
+      "waitTimer": 0,
+      "deploymentBranches": ["main"],
+      "secrets": [],
+      "variables": []
+    },
+    "publish": {
+      "reviewers": [{"type": "User", "id": 660779, "login": "luhenry"}],
+      "allowSelfReview": true,
+      "waitTimer": 0,
+      "deploymentBranches": ["main"],
+      "secrets": [],
+      "variables": []
+    },
+    "github-pages": {
+      "deploymentBranches": ["main"]
+    }
+  },
+  "organizationVariables": [
+    "RISEPROJECT_APP_CLIENT_ID",
+    "RISEPROJECT_APP_ID",
+    "RISEPROJECT_UPSTREAMING_APP_CLIENT_ID"
+  ],
+  "selectedOrganizationSecrets": [
+    "ANTHROPIC_API_KEY",
+    "RISEPROJECT_APP_PRIVATE_KEY",
+    "RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"
+  ],
+  "repositorySecrets": [],
+  "repositoryVariables": [],
+  "appInstallations": {
+    "control": {"slug": "riseproject-dev", "repositorySelection": "all"},
+    "runner": {"repositorySelection": "all"},
+    "destination": {
+      "slug": "riseproject-upstreaming",
+      "organization": "riseproject-upstreaming",
+      "repositorySelection": "all",
+      "permissions": ["administration:write", "actions:write", "contents:write", "pull_requests:write", "workflows:write", "repository_creation"]
+    }
+  }
+}

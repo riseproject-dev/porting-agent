@@ -1,0 +1,61 @@
+Upstream-Status: To upstream [Local reproduction validated; upstream submission requires separate authorization]
+
+diff --git a/actions/setup/js/upload_artifact.cjs b/actions/setup/js/upload_artifact.cjs
+index b9553d6..a74f933 100644
+--- a/actions/setup/js/upload_artifact.cjs
++++ b/actions/setup/js/upload_artifact.cjs
+@@ -57,0 +58,3 @@ const {
++  withClaimResourceEffects,
++  createClaimResourceVerification,
++  withClaimResourceVerification,
+@@ -703,0 +707 @@ async function main(config = {}) {
++    let authorityResource;
+@@ -714,0 +719,10 @@ async function main(config = {}) {
++        const uploadNativeArtifact = async () => {
++          const effect = recordClaimEffect({ kind: "artifact", repository, outcome: "unknown" });
++          const result = await client.uploadArtifact(artifactName, absoluteFiles, stagingDirectory(), uploadOpts);
++          if (effect) {
++            effect.outcome = "succeeded";
++            effect.id = String(result.id || "");
++          }
++          return result;
++        };
++        let uploadResult;
+@@ -721,7 +735,12 @@ async function main(config = {}) {
+-          await assertClaimAuthorized({ ...message, repo: repository }, { effect: true, resource: { repository, host: expectedGitHubHost(), repository_id: String(nativeRepository.id), run_id: process.env.GITHUB_RUN_ID } });
+-        }
+-        const effect = recordClaimEffect({ kind: "artifact", repository, outcome: "unknown" });
+-        const uploadResult = await client.uploadArtifact(artifactName, absoluteFiles, stagingDirectory(), uploadOpts);
+-        if (effect) {
+-          effect.outcome = "succeeded";
+-          effect.id = String(uploadResult.id || "");
++          // The trusted native target is the original bound worker run. Work
++          // cannot predict its future run ID at admission. Use the existing
++          // protected adapter frame, retaining immutable repository selectors
++          // and the independent exact Claim/run binding checks.
++          const target = { repository, host: expectedGitHubHost(), repository_id: String(nativeRepository.id), run_id: process.env.GITHUB_RUN_ID };
++          authorityResource = target;
++          uploadResult = await withClaimResourceEffects([target], ["upload_artifact"], async () => {
++            await assertClaimAuthorized({ ...message, repo: repository }, { effect: true, resource: target });
++            return uploadNativeArtifact();
++          });
++        } else {
++          uploadResult = await uploadNativeArtifact();
+@@ -816,0 +836 @@ async function main(config = {}) {
++        authorityResource,
+@@ -823 +843,2 @@ async function main(config = {}) {
+-async function verifyArtifactDelivery({ claim, result, github }) {
++async function verifyArtifactDelivery(options) {
++  const { claim, result, github } = options;
+@@ -837 +858,4 @@ async function verifyArtifactDelivery({ claim, result, github }) {
+-  return {
++  // Artifact descriptors contain name/digest metadata, not authorization
++  // selectors. Register the independently verified native repository/run
++  // target in the existing private receipt frame used by Claim finalization.
++  const proof = createClaimResourceVerification({
+@@ -840,0 +865 @@ async function verifyArtifactDelivery({ claim, result, github }) {
++    authority_resource: await require("./work_queue_effect_resource.cjs").resolveRepositoryTarget(github, receipt.authorityResource),
+@@ -842 +867,2 @@ async function verifyArtifactDelivery({ claim, result, github }) {
+-  };
++  });
++  return withClaimResourceVerification(proof, () => proof, { authorize: options.authorize, context: options.context, github });

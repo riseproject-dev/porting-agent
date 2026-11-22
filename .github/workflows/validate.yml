@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The RISE Project
+# SPDX-License-Identifier: MIT
+# Read-only bootstrap validation. This workflow has no remote-writer credential.
+name: Porting agent validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+
+      - name: Dependency inventory matches reviewed pins
+        run: uv run --locked python scripts/dependencies/sync.py
+
+      - name: Unit and contract tests
+        run: uv run --locked python -m unittest discover -s tests -t . -v
+
+      - name: Python lint
+        run: uv run --locked ruff check .
+
+      - name: Repository settings declaration audit
+        run: uv run --locked python scripts/audit_repository_settings.py --snapshot tests/fixtures/repository-settings.json
+
+      - name: Native artifact compatibility regression tests
+        run: sh scripts/gh-aw-compat/check.sh
+
+      - name: Pinned gh-aw compiler and rejection fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/check_gh_aw.sh "$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli")"

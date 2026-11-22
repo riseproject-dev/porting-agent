@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "sourceRepository": "riseproject-dev/python-wheels",
+  "sourceCommit": "c21e458f67541af8b6e988eda7a20e30fbad201d",
+  "workflows": [
+    {"source": "upstreaming-validate.yml", "target": "validate.yml", "milestone": 1, "owner": "repository validation", "agentic": false},
+    {"source": "upstreaming-controller.yml", "target": "controller.yml", "milestone": 3, "owner": "lifecycle controller", "agentic": false},
+    {"source": "website.yml", "target": "website.yml", "milestone": 3, "owner": "public status publication", "agentic": false},
+    {"source": "upstreaming-dispatcher.md", "target": "dispatcher.md", "milestone": 4, "owner": "native Work admission and dispatch", "agentic": true},
+    {"source": "upstreaming-dispatcher.lock.yml", "target": "dispatcher.lock.yml", "milestone": 4, "owner": "generated dispatcher lock", "agentic": false},
+    {"source": "upstreaming-investigator.md", "target": "investigator.md", "milestone": 4, "owner": "verified investigation", "agentic": true},
+    {"source": "upstreaming-investigator.lock.yml", "target": "investigator.lock.yml", "milestone": 4, "owner": "generated investigator lock", "agentic": false},
+    {"source": "upstreaming-worker.md", "target": "worker.md", "milestone": 5, "owner": "bounded patch proposal", "agentic": true},
+    {"source": "upstreaming-worker.lock.yml", "target": "worker.lock.yml", "milestone": 5, "owner": "generated worker lock", "agentic": false},
+    {"source": "upstreaming-image.yml", "target": "image.yml", "milestone": 5, "owner": "reproduction image", "agentic": false},
+    {"source": "upstreaming-provision.yml", "target": "provision.yml", "milestone": 6, "owner": "trusted fork provisioning", "agentic": false},
+    {"source": "upstreaming-dev-pr.yml", "target": "dev-pr.yml", "milestone": 6, "owner": "development pull request", "agentic": false},
+    {"source": "upstreaming-publish-retry.yml", "target": "publish-retry.yml", "milestone": 6, "owner": "trusted publication recovery", "agentic": false}
+  ]
+}
