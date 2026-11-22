@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 # Trusted lifecycle reconciliation. No model or destination credential is used.
-name: Porting controller
+name: Controller
 
 on:
   schedule:
@@ -22,13 +22,13 @@ on:
     types: [created, edited]
   workflow_run:
     workflows:
-      - Porting dispatcher
-      - Porting investigator
-      - Porting worker
-      - Porting reproduction image
-      - Porting fork provisioning
-      - Porting development PR
-      - Porting publish retry
+      - Dispatcher
+      - Investigator
+      - Worker
+      - Reproduction Image
+      - Fork Provisioning
+      - Development PR
+      - Publish Retry
     types: [completed]
   workflow_dispatch:
 

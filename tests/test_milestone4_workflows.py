@@ -207,13 +207,13 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
         self.assertEqual(
             set(triggers["workflow_run"]["workflows"]),
             {
-                "Porting dispatcher",
-                "Porting investigator",
-                "Porting worker",
-                "Porting reproduction image",
-                "Porting fork provisioning",
-                "Porting development PR",
-                "Porting publish retry",
+                "Dispatcher",
+                "Investigator",
+                "Worker",
+                "Reproduction Image",
+                "Fork Provisioning",
+                "Development PR",
+                "Publish Retry",
             },
         )
         self.assertIn("for workflow in investigator.lock.yml worker.lock.yml", controller_text)

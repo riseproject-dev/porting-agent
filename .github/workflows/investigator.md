@@ -1,7 +1,7 @@
 ---
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-name: Porting investigator
+name: Investigator
 description: Investigate one upstream project for a riscv64 wheel contribution (read and report only)
 on:
   workflow_dispatch:

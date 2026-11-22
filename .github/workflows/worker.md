@@ -1,7 +1,7 @@
 ---
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-name: Porting worker
+name: Worker
 description: Bounded riscv64 porting task (patch, repair or revise one contribution)
 on:
   workflow_dispatch:

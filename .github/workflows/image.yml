@@ -11,7 +11,7 @@
 # tags latest (moving) and ubuntu-24.04-<base digest prefix>, and the
 # exact base digest in the org.opencontainers.image.base.digest label.
 # Pull requests (and forks) build without pushing.
-name: Porting reproduction image
+name: Reproduction Image
 
 on:
   schedule:

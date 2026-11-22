@@ -28,12 +28,12 @@ class TestDossierComment(unittest.TestCase):
 
     def test_trusted_worker_ref_is_accepted_without_weakening_workflow_identity(self):
         env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "riseproject-dev/porting-agent",
-               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW": "Porting investigator",
+               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW": "Investigator",
                "GITHUB_REF": "refs/heads/work-queue"}
         self.assertTrue(dossier_comment.trusted_runtime(env))
         env["GITHUB_WORKFLOW"] = "Untrusted workflow"
         self.assertFalse(dossier_comment.trusted_runtime(env))
-        env["GITHUB_WORKFLOW"] = "Porting controller"
+        env["GITHUB_WORKFLOW"] = "Controller"
         self.assertFalse(dossier_comment.trusted_runtime(env))
         env["PORTING_DOSSIER_RECOVERY"] = "1"
         self.assertTrue(dossier_comment.trusted_runtime(env))

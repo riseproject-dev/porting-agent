@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-name: Porting fork provisioning
-run-name: "Porting fork provision ${{ inputs.operation-id }}"
+name: Fork Provisioning
+run-name: "Fork Provisioning ${{ inputs.operation-id }}"
 on:
   workflow_dispatch:
     inputs:

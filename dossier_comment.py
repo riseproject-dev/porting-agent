@@ -88,11 +88,11 @@ def trusted_runtime(env: dict[str, str]) -> bool:
     if env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_REPOSITORY") != CONTROL_REPO:
         return False
     if env.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and env.get("GITHUB_WORKFLOW") in (
-        "Porting investigator", "Porting publish retry"
+        "Investigator", "Publish Retry"
     ):
         return True
     return (
-        env.get("GITHUB_WORKFLOW") == "Porting controller"
+        env.get("GITHUB_WORKFLOW") == "Controller"
         and env.get("PORTING_DOSSIER_RECOVERY") == "1"
     )
 

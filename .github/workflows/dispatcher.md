@@ -1,7 +1,7 @@
 ---
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-name: Porting dispatcher
+name: Dispatcher
 description: Admit at most one controller-selected porting task and request one investigator
 on:
   workflow_dispatch:

@@ -12,7 +12,7 @@
 #
 # Launched by the controller's reconcile job (never by the agent), with the
 # worker run ID it recorded in state.
-name: Porting publish retry
+name: Publish Retry
 
 on:
   workflow_dispatch:
