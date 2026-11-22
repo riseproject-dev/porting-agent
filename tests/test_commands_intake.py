@@ -8,7 +8,7 @@ import commands
 import intake
 from tests.helpers import NOW, OWNER, STRANGER, comment, policy
 
-# A "Package build request" body (.github/ISSUE_TEMPLATE/package-request.yml).
+# Explicit legacy "Package build request" body retained for compatibility.
 FORM = """### Package name (on PyPI)
 
 Proj_Core
@@ -129,6 +129,27 @@ class TestCommandAcceptance(unittest.TestCase):
 class TestIntake(unittest.TestCase):
     def setUp(self):
         self.p = policy()
+
+    def test_current_and_legacy_heading_contracts_are_exact(self):
+        self.assertEqual(
+            intake.FIELDS,
+            {
+                "Upstream repository": "upstream",
+                "PyPI distributions": "distributions",
+                "Upstream target branch": "target_branch",
+                "Additional notes": "notes",
+            },
+        )
+        self.assertEqual(
+            set(intake.LEGACY_FIELDS),
+            {
+                "Package name (on PyPI)",
+                "Source repository",
+                "Version(s) requested",
+                "Why is this needed?",
+                "Additional context",
+            },
+        )
 
     def test_parse_and_normalize(self):
         r = intake.parse_request(issue(), self.p)

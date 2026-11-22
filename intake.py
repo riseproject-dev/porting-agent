@@ -24,12 +24,20 @@ COMMENT_ACTIONS = frozenset({"created", "edited"})
 
 _REPO_URL = re.compile(r"^https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100}?)(?:\.git)?/?$")
 _DIST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
-# Headings produced by .github/ISSUE_TEMPLATE/package-request.yml (the
-# "Package build request" form). Upstreaming uses the same issues that track
-# a package's riscv64 work; an issue enters intake only when it also carries
-# the upstreaming-request label.
+# Stable headings produced by .github/ISSUE_TEMPLATE/porting-request.yml.
 FIELDS = {
+    "Upstream repository": "upstream",
+    "PyPI distributions": "distributions",
+    "Upstream target branch": "target_branch",
+    "Additional notes": "notes",
+}
+
+# Explicit compatibility for the earlier python-wheels package request form.
+# New aliases are not accepted implicitly: a form is either current or this
+# immutable legacy contract, never a mixture.
+LEGACY_FIELDS = {
     "Package name (on PyPI)": "distributions",
     "Source repository": "upstream",
     "Version(s) requested": "versions",
@@ -51,25 +59,44 @@ class Request:
     distributions: tuple[str, ...]
     target_branch: str | None
     notes: str
+    body: str
     digest: str
 
 
 def parse_issue_form(body: str) -> dict[str, str]:
-    """Split a GitHub issue-form body (``### Heading`` sections)."""
+    """Parse one complete current or explicitly supported legacy issue form."""
     out: dict[str, str] = {}
+    formats: set[str] = set()
     current: str | None = None
-    buf: list[str] = []
+    buffer: list[str] = []
+
+    def finish() -> None:
+        nonlocal current, buffer
+        if current is not None:
+            if current in out:
+                raise IntakeError(f"duplicate issue-form field {current!r}")
+            out[current] = "\n".join(buffer).strip()
+        current, buffer = None, []
+
     for line in body.splitlines():
-        m = re.match(r"^###\s+(.+?)\s*$", line)
-        if m and m.group(1) in FIELDS:
-            if current:
-                out[current] = "\n".join(buf).strip()
-            current, buf = FIELDS[m.group(1)], []
-        elif current:
-            buf.append(line)
-    if current:
-        out[current] = "\n".join(buf).strip()
-    return {k: ("" if v == "_No response_" else v) for k, v in out.items()}
+        match = re.match(r"^###\s+(.+?)\s*$", line)
+        if match and (
+            match.group(1) in FIELDS or match.group(1) in LEGACY_FIELDS
+        ):
+            finish()
+            heading = match.group(1)
+            if heading in FIELDS:
+                formats.add("current")
+                current = FIELDS[heading]
+            else:
+                formats.add("legacy")
+                current = LEGACY_FIELDS[heading]
+            if len(formats) > 1:
+                raise IntakeError("request mixes current and legacy issue-form headings")
+        elif current is not None:
+            buffer.append(line)
+    finish()
+    return {key: ("" if value == "_No response_" else value) for key, value in out.items()}
 
 
 _TITLE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s+riscv64 support\s*$", re.I)
@@ -83,6 +110,20 @@ def _freeform(issue: dict) -> dict[str, str]:
         return {}
     return {"upstream": f"https://github.com/{repos.pop()}", "distributions": m.group(1),
             "notes": (issue.get("body") or "")[:4000]}
+
+
+def canonical_branch(value: str) -> str | None:
+    """Return one safe optional Git branch name from the frozen request."""
+    branch = value.strip()
+    if not branch:
+        return None
+    forbidden = ("..", "@{", "//", "\\", " ", "~", "^", ":", "?", "*", "[")
+    components = branch.split("/")
+    if (not _BRANCH.fullmatch(branch) or any(token in branch for token in forbidden)
+            or any(part.startswith(".") or part.endswith((".", ".lock")) for part in components)
+            or branch.startswith("/") or branch.endswith("/")):
+        raise IntakeError("invalid upstream target branch")
+    return branch
 
 
 def canonical_repo(url: str) -> str:
@@ -134,10 +175,9 @@ def parse_request(issue: dict, policy: dict) -> Request:
     if len(body.encode("utf-8")) > policy["intake"]["max_request_bytes"]:
         raise IntakeError("request too large")
     form = parse_issue_form(body)
-    if not form.get("upstream"):
-        # Older Package build request issues predate the form. Accept them
-        # only when the body names exactly one GitHub repository and the
-        # title is "<distribution> riscv64 support".
+    if not form:
+        # Explicit compatibility for pre-form package requests: accept only
+        # one repository and the exact historical title shape.
         form = _freeform(issue)
     upstream = canonical_repo(form.get("upstream", ""))
     dists: list[str] = []
@@ -154,14 +194,12 @@ def parse_request(issue: dict, policy: dict) -> Request:
         raise IntakeError("at least one PyPI distribution is required")
     if len(dists) > policy["intake"]["max_distributions"]:
         raise IntakeError("too many distributions")
-    # The package form has no target-branch field: investigation determines
-    # the upstream contribution branch.
-    branch = None
+    branch = canonical_branch(form.get("target_branch", ""))
     return Request(
         issue_id=issue["id"], issue_number=issue["number"], actor_id=issue["user"]["id"],
         upstream=upstream, distributions=tuple(dists), target_branch=branch,
         notes="\n\n".join(x for x in (form.get("why", ""), form.get("notes", "")) if x),
-        digest=sha256_text(body),
+        body=body, digest=sha256_text(body),
     )
 
 

@@ -507,7 +507,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "parked_reason": None,
         "terminal_reason": None,
         "previous_phase": None,
-        "tracking_issue": {"id": issue["id"], "number": issue["number"]},
+        "tracking_issue": dict(issue),
         "owners": {"primary": None, "backup": None, "submitter": None, "handoff_reviewer": None},
         "admission_class": None,
         "distributions": distributions,

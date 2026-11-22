@@ -30,7 +30,7 @@ import lifecycle
 import recovery
 import schemas
 from commands import URGENT, Command
-from common import INTAKE_LABEL, contribution_file_id, load_policy, repository_root
+from common import CONTROL_REPO, INTAKE_LABEL, contribution_file_id, load_policy, repository_root
 
 
 @dataclass
@@ -128,7 +128,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         cid = f"{project_id}/{req.issue_number}"
         rec = lifecycle.new_contribution(
             contribution_id=cid, project_id=project_id,
-            issue={"id": req.issue_id, "number": req.issue_number}, upstream=req.upstream,
+            issue={
+                "id": req.issue_id,
+                "number": req.issue_number,
+                "url": f"https://github.com/{CONTROL_REPO}/issues/{req.issue_number}",
+                "description": req.body,
+                "description_digest": req.digest,
+                "notes": req.notes,
+            },
+            upstream=req.upstream,
             distributions=list(req.distributions), base_ref=req.target_branch,
             policy_id=policy["policy_version"], now=now)
         by_id[cid] = rec
@@ -406,10 +414,23 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             "requested_at": now,
             "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
             "dispatched_run_id": None, "reason_ids": reason_ids})
-        issue = inputs.tracking_issues.get(c["tracking_issue"]["number"]) or next(
-            (i for i in inputs.issues if i["number"] == c["tracking_issue"]["number"]), None)
-        if issue is not None:
-            claimed["active_work"]["tracking_issue"] = collect.tracking_issue_context(issue, c["tracking_issue"])
+        frozen_issue = c["tracking_issue"]
+        if all(
+            key in frozen_issue
+            for key in ("id", "number", "url", "description", "description_digest")
+        ):
+            claimed["active_work"]["tracking_issue"] = {
+                key: frozen_issue[key]
+                for key in ("id", "number", "url", "description", "description_digest")
+            }
+        else:
+            # Compatibility for records created before intake-level freezing.
+            issue = inputs.tracking_issues.get(c["tracking_issue"]["number"]) or next(
+                (i for i in inputs.issues if i["number"] == c["tracking_issue"]["number"]), None)
+            if issue is not None:
+                claimed["active_work"]["tracking_issue"] = collect.tracking_issue_context(
+                    issue, c["tracking_issue"]
+                )
         if kind == "investigation" and claimed["phase"] == "queued":
             claimed["phase"] = "investigation"
         by_id[c["contribution_id"]] = claimed

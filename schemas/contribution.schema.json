@@ -139,6 +139,22 @@
         "number": {
           "type": "integer",
           "minimum": 1
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/riseproject-dev/porting-agent/issues/[0-9]+$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 16384
+        },
+        "description_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 16384
         }
       }
     },
