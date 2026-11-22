@@ -57,7 +57,10 @@
   "prerequisite_ids": [],
   "previous_phase": null,
   "processed_pr_conversation_comment_ids": [],
-  "processed_publications": [],
+  "processed_publications": [
+    14734929090,
+    14736190358
+  ],
   "processed_review_comment_ids": [],
   "processed_review_ids": [],
   "project_id": "closeio--ciso8601",
