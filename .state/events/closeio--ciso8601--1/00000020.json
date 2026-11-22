@@ -1,0 +1,18 @@
+{
+  "at": "2026-11-22T10:21:32.973879+00:00",
+  "cause": {
+    "id": "ci-1467208233-45008094068-1",
+    "type": "observation"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "obsolete_ci_repair_withdrawn",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 20,
+  "to": {
+    "activity": "waiting_ci"
+  }
+}
