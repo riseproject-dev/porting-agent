@@ -1,0 +1,46 @@
+{
+  "capacity_reservation": null,
+  "contribution_id": "closeio--ciso8601/1",
+  "created_at": "2026-11-22T09:30:30.428834+00:00",
+  "discovery": [
+    {
+      "at": "2026-11-22T09:30:30.428834+00:00",
+      "detail": "riscv64 at b29a8f49374004d650cf312e9c31848953e5ae60",
+      "result": "confirmed"
+    }
+  ],
+  "external_ids": {},
+  "kind": "branch_update",
+  "operation_id": "op-0b54d1e289a0b1bd1b4797e5",
+  "policy_version": "2026-11-18.1-proposed",
+  "proposed": {
+    "changed_files": [
+      ".github/workflows/build-wheels.yml",
+      "pyproject.toml"
+    ],
+    "commit": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "content_digest": "38a6e5dfb0e07ce5f1fafd24909301d3dc3766a57958896f2d237bad3a139e4b",
+    "marker": "artifact:14748243901",
+    "parents": [
+      "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8"
+    ],
+    "tree": "30c2620ffc9c0470760a467d19454a124abb6727"
+  },
+  "reason_ids": [
+    "rehearsal-closeio--ciso8601--1-r3-44982902579",
+    "dossier-closeio--ciso8601--1-r2",
+    "artifact:14748243901"
+  ],
+  "resolution": null,
+  "revision": 4,
+  "schema_version": 1,
+  "status": "confirmed",
+  "target": {
+    "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "expected_head": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "ref": "riscv64",
+    "repository": "riseproject-upstreaming/ciso8601",
+    "repository_id": 1467208233
+  },
+  "updated_at": "2026-11-22T09:30:30.428834+00:00"
+}

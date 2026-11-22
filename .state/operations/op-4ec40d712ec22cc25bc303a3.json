@@ -1,0 +1,32 @@
+{
+  "capacity_reservation": null,
+  "contribution_id": "closeio--ciso8601/1",
+  "created_at": "2026-11-22T09:31:07.410103+00:00",
+  "discovery": [],
+  "external_ids": {
+    "launch_attempts": 1
+  },
+  "kind": "dev_pr_create",
+  "operation_id": "op-4ec40d712ec22cc25bc303a3",
+  "policy_version": "2026-11-18.1-proposed",
+  "proposed": {
+    "content_digest": "sha256:6caa4bf77f1f29a3c5f3fce6366eb3f541fcac4c4c694090059c0f1e6ac9b5b5",
+    "marker": "<!-- upstreaming-development:closeio--ciso8601/1:r5:b29a8f49374004d650cf312e9c31848953e5ae60 -->"
+  },
+  "reason_ids": [
+    "dossier-closeio--ciso8601--1-r2",
+    "q_7336b4e135f4387f9f1a70a94ade661f3b79cee971037a5a48609bc46bd04a66"
+  ],
+  "resolution": null,
+  "revision": 5,
+  "schema_version": 1,
+  "status": "planned",
+  "target": {
+    "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "expected_head": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "ref": "riscv64",
+    "repository": "riseproject-upstreaming/ciso8601",
+    "repository_id": 1467208233
+  },
+  "updated_at": "2026-11-22T09:31:07.410103+00:00"
+}
