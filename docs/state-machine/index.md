@@ -10,9 +10,20 @@ permalink: /state-machine/
 # Contribution state machine
 {: .no_toc }
 
-The contribution lifecycle is defined by one table in `lifecycle.py`. That table is the source of truth: every diagram on this page, the [lifecycle table]({{ '/state-machine/table/' | relative_url }}) reference, and the [open decisions]({{ '/state-machine/decisions/' | relative_url }}) page are generated from it by `scripts/generate_state_machine_doc.py`, and a test fails when a page no longer matches the table.
+The contribution lifecycle is defined by one table in `lifecycle.py`. That table is the source of truth: every diagram on this page, the [lifecycle table]({{ '/state-machine/table/' | relative_url }}) reference, and the [decisions]({{ '/state-machine/decisions/' | relative_url }}) page are generated from it by `scripts/generate_state_machine_doc.py`, and a test fails when a page no longer matches the table.
 
-`uv run --locked python -m lifecycle check` verifies that the table is consistent, and the Agent Validation workflow runs it on every pull request and every push to `main`. It checks that every target exists, every state is reachable from `queued.idle`, and an end state (kind `terminal`) is reachable from every state; that end states have no exits and every other state has one that leaves it; that every transition names its trigger and its guard (`always` when unconditional), every command transition its command and the revision it accepts, and every charged budget a `policy.json` key and an exhaustion transition; that a verb leads from a state to one target only; that revision bumps follow the revision rule; and that every state, transition, and flag is drawn below and every decision slice uses table entries.
+`uv run --locked python -m lifecycle check` verifies that the table is consistent, and the Agent Validation workflow runs it on every pull request and every push to `main`. It checks the structure: every target exists, every state is reachable from `queued.idle`, an end state (kind `terminal`) is reachable from every state, end states have no exits and every other state has one that leaves it, a verb leads from a state to one target only, and every transition names its trigger and its guard (`always` when unconditional), every command transition its command and the revision it accepts. It also checks the rules of the lifecycle:
+
+- every transition that allocates Work charges `work_total`, and every charged budget has a `policy.json` key and an exhaustion transition;
+- exhaustion of an infrastructure budget leads to a human wait of the same phase, and nothing ends the generation from `upstream_review` without a command;
+- the revision is bumped by every resume and by every transition that invalidates requested or approved work, and by no other transition;
+- `resume_stale` and the other resumes of the same states carry complementary guards, so exactly one applies, and `resume_stale` requires the quiescence of `refresh_investigation`;
+- the resumes of one human wait are guarded by `pending_human_action` so that exactly one applies for every pending action with which the wait is entered;
+- every budget exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, every resume from that wait starts exactly that counter again, and no other transition starts a counter again;
+- every state of kind `gate`, `human_wait`, or `locked` has a reminder from the rule, and a late Result is recorded in every state without changing it;
+- `handoff.waiting_upstream_pr` has exactly its three exits;
+- a stop set by the controller records its reason;
+- the operation table has the same structure, and every state, transition, rule, and flag is drawn below and every decision slice uses table entries.
 
 A state is `phase.activity`. Each arrow is a transition verb of the table, labelled with its `/upstreaming` command when a command triggers it; the other transitions are taken on a Result, an observation, an operation receipt, or a controller tick, as the table records.
 
@@ -42,10 +53,9 @@ flowchart TB
         provisioning_waiting_human["provisioning.waiting_human"]
     end
     subgraph development["development"]
-        development_idle["development.idle"]
+        development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
         development_waiting_ci["development.waiting_ci"]
-        development_fix_needed["development.fix_needed"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -84,15 +94,16 @@ flowchart TB
     investigation_agent_running -->|exhaust_investigation_recovery| investigation_waiting_human
     investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
     investigation_agent_running -->|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation<br/>/upstreaming park| parked_idle
+    investigation_agent_running -->|park_investigation| parked_idle
     investigation_agent_running -->|close_investigation| closed_idle
     provisioning_idle -->|require_provisioning_intervention| provisioning_waiting_human
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
-    provisioning_idle -->|confirm_provisioning| development_idle
-    development_idle -->|request_patch| development_agent_running
+    provisioning_idle -->|confirm_provisioning| development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running -->|record_publish_success| development_waiting_ci
     development_agent_running -->|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|record_ci_failure| development_fix_needed
     development_waiting_ci -->|record_actionable_review| development_fix_needed
     development_waiting_ci -->|record_explanation| development_waiting_ci
@@ -114,20 +125,22 @@ flowchart TB
     upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
     upstream_waiting_ci -->|record_pr_closed_unmerged| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
+    upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
     upstream_waiting_ci -->|record_merge| release_wait_idle
     release_wait_idle -->|require_release_intervention| release_wait_waiting_human
     release_wait_waiting_human -->|resume_release_observation<br/>/upstreaming resume| release_wait_idle
     release_wait_idle -->|verify_release| released_idle
     parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
     released_idle --> end_2(( ))
     closed_idle --> end_3(( ))
 ```
 
-On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested; an actionable review comment is answered and included in the next repair; an explanation-only comment is answered or recorded without requesting a change.
+On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; on the upstream PR it is recorded and surfaced on the tracking issue, and nothing is posted upstream. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
 
 ## Investigation and provisioning failure cases
 
-Investigation and provisioning fail in different ways, and each case has its own recovery path.
+Investigation and provisioning fail in different ways, and each case has its own recovery path. An infrastructure failure that exhausts its retries waits for a human in the same phase; it never ends the generation.
 
 ### Failure case 1: investigation finds no development path
 
@@ -153,43 +166,16 @@ flowchart TB
     start_1(( )) --> investigation_idle
     investigation_idle -->|dispatch_investigation| investigation_agent_running
     investigation_agent_running -->|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation<br/>/upstreaming park| parked_idle
+    investigation_agent_running -->|park_investigation| parked_idle
     investigation_agent_running -->|close_investigation| closed_idle
     parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
     closed_idle --> end_2(( ))
 ```
 
-The verified dossier decides between development, park, and close. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`.
+The verified dossier decides between development, park, and close. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs the complete investigation.
 
-### Failure case 2: the dossier is incomplete or invalid
-
-```mermaid
-flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-    end
-    subgraph provisioning["provisioning"]
-        provisioning_idle["provisioning.idle"]
-    end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
-    end
-    subgraph queued["queued"]
-        queued_idle["queued.idle"]
-    end
-
-    start_1(( )) --> investigation_idle
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running -->|reject_dossier| investigation_idle
-    investigation_agent_running -->|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation<br/>/upstreaming park| parked_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
-```
-
-`reject_dossier` retries automatically while `investigation_attempts` remains. An incomplete artifact is never adopted by hand.
-
-### Failure case 3: the investigator or dispatcher has an infrastructure failure
+### Failure case 2: the Result has no usable dossier
 
 ```mermaid
 flowchart TB
@@ -201,15 +187,6 @@ flowchart TB
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
     end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
-    end
-    subgraph queued["queued"]
-        queued_idle["queued.idle"]
-    end
-    subgraph closed["closed"]
-        closed_idle["closed.idle"]
-    end
 
     start_1(( )) --> investigation_idle
     investigation_idle -->|dispatch_investigation| investigation_agent_running
@@ -217,21 +194,37 @@ flowchart TB
     investigation_agent_running -->|exhaust_investigation_recovery| investigation_waiting_human
     investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
     investigation_agent_running -->|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation<br/>/upstreaming park| parked_idle
-    investigation_agent_running -->|close_investigation| closed_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+```
+
+`reject_dossier` retries automatically while `investigation_attempts` remains; a Result without a dossier counts like an invalid one. An incomplete artifact is never adopted by hand.
+
+### Failure case 3: the investigator or dispatcher has an infrastructure failure
+
+```mermaid
+flowchart TB
+    subgraph investigation["investigation"]
+        investigation_idle["investigation.idle"]
+        investigation_agent_running["investigation.agent_running"]
+        investigation_waiting_human["investigation.waiting_human"]
+    end
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+
+    start_1(( )) --> investigation_idle
+    investigation_idle -->|dispatch_investigation| investigation_agent_running
     investigation_agent_running -->|retry_dispatch| investigation_agent_running
     investigation_agent_running -->|allocate_work_retry| investigation_agent_running
     investigation_agent_running -->|exhaust_dispatch_recovery| investigation_waiting_human
-    investigation_agent_running -->|exhaust_work_recovery| parked_idle
+    investigation_agent_running -->|exhaust_work_recovery| investigation_waiting_human
+    investigation_idle -->|exhaust_work_total| investigation_waiting_human
+    investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
     investigation_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
-    investigation_idle -->|park_contribution<br/>/upstreaming park| parked_idle
-    closed_idle --> end_2(( ))
 ```
 
-Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity.
+Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity. Every Work allocation also charges `work_total`.
 
-### Failure case 4: fork provisioning has a transient failure
+### Failure case 4: fork provisioning fails or its outcome is uncertain
 
 ```mermaid
 flowchart TB
@@ -240,7 +233,7 @@ flowchart TB
         provisioning_waiting_human["provisioning.waiting_human"]
     end
     subgraph development["development"]
-        development_idle["development.idle"]
+        development_fix_needed["development.fix_needed"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
@@ -250,62 +243,11 @@ flowchart TB
     provisioning_idle -->|start_operation| provisioning_idle
     provisioning_idle -->|require_provisioning_intervention| provisioning_waiting_human
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
-    provisioning_idle -->|confirm_provisioning| development_idle
-    provisioning_idle -->|park_contribution<br/>/upstreaming park| parked_idle
-```
-
-`confirm_provisioning` follows fork creation, configuration, receipt validation, and exact readback. `start_operation` relaunches within `operation_launch`.
-
-### Failure case 5: provisioning outcome is uncertain
-
-```mermaid
-flowchart TB
-    subgraph provisioning["provisioning"]
-        provisioning_idle["provisioning.idle"]
-        provisioning_waiting_human["provisioning.waiting_human"]
-    end
-    subgraph development["development"]
-        development_idle["development.idle"]
-    end
-
-    start_1(( )) --> provisioning_idle
-    provisioning_idle -->|require_provisioning_intervention| provisioning_waiting_human
-    provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
-    provisioning_idle -->|confirm_provisioning| development_idle
-```
-
-A lost receipt is not proof that an operation did not launch; an uncertain effect is resolved by discovery or `/upstreaming resolve-operation`, never repeated blindly.
-
-### Failure case 6: provisioning cannot safely satisfy a prerequisite
-
-```mermaid
-flowchart TB
-    subgraph provisioning["provisioning"]
-        provisioning_idle["provisioning.idle"]
-        provisioning_waiting_human["provisioning.waiting_human"]
-    end
-    subgraph development["development"]
-        development_idle["development.idle"]
-    end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
-    end
-    subgraph closed["closed"]
-        closed_idle["closed.idle"]
-    end
-
-    start_1(( )) --> provisioning_idle
-    provisioning_idle -->|confirm_provisioning| development_idle
-    provisioning_idle -->|require_provisioning_intervention| provisioning_waiting_human
-    provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
-    provisioning_waiting_human -->|exhaust_provisioning_attempts| parked_idle
+    provisioning_idle -->|confirm_provisioning| development_fix_needed
     provisioning_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
-    provisioning_idle -->|park_contribution<br/>/upstreaming park| parked_idle
-    provisioning_idle -->|close_investigation| closed_idle
-    closed_idle --> end_2(( ))
 ```
 
-Correct the external permission or identity problem first, then resume. `exhaust_provisioning_attempts` parks after `provisioning_attempts`.
+`confirm_provisioning` follows fork creation, configuration, receipt validation, and exact readback. `start_operation` relaunches within `operation_launch`. A lost receipt is not proof that an operation did not launch; an uncertain effect is resolved by discovery or `/upstreaming resolve-operation`, never repeated blindly. A human corrects the prerequisite and resumes, or parks.
 
 ## Development and repair cases
 
@@ -316,7 +258,7 @@ Development is one bounded loop around the same development PR. A worker propose
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_idle["development.idle"]
+        development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
         development_waiting_ci["development.waiting_ci"]
     end
@@ -324,47 +266,37 @@ flowchart TB
         handoff_awaiting_submission["handoff.awaiting_submission"]
     end
 
-    start_1(( )) --> development_idle
-    development_idle -->|request_patch| development_agent_running
+    start_1(( )) --> development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
     development_agent_running -->|record_publish_success| development_waiting_ci
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
 ```
 
-Every applicable build and test job must execute and pass on the exact head.
+`development.fix_needed` is the one state in which development Work is due. `request_patch` applies while the head has no CI evidence and no feedback is recorded; `request_repair` applies otherwise. Every applicable build and test job must execute and pass on the exact head.
 
-### Failure case 1: patch proposal or dispatch failure
+### Failure case 1: patch proposal, dispatch, or Work failure
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_idle["development.idle"]
-        development_agent_running["development.agent_running"]
         development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
         development_waiting_human["development.waiting_human"]
     end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
-    end
-    subgraph queued["queued"]
-        queued_idle["queued.idle"]
-    end
 
-    start_1(( )) --> development_idle
-    development_idle -->|request_patch| development_agent_running
+    start_1(( )) --> development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
     development_agent_running -->|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|replan_development| development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
-    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
-    development_fix_needed -->|park_contribution<br/>/upstreaming park| parked_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
     development_agent_running -->|retry_dispatch| development_agent_running
     development_agent_running -->|allocate_work_retry| development_agent_running
     development_agent_running -->|exhaust_dispatch_recovery| development_waiting_human
-    development_agent_running -->|exhaust_work_recovery| parked_idle
-    development_fix_needed -->|exhaust_repair_attempts| parked_idle
+    development_agent_running -->|exhaust_work_recovery| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
-Dispatch recovery and bounded repair are automatic. Repair-budget exhaustion parks; `restart_generation` starts a clean generation that cannot bypass dossier validation.
+Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development.
 
 ### Failure case 2: trusted publication failure
 
@@ -375,21 +307,17 @@ flowchart TB
         development_fix_needed["development.fix_needed"]
         development_waiting_human["development.waiting_human"]
         development_waiting_ci["development.waiting_ci"]
-        development_idle["development.idle"]
     end
 
     start_1(( )) --> development_agent_running
     development_agent_running -->|record_publish_success| development_waiting_ci
-    development_agent_running -->|reject_patch_proposal| development_fix_needed
-    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
-    development_fix_needed -->|request_repair| development_agent_running
-    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_agent_running -->|schedule_publish_retry| development_agent_running
-    development_agent_running -->|replan_development| development_idle
-    development_agent_running -->|record_no_change| development_idle
+    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_fix_needed -->|request_repair| development_agent_running
 ```
 
-A validation failure needs new bounded repair Work. An infrastructure failure publishes the same verified Result again within `publish_recovery`.
+An infrastructure failure publishes the same verified Result again within `publish_recovery`. After exhaustion and a resume, fresh Work is requested; the held Result is not reused.
 
 ### Failure case 3: internal PR CI or review failure
 
@@ -399,6 +327,7 @@ flowchart TB
         development_waiting_ci["development.waiting_ci"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
         handoff_awaiting_submission["handoff.awaiting_submission"]
@@ -410,20 +339,24 @@ flowchart TB
     development_waiting_ci -->|record_explanation| development_waiting_ci
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
-    development_waiting_ci -->|rerun_failed_ci| development_waiting_ci
+    development_waiting_ci -->|rerun_interrupted_ci| development_waiting_ci
+    development_waiting_ci -->|exhaust_interrupted_reruns| development_waiting_human
+    development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
     development_waiting_ci -->|record_head_change| development_waiting_ci
+    development_waiting_ci -->|record_pr_mismatch| development_waiting_human
 ```
 
-Build and test failures and actionable comments request repair automatically. Explanation-only comments do not bump the revision, invalidate CI, or request repair.
+Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, which reruns the jobs. Explanation-only comments do not bump the revision, invalidate CI, or request repair.
 
-### Failure case 4: development must be re-investigated or stopped
+### Failure case 4: a repair budget is exhausted
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_idle["development.idle"]
         development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
     end
     subgraph queued["queued"]
         queued_idle["queued.idle"]
@@ -436,48 +369,124 @@ flowchart TB
         parked_idle["parked.idle"]
     end
 
-    start_1(( )) --> development_idle
-    development_idle -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    start_1(( )) --> development_fix_needed
+    development_fix_needed -->|request_repair| development_agent_running
+    development_fix_needed -->|refresh_on_exhaustion| queued_idle
     queued_idle -->|begin_investigation| investigation_idle
     investigation_idle -->|dispatch_investigation| investigation_agent_running
     investigation_agent_running -->|readmit_development| development_fix_needed
-    development_idle -->|park_contribution<br/>/upstreaming park| parked_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    development_fix_needed -->|exhaust_repair_attempts| parked_idle
 ```
 
-`refresh` runs a complete investigation without deleting the fork or development PR. `park` ends the current generation.
+Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs a complete investigation again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains.
+
+### Failure case 5: the Work budget is exhausted
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+
+    start_1(( )) --> development_fix_needed
+    development_fix_needed -->|request_repair| development_agent_running
+    development_fix_needed -->|exhaust_work_total| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
+```
+
+When `work_total` is exhausted at `development.fix_needed`, `exhaust_work_total` waits for a human and names `work_total` in `pending_human_action.counter`, whatever the repair budgets hold. The reply states the number of Work allocations spent in this generation and names both `/upstreaming resume` and `/upstreaming park`. One resume starts `work_total` again and returns to `development.fix_needed`; the repair budgets are not started again.
+
+### Failure case 6: development must be re-investigated
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+    subgraph investigation["investigation"]
+        investigation_agent_running["investigation.agent_running"]
+    end
+
+    development_waiting_ci -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    development_fix_needed -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    development_waiting_human -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    investigation_agent_running -->|readmit_development| development_fix_needed
+```
+
+`refresh` runs a complete investigation without deleting the fork or development PR. A refreshed dossier that decides to develop returns to `development.fix_needed` on the existing fork.
 
 ## Pause, waiting-human, and park cases
 
-Pause and block keep the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park ends the current generation; resume from parked performs a clean reset.
+Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and resume from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work.
 
-### Success case 1: temporary pause and successful resume
-
-```mermaid
-flowchart TB
-    active["development.waiting_ci"]
-    paused["development.waiting_ci, paused=true"]
-
-    start_1(( )) --> active
-    active -->|pause<br/>/upstreaming pause| paused
-    paused -->|resume_pause<br/>/upstreaming resume| active
-```
-
-Pause stops new Work and writer admission. An effect that passed its final publication check before the pause may finish and is reconciled normally.
-
-### Success case 2: block and resume
+### Success case 1: temporary pause and resume
 
 ```mermaid
 flowchart TB
-    active["development.waiting_ci"]
-    blocked["development.waiting_ci, blocked=true"]
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_ci_paused["development.waiting_ci, paused=true"]
+    end
 
-    start_1(( )) --> active
-    active -->|block<br/>/upstreaming block| blocked
-    blocked -->|resume_block<br/>/upstreaming resume| active
+    start_1(( )) --> development_waiting_ci
+    development_waiting_ci -->|pause<br/>/upstreaming pause| development_waiting_ci_paused
+    development_waiting_ci -->|pause_on_identity_change| development_waiting_ci_paused
+    development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
 ```
 
-Block records a reason and fences launches like pause. Resuming a block names the exact revision and bumps it.
+There is one flag, `paused`, with its reason and who set it. A human sets it with `pause`, with an optional reason; the controller sets it when the upstream identity changes and always records the reason. `resume_pause` bumps the revision. An effect that passed its final publication check before the pause may finish and is reconciled normally.
+
+### Success case 2: pause while Work is requested
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_fix_needed_paused["development.fix_needed, paused=true"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    start_1(( )) --> development_agent_running
+    development_agent_running -->|pause<br/>/upstreaming pause| development_fix_needed_paused
+    development_fix_needed_paused -->|resume_pause<br/>/upstreaming resume| development_fix_needed
+```
+
+Pause clears the requested Work, so the state in which that Work is due again is entered. A Result that lands during the pause takes `record_late_effect`; after the resume, fresh Work is requested.
+
+### Success case 3: resume after a long stop refreshes the dossier
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_ci_paused["development.waiting_ci, paused=true"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+
+    start_1(( )) --> development_waiting_ci
+    development_waiting_ci -->|pause<br/>/upstreaming pause| development_waiting_ci_paused
+    development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
+    development_waiting_ci_paused -->|resume_stale<br/>/upstreaming resume| queued_idle
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_waiting_human -->|resume_stale<br/>/upstreaming resume| queued_idle
+```
+
+In provisioning and development, a pause or human wait longer than `refresh.stale_after_days` days resumes through `resume_stale`, which runs the investigation again. The normal resume verbs carry the complementary guard, so exactly one applies. Handoff, upstream review, and release waits are never refreshed automatically.
 
 ### Failure case 1: waiting for operator action or an external prerequisite
 
@@ -498,14 +507,14 @@ flowchart TB
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-The controller records the concrete reason in `pending_human_action`. Correct the stated problem first, then resume with the exact revision.
+The controller records the concrete reason in `pending_human_action`. Correct the stated problem first, then resume with the exact revision. A contribution that is also paused needs two resumes: the first clears the flag and its reply names the pending action, the second leaves the wait. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`.
 
-### Failure case 2: park and later resume as a clean generation
+### Failure case 2: park, then restart as a clean generation or abandon
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_idle["development.idle"]
+        development_fix_needed["development.fix_needed"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
@@ -513,14 +522,19 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
 
-    start_1(( )) --> development_idle
-    development_idle -->|park_contribution<br/>/upstreaming park| parked_idle
+    start_1(( )) --> development_fix_needed
+    development_fix_needed -->|park_contribution<br/>/upstreaming park| parked_idle
     parked_idle -->|record_late_effect| parked_idle
     parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
+    closed_idle --> end_2(( ))
 ```
 
-`restart_generation` is accepted only when the contribution is quiescent. It bumps the generation, clears mutable lifecycle state, and starts at `queued.idle`. It does not close PRs, delete branches, or delete repositories.
+`restart_generation` is accepted only when no operation is open, no publication is pending, and no upstream PR is open. It bumps the generation, clears mutable lifecycle state, and starts at `queued.idle`. Requested Work carries its generation, so a Result of the ended generation is never folded or published. Nothing here closes PRs, deletes branches, or deletes repositories.
 
 ## Handoff, upstream review, and release cases
 
@@ -546,6 +560,7 @@ flowchart TB
     end
 
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
+    handoff_awaiting_submission -->|record_reminder| handoff_awaiting_submission
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_cleaning_debug
     handoff_cleaning_debug -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|accept_clean_head_ci| handoff_closing_internal_pr
@@ -555,7 +570,7 @@ flowchart TB
     handoff_waiting_upstream_pr -->|verify_upstream_pr| upstream_waiting_ci
 ```
 
-`submit-upstream` is the only submission command. The human follows the prefilled link and opens the PR under their own identity; observation verifies it before `upstream_review`.
+`submit-upstream` is the only submission command. The human follows the prefilled link and opens the PR under their own identity; observation verifies it before `upstream_review`. Both human steps are reminded.
 
 ### Failure case 1: pre-submission changes versus the locked upstream-PR wait
 
@@ -565,66 +580,64 @@ flowchart TB
         handoff_awaiting_submission["handoff.awaiting_submission"]
         handoff_cleaning_debug["handoff.cleaning_debug"]
         handoff_waiting_ci["handoff.waiting_ci"]
-        handoff_closing_internal_pr["handoff.closing_internal_pr"]
-        handoff_preparing_submission["handoff.preparing_submission"]
         handoff_waiting_upstream_pr["handoff.waiting_upstream_pr"]
     end
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
+        development_waiting_ci["development.waiting_ci"]
     end
     subgraph queued["queued"]
         queued_idle["queued.idle"]
-    end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
     end
 
     start_1(( )) --> handoff_awaiting_submission
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_cleaning_debug
     handoff_cleaning_debug -->|confirm_clean_head| handoff_waiting_ci
-    handoff_waiting_ci -->|accept_clean_head_ci| handoff_closing_internal_pr
-    handoff_closing_internal_pr -->|confirm_internal_pr_closed| handoff_preparing_submission
-    handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
-    handoff_waiting_upstream_pr -->|record_audit_observation| handoff_waiting_upstream_pr
+    handoff_waiting_ci -->|rerun_interrupted_ci| handoff_waiting_ci
+    handoff_awaiting_submission -->|return_for_repair| development_fix_needed
+    handoff_awaiting_submission -->|record_head_change| development_waiting_ci
     handoff_cleaning_debug -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
-    handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
-    handoff_awaiting_submission -->|return_for_repair| development_fix_needed
     handoff_awaiting_submission -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
-    handoff_awaiting_submission -->|park_contribution<br/>/upstreaming park| parked_idle
+    handoff_waiting_upstream_pr -->|record_audit_observation| handoff_waiting_upstream_pr
+    handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
+    handoff_waiting_upstream_pr -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
 ```
 
-Before the package is posted, cleanup validation, an exact-head lease conflict, or blocking CI on the clean head returns to development. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr` and `retract_submission` leave it.
+Before the package is posted, a changed head, cleanup validation, an exact-head lease conflict, or blocking CI on the clean head returns to development. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_investigation` leave it.
 
-### Failure case 2: submission-package publication or PR verification fails
+### Failure case 2: a handoff operation fails repeatedly
 
 ```mermaid
 flowchart TB
     subgraph handoff["handoff"]
+        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_waiting_ci["handoff.waiting_ci"]
         handoff_closing_internal_pr["handoff.closing_internal_pr"]
-        handoff_waiting_internal_pr["handoff.waiting_internal_pr"]
         handoff_preparing_submission["handoff.preparing_submission"]
-        handoff_waiting_comment["handoff.waiting_comment"]
+        handoff_waiting_human["handoff.waiting_human"]
         handoff_waiting_upstream_pr["handoff.waiting_upstream_pr"]
     end
-    subgraph upstream_review["upstream_review"]
-        upstream_waiting_ci["upstream_review.waiting_ci"]
-    end
 
-    start_1(( )) --> handoff_closing_internal_pr
-    handoff_closing_internal_pr -->|confirm_internal_pr_closed| handoff_preparing_submission
-    handoff_closing_internal_pr -->|exhaust_internal_pr_retries| handoff_waiting_internal_pr
-    handoff_waiting_internal_pr -->|resume_internal_pr_closure<br/>/upstreaming resume| handoff_closing_internal_pr
-    handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
-    handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_comment
-    handoff_waiting_comment -->|resume_submission_preparation<br/>/upstreaming resume| handoff_preparing_submission
-    handoff_waiting_upstream_pr -->|record_reminder| handoff_waiting_upstream_pr
-    handoff_waiting_upstream_pr -->|verify_upstream_pr| upstream_waiting_ci
+    start_1(( )) --> handoff_cleaning_debug
+    handoff_cleaning_debug -->|retry_debug_cleanup| handoff_cleaning_debug
+    handoff_cleaning_debug -->|exhaust_debug_cleanup_retries| handoff_waiting_human
+    handoff_waiting_human -->|resume_debug_cleanup<br/>/upstreaming resume| handoff_cleaning_debug
+    handoff_cleaning_debug -->|confirm_clean_head| handoff_waiting_ci
+    handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
+    handoff_waiting_human -->|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
+    handoff_waiting_ci -->|accept_clean_head_ci| handoff_closing_internal_pr
     handoff_closing_internal_pr -->|retry_internal_pr_closure| handoff_closing_internal_pr
+    handoff_closing_internal_pr -->|exhaust_internal_pr_retries| handoff_waiting_human
+    handoff_waiting_human -->|resume_internal_pr_closure<br/>/upstreaming resume| handoff_closing_internal_pr
+    handoff_closing_internal_pr -->|confirm_internal_pr_closed| handoff_preparing_submission
     handoff_preparing_submission -->|retry_submission_comment| handoff_preparing_submission
+    handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
+    handoff_waiting_human -->|resume_submission_preparation<br/>/upstreaming resume| handoff_preparing_submission
+    handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
 ```
 
-Closure and package recovery happen before the locked wait and do not need another `submit-upstream`.
+The lease write, the reruns of interrupted CI, the closure, and the package each retry within their budget and then wait for a human in the one `handoff.waiting_human`. `pending_human_action` names the step that failed, and exactly one of the four resume verbs applies: it returns to that step. Recovery does not need another `submit-upstream`.
 
 ### Success case 2: upstream review, merge, and release
 
@@ -658,12 +671,6 @@ flowchart TB
         upstream_agent_running["upstream_review.agent_running"]
         upstream_waiting_human["upstream_review.waiting_human"]
     end
-    subgraph release_wait["release_wait"]
-        release_wait_idle["release_wait.idle"]
-    end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
-    end
 
     start_1(( )) --> upstream_waiting_ci
     upstream_waiting_ci -->|record_upstream_ci_failure| upstream_fix_needed
@@ -671,17 +678,38 @@ flowchart TB
     upstream_waiting_ci -->|record_explanation| upstream_waiting_ci
     upstream_fix_needed -->|request_upstream_revision| upstream_agent_running
     upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
-    upstream_waiting_ci -->|record_merge| release_wait_idle
-    upstream_agent_running -->|retry_dispatch| upstream_agent_running
-    upstream_agent_running -->|allocate_work_retry| upstream_agent_running
-    upstream_agent_running -->|exhaust_dispatch_recovery| upstream_waiting_human
-    upstream_agent_running -->|exhaust_work_recovery| parked_idle
-    upstream_fix_needed -->|exhaust_repair_attempts| parked_idle
+    upstream_agent_running -->|reject_patch_proposal| upstream_fix_needed
+    upstream_agent_running -->|require_reviewer_answer| upstream_waiting_human
+    upstream_fix_needed -->|exhaust_repair_attempts| upstream_waiting_human
+    upstream_waiting_human -->|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
+    upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
 
-Automated upstream revisions require that the registered PR head is the controlled fork ref. Otherwise patches go to the submitter.
+Automated upstream revisions require that the upstream PR head is the controlled fork ref. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without requesting Work. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and CI run. Upstream CI is never rerun by the pipeline.
 
-### Failure case 4: upstream PR is closed or maintainer intent is unclear
+### Failure case 4: revision Work or its publication fails
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_agent_running["upstream_review.agent_running"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+    end
+
+    start_1(( )) --> upstream_agent_running
+    upstream_agent_running -->|retry_dispatch| upstream_agent_running
+    upstream_agent_running -->|allocate_work_retry| upstream_agent_running
+    upstream_agent_running -->|schedule_publish_retry| upstream_agent_running
+    upstream_agent_running -->|exhaust_dispatch_recovery| upstream_waiting_human
+    upstream_agent_running -->|exhaust_work_recovery| upstream_waiting_human
+    upstream_agent_running -->|exhaust_publish_recovery| upstream_waiting_human
+    upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+```
+
+Every exhaustion in upstream review waits for a human in `upstream_review.waiting_human`; nothing parks from upstream review automatically.
+
+### Failure case 5: the upstream PR is closed or its head changes
 
 ```mermaid
 flowchart TB
@@ -695,13 +723,14 @@ flowchart TB
 
     start_1(( )) --> upstream_waiting_ci
     upstream_waiting_ci -->|record_pr_closed_unmerged| upstream_waiting_human
+    upstream_waiting_ci -->|record_head_change| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
     upstream_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-The pipeline does not reopen the PR or create a replacement. Human triage either resumes or parks.
+The pipeline does not reopen the PR or create a replacement. `resume_upstream_review` returns to `upstream_review.waiting_ci` after a head change, and after a closed PR once it is observed open again. `resume_upstream_revision` applies only when revision Work failed. Human triage either resumes or parks.
 
-### Failure case 5: release is missing, incomplete, or waiting for operator action
+### Failure case 6: release is missing, incomplete, or waiting for operator action
 
 ```mermaid
 flowchart TB
@@ -722,26 +751,119 @@ flowchart TB
 
 Release observation waits without invoking a worker until the evidence satisfies the frozen acceptance contract.
 
+## Rules that apply in many states
+
+Four transitions apply in many states. Each is written once as a rule and expanded into the table; each is drawn once here, from a single node that stands for every state the rule applies in.
+
+### Rule: park by command
+
+```mermaid
+flowchart TB
+    any["every non-terminal state except parked.idle, handoff.waiting_upstream_pr, release_wait.*, and upstream_review.* other than upstream_review.waiting_human"]
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+
+    any -->|park_contribution<br/>/upstreaming park| parked_idle
+```
+
+Nothing parks from `upstream_review` automatically, and `handoff.waiting_upstream_pr` and `release_wait` cannot be parked.
+
+### Rule: resume after a long stop
+
+```mermaid
+flowchart TB
+    any["every provisioning.* and development.* state"]
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+
+    any -->|resume_stale<br/>/upstreaming resume| queued_idle
+```
+
+### Rule: reminders of a pending human step
+
+```mermaid
+flowchart TB
+    any["every state of kind gate, human_wait, or locked"]
+
+    any -->|record_reminder| any
+```
+
+The rule covers the `gate`, `human_wait`, and `locked` kinds. In `handoff.waiting_upstream_pr` the reminder text carries the package link.
+
+### Rule: late Results
+
+```mermaid
+flowchart TB
+    any["every state"]
+
+    any -->|record_late_effect| any
+```
+
+## Remote operations
+
+Every remote effect is an operation with its own small table, held to the same checks. The intent is recorded before the effect, and the receipt is confirmed by discovering the actual resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` closes an open operation with a resolution evidence record.
+
+```mermaid
+flowchart TB
+    subgraph open_operations["open"]
+        op_planned["planned"]
+        op_applying["applying"]
+        op_uncertain["uncertain"]
+    end
+    subgraph closed_operations["closed"]
+        op_confirmed["confirmed"]
+        op_failed["failed"]
+        op_not_launched["not_launched"]
+    end
+
+    start_1(( )) -->|record_intent| op_planned
+    op_planned -->|begin_effect| op_applying
+    op_planned -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_planned -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_planned -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_applying -->|record_response| op_uncertain
+    op_applying -->|record_failure| op_failed
+    op_applying -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_applying -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_applying -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_uncertain -->|confirm_by_discovery| op_confirmed
+    op_uncertain -->|record_discovery| op_uncertain
+    op_uncertain -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_uncertain -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_uncertain -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_confirmed --> end_2(( ))
+    op_failed --> end_3(( ))
+    op_not_launched --> end_4(( ))
+```
+
 ## Command impact summary
 
-Every `/upstreaming` command that the table accepts, with the transitions it triggers.
+Every `/upstreaming` command that the tables accept, with the transitions it triggers.
 
 | Command | Verb | From | To |
 |:--------|:-----|:-----|:---|
-| `/upstreaming block` | `block` | every non-terminal state | same state |
-| `/upstreaming park` | `park_contribution` | `investigation.idle`, `investigation.waiting_human`, `provisioning.idle`, `provisioning.waiting_human`, `development.idle`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `upstream_review.waiting_human` | `parked.idle` |
-| `/upstreaming park` | `park_investigation` | `investigation.agent_running` | `parked.idle` |
+| `/upstreaming abandon` | `abandon` | `parked.idle` | `closed.idle` |
+| `/upstreaming park` | `park_contribution` | every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human` | `parked.idle` |
 | `/upstreaming pause` | `pause` | every non-terminal state | same state |
-| `/upstreaming refresh` | `refresh_investigation` | `development.idle`, `handoff.awaiting_submission` | `queued.idle` |
+| `/upstreaming refresh` | `refresh_investigation` | `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.waiting_upstream_pr` | `queued.idle` |
+| `/upstreaming resolve-operation` | `resolve_confirmed` | operation `planned`, operation `applying`, operation `uncertain` | operation `confirmed` |
+| `/upstreaming resolve-operation` | `resolve_failed` | operation `planned`, operation `applying`, operation `uncertain` | operation `failed` |
+| `/upstreaming resolve-operation` | `resolve_not_launched` | operation `planned`, operation `applying`, operation `uncertain` | operation `not_launched` |
 | `/upstreaming resume` | `restart_generation` | `parked.idle` | `queued.idle` |
-| `/upstreaming resume` | `resume_block` | every non-terminal state | same state |
+| `/upstreaming resume` | `resume_ci` | `development.waiting_human` | `development.waiting_ci` |
+| `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
+| `/upstreaming resume` | `resume_debug_cleanup` | `handoff.waiting_human` | `handoff.cleaning_debug` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
-| `/upstreaming resume` | `resume_internal_pr_closure` | `handoff.waiting_internal_pr` | `handoff.closing_internal_pr` |
+| `/upstreaming resume` | `resume_internal_pr_closure` | `handoff.waiting_human` | `handoff.closing_internal_pr` |
 | `/upstreaming resume` | `resume_investigation` | `investigation.waiting_human` | `investigation.idle` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |
 | `/upstreaming resume` | `resume_provisioning` | `provisioning.waiting_human` | `provisioning.idle` |
 | `/upstreaming resume` | `resume_release_observation` | `release_wait.waiting_human` | `release_wait.idle` |
-| `/upstreaming resume` | `resume_submission_preparation` | `handoff.waiting_comment` | `handoff.preparing_submission` |
+| `/upstreaming resume` | `resume_stale` | every `provisioning.*` and `development.*` state | `queued.idle` |
+| `/upstreaming resume` | `resume_submission_preparation` | `handoff.waiting_human` | `handoff.preparing_submission` |
 | `/upstreaming resume` | `resume_upstream_review` | `upstream_review.waiting_human` | `upstream_review.waiting_ci` |
+| `/upstreaming resume` | `resume_upstream_revision` | `upstream_review.waiting_human` | `upstream_review.fix_needed` |
 | `/upstreaming retract-pr` | `retract_submission` | `handoff.waiting_upstream_pr` | `development.fix_needed` |
 | `/upstreaming submit-upstream` | `submit_upstream` | `handoff.awaiting_submission` | `handoff.cleaning_debug` |

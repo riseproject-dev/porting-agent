@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Contribution lifecycle: phases, ordinary transitions and command handling.
 
-The lifecycle table at the end of this module (``LIFECYCLE``, ``FLAGS`` and
-``BUDGETS``) is the definition of the contribution state machine. Documentation and tests are derived from it.
+The lifecycle table at the end of this module (``LIFECYCLE``, ``RULES``,
+``FLAGS``, ``BUDGETS`` and ``OPERATIONS``) is the definition of the contribution
+state machine. Documentation and tests are derived from it.
 
 Everything here is pure: functions take a record and return a new record plus
 the semantic event to persist. They never perform remote effects. The trusted
@@ -601,15 +602,18 @@ def write_admission(record: dict) -> str | None:
 # its properties and, in order, the transitions that leave it. Each
 # transition is keyed by its verb and the state it leads to, and records its
 # trigger, guard, effects on the record and the retry budgets it charges.
-# ``FLAGS`` are the orthogonal overrides (``paused``, ``blocked``) that do not
-# change phase or activity. ``BUDGETS`` names every retry budget: what one
-# charge is, where the count lives, the ``policy.json`` key that sets its
-# limit, and the exhaustion verb that leaves it.
+# ``RULES`` are transitions that apply in many states; each is written once
+# and expanded into ``LIFECYCLE`` when this module is imported, so the table
+# holds every row. ``FLAGS`` are the orthogonal overrides (``paused``) that
+# do not change phase or activity. ``BUDGETS`` names every retry budget: what
+# one charge is, where the count lives, the ``policy.json`` key that sets its
+# limit, and the exhaustion verbs that leave it. ``OPERATIONS`` is the table
+# of one remote operation, held to the same checks.
 #
 # ``DIAGRAM_SECTIONS`` is presentation metadata used to render the table as
 # diagrams; it selects and orders table entries but adds no transitions.
-# ``check_table`` (``python -m lifecycle check``) verifies that the table is
-# consistent.
+# ``check_table`` (``python -m lifecycle check``) verifies that the tables
+# are consistent.
 
 
 class Trigger(StrEnum):
@@ -627,14 +631,19 @@ TRIGGER_DESCRIPTIONS = {
                      "name the exact current revision; stop commands may name a stale one.",
     Trigger.OBSERVATION: "A read-only observation by the collector: fork branch, CI runs, pull "
                          "requests, review comments, or releases.",
-    Trigger.RESULT: "A verified native-queue Result folded by reconciliation.",
+    Trigger.RESULT: "A verified native-queue Result folded by reconciliation. A Result is folded "
+                    "only when it matches the current generation, revision, and requested Work; "
+                    "any other Result takes `record_late_effect`. Each Result records its token "
+                    "usage in the events.",
     Trigger.OPERATION: "A trusted remote operation receipt and its exact readback.",
     Trigger.TICK: "A controller decision without new input: Work allocation, a budget charge "
                   "or exhaustion, or a deadline.",
 }
 
 KIND_DESCRIPTIONS = {
-    "auto_wait": "Waits for an automatic trigger; the controller acts without a human.",
+    "auto_wait": "Waits for an automatic trigger; the controller acts without a human. A guard "
+                 "that does not hold yet (a worker slot, capacity) keeps the contribution here; "
+                 "there is no separate capacity wait.",
     "work": "Requested Work or a trusted operation is in progress.",
     "human_wait": "A recorded `pending_human_action` names what a human must do; "
                   "`/upstreaming resume` continues.",
@@ -645,6 +654,10 @@ KIND_DESCRIPTIONS = {
                       "late-effect reconciliation until a clean restart.",
     "terminal": "No transition leaves this state.",
 }
+
+# The identity of requested Work. A Result names all three; a Result that
+# differs in any of them is never folded and never published.
+WORK_IDENTITY = ("generation", "revision", "Work id")
 
 
 @dataclass(frozen=True)
@@ -657,6 +670,9 @@ class Effects:
     ``keep``, ``clear``, ``allocate`` (new Work for this state) or
     ``reallocate`` (a fresh Work graph for the same task). ``sets`` and
     ``clears`` name record fields; ``field=value`` names the value set.
+    ``restarts`` names the budgets whose counter the transition may start
+    again: it starts exactly the one named in ``pending_human_action.counter``,
+    and none when no counter is named.
     """
 
     revision: str = "keep"
@@ -664,6 +680,7 @@ class Effects:
     work: str = "keep"
     sets: tuple[str, ...] = ()
     clears: tuple[str, ...] = ()
+    restarts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.revision not in ("keep", "bump") or self.generation not in ("keep", "bump"):
@@ -676,11 +693,10 @@ class Effects:
 class Transition:
     """One transition, stored under the ``(verb, target)`` key of its state.
 
-    ``command`` is the `/upstreaming` command that triggers it, or, for a
-    Result that applies a decision, the command with the same effect.
-    ``guard`` lists every condition that must hold; an unconditional
-    transition states ``(ALWAYS,)``. ``charges`` names the ``BUDGETS``
-    entries one taking of this transition charges.
+    ``command`` is the `/upstreaming` command that triggers it. ``guard``
+    lists every condition that must hold; an unconditional transition states
+    ``(ALWAYS,)``. ``charges`` names the ``BUDGETS`` entries one taking of
+    this transition charges.
     """
 
     trigger: Trigger
@@ -716,20 +732,43 @@ class State:
 
 
 @dataclass(frozen=True)
+class Rule:
+    """A transition that applies in many states, written once.
+
+    The rule's verb leads to ``target`` (a state key, or ``SELF``) from every
+    state whose kind is in ``kinds`` (every kind when empty) and whose key
+    matches a pattern in ``states`` (every state when empty), except the
+    states matching ``exclude`` that do not also match ``include``.
+    ``applies`` says the same in words. ``expand_rules`` adds one row per
+    matching state to ``LIFECYCLE``.
+    """
+
+    target: str
+    transition: Transition
+    applies: str
+    kinds: tuple[str, ...] = ()
+    states: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    include: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Flag:
     """An orthogonal override stored in ``field``.
 
-    ``set_by`` (verb ``set_verb``) and ``cleared_by`` (verb ``clear_verb``)
-    apply from every non-terminal state and keep phase and activity.
-    ``mask`` says what each trigger may still do while the flag is set.
+    ``set_by`` and ``cleared_by`` map a verb to its transition; they apply
+    from every non-terminal state and keep phase and activity. The one
+    exception is ``set_moves``: setting the flag clears the requested Work,
+    so a state that holds requested Work is left for the state in which that
+    Work is due again. A setter that is not a command records its reason. ``mask`` says what each trigger may still do while
+    the flag is set.
     """
 
     field: str
     description: str
-    set_verb: str
-    set_by: Transition
-    clear_verb: str
-    cleared_by: Transition
+    set_by: dict[str, Transition]
+    cleared_by: dict[str, Transition]
+    set_moves: dict[str, str]
     mask: dict[Trigger, str]
 
 
@@ -740,17 +779,36 @@ class Budget:
     The limit is the value at ``policy_key`` in ``policy.json`` plus
     ``offset`` (``offset=1`` for budgets whose first try is free). ``unit``
     is what one charge is, ``counter`` where the count lives. When the count
-    reaches the limit, ``exhaustion_verb`` is taken instead of the charging
-    verb, from the charging state or the state the charging verb leads to;
-    its guard names the budget.
+    reaches the limit, one of ``exhaustion_verbs`` is taken instead of the
+    charging verb, from the charging state or the state the charging verb
+    leads to; its guard names the budget. ``infrastructure`` marks a budget
+    spent on infrastructure failures: its exhaustion always leads to a human
+    wait of the same phase and never ends the generation. Every exhaustion
+    that leads to a human wait names its counter in
+    ``pending_human_action.counter``, and the resume from that wait starts
+    exactly that counter again.
     """
 
     policy_key: str
     offset: int
     unit: str
     counter: str
-    exhaustion_verb: str
-    description: str = ""
+    exhaustion_verbs: tuple[str, ...]
+    infrastructure: bool = False
+
+
+@dataclass(frozen=True)
+class OperationState:
+    """One state of a remote operation and the transitions that leave it.
+
+    ``open``: the effect may still happen or is not yet known, so the
+    operation fences its contribution (no park, refresh, or second writer).
+    A state that is not open is an end state.
+    """
+
+    open: bool
+    description: str
+    transitions: dict[tuple[str, str], Transition] = field(default_factory=dict)
 
 
 SELF = "@self"
@@ -762,27 +820,77 @@ _E = Effects
 PARK = "/upstreaming park"
 RESUME = "/upstreaming resume"
 REFRESH = "/upstreaming refresh"
+RESOLVE = "/upstreaming resolve-operation"
 
 INITIAL_STATE = "queued.idle"
 INITIAL_VERB = "accept_request"
 
+# Guard conditions that the consistency check reads.
+EXACT_REVISION = "exact revision"
+ANY_REVISION = "any revision, current or stale"
+NOT_PAUSED = "not paused"
+QUIESCENT = "quiescent: no open operation and no pending publication"
+NO_WORK = "no requested Work"
+# A stop is stale when it lasted longer than ``refresh.stale_after_days``,
+# counted from the older of ``paused_at`` and
+# ``pending_human_action.requested_at``. ``resume_stale`` requires it; every
+# other resume from the same states requires the complement, so exactly one
+# of them applies.
+STALE = "stopped for longer than `refresh.stale_after_days` days"
+NOT_STALE = "stopped for at most `refresh.stale_after_days` days"
+FLAG_NOT_STALE = ("stopped for at most `refresh.stale_after_days` days, or the phase is not "
+                  "provisioning or development")
+STALE_PHASES = ("provisioning", "development")
+STALE_KEY = "refresh.stale_after_days"
+REMINDER_KEY = "human_sla_business_days.reminder"
+REMINDER_KINDS = ("gate", "human_wait", "locked")
+INFRASTRUCTURE_KEY = "retries.infrastructure_per_head_failure"
+EXACT_OPERATION = "the command names this operation"
+
+# Guards on the recorded ``pending_human_action``, as (negated, kinds). The
+# resumes of a human wait that are guarded by it are mutually exclusive, and
+# together they cover every pending action with which the wait is entered.
+PENDING_GUARDS: dict[str, tuple[bool, tuple[str, ...]]] = {}
+# The field in which an exhaustion that leads to a human wait names the
+# counter that the resume from that wait starts again.
+PENDING_COUNTER = "pending_human_action.counter"
+
+
+def _one_of(kinds: tuple[str, ...]) -> str:
+    if len(kinds) < 3:
+        return " or ".join(kinds)
+    return ", ".join(kinds[:-1]) + f", or {kinds[-1]}"
+
+
+def pending_is(*kinds: str) -> str:
+    """The guard that the pending human action is one of ``kinds``."""
+    guard = f"pending_human_action is {_one_of(kinds)}"
+    PENDING_GUARDS[guard] = (False, kinds)
+    return guard
+
+
+def pending_is_not(*kinds: str) -> str:
+    """The guard that the pending human action is none of ``kinds``."""
+    guard = f"pending_human_action is not {_one_of(kinds)}"
+    PENDING_GUARDS[guard] = (True, kinds)
+    return guard
+
+
+_REFRESH_EFFECTS = _E(
+    revision="bump", sets=("refresh",),
+    clears=("dossier_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
+            "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
+            "pending_human_action", "publication_operation_id"))
+_FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
 
 # Transitions shared by several states. The key under each state names the
 # verb and the target.
-_PARK_CONTRIBUTION = Transition(
-    _C, PARK,
-    ("a reason is given", "any revision, current or stale"),
-    _E(work="clear", sets=("parked_reason", "previous_phase")),
-    description="Ends the current generation; evidence is kept for audit.")
 _REFRESH = Transition(
     _C, REFRESH,
-    ("exact revision", "quiescent: no Work, operation, or pending publication",
-     "development PR and head recorded"),
-    _E(revision="bump", sets=("refresh",),
-      clears=("dossier_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
-              "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
-              "pending_human_action", "publication_operation_id")),
-    description="Runs a complete investigation again while keeping the fork and development PR.")
+    (EXACT_REVISION, QUIESCENT, NO_WORK, "development PR and head recorded"),
+    _REFRESH_EFFECTS,
+    description="Runs a complete investigation again while keeping the fork and development PR. "
+                "Accepted while paused.")
 _RETRY_DISPATCH = Transition(
     _K, None,
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_recovery remains"),
@@ -790,25 +898,82 @@ _RETRY_DISPATCH = Transition(
     description="Launches the dispatcher again for the same committed Work request.")
 _EXHAUST_DISPATCH_RECOVERY = Transition(
     _K, None, ("dispatch_recovery exhausted",),
-    _E(work="clear", sets=("pending_human_action=dispatch_failed",)))
+    _E(work="clear", sets=("pending_human_action=dispatch_failed",
+                           f"{PENDING_COUNTER}=dispatch_recovery")))
+# Guards that decide which transition applies when Work is due. EXCLUSIVE_GUARDS
+# lists the combinations that cannot hold together.
+WORK_TOTAL_REMAINS = "work_total remains"
+WORK_TOTAL_EXHAUSTED = "work_total exhausted"
+PATCH_DUE = "no CI evidence for the head and no feedback recorded"
+REPAIR_DUE = "CI evidence for the head or feedback recorded"
+NO_PROGRESS_REMAINS = "no_progress remains"
+REPAIR_BUDGETS_REMAIN = "repair_attempts_cluster and no_progress remain"
+REPAIR_BUDGET_EXHAUSTED = ("no_progress is exhausted, or repair_attempts_cluster is exhausted "
+                           "and CI evidence for the head or feedback is recorded")
+REFRESH_UNUSED = "the automatic refresh is unused in this generation"
+REFRESH_USED = "the automatic refresh is used in this generation"
+REVISION_BUDGETS_REMAIN = "repair_attempts_cluster, no_progress, and work_total remain"
+REVISION_BUDGET_EXHAUSTED = "repair_attempts_cluster, no_progress, or work_total is exhausted"
+EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    ((WORK_TOTAL_REMAINS,), (WORK_TOTAL_EXHAUSTED,)),
+    ((PATCH_DUE,), (REPAIR_DUE,)),
+    ((PATCH_DUE, NO_PROGRESS_REMAINS), (REPAIR_BUDGET_EXHAUSTED,)),
+    ((REPAIR_BUDGETS_REMAIN,), (REPAIR_BUDGET_EXHAUSTED,)),
+    ((REFRESH_UNUSED,), (REFRESH_USED,)),
+    ((REVISION_BUDGETS_REMAIN,), (REVISION_BUDGET_EXHAUSTED,)),
+)
+
 _ALLOCATE_WORK_RETRY = Transition(
     _K, None,
-    ("the Work graph is terminal without a usable Result", "work_recovery remains"),
-    _E(revision="bump", work="reallocate"), ("work_recovery",),
+    ("the Work graph is terminal without a usable Result", "work_recovery and work_total remain"),
+    _E(revision="bump", work="reallocate"), ("work_recovery", "work_total"),
     description="A terminal Work graph is never submitted again; a fresh graph is allocated.")
 _EXHAUST_WORK_RECOVERY = Transition(
-    _K, None, ("work_recovery exhausted",),
-    _E(work="clear", sets=("parked_reason", "previous_phase")))
+    _K, None,
+    ("the Work graph is terminal without a usable Result", "work_recovery or work_total exhausted"),
+    _E(work="clear", sets=("pending_human_action=work_failed", PENDING_COUNTER)),
+    description="`pending_human_action.counter` names `work_total` when that budget is "
+                "exhausted, and `work_recovery` otherwise.")
+_SCHEDULE_PUBLISH_RETRY = Transition(
+    _R, None,
+    ("publication failed with an infrastructure error", "publish_recovery remains"),
+    _E(work="clear", sets=("pending_publication",)), ("publish_recovery",),
+    "The same verified Result is published again; no new Work is requested.")
+_EXHAUST_PUBLISH_RECOVERY = Transition(
+    _R, None,
+    ("publish_recovery exhausted",),
+    _E(sets=("pending_human_action=publication_infrastructure_failure",
+            f"{PENDING_COUNTER}=publish_recovery", "pending_publication.exhausted")))
 _RECORD_EXPLANATION = Transition(
     _O, None, ("authorized explanation-only inquiry",),
     _E(sets=("processed_review_ids", "processed_review_comment_ids",
             "processed_pr_conversation_comment_ids")),
-    description="Answered or recorded without requesting a change; revision and CI evidence are kept.")
+    description="Answered on the development PR or recorded without requesting a change; "
+                "revision and CI evidence are kept.")
+_INTERRUPTED = "a required CI job on the exact head was cancelled or lost its runner"
+_RERUN_INTERRUPTED_CI = Transition(
+    _O, None, (_INTERRUPTED, "interrupted_reruns remains"),
+    charges=("interrupted_reruns",),
+    description="The collector reruns the interrupted jobs on the exact head. It reruns for no "
+                "other conclusion.")
+_EXHAUST_INTERRUPTED_RERUNS = Transition(
+    _O, None, (_INTERRUPTED, "interrupted_reruns exhausted"),
+    _E(sets=("pending_human_action=ci_interrupted", f"{PENDING_COUNTER}=interrupted_reruns")))
+_RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
+_RESUME_CI_NOTE = ("Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` "
+                   "again for the head.")
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=("clean_head_sha", "handoff_request", "pending_human_action"))
-_EXHAUST_REPAIR_ATTEMPTS = Transition(
-    _K, None,
-    ("repair_attempts_cluster, repair_attempts_total, or no_progress is exhausted at allocation",),
-    _E(work="clear", sets=("parked_reason", "previous_phase")))
+_RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
+_RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts again the one "
+                 "counter named in `pending_human_action.counter`, and no other. The event "
+                 "records the actor, the counter, and its count at that point.")
+
+
+def _resume_restarting(*budgets: str) -> Effects:
+    """The effects of the resume of a human wait that one exhausted budget caused."""
+    return _E(revision="bump", clears=("pending_human_action",), restarts=budgets)
+_ADMISSION = ("verified dossier decision develop, or verified dossier decision park and a "
+              "recorded admission_override")
 
 
 LIFECYCLE: dict[str, State] = {
@@ -816,8 +981,7 @@ LIFECYCLE: dict[str, State] = {
         "auto_wait", True, False,
         "An accepted request is recorded; investigation has not started.",
         transitions={
-            ("begin_investigation", "investigation.idle"): Transition(
-                _K, None, ("not paused", "not blocked")),
+            ("begin_investigation", "investigation.idle"): Transition(_K, None, (NOT_PAUSED,)),
             ("withdraw_request", "closed.idle"): Transition(
                 _O, None,
                 ("intake label removed", "no Work requested", "no dossier", "no fork"),
@@ -829,9 +993,12 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("dispatch_investigation", "investigation.agent_running"): Transition(
                 _K, None,
-                ("worker slot free", "not paused", "not blocked", "no open operation"),
-                _E(work="allocate")),
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
+                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation"),
+                _E(work="allocate"), ("work_total",)),
+            ("exhaust_work_total", "investigation.waiting_human"): Transition(
+                _K, None, (WORK_TOTAL_EXHAUSTED,),
+                _E(sets=("pending_human_action=work_budget_exhausted",
+                        f"{PENDING_COUNTER}=work_total"))),
         }),
     "investigation.agent_running": State(
         "work", False, False,
@@ -840,46 +1007,55 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_dispatch_recovery", "investigation.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "parked.idle"): _EXHAUST_WORK_RECOVERY,
+            ("exhaust_work_recovery", "investigation.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("reject_dossier", "investigation.idle"): Transition(
                 _R, None,
-                ("the dossier is invalid, or its decision is not develop, park, or close",
+                ("the Result has no dossier, the dossier is invalid, or its decision is not "
+                 "develop, park, or close",
                  "investigation_attempts remains"),
                 _E(revision="bump", work="clear"), ("investigation_attempts",),
-                "Trusted validation rejects the dossier; a new investigation is due."),
+                "Trusted validation rejects the Result; a new investigation is due."),
             ("exhaust_investigation_recovery", "investigation.waiting_human"): Transition(
                 _R, None,
-                ("a Result without a dossier, or investigation_attempts exhausted",),
-                _E(work="clear", sets=("pending_human_action",))),
+                ("the Result has no usable dossier", "investigation_attempts exhausted"),
+                _E(work="clear", sets=("pending_human_action=investigation_failed",
+                                       f"{PENDING_COUNTER}=investigation_attempts"))),
             ("admit_development", "provisioning.idle"): Transition(
                 _R, None,
-                ("verified dossier decision develop", "no refresh recorded"),
-                _E(revision="bump", work="clear",
-                  sets=("dossier_evidence_id", "admission_class", "scope_paths"))),
-            ("readmit_development", "development.fix_needed"): Transition(
-                _R, None,
-                ("verified dossier decision develop", "refresh recorded",
-                 "the recorded fork and development PR still match"),
+                (_ADMISSION,
+                 "no refresh recorded, or the recorded fork or development PR no longer matches"),
                 _E(revision="bump", work="clear",
                   sets=("dossier_evidence_id", "admission_class", "scope_paths"),
-                  clears=("refresh",)),
+                  clears=("refresh", "admission_override"))),
+            ("readmit_development", "development.fix_needed"): Transition(
+                _R, None,
+                (_ADMISSION,
+                 "refresh recorded", "the recorded fork and development PR still match"),
+                _E(revision="bump", work="clear",
+                  sets=("dossier_evidence_id", "admission_class", "scope_paths"),
+                  clears=("refresh", "admission_override")),
                 description="A refreshed investigation returns to the existing fork for repair."),
             ("park_investigation", "parked.idle"): Transition(
-                _R, PARK, ("verified dossier decision park",),
-                _E(revision="bump", work="clear", sets=("parked_reason", "previous_phase"))),
+                _R, None,
+                ("verified dossier decision park", "no admission_override recorded"),
+                _E(work="clear", sets=("parked_reason", "previous_phase"))),
             ("close_investigation", "closed.idle"): Transition(
-                _R, None, ("verified dossier decision close",),
-                _E(work="clear", sets=("terminal_reason",))),
+                _R, None,
+                ("verified dossier decision close",),
+                _E(work="clear", sets=("terminal_reason",)),
+                description="A recorded `admission_override` is not applied against a decision close; the "
+                "reply states so."),
         }),
     "investigation.waiting_human": State(
         "human_wait", False, False,
-        "Investigation recovery is exhausted; a human corrects the cause and resumes.",
+        "Investigation recovery or a budget is exhausted; a human corrects the cause and resumes.",
         transitions={
             ("resume_investigation", "investigation.idle"): Transition(
                 _C, RESUME,
-                ("exact revision", "quiescent"),
-                _E(revision="bump", clears=("pending_human_action",))),
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
+                (EXACT_REVISION, QUIESCENT),
+                _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
+                                   "investigation_attempts"),
+                description=_RESTART_NOTE),
         }),
     "provisioning.idle": State(
         "work", True, True,
@@ -888,7 +1064,7 @@ LIFECYCLE: dict[str, State] = {
             ("start_operation", SELF): Transition(
                 _K, None,
                 ("fork_provision operation planned", "capacity available", "operation_launch remains",
-                 "not paused", "not blocked"),
+                 NOT_PAUSED),
                 charges=("operation_launch",),
                 description="Launches the planned operation; an uncertain launch is never repeated "
                             "without discovery."),
@@ -896,43 +1072,24 @@ LIFECYCLE: dict[str, State] = {
                 _P, None,
                 ("a prerequisite cannot be satisfied, an uncertain operation has no discovery, "
                  "or operation_launch is exhausted",),
-                _E(sets=("pending_human_action",))),
-            ("confirm_provisioning", "development.idle"): Transition(
+                _E(sets=("pending_human_action", PENDING_COUNTER)),
+                description="`pending_human_action.counter` names `operation_launch` when that "
+                            "budget is exhausted, and no counter otherwise."),
+            ("confirm_provisioning", "development.fix_needed"): Transition(
                 _P, None,
                 ("the receipt matches the operation", "exact fork and ref readback"),
-                _E(revision="bump", sets=("fork", "upstream.repository_id", "upstream.base_ref",
-                                         "upstream.base_sha"))),
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
-            ("close_investigation", "closed.idle"): Transition(
-                _P, None,
-                ("the provisioning readback shows that no contribution is needed",),
-                _E(sets=("terminal_reason",))),
+                _E(sets=("fork", "upstream.repository_id", "upstream.base_ref",
+                        "upstream.base_sha"))),
         }),
     "provisioning.waiting_human": State(
         "human_wait", False, False,
-        "Provisioning cannot continue safely; a human corrects the prerequisite and resumes.",
+        "Provisioning cannot continue safely; a human corrects the prerequisite and resumes, "
+        "or parks.",
         transitions={
             ("resume_provisioning", "provisioning.idle"): Transition(
                 _C, RESUME,
-                ("exact revision", "the prerequisite is corrected", "provisioning_attempts remains"),
-                _E(revision="bump", clears=("pending_human_action",)), ("provisioning_attempts",)),
-            ("exhaust_provisioning_attempts", "parked.idle"): Transition(
-                _K, None,
-                ("provisioning_attempts exhausted",),
-                _E(sets=("parked_reason", "previous_phase"), clears=("pending_human_action",))),
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
-        }),
-    "development.idle": State(
-        "auto_wait", True, True,
-        "The fork is ready and no development Work is requested yet.",
-        transitions={
-            ("request_patch", "development.agent_running"): Transition(
-                _K, None,
-                ("no CI evidence for the head yet", "proposal or write admission", "worker slot free",
-                 "capacity available", "not paused", "not blocked"),
-                _E(work="allocate")),
-            ("refresh_investigation", "queued.idle"): _REFRESH,
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
+                (EXACT_REVISION, "the prerequisite is corrected", NOT_STALE),
+                _resume_restarting("operation_launch"), description=_RESTART_NOTE),
         }),
     "development.agent_running": State(
         "work", False, True,
@@ -941,86 +1098,120 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_dispatch_recovery", "development.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "parked.idle"): _EXHAUST_WORK_RECOVERY,
+            ("exhaust_work_recovery", "development.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
                 ("the Result is published, or uncertain and later confirmed",),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id"))),
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
-                ("the proposal is rejected for the current revision, or the worker reports it is blocked",
+                ("the proposal is rejected for the current revision, the worker reports it is "
+                 "blocked, or the worker reports a failure not caused by the patch and "
+                 "flaky_reruns is exhausted",
                  "no_progress remains"),
                 _E(revision="bump", work="clear", clears=("clean_head_sha",)), ("no_progress",)),
-            ("replan_development", "development.idle"): Transition(
+            ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
-                ("the proposal is rejected as stale",), _E(work="clear")),
-            ("record_no_change", "development.idle"): Transition(
+                ("the proposal no longer applies to the fork head",),
+                _E(revision="bump", work="clear")),
+            ("request_ci_rerun", "development.waiting_ci"): Transition(
                 _R, None,
-                ("the worker reports that no change is needed",), _E(work="clear")),
-            ("schedule_publish_retry", SELF): Transition(
-                _R, None,
-                ("publication failed with an infrastructure error", "publish_recovery remains"),
-                _E(work="clear", sets=("pending_publication",)), ("publish_recovery",),
-                "The same verified Result is published again; no new Work is requested."),
-            ("exhaust_publish_recovery", "development.waiting_human"): Transition(
-                _R, None,
-                ("publish_recovery exhausted",),
-                _E(sets=("pending_human_action=publication_infrastructure_failure",
-                        "pending_publication.exhausted"))),
+                ("the worker reports a failure not caused by the patch", "flaky_reruns remains"),
+                _E(work="clear", clears=("last_ci_evidence_id",)), ("flaky_reruns",),
+                "The repair worker classifies the failure; the failed jobs are rerun on the exact "
+                "head, and the head and revision are kept."),
+            ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
+            ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
         }),
     "development.waiting_ci": State(
         "auto_wait", False, True,
-        "A patch is published to the development PR; CI and review evaluate the exact head.",
+        "A patch is published to the development PR; CI and review evaluate the exact head. "
+        "Passing CI that does not yet satisfy `nominate_for_handoff` keeps the contribution here.",
         transitions={
             ("record_ci_failure", "development.fix_needed"): Transition(
                 _O, None,
-                ("an executed blocking failure on the exact head",
-                 "the failure is not flaky, or flaky_reruns is exhausted"),
+                ("an executed blocking failure on the exact head",),
                 _E(sets=("last_ci_evidence_id",))),
-            ("rerun_failed_ci", SELF): Transition(
-                _O, None,
-                ("the failure is classified flaky", "flaky_reruns remains"),
-                charges=("flaky_reruns",),
-                description="Reruns the failed jobs on the exact head."),
+            ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
+            ("exhaust_interrupted_reruns", "development.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
-                _E(revision="bump", work="clear", sets=("pending_feedback_evidence_ids",))),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",))),
             ("record_explanation", SELF): _RECORD_EXPLANATION,
             ("record_head_change", SELF): Transition(
                 _O, None,
                 ("the observed fork head differs from the recorded head",),
-                _E(revision="bump", sets=("fork.head_sha",),
-                  clears=("last_ci_evidence_id", "handoff_approval"))),
+                _E(revision="bump", sets=("fork.head_sha",), clears=("last_ci_evidence_id",))),
+            ("record_pr_mismatch", "development.waiting_human"): Transition(
+                _O, None,
+                ("the observed development PR does not match the recorded fork, ref, or PR",),
+                _E(sets=("pending_human_action=development_pr_mismatch",))),
             ("nominate_for_handoff", "handoff.awaiting_submission"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
                  "no pending actionable feedback", "no requested Work"),
-                _E(work="clear", sets=("last_ci_evidence_id", "handoff_request",
-                                      "pending_human_action=submit_upstream"))),
+                _E(sets=("last_ci_evidence_id", "handoff_request",
+                        "pending_human_action=submit_upstream"))),
+            ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
         "auto_wait", True, True,
-        "A CI failure, actionable review, or rejected proposal needs a bounded repair.",
+        "Development Work is due: the fork is ready for a first patch, or a CI failure, "
+        "actionable review, rejected proposal, refreshed dossier, or a resume needs a bounded "
+        "repair.",
         transitions={
+            ("request_patch", "development.agent_running"): Transition(
+                _K, None,
+                (PATCH_DUE, "proposal or write admission", "worker slot free",
+                 "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS, NOT_PAUSED),
+                _E(work="allocate"), ("work_total",)),
             ("request_repair", "development.agent_running"): Transition(
                 _K, None,
-                ("write admission", "worker slot free", "capacity available",
-                 "repair_attempts_cluster, repair_attempts_total, and no_progress remain",
-                 "not paused", "not blocked"),
-                _E(work="allocate"), ("repair_attempts_cluster", "repair_attempts_total")),
-            ("exhaust_repair_attempts", "parked.idle"): _EXHAUST_REPAIR_ATTEMPTS,
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
+                (REPAIR_DUE, "write admission", "worker slot free", "capacity available",
+                 REPAIR_BUDGETS_REMAIN, WORK_TOTAL_REMAINS, NOT_PAUSED),
+                _E(work="allocate"), ("repair_attempts_cluster", "work_total")),
+            ("refresh_on_exhaustion", "queued.idle"): Transition(
+                _K, None,
+                (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_UNUSED, NOT_PAUSED),
+                _E(revision="bump", sets=("refresh", "automatic_refresh_used"),
+                  clears=(*_REFRESH_EFFECTS.clears, "budget.clusters", "budget.no_progress_streak")),
+                description="One automatic refresh per generation: a complete investigation runs "
+                            "again on the existing fork. The per-job and no-progress counters "
+                            "start again; `work_total` does not."),
+            ("exhaust_repair_attempts", "parked.idle"): Transition(
+                _K, None,
+                (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_USED),
+                _E(work="clear", sets=("parked_reason", "previous_phase")),
+                description="Parks for `repair_attempts_cluster` and `no_progress` only, after "
+                            "`refresh_on_exhaustion` is used. Exhaustion of `work_total` takes "
+                            "`exhaust_work_total` first."),
+            ("exhaust_work_total", "development.waiting_human"): Transition(
+                _K, None, (WORK_TOTAL_EXHAUSTED,),
+                _E(sets=("pending_human_action=work_budget_exhausted",
+                        f"{PENDING_COUNTER}=work_total")),
+                description="The reply states the number of Work allocations spent in this "
+                            "generation and names both `/upstreaming resume`, which starts "
+                            "`work_total` again, and `/upstreaming park`."),
+            ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
     "development.waiting_human": State(
         "human_wait", False, False,
-        "Development recovery is exhausted; a human corrects the cause and resumes.",
+        "Development recovery or `work_total` is exhausted, the development PR does not match, "
+        "or CI on the head was interrupted repeatedly; a human corrects the cause and resumes.",
         transitions={
+            ("resume_ci", "development.waiting_ci"): Transition(
+                _C, RESUME,
+                (EXACT_REVISION, pending_is("ci_interrupted"), QUIESCENT, NOT_STALE),
+                _RESUME_CI, description=_RESUME_CI_NOTE),
             ("resume_development", "development.fix_needed"): Transition(
                 _C, RESUME,
-                ("exact revision", "quiescent"),
-                _E(revision="bump", clears=("pending_human_action", "pending_publication"))),
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
+                (EXACT_REVISION, pending_is_not("ci_interrupted"), QUIESCENT, NOT_STALE),
+                _E(revision="bump", clears=("pending_human_action", "pending_publication"),
+                  restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery")),
+                description="Fresh Work is requested; a Result held for publication is not "
+                            "reused. " + _RESTART_NOTE),
+            ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
     "handoff.awaiting_submission": State(
         "gate", False, False,
@@ -1028,7 +1219,7 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("submit_upstream", "handoff.cleaning_debug"): Transition(
                 _C, "/upstreaming submit-upstream",
-                ("exact revision", "exact candidate head", "not paused", "not blocked"),
+                (EXACT_REVISION, "exact candidate head", NOT_PAUSED),
                 _E(sets=("handoff_approval", "active_operation_id"), clears=("pending_human_action",)),
                 description="The only submission command; it authorizes the whole deterministic "
                             "handoff preparation."),
@@ -1036,13 +1227,22 @@ LIFECYCLE: dict[str, State] = {
                 _O, None,
                 ("an executed blocking failure or actionable review on the candidate head",),
                 _RETURN_FOR_REPAIR),
+            ("record_head_change", "development.waiting_ci"): Transition(
+                _O, None,
+                ("the observed fork head differs from the candidate head",),
+                _E(revision="bump", sets=("fork.head_sha",),
+                  clears=("last_ci_evidence_id", "handoff_request", "pending_human_action"))),
             ("refresh_investigation", "queued.idle"): _REFRESH,
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
         }),
     "handoff.cleaning_debug": State(
         "work", False, True,
         "Debug commits are removed from the admitted series and the clean head is published under lease.",
         transitions={
+            ("retry_debug_cleanup", SELF): Transition(
+                _P, None,
+                ("the lease write or its readback failed with an infrastructure error",
+                 "debug_cleanup remains"),
+                charges=("debug_cleanup",)),
             ("confirm_clean_head", "handoff.waiting_ci"): Transition(
                 _P, None,
                 ("the lease write and ref readback match",),
@@ -1051,6 +1251,11 @@ LIFECYCLE: dict[str, State] = {
                 _P, None,
                 ("the cleanup is invalid, or the exact-head lease conflicts",),
                 _RETURN_FOR_REPAIR),
+            ("exhaust_debug_cleanup_retries", "handoff.waiting_human"): Transition(
+                _P, None,
+                ("debug_cleanup exhausted",),
+                _E(sets=("pending_human_action=debug_cleanup_failed",
+                        f"{PENDING_COUNTER}=debug_cleanup"))),
         }),
     "handoff.waiting_ci": State(
         "auto_wait", False, False,
@@ -1060,9 +1265,13 @@ LIFECYCLE: dict[str, State] = {
                 _O, None,
                 ("every required CI job executed and passed on the clean head",),
                 _E(sets=("last_ci_evidence_id",))),
+            ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
+            ("exhaust_interrupted_reruns", "handoff.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
             ("return_for_repair", "development.fix_needed"): Transition(
                 _O, None,
-                ("a blocking CI failure on the clean head",), _RETURN_FOR_REPAIR),
+                ("a blocking CI failure on the clean head, or the observed fork head differs "
+                 "from the clean head",),
+                _RETURN_FOR_REPAIR),
         }),
     "handoff.closing_internal_pr": State(
         "work", False, True,
@@ -1075,17 +1284,11 @@ LIFECYCLE: dict[str, State] = {
             ("confirm_internal_pr_closed", "handoff.preparing_submission"): Transition(
                 _P, None,
                 ("the readback shows the exact development PR closed",)),
-            ("exhaust_internal_pr_retries", "handoff.waiting_internal_pr"): Transition(
+            ("exhaust_internal_pr_retries", "handoff.waiting_human"): Transition(
                 _P, None,
-                ("internal_pr_closure exhausted",), _E(sets=("pending_human_action",))),
-        }),
-    "handoff.waiting_internal_pr": State(
-        "human_wait", False, False,
-        "Closing the development PR failed repeatedly; a human corrects it and resumes.",
-        transitions={
-            ("resume_internal_pr_closure", "handoff.closing_internal_pr"): Transition(
-                _C, RESUME,
-                ("exact revision",), _E(clears=("pending_human_action",))),
+                ("internal_pr_closure exhausted",),
+                _E(sets=("pending_human_action=internal_pr_closure_failed",
+                        f"{PENDING_COUNTER}=internal_pr_closure"))),
         }),
     "handoff.preparing_submission": State(
         "work", False, False,
@@ -1099,27 +1302,37 @@ LIFECYCLE: dict[str, State] = {
                 _P, None,
                 ("the package comment is read back",),
                 _E(sets=("pending_human_action=open_upstream_pr", "handoff_request"))),
-            ("exhaust_comment_retries", "handoff.waiting_comment"): Transition(
+            ("exhaust_comment_retries", "handoff.waiting_human"): Transition(
                 _P, None,
-                ("submission_comment exhausted",), _E(sets=("pending_human_action",))),
+                ("submission_comment exhausted",),
+                _E(sets=("pending_human_action=submission_comment_failed",
+                        f"{PENDING_COUNTER}=submission_comment"))),
         }),
-    "handoff.waiting_comment": State(
+    "handoff.waiting_human": State(
         "human_wait", False, False,
-        "Posting the submission package failed repeatedly; a human corrects it and resumes.",
+        "A handoff step failed repeatedly: publishing the clean head, CI on the clean head, "
+        "closing the development PR, or posting the submission package. A human corrects it and "
+        "resumes; the resume returns to the step named by `pending_human_action` and starts "
+        "again the counter named in `pending_human_action.counter`.",
         transitions={
+            ("resume_debug_cleanup", "handoff.cleaning_debug"): Transition(
+                _C, RESUME, (EXACT_REVISION, pending_is("debug_cleanup_failed")),
+                _resume_restarting("debug_cleanup")),
+            ("resume_ci", "handoff.waiting_ci"): Transition(
+                _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted")), _RESUME_CI,
+                description=_RESUME_CI_NOTE),
+            ("resume_internal_pr_closure", "handoff.closing_internal_pr"): Transition(
+                _C, RESUME, (EXACT_REVISION, pending_is("internal_pr_closure_failed")),
+                _resume_restarting("internal_pr_closure")),
             ("resume_submission_preparation", "handoff.preparing_submission"): Transition(
-                _C, RESUME,
-                ("exact revision",), _E(clears=("pending_human_action",))),
+                _C, RESUME, (EXACT_REVISION, pending_is("submission_comment_failed")),
+                _resume_restarting("submission_comment")),
         }),
     "handoff.waiting_upstream_pr": State(
         "locked", False, False,
-        "Waiting for a human to open the upstream PR from the package. Exactly two exits leave it.",
+        "Waiting for a human to open the upstream PR from the package. Exactly three exits leave "
+        "it: `verify_upstream_pr`, `retract_submission`, and `refresh_investigation`.",
         transitions={
-            ("record_reminder", SELF): Transition(
-                _K, None,
-                ("at least 7 days since the package or the last reminder", "not paused"),
-                _E(sets=("pending_human_action.reminded_at",)),
-                description="Posts an append-only reminder with the package link and exact head."),
             ("record_audit_observation", SELF): Transition(
                 _O, None,
                 ("an observation that does not satisfy verify_upstream_pr",),
@@ -1132,23 +1345,44 @@ LIFECYCLE: dict[str, State] = {
                 _E(sets=("upstream_pr",), clears=("pending_human_action",))),
             ("retract_submission", "development.fix_needed"): Transition(
                 _C, "/upstreaming retract-pr",
-                ("exact revision", "exact clean head", "quiescent"),
+                (EXACT_REVISION, "exact clean head", QUIESCENT),
                 _E(revision="bump", clears=("pending_human_action", "handoff_request", "handoff_approval")),
-                description="The only non-success exit; it stops reminders and unlocks branch work."),
+                description="Stops reminders and unlocks branch work."),
+            ("refresh_investigation", "queued.idle"): Transition(
+                _C, REFRESH,
+                (EXACT_REVISION, "exact clean head", QUIESCENT),
+                _REFRESH_EFFECTS,
+                description="Returns to a complete investigation while keeping the fork. "
+                            "Accepted while paused."),
         }),
     "upstream_review.waiting_ci": State(
         "auto_wait", False, False,
-        "The upstream PR is open; upstream CI, review, and merge are observed.",
+        "The upstream PR is open; upstream CI, review, and merge are observed. Upstream CI is "
+        "never rerun by the pipeline.",
         transitions={
             ("record_upstream_ci_failure", "upstream_review.fix_needed"): Transition(
                 _O, None,
-                ("an executed blocking failure on the upstream PR head",),
-                _E(sets=("last_ci_evidence_id",))),
+                ("an executed blocking failure on the upstream PR head",
+                 "not yet recorded for this head and CI run"),
+                _E(sets=("last_ci_evidence_id",)),
+                description="Fires once per head and CI run, so a failure that was already recorded does not "
+                "request a revision again after a resume."),
             ("record_actionable_review", "upstream_review.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
                 _E(revision="bump", sets=("pending_feedback_evidence_ids",))),
-            ("record_explanation", SELF): _RECORD_EXPLANATION,
+            ("record_explanation", SELF): Transition(
+                _O, None, ("authorized explanation-only inquiry",),
+                _E(sets=("processed_review_ids", "processed_review_comment_ids",
+                        "processed_pr_conversation_comment_ids")),
+                description="Recorded and surfaced on the tracking issue; nothing is posted on the "
+                            "upstream PR. Revision and CI evidence are kept."),
+            ("record_head_change", "upstream_review.waiting_human"): Transition(
+                _O, None,
+                ("the upstream PR head changed and the pipeline did not publish the change",),
+                _E(revision="bump",
+                  sets=("upstream_pr.head_sha", "pending_human_action=upstream_head_changed"),
+                  clears=("last_ci_evidence_id",))),
             ("record_pr_closed_unmerged", "upstream_review.waiting_human"): Transition(
                 _O, None,
                 ("the upstream PR is closed without merge",),
@@ -1165,32 +1399,66 @@ LIFECYCLE: dict[str, State] = {
             ("request_upstream_revision", "upstream_review.agent_running"): Transition(
                 _K, None,
                 ("the upstream PR head is the controlled fork ref", "worker slot free",
-                 "repair_attempts_cluster, repair_attempts_total, and no_progress remain",
-                 "not paused", "not blocked"),
-                _E(work="allocate"), ("repair_attempts_cluster", "repair_attempts_total")),
-            ("exhaust_repair_attempts", "parked.idle"): _EXHAUST_REPAIR_ATTEMPTS,
+                 REVISION_BUDGETS_REMAIN, NOT_PAUSED),
+                _E(work="allocate"), ("repair_attempts_cluster", "work_total")),
+            ("exhaust_repair_attempts", "upstream_review.waiting_human"): Transition(
+                _K, None,
+                (REVISION_BUDGET_EXHAUSTED,),
+                _E(sets=("pending_human_action=repair_budget_exhausted", PENDING_COUNTER)),
+                description="`pending_human_action.counter` names the counter that is exhausted."),
         }),
     "upstream_review.agent_running": State(
         "work", False, True,
-        "Revision Work for the upstream PR head is requested or running.",
+        "Revision Work for the upstream PR head is requested or running, or its verified Result "
+        "is being published.",
         transitions={
             ("record_revision_publish_success", "upstream_review.waiting_ci"): Transition(
                 _R, None,
                 ("the revision is published to the upstream PR head",),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id"))),
+            ("reject_patch_proposal", "upstream_review.fix_needed"): Transition(
+                _R, None,
+                ("the proposal is rejected for the current revision, or the worker reports it is "
+                 "blocked",
+                 "no_progress remains"),
+                _E(revision="bump", work="clear"), ("no_progress",)),
+            ("require_reviewer_answer", "upstream_review.waiting_human"): Transition(
+                _R, None,
+                ("the worker reports that no change is needed",),
+                _E(work="clear", sets=("pending_human_action=answer_reviewer",)),
+                description="A human answers the reviewer; the pipeline posts nothing on the "
+                            "upstream PR."),
+            ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
+            ("exhaust_publish_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_dispatch_recovery", "upstream_review.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "parked.idle"): _EXHAUST_WORK_RECOVERY,
+            ("exhaust_work_recovery", "upstream_review.waiting_human"): _EXHAUST_WORK_RECOVERY,
         }),
     "upstream_review.waiting_human": State(
         "human_wait", False, False,
-        "The upstream PR was closed unmerged or recovery is exhausted; a human triages.",
+        "The upstream PR was closed unmerged, its head changed, a reviewer needs an answer, or "
+        "recovery or a budget is exhausted; a human triages.",
         transitions={
             ("resume_upstream_review", "upstream_review.waiting_ci"): Transition(
                 _C, RESUME,
-                ("exact revision",), _E(revision="bump", clears=("pending_human_action",))),
-            ("park_contribution", "parked.idle"): _PARK_CONTRIBUTION,
+                (EXACT_REVISION,
+                 pending_is("pr_closed_unmerged", "answer_reviewer", "upstream_head_changed"),
+                 "for pr_closed_unmerged, the upstream PR is observed open again"),
+                _E(revision="bump", clears=("pending_human_action", "pending_feedback_evidence_ids")),
+                description="No revision Work is requested. The pending feedback is cleared when "
+                            "the pending action is `answer_reviewer`, because a human answered "
+                            "it; the other two pending actions hold none."),
+            ("resume_upstream_revision", "upstream_review.fix_needed"): Transition(
+                _C, RESUME,
+                (EXACT_REVISION,
+                 pending_is("dispatch_failed", "work_failed", "publication_infrastructure_failure",
+                            "repair_budget_exhausted")),
+                _E(revision="bump", clears=("pending_human_action", "pending_publication"),
+                  restarts=("repair_attempts_cluster", "no_progress", "work_total",
+                            "dispatch_recovery", "work_recovery", "publish_recovery")),
+                description="Only when revision Work failed: dispatch, Work, publication, or a "
+                            "budget. " + _RESTART_NOTE),
         }),
     "release_wait.idle": State(
         "auto_wait", False, False,
@@ -1212,8 +1480,7 @@ LIFECYCLE: dict[str, State] = {
         "Release evidence needs operator action.",
         transitions={
             ("resume_release_observation", "release_wait.idle"): Transition(
-                _C, RESUME,
-                ("exact revision",), _E(clears=("pending_human_action",))),
+                _C, RESUME, (EXACT_REVISION,), _RESUME_EFFECTS),
         }),
     "released.idle": State(
         "terminal", False, False,
@@ -1224,105 +1491,283 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("restart_generation", "queued.idle"): Transition(
                 _C, RESUME,
-                ("exact revision", "quiescent: no Work, operation, or pending publication"),
-                _E(revision="bump", generation="bump", work="clear"),
-                description="Starts a clean generation; identity, events, evidence, and replay "
-                            "fences are kept."),
-            ("record_late_effect", SELF): Transition(
-                _R, None,
-                ("a late Result of the ended generation is published or uncertain",),
-                _E(sets=("proposal_artifact", "publication_operation_id")),
-                description="Reconciles a late effect for audit without changing state."),
+                (EXACT_REVISION, QUIESCENT, "no open upstream PR"),
+                _E(revision="bump", generation="bump", work="clear", sets=("admission_override",)),
+                description="Starts a clean generation that runs the complete investigation; "
+                            "identity, events, evidence, and replay fences are kept. An optional "
+                            "class, paths, and reason are stored as `admission_override`."),
+            ("abandon", "closed.idle"): Transition(
+                _C, "/upstreaming abandon",
+                ("a reason is given", ANY_REVISION),
+                _E(sets=("terminal_reason=abandoned",))),
         }),
     "closed.idle": State(
         "terminal", False, False,
-        "No further work: withdrawn, not applicable, or already satisfied. The reason is "
-        "`terminal_reason`."),
+        "No further work: withdrawn, not applicable, already satisfied, or abandoned. The reason "
+        "is `terminal_reason`."),
 }
+
+# Transitions that apply in many states, keyed by verb.
+RULES: dict[str, Rule] = {
+    "park_contribution": Rule(
+        "parked.idle",
+        Transition(
+            _C, PARK,
+            ("a reason is given", ANY_REVISION, "no open operation"),
+            _E(work="clear", sets=("parked_reason", "previous_phase")),
+            description="Ends the current generation; evidence is kept for audit. Accepted "
+                        "while paused."),
+        "every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, "
+        "`release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`",
+        kinds=("auto_wait", "work", "human_wait", "gate", "locked"),
+        exclude=("handoff.waiting_upstream_pr", "release_wait.*", "upstream_review.*"),
+        include=("upstream_review.waiting_human",)),
+    "resume_stale": Rule(
+        "queued.idle",
+        Transition(
+            _C, RESUME,
+            (EXACT_REVISION, "paused, or waiting for a human", STALE, QUIESCENT, NO_WORK),
+            _E(revision="bump", sets=_REFRESH_EFFECTS.sets,
+              clears=(*_REFRESH_EFFECTS.clears, *_FLAG_FIELDS),
+              restarts=("operation_launch", "interrupted_reruns", "dispatch_recovery",
+                        "work_recovery", "work_total", "publish_recovery")),
+            description="After a long stop the dossier is refreshed: a complete investigation "
+                        "runs again while the fork and development PR are kept. The stop is "
+                        "counted from the older of `paused_at` and "
+                        "`pending_human_action.requested_at`. While an operation is open no "
+                        "resume applies, and the rejection names the open operation. From a "
+                        "human wait that an exhausted budget caused, it starts again the "
+                        "counter named in `pending_human_action.counter`, like every resume."),
+        "every `provisioning.*` and `development.*` state",
+        states=tuple(f"{phase}.*" for phase in STALE_PHASES)),
+    "record_reminder": Rule(
+        SELF,
+        Transition(
+            _K, None,
+            ("at least `human_sla_business_days.reminder` business days since the request or the "
+             "last reminder", NOT_PAUSED),
+            _E(sets=("pending_human_action.reminded_at",)),
+            description="Posts an append-only reminder of the pending human step. In "
+                        "`handoff.waiting_upstream_pr` the reminder text carries the package "
+                        "link and the exact head, and states when an observed PR does not match."),
+        "every state of kind `gate`, `human_wait`, or `locked`",
+        kinds=REMINDER_KINDS),
+    "record_late_effect": Rule(
+        SELF,
+        Transition(
+            _R, None,
+            ("the Result does not match the current generation, revision, and requested Work",),
+            description="Recorded in the events for audit. The Result is never folded, the "
+                        "publisher refuses it, and the state never changes."),
+        "every state"),
+}
+
+
+def rule_states(verb: str) -> tuple[str, ...]:
+    """The states a rule applies in, in table order."""
+    from fnmatch import fnmatchcase
+
+    rule = RULES[verb]
+
+    def matches(key: str, patterns: tuple[str, ...]) -> bool:
+        return any(fnmatchcase(key, p) for p in patterns)
+
+    return tuple(
+        key for key, state in LIFECYCLE.items()
+        if (not rule.kinds or state.kind in rule.kinds)
+        and (not rule.states or matches(key, rule.states))
+        and (not matches(key, rule.exclude) or matches(key, rule.include)))
+
+
+def expand_rules() -> None:
+    """Add one row per matching state for every rule, after the state's own rows."""
+    for verb, rule in RULES.items():
+        for key in rule_states(verb):
+            transitions = LIFECYCLE[key].transitions
+            if any(v == verb for v, _to in transitions):
+                raise ValueError(f"{key} already has a transition {verb}")
+            transitions[(verb, SELF if rule.target == key else rule.target)] = rule.transition
+
+
+expand_rules()
+
 
 FLAGS: dict[str, Flag] = {
     "paused": Flag(
         "paused",
-        "A temporary stop of new Work and writer admission. Phase, activity, evidence, and "
-        "pending feedback are kept.",
-        "pause", Transition(_C, "/upstreaming pause",
-                            ("not paused", "not terminal", "any revision, current or stale"),
-                            _E(sets=("paused",))),
-        "resume_pause", Transition(_C, RESUME, ("paused", "exact revision"),
-                                   _E(clears=("paused",))),
+        "A stop of new Work and writer admission, with its reason and who set it (a human or "
+        "the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; "
+        "a pause set by the controller always records one. Setting it clears the requested "
+        "Work and records `paused_at`; phase, activity, evidence, and pending feedback are kept. "
+        "The one exception: `pause` in an `agent_running` state leads to the state in which the "
+        "Work is due again, `investigation.idle`, `development.fix_needed`, or "
+        "`upstream_review.fix_needed`. "
+        "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
+        "keeps the dossier, candidate head, clean head, `handoff_request`, and the posted "
+        "package: `submit_upstream`, `verify_upstream_pr`, and the package bind to the exact "
+        "head, so the revision bump does not invalidate the submission.",
         {
-            _C: "`resume`, `park`, and `retract-pr` apply; other commands are rejected.",
-            _O: "Folded normally.",
-            _R: "Folded normally.",
-            _P: "Folded normally; an effect that passed its final check before the pause may finish.",
-            _K: "No launch, no Work allocation, no budget charge; reminders are suppressed.",
+            "pause": Transition(
+                _C, "/upstreaming pause",
+                (NOT_PAUSED, "not terminal", ANY_REVISION),
+                _E(work="clear", sets=(*_FLAG_FIELDS[:3], "paused_by=human")),
+                description="A reason is optional; when given it is recorded in `paused_reason`."),
+            "pause_on_identity_change": Transition(
+                _O, None,
+                (NOT_PAUSED, "not terminal",
+                 "the observed upstream repository identity differs from the recorded one"),
+                _E(work="clear", sets=("paused", "paused_at",
+                                       "paused_reason=upstream_identity_changed",
+                                       "paused_by=controller"))),
         },
-    ),
-    "blocked": Flag(
-        "blocked_reason",
-        "A stop recorded by a human or by the controller when the upstream identity changes. "
-        "It fences launches like `paused` and records why.",
-        "block", Transition(_C, "/upstreaming block", ("any revision, current or stale",),
-                            _E(sets=("blocked_reason",))),
-        "resume_block", Transition(_C, RESUME, ("blocked", "exact revision"),
-                                   _E(revision="bump", clears=("blocked_reason",))),
         {
-            _C: "`resume`, `park`, and `retract-pr` apply; other commands are rejected.",
-            _O: "Folded normally.",
-            _R: "Folded normally.",
-            _P: "Folded normally.",
-            _K: "No launch, no Work allocation, no budget charge.",
+            "resume_pause": Transition(
+                _C, RESUME, ("paused", EXACT_REVISION, FLAG_NOT_STALE),
+                _E(revision="bump", clears=_FLAG_FIELDS),
+                description="A Result that landed during the pause no longer matches and takes "
+                            "`record_late_effect`. In a human wait the resume clears the flag "
+                            "only: the reply states that the contribution still waits for a "
+                            "human and names the pending action, and a second resume leaves "
+                            "the wait."),
+        },
+        {
+            "investigation.agent_running": "investigation.idle",
+            "development.agent_running": "development.fix_needed",
+            "upstream_review.agent_running": "upstream_review.fix_needed",
+        },
+        {
+            _C: "`resume`, `park`, `refresh`, `retract-pr`, `abandon`, and `resolve-operation` "
+                "apply; other commands are rejected. `resume` clears the flag first: it takes "
+                "`resume_pause` or `resume_stale`. In a human wait a second `resume` then leaves "
+                "the wait.",
+            _O: "Folded normally, including CI on the exact head.",
+            _R: "The requested Work was cleared, so a Result takes `record_late_effect`; nothing "
+                "is published.",
+            _P: "Folded normally. The publisher's final check reads `paused`; an effect that "
+                "passed it before the pause may finish.",
+            _K: "No launch, no Work allocation, no budget charge; reminders are suppressed.",
         },
     ),
 }
 
 BUDGETS: dict[str, Budget] = {
-    "dispatch_recovery": Budget(
-        "retries.infrastructure_per_head_failure", 1,
-        "one dispatcher run that ended with the requested Work absent or unclaimed",
-        "dispatcher runs since `active_work.requested_at`", "exhaust_dispatch_recovery"),
-    "work_recovery": Budget(
-        "retries.infrastructure_per_head_failure", 1,
-        "one fresh Work graph after terminal Work without a usable Result",
-        "`active_work.attempt`", "exhaust_work_recovery"),
-    "publish_recovery": Budget(
-        "retries.infrastructure_per_head_failure", 1,
-        "one publish-only retry of the same verified Result",
-        "`pending_publication.attempts`", "exhaust_publish_recovery"),
-    "investigation_attempts": Budget(
+    "work_total": Budget(
         "retries.max_attempts_per_contribution", 0,
-        "one rejected dossier", "`budget.attempts_used`", "exhaust_investigation_recovery"),
+        "one Work allocation of any kind",
+        "`budget.attempts_used`, counted per generation",
+        ("exhaust_work_total", "exhaust_work_recovery", "exhaust_repair_attempts")),
+    "work_recovery": Budget(
+        "retries.work_recovery", 1,
+        "one fresh Work graph after terminal Work without a usable Result",
+        "`active_work.attempt`", ("exhaust_work_recovery",), infrastructure=True),
+    "investigation_attempts": Budget(
+        "retries.investigation_attempts", 0,
+        "one investigation Result without a usable dossier",
+        "`budget.investigation_attempts`", ("exhaust_investigation_recovery",)),
     "repair_attempts_cluster": Budget(
         "retries.patch_attempts_per_cluster", 0,
         "one CI-driven repair Work allocation for one failing CI job",
-        "`budget.clusters[<job>]`", "exhaust_repair_attempts"),
-    "repair_attempts_total": Budget(
-        "retries.max_attempts_per_contribution", 0,
-        "one CI-driven repair Work allocation", "`budget.attempts_used`", "exhaust_repair_attempts"),
+        "`budget.clusters[<job>]`, started again by `refresh_on_exhaustion`",
+        ("refresh_on_exhaustion", "exhaust_repair_attempts")),
     "no_progress": Budget(
         "retries.no_progress_review_after", 0,
         "one successive rejected or blocked outcome without progress",
-        "`budget.no_progress_streak` (reset by a published patch)", "exhaust_repair_attempts"),
+        "`budget.no_progress_streak`, started again by a published patch and by "
+        "`refresh_on_exhaustion`",
+        ("refresh_on_exhaustion", "exhaust_repair_attempts")),
     "flaky_reruns": Budget(
         "retries.flaky_reruns", 0,
-        "one rerun of the failed CI jobs on the exact head", "reruns recorded for the head",
-        "record_ci_failure"),
+        "one rerun of the failed CI jobs on the exact head, requested by the repair worker",
+        "reruns recorded for the head", ("reject_patch_proposal",)),
+    "interrupted_reruns": Budget(
+        INFRASTRUCTURE_KEY, 0,
+        "one rerun by the collector of CI jobs that were cancelled or lost their runner",
+        "reruns recorded for the head", ("exhaust_interrupted_reruns",), infrastructure=True),
+    "dispatch_recovery": Budget(
+        INFRASTRUCTURE_KEY, 1,
+        "one dispatcher run that ended with the requested Work absent or unclaimed",
+        "dispatcher runs since `active_work.requested_at`", ("exhaust_dispatch_recovery",),
+        infrastructure=True),
+    "publish_recovery": Budget(
+        INFRASTRUCTURE_KEY, 1,
+        "one publish-only retry of the same verified Result",
+        "`pending_publication.attempts`", ("exhaust_publish_recovery",), infrastructure=True),
     "operation_launch": Budget(
-        "retries.infrastructure_per_head_failure", 1,
+        INFRASTRUCTURE_KEY, 1,
         "one launch of a planned fork provisioning operation", "the operation's launch attempts",
-        "require_provisioning_intervention"),
-    "provisioning_attempts": Budget(
-        "retries.infrastructure_per_head_failure", 0,
-        "one resume of a provisioning human wait", "resumes recorded for the provisioning phase",
-        "exhaust_provisioning_attempts"),
+        ("require_provisioning_intervention",), infrastructure=True),
+    "debug_cleanup": Budget(
+        INFRASTRUCTURE_KEY, 1,
+        "one lease write and readback of the clean head", "the handoff operation's attempts",
+        ("exhaust_debug_cleanup_retries",), infrastructure=True),
     "internal_pr_closure": Budget(
-        "retries.infrastructure_per_head_failure", 1,
+        INFRASTRUCTURE_KEY, 1,
         "one close-and-readback attempt of the development PR", "the handoff operation's attempts",
-        "exhaust_internal_pr_retries"),
+        ("exhaust_internal_pr_retries",), infrastructure=True),
     "submission_comment": Budget(
-        "retries.infrastructure_per_head_failure", 1,
+        INFRASTRUCTURE_KEY, 1,
         "one attempt to post the submission package", "the handoff operation's attempts",
-        "exhaust_comment_retries"),
+        ("exhaust_comment_retries",), infrastructure=True),
+}
+
+# The table of one remote operation. An operation is an intent recorded
+# before a remote effect and a receipt confirmed by discovering the actual
+# resource. A lifecycle transition with the ``operation`` trigger is taken
+# when its operation reaches ``confirmed`` or ``failed``.
+OPERATION_INITIAL_STATE = "planned"
+OPERATION_INITIAL_VERB = "record_intent"
+
+_RESOLVE_GUARD = (EXACT_OPERATION, "a resolution evidence record states the disposition")
+_RESOLVE = {
+    ("resolve_confirmed", "confirmed"): Transition(
+        _C, RESOLVE, (*_RESOLVE_GUARD, "disposition confirmed"), _E(sets=("resolution",))),
+    ("resolve_failed", "failed"): Transition(
+        _C, RESOLVE, (*_RESOLVE_GUARD, "disposition failed"), _E(sets=("resolution",))),
+    ("resolve_not_launched", "not_launched"): Transition(
+        _C, RESOLVE, (*_RESOLVE_GUARD, "disposition not-launched"), _E(sets=("resolution",))),
+}
+
+OPERATIONS: dict[str, OperationState] = {
+    "planned": OperationState(
+        True, "The intent is recorded; the remote effect has not been attempted.",
+        transitions={
+            ("begin_effect", "applying"): Transition(
+                _K, None,
+                ("capacity available", "the contribution is not paused",
+                 "the final check before the effect passes")),
+            **_RESOLVE,
+        }),
+    "applying": OperationState(
+        True, "The remote call is in flight.",
+        transitions={
+            ("record_response", "uncertain"): Transition(
+                _P, None,
+                ("the remote call succeeded, or its response was lost or ambiguous",),
+                _E(sets=("external_ids",)),
+                description="Even a successful response is provisional until discovery confirms "
+                            "the resource."),
+            ("record_failure", "failed"): Transition(
+                _P, None, ("the remote call returned a definite failure",),
+                _E(sets=("external_ids",))),
+            **_RESOLVE,
+        }),
+    "uncertain": OperationState(
+        True, "The effect may or may not exist; it is discovered, never repeated.",
+        transitions={
+            ("confirm_by_discovery", "confirmed"): Transition(
+                _P, None, ("discovery finds the exact resource the operation proposed",),
+                _E(sets=("discovery",))),
+            ("record_discovery", SELF): Transition(
+                _P, None, ("discovery finds the resource absent or an unrelated one",),
+                _E(sets=("discovery",)),
+                description="Absence never proves that the effect did not launch, and elapsed "
+                            "time never closes an operation."),
+            **_RESOLVE,
+        }),
+    "confirmed": OperationState(False, "The effect exists and was read back."),
+    "failed": OperationState(False, "The effect definitely did not succeed."),
+    "not_launched": OperationState(
+        False, "A human established with evidence that the effect was never launched."),
 }
 
 TERMINAL_STATES = frozenset(k for k, s in LIFECYCLE.items() if s.kind == "terminal")
@@ -1345,63 +1790,85 @@ def resolve_target(state: str, to: str) -> str:
     return state if to == SELF else to
 
 
-def state_edges(state: str):
+def state_edges(state: str, table: dict | None = None):
     """Yield an ``Edge`` for every transition leaving ``state``, in table order."""
-    for (verb, to), t in LIFECYCLE[state].transitions.items():
+    for (verb, to), t in (table or LIFECYCLE)[state].transitions.items():
         yield Edge(state, verb, resolve_target(state, to), t)
 
 
-def table_edges():
+def table_edges(table: dict | None = None):
     """Yield an ``Edge`` for every table transition, in table order."""
-    for state in LIFECYCLE:
-        yield from state_edges(state)
+    for state in table or LIFECYCLE:
+        yield from state_edges(state, table)
 
 
-def find_edge(state: str, verb: str) -> Edge:
+def find_edge(state: str, verb: str, table: dict | None = None) -> Edge:
     """The transition ``verb`` from ``state``; the verb must lead to one target."""
-    edges = [e for e in state_edges(state) if e.verb == verb]
+    edges = [e for e in state_edges(state, table) if e.verb == verb]
     if len(edges) != 1:
         raise KeyError(f"{state} has {len(edges)} transitions {verb}")
     return edges[0]
 
 
+def is_rule_row(edge: Edge) -> bool:
+    """Whether a table row is the expansion of a rule."""
+    rule = RULES.get(edge.verb)
+    return rule is not None and edge.transition is rule.transition
+
+
+def _names_exhaustion(t: Transition, budget: str) -> bool:
+    """Whether a guard of ``t`` states that ``budget`` is exhausted. A guard
+    that requires the budget to remain does not."""
+    return any(budget in g and "exhausted" in g for g in t.guard)
+
+
 def exhaustion_edges(budget: str):
-    """The transitions taken when ``budget`` is exhausted: its exhaustion verb
-    with a guard that names the budget."""
-    verb = BUDGETS[budget].exhaustion_verb
+    """The transitions taken when ``budget`` is exhausted: one of its
+    exhaustion verbs with a guard that names the budget."""
+    verbs = BUDGETS[budget].exhaustion_verbs
     for e in table_edges():
-        if e.verb == verb and budget in "; ".join(e.transition.guard):
+        if e.verb in verbs and _names_exhaustion(e.transition, budget):
             yield e
 
 
 def resolve_node(node: str, verb: str) -> tuple[Transition, str]:
     """The transition ``verb`` from a diagram node and the node it leads to.
 
-    ``node`` may carry a flag (``state+flag``); flag transitions keep the
-    state and toggle the flag."""
+    ``node`` may carry a flag (``state+flag``). Setting a flag keeps the
+    state, or follows ``set_moves``; clearing it keeps the state. A table
+    transition keeps the flag unless it clears the flag's field or starts a
+    new generation."""
     state, _, flag = node.partition("+")
-    if flag and verb == FLAGS[flag].clear_verb:
-        return FLAGS[flag].cleared_by, state
+    if flag and verb in FLAGS[flag].cleared_by:
+        return FLAGS[flag].cleared_by[verb], state
     for name, f in FLAGS.items():
-        if verb == f.set_verb:
-            return f.set_by, f"{node}+{name}"
+        if verb in f.set_by:
+            return f.set_by[verb], f"{f.set_moves.get(state, state)}+{name}"
     edge = find_edge(state, verb)
-    return edge.transition, f"{edge.target}+{flag}" if flag and edge.target == state else edge.target
+    effects = edge.transition.effects
+    keeps = flag and FLAGS[flag].field not in effects.clears and effects.generation == "keep"
+    return edge.transition, f"{edge.target}+{flag}" if keeps else edge.target
+
+
+def policy_value(policy: dict, key: str) -> Any:
+    value: Any = policy
+    for part in key.split("."):
+        value = value[part]
+    return value
 
 
 def budget_limit(name: str, policy: dict) -> int:
     budget = BUDGETS[name]
-    value: Any = policy
-    for part in budget.policy_key.split("."):
-        value = value[part]
-    return int(value) + budget.offset
+    return int(policy_value(policy, budget.policy_key)) + budget.offset
 
 
 # --------------------------------------------------------------------------
 # Diagram presentation metadata. Each diagram selects table states (``nodes``,
 # in drawing order; phases are grouped in order of first appearance) and
-# table transitions (``edges`` as ``(from_state, verb)``, in drawing order). A flag
-# diagram draws ``nodes[0]`` with and without the flag.
+# table transitions (``edges`` as ``(from_node, verb)``, in drawing order). A
+# node written ``state+flag`` is ``state`` with that flag set. A diagram with
+# ``rule`` draws that rule once, from a single node that stands for every
+# state the rule applies in; rule rows are not repeated on every state.
 
 
 @dataclass(frozen=True)
@@ -1412,7 +1879,7 @@ class Diagram:
     start: str | None = None
     start_verb: str | None = None
     ends: tuple[str, ...] = ()
-    flags: tuple[str, ...] = ()
+    rule: str | None = None
     text: str = ""
 
 
@@ -1427,8 +1894,8 @@ _SIMPLIFIED_NODES = (
     "queued.idle",
     "investigation.idle", "investigation.agent_running", "investigation.waiting_human",
     "provisioning.idle", "provisioning.waiting_human",
-    "development.idle", "development.agent_running", "development.waiting_ci",
-    "development.fix_needed", "development.waiting_human",
+    "development.fix_needed", "development.agent_running", "development.waiting_ci",
+    "development.waiting_human",
     "handoff.awaiting_submission", "handoff.cleaning_debug", "handoff.waiting_ci",
     "handoff.closing_internal_pr", "handoff.preparing_submission", "handoff.waiting_upstream_pr",
     "upstream_review.waiting_ci", "upstream_review.fix_needed", "upstream_review.agent_running",
@@ -1457,10 +1924,11 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("provisioning.idle", "require_provisioning_intervention"),
                 ("provisioning.waiting_human", "resume_provisioning"),
                 ("provisioning.idle", "confirm_provisioning"),
-                ("development.idle", "request_patch"),
+                ("development.fix_needed", "request_patch"),
                 ("development.fix_needed", "request_repair"),
                 ("development.agent_running", "record_publish_success"),
                 ("development.agent_running", "reject_patch_proposal"),
+                ("development.agent_running", "request_ci_rerun"),
                 ("development.waiting_ci", "record_ci_failure"),
                 ("development.waiting_ci", "record_actionable_review"),
                 ("development.waiting_ci", "record_explanation"),
@@ -1482,22 +1950,29 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("upstream_review.agent_running", "record_revision_publish_success"),
                 ("upstream_review.waiting_ci", "record_pr_closed_unmerged"),
                 ("upstream_review.waiting_human", "resume_upstream_review"),
+                ("upstream_review.waiting_human", "resume_upstream_revision"),
                 ("upstream_review.waiting_ci", "record_merge"),
                 ("release_wait.idle", "require_release_intervention"),
                 ("release_wait.waiting_human", "resume_release_observation"),
                 ("release_wait.idle", "verify_release"),
                 ("parked.idle", "restart_generation"),
+                ("parked.idle", "abandon"),
             ), start=INITIAL_STATE, start_verb=INITIAL_VERB, ends=("released.idle", "closed.idle"),
                 text="On both the development PR and the upstream PR, a CI failure keeps the "
-                     "contribution in its phase while a bounded repair is prepared and tested; an "
-                     "actionable review comment is answered and included in the next repair; an "
-                     "explanation-only comment is answered or recorded without requesting a change."),
+                     "contribution in its phase while a bounded repair is prepared and tested, and "
+                     "an actionable review comment is included in the next repair. An "
+                     "explanation-only comment is answered on the development PR; on the upstream "
+                     "PR it is recorded and surfaced on the tracking issue, and nothing is posted "
+                     "upstream. Transitions that apply in many states (`park_contribution`, "
+                     "`resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, "
+                     "under the rules below."),
         ),
     ),
     DiagramSection(
         "Investigation and provisioning failure cases",
         "Investigation and provisioning fail in different ways, and each case has its own recovery "
-        "path.",
+        "path. An infrastructure failure that exhausts its retries waits for a human in the same "
+        "phase; it never ends the generation.",
         (
             Diagram(
                 "Failure case 1: investigation finds no development path",
@@ -1507,81 +1982,58 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("investigation.agent_running", "admit_development"),
                  ("investigation.agent_running", "park_investigation"),
                  ("investigation.agent_running", "close_investigation"),
-                 ("parked.idle", "restart_generation")),
+                 ("parked.idle", "restart_generation"),
+                 ("parked.idle", "abandon")),
                 start="investigation.idle", ends=("closed.idle",),
                 text="The verified dossier decides between development, park, and close. "
                      "`closed` is the single terminal phase for work that is not needed; the reason "
-                     "is `terminal_reason`."),
+                     "is `terminal_reason`. A restart may record an `admission_override`; the new "
+                     "generation still runs the complete investigation."),
             Diagram(
-                "Failure case 2: the dossier is incomplete or invalid",
-                ("investigation.idle", "investigation.agent_running", "provisioning.idle",
-                 "parked.idle", "queued.idle"),
-                (("investigation.idle", "dispatch_investigation"),
-                 ("investigation.agent_running", "reject_dossier"),
-                 ("investigation.agent_running", "admit_development"),
-                 ("investigation.agent_running", "park_investigation"),
-                 ("parked.idle", "restart_generation")),
-                start="investigation.idle",
-                text="`reject_dossier` retries automatically while `investigation_attempts` remains. "
-                     "An incomplete artifact is never adopted by hand."),
-            Diagram(
-                "Failure case 3: the investigator or dispatcher has an infrastructure failure",
+                "Failure case 2: the Result has no usable dossier",
                 ("investigation.idle", "investigation.agent_running", "investigation.waiting_human",
-                 "provisioning.idle", "parked.idle", "queued.idle", "closed.idle"),
+                 "provisioning.idle"),
                 (("investigation.idle", "dispatch_investigation"),
                  ("investigation.agent_running", "reject_dossier"),
                  ("investigation.agent_running", "exhaust_investigation_recovery"),
                  ("investigation.waiting_human", "resume_investigation"),
-                 ("investigation.agent_running", "admit_development"),
-                 ("investigation.agent_running", "park_investigation"),
-                 ("investigation.agent_running", "close_investigation"),
-                 ("parked.idle", "restart_generation"),
+                 ("investigation.agent_running", "admit_development")),
+                start="investigation.idle",
+                text="`reject_dossier` retries automatically while `investigation_attempts` remains; "
+                     "a Result without a dossier counts like an invalid one. An incomplete artifact "
+                     "is never adopted by hand."),
+            Diagram(
+                "Failure case 3: the investigator or dispatcher has an infrastructure failure",
+                ("investigation.idle", "investigation.agent_running", "investigation.waiting_human",
+                 "parked.idle"),
+                (("investigation.idle", "dispatch_investigation"),
                  ("investigation.agent_running", "retry_dispatch"),
                  ("investigation.agent_running", "allocate_work_retry"),
                  ("investigation.agent_running", "exhaust_dispatch_recovery"),
                  ("investigation.agent_running", "exhaust_work_recovery"),
-                 ("investigation.waiting_human", "park_contribution"),
-                 ("investigation.idle", "park_contribution")),
-                start="investigation.idle", ends=("closed.idle",),
+                 ("investigation.idle", "exhaust_work_total"),
+                 ("investigation.waiting_human", "resume_investigation"),
+                 ("investigation.waiting_human", "park_contribution")),
+                start="investigation.idle",
                 text="Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` "
                      "and `work_recovery`. A terminal Work graph is never submitted again under the "
-                     "same identity."),
+                     "same identity. Every Work allocation also charges `work_total`."),
             Diagram(
-                "Failure case 4: fork provisioning has a transient failure",
-                ("provisioning.idle", "provisioning.waiting_human", "development.idle", "parked.idle"),
+                "Failure case 4: fork provisioning fails or its outcome is uncertain",
+                ("provisioning.idle", "provisioning.waiting_human", "development.fix_needed",
+                 "parked.idle"),
                 (("provisioning.idle", "start_operation"),
                  ("provisioning.idle", "require_provisioning_intervention"),
                  ("provisioning.waiting_human", "resume_provisioning"),
                  ("provisioning.idle", "confirm_provisioning"),
-                 ("provisioning.idle", "park_contribution")),
+                 ("provisioning.waiting_human", "park_contribution")),
                 start="provisioning.idle",
                 text="`confirm_provisioning` follows fork creation, configuration, receipt "
                      "validation, and exact readback. `start_operation` relaunches within "
-                     "`operation_launch`."),
-            Diagram(
-                "Failure case 5: provisioning outcome is uncertain",
-                ("provisioning.idle", "provisioning.waiting_human", "development.idle"),
-                (("provisioning.idle", "require_provisioning_intervention"),
-                 ("provisioning.waiting_human", "resume_provisioning"),
-                 ("provisioning.idle", "confirm_provisioning")),
-                start="provisioning.idle",
-                text="A lost receipt is not proof that an operation did not launch; an uncertain "
-                     "effect is resolved by discovery or `/upstreaming resolve-operation`, never "
-                     "repeated blindly."),
-            Diagram(
-                "Failure case 6: provisioning cannot safely satisfy a prerequisite",
-                ("provisioning.idle", "provisioning.waiting_human", "development.idle", "parked.idle",
-                 "closed.idle"),
-                (("provisioning.idle", "confirm_provisioning"),
-                 ("provisioning.idle", "require_provisioning_intervention"),
-                 ("provisioning.waiting_human", "resume_provisioning"),
-                 ("provisioning.waiting_human", "exhaust_provisioning_attempts"),
-                 ("provisioning.waiting_human", "park_contribution"),
-                 ("provisioning.idle", "park_contribution"),
-                 ("provisioning.idle", "close_investigation")),
-                start="provisioning.idle", ends=("closed.idle",),
-                text="Correct the external permission or identity problem first, then resume. "
-                     "`exhaust_provisioning_attempts` parks after `provisioning_attempts`."),
+                     "`operation_launch`. A lost receipt is not proof that an operation did not "
+                     "launch; an uncertain effect is resolved by discovery or "
+                     "`/upstreaming resolve-operation`, never repeated blindly. A human corrects "
+                     "the prerequisite and resumes, or parks."),
         ),
     ),
     DiagramSection(
@@ -1592,95 +2044,159 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
         (
             Diagram(
                 "Success case: patch, publish, CI, and handoff",
-                ("development.idle", "development.agent_running", "development.waiting_ci",
+                ("development.fix_needed", "development.agent_running", "development.waiting_ci",
                  "handoff.awaiting_submission"),
-                (("development.idle", "request_patch"),
+                (("development.fix_needed", "request_patch"),
                  ("development.agent_running", "record_publish_success"),
                  ("development.waiting_ci", "nominate_for_handoff")),
-                start="development.idle",
-                text="Every applicable build and test job must execute and pass on the exact head."),
+                start="development.fix_needed",
+                text="`development.fix_needed` is the one state in which development Work is due. "
+                     "`request_patch` applies while the head has no CI evidence and no feedback is "
+                     "recorded; `request_repair` applies otherwise. Every applicable build and "
+                     "test job must execute and pass on the exact head."),
             Diagram(
-                "Failure case 1: patch proposal or dispatch failure",
-                ("development.idle", "development.agent_running", "development.fix_needed",
-                 "development.waiting_human", "parked.idle", "queued.idle"),
-                (("development.idle", "request_patch"),
+                "Failure case 1: patch proposal, dispatch, or Work failure",
+                ("development.fix_needed", "development.agent_running",
+                 "development.waiting_human"),
+                (("development.fix_needed", "request_patch"),
                  ("development.agent_running", "reject_patch_proposal"),
+                 ("development.agent_running", "replan_development"),
                  ("development.fix_needed", "request_repair"),
-                 ("development.agent_running", "exhaust_publish_recovery"),
-                 ("development.waiting_human", "resume_development"),
-                 ("development.fix_needed", "park_contribution"),
-                 ("parked.idle", "restart_generation"),
                  ("development.agent_running", "retry_dispatch"),
                  ("development.agent_running", "allocate_work_retry"),
                  ("development.agent_running", "exhaust_dispatch_recovery"),
                  ("development.agent_running", "exhaust_work_recovery"),
-                 ("development.fix_needed", "exhaust_repair_attempts")),
-                start="development.idle",
-                text="Dispatch recovery and bounded repair are automatic. Repair-budget exhaustion "
-                     "parks; `restart_generation` starts a clean generation that cannot bypass "
-                     "dossier validation."),
+                 ("development.waiting_human", "resume_development")),
+                start="development.fix_needed",
+                text="Dispatch recovery and bounded repair are automatic. Dispatch and Work "
+                     "exhaustion wait for a human in development."),
             Diagram(
                 "Failure case 2: trusted publication failure",
                 ("development.agent_running", "development.fix_needed", "development.waiting_human",
-                 "development.waiting_ci", "development.idle"),
+                 "development.waiting_ci"),
                 (("development.agent_running", "record_publish_success"),
-                 ("development.agent_running", "reject_patch_proposal"),
-                 ("development.agent_running", "exhaust_publish_recovery"),
-                 ("development.fix_needed", "request_repair"),
-                 ("development.waiting_human", "resume_development"),
                  ("development.agent_running", "schedule_publish_retry"),
-                 ("development.agent_running", "replan_development"),
-                 ("development.agent_running", "record_no_change")),
+                 ("development.agent_running", "exhaust_publish_recovery"),
+                 ("development.waiting_human", "resume_development"),
+                 ("development.fix_needed", "request_repair")),
                 start="development.agent_running",
-                text="A validation failure needs new bounded repair Work. An infrastructure failure "
-                     "publishes the same verified Result again within `publish_recovery`."),
+                text="An infrastructure failure publishes the same verified Result again within "
+                     "`publish_recovery`. After exhaustion and a resume, fresh Work is requested; "
+                     "the held Result is not reused."),
             Diagram(
                 "Failure case 3: internal PR CI or review failure",
                 ("development.waiting_ci", "development.fix_needed", "development.agent_running",
-                 "handoff.awaiting_submission"),
+                 "development.waiting_human", "handoff.awaiting_submission"),
                 (("development.waiting_ci", "record_ci_failure"),
                  ("development.waiting_ci", "record_actionable_review"),
                  ("development.waiting_ci", "record_explanation"),
                  ("development.fix_needed", "request_repair"),
                  ("development.agent_running", "record_publish_success"),
+                 ("development.agent_running", "request_ci_rerun"),
                  ("development.waiting_ci", "nominate_for_handoff"),
-                 ("development.waiting_ci", "rerun_failed_ci"),
-                 ("development.waiting_ci", "record_head_change")),
+                 ("development.waiting_ci", "rerun_interrupted_ci"),
+                 ("development.waiting_ci", "exhaust_interrupted_reruns"),
+                 ("development.waiting_human", "resume_ci"),
+                 ("development.waiting_ci", "record_head_change"),
+                 ("development.waiting_ci", "record_pr_mismatch")),
                 start="development.waiting_ci",
                 text="Build and test failures and actionable comments request repair automatically. "
-                     "Explanation-only comments do not bump the revision, invalidate CI, or request "
-                     "repair."),
+                     "The repair worker classifies a failure: one not caused by the patch takes "
+                     "`request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only "
+                     "jobs that were cancelled or lost their runner, within `interrupted_reruns` "
+                     "per head; after that a human resumes with `resume_ci`, which reruns the "
+                     "jobs. Explanation-only comments do not bump the revision, invalidate CI, or "
+                     "request repair."),
             Diagram(
-                "Failure case 4: development must be re-investigated or stopped",
-                ("development.idle", "queued.idle", "investigation.idle", "investigation.agent_running",
-                 "development.fix_needed", "parked.idle"),
-                (("development.idle", "refresh_investigation"),
+                "Failure case 4: a repair budget is exhausted",
+                ("development.fix_needed", "development.agent_running", "queued.idle",
+                 "investigation.idle", "investigation.agent_running", "parked.idle"),
+                (("development.fix_needed", "request_repair"),
+                 ("development.fix_needed", "refresh_on_exhaustion"),
                  ("queued.idle", "begin_investigation"),
                  ("investigation.idle", "dispatch_investigation"),
                  ("investigation.agent_running", "readmit_development"),
-                 ("development.idle", "park_contribution"),
-                 ("parked.idle", "restart_generation")),
-                start="development.idle",
+                 ("development.fix_needed", "exhaust_repair_attempts")),
+                start="development.fix_needed",
+                text="Exhaustion is decided at `development.fix_needed`. The first time "
+                     "`repair_attempts_cluster` or `no_progress` is exhausted in a generation, "
+                     "`refresh_on_exhaustion` runs a complete investigation again on the existing "
+                     "fork. After that, `exhaust_repair_attempts` parks. Both apply only while "
+                     "`work_total` remains."),
+            Diagram(
+                "Failure case 5: the Work budget is exhausted",
+                ("development.fix_needed", "development.agent_running",
+                 "development.waiting_human", "parked.idle"),
+                (("development.fix_needed", "request_repair"),
+                 ("development.fix_needed", "exhaust_work_total"),
+                 ("development.waiting_human", "resume_development"),
+                 ("development.waiting_human", "park_contribution")),
+                start="development.fix_needed",
+                text="When `work_total` is exhausted at `development.fix_needed`, "
+                     "`exhaust_work_total` waits for a human and names `work_total` in "
+                     "`pending_human_action.counter`, whatever the repair budgets hold. The reply states the "
+                     "number of Work allocations spent in this generation and names both "
+                     "`/upstreaming resume` and `/upstreaming park`. One resume starts "
+                     "`work_total` again and returns to `development.fix_needed`; the repair "
+                     "budgets are not started again."),
+            Diagram(
+                "Failure case 6: development must be re-investigated",
+                ("development.waiting_ci", "development.fix_needed",
+                 "development.waiting_human", "queued.idle", "investigation.agent_running"),
+                (("development.waiting_ci", "refresh_investigation"),
+                 ("development.fix_needed", "refresh_investigation"),
+                 ("development.waiting_human", "refresh_investigation"),
+                 ("investigation.agent_running", "readmit_development")),
                 text="`refresh` runs a complete investigation without deleting the fork or "
-                     "development PR. `park` ends the current generation."),
+                     "development PR. A refreshed dossier that decides to develop returns to "
+                     "`development.fix_needed` on the existing fork."),
         ),
     ),
     DiagramSection(
         "Pause, waiting-human, and park cases",
-        "Pause and block keep the lifecycle phase and activity. `waiting_human` is entered "
-        "automatically when a specific failure or external prerequisite needs operator action. "
-        "Park ends the current generation; resume from parked performs a clean reset.",
+        "Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically "
+        "when a specific failure or external prerequisite needs operator action. Park means the "
+        "approach is not working or a human said stop; it ends the current generation, and resume "
+        "from parked performs a clean reset. A Result is reused only while the pipeline ran "
+        "continuously: after a pause, a human wait, or a park, the next step is fresh Work.",
         (
             Diagram(
-                "Success case 1: temporary pause and successful resume",
-                ("development.waiting_ci",), (), start="development.waiting_ci", flags=("paused",),
-                text="Pause stops new Work and writer admission. An effect that passed its final "
+                "Success case 1: temporary pause and resume",
+                ("development.waiting_ci", "development.waiting_ci+paused"),
+                (("development.waiting_ci", "pause"),
+                 ("development.waiting_ci", "pause_on_identity_change"),
+                 ("development.waiting_ci+paused", "resume_pause")),
+                start="development.waiting_ci",
+                text="There is one flag, `paused`, with its reason and who set it. A human sets it "
+                     "with `pause`, with an optional reason; the controller sets it when the "
+                     "upstream identity changes and always records the reason. `resume_pause` "
+                     "bumps the revision. An effect that passed its final "
                      "publication check before the pause may finish and is reconciled normally."),
             Diagram(
-                "Success case 2: block and resume",
-                ("development.waiting_ci",), (), start="development.waiting_ci", flags=("blocked",),
-                text="Block records a reason and fences launches like pause. Resuming a block names "
-                     "the exact revision and bumps it."),
+                "Success case 2: pause while Work is requested",
+                ("development.agent_running", "development.fix_needed+paused",
+                 "development.fix_needed"),
+                (("development.agent_running", "pause"),
+                 ("development.fix_needed+paused", "resume_pause")),
+                start="development.agent_running",
+                text="Pause clears the requested Work, so the state in which that Work is due "
+                     "again is entered. A Result that lands during the pause takes "
+                     "`record_late_effect`; after the resume, fresh Work is requested."),
+            Diagram(
+                "Success case 3: resume after a long stop refreshes the dossier",
+                ("development.waiting_ci", "development.waiting_ci+paused",
+                 "development.waiting_human", "development.fix_needed", "queued.idle"),
+                (("development.waiting_ci", "pause"),
+                 ("development.waiting_ci+paused", "resume_pause"),
+                 ("development.waiting_ci+paused", "resume_stale"),
+                 ("development.waiting_human", "resume_development"),
+                 ("development.waiting_human", "resume_stale")),
+                start="development.waiting_ci",
+                text="In provisioning and development, a pause or human wait longer than "
+                     "`refresh.stale_after_days` days resumes through `resume_stale`, which runs "
+                     "the investigation again. The normal resume verbs carry the complementary "
+                     "guard, so exactly one applies. Handoff, upstream review, and release waits "
+                     "are never refreshed automatically."),
             Diagram(
                 "Failure case 1: waiting for operator action or an external prerequisite",
                 ("development.agent_running", "development.waiting_human", "development.fix_needed",
@@ -1690,17 +2206,25 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_human", "park_contribution")),
                 start="development.agent_running",
                 text="The controller records the concrete reason in `pending_human_action`. Correct "
-                     "the stated problem first, then resume with the exact revision."),
+                     "the stated problem first, then resume with the exact revision. A "
+                     "contribution that is also paused needs two resumes: the first clears the "
+                     "flag and its reply names the pending action, the second leaves the wait. "
+                     "When an exhausted budget caused the wait, the resume starts again the one "
+                     "counter named in `pending_human_action.counter`."),
             Diagram(
-                "Failure case 2: park and later resume as a clean generation",
-                ("development.idle", "parked.idle", "queued.idle"),
-                (("development.idle", "park_contribution"),
+                "Failure case 2: park, then restart as a clean generation or abandon",
+                ("development.fix_needed", "parked.idle", "queued.idle", "closed.idle"),
+                (("development.fix_needed", "park_contribution"),
                  ("parked.idle", "record_late_effect"),
-                 ("parked.idle", "restart_generation")),
-                start="development.idle",
-                text="`restart_generation` is accepted only when the contribution is quiescent. It "
-                     "bumps the generation, clears mutable lifecycle state, and starts at "
-                     "`queued.idle`. It does not close PRs, delete branches, or delete repositories."),
+                 ("parked.idle", "restart_generation"),
+                 ("parked.idle", "abandon")),
+                start="development.fix_needed", ends=("closed.idle",),
+                text="`restart_generation` is accepted only when no operation is open, no "
+                     "publication is pending, and no upstream PR is open. It bumps the generation, "
+                     "clears mutable lifecycle state, and starts at `queued.idle`. Requested Work "
+                     "carries its generation, so a Result of the ended generation is never folded "
+                     "or published. Nothing here closes PRs, deletes branches, or deletes "
+                     "repositories."),
         ),
     ),
     DiagramSection(
@@ -1715,6 +2239,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "handoff.waiting_ci", "handoff.closing_internal_pr", "handoff.preparing_submission",
                  "handoff.waiting_upstream_pr", "upstream_review.waiting_ci"),
                 (("development.waiting_ci", "nominate_for_handoff"),
+                 ("handoff.awaiting_submission", "record_reminder"),
                  ("handoff.awaiting_submission", "submit_upstream"),
                  ("handoff.cleaning_debug", "confirm_clean_head"),
                  ("handoff.waiting_ci", "accept_clean_head_ci"),
@@ -1724,47 +2249,55 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.waiting_upstream_pr", "verify_upstream_pr")),
                 text="`submit-upstream` is the only submission command. The human follows the "
                      "prefilled link and opens the PR under their own identity; observation "
-                     "verifies it before `upstream_review`."),
+                     "verifies it before `upstream_review`. Both human steps are reminded."),
             Diagram(
                 "Failure case 1: pre-submission changes versus the locked upstream-PR wait",
                 ("handoff.awaiting_submission", "handoff.cleaning_debug", "handoff.waiting_ci",
-                 "handoff.closing_internal_pr", "handoff.preparing_submission",
-                 "handoff.waiting_upstream_pr", "development.fix_needed", "queued.idle", "parked.idle"),
+                 "handoff.waiting_upstream_pr", "development.fix_needed", "development.waiting_ci",
+                 "queued.idle"),
                 (("handoff.awaiting_submission", "submit_upstream"),
                  ("handoff.cleaning_debug", "confirm_clean_head"),
-                 ("handoff.waiting_ci", "accept_clean_head_ci"),
-                 ("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
-                 ("handoff.preparing_submission", "confirm_submission_package"),
-                 ("handoff.waiting_upstream_pr", "record_audit_observation"),
+                 ("handoff.waiting_ci", "rerun_interrupted_ci"),
+                 ("handoff.awaiting_submission", "return_for_repair"),
+                 ("handoff.awaiting_submission", "record_head_change"),
                  ("handoff.cleaning_debug", "return_for_repair"),
                  ("handoff.waiting_ci", "return_for_repair"),
-                 ("handoff.waiting_upstream_pr", "retract_submission"),
-                 ("handoff.awaiting_submission", "return_for_repair"),
                  ("handoff.awaiting_submission", "refresh_investigation"),
-                 ("handoff.awaiting_submission", "park_contribution")),
+                 ("handoff.waiting_upstream_pr", "record_audit_observation"),
+                 ("handoff.waiting_upstream_pr", "retract_submission"),
+                 ("handoff.waiting_upstream_pr", "refresh_investigation")),
                 start="handoff.awaiting_submission",
-                text="Before the package is posted, cleanup validation, an exact-head lease "
-                     "conflict, or blocking CI on the clean head returns to development. "
-                     "`handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr` and "
-                     "`retract_submission` leave it."),
+                text="Before the package is posted, a changed head, cleanup validation, an "
+                     "exact-head lease conflict, or blocking CI on the clean head returns to "
+                     "development. `handoff.waiting_upstream_pr` is locked: only "
+                     "`verify_upstream_pr`, `retract_submission`, and `refresh_investigation` "
+                     "leave it."),
             Diagram(
-                "Failure case 2: submission-package publication or PR verification fails",
-                ("handoff.closing_internal_pr", "handoff.waiting_internal_pr",
-                 "handoff.preparing_submission", "handoff.waiting_comment",
-                 "handoff.waiting_upstream_pr", "upstream_review.waiting_ci"),
-                (("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
-                 ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
-                 ("handoff.waiting_internal_pr", "resume_internal_pr_closure"),
-                 ("handoff.preparing_submission", "confirm_submission_package"),
-                 ("handoff.preparing_submission", "exhaust_comment_retries"),
-                 ("handoff.waiting_comment", "resume_submission_preparation"),
-                 ("handoff.waiting_upstream_pr", "record_reminder"),
-                 ("handoff.waiting_upstream_pr", "verify_upstream_pr"),
+                "Failure case 2: a handoff operation fails repeatedly",
+                ("handoff.cleaning_debug", "handoff.waiting_ci", "handoff.closing_internal_pr",
+                 "handoff.preparing_submission", "handoff.waiting_human",
+                 "handoff.waiting_upstream_pr"),
+                (("handoff.cleaning_debug", "retry_debug_cleanup"),
+                 ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+                 ("handoff.waiting_human", "resume_debug_cleanup"),
+                 ("handoff.cleaning_debug", "confirm_clean_head"),
+                 ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+                 ("handoff.waiting_human", "resume_ci"),
+                 ("handoff.waiting_ci", "accept_clean_head_ci"),
                  ("handoff.closing_internal_pr", "retry_internal_pr_closure"),
-                 ("handoff.preparing_submission", "retry_submission_comment")),
-                start="handoff.closing_internal_pr",
-                text="Closure and package recovery happen before the locked wait and do not need "
-                     "another `submit-upstream`."),
+                 ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
+                 ("handoff.waiting_human", "resume_internal_pr_closure"),
+                 ("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
+                 ("handoff.preparing_submission", "retry_submission_comment"),
+                 ("handoff.preparing_submission", "exhaust_comment_retries"),
+                 ("handoff.waiting_human", "resume_submission_preparation"),
+                 ("handoff.preparing_submission", "confirm_submission_package")),
+                start="handoff.cleaning_debug",
+                text="The lease write, the reruns of interrupted CI, the closure, and the package "
+                     "each retry within their budget and then wait for a human in the one "
+                     "`handoff.waiting_human`. `pending_human_action` names the step that "
+                     "failed, and exactly one of the four resume verbs applies: it returns to "
+                     "that step. Recovery does not need another `submit-upstream`."),
             Diagram(
                 "Success case 2: upstream review, merge, and release",
                 ("upstream_review.waiting_ci", "release_wait.idle", "released.idle"),
@@ -1776,33 +2309,56 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
             Diagram(
                 "Failure case 3: upstream CI or actionable review needs a revision",
                 ("upstream_review.waiting_ci", "upstream_review.fix_needed",
-                 "upstream_review.agent_running", "upstream_review.waiting_human",
-                 "release_wait.idle", "parked.idle"),
+                 "upstream_review.agent_running", "upstream_review.waiting_human"),
                 (("upstream_review.waiting_ci", "record_upstream_ci_failure"),
                  ("upstream_review.waiting_ci", "record_actionable_review"),
                  ("upstream_review.waiting_ci", "record_explanation"),
                  ("upstream_review.fix_needed", "request_upstream_revision"),
                  ("upstream_review.agent_running", "record_revision_publish_success"),
-                 ("upstream_review.waiting_ci", "record_merge"),
-                 ("upstream_review.agent_running", "retry_dispatch"),
+                 ("upstream_review.agent_running", "reject_patch_proposal"),
+                 ("upstream_review.agent_running", "require_reviewer_answer"),
+                 ("upstream_review.fix_needed", "exhaust_repair_attempts"),
+                 ("upstream_review.waiting_human", "resume_upstream_review"),
+                 ("upstream_review.waiting_human", "resume_upstream_revision")),
+                start="upstream_review.waiting_ci",
+                text="Automated upstream revisions require that the upstream PR head is the "
+                     "controlled fork ref. A rejected proposal is repaired within `no_progress`. "
+                     "When the worker reports that no change is needed, a human answers the "
+                     "reviewer; `resume_upstream_review` then clears the pending feedback and "
+                     "returns to `upstream_review.waiting_ci` without requesting Work. After a "
+                     "budget is exhausted, `resume_upstream_revision` starts again the one "
+                     "counter named in `pending_human_action.counter`. A CI failure is recorded "
+                     "once per head and CI run. Upstream CI is never rerun by the pipeline."),
+            Diagram(
+                "Failure case 4: revision Work or its publication fails",
+                ("upstream_review.agent_running", "upstream_review.waiting_human",
+                 "upstream_review.fix_needed"),
+                (("upstream_review.agent_running", "retry_dispatch"),
                  ("upstream_review.agent_running", "allocate_work_retry"),
+                 ("upstream_review.agent_running", "schedule_publish_retry"),
                  ("upstream_review.agent_running", "exhaust_dispatch_recovery"),
                  ("upstream_review.agent_running", "exhaust_work_recovery"),
-                 ("upstream_review.fix_needed", "exhaust_repair_attempts")),
-                start="upstream_review.waiting_ci",
-                text="Automated upstream revisions require that the registered PR head is the "
-                     "controlled fork ref. Otherwise patches go to the submitter."),
+                 ("upstream_review.agent_running", "exhaust_publish_recovery"),
+                 ("upstream_review.waiting_human", "resume_upstream_revision")),
+                start="upstream_review.agent_running",
+                text="Every exhaustion in upstream review waits for a human in "
+                     "`upstream_review.waiting_human`; nothing parks from upstream review "
+                     "automatically."),
             Diagram(
-                "Failure case 4: upstream PR is closed or maintainer intent is unclear",
+                "Failure case 5: the upstream PR is closed or its head changes",
                 ("upstream_review.waiting_ci", "upstream_review.waiting_human", "parked.idle"),
                 (("upstream_review.waiting_ci", "record_pr_closed_unmerged"),
+                 ("upstream_review.waiting_ci", "record_head_change"),
                  ("upstream_review.waiting_human", "resume_upstream_review"),
                  ("upstream_review.waiting_human", "park_contribution")),
                 start="upstream_review.waiting_ci",
-                text="The pipeline does not reopen the PR or create a replacement. Human triage "
-                     "either resumes or parks."),
+                text="The pipeline does not reopen the PR or create a replacement. "
+                     "`resume_upstream_review` returns to `upstream_review.waiting_ci` after a "
+                     "head change, and after a closed PR once it is observed open again. "
+                     "`resume_upstream_revision` applies only when revision Work failed. Human "
+                     "triage either resumes or parks."),
             Diagram(
-                "Failure case 5: release is missing, incomplete, or waiting for operator action",
+                "Failure case 6: release is missing, incomplete, or waiting for operator action",
                 ("release_wait.idle", "release_wait.waiting_human", "released.idle"),
                 (("release_wait.idle", "record_release_incomplete"),
                  ("release_wait.idle", "require_release_intervention"),
@@ -1813,6 +2369,35 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "satisfies the frozen acceptance contract."),
         ),
     ),
+    DiagramSection(
+        "Rules that apply in many states",
+        "Four transitions apply in many states. Each is written once as a rule and expanded into "
+        "the table; each is drawn once here, from a single node that stands for every state the "
+        "rule applies in.",
+        (
+            Diagram(
+                "Rule: park by command", ("parked.idle",), (), rule="park_contribution",
+                text="Nothing parks from `upstream_review` automatically, and "
+                     "`handoff.waiting_upstream_pr` and `release_wait` cannot be parked."),
+            Diagram(
+                "Rule: resume after a long stop", ("queued.idle",), (), rule="resume_stale"),
+            Diagram(
+                "Rule: reminders of a pending human step", (), (), rule="record_reminder",
+                text="The rule covers the `gate`, `human_wait`, and `locked` kinds. In "
+                     "`handoff.waiting_upstream_pr` the reminder text carries the package link."),
+            Diagram(
+                "Rule: late Results", (), (), rule="record_late_effect"),
+        ),
+    ),
+)
+
+OPERATION_SECTION = (
+    "Remote operations",
+    "Every remote effect is an operation with its own small table, held to the same checks. The "
+    "intent is recorded before the effect, and the receipt is confirmed by discovering the actual "
+    "resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its "
+    "contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` "
+    "closes an open operation with a resolution evidence record.",
 )
 
 # Short node ids used when drawing states (``phase_activity`` otherwise).
@@ -1820,17 +2405,30 @@ DIAGRAM_PHASE_IDS = {"upstream_review": "upstream"}
 
 
 # --------------------------------------------------------------------------
-# Consistency check of the table, run in CI as ``python -m lifecycle check``.
+# Consistency check of the tables, run in CI as ``python -m lifecycle check``.
 
-# Record fields whose change is a change of the requested work, so a
-# transition that sets or clears one bumps the revision.
-REVISION_FIELDS = ("scope_paths", "pending_feedback_evidence_ids", "handoff_approval")
-_REVISION_SET_EXEMPT = ("handoff_approval",)  # granting approval keeps the revision
-_REVISION_GUARDS = ("exact revision", "any revision, current or stale")
+# The revision rule. A transition bumps the revision when it is a resume,
+# when it starts a generation or a fresh Work graph, when it changes a field
+# that defines the requested or approved work, or when a Result is rejected
+# and the same kind of Work is due again. No other transition bumps it.
+# Setting a field in ``REVISION_SET_FIELDS`` or clearing one in
+# ``REVISION_CLEAR_FIELDS`` changes the requested or approved work; so does
+# an observed head (``REVISION_OBSERVED_FIELDS`` set by an observation).
+REVISION_SET_FIELDS = ("scope_paths", "pending_feedback_evidence_ids", "refresh")
+REVISION_CLEAR_FIELDS = ("scope_paths", "dossier_evidence_id", "handoff_request",
+                         "handoff_approval", "clean_head_sha")
+REVISION_OBSERVED_FIELDS = ("fork.head_sha", "upstream_pr.head_sha")
+_REVISION_GUARDS = (EXACT_REVISION, ANY_REVISION)
+
+# The exits of the locked upstream-PR wait.
+LOCKED_EXITS = {"handoff.waiting_upstream_pr": ("verify_upstream_pr", "retract_submission",
+                                                "refresh_investigation")}
+# Phases from which only a command may end the generation.
+NO_AUTOMATIC_PARK = ("upstream_review",)
 
 
 def _field_name(entry: str) -> str:
-    return entry.split("=", 1)[0].split(".", 1)[0]
+    return entry.split("=", 1)[0]
 
 
 def _reachable(start: str, step) -> set[str]:
@@ -1843,7 +2441,25 @@ def _reachable(start: str, step) -> set[str]:
     return seen
 
 
-def _check_transition(where: str, source: str | None, t: Transition, problems: list[str]) -> None:
+def must_bump(edge: Edge) -> bool:
+    """Whether the revision rule requires ``edge`` to bump the revision."""
+    t, e = edge.transition, edge.transition.effects
+    sets = {_field_name(f) for f in e.sets}
+    clears = {_field_name(f) for f in e.clears}
+    if t.command == RESUME or e.generation == "bump" or e.work == "reallocate":
+        return True
+    if sets & set(REVISION_SET_FIELDS) or clears & set(REVISION_CLEAR_FIELDS):
+        return True
+    if t.trigger == Trigger.OBSERVATION and sets & set(REVISION_OBSERVED_FIELDS):
+        return True
+    target = LIFECYCLE.get(edge.target)
+    return bool(t.trigger == Trigger.RESULT and e.work == "clear" and edge.target != edge.source
+                and target is not None and target.kind == "auto_wait" and target.launches)
+
+
+def _check_transition(where: str, t: Transition, problems: list[str], *,
+                      command_prefix: str = "/upstreaming ",
+                      command_guards: tuple[str, ...] = _REVISION_GUARDS) -> None:
     if not isinstance(t.trigger, Trigger):
         problems.append(f"{where}: trigger {t.trigger!r} is not a Trigger")
     if not t.guard:
@@ -1853,29 +2469,18 @@ def _check_transition(where: str, source: str | None, t: Transition, problems: l
     if any(not g.strip() for g in t.guard):
         problems.append(f"{where}: blank guard condition")
     if t.trigger == Trigger.COMMAND:
-        if not (t.command or "").startswith("/upstreaming "):
+        if not (t.command or "").startswith(command_prefix):
             problems.append(f"{where}: command trigger without an `/upstreaming` command")
-        if not any(g in _REVISION_GUARDS for g in t.guard):
-            problems.append(f"{where}: command guard names neither {_REVISION_GUARDS[0]!r} "
-                            f"nor {_REVISION_GUARDS[1]!r}")
-    elif t.command and t.trigger != Trigger.RESULT:
+        if not any(g in command_guards for g in t.guard):
+            problems.append(f"{where}: command guard names none of "
+                            + ", ".join(repr(g) for g in command_guards))
+    elif t.command:
         problems.append(f"{where}: command {t.command!r} on a {t.trigger} trigger")
     e = t.effects
     if e.generation == "bump" and (e.revision != "bump" or e.work != "clear"):
         problems.append(f"{where}: a generation bump must bump the revision and clear Work")
-    if e.work == "reallocate" and e.revision != "bump":
-        problems.append(f"{where}: reallocating Work must bump the revision")
-    changed = {_field_name(f) for f in e.sets if _field_name(f) not in _REVISION_SET_EXEMPT}
-    changed |= {_field_name(f) for f in e.clears}
-    if changed & set(REVISION_FIELDS) and e.revision != "bump":
-        problems.append(f"{where}: changes {sorted(changed & set(REVISION_FIELDS))} "
-                        "without a revision bump")
-    if e.work == "allocate":
-        if source is not None and not LIFECYCLE[source].launches:
-            problems.append(f"{where}: allocates Work from a state that does not launch")
-        for g in ("not paused", "not blocked"):
-            if g not in t.guard:
-                problems.append(f"{where}: allocates Work without the guard {g!r}")
+    if e.work == "allocate" and NOT_PAUSED not in t.guard:
+        problems.append(f"{where}: allocates Work without the guard {NOT_PAUSED!r}")
     guard_text = "; ".join(t.guard)
     for name in t.charges:
         if name not in BUDGETS:
@@ -1884,41 +2489,63 @@ def _check_transition(where: str, source: str | None, t: Transition, problems: l
             problems.append(f"{where}: charges {name!r} but its guard does not mention it")
 
 
-def check_table(policy: dict | None = None) -> list[str]:
-    """Every consistency problem of the lifecycle table; empty when coherent."""
-    import json
-    from pathlib import Path
-
-    from scripts.state_machine_decisions import DECISIONS
-
-    if policy is None:
-        policy = json.loads((Path(__file__).resolve().parent / "policy.json").read_text())
-    problems: list[str] = []
-    ends = {k for k, s in LIFECYCLE.items() if s.kind == "terminal"}
-    edges = list(table_edges())
-
-    # States, targets, and end states.
-    if INITIAL_STATE not in LIFECYCLE:
-        problems.append(f"initial state {INITIAL_STATE!r} is not a table state")
-        return problems
+def _check_graph(name: str, table: dict, initial: str, is_end, problems: list[str]) -> bool:
+    """Structure of one table: targets, end states, reachability, and one
+    target per verb. Returns False when targets are missing."""
+    label = f"{name} " if name else ""
+    if initial not in table:
+        problems.append(f"{label}initial state {initial!r} is not a table state")
+        return False
+    ends = {k for k in table if is_end(k)}
     if not ends:
-        problems.append("no state is marked as an end state (kind 'terminal')")
+        problems.append(f"{label}no state is marked as an end state")
+    ok = True
+    for key, state in table.items():
+        targets: dict[str, list[str]] = {}
+        for verb, to in state.transitions:
+            if not verb:
+                problems.append(f"{label}{key}: transition with an empty verb")
+            if to != SELF and to not in table:
+                problems.append(f"{label}{key} --{verb}--> {to}: target is not a table state")
+                ok = False
+            targets.setdefault(verb, []).append(resolve_target(key, to))
+        for verb, to in targets.items():
+            if len(to) > 1:
+                problems.append(f"{label}{key} --{verb}-->: the verb leads to {len(to)} targets "
+                                f"({', '.join(to)}); a verb from a state must lead to one target")
+        leaving = [v for v, to in state.transitions if resolve_target(key, to) != key]
+        if key in ends and leaving:
+            problems.append(f"{label}{key}: end state has outgoing transitions")
+        if key not in ends and not leaving:
+            problems.append(f"{label}{key}: not an end state but no transition leaves it")
+    if not ok:
+        return False
+    successors: dict[str, set[str]] = {k: set() for k in table}
+    predecessors: dict[str, set[str]] = {k: set() for k in table}
+    for e in table_edges(table):
+        successors[e.source].add(e.target)
+        predecessors[e.target].add(e.source)
+    reached = _reachable(initial, successors.__getitem__)
+    for key in table:
+        if key not in reached:
+            kind = "end state" if key in ends else "state"
+            problems.append(f"{label}{key}: {kind} is not reachable from {initial}")
+    can_end: set[str] = set()
+    for end in ends:
+        can_end |= _reachable(end, predecessors.__getitem__)
+    for key in table:
+        if key not in can_end:
+            problems.append(f"{label}{key}: no end state is reachable from this state")
+    return True
+
+
+def _check_states(problems: list[str]) -> None:
     for key, state in LIFECYCLE.items():
         phase, _, activity = key.partition(".")
         if not phase or not activity or "." in activity:
             problems.append(f"{key}: state key is not phase.activity")
-        for verb, to in state.transitions:
-            if not verb:
-                problems.append(f"{key}: transition with an empty verb")
-            if to != SELF and to not in LIFECYCLE:
-                problems.append(f"{key} --{verb}--> {to}: target is not a table state")
-        if state.kind == "terminal":
-            if state.transitions:
-                problems.append(f"{key}: end state has outgoing transitions")
-            if state.launches or state.writes:
-                problems.append(f"{key}: end state launches or writes")
-        elif not [v for v, to in state.transitions if resolve_target(key, to) != key]:
-            problems.append(f"{key}: not an end state but no transition leaves it")
+        if state.kind == "terminal" and (state.launches or state.writes):
+            problems.append(f"{key}: end state launches or writes")
         if state.kind in ("locked", "human_wait", "generation_end") and (state.launches or state.writes):
             problems.append(f"{key}: {state.kind} state launches or writes")
         if state.kind in ("human_wait", "generation_end") and not any(
@@ -1927,63 +2554,398 @@ def check_table(policy: dict | None = None) -> list[str]:
         if state.kind == "gate" and not any(
                 t.trigger == Trigger.COMMAND for t in state.transitions.values()):
             problems.append(f"{key}: gate state has no command exit")
-    if any(p.endswith("is not a table state") for p in problems):
-        return problems
-
-    successors: dict[str, set[str]] = {k: set() for k in LIFECYCLE}
-    predecessors: dict[str, set[str]] = {k: set() for k in LIFECYCLE}
-    for e in edges:
-        successors[e.source].add(e.target)
-        predecessors[e.target].add(e.source)
-    reached = _reachable(INITIAL_STATE, successors.__getitem__)
-    for key in LIFECYCLE:
-        if key not in reached:
-            kind = "end state" if key in ends else "state"
-            problems.append(f"{key}: {kind} is not reachable from {INITIAL_STATE}")
-    can_end: set[str] = set()
-    for end in ends:
-        can_end |= _reachable(end, predecessors.__getitem__)
-    for key in LIFECYCLE:
-        if key not in can_end:
-            problems.append(f"{key}: no end state is reachable from this state")
-
-    # Transitions. A verb leads from a state to one target only, so the
-    # machine is deterministic; several verbs may share a target.
-    for key, state in LIFECYCLE.items():
-        targets: dict[str, list[str]] = {}
         for e in state_edges(key):
             where = f"{key} --{e.verb}--> {e.target}"
-            targets.setdefault(e.verb, []).append(e.target)
-            _check_transition(where, key, e.transition, problems)
+            _check_transition(where, e.transition, problems)
+            effects = e.transition.effects
+            if effects.work == "allocate" and not state.launches:
+                problems.append(f"{where}: allocates Work from a state that does not launch")
+            if effects.work in ("allocate", "reallocate") and "work_total" not in e.transition.charges:
+                problems.append(f"{where}: allocates Work without charging 'work_total'")
+            if must_bump(e) and effects.revision != "bump":
+                problems.append(f"{where}: the revision rule requires a revision bump")
+            if not must_bump(e) and effects.revision == "bump":
+                problems.append(f"{where}: bumps the revision although the revision rule "
+                                "does not require it")
             target = LIFECYCLE[e.target]
             entering = e.target != key
-            sets = {_field_name(f) for f in e.transition.effects.sets}
+            sets = {_field_name(f).split(".", 1)[0] for f in effects.sets}
             if entering and target.kind == "human_wait" and state.kind != "human_wait" \
                     and "pending_human_action" not in sets:
                 problems.append(f"{where}: enters a human wait without setting pending_human_action")
-            if entering and target.kind == "generation_end" \
-                    and not {"parked_reason", "previous_phase"} <= sets:
-                problems.append(f"{where}: ends the generation without parked_reason and previous_phase")
-        for verb, to in targets.items():
-            if len(to) > 1:
-                problems.append(f"{key} --{verb}-->: the verb leads to {len(to)} targets "
-                                f"({', '.join(to)}); a verb from a state must lead to one target")
+            if entering and target.kind == "generation_end":
+                if not {"parked_reason", "previous_phase"} <= sets:
+                    problems.append(f"{where}: ends the generation without parked_reason and "
+                                    "previous_phase")
+                if state_phase(key) in NO_AUTOMATIC_PARK and e.transition.trigger != Trigger.COMMAND:
+                    problems.append(f"{where}: ends the generation from {state_phase(key)} "
+                                    "without a command")
+    for key, verbs in LOCKED_EXITS.items():
+        state = LIFECYCLE.get(key)
+        if state is None or state.kind != "locked":
+            problems.append(f"{key}: LOCKED_EXITS names a state that is not locked")
+            continue
+        exits = [e.verb for e in state_edges(key) if e.target != key]
+        if sorted(exits) != sorted(verbs):
+            problems.append(f"{key}: exits {sorted(exits)} differ from the {len(verbs)} "
+                            f"allowed exits {sorted(verbs)}")
+        guards = {e.transition.guard for e in state_edges(key)
+                  if e.target != key and e.transition.trigger == Trigger.COMMAND}
+        if len(guards) > 1:
+            problems.append(f"{key}: the command exits of a locked state must share one guard")
+    for key, state in LIFECYCLE.items():
+        if state.kind == "locked" and key not in LOCKED_EXITS:
+            problems.append(f"{key}: locked state without LOCKED_EXITS")
 
-    # Flags.
+
+def _check_rules(problems: list[str]) -> None:
+    for verb, rule in RULES.items():
+        where = f"rule {verb}"
+        if rule.target != SELF and rule.target not in LIFECYCLE:
+            problems.append(f"{where}: target {rule.target!r} is not a table state")
+            continue
+        _check_transition(where, rule.transition, problems)
+        if not rule.applies.strip():
+            problems.append(f"{where}: no description of where it applies")
+        expected = set(rule_states(verb))
+        if not expected:
+            problems.append(f"{where}: applies in no state")
+        rows = {e.source for e in table_edges() if is_rule_row(e)
+                and e.target == resolve_target(e.source, rule.target) and e.verb == verb}
+        for key in sorted(expected - rows):
+            problems.append(f"{where}: applies in {key} but the table has no such row")
+        for key in sorted(rows - expected):
+            problems.append(f"{where}: the table has a row in {key} where the rule does not apply")
+    # Reminders: every state that waits for a human command is reminded.
+    reminder = RULES.get("record_reminder")
+    if reminder is None or set(reminder.kinds) != set(REMINDER_KINDS) or reminder.states \
+            or reminder.exclude or reminder.target != SELF:
+        problems.append("rule record_reminder: must apply in every gate, human_wait, and locked "
+                        "state and keep the state")
+    for key, state in LIFECYCLE.items():
+        if state.kind in REMINDER_KINDS and not any(
+                v == "record_reminder" for v, _to in state.transitions):
+            problems.append(f"{key}: {state.kind} state without record_reminder")
+    for e in table_edges():
+        if e.verb != "record_reminder":
+            continue
+        if REMINDER_KEY not in "; ".join(e.transition.guard):
+            problems.append(f"{e.source} --record_reminder-->: guard does not read {REMINDER_KEY}")
+        if not is_rule_row(e):
+            problems.append(f"{e.source} --record_reminder-->: a reminder row beside the rule")
+    # Late Results: recorded in every state, never changing it.
+    late = RULES.get("record_late_effect")
+    if late is None or late.target != SELF or late.kinds or late.states or late.exclude \
+            or late.transition.effects != Effects():
+        problems.append("rule record_late_effect: must apply in every state, keep the state, "
+                        "and have no effects")
+    # Park: one command rule; nothing else is a command into the generation end.
+    park = RULES.get("park_contribution")
+    if park is None or park.transition.command != PARK or "no open operation" not in park.transition.guard:
+        problems.append(f"rule park_contribution: must be the `{PARK}` command guarded by "
+                        "'no open operation'")
+
+
+def _check_stale_resume(policy: dict, problems: list[str]) -> None:
+    """``resume_stale`` and the other resumes of the same states carry
+    complementary guards, so exactly one applies."""
+    rule = RULES.get("resume_stale")
+    if rule is None:
+        problems.append("rule resume_stale: missing")
+        return
+    stale_states = set(rule_states("resume_stale"))
+    expected = {k for k in LIFECYCLE if state_phase(k) in STALE_PHASES}
+    if stale_states != expected:
+        problems.append(f"rule resume_stale: applies in {sorted(stale_states)}, not in every "
+                        f"state of {', '.join(STALE_PHASES)}")
+    t = rule.transition
+    if t.command != RESUME or STALE not in t.guard or NOT_STALE in t.guard:
+        problems.append(f"rule resume_stale: must be `{RESUME}` guarded by {STALE!r}")
+    refresh = {e.transition.guard for e in table_edges() if e.verb == "refresh_investigation"}
+    for guard in (QUIESCENT, NO_WORK):
+        if guard not in t.guard:
+            problems.append(f"rule resume_stale: without the guard {guard!r}")
+        if not any(guard in g for g in refresh):
+            problems.append(f"refresh_investigation: no row with the guard {guard!r}")
+    if not set(_REFRESH_EFFECTS.sets) <= set(t.effects.sets) \
+            or not set(_REFRESH_EFFECTS.clears) <= set(t.effects.clears):
+        problems.append("rule resume_stale: does not have the effects of refresh_investigation")
+    for e in table_edges():
+        if e.transition.command != RESUME or e.verb == "resume_stale":
+            continue
+        where = f"{e.source} --{e.verb}--> {e.target}"
+        if STALE in e.transition.guard:
+            problems.append(f"{where}: only resume_stale may be guarded by {STALE!r}")
+        declared = NOT_STALE in e.transition.guard
+        if e.source in stale_states and not declared:
+            problems.append(f"{where}: a resume beside resume_stale without the guard {NOT_STALE!r}")
+        if e.source not in stale_states and declared:
+            problems.append(f"{where}: guard {NOT_STALE!r} in a state without resume_stale")
     for name, f in FLAGS.items():
-        for verb, t, what in ((f.set_verb, f.set_by, "set"), (f.clear_verb, f.cleared_by, "clear")):
-            if not verb or t is None:
-                problems.append(f"flag {name}: no {what} transition")
-                continue
+        for verb, clear in f.cleared_by.items():
+            if clear.command == RESUME and FLAG_NOT_STALE not in clear.guard:
+                problems.append(f"flag {name} {verb}: a resume without the guard {FLAG_NOT_STALE!r}")
+    for key in (STALE_KEY, REMINDER_KEY):
+        try:
+            if int(policy_value(policy, key)) <= 0:
+                problems.append(f"policy.json: {key} is not positive")
+        except (KeyError, TypeError, ValueError):
+            problems.append(f"policy.json has no integer {key}")
+
+
+def _check_flags(problems: list[str]) -> None:
+    allocated = {e.target for e in table_edges() if e.transition.effects.work == "allocate"}
+    table_verbs = {e.verb for e in table_edges()}
+    for name, f in FLAGS.items():
+        if not f.set_by or not f.cleared_by:
+            problems.append(f"flag {name}: no set or no clear transition")
+        for verb, t in (*f.set_by.items(), *f.cleared_by.items()):
+            where = f"flag {name} {verb}"
+            if verb in table_verbs:
+                problems.append(f"{where}: is also a table verb")
+            _check_transition(where, t, problems)
+        for verb, t in f.set_by.items():
+            where = f"flag {name} {verb}"
+            if f.field not in t.effects.sets:
+                problems.append(f"{where}: does not set {f.field}")
+            if NOT_PAUSED not in t.guard and name == "paused":
+                problems.append(f"{where}: sets the flag without the guard {NOT_PAUSED!r}")
+            if t.effects.work != "clear":
+                problems.append(f"{where}: setting the flag must clear the requested Work")
+            if t.effects.revision == "bump":
+                problems.append(f"{where}: a stop must not bump the revision")
+            reason = [s for s in t.effects.sets if _field_name(s) == f"{f.field}_reason"]
+            if not reason:
+                problems.append(f"{where}: does not set {f.field}_reason")
+            elif t.trigger != Trigger.COMMAND and "=" not in reason[0]:
+                problems.append(f"{where}: a stop set by the controller must record its reason")
+        for verb, t in f.cleared_by.items():
+            where = f"flag {name} {verb}"
             if t.trigger != Trigger.COMMAND:
-                problems.append(f"flag {name}: {verb} is not command-triggered")
-            _check_transition(f"flag {name} {verb}", None, t, problems)
-        if f.field not in f.set_by.effects.sets or f.field not in f.cleared_by.effects.clears:
-            problems.append(f"flag {name}: set and clear transitions do not set and clear {f.field}")
+                problems.append(f"{where}: is not command-triggered")
+            if f.field not in t.effects.clears:
+                problems.append(f"{where}: does not clear {f.field}")
+            if t.command == RESUME and t.effects.revision != "bump":
+                problems.append(f"{where}: a resume must bump the revision")
+            extra = [c for c in t.effects.clears if not c.startswith(f.field)]
+            if extra or t.effects.sets:
+                problems.append(f"{where}: changes more than the flag: {extra or t.effects.sets}")
+        if set(f.set_moves) != allocated:
+            problems.append(f"flag {name}: set_moves {sorted(f.set_moves)} differ from the states "
+                            f"that hold requested Work {sorted(allocated)}")
+        for source, target in f.set_moves.items():
+            state = LIFECYCLE.get(target)
+            if state is None or state_phase(source) != state_phase(target) or not state.launches \
+                    or state.kind != "auto_wait":
+                problems.append(f"flag {name}: {source} moves to {target}, which is not a state "
+                                "of the same phase in which Work is due")
         if set(f.mask) != set(Trigger):
             problems.append(f"flag {name}: mask does not cover every trigger")
 
-    # Budgets.
+
+def pending_kinds(state: str) -> set[str]:
+    """The pending human actions with which ``state`` is entered; ``""`` for
+    an entry that does not name its action."""
+    kinds = set()
+    for e in table_edges():
+        if e.target == state and e.source != state:
+            for entry in e.transition.effects.sets:
+                name, _, value = entry.partition("=")
+                if name == "pending_human_action":
+                    kinds.add(value)
+    return kinds
+
+
+def _admits(t: Transition, kind: str) -> bool:
+    """Whether the pending-action guards of ``t`` allow the action ``kind``."""
+    for guard in t.guard:
+        if guard in PENDING_GUARDS:
+            negated, kinds = PENDING_GUARDS[guard]
+            if (kind in kinds) == negated:
+                return False
+    return True
+
+
+def _check_human_waits(problems: list[str]) -> None:
+    """The resumes of one human wait are mutually exclusive: when a wait has
+    several, each is guarded by the pending action, no action satisfies two
+    of them, and every action with which the wait is entered satisfies one."""
+    for e in table_edges():
+        if any(g in PENDING_GUARDS for g in e.transition.guard) and (
+                LIFECYCLE[e.source].kind != "human_wait" or e.transition.command != RESUME):
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: a pending-action guard on a "
+                            "transition that is not the resume of a human wait")
+    for key, state in LIFECYCLE.items():
+        if state.kind != "human_wait":
+            continue
+        resumes = [e for e in state_edges(key) if e.transition.command == RESUME and not is_rule_row(e)]
+        entering = pending_kinds(key)
+        guarded: dict[str, tuple[bool, tuple[str, ...]]] = {}
+        for e in resumes:
+            guards = [PENDING_GUARDS[g] for g in e.transition.guard if g in PENDING_GUARDS]
+            if len(guards) > 1 or (len(resumes) > 1 and not guards):
+                problems.append(f"{key} --{e.verb}--> {e.target}: one of {len(resumes)} resumes of "
+                                "the wait, so exactly one pending-action guard is required")
+            elif guards:
+                guarded[e.verb] = guards[0]
+        if not guarded:
+            continue
+        positive = [k for negated, kinds in guarded.values() if not negated for k in kinds]
+        for kind in sorted(set(positive)):
+            if positive.count(kind) > 1:
+                problems.append(f"{key}: several resumes apply when pending_human_action is {kind}")
+        named = {k for _negated, kinds in guarded.values() for k in kinds}
+        for kind in sorted(named - entering):
+            problems.append(f"{key}: a resume is guarded by pending_human_action {kind}, with "
+                            "which the wait is never entered")
+        negative = [kinds for negated, kinds in guarded.values() if negated]
+        if len(negative) > 1 or (negative and set(negative[0]) != set(positive)):
+            problems.append(f"{key}: the resume for the other pending actions must exclude "
+                            "exactly the actions the other resumes name")
+        if "" in entering:
+            problems.append(f"{key}: entered without naming the pending action although its "
+                            "resumes are guarded by it")
+        for kind in sorted(entering - {""}):
+            if sum(1 for e in resumes if _admits(e.transition, kind)) != 1:
+                problems.append(f"{key}: not exactly one resume applies when pending_human_action "
+                                f"is {kind}")
+
+
+def excluded(a: Transition, b: Transition) -> bool:
+    """Whether the guards of ``a`` and ``b`` cannot hold together, by
+    ``EXCLUSIVE_GUARDS``."""
+    return any((set(x) <= set(a.guard) and set(y) <= set(b.guard))
+               or (set(y) <= set(a.guard) and set(x) <= set(b.guard))
+               for x, y in EXCLUSIVE_GUARDS)
+
+
+def due_work_edges(state: str) -> list[Edge]:
+    """The controller transitions of a state in which Work is due: the rows
+    of the table, without the expansions of rules."""
+    return [e for e in state_edges(state)
+            if e.transition.trigger == Trigger.TICK and not is_rule_row(e)]
+
+
+def _check_due_work(problems: list[str]) -> None:
+    """In a state in which the controller allocates Work, at most one of its
+    controller transitions applies: every two of them carry guards that
+    ``EXCLUSIVE_GUARDS`` lists as exclusive. Exhaustion of ``work_total``
+    is one transition, guarded by nothing else, so that it applies whatever
+    the other budgets hold."""
+    guards = {g for e in table_edges() for g in e.transition.guard}
+    for x, y in EXCLUSIVE_GUARDS:
+        for g in (*x, *y):
+            if g not in guards:
+                problems.append(f"exclusive guards: {g!r} is not the guard of any transition")
+    for key, state in LIFECYCLE.items():
+        edges = due_work_edges(key)
+        if not any(e.transition.effects.work == "allocate" for e in edges):
+            continue
+        for i, a in enumerate(edges):
+            for b in edges[i + 1:]:
+                if not excluded(a.transition, b.transition):
+                    problems.append(f"{key}: {a.verb} and {b.verb} can apply together; their "
+                                    "guards are not exclusive")
+        for e in edges:
+            if WORK_TOTAL_EXHAUSTED in e.transition.guard and (
+                    e.verb != "exhaust_work_total" or e.transition.guard != (WORK_TOTAL_EXHAUSTED,)
+                    or LIFECYCLE[e.target].kind != "human_wait"):
+                problems.append(f"{key} --{e.verb}--> {e.target}: exhaustion of work_total where "
+                                "Work is due is exhaust_work_total, guarded by nothing else, and "
+                                "leads to a human wait")
+
+
+def exhausted_budgets(edge: Edge) -> list[str]:
+    """The budgets whose exhaustion ``edge`` is."""
+    return [n for n, b in BUDGETS.items()
+            if edge.verb in b.exhaustion_verbs and _names_exhaustion(edge.transition, n)]
+
+
+def counters_named(edge: Edge) -> set[str]:
+    """The counters an exhaustion may name in ``PENDING_COUNTER``: the one it
+    states, or any budget it exhausts when it states none."""
+    named = [s for s in edge.transition.effects.sets if _field_name(s) == PENDING_COUNTER]
+    if not named:
+        return set()
+    value = named[0].partition("=")[2]
+    return {value} if value else set(exhausted_budgets(edge))
+
+
+def _check_counter_restarts(problems: list[str]) -> None:
+    """A resume after a budget was exhausted starts that counter again, with
+    no exception: every exhaustion that leads to a human wait names its
+    counter in ``PENDING_COUNTER``, and every resume from that wait restarts
+    exactly the counters that can be named when it applies. No other
+    transition names or restarts a counter."""
+    entries: dict[str, list[tuple[set[str], list[str]]]] = {}
+    for e in table_edges():
+        where = f"{e.source} --{e.verb}--> {e.target}"
+        budgets = exhausted_budgets(e)
+        named = [s for s in e.transition.effects.sets if _field_name(s) == PENDING_COUNTER]
+        counted = bool(budgets) and e.target != e.source \
+            and LIFECYCLE[e.target].kind == "human_wait"
+        if not counted:
+            if named:
+                problems.append(f"{where}: sets {PENDING_COUNTER} but is not an exhaustion that "
+                                "leads to a human wait")
+            continue
+        if len(named) != 1:
+            problems.append(f"{where}: exhaustion that leads to a human wait without "
+                            f"{PENDING_COUNTER}")
+            continue
+        value = named[0].partition("=")[2]
+        if value and value not in budgets:
+            problems.append(f"{where}: {PENDING_COUNTER} names {value!r}, which this transition "
+                            "does not exhaust")
+            continue
+        if not value and PENDING_COUNTER not in e.transition.description:
+            problems.append(f"{where}: {PENDING_COUNTER} names no counter, so the description "
+                            "must state which one it names")
+        kinds = [s.partition("=")[2] for s in e.transition.effects.sets
+                 if s.startswith("pending_human_action=")]
+        entries.setdefault(e.target, []).append((counters_named(e), kinds))
+    rule_expected: dict[str, set[str]] = {}
+    for e in table_edges():
+        t = e.transition
+        restarts = set(t.effects.restarts)
+        where = f"{e.source} --{e.verb}--> {e.target}"
+        resume = t.command == RESUME and LIFECYCLE[e.source].kind == "human_wait"
+        if e.verb in RULES:
+            if resume:
+                rule_expected.setdefault(e.verb, set()).update(
+                    n for names, _kinds in entries.get(e.source, ()) for n in names)
+            continue
+        if not resume:
+            if restarts:
+                problems.append(f"{where}: only the resume of a human wait starts a counter again")
+            continue
+        expected = {n for names, kinds in entries.get(e.source, ())
+                    if all(_admits(t, k) for k in kinds) for n in names}
+        for name in sorted(expected - restarts):
+            problems.append(f"{where}: does not start {name!r} again, although an exhaustion of "
+                            f"it leads to {e.source} and this resume applies")
+        for name in sorted(restarts - expected):
+            problems.append(f"{where}: starts {name!r} again, but no exhaustion of it names "
+                            f"its counter on the way into {e.source}")
+    for verb, rule in RULES.items():
+        restarts = set(rule.transition.effects.restarts)
+        expected = rule_expected.get(verb, set())
+        if restarts and rule.transition.command != RESUME:
+            problems.append(f"rule {verb}: only a resume starts a counter again")
+        for name in sorted(expected - restarts):
+            problems.append(f"rule {verb}: does not start {name!r} again, although it resumes a "
+                            "human wait that an exhaustion of it leads to")
+        for name in sorted(restarts - expected):
+            problems.append(f"rule {verb}: starts {name!r} again, but no exhaustion of it names "
+                            "its counter on the way into a human wait the rule resumes")
+    for f in FLAGS.values():
+        for verb, t in (*f.set_by.items(), *f.cleared_by.items()):
+            if t.effects.restarts:
+                problems.append(f"flag {f.field} {verb}: a flag transition starts a counter again")
+
+
+def _check_budgets(policy: dict, problems: list[str]) -> None:
+    edges = list(table_edges())
     charged = {n for e in edges for n in e.transition.charges}
     for name, b in BUDGETS.items():
         try:
@@ -1995,34 +2957,81 @@ def check_table(policy: dict | None = None) -> list[str]:
             problems.append(f"budget {name}: limit {limit} is not positive")
         if name not in charged:
             problems.append(f"budget {name}: no transition charges it")
-        if not any(e.verb == b.exhaustion_verb for e in edges):
-            problems.append(f"budget {name}: exhaustion verb {b.exhaustion_verb!r} is not in the table")
+        for verb in b.exhaustion_verbs:
+            if not any(e.verb == verb for e in exhaustion_edges(name)):
+                problems.append(f"budget {name}: no transition {verb!r} has a guard that names it")
+        if b.policy_key == INFRASTRUCTURE_KEY and not b.infrastructure:
+            problems.append(f"budget {name}: uses {INFRASTRUCTURE_KEY} but is not marked "
+                            "infrastructure")
+        for x in exhaustion_edges(name):
+            where = f"{x.source} --{x.verb}--> {x.target}"
+            target = LIFECYCLE[x.target]
+            same_phase_wait = (target.kind == "human_wait"
+                               and state_phase(x.target) == state_phase(x.source))
+            if b.infrastructure and not same_phase_wait:
+                problems.append(f"{where}: exhaustion of infrastructure budget {name!r} must lead "
+                                "to a human wait of the same phase")
+            if state_phase(x.source) in NO_AUTOMATIC_PARK and not same_phase_wait:
+                problems.append(f"{where}: exhaustion of {name!r} in {state_phase(x.source)} must "
+                                "lead to its human wait")
+            if name in x.transition.charges:
+                problems.append(f"{where}: exhaustion charges {name!r}")
+    shared = sorted(n for n, b in BUDGETS.items() if b.policy_key == INFRASTRUCTURE_KEY)
+    if len(shared) < 2:
+        problems.append(f"budgets: {INFRASTRUCTURE_KEY} is shared by {shared}")
     for e in edges:
         for name in e.transition.charges:
             if name not in BUDGETS:
                 continue
-            verb = BUDGETS[name].exhaustion_verb
-            exits = [x for x in exhaustion_edges(name) if x.source in (e.source, e.target)]
-            if not exits:
+            if not [x for x in exhaustion_edges(name) if x.source in (e.source, e.target)]:
                 problems.append(f"{e.source} --{e.verb}--> {e.target}: charges {name!r} but no "
-                                f"{verb!r} whose guard names {name!r} leaves {e.source} or "
-                                f"{e.target}")
-            for x in exits:
-                if name in x.transition.charges:
-                    problems.append(f"{x.source} --{verb}--> {x.target}: exhaustion charges {name!r}")
+                                f"exhaustion transition whose guard names {name!r} leaves "
+                                f"{e.source} or {e.target}")
 
-    # Constants used elsewhere in this module.
-    writes = {state_phase(k) for k, s in LIFECYCLE.items() if s.writes}
-    if writes != set(WRITE_PHASES):
-        problems.append(f"fork-writing phases {sorted(writes)} differ from WRITE_PHASES")
-    phases = {state_phase(k) for k in LIFECYCLE}
-    if INITIAL_VERB in {e.verb for e in edges}:
-        problems.append(f"initial verb {INITIAL_VERB!r} is also a table transition")
-    for phase in DIAGRAM_PHASE_IDS:
-        if phase not in phases:
-            problems.append(f"DIAGRAM_PHASE_IDS names unknown phase {phase!r}")
 
-    # Diagrams and decision slices.
+def _check_operations(problems: list[str]) -> None:
+    import recovery
+
+    name = "operation"
+    if not _check_graph(name, OPERATIONS, OPERATION_INITIAL_STATE,
+                        lambda k: not OPERATIONS[k].open, problems):
+        return
+    if set(OPERATIONS) != set(recovery.STATUSES):
+        problems.append(f"operation table states differ from {sorted(recovery.STATUSES)}")
+    if {k for k, s in OPERATIONS.items() if s.open} != set(recovery.OPEN):
+        problems.append(f"open operation states differ from {sorted(recovery.OPEN)}")
+    lifecycle_verbs = {e.verb for e in table_edges()} | {
+        v for f in FLAGS.values() for v in (*f.set_by, *f.cleared_by)}
+    for e in table_edges(OPERATIONS):
+        where = f"operation {e.source} --{e.verb}--> {e.target}"
+        _check_transition(where, e.transition, problems, command_guards=(EXACT_OPERATION,))
+        effects = e.transition.effects
+        if effects.revision != "keep" or effects.generation != "keep" or effects.work != "keep":
+            problems.append(f"{where}: an operation transition changes the contribution")
+        if e.transition.charges:
+            problems.append(f"{where}: an operation transition charges a budget")
+        if e.transition.trigger == Trigger.COMMAND and e.transition.command != RESOLVE:
+            problems.append(f"{where}: operation commands are `{RESOLVE}`")
+        if e.verb in lifecycle_verbs:
+            problems.append(f"{where}: the verb is also a lifecycle verb")
+    for key, state in OPERATIONS.items():
+        resolves = {e.target for e in state_edges(key, OPERATIONS) if e.transition.command == RESOLVE}
+        ends = {k for k, s in OPERATIONS.items() if not s.open}
+        if state.open and resolves != ends:
+            problems.append(f"operation {key}: `{RESOLVE}` leads to {sorted(resolves)}, "
+                            f"not to every end state")
+    if OPERATION_INITIAL_VERB in {e.verb for e in table_edges(OPERATIONS)}:
+        problems.append(f"operation initial verb {OPERATION_INITIAL_VERB!r} is also a transition")
+
+
+def _check_diagrams(problems: list[str]) -> None:
+    from scripts.state_machine_decisions import (
+        DECISIONS,
+        FURTHER_CHANGES,
+        OPEN_ITEMS,
+        SETTLED_OPEN_ITEMS,
+    )
+
     def drawn(title: str, source: str, verb: str) -> tuple[str, str, str] | None:
         try:
             _t, target = resolve_node(source, verb)
@@ -2031,77 +3040,144 @@ def check_table(policy: dict | None = None) -> list[str]:
             return None
         return source.partition("+")[0], verb, target.partition("+")[0]
 
+    def check_node(title: str, node: str, extra: set[str] = frozenset()) -> None:
+        state, _, flag = node.partition("+")
+        if state not in LIFECYCLE and node not in extra:
+            problems.append(f"{title}: node {node!r} is not a table state")
+        if flag and flag not in FLAGS:
+            problems.append(f"{title}: unknown flag in {node!r}")
+
     drawn_states: set[str] = set()
     drawn_edges: set[tuple[str, str, str]] = set()
-    drawn_flags: set[str] = set()
+    drawn_verbs: set[str] = set()
+    drawn_rules: list[str] = []
     for section in DIAGRAM_SECTIONS:
         for d in section.diagrams:
             title = f"diagram {d.title or section.title!r}"
-            for node in (*d.nodes, *(n for n in (d.start, *d.ends) if n)):
-                if node not in LIFECYCLE:
-                    problems.append(f"{title}: node {node!r} is not a table state")
+            for node in d.nodes:
+                check_node(title, node)
+            for node in (n for n in (d.start, *d.ends) if n):
                 if node not in d.nodes:
                     problems.append(f"{title}: start or end node {node!r} is not drawn")
-            for flag in d.flags:
-                if flag not in FLAGS:
-                    problems.append(f"{title}: unknown flag {flag!r}")
-            drawn_states.update(d.nodes)
-            drawn_flags.update(d.flags)
+            drawn_states.update(n.partition("+")[0] for n in d.nodes)
+            if d.rule is not None:
+                drawn_rules.append(d.rule)
+                rule = RULES.get(d.rule)
+                if rule is None:
+                    problems.append(f"{title}: unknown rule {d.rule!r}")
+                elif d.edges or d.nodes != (() if rule.target == SELF else (rule.target,)):
+                    problems.append(f"{title}: a rule diagram draws only the rule and its target")
+                continue
             if len(set(d.edges)) != len(d.edges):
                 problems.append(f"{title}: an edge is drawn twice")
             for source, verb in d.edges:
+                if source not in d.nodes:
+                    problems.append(f"{title}: edge source {source!r} is not drawn")
+                    continue
                 edge = drawn(title, source, verb)
                 if edge:
                     drawn_edges.add(edge)
-                    if edge[2] not in d.nodes:
-                        problems.append(f"{title}: {source} {verb} leads to {edge[2]}, not drawn")
+                    drawn_verbs.add(verb)
+                    _t, target = resolve_node(source, verb)
+                    if target not in d.nodes:
+                        problems.append(f"{title}: {source} {verb} leads to {target}, not drawn")
     for key in LIFECYCLE:
         if key not in drawn_states:
             problems.append(f"{key}: state appears in no diagram")
-    for e in edges:
-        if (e.source, e.verb, e.target) not in drawn_edges:
+    for e in table_edges():
+        if not is_rule_row(e) and (e.source, e.verb, e.target) not in drawn_edges:
             problems.append(f"{e.source} --{e.verb}--> {e.target}: transition appears in no diagram")
-    for flag in FLAGS:
-        if flag not in drawn_flags:
-            problems.append(f"flag {flag}: appears in no diagram")
-    for d in DECISIONS:
+    for verb in RULES:
+        if drawn_rules.count(verb) != 1:
+            problems.append(f"rule {verb}: drawn in {drawn_rules.count(verb)} rule diagrams, not one")
+    for name, f in FLAGS.items():
+        for verb in (*f.set_by, *f.cleared_by):
+            if verb not in drawn_verbs:
+                problems.append(f"flag {name} {verb}: appears in no diagram")
+        if f.set_moves and not any((source, verb, target) in drawn_edges
+                                   for source, target in f.set_moves.items() for verb in f.set_by):
+            problems.append(f"flag {name}: no move out of a state with requested Work is drawn")
+
+    for d in (*DECISIONS, *FURTHER_CHANGES, *SETTLED_OPEN_ITEMS, *OPEN_ITEMS):
         title = f"decision {d.title!r}"
+        if d.operations:
+            if d.nodes or d.edges:
+                problems.append(f"{title}: an operation slice draws the operation table only")
+            continue
         candidate_nodes = {n for c in d.candidates for n in (c.source, c.target)}
         for node in d.nodes:
-            state, _, flag = node.partition("+")
-            if state not in LIFECYCLE and node not in candidate_nodes:
-                problems.append(f"{title}: node {node!r} is neither a table state nor a candidate")
-            if flag and flag not in FLAGS:
-                problems.append(f"{title}: unknown flag in {node!r}")
+            check_node(title, node, candidate_nodes)
         if len(set(d.edges)) != len(d.edges):
             problems.append(f"{title}: an edge is drawn twice")
         for source, verb in d.edges:
             if source not in d.nodes:
                 problems.append(f"{title}: edge source {source!r} is not drawn")
-            elif source.partition("+")[0] in LIFECYCLE:
-                edge = drawn(title, source, verb)
-                if edge:
-                    _t, target = resolve_node(source, verb)
-                    if target not in d.nodes:
-                        problems.append(f"{title}: {source} {verb} leads to {target}, not drawn")
-        for edge in d.contested:
+            elif source.partition("+")[0] in LIFECYCLE and drawn(title, source, verb):
+                _t, target = resolve_node(source, verb)
+                if target not in d.nodes:
+                    problems.append(f"{title}: {source} {verb} leads to {target}, not drawn")
+        for edge in d.highlighted:
             if edge not in d.edges:
-                problems.append(f"{title}: contested edge {edge} is not drawn")
+                problems.append(f"{title}: highlighted edge {edge} is not drawn")
         letters = {letter for letter, _ in d.options}
+        settled = not any(d is o for o in OPEN_ITEMS)
+        if settled and (d.options or d.candidates):
+            problems.append(f"{title}: a settled decision lists options")
+        if not settled and len(d.options) < 2:
+            problems.append(f"{title}: an open item needs at least two options")
         for c in d.candidates:
             if c.option not in letters:
                 problems.append(f"{title}: candidate names unknown option {c.option!r}")
             for node in (c.source, c.target):
                 if node not in d.nodes:
                     problems.append(f"{title}: candidate node {node!r} is not drawn")
+
+
+def check_table(policy: dict | None = None) -> list[str]:
+    """Every consistency problem of the lifecycle tables; empty when coherent."""
+    import json
+    from pathlib import Path
+
+    if policy is None:
+        policy = json.loads((Path(__file__).resolve().parent / "policy.json").read_text())
+    problems: list[str] = []
+    if not _check_graph("", LIFECYCLE, INITIAL_STATE,
+                        lambda k: LIFECYCLE[k].kind == "terminal", problems):
+        return problems
+    _check_states(problems)
+    _check_rules(problems)
+    _check_stale_resume(policy, problems)
+    _check_flags(problems)
+    _check_budgets(policy, problems)
+    _check_due_work(problems)
+    _check_human_waits(problems)
+    _check_counter_restarts(problems)
+    _check_operations(problems)
+
+    # Constants used elsewhere in this module.
+    writes = {state_phase(k) for k, s in LIFECYCLE.items() if s.writes}
+    if writes != set(WRITE_PHASES):
+        problems.append(f"fork-writing phases {sorted(writes)} differ from WRITE_PHASES")
+    phases = {state_phase(k) for k in LIFECYCLE}
+    if INITIAL_VERB in {e.verb for e in table_edges()}:
+        problems.append(f"initial verb {INITIAL_VERB!r} is also a table transition")
+    for phase in (*DIAGRAM_PHASE_IDS, *STALE_PHASES, *NO_AUTOMATIC_PARK):
+        if phase not in phases:
+            problems.append(f"unknown phase {phase!r} in a table constant")
+    _check_diagrams(problems)
     return problems
 
 
 def table_summary() -> str:
     ends = sum(1 for s in LIFECYCLE.values() if s.kind == "terminal")
     transitions = sum(len(s.transitions) for s in LIFECYCLE.values())
-    return (f"{len(LIFECYCLE)} states ({ends} end states), {transitions} transitions, "
-            f"{len(FLAGS)} flags, {len(BUDGETS)} budgets")
+    rule_rows = sum(1 for e in table_edges() if is_rule_row(e))
+    verbs = len({e.verb for e in table_edges()})
+    operation_rows = sum(len(s.transitions) for s in OPERATIONS.values())
+    return (f"{len(LIFECYCLE)} states ({ends} end states), {transitions} transitions "
+            f"({rule_rows} expanded from {len(RULES)} rules) with {verbs} verbs, "
+            f"{len(FLAGS)} flag{'' if len(FLAGS) == 1 else 's'}, {len(BUDGETS)} budgets; operation table: "
+            f"{len(OPERATIONS)} states, {operation_rows} transitions")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2111,7 +3187,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m lifecycle",
                                      description="Lifecycle table tools.")
     parser.add_argument("command", choices=["check"],
-                        help="check: verify the consistency of the lifecycle table")
+                        help="check: verify the consistency of the lifecycle tables")
     parser.parse_args(argv)
     problems = check_table()
     for problem in problems:

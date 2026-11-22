@@ -11,7 +11,12 @@ from unittest import mock
 
 import lifecycle as lc
 from scripts import generate_state_machine_doc as gen
-from scripts.state_machine_decisions import DECISIONS
+from scripts.state_machine_decisions import (
+    DECISIONS,
+    FURTHER_CHANGES,
+    OPEN_ITEMS,
+    SETTLED_OPEN_ITEMS,
+)
 from tests import helpers
 
 ROOT = Path(__file__).parents[1]
@@ -59,15 +64,307 @@ class TestLifecycleTable(unittest.TestCase):
         for state, spec in lc.LIFECYCLE.items():
             leaves = [e for e in lc.state_edges(state) if e.target != state]
             if state in lc.TERMINAL_STATES:
-                self.assertEqual(spec.transitions, {}, state)
+                self.assertEqual(leaves, [], state)
+                self.assertEqual([e.verb for e in lc.state_edges(state)], ["record_late_effect"])
             else:
                 self.assertTrue(leaves, state)
+        self.assertNotIn("waiting_capacity", {s.split(".")[1] for s in lc.LIFECYCLE})
 
-    def test_locked_upstream_pr_wait_has_exactly_two_exits(self):
+    def test_locked_upstream_pr_wait_has_exactly_three_exits(self):
         exits = {e.verb: e.target for e in lc.state_edges("handoff.waiting_upstream_pr")
                  if e.target != "handoff.waiting_upstream_pr"}
         self.assertEqual(exits, {"verify_upstream_pr": "upstream_review.waiting_ci",
-                                 "retract_submission": "development.fix_needed"})
+                                 "retract_submission": "development.fix_needed",
+                                 "refresh_investigation": "queued.idle"})
+        self.assertEqual(lc.find_edge("handoff.waiting_upstream_pr", "refresh_investigation").transition.guard,
+                         lc.find_edge("handoff.waiting_upstream_pr", "retract_submission").transition.guard)
+
+    def test_rules_expand_into_the_table(self):
+        self.assertEqual(set(lc.RULES), {"park_contribution", "resume_stale", "record_reminder",
+                                         "record_late_effect"})
+        self.assertEqual(set(lc.rule_states("record_late_effect")), set(lc.LIFECYCLE))
+        self.assertEqual(
+            set(lc.rule_states("record_reminder")),
+            {k for k, s in lc.LIFECYCLE.items() if s.kind in ("gate", "human_wait", "locked")})
+        for state in ("handoff.awaiting_submission", "handoff.waiting_upstream_pr",
+                      "handoff.waiting_human"):
+            self.assertIn(state, lc.rule_states("record_reminder"))
+            self.assertTrue(lc.is_rule_row(lc.find_edge(state, "record_reminder")))
+        parks = set(lc.rule_states("park_contribution"))
+        self.assertIn("upstream_review.waiting_human", parks)
+        self.assertIn("development.agent_running", parks)
+        for state in ("parked.idle", "closed.idle", "released.idle", "handoff.waiting_upstream_pr",
+                      "release_wait.idle", "release_wait.waiting_human", "upstream_review.waiting_ci",
+                      "upstream_review.fix_needed", "upstream_review.agent_running"):
+            self.assertNotIn(state, parks)
+        self.assertEqual(set(lc.rule_states("resume_stale")),
+                         {k for k in lc.LIFECYCLE if lc.state_phase(k) in ("provisioning", "development")})
+        for verb, rule in lc.RULES.items():
+            for state in lc.rule_states(verb):
+                edge = lc.find_edge(state, verb)
+                self.assertIs(edge.transition, rule.transition)
+                self.assertEqual(edge.target, lc.resolve_target(state, rule.target))
+
+    def test_nothing_parks_from_upstream_review_automatically(self):
+        for e in lc.table_edges():
+            if lc.state_phase(e.source) == "upstream_review" and e.target == "parked.idle":
+                self.assertEqual((e.source, e.verb), ("upstream_review.waiting_human", "park_contribution"))
+        self.assertIn("no open upstream PR", lc.find_edge("parked.idle", "restart_generation").transition.guard)
+        self.assertEqual(lc.find_edge("parked.idle", "abandon").target, "closed.idle")
+
+    def test_every_work_allocation_charges_work_total(self):
+        allocating = [e for e in lc.table_edges() if e.transition.effects.work in ("allocate", "reallocate")]
+        self.assertEqual({e.verb for e in allocating},
+                         {"dispatch_investigation", "request_patch", "request_repair",
+                          "request_upstream_revision", "allocate_work_retry"})
+        for e in allocating:
+            self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
+
+    def test_revision_bumps_follow_the_rule(self):
+        for e in lc.table_edges():
+            self.assertEqual(e.transition.effects.revision == "bump", lc.must_bump(e), (e.source, e.verb))
+            if e.transition.command == lc.RESUME:
+                self.assertEqual(e.transition.effects.revision, "bump", (e.source, e.verb))
+        self.assertEqual(lc.find_edge("provisioning.idle", "confirm_provisioning").transition.effects.revision,
+                         "keep")
+        for state, verb in (("handoff.waiting_human", "resume_internal_pr_closure"),
+                            ("handoff.waiting_human", "resume_submission_preparation"),
+                            ("release_wait.waiting_human", "resume_release_observation")):
+            self.assertEqual(lc.find_edge(state, verb).transition.effects.revision, "bump")
+
+    def test_stale_and_normal_resumes_are_complementary(self):
+        stale = set(lc.rule_states("resume_stale"))
+        self.assertIn(lc.STALE, lc.RULES["resume_stale"].transition.guard)
+        for e in lc.table_edges():
+            if e.transition.command == lc.RESUME and e.verb != "resume_stale":
+                self.assertEqual(lc.NOT_STALE in e.transition.guard, e.source in stale, (e.source, e.verb))
+        self.assertIn(lc.FLAG_NOT_STALE, lc.FLAGS["paused"].cleared_by["resume_pause"].guard)
+        self.assertEqual(policy_value(lc.STALE_KEY), 7)
+
+    def test_resume_targets_in_upstream_review(self):
+        self.assertEqual(lc.find_edge("upstream_review.waiting_human", "resume_upstream_review").target,
+                         "upstream_review.waiting_ci")
+        self.assertEqual(lc.find_edge("upstream_review.waiting_human", "resume_upstream_revision").target,
+                         "upstream_review.fix_needed")
+        self.assertEqual(lc.find_edge("upstream_review.waiting_ci", "record_head_change").target,
+                         "upstream_review.waiting_human")
+        review = lc.find_edge("upstream_review.waiting_human", "resume_upstream_review").transition
+        revision = lc.find_edge("upstream_review.waiting_human", "resume_upstream_revision").transition
+        for kind in ("pr_closed_unmerged", "answer_reviewer", "upstream_head_changed"):
+            self.assertTrue(lc._admits(review, kind) and not lc._admits(revision, kind), kind)
+        for kind in ("dispatch_failed", "work_failed", "publication_infrastructure_failure",
+                     "repair_budget_exhausted"):
+            self.assertTrue(lc._admits(revision, kind) and not lc._admits(review, kind), kind)
+        self.assertIn("pending_feedback_evidence_ids", review.effects.clears)
+        self.assertNotIn("pending_feedback_evidence_ids", revision.effects.clears)
+        self.assertIn("not yet recorded for this head and CI run",
+                      lc.find_edge("upstream_review.waiting_ci", "record_upstream_ci_failure").transition.guard)
+
+    def test_one_state_in_which_development_work_is_due(self):
+        self.assertNotIn("development.idle", lc.LIFECYCLE)
+        self.assertEqual(lc.find_edge("provisioning.idle", "confirm_provisioning").target,
+                         "development.fix_needed")
+        patch = lc.find_edge("development.fix_needed", "request_patch")
+        repair = lc.find_edge("development.fix_needed", "request_repair")
+        self.assertEqual(patch.target, repair.target)
+        self.assertIn("no CI evidence for the head and no feedback recorded", patch.transition.guard)
+        self.assertIn("CI evidence for the head or feedback recorded", repair.transition.guard)
+        self.assertEqual([e.source for e in lc.table_edges() if e.verb == "exhaust_repair_attempts"],
+                         ["development.fix_needed", "upstream_review.fix_needed"])
+        self.assertEqual([e.source for e in lc.table_edges() if e.verb == "refresh_investigation"],
+                         ["development.waiting_ci", "development.fix_needed",
+                          "development.waiting_human", "handoff.awaiting_submission",
+                          "handoff.waiting_upstream_pr"])
+
+    def test_resume_stale_requires_quiescence(self):
+        guard = lc.RULES["resume_stale"].transition.guard
+        refresh = lc.find_edge("development.fix_needed", "refresh_investigation").transition.guard
+        for condition in (lc.QUIESCENT, lc.NO_WORK):
+            self.assertIn(condition, guard)
+            self.assertIn(condition, refresh)
+
+    def test_resumes_of_a_human_wait_are_mutually_exclusive(self):
+        waits = {k for k, s in lc.LIFECYCLE.items() if s.kind == "human_wait"}
+        self.assertEqual({k for k in waits if lc.state_phase(k) == "handoff"},
+                         {"handoff.waiting_human"})
+        self.assertEqual(
+            {e.verb: e.target for e in lc.state_edges("handoff.waiting_human")
+             if e.transition.command == lc.RESUME},
+            {"resume_debug_cleanup": "handoff.cleaning_debug", "resume_ci": "handoff.waiting_ci",
+             "resume_internal_pr_closure": "handoff.closing_internal_pr",
+             "resume_submission_preparation": "handoff.preparing_submission"})
+        self.assertEqual(lc.pending_kinds("handoff.waiting_human"),
+                         {"debug_cleanup_failed", "ci_interrupted", "internal_pr_closure_failed",
+                          "submission_comment_failed"})
+        for key in ("handoff.waiting_human", "development.waiting_human",
+                    "upstream_review.waiting_human"):
+            resumes = [e for e in lc.state_edges(key)
+                       if e.transition.command == lc.RESUME and not lc.is_rule_row(e)]
+            self.assertGreater(len(resumes), 1, key)
+            for kind in lc.pending_kinds(key):
+                applies = [e.verb for e in resumes if lc._admits(e.transition, kind)]
+                self.assertEqual(len(applies), 1, (key, kind, applies))
+
+    def test_resume_after_exhaustion_restarts_the_named_counter(self):
+        cases = (("investigation.idle", "exhaust_work_total", "resume_investigation", {"work_total"}),
+                 ("development.fix_needed", "exhaust_work_total", "resume_development",
+                  {"work_total"}),
+                 ("investigation.agent_running", "exhaust_investigation_recovery",
+                  "resume_investigation", {"investigation_attempts"}),
+                 ("investigation.agent_running", "exhaust_dispatch_recovery",
+                  "resume_investigation", {"dispatch_recovery"}),
+                 ("provisioning.idle", "require_provisioning_intervention",
+                  "resume_provisioning", {"operation_launch"}),
+                 ("development.agent_running", "exhaust_publish_recovery",
+                  "resume_development", {"publish_recovery"}),
+                 ("development.waiting_ci", "exhaust_interrupted_reruns", "resume_ci",
+                  {"interrupted_reruns"}),
+                 ("handoff.waiting_ci", "exhaust_interrupted_reruns", "resume_ci",
+                  {"interrupted_reruns"}),
+                 ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries",
+                  "resume_debug_cleanup", {"debug_cleanup"}),
+                 ("handoff.closing_internal_pr", "exhaust_internal_pr_retries",
+                  "resume_internal_pr_closure", {"internal_pr_closure"}),
+                 ("handoff.preparing_submission", "exhaust_comment_retries",
+                  "resume_submission_preparation", {"submission_comment"}),
+                 ("upstream_review.fix_needed", "exhaust_repair_attempts", "resume_upstream_revision",
+                  {"repair_attempts_cluster", "no_progress", "work_total"}))
+        for state, verb, resume, counters in cases:
+            edge = lc.find_edge(state, verb)
+            self.assertEqual(lc.counters_named(edge), counters, (state, verb))
+            if len(counters) == 1 and verb != "require_provisioning_intervention":
+                self.assertIn(f"{lc.PENDING_COUNTER}={next(iter(counters))}",
+                              edge.transition.effects.sets)
+            self.assertLessEqual(counters, set(lc.find_edge(edge.target, resume).transition.effects.restarts))
+        self.assertIn("starts again the counter named in `pending_human_action.counter`",
+                      gen.render_table(POLICY))
+
+    def test_every_exhaustion_into_a_human_wait_names_its_counter(self):
+        exhaustions = [e for e in lc.table_edges() if lc.exhausted_budgets(e)
+                       and e.target != e.source and lc.LIFECYCLE[e.target].kind == "human_wait"]
+        self.assertEqual({b for e in exhaustions for b in lc.exhausted_budgets(e)},
+                         set(lc.BUDGETS) - {"flaky_reruns"})
+        for e in exhaustions:
+            named = lc.counters_named(e)
+            self.assertTrue(named, (e.source, e.verb))
+            kinds = [s.partition("=")[2] for s in e.transition.effects.sets
+                     if s.startswith("pending_human_action=")]
+            resumes = [x for x in lc.state_edges(e.target) if x.transition.command == lc.RESUME
+                       and all(lc._admits(x.transition, k) for k in kinds)]
+            self.assertTrue(resumes, e.target)
+            for x in resumes:
+                self.assertLessEqual(named, set(x.transition.effects.restarts),
+                                     (e.source, e.verb, x.verb))
+        restarting = {(e.source, e.verb) for e in lc.table_edges()
+                      if e.transition.effects.restarts and not lc.is_rule_row(e)}
+        self.assertEqual(restarting, {
+            ("investigation.waiting_human", "resume_investigation"),
+            ("provisioning.waiting_human", "resume_provisioning"),
+            ("development.waiting_human", "resume_ci"),
+            ("development.waiting_human", "resume_development"),
+            ("handoff.waiting_human", "resume_debug_cleanup"),
+            ("handoff.waiting_human", "resume_ci"),
+            ("handoff.waiting_human", "resume_internal_pr_closure"),
+            ("handoff.waiting_human", "resume_submission_preparation"),
+            ("upstream_review.waiting_human", "resume_upstream_revision")})
+        self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
+                         {"resume_stale"})
+
+    def test_work_total_found_while_work_runs_takes_one_resume(self):
+        resumes = {"investigation": "resume_investigation", "development": "resume_development",
+                   "upstream_review": "resume_upstream_revision"}
+        for phase, resume in resumes.items():
+            edge = lc.find_edge(f"{phase}.agent_running", "exhaust_work_recovery")
+            self.assertEqual(edge.target, f"{phase}.waiting_human")
+            self.assertEqual(lc.counters_named(edge), {"work_total", "work_recovery"})
+            self.assertIn("names `work_total` when that budget is exhausted, and `work_recovery` "
+                          "otherwise", edge.transition.description)
+            restarts = lc.find_edge(edge.target, resume).transition.effects.restarts
+            self.assertIn("work_total", restarts)
+            self.assertIn("work_recovery", restarts)
+
+    def test_work_total_found_when_development_work_is_due_waits_for_a_human(self):
+        state = "development.fix_needed"
+        edge = lc.find_edge(state, "exhaust_work_total")
+        self.assertEqual(edge.target, "development.waiting_human")
+        self.assertEqual(edge.transition.guard, (lc.WORK_TOTAL_EXHAUSTED,))
+        self.assertEqual(edge.transition.effects.sets,
+                         ("pending_human_action=work_budget_exhausted",
+                          f"{lc.PENDING_COUNTER}=work_total"))
+        for text in ("number of Work allocations spent", "`/upstreaming resume`",
+                     "`/upstreaming park`"):
+            self.assertIn(text, edge.transition.description)
+        resume = lc.find_edge(edge.target, "resume_development")
+        self.assertTrue(lc._admits(resume.transition, "work_budget_exhausted"))
+        self.assertIn("work_total", resume.transition.effects.restarts)
+        self.assertEqual(resume.target, state)
+        self.assertEqual(lc.find_edge(edge.target, "park_contribution").target, "parked.idle")
+        park = lc.find_edge(state, "exhaust_repair_attempts")
+        self.assertEqual(park.target, "parked.idle")
+        self.assertEqual(lc.exhausted_budgets(park), ["repair_attempts_cluster", "no_progress"])
+        self.assertIn(lc.REFRESH_USED, park.transition.guard)
+        self.assertEqual([(e.source, e.verb, e.target) for e in lc.exhaustion_edges("work_total")
+                          if lc.state_phase(e.source) == "development"],
+                         [("development.agent_running", "exhaust_work_recovery",
+                           "development.waiting_human"),
+                          (state, "exhaust_work_total", "development.waiting_human")])
+        self.assertFalse([e for e in lc.exhaustion_edges("work_total")
+                          if lc.LIFECYCLE[e.target].kind != "human_wait"])
+
+    def test_transitions_of_a_state_in_which_work_is_due_are_mutually_exclusive(self):
+        self.assertEqual([e.verb for e in lc.due_work_edges("development.fix_needed")],
+                         ["request_patch", "request_repair", "refresh_on_exhaustion",
+                          "exhaust_repair_attempts", "exhaust_work_total"])
+        for state in ("investigation.idle", "development.fix_needed", "upstream_review.fix_needed"):
+            edges = lc.due_work_edges(state)
+            self.assertGreater(len(edges), 1, state)
+            for a in edges:
+                for b in edges:
+                    self.assertEqual(lc.excluded(a.transition, b.transition), a is not b,
+                                     (state, a.verb, b.verb))
+        for verb in ("request_patch", "request_repair", "refresh_on_exhaustion",
+                     "exhaust_repair_attempts"):
+            self.assertIn(lc.WORK_TOTAL_REMAINS,
+                          lc.find_edge("development.fix_needed", verb).transition.guard)
+
+    def test_first_patch_after_a_rejected_proposal(self):
+        patch = lc.find_edge("development.fix_needed", "request_patch").transition
+        self.assertEqual(patch.charges, ("work_total",))
+        self.assertIn("no CI evidence for the head and no feedback recorded", patch.guard)
+        self.assertTrue(any("no_progress" in g and "remain" in g for g in patch.guard))
+        self.assertNotIn("feedback", " ".join(
+            lc.find_edge("development.agent_running", "reject_patch_proposal").transition.effects.sets))
+
+    def test_interrupted_reruns_are_bounded_per_head(self):
+        budget = lc.BUDGETS["interrupted_reruns"]
+        self.assertEqual(budget.policy_key, lc.INFRASTRUCTURE_KEY)
+        self.assertTrue(budget.infrastructure)
+        self.assertIn("head", budget.counter)
+        for phase in ("development", "handoff"):
+            ci, wait = f"{phase}.waiting_ci", f"{phase}.waiting_human"
+            self.assertEqual(lc.find_edge(ci, "rerun_interrupted_ci").transition.charges,
+                             ("interrupted_reruns",))
+            exhausted = lc.find_edge(ci, "exhaust_interrupted_reruns")
+            self.assertEqual(exhausted.target, wait)
+            self.assertIn("pending_human_action=ci_interrupted", exhausted.transition.effects.sets)
+            self.assertIn("pending_human_action.counter=interrupted_reruns",
+                          exhausted.transition.effects.sets)
+            resume = lc.find_edge(wait, "resume_ci")
+            self.assertEqual(resume.target, ci)
+            self.assertEqual(resume.transition.effects.restarts, ("interrupted_reruns",))
+            self.assertIn("pending_human_action is ci_interrupted", resume.transition.guard)
+        self.assertEqual(lc.budget_limit("interrupted_reruns", POLICY), 2)
+
+    def test_admission_override_applies_against_park_only(self):
+        state = "investigation.agent_running"
+        for verb in ("admit_development", "readmit_development"):
+            self.assertIn("verified dossier decision develop, or verified dossier decision park and "
+                          "a recorded admission_override", lc.find_edge(state, verb).transition.guard)
+        self.assertIn("no admission_override recorded",
+                      lc.find_edge(state, "park_investigation").transition.guard)
+        close = lc.find_edge(state, "close_investigation").transition
+        self.assertEqual(close.guard, ("verified dossier decision close",))
+        self.assertIn("not applied", close.description)
 
     def test_budgets_name_policy_keys_and_reachable_exhaustion(self):
         charged = set()
@@ -82,11 +379,67 @@ class TestLifecycleTable(unittest.TestCase):
                 self.assertTrue(exhaustion, (e.source, e.verb, name))
         self.assertEqual(charged, set(lc.BUDGETS))
 
-    def test_flags_keep_the_state(self):
-        for flag in lc.FLAGS.values():
-            for t in (flag.set_by, flag.cleared_by):
-                self.assertEqual(t.trigger, lc.Trigger.COMMAND)
-            self.assertEqual(set(flag.mask), set(lc.Trigger))
+    def test_budget_table(self):
+        infrastructure = "retries.infrastructure_per_head_failure"
+        self.assertEqual({name: b.policy_key for name, b in lc.BUDGETS.items()}, {
+            "work_total": "retries.max_attempts_per_contribution",
+            "work_recovery": "retries.work_recovery",
+            "investigation_attempts": "retries.investigation_attempts",
+            "repair_attempts_cluster": "retries.patch_attempts_per_cluster",
+            "no_progress": "retries.no_progress_review_after",
+            "flaky_reruns": "retries.flaky_reruns",
+            "dispatch_recovery": infrastructure, "publish_recovery": infrastructure,
+            "interrupted_reruns": infrastructure,
+            "operation_launch": infrastructure, "debug_cleanup": infrastructure,
+            "internal_pr_closure": infrastructure, "submission_comment": infrastructure,
+        })
+        self.assertEqual(policy_value("retries.investigation_attempts"), 3)
+        self.assertGreater(policy_value("retries.max_attempts_per_contribution"), 12)
+        for name, b in lc.BUDGETS.items():
+            if not b.infrastructure:
+                continue
+            for x in lc.exhaustion_edges(name):
+                self.assertEqual(lc.LIFECYCLE[x.target].kind, "human_wait", (name, x.source))
+                self.assertEqual(lc.state_phase(x.target), lc.state_phase(x.source), (name, x.source))
+        for e in lc.table_edges():
+            if e.verb in ("exhaust_work_recovery", "exhaust_dispatch_recovery", "exhaust_publish_recovery"):
+                self.assertEqual(e.target, f"{lc.state_phase(e.source)}.waiting_human")
+
+    def test_one_flag_with_reason_and_setter(self):
+        self.assertEqual(set(lc.FLAGS), {"paused"})
+        flag = lc.FLAGS["paused"]
+        self.assertEqual(set(flag.set_by), {"pause", "pause_on_identity_change"})
+        self.assertNotIn("a reason is given", flag.set_by["pause"].guard)
+        self.assertIn("paused_reason=upstream_identity_changed",
+                      flag.set_by["pause_on_identity_change"].effects.sets)
+        self.assertNotIn("/upstreaming block", gen.render_index())
+        for t in flag.set_by.values():
+            fields = {f.split("=")[0] for f in t.effects.sets}
+            self.assertEqual(fields, {"paused", "paused_at", "paused_reason", "paused_by"})
+            self.assertEqual(t.effects.work, "clear")
+        for t in flag.cleared_by.values():
+            self.assertEqual(t.trigger, lc.Trigger.COMMAND)
+            self.assertEqual(t.effects.revision, "bump")
+        self.assertEqual(set(flag.mask), set(lc.Trigger))
+        self.assertEqual(lc.resolve_node("development.agent_running", "pause")[1],
+                         "development.fix_needed+paused")
+        self.assertEqual(lc.resolve_node("investigation.agent_running", "pause")[1],
+                         "investigation.idle+paused")
+        self.assertEqual(lc.resolve_node("upstream_review.agent_running", "pause")[1],
+                         "upstream_review.fix_needed+paused")
+        self.assertEqual(lc.resolve_node("development.waiting_human+paused", "resume_pause")[1],
+                         "development.waiting_human")
+        self.assertEqual(lc.resolve_node("development.waiting_ci+paused", "resume_stale")[1], "queued.idle")
+
+    def test_operation_table(self):
+        import recovery
+
+        self.assertEqual(set(lc.OPERATIONS), set(recovery.STATUSES))
+        self.assertEqual({k for k, s in lc.OPERATIONS.items() if s.open}, set(recovery.OPEN))
+        for key, state in lc.OPERATIONS.items():
+            targets = {e.target for e in lc.state_edges(key, lc.OPERATIONS)
+                       if e.transition.command == lc.RESOLVE}
+            self.assertEqual(targets, {"confirmed", "failed", "not_launched"} if state.open else set())
 
     def test_existing_constants_agree_with_the_table(self):
         writes = {lc.state_phase(s) for s, spec in lc.LIFECYCLE.items() if spec.writes}
@@ -117,6 +470,213 @@ class TestConsistencyCheckViolations(unittest.TestCase):
     def problems(self, states: dict) -> list[str]:
         with mock.patch.dict(lc.LIFECYCLE, states):
             return lc.check_table(POLICY)
+
+    def with_row(self, state: str, verb: str, target: str | None = None, **changes) -> dict:
+        """The table with one row replaced or added (``target``) or changed."""
+        transitions = dict(lc.LIFECYCLE[state].transitions)
+        if target is not None:
+            edge = [e for e in lc.state_edges(state) if e.verb == verb]
+            old = edge[0].transition if edge else lc.Transition(lc.Trigger.TICK, None, (lc.ALWAYS,))
+            transitions = {k: v for k, v in transitions.items() if k[0] != verb}
+            transitions[(verb, target)] = dataclasses.replace(old, **changes)
+        else:
+            key = next(k for k in transitions if k[0] == verb)
+            transitions[key] = dataclasses.replace(transitions[key], **changes)
+        return _with_state(state, transitions=transitions)
+
+    def test_work_allocation_without_work_total(self):
+        self.assertReports(
+            self.with_row("development.fix_needed", "request_patch", charges=()),
+            "development.fix_needed --request_patch--> development.agent_running: allocates Work "
+            "without charging 'work_total'")
+
+    def test_resume_without_bump_and_bump_without_reason(self):
+        edge = lc.find_edge("handoff.waiting_human", "resume_submission_preparation")
+        self.assertReports(
+            self.with_row("handoff.waiting_human", "resume_submission_preparation",
+                          effects=dataclasses.replace(edge.transition.effects, revision="keep")),
+            "resume_submission_preparation--> handoff.preparing_submission: the revision rule "
+            "requires a revision bump")
+        edge = lc.find_edge("provisioning.idle", "confirm_provisioning")
+        self.assertReports(
+            self.with_row("provisioning.idle", "confirm_provisioning",
+                          effects=dataclasses.replace(edge.transition.effects, revision="bump")),
+            "confirm_provisioning--> development.fix_needed: bumps the revision although")
+
+    def test_fourth_exit_from_the_locked_wait(self):
+        self.assertReports(
+            self.with_row("handoff.waiting_upstream_pr", "record_audit_observation",
+                          "development.waiting_ci"),
+            "handoff.waiting_upstream_pr: exits", "differ from the 3 allowed exits")
+
+    def test_automatic_park_from_upstream_review(self):
+        self.assertReports(
+            self.with_row("upstream_review.fix_needed", "exhaust_repair_attempts", "parked.idle",
+                          effects=lc.Effects(sets=("parked_reason", "previous_phase"))),
+            "ends the generation from upstream_review without a command",
+            "exhaustion of 'repair_attempts_cluster' in upstream_review must lead to its human wait")
+
+    def test_infrastructure_exhaustion_that_parks(self):
+        self.assertReports(
+            self.with_row("development.agent_running", "exhaust_dispatch_recovery", "parked.idle",
+                          effects=lc.Effects(work="clear", sets=("parked_reason", "previous_phase"))),
+            "exhaustion of infrastructure budget 'dispatch_recovery' must lead to a human wait "
+            "of the same phase")
+
+    def test_missing_rule_rows(self):
+        transitions = {k: v for k, v in lc.LIFECYCLE["handoff.awaiting_submission"].transitions.items()
+                       if k[0] not in ("record_reminder", "record_late_effect")}
+        self.assertReports(
+            _with_state("handoff.awaiting_submission", transitions=transitions),
+            "handoff.awaiting_submission: gate state without record_reminder",
+            "rule record_reminder: applies in handoff.awaiting_submission but the table has no such row",
+            "rule record_late_effect: applies in handoff.awaiting_submission but the table has no such row")
+
+    def test_resume_without_the_complementary_guard(self):
+        edge = lc.find_edge("development.waiting_human", "resume_development")
+        guard = tuple(g for g in edge.transition.guard if g != lc.NOT_STALE)
+        self.assertReports(
+            self.with_row("development.waiting_human", "resume_development", guard=guard),
+            "resume_development--> development.fix_needed: a resume beside resume_stale without")
+        edge = lc.find_edge("investigation.waiting_human", "resume_investigation")
+        self.assertReports(
+            self.with_row("investigation.waiting_human", "resume_investigation",
+                          guard=(*edge.transition.guard, lc.NOT_STALE)),
+            "in a state without resume_stale")
+
+    def test_reminder_row_beside_the_rule(self):
+        rule = lc.RULES["record_reminder"].transition
+        self.assertReports(
+            self.with_row("handoff.waiting_upstream_pr", "record_reminder", lc.SELF,
+                          description="own row"),
+            "handoff.waiting_upstream_pr --record_reminder-->: a reminder row beside the rule")
+        self.assertIs(lc.find_edge("handoff.waiting_upstream_pr", "record_reminder").transition, rule)
+
+    def test_resumes_of_a_wait_that_overlap_or_leave_a_gap(self):
+        edge = lc.find_edge("handoff.waiting_human", "resume_ci")
+        guard = tuple(lc.pending_is("debug_cleanup_failed") if g in lc.PENDING_GUARDS else g
+                      for g in edge.transition.guard)
+        self.assertReports(
+            self.with_row("handoff.waiting_human", "resume_ci", guard=guard),
+            "handoff.waiting_human: several resumes apply when pending_human_action is "
+            "debug_cleanup_failed",
+            "handoff.waiting_human: not exactly one resume applies when pending_human_action is "
+            "ci_interrupted")
+        self.assertReports(
+            self.with_row("handoff.waiting_human", "resume_ci", guard=(lc.EXACT_REVISION,)),
+            "one of 4 resumes of the wait, so exactly one pending-action guard is required")
+        self.assertReports(
+            self.with_row("handoff.closing_internal_pr", "exhaust_internal_pr_retries",
+                          effects=lc.Effects(sets=("pending_human_action",))),
+            "handoff.waiting_human: entered without naming the pending action")
+        edge = lc.find_edge("upstream_review.waiting_human", "resume_upstream_review")
+        guard = tuple(lc.pending_is("pr_closed_unmerged") if g in lc.PENDING_GUARDS else g
+                      for g in edge.transition.guard)
+        self.assertReports(
+            self.with_row("upstream_review.waiting_human", "resume_upstream_review", guard=guard),
+            "upstream_review.waiting_human: not exactly one resume applies when "
+            "pending_human_action is answer_reviewer")
+
+    def test_transitions_that_can_apply_together_where_work_is_due(self):
+        edge = lc.find_edge("development.fix_needed", "exhaust_repair_attempts")
+        guard = tuple(g for g in edge.transition.guard if g != lc.WORK_TOTAL_REMAINS)
+        self.assertReports(
+            self.with_row("development.fix_needed", "exhaust_repair_attempts", guard=guard),
+            "development.fix_needed: exhaust_repair_attempts and exhaust_work_total can apply "
+            "together; their guards are not exclusive")
+        self.assertReports(
+            self.with_row("development.fix_needed", "exhaust_work_total", "parked.idle",
+                          effects=lc.Effects(sets=("parked_reason", "previous_phase"))),
+            "development.fix_needed --exhaust_work_total--> parked.idle: exhaustion of "
+            "work_total where Work is due is exhaust_work_total, guarded by nothing else, and "
+            "leads to a human wait")
+
+    def test_exhaustion_without_a_counter_or_a_restart(self):
+        self.assertReports(
+            self.with_row("investigation.idle", "exhaust_work_total",
+                          effects=lc.Effects(sets=("pending_human_action=work_budget_exhausted",))),
+            "investigation.idle --exhaust_work_total--> investigation.waiting_human: exhaustion "
+            "that leads to a human wait without pending_human_action.counter")
+        edge = lc.find_edge("upstream_review.waiting_human", "resume_upstream_revision")
+        self.assertReports(
+            self.with_row("upstream_review.waiting_human", "resume_upstream_revision",
+                          effects=dataclasses.replace(edge.transition.effects,
+                                                      restarts=("work_total",))),
+            "upstream_review.waiting_human --resume_upstream_revision--> "
+            "upstream_review.fix_needed: does not start 'no_progress' again")
+        edge = lc.find_edge("handoff.waiting_human", "resume_ci")
+        self.assertReports(
+            self.with_row("handoff.waiting_human", "resume_ci",
+                          effects=dataclasses.replace(edge.transition.effects, restarts=())),
+            "handoff.waiting_human --resume_ci--> handoff.waiting_ci: does not start "
+            "'interrupted_reruns' again")
+        self.assertReports(
+            self.with_row("handoff.waiting_human", "resume_ci",
+                          effects=dataclasses.replace(edge.transition.effects,
+                                                      restarts=("interrupted_reruns", "work_total"))),
+            "starts 'work_total' again, but no exhaustion of it names its counter")
+        edge = lc.find_edge("handoff.closing_internal_pr", "exhaust_internal_pr_retries")
+        self.assertReports(
+            self.with_row("handoff.closing_internal_pr", "exhaust_internal_pr_retries",
+                          effects=lc.Effects(sets=("pending_human_action=internal_pr_closure_failed",))),
+            "exhaustion that leads to a human wait without pending_human_action.counter")
+        edge = lc.find_edge("development.agent_running", "exhaust_work_recovery")
+        self.assertReports(
+            self.with_row("development.agent_running", "exhaust_work_recovery", description=""),
+            "pending_human_action.counter names no counter, so the description must state")
+        rule = lc.RULES["resume_stale"]
+        stale = dataclasses.replace(rule, transition=dataclasses.replace(
+            rule.transition, effects=dataclasses.replace(rule.transition.effects, restarts=())))
+        with mock.patch.dict(lc.RULES, {"resume_stale": stale}):
+            self.assertTrue(any(p.startswith("rule resume_stale: does not start")
+                                for p in lc.check_table(POLICY)))
+
+    def test_resume_stale_without_quiescence(self):
+        rule = lc.RULES["resume_stale"]
+        guard = tuple(g for g in rule.transition.guard if g != lc.QUIESCENT)
+        broken = dataclasses.replace(rule, transition=dataclasses.replace(rule.transition, guard=guard))
+        with mock.patch.dict(lc.RULES, {"resume_stale": broken}):
+            problems = lc.check_table(POLICY)
+        self.assertIn(f"rule resume_stale: without the guard {lc.QUIESCENT!r}", problems)
+
+    def test_budget_table_violations(self):
+        policy = json.loads(json.dumps(POLICY))
+        del policy["retries"]["work_recovery"]
+        del policy["refresh"]
+        problems = lc.check_table(policy)
+        self.assertIn("budget work_recovery: policy.json has no integer retries.work_recovery", problems)
+        self.assertIn("policy.json has no integer refresh.stale_after_days", problems)
+        budget = dataclasses.replace(lc.BUDGETS["debug_cleanup"], infrastructure=False)
+        with mock.patch.dict(lc.BUDGETS, {"debug_cleanup": budget}):
+            self.assertTrue(any("is not marked infrastructure" in p for p in lc.check_table(POLICY)))
+
+    def test_flag_violations(self):
+        flag = lc.FLAGS["paused"]
+        clear = dataclasses.replace(flag.cleared_by["resume_pause"],
+                                    effects=lc.Effects(clears=("paused",)))
+        broken = dataclasses.replace(flag, cleared_by={"resume_pause": clear}, set_moves={})
+        with mock.patch.dict(lc.FLAGS, {"paused": broken}):
+            problems = lc.check_table(POLICY)
+        self.assertTrue(any("flag paused resume_pause: a resume must bump the revision" in p
+                            for p in problems), problems)
+        self.assertTrue(any("flag paused: set_moves" in p for p in problems), problems)
+        stop = flag.set_by["pause_on_identity_change"]
+        sets = tuple(s.split("=")[0] if s.startswith("paused_reason") else s for s in stop.effects.sets)
+        broken = dataclasses.replace(flag, set_by={
+            **flag.set_by,
+            "pause_on_identity_change": dataclasses.replace(
+                stop, effects=dataclasses.replace(stop.effects, sets=sets))})
+        with mock.patch.dict(lc.FLAGS, {"paused": broken}):
+            problems = lc.check_table(POLICY)
+        self.assertIn("flag paused pause_on_identity_change: a stop set by the controller must "
+                      "record its reason", problems)
+
+    def test_operation_table_violations(self):
+        broken = dataclasses.replace(lc.OPERATIONS["uncertain"], transitions={})
+        with mock.patch.dict(lc.OPERATIONS, {"uncertain": broken}):
+            problems = lc.check_table(POLICY)
+        self.assertIn("operation uncertain: not an end state but no transition leaves it", problems)
+        self.assertIn("operation uncertain: no end state is reachable from this state", problems)
 
     def assertReports(self, states: dict, *fragments: str) -> None:
         problems = self.problems(states)
@@ -153,6 +713,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             lc.Trigger.COMMAND, "/upstreaming reopen", ("exact revision",))}
         self.assertReports(_with_state("closed.idle", transitions=transitions),
                            "closed.idle: end state has outgoing transitions")
+        self.assertEqual(self.problems({}), [])
 
     def test_state_that_cannot_reach_an_end_state(self):
         loop = {("go", "release_wait.waiting_human"): lc.Transition(
@@ -170,7 +731,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         transitions = dict(lc.LIFECYCLE["queued.idle"].transitions)
         transitions[("begin_investigation", "investigation.idle")] = lc.Transition(lc.Trigger.TICK)
         transitions[("withdraw_request", "closed.idle")] = lc.Transition(
-            lc.Trigger.COMMAND, None, ("exact revision",))
+            lc.Trigger.COMMAND, None, ("any revision, current or stale",))
         self.assertReports(
             _with_state("queued.idle", transitions=transitions),
             "queued.idle --begin_investigation--> investigation.idle: empty guard",
@@ -184,28 +745,41 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertReports(
             _with_state("development.waiting_ci", transitions=transitions),
             "charges unknown budget 'review_rounds'",
-            "changes ['pending_feedback_evidence_ids'] without a revision bump")
+            "record_actionable_review--> development.fix_needed: the revision rule requires a "
+            "revision bump")
 
 
 class TestDiagrams(unittest.TestCase):
     def test_diagrams_draw_only_table_entries_and_cover_the_table(self):
-        drawn_edges, drawn_states, flags = set(), set(), set()
+        drawn_edges, drawn_states, drawn_verbs, rules = set(), set(), set(), []
         for section in lc.DIAGRAM_SECTIONS:
             for d in section.diagrams:
                 for node in d.nodes:
-                    self.assertIn(node, lc.LIFECYCLE, d.title)
-                drawn_states.update(d.nodes)
+                    self.assertIn(node.partition("+")[0], lc.LIFECYCLE, d.title)
+                drawn_states.update(n.partition("+")[0] for n in d.nodes)
                 for node in (d.start, *d.ends):
                     if node:
                         self.assertIn(node, d.nodes, d.title)
-                flags.update(d.flags)
+                if d.rule:
+                    rules.append(d.rule)
+                    self.assertEqual(d.edges, (), d.title)
                 for source, verb in d.edges:
                     _t, target = lc.resolve_node(source, verb)
                     self.assertIn(target, d.nodes, (d.title, source, verb))
                     drawn_edges.add((source, verb, target))
+                    drawn_verbs.add(verb)
         self.assertEqual(drawn_states, set(lc.LIFECYCLE))
-        self.assertEqual(drawn_edges, {(e.source, e.verb, e.target) for e in lc.table_edges()})
-        self.assertEqual(flags, set(lc.FLAGS))
+        own_rows = {(e.source, e.verb, e.target) for e in lc.table_edges() if not lc.is_rule_row(e)}
+        self.assertLessEqual(own_rows, drawn_edges)
+        self.assertEqual(sorted(rules), sorted(lc.RULES))
+        for flag in lc.FLAGS.values():
+            self.assertLessEqual({*flag.set_by, *flag.cleared_by}, drawn_verbs)
+
+    def test_rule_rows_do_not_flood_the_diagrams(self):
+        index = gen.render_index()
+        self.assertEqual(index.count("|record_late_effect|"), 2)
+        self.assertLess(index.count("|park_contribution<br/>"), 8)
+        self.assertIn('any["every state"]', index)
 
     def test_overview_diagram_structure_matches_the_table(self):
         index = gen.render_index()
@@ -236,15 +810,38 @@ class TestDiagrams(unittest.TestCase):
             self.assertEqual(lc.find_edge(state, verb).target, node_state[target], (state, verb))
         self.assertGreater(len(edges), 40)
 
+    def test_decisions_are_settled_and_open_items_are_listed(self):
+        self.assertEqual(len(DECISIONS), 24)
+        for d in (*DECISIONS, *FURTHER_CHANGES):
+            self.assertTrue(d.text and not d.options and not d.candidates, d.title)
+            self.assertTrue(d.operations or d.highlighted, d.title)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 18)
+        self.assertEqual(OPEN_ITEMS, ())
+        for d in SETTLED_OPEN_ITEMS:
+            self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)
+        for d in OPEN_ITEMS:
+            self.assertGreaterEqual(len(d.options), 2, d.title)
+        page = gen.render_decisions()
+        for number, d in enumerate(DECISIONS, 1):
+            self.assertIn(f"### {number}. {d.title}", page)
+        for number, d in enumerate(SETTLED_OPEN_ITEMS, 1):
+            self.assertIn(f"### O{number}. {d.title}", page)
+        for number, d in enumerate(OPEN_ITEMS, len(SETTLED_OPEN_ITEMS) + 1):
+            self.assertIn(f"### O{number}. {d.title}", page)
+        open_section = page.split("## Open items", 1)[1].split("## Settled decisions", 1)[0]
+        self.assertEqual("No item is open." in open_section, not OPEN_ITEMS)
+        with mock.patch.object(gen, "OPEN_ITEMS", ()):
+            self.assertIn("No item is open.", gen.render_decisions())
+
     def test_decision_slices_use_table_entries(self):
-        for d in DECISIONS:
+        for d in (*DECISIONS, *FURTHER_CHANGES, *SETTLED_OPEN_ITEMS, *OPEN_ITEMS):
             states = {n.partition("+")[0] for n in d.nodes}
             self.assertLessEqual(len(states), 6, d.title)
             for source, verb in d.edges:
                 self.assertIn(source, d.nodes, d.title)
                 _t, target = lc.resolve_node(source, verb)
                 self.assertIn(target, d.nodes, (d.title, source, verb))
-            for edge in d.contested:
+            for edge in d.highlighted:
                 self.assertIn(edge, d.edges, d.title)
             for c in d.candidates:
                 self.assertIn(c.source, d.nodes, d.title)

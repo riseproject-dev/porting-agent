@@ -28,7 +28,12 @@
     "flaky_reruns": 1,
     "patch_attempts_per_cluster": 3,
     "no_progress_review_after": 2,
-    "max_attempts_per_contribution": 12
+    "max_attempts_per_contribution": 24,
+    "investigation_attempts": 3,
+    "work_recovery": 2
+  },
+  "refresh": {
+    "stale_after_days": 7
   },
   "capacity": {
     "usage_url": "https://riseriscvrunnerappqdvknz9s-scheduler.functions.fnc.fr-par.scw.cloud/usage.json",

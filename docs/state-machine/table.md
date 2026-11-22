@@ -10,7 +10,9 @@ permalink: /state-machine/table/
 # Lifecycle table
 {: .no_toc }
 
-This is the contribution state machine as defined in `lifecycle.py`: 28 states, 88 transitions with 65 distinct verbs, 2 flags, and 12 retry budgets. A contribution starts in `queued.idle` (`accept_request`).
+This is the contribution state machine as defined in `lifecycle.py`: 26 states, 155 transitions with 76 distinct verbs (57 of the transitions are expanded from 4 rules), 1 flag, and 13 retry budgets, plus the operation table with 6 states and 14 transitions. A contribution starts in `queued.idle` (`accept_request`).
+
+Requested Work is identified by its generation, revision, and Work id. A Result that differs in any of them is never folded and never published.
 
 <details open markdown="block">
   <summary>Contents</summary>
@@ -25,7 +27,7 @@ This is the contribution state machine as defined in `lifecycle.py`: 28 states, 
 |:--------|:--------|
 | `command` | An authorized `/upstreaming` command. Commands that activate or approve work name the exact current revision; stop commands may name a stale one. |
 | `observation` | A read-only observation by the collector: fork branch, CI runs, pull requests, review comments, or releases. |
-| `result` | A verified native-queue Result folded by reconciliation. |
+| `result` | A verified native-queue Result folded by reconciliation. A Result is folded only when it matches the current generation, revision, and requested Work; any other Result takes `record_late_effect`. Each Result records its token usage in the events. |
 | `operation` | A trusted remote operation receipt and its exact readback. |
 | `tick` | A controller decision without new input: Work allocation, a budget charge or exhaustion, or a deadline. |
 
@@ -33,7 +35,7 @@ This is the contribution state machine as defined in `lifecycle.py`: 28 states, 
 
 | Kind | Meaning |
 |:-----|:--------|
-| `auto_wait` | Waits for an automatic trigger; the controller acts without a human. |
+| `auto_wait` | Waits for an automatic trigger; the controller acts without a human. A guard that does not hold yet (a worker slot, capacity) keeps the contribution here; there is no separate capacity wait. |
 | `work` | Requested Work or a trusted operation is in progress. |
 | `human_wait` | A recorded `pending_human_action` names what a human must do; `/upstreaming resume` continues. |
 | `gate` | Waits for a human command that starts the next step. |
@@ -43,80 +45,112 @@ This is the contribution state machine as defined in `lifecycle.py`: 28 states, 
 
 ## States
 
-*Launches* means the controller may allocate Work or launch remote effects from the state, subject to the flags. *Fork writes* means automated writers may write the contribution fork.
+*Launches* means the controller may allocate Work or launch remote effects from the state, subject to the flags. *Fork writes* means automated writers may write the contribution fork. *Exits* counts the state's own transitions and, after the plus sign, the rule transitions that apply in it.
 
 | State | Kind | Launches | Fork writes | Exits | Description |
 |:------|:-----|:---------|:------------|:------|:------------|
-| `queued.idle` | `auto_wait` | yes | no | 2 | An accepted request is recorded; investigation has not started. |
-| `investigation.idle` | `auto_wait` | yes | no | 2 | Investigation is due; the controller allocates investigation Work when a worker slot is free. |
-| `investigation.agent_running` | `work` | no | no | 10 | Investigation Work is requested or running and will return a dossier. |
-| `investigation.waiting_human` | `human_wait` | no | no | 2 | Investigation recovery is exhausted; a human corrects the cause and resumes. |
-| `provisioning.idle` | `work` | yes | yes | 5 | The fork provisioning operation is planned or running through the trusted workflow. |
-| `provisioning.waiting_human` | `human_wait` | no | no | 3 | Provisioning cannot continue safely; a human corrects the prerequisite and resumes. |
-| `development.idle` | `auto_wait` | yes | yes | 3 | The fork is ready and no development Work is requested yet. |
-| `development.agent_running` | `work` | no | yes | 10 | Patch Work is requested or running, or its verified Result is being published. |
-| `development.waiting_ci` | `auto_wait` | no | yes | 6 | A patch is published to the development PR; CI and review evaluate the exact head. |
-| `development.fix_needed` | `auto_wait` | yes | yes | 3 | A CI failure, actionable review, or rejected proposal needs a bounded repair. |
-| `development.waiting_human` | `human_wait` | no | no | 2 | Development recovery is exhausted; a human corrects the cause and resumes. |
-| `handoff.awaiting_submission` | `gate` | no | no | 4 | Required CI passed on the exact head; a human may request upstream submission. |
-| `handoff.cleaning_debug` | `work` | no | yes | 2 | Debug commits are removed from the admitted series and the clean head is published under lease. |
-| `handoff.waiting_ci` | `auto_wait` | no | no | 2 | Required CI runs on the clean head. |
-| `handoff.closing_internal_pr` | `work` | no | yes | 3 | The development PR is closed and the closure is read back. |
-| `handoff.waiting_internal_pr` | `human_wait` | no | no | 1 | Closing the development PR failed repeatedly; a human corrects it and resumes. |
-| `handoff.preparing_submission` | `work` | no | no | 3 | The submission package (title, body, prefilled compare link) is posted to the tracking issue. |
-| `handoff.waiting_comment` | `human_wait` | no | no | 1 | Posting the submission package failed repeatedly; a human corrects it and resumes. |
-| `handoff.waiting_upstream_pr` | `locked` | no | no | 4 | Waiting for a human to open the upstream PR from the package. Exactly two exits leave it. |
-| `upstream_review.waiting_ci` | `auto_wait` | no | no | 5 | The upstream PR is open; upstream CI, review, and merge are observed. |
-| `upstream_review.fix_needed` | `auto_wait` | yes | yes | 2 | Upstream CI or actionable review needs a revision of the upstream PR head. |
-| `upstream_review.agent_running` | `work` | no | yes | 5 | Revision Work for the upstream PR head is requested or running. |
-| `upstream_review.waiting_human` | `human_wait` | no | no | 2 | The upstream PR was closed unmerged or recovery is exhausted; a human triages. |
-| `release_wait.idle` | `auto_wait` | no | no | 3 | The upstream PR is merged; official release coverage is observed. |
-| `release_wait.waiting_human` | `human_wait` | no | no | 1 | Release evidence needs operator action. |
-| `released.idle` | `terminal` | no | no | 0 | Verified official release coverage satisfies the acceptance contract. |
-| `parked.idle` | `generation_end` | no | no | 2 | The generation ended without success; a clean restart is possible. |
-| `closed.idle` | `terminal` | no | no | 0 | No further work: withdrawn, not applicable, or already satisfied. The reason is `terminal_reason`. |
+| `queued.idle` | `auto_wait` | yes | no | 2 + 2 | An accepted request is recorded; investigation has not started. |
+| `investigation.idle` | `auto_wait` | yes | no | 2 + 2 | Investigation is due; the controller allocates investigation Work when a worker slot is free. |
+| `investigation.agent_running` | `work` | no | no | 10 + 2 | Investigation Work is requested or running and will return a dossier. |
+| `investigation.waiting_human` | `human_wait` | no | no | 1 + 3 | Investigation recovery or a budget is exhausted; a human corrects the cause and resumes. |
+| `provisioning.idle` | `work` | yes | yes | 3 + 3 | The fork provisioning operation is planned or running through the trusted workflow. |
+| `provisioning.waiting_human` | `human_wait` | no | no | 1 + 4 | Provisioning cannot continue safely; a human corrects the prerequisite and resumes, or parks. |
+| `development.agent_running` | `work` | no | yes | 10 + 3 | Patch Work is requested or running, or its verified Result is being published. |
+| `development.waiting_ci` | `auto_wait` | no | yes | 9 + 3 | A patch is published to the development PR; CI and review evaluate the exact head. Passing CI that does not yet satisfy `nominate_for_handoff` keeps the contribution here. |
+| `development.fix_needed` | `auto_wait` | yes | yes | 6 + 3 | Development Work is due: the fork is ready for a first patch, or a CI failure, actionable review, rejected proposal, refreshed dossier, or a resume needs a bounded repair. |
+| `development.waiting_human` | `human_wait` | no | no | 3 + 4 | Development recovery or `work_total` is exhausted, the development PR does not match, or CI on the head was interrupted repeatedly; a human corrects the cause and resumes. |
+| `handoff.awaiting_submission` | `gate` | no | no | 4 + 3 | Required CI passed on the exact head; a human may request upstream submission. |
+| `handoff.cleaning_debug` | `work` | no | yes | 4 + 2 | Debug commits are removed from the admitted series and the clean head is published under lease. |
+| `handoff.waiting_ci` | `auto_wait` | no | no | 4 + 2 | Required CI runs on the clean head. |
+| `handoff.closing_internal_pr` | `work` | no | yes | 3 + 2 | The development PR is closed and the closure is read back. |
+| `handoff.preparing_submission` | `work` | no | no | 3 + 2 | The submission package (title, body, prefilled compare link) is posted to the tracking issue. |
+| `handoff.waiting_human` | `human_wait` | no | no | 4 + 3 | A handoff step failed repeatedly: publishing the clean head, CI on the clean head, closing the development PR, or posting the submission package. A human corrects it and resumes; the resume returns to the step named by `pending_human_action` and starts again the counter named in `pending_human_action.counter`. |
+| `handoff.waiting_upstream_pr` | `locked` | no | no | 4 + 2 | Waiting for a human to open the upstream PR from the package. Exactly three exits leave it: `verify_upstream_pr`, `retract_submission`, and `refresh_investigation`. |
+| `upstream_review.waiting_ci` | `auto_wait` | no | no | 6 + 1 | The upstream PR is open; upstream CI, review, and merge are observed. Upstream CI is never rerun by the pipeline. |
+| `upstream_review.fix_needed` | `auto_wait` | yes | yes | 2 + 1 | Upstream CI or actionable review needs a revision of the upstream PR head. |
+| `upstream_review.agent_running` | `work` | no | yes | 9 + 1 | Revision Work for the upstream PR head is requested or running, or its verified Result is being published. |
+| `upstream_review.waiting_human` | `human_wait` | no | no | 2 + 3 | The upstream PR was closed unmerged, its head changed, a reviewer needs an answer, or recovery or a budget is exhausted; a human triages. |
+| `release_wait.idle` | `auto_wait` | no | no | 3 + 1 | The upstream PR is merged; official release coverage is observed. |
+| `release_wait.waiting_human` | `human_wait` | no | no | 1 + 2 | Release evidence needs operator action. |
+| `released.idle` | `terminal` | no | no | 0 + 1 | Verified official release coverage satisfies the acceptance contract. |
+| `parked.idle` | `generation_end` | no | no | 2 + 1 | The generation ended without success; a clean restart is possible. |
+| `closed.idle` | `terminal` | no | no | 0 + 1 | No further work: withdrawn, not applicable, already satisfied, or abandoned. The reason is `terminal_reason`. |
+
+## Rules
+
+A rule is a transition that applies in many states. It is written once and expanded into one row per state; the rows appear under each state below, marked *(rule)*.
+
+### `park_contribution`
+
+Applies in every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`.
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+
+Expanded into: `queued.idle`, `investigation.idle`, `investigation.agent_running`, `investigation.waiting_human`, `provisioning.idle`, `provisioning.waiting_human`, `development.agent_running`, `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.cleaning_debug`, `handoff.waiting_ci`, `handoff.closing_internal_pr`, `handoff.preparing_submission`, `handoff.waiting_human`, `upstream_review.waiting_human`.
+
+### `resume_stale`
+
+Applies in every `provisioning.*` and `development.*` state.
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `resume_stale` | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+
+Expanded into: `provisioning.idle`, `provisioning.waiting_human`, `development.agent_running`, `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`.
+
+### `record_reminder`
+
+Applies in every state of kind `gate`, `human_wait`, or `locked`.
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `record_reminder` | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+
+Expanded into: `investigation.waiting_human`, `provisioning.waiting_human`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.waiting_human`, `handoff.waiting_upstream_pr`, `upstream_review.waiting_human`, `release_wait.waiting_human`.
+
+### `record_late_effect`
+
+Applies in every state.
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `record_late_effect` | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
+
+Expanded into: `queued.idle`, `investigation.idle`, `investigation.agent_running`, `investigation.waiting_human`, `provisioning.idle`, `provisioning.waiting_human`, `development.agent_running`, `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.cleaning_debug`, `handoff.waiting_ci`, `handoff.closing_internal_pr`, `handoff.preparing_submission`, `handoff.waiting_human`, `handoff.waiting_upstream_pr`, `upstream_review.waiting_ci`, `upstream_review.fix_needed`, `upstream_review.agent_running`, `upstream_review.waiting_human`, `release_wait.idle`, `release_wait.waiting_human`, `released.idle`, `parked.idle`, `closed.idle`.
 
 ## Flags
 
-Flags are stored beside the state and do not change phase or activity. They are set and cleared from every non-terminal state.
+A flag is stored beside the state. It is set and cleared from every non-terminal state and keeps phase and activity, except where noted.
 
 ### `paused`
 
-Stored in `paused`. A temporary stop of new Work and writer admission. Phase, activity, evidence, and pending feedback are kept.
+Stored in `paused`. A stop of new Work and writer admission, with its reason and who set it (a human or the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; a pause set by the controller always records one. Setting it clears the requested Work and records `paused_at`; phase, activity, evidence, and pending feedback are kept. The one exception: `pause` in an `agent_running` state leads to the state in which the Work is due again, `investigation.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` keeps the dossier, candidate head, clean head, `handoff_request`, and the posted package: `submit_upstream`, `verify_upstream_pr`, and the package bind to the exact head, so the revision bump does not invalidate the submission.
 
-| Verb | Trigger | Guard | Effects |
-|:-----|:--------|:------|:--------|
-| `pause` | command (`/upstreaming pause`) | not paused; not terminal; any revision, current or stale | sets `paused` |
-| `resume_pause` | command (`/upstreaming resume`) | paused; exact revision | clears `paused` |
+| Verb | Sets or clears | Trigger | Guard | Effects |
+|:-----|:---------------|:--------|:------|:--------|
+| `pause` | sets | command (`/upstreaming pause`) | not paused; not terminal; any revision, current or stale. A reason is optional; when given it is recorded in `paused_reason`. | Work: clear; sets `paused`, `paused_at`, `paused_reason`, `paused_by=human` |
+| `pause_on_identity_change` | sets | observation | not paused; not terminal; the observed upstream repository identity differs from the recorded one | Work: clear; sets `paused`, `paused_at`, `paused_reason=upstream_identity_changed`, `paused_by=controller` |
+| `resume_pause` | clears | command (`/upstreaming resume`) | paused; exact revision; stopped for at most `refresh.stale_after_days` days, or the phase is not provisioning or development. A Result that landed during the pause no longer matches and takes `record_late_effect`. In a human wait the resume clears the flag only: the reply states that the contribution still waits for a human and names the pending action, and a second resume leaves the wait. | revision +1; clears `paused`, `paused_at`, `paused_reason`, `paused_by` |
+
+Setting the flag clears the requested Work, so these states are left for the state in which that Work is due again:
+
+| From | To |
+|:-----|:---|
+| `investigation.agent_running` | `investigation.idle` |
+| `development.agent_running` | `development.fix_needed` |
+| `upstream_review.agent_running` | `upstream_review.fix_needed` |
 
 While set:
 
 | Trigger | Effect |
 |:--------|:-------|
-| `command` | `resume`, `park`, and `retract-pr` apply; other commands are rejected. |
-| `observation` | Folded normally. |
-| `result` | Folded normally. |
-| `operation` | Folded normally; an effect that passed its final check before the pause may finish. |
+| `command` | `resume`, `park`, `refresh`, `retract-pr`, `abandon`, and `resolve-operation` apply; other commands are rejected. `resume` clears the flag first: it takes `resume_pause` or `resume_stale`. In a human wait a second `resume` then leaves the wait. |
+| `observation` | Folded normally, including CI on the exact head. |
+| `result` | The requested Work was cleared, so a Result takes `record_late_effect`; nothing is published. |
+| `operation` | Folded normally. The publisher's final check reads `paused`; an effect that passed it before the pause may finish. |
 | `tick` | No launch, no Work allocation, no budget charge; reminders are suppressed. |
-
-### `blocked`
-
-Stored in `blocked_reason`. A stop recorded by a human or by the controller when the upstream identity changes. It fences launches like `paused` and records why.
-
-| Verb | Trigger | Guard | Effects |
-|:-----|:--------|:------|:--------|
-| `block` | command (`/upstreaming block`) | any revision, current or stale | sets `blocked_reason` |
-| `resume_block` | command (`/upstreaming resume`) | blocked; exact revision | revision +1; clears `blocked_reason` |
-
-While set:
-
-| Trigger | Effect |
-|:--------|:-------|
-| `command` | `resume`, `park`, and `retract-pr` apply; other commands are rejected. |
-| `observation` | Folded normally. |
-| `result` | Folded normally. |
-| `operation` | Folded normally. |
-| `tick` | No launch, no Work allocation, no budget charge. |
 
 ## Transitions
 
@@ -126,127 +160,161 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `begin_investigation` | tick | `investigation.idle` | not paused; not blocked | none | - |
+| `begin_investigation` | tick | `investigation.idle` | not paused | none | - |
 | `withdraw_request` | observation | `closed.idle` | intake label removed; no Work requested; no dossier; no fork | sets `terminal_reason=withdrawn` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `investigation.idle`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `dispatch_investigation` | tick | `investigation.agent_running` | worker slot free; not paused; not blocked; no open operation | Work: allocate | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `dispatch_investigation` | tick | `investigation.agent_running` | worker slot free; work_total remains; not paused; no open operation | Work: allocate | `work_total` |
+| `exhaust_work_total` | tick | `investigation.waiting_human` | work_total exhausted | sets `pending_human_action=work_budget_exhausted`, `pending_human_action.counter=work_total` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `investigation.agent_running`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_dispatch` | tick | same state | a dispatcher run ended with the requested Work absent or unclaimed; dispatch_recovery remains. Launches the dispatcher again for the same committed Work request. | none | `dispatch_recovery` |
-| `exhaust_dispatch_recovery` | tick | `investigation.waiting_human` | dispatch_recovery exhausted | Work: clear; sets `pending_human_action=dispatch_failed` | - |
-| `allocate_work_retry` | tick | same state | the Work graph is terminal without a usable Result; work_recovery remains. A terminal Work graph is never submitted again; a fresh graph is allocated. | revision +1; Work: reallocate | `work_recovery` |
-| `exhaust_work_recovery` | tick | `parked.idle` | work_recovery exhausted | Work: clear; sets `parked_reason`, `previous_phase` | - |
-| `reject_dossier` | result | `investigation.idle` | the dossier is invalid, or its decision is not develop, park, or close; investigation_attempts remains. Trusted validation rejects the dossier; a new investigation is due. | revision +1; Work: clear | `investigation_attempts` |
-| `exhaust_investigation_recovery` | result | `investigation.waiting_human` | a Result without a dossier, or investigation_attempts exhausted | Work: clear; sets `pending_human_action` | - |
-| `admit_development` | result | `provisioning.idle` | verified dossier decision develop; no refresh recorded | revision +1; Work: clear; sets `dossier_evidence_id`, `admission_class`, `scope_paths` | - |
-| `readmit_development` | result | `development.fix_needed` | verified dossier decision develop; refresh recorded; the recorded fork and development PR still match. A refreshed investigation returns to the existing fork for repair. | revision +1; Work: clear; sets `dossier_evidence_id`, `admission_class`, `scope_paths`; clears `refresh` | - |
-| `park_investigation` | result (`/upstreaming park`) | `parked.idle` | verified dossier decision park | revision +1; Work: clear; sets `parked_reason`, `previous_phase` | - |
-| `close_investigation` | result | `closed.idle` | verified dossier decision close | Work: clear; sets `terminal_reason` | - |
+| `exhaust_dispatch_recovery` | tick | `investigation.waiting_human` | dispatch_recovery exhausted | Work: clear; sets `pending_human_action=dispatch_failed`, `pending_human_action.counter=dispatch_recovery` | - |
+| `allocate_work_retry` | tick | same state | the Work graph is terminal without a usable Result; work_recovery and work_total remain. A terminal Work graph is never submitted again; a fresh graph is allocated. | revision +1; Work: reallocate | `work_recovery`, `work_total` |
+| `exhaust_work_recovery` | tick | `investigation.waiting_human` | the Work graph is terminal without a usable Result; work_recovery or work_total exhausted. `pending_human_action.counter` names `work_total` when that budget is exhausted, and `work_recovery` otherwise. | Work: clear; sets `pending_human_action=work_failed`, `pending_human_action.counter` | - |
+| `reject_dossier` | result | `investigation.idle` | the Result has no dossier, the dossier is invalid, or its decision is not develop, park, or close; investigation_attempts remains. Trusted validation rejects the Result; a new investigation is due. | revision +1; Work: clear | `investigation_attempts` |
+| `exhaust_investigation_recovery` | result | `investigation.waiting_human` | the Result has no usable dossier; investigation_attempts exhausted | Work: clear; sets `pending_human_action=investigation_failed`, `pending_human_action.counter=investigation_attempts` | - |
+| `admit_development` | result | `provisioning.idle` | verified dossier decision develop, or verified dossier decision park and a recorded admission_override; no refresh recorded, or the recorded fork or development PR no longer matches | revision +1; Work: clear; sets `dossier_evidence_id`, `admission_class`, `scope_paths`; clears `refresh`, `admission_override` | - |
+| `readmit_development` | result | `development.fix_needed` | verified dossier decision develop, or verified dossier decision park and a recorded admission_override; refresh recorded; the recorded fork and development PR still match. A refreshed investigation returns to the existing fork for repair. | revision +1; Work: clear; sets `dossier_evidence_id`, `admission_class`, `scope_paths`; clears `refresh`, `admission_override` | - |
+| `park_investigation` | result | `parked.idle` | verified dossier decision park; no admission_override recorded | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `close_investigation` | result | `closed.idle` | verified dossier decision close. A recorded `admission_override` is not applied against a decision close; the reply states so. | Work: clear; sets `terminal_reason` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `investigation.waiting_human`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `resume_investigation` | command (`/upstreaming resume`) | `investigation.idle` | exact revision; quiescent | revision +1; clears `pending_human_action` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_investigation` | command (`/upstreaming resume`) | `investigation.idle` | exact revision; quiescent: no open operation and no pending publication. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `work_total`, `dispatch_recovery`, `work_recovery`, `investigation_attempts`) | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `provisioning.idle`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `start_operation` | tick | same state | fork_provision operation planned; capacity available; operation_launch remains; not paused; not blocked. Launches the planned operation; an uncertain launch is never repeated without discovery. | none | `operation_launch` |
-| `require_provisioning_intervention` | operation | `provisioning.waiting_human` | a prerequisite cannot be satisfied, an uncertain operation has no discovery, or operation_launch is exhausted | sets `pending_human_action` | - |
-| `confirm_provisioning` | operation | `development.idle` | the receipt matches the operation; exact fork and ref readback | revision +1; sets `fork`, `upstream.repository_id`, `upstream.base_ref`, `upstream.base_sha` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
-| `close_investigation` | operation | `closed.idle` | the provisioning readback shows that no contribution is needed | sets `terminal_reason` | - |
+| `start_operation` | tick | same state | fork_provision operation planned; capacity available; operation_launch remains; not paused. Launches the planned operation; an uncertain launch is never repeated without discovery. | none | `operation_launch` |
+| `require_provisioning_intervention` | operation | `provisioning.waiting_human` | a prerequisite cannot be satisfied, an uncertain operation has no discovery, or operation_launch is exhausted. `pending_human_action.counter` names `operation_launch` when that budget is exhausted, and no counter otherwise. | sets `pending_human_action`, `pending_human_action.counter` | - |
+| `confirm_provisioning` | operation | `development.fix_needed` | the receipt matches the operation; exact fork and ref readback | sets `fork`, `upstream.repository_id`, `upstream.base_ref`, `upstream.base_sha` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_stale` (rule) | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `provisioning.waiting_human`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `resume_provisioning` | command (`/upstreaming resume`) | `provisioning.idle` | exact revision; the prerequisite is corrected; provisioning_attempts remains | revision +1; clears `pending_human_action` | `provisioning_attempts` |
-| `exhaust_provisioning_attempts` | tick | `parked.idle` | provisioning_attempts exhausted | sets `parked_reason`, `previous_phase`; clears `pending_human_action` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
-
-### `development.idle`
-
-| Verb | Trigger | To | Guard | Effects | Charges |
-|:-----|:--------|:---|:------|:--------|:--------|
-| `request_patch` | tick | `development.agent_running` | no CI evidence for the head yet; proposal or write admission; worker slot free; capacity available; not paused; not blocked | Work: allocate | - |
-| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no Work, operation, or pending publication; development PR and head recorded. Runs a complete investigation again while keeping the fork and development PR. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_provisioning` | command (`/upstreaming resume`) | `provisioning.idle` | exact revision; the prerequisite is corrected; stopped for at most `refresh.stale_after_days` days. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`) | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_stale` (rule) | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `development.agent_running`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_dispatch` | tick | same state | a dispatcher run ended with the requested Work absent or unclaimed; dispatch_recovery remains. Launches the dispatcher again for the same committed Work request. | none | `dispatch_recovery` |
-| `exhaust_dispatch_recovery` | tick | `development.waiting_human` | dispatch_recovery exhausted | Work: clear; sets `pending_human_action=dispatch_failed` | - |
-| `allocate_work_retry` | tick | same state | the Work graph is terminal without a usable Result; work_recovery remains. A terminal Work graph is never submitted again; a fresh graph is allocated. | revision +1; Work: reallocate | `work_recovery` |
-| `exhaust_work_recovery` | tick | `parked.idle` | work_recovery exhausted | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `exhaust_dispatch_recovery` | tick | `development.waiting_human` | dispatch_recovery exhausted | Work: clear; sets `pending_human_action=dispatch_failed`, `pending_human_action.counter=dispatch_recovery` | - |
+| `allocate_work_retry` | tick | same state | the Work graph is terminal without a usable Result; work_recovery and work_total remain. A terminal Work graph is never submitted again; a fresh graph is allocated. | revision +1; Work: reallocate | `work_recovery`, `work_total` |
+| `exhaust_work_recovery` | tick | `development.waiting_human` | the Work graph is terminal without a usable Result; work_recovery or work_total exhausted. `pending_human_action.counter` names `work_total` when that budget is exhausted, and `work_recovery` otherwise. | Work: clear; sets `pending_human_action=work_failed`, `pending_human_action.counter` | - |
 | `record_publish_success` | result | `development.waiting_ci` | the Result is published, or uncertain and later confirmed | Work: clear; sets `proposal_artifact`, `publication_operation_id` | - |
-| `reject_patch_proposal` | result | `development.fix_needed` | the proposal is rejected for the current revision, or the worker reports it is blocked; no_progress remains | revision +1; Work: clear; clears `clean_head_sha` | `no_progress` |
-| `replan_development` | result | `development.idle` | the proposal is rejected as stale | Work: clear | - |
-| `record_no_change` | result | `development.idle` | the worker reports that no change is needed | Work: clear | - |
+| `reject_patch_proposal` | result | `development.fix_needed` | the proposal is rejected for the current revision, the worker reports it is blocked, or the worker reports a failure not caused by the patch and flaky_reruns is exhausted; no_progress remains | revision +1; Work: clear; clears `clean_head_sha` | `no_progress` |
+| `replan_development` | result | `development.fix_needed` | the proposal no longer applies to the fork head | revision +1; Work: clear | - |
+| `request_ci_rerun` | result | `development.waiting_ci` | the worker reports a failure not caused by the patch; flaky_reruns remains. The repair worker classifies the failure; the failed jobs are rerun on the exact head, and the head and revision are kept. | Work: clear; clears `last_ci_evidence_id` | `flaky_reruns` |
 | `schedule_publish_retry` | result | same state | publication failed with an infrastructure error; publish_recovery remains. The same verified Result is published again; no new Work is requested. | Work: clear; sets `pending_publication` | `publish_recovery` |
-| `exhaust_publish_recovery` | result | `development.waiting_human` | publish_recovery exhausted | sets `pending_human_action=publication_infrastructure_failure`, `pending_publication.exhausted` | - |
+| `exhaust_publish_recovery` | result | `development.waiting_human` | publish_recovery exhausted | sets `pending_human_action=publication_infrastructure_failure`, `pending_human_action.counter=publish_recovery`, `pending_publication.exhausted` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_stale` (rule) | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `development.waiting_ci`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `record_ci_failure` | observation | `development.fix_needed` | an executed blocking failure on the exact head; the failure is not flaky, or flaky_reruns is exhausted | sets `last_ci_evidence_id` | - |
-| `rerun_failed_ci` | observation | same state | the failure is classified flaky; flaky_reruns remains. Reruns the failed jobs on the exact head. | none | `flaky_reruns` |
-| `record_actionable_review` | observation | `development.fix_needed` | authorized actionable review feedback | revision +1; Work: clear; sets `pending_feedback_evidence_ids` | - |
-| `record_explanation` | observation | same state | authorized explanation-only inquiry. Answered or recorded without requesting a change; revision and CI evidence are kept. | sets `processed_review_ids`, `processed_review_comment_ids`, `processed_pr_conversation_comment_ids` | - |
-| `record_head_change` | observation | same state | the observed fork head differs from the recorded head | revision +1; sets `fork.head_sha`; clears `last_ci_evidence_id`, `handoff_approval` | - |
-| `nominate_for_handoff` | observation | `handoff.awaiting_submission` | every required CI job executed and passed on the exact head; no pending actionable feedback; no requested Work | Work: clear; sets `last_ci_evidence_id`, `handoff_request`, `pending_human_action=submit_upstream` | - |
+| `record_ci_failure` | observation | `development.fix_needed` | an executed blocking failure on the exact head | sets `last_ci_evidence_id` | - |
+| `rerun_interrupted_ci` | observation | same state | a required CI job on the exact head was cancelled or lost its runner; interrupted_reruns remains. The collector reruns the interrupted jobs on the exact head. It reruns for no other conclusion. | none | `interrupted_reruns` |
+| `exhaust_interrupted_reruns` | observation | `development.waiting_human` | a required CI job on the exact head was cancelled or lost its runner; interrupted_reruns exhausted | sets `pending_human_action=ci_interrupted`, `pending_human_action.counter=interrupted_reruns` | - |
+| `record_actionable_review` | observation | `development.fix_needed` | authorized actionable review feedback | revision +1; sets `pending_feedback_evidence_ids` | - |
+| `record_explanation` | observation | same state | authorized explanation-only inquiry. Answered on the development PR or recorded without requesting a change; revision and CI evidence are kept. | sets `processed_review_ids`, `processed_review_comment_ids`, `processed_pr_conversation_comment_ids` | - |
+| `record_head_change` | observation | same state | the observed fork head differs from the recorded head | revision +1; sets `fork.head_sha`; clears `last_ci_evidence_id` | - |
+| `record_pr_mismatch` | observation | `development.waiting_human` | the observed development PR does not match the recorded fork, ref, or PR | sets `pending_human_action=development_pr_mismatch` | - |
+| `nominate_for_handoff` | observation | `handoff.awaiting_submission` | every required CI job executed and passed on the exact head; no pending actionable feedback; no requested Work | sets `last_ci_evidence_id`, `handoff_request`, `pending_human_action=submit_upstream` | - |
+| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no requested Work; development PR and head recorded. Runs a complete investigation again while keeping the fork and development PR. Accepted while paused. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_stale` (rule) | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `development.fix_needed`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `request_repair` | tick | `development.agent_running` | write admission; worker slot free; capacity available; repair_attempts_cluster, repair_attempts_total, and no_progress remain; not paused; not blocked | Work: allocate | `repair_attempts_cluster`, `repair_attempts_total` |
-| `exhaust_repair_attempts` | tick | `parked.idle` | repair_attempts_cluster, repair_attempts_total, or no_progress is exhausted at allocation | Work: clear; sets `parked_reason`, `previous_phase` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `request_patch` | tick | `development.agent_running` | no CI evidence for the head and no feedback recorded; proposal or write admission; worker slot free; capacity available; no_progress remains; work_total remains; not paused | Work: allocate | `work_total` |
+| `request_repair` | tick | `development.agent_running` | CI evidence for the head or feedback recorded; write admission; worker slot free; capacity available; repair_attempts_cluster and no_progress remain; work_total remains; not paused | Work: allocate | `repair_attempts_cluster`, `work_total` |
+| `refresh_on_exhaustion` | tick | `queued.idle` | no_progress is exhausted, or repair_attempts_cluster is exhausted and CI evidence for the head or feedback is recorded; work_total remains; the automatic refresh is unused in this generation; not paused. One automatic refresh per generation: a complete investigation runs again on the existing fork. The per-job and no-progress counters start again; `work_total` does not. | revision +1; sets `refresh`, `automatic_refresh_used`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `budget.clusters`, `budget.no_progress_streak` | - |
+| `exhaust_repair_attempts` | tick | `parked.idle` | no_progress is exhausted, or repair_attempts_cluster is exhausted and CI evidence for the head or feedback is recorded; work_total remains; the automatic refresh is used in this generation. Parks for `repair_attempts_cluster` and `no_progress` only, after `refresh_on_exhaustion` is used. Exhaustion of `work_total` takes `exhaust_work_total` first. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `exhaust_work_total` | tick | `development.waiting_human` | work_total exhausted. The reply states the number of Work allocations spent in this generation and names both `/upstreaming resume`, which starts `work_total` again, and `/upstreaming park`. | sets `pending_human_action=work_budget_exhausted`, `pending_human_action.counter=work_total` | - |
+| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no requested Work; development PR and head recorded. Runs a complete investigation again while keeping the fork and development PR. Accepted while paused. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_stale` (rule) | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `development.waiting_human`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `resume_development` | command (`/upstreaming resume`) | `development.fix_needed` | exact revision; quiescent | revision +1; clears `pending_human_action`, `pending_publication` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_ci` | command (`/upstreaming resume`) | `development.waiting_ci` | exact revision; pending_human_action is ci_interrupted; quiescent: no open operation and no pending publication; stopped for at most `refresh.stale_after_days` days. Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` again for the head. | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `interrupted_reruns`) | - |
+| `resume_development` | command (`/upstreaming resume`) | `development.fix_needed` | exact revision; pending_human_action is not ci_interrupted; quiescent: no open operation and no pending publication; stopped for at most `refresh.stale_after_days` days. Fresh Work is requested; a Result held for publication is not reused. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. | revision +1; clears `pending_human_action`, `pending_publication`; starts again the counter named in `pending_human_action.counter` (one of `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no requested Work; development PR and head recorded. Runs a complete investigation again while keeping the fork and development PR. Accepted while paused. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_stale` (rule) | command (`/upstreaming resume`) | `queued.idle` | exact revision; paused, or waiting for a human; stopped for longer than `refresh.stale_after_days` days; quiescent: no open operation and no pending publication; no requested Work. After a long stop the dossier is refreshed: a complete investigation runs again while the fork and development PR are kept. The stop is counted from the older of `paused_at` and `pending_human_action.requested_at`. While an operation is open no resume applies, and the rejection names the open operation. From a human wait that an exhausted budget caused, it starts again the counter named in `pending_human_action.counter`, like every resume. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id`, `paused`, `paused_at`, `paused_reason`, `paused_by`; starts again the counter named in `pending_human_action.counter` (one of `operation_launch`, `interrupted_reruns`, `dispatch_recovery`, `work_recovery`, `work_total`, `publish_recovery`) | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `handoff.awaiting_submission`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `submit_upstream` | command (`/upstreaming submit-upstream`) | `handoff.cleaning_debug` | exact revision; exact candidate head; not paused; not blocked. The only submission command; it authorizes the whole deterministic handoff preparation. | sets `handoff_approval`, `active_operation_id`; clears `pending_human_action` | - |
+| `submit_upstream` | command (`/upstreaming submit-upstream`) | `handoff.cleaning_debug` | exact revision; exact candidate head; not paused. The only submission command; it authorizes the whole deterministic handoff preparation. | sets `handoff_approval`, `active_operation_id`; clears `pending_human_action` | - |
 | `return_for_repair` | observation | `development.fix_needed` | an executed blocking failure or actionable review on the candidate head | revision +1; clears `clean_head_sha`, `handoff_request`, `pending_human_action` | - |
-| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no Work, operation, or pending publication; development PR and head recorded. Runs a complete investigation again while keeping the fork and development PR. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_head_change` | observation | `development.waiting_ci` | the observed fork head differs from the candidate head | revision +1; sets `fork.head_sha`; clears `last_ci_evidence_id`, `handoff_request`, `pending_human_action` | - |
+| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no requested Work; development PR and head recorded. Runs a complete investigation again while keeping the fork and development PR. Accepted while paused. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `handoff.cleaning_debug`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
+| `retry_debug_cleanup` | operation | same state | the lease write or its readback failed with an infrastructure error; debug_cleanup remains | none | `debug_cleanup` |
 | `confirm_clean_head` | operation | `handoff.waiting_ci` | the lease write and ref readback match | sets `clean_head_sha`, `fork.head_sha` | - |
 | `return_for_repair` | operation | `development.fix_needed` | the cleanup is invalid, or the exact-head lease conflicts | revision +1; clears `clean_head_sha`, `handoff_request`, `pending_human_action` | - |
+| `exhaust_debug_cleanup_retries` | operation | `handoff.waiting_human` | debug_cleanup exhausted | sets `pending_human_action=debug_cleanup_failed`, `pending_human_action.counter=debug_cleanup` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `handoff.waiting_ci`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `accept_clean_head_ci` | observation | `handoff.closing_internal_pr` | every required CI job executed and passed on the clean head | sets `last_ci_evidence_id` | - |
-| `return_for_repair` | observation | `development.fix_needed` | a blocking CI failure on the clean head | revision +1; clears `clean_head_sha`, `handoff_request`, `pending_human_action` | - |
+| `rerun_interrupted_ci` | observation | same state | a required CI job on the exact head was cancelled or lost its runner; interrupted_reruns remains. The collector reruns the interrupted jobs on the exact head. It reruns for no other conclusion. | none | `interrupted_reruns` |
+| `exhaust_interrupted_reruns` | observation | `handoff.waiting_human` | a required CI job on the exact head was cancelled or lost its runner; interrupted_reruns exhausted | sets `pending_human_action=ci_interrupted`, `pending_human_action.counter=interrupted_reruns` | - |
+| `return_for_repair` | observation | `development.fix_needed` | a blocking CI failure on the clean head, or the observed fork head differs from the clean head | revision +1; clears `clean_head_sha`, `handoff_request`, `pending_human_action` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `handoff.closing_internal_pr`
 
@@ -254,13 +322,9 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_internal_pr_closure` | operation | same state | the close or its readback failed; internal_pr_closure remains | none | `internal_pr_closure` |
 | `confirm_internal_pr_closed` | operation | `handoff.preparing_submission` | the readback shows the exact development PR closed | none | - |
-| `exhaust_internal_pr_retries` | operation | `handoff.waiting_internal_pr` | internal_pr_closure exhausted | sets `pending_human_action` | - |
-
-### `handoff.waiting_internal_pr`
-
-| Verb | Trigger | To | Guard | Effects | Charges |
-|:-----|:--------|:---|:------|:--------|:--------|
-| `resume_internal_pr_closure` | command (`/upstreaming resume`) | `handoff.closing_internal_pr` | exact revision | clears `pending_human_action` | - |
+| `exhaust_internal_pr_retries` | operation | `handoff.waiting_human` | internal_pr_closure exhausted | sets `pending_human_action=internal_pr_closure_failed`, `pending_human_action.counter=internal_pr_closure` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `handoff.preparing_submission`
 
@@ -268,56 +332,77 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_submission_comment` | operation | same state | posting the package failed; submission_comment remains | none | `submission_comment` |
 | `confirm_submission_package` | operation | `handoff.waiting_upstream_pr` | the package comment is read back | sets `pending_human_action=open_upstream_pr`, `handoff_request` | - |
-| `exhaust_comment_retries` | operation | `handoff.waiting_comment` | submission_comment exhausted | sets `pending_human_action` | - |
+| `exhaust_comment_retries` | operation | `handoff.waiting_human` | submission_comment exhausted | sets `pending_human_action=submission_comment_failed`, `pending_human_action.counter=submission_comment` | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
-### `handoff.waiting_comment`
+### `handoff.waiting_human`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `resume_submission_preparation` | command (`/upstreaming resume`) | `handoff.preparing_submission` | exact revision | clears `pending_human_action` | - |
+| `resume_debug_cleanup` | command (`/upstreaming resume`) | `handoff.cleaning_debug` | exact revision; pending_human_action is debug_cleanup_failed | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `debug_cleanup`) | - |
+| `resume_ci` | command (`/upstreaming resume`) | `handoff.waiting_ci` | exact revision; pending_human_action is ci_interrupted. Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` again for the head. | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `interrupted_reruns`) | - |
+| `resume_internal_pr_closure` | command (`/upstreaming resume`) | `handoff.closing_internal_pr` | exact revision; pending_human_action is internal_pr_closure_failed | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `internal_pr_closure`) | - |
+| `resume_submission_preparation` | command (`/upstreaming resume`) | `handoff.preparing_submission` | exact revision; pending_human_action is submission_comment_failed | revision +1; clears `pending_human_action`; starts again the counter named in `pending_human_action.counter` (one of `submission_comment`) | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `handoff.waiting_upstream_pr`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `record_reminder` | tick | same state | at least 7 days since the package or the last reminder; not paused. Posts an append-only reminder with the package link and exact head. | sets `pending_human_action.reminded_at` | - |
 | `record_audit_observation` | observation | same state | an observation that does not satisfy verify_upstream_pr. Recorded for audit only; it never changes phase or activity. | none | - |
 | `verify_upstream_pr` | observation | `upstream_review.waiting_ci` | an open PR against the upstream repository and the frozen base; its head is the controlled fork ref at the exact clean head; a compatible human author | sets `upstream_pr`; clears `pending_human_action` | - |
-| `retract_submission` | command (`/upstreaming retract-pr`) | `development.fix_needed` | exact revision; exact clean head; quiescent. The only non-success exit; it stops reminders and unlocks branch work. | revision +1; clears `pending_human_action`, `handoff_request`, `handoff_approval` | - |
+| `retract_submission` | command (`/upstreaming retract-pr`) | `development.fix_needed` | exact revision; exact clean head; quiescent: no open operation and no pending publication. Stops reminders and unlocks branch work. | revision +1; clears `pending_human_action`, `handoff_request`, `handoff_approval` | - |
+| `refresh_investigation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; exact clean head; quiescent: no open operation and no pending publication. Returns to a complete investigation while keeping the fork. Accepted while paused. | revision +1; sets `refresh`; clears `dossier_evidence_id`, `scope_coverage_complete`, `scope_paths`, `proposal_artifact`, `last_ci_evidence_id`, `clean_head_sha`, `handoff_request`, `handoff_approval`, `pending_human_action`, `publication_operation_id` | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `upstream_review.waiting_ci`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `record_upstream_ci_failure` | observation | `upstream_review.fix_needed` | an executed blocking failure on the upstream PR head | sets `last_ci_evidence_id` | - |
+| `record_upstream_ci_failure` | observation | `upstream_review.fix_needed` | an executed blocking failure on the upstream PR head; not yet recorded for this head and CI run. Fires once per head and CI run, so a failure that was already recorded does not request a revision again after a resume. | sets `last_ci_evidence_id` | - |
 | `record_actionable_review` | observation | `upstream_review.fix_needed` | authorized actionable review feedback | revision +1; sets `pending_feedback_evidence_ids` | - |
-| `record_explanation` | observation | same state | authorized explanation-only inquiry. Answered or recorded without requesting a change; revision and CI evidence are kept. | sets `processed_review_ids`, `processed_review_comment_ids`, `processed_pr_conversation_comment_ids` | - |
+| `record_explanation` | observation | same state | authorized explanation-only inquiry. Recorded and surfaced on the tracking issue; nothing is posted on the upstream PR. Revision and CI evidence are kept. | sets `processed_review_ids`, `processed_review_comment_ids`, `processed_pr_conversation_comment_ids` | - |
+| `record_head_change` | observation | `upstream_review.waiting_human` | the upstream PR head changed and the pipeline did not publish the change | revision +1; sets `upstream_pr.head_sha`, `pending_human_action=upstream_head_changed`; clears `last_ci_evidence_id` | - |
 | `record_pr_closed_unmerged` | observation | `upstream_review.waiting_human` | the upstream PR is closed without merge | sets `pending_human_action=pr_closed_unmerged` | - |
 | `record_merge` | observation | `release_wait.idle` | the upstream PR is merged | sets `merge`; clears `active_operation_id` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `upstream_review.fix_needed`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `request_upstream_revision` | tick | `upstream_review.agent_running` | the upstream PR head is the controlled fork ref; worker slot free; repair_attempts_cluster, repair_attempts_total, and no_progress remain; not paused; not blocked | Work: allocate | `repair_attempts_cluster`, `repair_attempts_total` |
-| `exhaust_repair_attempts` | tick | `parked.idle` | repair_attempts_cluster, repair_attempts_total, or no_progress is exhausted at allocation | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `request_upstream_revision` | tick | `upstream_review.agent_running` | the upstream PR head is the controlled fork ref; worker slot free; repair_attempts_cluster, no_progress, and work_total remain; not paused | Work: allocate | `repair_attempts_cluster`, `work_total` |
+| `exhaust_repair_attempts` | tick | `upstream_review.waiting_human` | repair_attempts_cluster, no_progress, or work_total is exhausted. `pending_human_action.counter` names the counter that is exhausted. | sets `pending_human_action=repair_budget_exhausted`, `pending_human_action.counter` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `upstream_review.agent_running`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
 | `record_revision_publish_success` | result | `upstream_review.waiting_ci` | the revision is published to the upstream PR head | Work: clear; sets `proposal_artifact`, `publication_operation_id` | - |
+| `reject_patch_proposal` | result | `upstream_review.fix_needed` | the proposal is rejected for the current revision, or the worker reports it is blocked; no_progress remains | revision +1; Work: clear | `no_progress` |
+| `require_reviewer_answer` | result | `upstream_review.waiting_human` | the worker reports that no change is needed. A human answers the reviewer; the pipeline posts nothing on the upstream PR. | Work: clear; sets `pending_human_action=answer_reviewer` | - |
+| `schedule_publish_retry` | result | same state | publication failed with an infrastructure error; publish_recovery remains. The same verified Result is published again; no new Work is requested. | Work: clear; sets `pending_publication` | `publish_recovery` |
+| `exhaust_publish_recovery` | result | `upstream_review.waiting_human` | publish_recovery exhausted | sets `pending_human_action=publication_infrastructure_failure`, `pending_human_action.counter=publish_recovery`, `pending_publication.exhausted` | - |
 | `retry_dispatch` | tick | same state | a dispatcher run ended with the requested Work absent or unclaimed; dispatch_recovery remains. Launches the dispatcher again for the same committed Work request. | none | `dispatch_recovery` |
-| `exhaust_dispatch_recovery` | tick | `upstream_review.waiting_human` | dispatch_recovery exhausted | Work: clear; sets `pending_human_action=dispatch_failed` | - |
-| `allocate_work_retry` | tick | same state | the Work graph is terminal without a usable Result; work_recovery remains. A terminal Work graph is never submitted again; a fresh graph is allocated. | revision +1; Work: reallocate | `work_recovery` |
-| `exhaust_work_recovery` | tick | `parked.idle` | work_recovery exhausted | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `exhaust_dispatch_recovery` | tick | `upstream_review.waiting_human` | dispatch_recovery exhausted | Work: clear; sets `pending_human_action=dispatch_failed`, `pending_human_action.counter=dispatch_recovery` | - |
+| `allocate_work_retry` | tick | same state | the Work graph is terminal without a usable Result; work_recovery and work_total remain. A terminal Work graph is never submitted again; a fresh graph is allocated. | revision +1; Work: reallocate | `work_recovery`, `work_total` |
+| `exhaust_work_recovery` | tick | `upstream_review.waiting_human` | the Work graph is terminal without a usable Result; work_recovery or work_total exhausted. `pending_human_action.counter` names `work_total` when that budget is exhausted, and `work_recovery` otherwise. | Work: clear; sets `pending_human_action=work_failed`, `pending_human_action.counter` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `upstream_review.waiting_human`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `resume_upstream_review` | command (`/upstreaming resume`) | `upstream_review.waiting_ci` | exact revision | revision +1; clears `pending_human_action` | - |
-| `park_contribution` | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale. Ends the current generation; evidence is kept for audit. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `resume_upstream_review` | command (`/upstreaming resume`) | `upstream_review.waiting_ci` | exact revision; pending_human_action is pr_closed_unmerged, answer_reviewer, or upstream_head_changed; for pr_closed_unmerged, the upstream PR is observed open again. No revision Work is requested. The pending feedback is cleared when the pending action is `answer_reviewer`, because a human answered it; the other two pending actions hold none. | revision +1; clears `pending_human_action`, `pending_feedback_evidence_ids` | - |
+| `resume_upstream_revision` | command (`/upstreaming resume`) | `upstream_review.fix_needed` | exact revision; pending_human_action is dispatch_failed, work_failed, publication_infrastructure_failure, or repair_budget_exhausted. Only when revision Work failed: dispatch, Work, publication, or a budget. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. | revision +1; clears `pending_human_action`, `pending_publication`; starts again the counter named in `pending_human_action.counter` (one of `repair_attempts_cluster`, `no_progress`, `work_total`, `dispatch_recovery`, `work_recovery`, `publish_recovery`) | - |
+| `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase` | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `release_wait.idle`
 
@@ -326,43 +411,114 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 | `record_release_incomplete` | observation | same state | release evidence does not yet satisfy the acceptance contract | none | - |
 | `require_release_intervention` | observation | `release_wait.waiting_human` | release evidence needs operator action | sets `pending_human_action` | - |
 | `verify_release` | observation | `released.idle` | verified release coverage satisfies the acceptance contract | sets `release_acceptance` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `release_wait.waiting_human`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `resume_release_observation` | command (`/upstreaming resume`) | `release_wait.idle` | exact revision | clears `pending_human_action` | - |
+| `resume_release_observation` | command (`/upstreaming resume`) | `release_wait.idle` | exact revision | revision +1; clears `pending_human_action` | - |
+| `record_reminder` (rule) | tick | same state | at least `human_sla_business_days.reminder` business days since the request or the last reminder; not paused. Posts an append-only reminder of the pending human step. In `handoff.waiting_upstream_pr` the reminder text carries the package link and the exact head, and states when an observed PR does not match. | sets `pending_human_action.reminded_at` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `released.idle`
 
 Terminal: no transition leaves this state.
 
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
+
 ### `parked.idle`
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `restart_generation` | command (`/upstreaming resume`) | `queued.idle` | exact revision; quiescent: no Work, operation, or pending publication. Starts a clean generation; identity, events, evidence, and replay fences are kept. | revision +1; generation +1; Work: clear | - |
-| `record_late_effect` | result | same state | a late Result of the ended generation is published or uncertain. Reconciles a late effect for audit without changing state. | sets `proposal_artifact`, `publication_operation_id` | - |
+| `restart_generation` | command (`/upstreaming resume`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no open upstream PR. Starts a clean generation that runs the complete investigation; identity, events, evidence, and replay fences are kept. An optional class, paths, and reason are stored as `admission_override`. | revision +1; generation +1; Work: clear; sets `admission_override` | - |
+| `abandon` | command (`/upstreaming abandon`) | `closed.idle` | a reason is given; any revision, current or stale | sets `terminal_reason=abandoned` | - |
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 
 ### `closed.idle`
 
 Terminal: no transition leaves this state.
 
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
+
 ## Budgets
 
-Each budget counts charges by the verbs that name it. Its limit is a `policy.json` value, plus one when the first try is free. When the count reaches the limit, the exhaustion verb is taken instead.
+Each budget counts charges by the verbs that name it. Its limit is a `policy.json` value, plus one when the first try is free. When the count reaches the limit, an exhaustion verb is taken instead. Exhaustion of an infrastructure budget always leads to a human wait of the same phase. Every exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, and the resume from that wait starts exactly that counter again, and no other.
 
-| Budget | One charge | Counter | Limit | Charged by | Exhaustion |
-|:-------|:-----------|:--------|:------|:-----------|:-----------|
-| `dispatch_recovery` | one dispatcher run that ended with the requested Work absent or unclaimed | dispatcher runs since `active_work.requested_at` | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | `retry_dispatch` from `development.agent_running`; `retry_dispatch` from `investigation.agent_running`; `retry_dispatch` from `upstream_review.agent_running` | `exhaust_dispatch_recovery`: `development.agent_running` to `development.waiting_human`; `investigation.agent_running` to `investigation.waiting_human`; `upstream_review.agent_running` to `upstream_review.waiting_human` |
-| `work_recovery` | one fresh Work graph after terminal Work without a usable Result | `active_work.attempt` | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | `allocate_work_retry` from `development.agent_running`; `allocate_work_retry` from `investigation.agent_running`; `allocate_work_retry` from `upstream_review.agent_running` | `exhaust_work_recovery`: `development.agent_running` to `parked.idle`; `investigation.agent_running` to `parked.idle`; `upstream_review.agent_running` to `parked.idle` |
-| `publish_recovery` | one publish-only retry of the same verified Result | `pending_publication.attempts` | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | `schedule_publish_retry` from `development.agent_running` | `exhaust_publish_recovery`: `development.agent_running` to `development.waiting_human` |
-| `investigation_attempts` | one rejected dossier | `budget.attempts_used` | `retries.max_attempts_per_contribution` (12) | `reject_dossier` from `investigation.agent_running` | `exhaust_investigation_recovery`: `investigation.agent_running` to `investigation.waiting_human` |
-| `repair_attempts_cluster` | one CI-driven repair Work allocation for one failing CI job | `budget.clusters[<job>]` | `retries.patch_attempts_per_cluster` (3) | `request_repair` from `development.fix_needed`; `request_upstream_revision` from `upstream_review.fix_needed` | `exhaust_repair_attempts`: `development.fix_needed` to `parked.idle`; `upstream_review.fix_needed` to `parked.idle` |
-| `repair_attempts_total` | one CI-driven repair Work allocation | `budget.attempts_used` | `retries.max_attempts_per_contribution` (12) | `request_repair` from `development.fix_needed`; `request_upstream_revision` from `upstream_review.fix_needed` | `exhaust_repair_attempts`: `development.fix_needed` to `parked.idle`; `upstream_review.fix_needed` to `parked.idle` |
-| `no_progress` | one successive rejected or blocked outcome without progress | `budget.no_progress_streak` (reset by a published patch) | `retries.no_progress_review_after` (2) | `reject_patch_proposal` from `development.agent_running` | `exhaust_repair_attempts`: `development.fix_needed` to `parked.idle`; `upstream_review.fix_needed` to `parked.idle` |
-| `flaky_reruns` | one rerun of the failed CI jobs on the exact head | reruns recorded for the head | `retries.flaky_reruns` (1) | `rerun_failed_ci` from `development.waiting_ci` | `record_ci_failure`: `development.waiting_ci` to `development.fix_needed` |
-| `operation_launch` | one launch of a planned fork provisioning operation | the operation's launch attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | `start_operation` from `provisioning.idle` | `require_provisioning_intervention`: `provisioning.idle` to `provisioning.waiting_human` |
-| `provisioning_attempts` | one resume of a provisioning human wait | resumes recorded for the provisioning phase | `retries.infrastructure_per_head_failure` (2) | `resume_provisioning` from `provisioning.waiting_human` | `exhaust_provisioning_attempts`: `provisioning.waiting_human` to `parked.idle` |
-| `internal_pr_closure` | one close-and-readback attempt of the development PR | the handoff operation's attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | `retry_internal_pr_closure` from `handoff.closing_internal_pr` | `exhaust_internal_pr_retries`: `handoff.closing_internal_pr` to `handoff.waiting_internal_pr` |
-| `submission_comment` | one attempt to post the submission package | the handoff operation's attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | `retry_submission_comment` from `handoff.preparing_submission` | `exhaust_comment_retries`: `handoff.preparing_submission` to `handoff.waiting_comment` |
+| Budget | One charge | Counter | Limit | Infrastructure | Charged by | Exhaustion |
+|:-------|:-----------|:--------|:------|:---------------|:-----------|:-----------|
+| `work_total` | one Work allocation of any kind | `budget.attempts_used`, counted per generation | `retries.max_attempts_per_contribution` (24) | no | `allocate_work_retry` from `development.agent_running`; `allocate_work_retry` from `investigation.agent_running`; `allocate_work_retry` from `upstream_review.agent_running`; `dispatch_investigation` from `investigation.idle`; `request_patch` from `development.fix_needed`; `request_repair` from `development.fix_needed`; `request_upstream_revision` from `upstream_review.fix_needed` | `exhaust_work_total`: `investigation.idle` to `investigation.waiting_human`; `exhaust_work_recovery`: `investigation.agent_running` to `investigation.waiting_human`; `exhaust_work_recovery`: `development.agent_running` to `development.waiting_human`; `exhaust_work_total`: `development.fix_needed` to `development.waiting_human`; `exhaust_repair_attempts`: `upstream_review.fix_needed` to `upstream_review.waiting_human`; `exhaust_work_recovery`: `upstream_review.agent_running` to `upstream_review.waiting_human` |
+| `work_recovery` | one fresh Work graph after terminal Work without a usable Result | `active_work.attempt` | 1 + `retries.work_recovery` (2) = 3 | yes | `allocate_work_retry` from `development.agent_running`; `allocate_work_retry` from `investigation.agent_running`; `allocate_work_retry` from `upstream_review.agent_running` | `exhaust_work_recovery`: `investigation.agent_running` to `investigation.waiting_human`; `exhaust_work_recovery`: `development.agent_running` to `development.waiting_human`; `exhaust_work_recovery`: `upstream_review.agent_running` to `upstream_review.waiting_human` |
+| `investigation_attempts` | one investigation Result without a usable dossier | `budget.investigation_attempts` | `retries.investigation_attempts` (3) | no | `reject_dossier` from `investigation.agent_running` | `exhaust_investigation_recovery`: `investigation.agent_running` to `investigation.waiting_human` |
+| `repair_attempts_cluster` | one CI-driven repair Work allocation for one failing CI job | `budget.clusters[<job>]`, started again by `refresh_on_exhaustion` | `retries.patch_attempts_per_cluster` (3) | no | `request_repair` from `development.fix_needed`; `request_upstream_revision` from `upstream_review.fix_needed` | `refresh_on_exhaustion`: `development.fix_needed` to `queued.idle`; `exhaust_repair_attempts`: `development.fix_needed` to `parked.idle`; `exhaust_repair_attempts`: `upstream_review.fix_needed` to `upstream_review.waiting_human` |
+| `no_progress` | one successive rejected or blocked outcome without progress | `budget.no_progress_streak`, started again by a published patch and by `refresh_on_exhaustion` | `retries.no_progress_review_after` (2) | no | `reject_patch_proposal` from `development.agent_running`; `reject_patch_proposal` from `upstream_review.agent_running` | `refresh_on_exhaustion`: `development.fix_needed` to `queued.idle`; `exhaust_repair_attempts`: `development.fix_needed` to `parked.idle`; `exhaust_repair_attempts`: `upstream_review.fix_needed` to `upstream_review.waiting_human` |
+| `flaky_reruns` | one rerun of the failed CI jobs on the exact head, requested by the repair worker | reruns recorded for the head | `retries.flaky_reruns` (1) | no | `request_ci_rerun` from `development.agent_running` | `reject_patch_proposal`: `development.agent_running` to `development.fix_needed` |
+| `interrupted_reruns` | one rerun by the collector of CI jobs that were cancelled or lost their runner | reruns recorded for the head | `retries.infrastructure_per_head_failure` (2) | yes | `rerun_interrupted_ci` from `development.waiting_ci`; `rerun_interrupted_ci` from `handoff.waiting_ci` | `exhaust_interrupted_reruns`: `development.waiting_ci` to `development.waiting_human`; `exhaust_interrupted_reruns`: `handoff.waiting_ci` to `handoff.waiting_human` |
+| `dispatch_recovery` | one dispatcher run that ended with the requested Work absent or unclaimed | dispatcher runs since `active_work.requested_at` | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | yes | `retry_dispatch` from `development.agent_running`; `retry_dispatch` from `investigation.agent_running`; `retry_dispatch` from `upstream_review.agent_running` | `exhaust_dispatch_recovery`: `investigation.agent_running` to `investigation.waiting_human`; `exhaust_dispatch_recovery`: `development.agent_running` to `development.waiting_human`; `exhaust_dispatch_recovery`: `upstream_review.agent_running` to `upstream_review.waiting_human` |
+| `publish_recovery` | one publish-only retry of the same verified Result | `pending_publication.attempts` | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | yes | `schedule_publish_retry` from `development.agent_running`; `schedule_publish_retry` from `upstream_review.agent_running` | `exhaust_publish_recovery`: `development.agent_running` to `development.waiting_human`; `exhaust_publish_recovery`: `upstream_review.agent_running` to `upstream_review.waiting_human` |
+| `operation_launch` | one launch of a planned fork provisioning operation | the operation's launch attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | yes | `start_operation` from `provisioning.idle` | `require_provisioning_intervention`: `provisioning.idle` to `provisioning.waiting_human` |
+| `debug_cleanup` | one lease write and readback of the clean head | the handoff operation's attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | yes | `retry_debug_cleanup` from `handoff.cleaning_debug` | `exhaust_debug_cleanup_retries`: `handoff.cleaning_debug` to `handoff.waiting_human` |
+| `internal_pr_closure` | one close-and-readback attempt of the development PR | the handoff operation's attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | yes | `retry_internal_pr_closure` from `handoff.closing_internal_pr` | `exhaust_internal_pr_retries`: `handoff.closing_internal_pr` to `handoff.waiting_human` |
+| `submission_comment` | one attempt to post the submission package | the handoff operation's attempts | 1 + `retries.infrastructure_per_head_failure` (2) = 3 | yes | `retry_submission_comment` from `handoff.preparing_submission` | `exhaust_comment_retries`: `handoff.preparing_submission` to `handoff.waiting_human` |
+
+Two more limits are read from `policy.json`: `refresh.stale_after_days` (7) is the length of a stop after which `resume_stale` applies, and `human_sla_business_days.reminder` (3) is the interval of `record_reminder`.
+
+## Operation table
+
+Every remote effect is an operation with its own small table, held to the same checks. The intent is recorded before the effect, and the receipt is confirmed by discovering the actual resource. While an operation is open (`planned`, `applying`, `uncertain`) it fences its contribution: no park, no refresh, and no second writer. `/upstreaming resolve-operation` closes an open operation with a resolution evidence record.
+
+An operation starts in `planned` (`record_intent`).
+
+| State | Open | Exits | Description |
+|:------|:-----|:------|:------------|
+| `planned` | yes | 4 | The intent is recorded; the remote effect has not been attempted. |
+| `applying` | yes | 5 | The remote call is in flight. |
+| `uncertain` | yes | 5 | The effect may or may not exist; it is discovered, never repeated. |
+| `confirmed` | no | 0 | The effect exists and was read back. |
+| `failed` | no | 0 | The effect definitely did not succeed. |
+| `not_launched` | no | 0 | A human established with evidence that the effect was never launched. |
+
+### Operation `planned`
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `begin_effect` | tick | `applying` | capacity available; the contribution is not paused; the final check before the effect passes | none | - |
+| `resolve_confirmed` | command (`/upstreaming resolve-operation`) | `confirmed` | the command names this operation; a resolution evidence record states the disposition; disposition confirmed | sets `resolution` | - |
+| `resolve_failed` | command (`/upstreaming resolve-operation`) | `failed` | the command names this operation; a resolution evidence record states the disposition; disposition failed | sets `resolution` | - |
+| `resolve_not_launched` | command (`/upstreaming resolve-operation`) | `not_launched` | the command names this operation; a resolution evidence record states the disposition; disposition not-launched | sets `resolution` | - |
+
+### Operation `applying`
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `record_response` | operation | `uncertain` | the remote call succeeded, or its response was lost or ambiguous. Even a successful response is provisional until discovery confirms the resource. | sets `external_ids` | - |
+| `record_failure` | operation | `failed` | the remote call returned a definite failure | sets `external_ids` | - |
+| `resolve_confirmed` | command (`/upstreaming resolve-operation`) | `confirmed` | the command names this operation; a resolution evidence record states the disposition; disposition confirmed | sets `resolution` | - |
+| `resolve_failed` | command (`/upstreaming resolve-operation`) | `failed` | the command names this operation; a resolution evidence record states the disposition; disposition failed | sets `resolution` | - |
+| `resolve_not_launched` | command (`/upstreaming resolve-operation`) | `not_launched` | the command names this operation; a resolution evidence record states the disposition; disposition not-launched | sets `resolution` | - |
+
+### Operation `uncertain`
+
+| Verb | Trigger | To | Guard | Effects | Charges |
+|:-----|:--------|:---|:------|:--------|:--------|
+| `confirm_by_discovery` | operation | `confirmed` | discovery finds the exact resource the operation proposed | sets `discovery` | - |
+| `record_discovery` | operation | same state | discovery finds the resource absent or an unrelated one. Absence never proves that the effect did not launch, and elapsed time never closes an operation. | sets `discovery` | - |
+| `resolve_confirmed` | command (`/upstreaming resolve-operation`) | `confirmed` | the command names this operation; a resolution evidence record states the disposition; disposition confirmed | sets `resolution` | - |
+| `resolve_failed` | command (`/upstreaming resolve-operation`) | `failed` | the command names this operation; a resolution evidence record states the disposition; disposition failed | sets `resolution` | - |
+| `resolve_not_launched` | command (`/upstreaming resolve-operation`) | `not_launched` | the command names this operation; a resolution evidence record states the disposition; disposition not-launched | sets `resolution` | - |
+
+### Operation `confirmed`
+
+End state: no transition leaves it.
+
+### Operation `failed`
+
+End state: no transition leaves it.
+
+### Operation `not_launched`
+
+End state: no transition leaves it.

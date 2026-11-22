@@ -136,6 +136,27 @@
         },
         "max_attempts_per_contribution": {
           "type": "integer"
+        },
+        "investigation_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "work_recovery": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "refresh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stale_after_days"
+      ],
+      "properties": {
+        "stale_after_days": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

@@ -1,13 +1,21 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Open decisions about the lifecycle table in ``lifecycle.py``.
+"""Decisions about the lifecycle table in ``lifecycle.py``.
 
-Each decision names the table states and verbs it concerns. ``edges`` are
-table rows (``(from_state, verb)``) drawn solid, ``contested`` are the table
-rows the decision may change (drawn thick), and ``candidates`` are edges an
-option would add (drawn dashed). A node written ``state+flag`` is ``state``
-with that flag set; a node that is not a table state is a candidate state.
-The page is rendered by ``scripts/generate_state_machine_doc.py``.
+``RULES_BEHIND`` are the rules the decisions follow. ``DECISIONS`` are
+settled: each records its topic, the decision, and the slice of the table that
+now holds it. ``FURTHER_CHANGES`` are settled changes that are not one of the
+numbered decisions. ``SETTLED_OPEN_ITEMS`` are the items that were open after
+those and are settled now, in the order of their numbers. ``OPEN_ITEMS`` are
+not settled: each states what the table does today and the options; they are
+numbered after the settled ones.
+
+Every item names the table states and verbs it concerns. ``edges`` are table
+rows (``(from_node, verb)``) drawn solid, ``highlighted`` are the rows the item
+is about (drawn thick), and ``candidates`` are edges an option of an open item
+would add (drawn dashed). A node written ``state+flag`` is ``state`` with that
+flag set. ``operations`` draws the operation table instead. The page is
+rendered by ``scripts/generate_state_machine_doc.py``.
 """
 
 from __future__ import annotations
@@ -24,457 +32,860 @@ class Candidate:
 
 
 @dataclass(frozen=True)
-class Decision:
+class Item:
     title: str
     question: str
-    table: str
-    options: tuple[tuple[str, str], ...]
-    nodes: tuple[str, ...]
+    text: str
+    nodes: tuple[str, ...] = ()
     edges: tuple[tuple[str, str], ...] = ()
-    contested: tuple[tuple[str, str], ...] = ()
+    highlighted: tuple[tuple[str, str], ...] = ()
+    options: tuple[tuple[str, str], ...] = ()
     candidates: tuple[Candidate, ...] = ()
+    operations: bool = False
 
 
-DECISIONS: tuple[Decision, ...] = (
-    Decision(
+# The rules the settled decisions follow.
+RULES_BEHIND: tuple[str, ...] = (
+    "Infrastructure exhaustion goes to the phase's `waiting_human`. It never ends the generation.",
+    "Park means \"the approach is not working\" or \"a human said stop\". Nothing parks from "
+    "`upstream_review` automatically.",
+    "A Result is reused only while the pipeline ran continuously. Any stop of unknown length "
+    "(pause, human wait, park) invalidates it; the next step is fresh Work.",
+    "The dossier is refreshed after a park, and after a pause or human wait longer than 7 days "
+    "in provisioning or development. It is never refreshed automatically from "
+    "`handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses "
+    "`/upstreaming refresh`.",
+    "Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation "
+    "counter, `work_total`. `lifecycle check` verifies this.",
+    "Prefer a guard or a derived status over a new state or flag.",
+)
+
+DECISIONS: tuple[Item, ...] = (
+    Item(
         "Pause semantics",
         "What `pause` stops, and whether `resume_pause` changes the revision.",
-        "`pause` only sets `paused`; Work and activity are kept, and the `paused` mask fences "
-        "ticks and non-stop commands. `resume_pause` clears the flag without a revision bump. "
-        "The controller today also clears the requested Work at `pause` and bumps the revision "
-        "at resume, so a Result for the paused revision is dropped as stale.",
-        (("A", "Keep the table: pause is a launch and allocation fence only; Results, operations, "
-               "and observations fold normally and may change phase or activity."),
-         ("B", "Clear the requested Work at `pause` and bump the revision at `resume_pause`."),
-         ("C", "As A, but hold every Result or observation that would change phase until "
-               "`resume_pause`.")),
-        ("development.agent_running", "development.agent_running+paused", "development.idle+paused"),
+        "`pause` clears the requested Work and records `paused_at`. `resume_pause` bumps the "
+        "revision, so a Result that lands during the pause no longer matches and takes "
+        "`record_late_effect`. Observations, including CI on the exact head, still fold. The "
+        "publisher's final check reads `paused`.",
+        ("development.agent_running", "development.fix_needed+paused", "development.fix_needed",
+         "development.waiting_ci", "development.waiting_ci+paused"),
         edges=(("development.agent_running", "pause"),
-               ("development.agent_running+paused", "resume_pause")),
-        contested=(("development.agent_running", "pause"),
-                   ("development.agent_running+paused", "resume_pause")),
-        candidates=(Candidate("development.agent_running", "pause, clear Work",
-                              "development.idle+paused", "B"),),
+               ("development.fix_needed+paused", "resume_pause"),
+               ("development.waiting_ci", "pause"),
+               ("development.waiting_ci+paused", "resume_pause")),
+        highlighted=(("development.agent_running", "pause"),
+                     ("development.fix_needed+paused", "resume_pause"),
+                     ("development.waiting_ci+paused", "resume_pause")),
     ),
-    Decision(
+    Item(
         "Park quiescence and the generation fence",
         "How `restart_generation` knows the ended generation is quiescent, and how a late Result "
         "of that generation is kept out of the new one.",
-        "Every transition into `parked.idle` clears the requested Work. `restart_generation` "
-        "requires quiescence, and `record_late_effect` reconciles a late published Result for "
-        "audit. Work carries no generation, so quiescence cannot see Work cleared at park.",
-        (("A", "Keep the Work at park, marked stopped; quiescence waits until its claim is "
-               "terminal or its Result is folded."),
-         ("B", "Clear the Work at park but record it as parked Work that quiescence checks."),
-         ("C", "Add the generation to the Work identity and drop any Result of another generation "
-               "as a late effect. Combines with A or B.")),
+        "The generation is part of the Work identity. A Result of another generation is never "
+        "folded and the publisher refuses it; it takes `record_late_effect`. Work is cleared at "
+        "park. Quiescence for `restart_generation` is: no open operation and no pending "
+        "publication.",
         ("development.agent_running", "parked.idle", "queued.idle"),
-        edges=(("development.agent_running", "exhaust_work_recovery"),
+        edges=(("development.agent_running", "park_contribution"),
                ("parked.idle", "record_late_effect"),
                ("parked.idle", "restart_generation")),
-        contested=(("parked.idle", "restart_generation"), ("parked.idle", "record_late_effect")),
+        highlighted=(("parked.idle", "restart_generation"), ("parked.idle", "record_late_effect")),
     ),
-    Decision(
+    Item(
         "Resume targets of recorded human waits in upstream review",
-        "Where `resume_upstream_review` leads when the wait was entered by "
-        "`exhaust_dispatch_recovery` rather than by `record_pr_closed_unmerged`.",
-        "`resume_upstream_review` always leads to `upstream_review.waiting_ci`.",
-        (("A", "Make the resume target depend on the recorded `pending_human_action`: "
-               "`upstream_review.fix_needed` for Work and publication failures, "
-               "`upstream_review.waiting_ci` for a closed PR."),
-         ("B", "Park on dispatch exhaustion in upstream review instead of waiting for a human."),
-         ("C", "Allow no automatic Work in upstream review until its rows are settled.")),
+        "Where a resume from `upstream_review.waiting_human` leads.",
+        "Two verbs, each guarded by the pending action, so exactly one applies. "
+        "`resume_upstream_review` leads to `upstream_review.waiting_ci` after a closed PR that "
+        "is observed open again, after a reviewer was answered, and after a head change. "
+        "`resume_upstream_revision` leads to `upstream_review.fix_needed` only when revision "
+        "Work failed. Dispatch exhaustion does not park.",
         ("upstream_review.agent_running", "upstream_review.waiting_human",
-         "upstream_review.waiting_ci", "upstream_review.fix_needed", "parked.idle"),
+         "upstream_review.waiting_ci", "upstream_review.fix_needed"),
         edges=(("upstream_review.agent_running", "exhaust_dispatch_recovery"),
                ("upstream_review.waiting_ci", "record_pr_closed_unmerged"),
-               ("upstream_review.waiting_human", "resume_upstream_review")),
-        contested=(("upstream_review.waiting_human", "resume_upstream_review"),
-                   ("upstream_review.agent_running", "exhaust_dispatch_recovery")),
-        candidates=(Candidate("upstream_review.waiting_human", "resume_upstream_review",
-                              "upstream_review.fix_needed", "A"),
-                    Candidate("upstream_review.agent_running", "exhaust_dispatch_recovery",
-                              "parked.idle", "B")),
+               ("upstream_review.waiting_human", "resume_upstream_review"),
+               ("upstream_review.waiting_human", "resume_upstream_revision")),
+        highlighted=(("upstream_review.waiting_human", "resume_upstream_review"),
+                     ("upstream_review.waiting_human", "resume_upstream_revision")),
     ),
-    Decision(
+    Item(
         "Handoff entry and the handoff commands",
         "Whether `handoff.awaiting_submission`, `submit_upstream`, and the observed "
         "`verify_upstream_pr` replace the `request-handoff`, `approve-handoff`, and "
-        "`register-upstream-pr` commands the controller accepts today.",
-        "Nomination enters `handoff.awaiting_submission`; one `submit_upstream` command drives "
-        "the handoff sub-states; `verify_upstream_pr` is an observation. The table has no rows "
-        "for the three commands; the controller today enters `handoff.waiting_human` and "
-        "registers the upstream PR by command.",
-        (("A", "Keep the table and retire the three commands."),
-         ("B", "Keep `register-upstream-pr` as a command exit of `handoff.waiting_upstream_pr` "
-               "instead of the observation."),
-         ("C", "Name the entry state `handoff.waiting_human` and keep the commands.")),
+        "`register-upstream-pr` commands.",
+        "They do. Nomination enters `handoff.awaiting_submission`, one `submit_upstream` command "
+        "drives the handoff, and `verify_upstream_pr` is an observation. The three commands are "
+        "retired. The reminder in `handoff.waiting_upstream_pr` states when an observed PR does "
+        "not match.",
         ("development.waiting_ci", "handoff.awaiting_submission", "handoff.cleaning_debug",
          "handoff.waiting_upstream_pr", "upstream_review.waiting_ci"),
         edges=(("development.waiting_ci", "nominate_for_handoff"),
                ("handoff.awaiting_submission", "submit_upstream"),
+               ("handoff.waiting_upstream_pr", "record_reminder"),
                ("handoff.waiting_upstream_pr", "verify_upstream_pr")),
-        contested=(("handoff.waiting_upstream_pr", "verify_upstream_pr"),
-                   ("handoff.awaiting_submission", "submit_upstream")),
-        candidates=(Candidate("handoff.waiting_upstream_pr",
-                              "register_upstream_pr<br/>/upstreaming register-upstream-pr",
-                              "upstream_review.waiting_ci", "B"),),
+        highlighted=(("handoff.awaiting_submission", "submit_upstream"),
+                     ("handoff.waiting_upstream_pr", "verify_upstream_pr")),
     ),
-    Decision(
+    Item(
         "One terminal phase for work that is not needed",
         "Whether `closed.idle` with `terminal_reason` replaces the separate terminal phases "
-        "`no_work`, `deferred`, `abandoned`, and `already_released` the record schema has today.",
-        "`withdraw_request` and `close_investigation` lead to `closed.idle`; the reason is "
-        "`terminal_reason`.",
-        (("A", "Keep `closed.idle` and migrate existing records."),
-         ("B", "Keep the separate terminal phases, rendered as `closed`.")),
-        ("queued.idle", "investigation.agent_running", "closed.idle", "abandoned.idle",
-         "no_work.idle"),
+        "`no_work`, `deferred`, `abandoned`, and `already_released`.",
+        "It does: one `closed.idle` with `terminal_reason`. Existing records are migrated.",
+        ("queued.idle", "investigation.agent_running", "parked.idle", "closed.idle"),
         edges=(("queued.idle", "withdraw_request"),
-               ("investigation.agent_running", "close_investigation")),
-        contested=(("queued.idle", "withdraw_request"),
-                   ("investigation.agent_running", "close_investigation")),
-        candidates=(Candidate("queued.idle", "withdraw_request", "abandoned.idle", "B"),
-                    Candidate("investigation.agent_running", "close_investigation",
-                              "no_work.idle", "B")),
+               ("investigation.agent_running", "close_investigation"),
+               ("parked.idle", "abandon")),
+        highlighted=(("queued.idle", "withdraw_request"),
+                     ("investigation.agent_running", "close_investigation"),
+                     ("parked.idle", "abandon")),
     ),
-    Decision(
+    Item(
         "Capacity waits",
         "Whether lack of capacity, a planned operation, or a pending publication retry is an "
         "activity.",
-        "There is no `waiting_capacity` activity: `start_operation` and `schedule_publish_retry` "
-        "keep the state, and the pending operation or publication is read from "
-        "`active_operation_id` and `pending_publication`. The controller today writes "
-        "`waiting_capacity` in these cases.",
-        (("A", "Keep the table."),
-         ("B", "Add `waiting_capacity` states to the table."),
-         ("C", "Model the wait as a flag beside `paused`.")),
-        ("provisioning.idle", "provisioning.waiting_capacity", "development.agent_running",
-         "development.waiting_capacity"),
+        "It is not. There is no `waiting_capacity` state or flag: the contribution stays in its "
+        "state while a guard such as a free worker slot or available capacity does not hold, and "
+        "the status page shows the unmet guard.",
+        ("provisioning.idle", "development.agent_running"),
         edges=(("provisioning.idle", "start_operation"),
                ("development.agent_running", "schedule_publish_retry")),
-        contested=(("provisioning.idle", "start_operation"),
-                   ("development.agent_running", "schedule_publish_retry")),
-        candidates=(Candidate("provisioning.idle", "start_operation",
-                              "provisioning.waiting_capacity", "B"),
-                    Candidate("development.agent_running", "schedule_publish_retry",
-                              "development.waiting_capacity", "B")),
+        highlighted=(("provisioning.idle", "start_operation"),
+                     ("development.agent_running", "schedule_publish_retry")),
     ),
-    Decision(
+    Item(
         "Repair-budget exhaustion",
-        "Whether `no_progress` exhaustion parks straight from `development.agent_running` or "
-        "through `development.fix_needed`.",
-        "`reject_patch_proposal` charges `no_progress` and leads to `development.fix_needed`, "
-        "where `exhaust_repair_attempts` parks when any repair budget is exhausted at allocation.",
-        (("A", "Keep the table."),
-         ("B", "Add `exhaust_repair_attempts` from `development.agent_running` for the "
-               "`no_progress` streak.")),
-        ("development.agent_running", "development.fix_needed", "parked.idle"),
+        "Where repair-budget exhaustion is decided, and what it does.",
+        "Exhaustion is decided at `development.fix_needed` only. The first time "
+        "`repair_attempts_cluster` or `no_progress` is exhausted in a generation, the tick row "
+        "`refresh_on_exhaustion` leads to `queued.idle` and starts both counters again, but not "
+        "`work_total`. Once that automatic refresh is used, `exhaust_repair_attempts` parks.",
+        ("development.agent_running", "development.fix_needed", "queued.idle", "parked.idle"),
         edges=(("development.agent_running", "reject_patch_proposal"),
                ("development.fix_needed", "request_repair"),
+               ("development.fix_needed", "refresh_on_exhaustion"),
                ("development.fix_needed", "exhaust_repair_attempts")),
-        contested=(("development.fix_needed", "exhaust_repair_attempts"),),
-        candidates=(Candidate("development.agent_running", "exhaust_repair_attempts",
-                              "parked.idle", "B"),),
+        highlighted=(("development.fix_needed", "refresh_on_exhaustion"),
+                     ("development.fix_needed", "exhaust_repair_attempts")),
     ),
-    Decision(
+    Item(
         "Investigation retry budget",
         "Which budget `reject_dossier` charges.",
-        "`reject_dossier` charges `investigation_attempts`, which counts against "
-        "`retries.max_attempts_per_contribution`.",
-        (("A", "Keep the table."),
-         ("B", "Add a dedicated `retries.investigation_attempts` key."),
-         ("C", "Charge `work_recovery` instead.")),
+        "A dedicated `investigation_attempts` budget with the key `retries.investigation_attempts` "
+        "(3) and its own counter. A Result without a dossier charges it too instead of going "
+        "straight to `investigation.waiting_human`.",
         ("investigation.idle", "investigation.agent_running", "investigation.waiting_human"),
         edges=(("investigation.idle", "dispatch_investigation"),
                ("investigation.agent_running", "reject_dossier"),
                ("investigation.agent_running", "exhaust_investigation_recovery"),
                ("investigation.waiting_human", "resume_investigation")),
-        contested=(("investigation.agent_running", "reject_dossier"),),
+        highlighted=(("investigation.agent_running", "reject_dossier"),
+                     ("investigation.agent_running", "exhaust_investigation_recovery")),
     ),
-    Decision(
+    Item(
         "Publication recovery exhaustion and its resume",
         "From which states `exhaust_publish_recovery` is taken, and where `resume_development` "
         "leads.",
-        "`exhaust_publish_recovery` leaves only `development.agent_running`; "
-        "`resume_development` leads to `development.fix_needed`.",
-        (("A", "Keep the table."),
-         ("B", "Also take `exhaust_publish_recovery` from `development.fix_needed` and resume "
-               "to `development.idle`.")),
-        ("development.agent_running", "development.fix_needed", "development.waiting_human",
-         "development.idle"),
+        "In development, `exhaust_publish_recovery` leaves only `development.agent_running`. "
+        "`resume_development` leads to `development.fix_needed`, clears `pending_publication`, "
+        "and requests fresh Work. Automatic publish retries still reuse the Result.",
+        ("development.agent_running", "development.fix_needed", "development.waiting_human"),
         edges=(("development.agent_running", "schedule_publish_retry"),
                ("development.agent_running", "exhaust_publish_recovery"),
                ("development.waiting_human", "resume_development")),
-        contested=(("development.agent_running", "exhaust_publish_recovery"),
-                   ("development.waiting_human", "resume_development")),
-        candidates=(Candidate("development.fix_needed", "exhaust_publish_recovery",
-                              "development.waiting_human", "B"),
-                    Candidate("development.waiting_human", "resume_development<br/>/upstreaming resume",
-                              "development.idle", "B")),
+        highlighted=(("development.agent_running", "exhaust_publish_recovery"),
+                     ("development.waiting_human", "resume_development")),
     ),
-    Decision(
+    Item(
         "Dispatch and Work recovery exhaustion targets",
-        "Whether dispatch exhaustion and Work exhaustion should lead to the same place.",
-        "`exhaust_dispatch_recovery` waits for a human; `exhaust_work_recovery` parks. "
-        "A stale rejection takes `replan_development`. A development PR resource that does not "
-        "match has no row.",
-        (("A", "Keep the table."),
-         ("B", "Both wait for a human."),
-         ("C", "Both park.")),
-        ("development.agent_running", "development.waiting_human", "parked.idle", "development.idle"),
+        "Whether dispatch exhaustion and Work exhaustion lead to the same place.",
+        "Both wait for a human: `exhaust_work_recovery` leads to the phase's `waiting_human` in "
+        "investigation, development, and upstream review, like `exhaust_dispatch_recovery`. An "
+        "observed development PR that does not match the record takes `record_pr_mismatch` to "
+        "`development.waiting_human`.",
+        ("development.agent_running", "development.waiting_ci", "development.waiting_human"),
         edges=(("development.agent_running", "exhaust_dispatch_recovery"),
                ("development.agent_running", "exhaust_work_recovery"),
-               ("development.agent_running", "replan_development")),
-        contested=(("development.agent_running", "exhaust_dispatch_recovery"),
-                   ("development.agent_running", "exhaust_work_recovery")),
-        candidates=(Candidate("development.agent_running", "exhaust_work_recovery",
-                              "development.waiting_human", "B"),
-                    Candidate("development.agent_running", "exhaust_dispatch_recovery",
-                              "parked.idle", "C")),
+               ("development.waiting_ci", "record_pr_mismatch")),
+        highlighted=(("development.agent_running", "exhaust_work_recovery"),
+                     ("development.waiting_ci", "record_pr_mismatch")),
     ),
-    Decision(
+    Item(
         "Where park and refresh apply",
         "From which states `park_contribution` and `refresh_investigation` are accepted.",
-        "Each state lists them explicitly: `park_contribution` from idle, fix-needed, gate, and "
-        "human-wait states, never from `handoff.waiting_upstream_pr`; `refresh_investigation` "
-        "from `development.idle` and `handoff.awaiting_submission`. The controller today "
-        "accepts `park` from every non-terminal state and `refresh` from every development and "
-        "handoff activity when no Work or operation is active.",
-        (("A", "Allow both from every non-terminal state except the listed exclusions, with "
-               "quiescence guards."),
-         ("B", "Keep the explicit rows.")),
-        ("development.agent_running", "development.idle", "handoff.awaiting_submission",
-         "queued.idle", "parked.idle"),
-        edges=(("development.idle", "refresh_investigation"),
-               ("development.idle", "park_contribution"),
+        "`park_contribution` is one rule: every non-terminal state, guarded by no open operation, "
+        "except `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other "
+        "than `upstream_review.waiting_human`. `refresh_investigation` stays explicit: "
+        "`development.fix_needed`, `development.waiting_ci`, "
+        "`development.waiting_human`, `handoff.awaiting_submission`, and "
+        "`handoff.waiting_upstream_pr`. Both are accepted while paused.",
+        ("development.agent_running", "development.waiting_ci", "handoff.awaiting_submission",
+         "handoff.waiting_upstream_pr", "queued.idle", "parked.idle"),
+        edges=(("development.agent_running", "park_contribution"),
+               ("development.waiting_ci", "park_contribution"),
+               ("development.waiting_ci", "refresh_investigation"),
+               ("handoff.awaiting_submission", "park_contribution"),
                ("handoff.awaiting_submission", "refresh_investigation"),
-               ("handoff.awaiting_submission", "park_contribution")),
-        candidates=(Candidate("development.agent_running", "park_contribution<br/>/upstreaming park",
-                              "parked.idle", "A"),
-                    Candidate("development.agent_running",
-                              "refresh_investigation<br/>/upstreaming refresh", "queued.idle", "A")),
+               ("handoff.waiting_upstream_pr", "refresh_investigation")),
+        highlighted=(("development.agent_running", "park_contribution"),
+                     ("development.waiting_ci", "refresh_investigation"),
+                     ("handoff.waiting_upstream_pr", "refresh_investigation")),
     ),
-    Decision(
+    Item(
         "Return path after refresh",
         "Where a refreshed investigation that decides to develop leads.",
-        "`readmit_development` leads to `development.fix_needed` on the existing fork; "
-        "`admit_development` without a recorded refresh leads to `provisioning.idle`.",
-        (("A", "Keep the table."),
-         ("B", "Always provision again through `admit_development`.")),
-        ("development.idle", "queued.idle", "investigation.agent_running", "provisioning.idle",
-         "development.fix_needed"),
-        edges=(("development.idle", "refresh_investigation"),
+        "`readmit_development` leads to `development.fix_needed` on the existing fork. The guard "
+        "of `admit_development` is the complement: no refresh recorded, or the recorded fork or "
+        "development PR no longer matches.",
+        ("development.fix_needed", "queued.idle", "investigation.agent_running",
+         "provisioning.idle"),
+        edges=(("development.fix_needed", "refresh_investigation"),
                ("investigation.agent_running", "admit_development"),
                ("investigation.agent_running", "readmit_development")),
-        contested=(("investigation.agent_running", "readmit_development"),),
+        highlighted=(("investigation.agent_running", "admit_development"),
+                     ("investigation.agent_running", "readmit_development")),
     ),
-    Decision(
+    Item(
         "Park by dossier decision and park by command",
         "Whether parking from investigation is one verb or two.",
-        "Two verbs: `park_investigation` is a Result transition taken on a dossier decision; "
-        "`park_contribution` is the `/upstreaming park` command.",
-        (("A", "Keep two verbs."),
-         ("B", "One verb with two triggers.")),
+        "Two verbs. `park_investigation` is the Result transition taken on a dossier decision and "
+        "no longer carries the `/upstreaming park` label; `park_contribution` is the command.",
         ("investigation.idle", "investigation.agent_running", "parked.idle"),
         edges=(("investigation.agent_running", "park_investigation"),
+               ("investigation.agent_running", "park_contribution"),
                ("investigation.idle", "park_contribution")),
-        contested=(("investigation.agent_running", "park_investigation"),),
-        candidates=(Candidate("investigation.agent_running",
-                              "park_contribution<br/>/upstreaming park", "parked.idle", "B"),),
+        highlighted=(("investigation.agent_running", "park_investigation"),),
     ),
-    Decision(
+    Item(
         "Beginning the investigation",
         "Whether `begin_investigation` and `dispatch_investigation` are two writes.",
-        "`begin_investigation` leads to `investigation.idle`, and `dispatch_investigation` "
-        "allocates Work from there. The controller today writes `investigation.agent_running` "
-        "directly from `queued.idle`.",
-        (("A", "Keep two transitions, written in two commits."),
-         ("B", "One compound write from `queued.idle` to `investigation.agent_running` that "
-               "records both events.")),
+        "Two transitions, written in two commits.",
         ("queued.idle", "investigation.idle", "investigation.agent_running"),
         edges=(("queued.idle", "begin_investigation"),
                ("investigation.idle", "dispatch_investigation")),
-        contested=(("queued.idle", "begin_investigation"),),
-        candidates=(Candidate("queued.idle", "begin_investigation",
-                              "investigation.agent_running", "B"),),
+        highlighted=(("queued.idle", "begin_investigation"),
+                     ("investigation.idle", "dispatch_investigation")),
     ),
-    Decision(
+    Item(
         "Provisioning failures",
         "How provisioning failures are recovered, and whether the `approve-scope` and `provision` "
-        "commands the controller accepts today stay.",
-        "`start_operation` charges `operation_launch`; its exhaustion and unsafe prerequisites "
-        "take `require_provisioning_intervention`. `resume_provisioning` charges "
-        "`provisioning_attempts`, and `exhaust_provisioning_attempts` parks. "
-        "`close_investigation` also leaves `provisioning.idle`.",
-        (("A", "Keep the table and retire `approve-scope` and `provision`."),
-         ("B", "Keep the commands as the resume path."),
-         ("C", "Park directly when `operation_launch` is exhausted.")),
-        ("provisioning.idle", "provisioning.waiting_human", "development.idle", "parked.idle",
-         "closed.idle"),
+        "commands stay.",
+        "`approve-scope` and `provision` are retired. The `provisioning_attempts` budget and "
+        "`exhaust_provisioning_attempts` are removed; a human parks explicitly. "
+        "`close_investigation` no longer leaves `provisioning.idle`. Exhausting "
+        "`operation_launch` waits for a human and does not park.",
+        ("provisioning.idle", "provisioning.waiting_human", "development.fix_needed",
+         "parked.idle"),
         edges=(("provisioning.idle", "start_operation"),
                ("provisioning.idle", "require_provisioning_intervention"),
                ("provisioning.waiting_human", "resume_provisioning"),
-               ("provisioning.waiting_human", "exhaust_provisioning_attempts"),
-               ("provisioning.idle", "confirm_provisioning"),
-               ("provisioning.idle", "close_investigation")),
-        contested=(("provisioning.waiting_human", "exhaust_provisioning_attempts"),
-                   ("provisioning.idle", "close_investigation")),
-        candidates=(Candidate("provisioning.idle", "exhaust_operation_launch", "parked.idle", "C"),),
+               ("provisioning.waiting_human", "park_contribution"),
+               ("provisioning.idle", "confirm_provisioning")),
+        highlighted=(("provisioning.waiting_human", "resume_provisioning"),
+                     ("provisioning.waiting_human", "park_contribution")),
     ),
-    Decision(
+    Item(
         "Upstream revision outcomes",
         "What happens when revision Work in upstream review is rejected or reports no change.",
-        "`upstream_review.agent_running` has no rejection or no-change transition; only "
-        "`record_revision_publish_success` and the recovery transitions leave it.",
-        (("A", "Mirror development: add `reject_patch_proposal` and `record_no_change`."),
-         ("B", "Send every unusable revision outcome to `upstream_review.waiting_human`.")),
+        "A rejected proposal takes `reject_patch_proposal` to `upstream_review.fix_needed` and "
+        "charges `no_progress`. When no change is needed, `require_reviewer_answer` leads to "
+        "`upstream_review.waiting_human` with a pending action to answer the reviewer. "
+        "`upstream_review.agent_running` has `schedule_publish_retry` and "
+        "`exhaust_publish_recovery`. Every exhaustion in upstream review leads to "
+        "`upstream_review.waiting_human`.",
         ("upstream_review.waiting_ci", "upstream_review.fix_needed", "upstream_review.agent_running",
          "upstream_review.waiting_human"),
-        edges=(("upstream_review.waiting_ci", "record_upstream_ci_failure"),
-               ("upstream_review.fix_needed", "request_upstream_revision"),
-               ("upstream_review.agent_running", "record_revision_publish_success")),
-        candidates=(Candidate("upstream_review.agent_running", "reject_patch_proposal",
-                              "upstream_review.fix_needed", "A"),
-                    Candidate("upstream_review.agent_running", "record_no_change",
-                              "upstream_review.waiting_ci", "A"),
-                    Candidate("upstream_review.agent_running", "reject_upstream_revision",
-                              "upstream_review.waiting_human", "B")),
+        edges=(("upstream_review.fix_needed", "request_upstream_revision"),
+               ("upstream_review.agent_running", "record_revision_publish_success"),
+               ("upstream_review.agent_running", "reject_patch_proposal"),
+               ("upstream_review.agent_running", "require_reviewer_answer"),
+               ("upstream_review.agent_running", "schedule_publish_retry"),
+               ("upstream_review.agent_running", "exhaust_publish_recovery"),
+               ("upstream_review.fix_needed", "exhaust_repair_attempts")),
+        highlighted=(("upstream_review.agent_running", "reject_patch_proposal"),
+                     ("upstream_review.agent_running", "require_reviewer_answer"),
+                     ("upstream_review.agent_running", "schedule_publish_retry"),
+                     ("upstream_review.agent_running", "exhaust_publish_recovery")),
     ),
-    Decision(
+    Item(
         "Commands without table rows",
-        "Which commands the controller accepts today become table rows: `abandon`, `restart`, "
-        "`clarify`, `revise-scope`, `force-develop`, `approve-scope`, `provision`, "
-        "`request-handoff`, `approve-handoff`, `register-upstream-pr`, and "
-        "`authorize-followup`.",
-        "None of them has a row. `block` is the `blocked` flag.",
-        (("A", "Add a row for each command that stays, such as `abandon` to `closed.idle` and "
-               "`force-develop` from `parked.idle`."),
-         ("B", "Retire the commands that table verbs replace (the handoff commands, "
-               "`approve-scope`, `provision`, `abandon`, and `restart`).")),
-        ("development.idle", "parked.idle", "provisioning.idle", "closed.idle", "queued.idle"),
-        candidates=(Candidate("development.idle", "abandon<br/>/upstreaming abandon", "closed.idle", "A"),
-                    Candidate("closed.idle", "restart<br/>/upstreaming restart", "queued.idle", "A"),
-                    Candidate("parked.idle", "force_develop<br/>/upstreaming force-develop",
-                              "provisioning.idle", "A")),
+        "Which commands become table rows and which are retired.",
+        "Retired: `request-handoff`, `approve-handoff`, `register-upstream-pr`, `approve-scope`, "
+        "`provision`, `restart`, `clarify`, `revise-scope`, and `force-develop`. `abandon` leads "
+        "from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. "
+        "`/upstreaming resume` from `parked.idle` accepts an optional class, paths, and reason, "
+        "stored as `admission_override`; `restart_generation` still runs the complete "
+        "investigation, and `admit_development` accepts a verified dossier decision develop, or "
+        "a decision park with a recorded override. `authorize-followup` is an intake command outside the table.",
+        ("parked.idle", "closed.idle", "queued.idle", "investigation.agent_running",
+         "provisioning.idle"),
+        edges=(("parked.idle", "abandon"),
+               ("parked.idle", "restart_generation"),
+               ("investigation.agent_running", "admit_development")),
+        highlighted=(("parked.idle", "abandon"), ("parked.idle", "restart_generation")),
     ),
-    Decision(
+    Item(
         "Observations and outcomes without verbs",
         "Whether CI passing without nomination, a CI access wait, and a withdrawn obsolete repair "
         "become table verbs.",
-        "The table has no rows for them. The controller today moves to an idle activity when CI "
-        "passes without nomination, to `waiting_human` without a pending action on a CI access "
-        "wait, and back to `waiting_ci` when an obsolete repair is withdrawn.",
-        (("A", "Name each as a verb in the table."),
-         ("B", "Make them self-transitions that never change phase or activity."),
-         ("C", "Remove them from the controller.")),
-        ("development.agent_running", "development.waiting_ci", "development.idle",
-         "development.waiting_human"),
-        edges=(("development.agent_running", "record_publish_success"),),
-        candidates=(Candidate("development.waiting_ci", "record_ci_passed", "development.idle", "A"),
-                    Candidate("development.waiting_ci", "record_ci_access_wait",
-                              "development.waiting_human", "A"),
-                    Candidate("development.agent_running", "withdraw_obsolete_repair",
-                              "development.waiting_ci", "A")),
+        "None does; all three leave the controller. Green CI without nomination stays in "
+        "`development.waiting_ci`. A CI access failure is collector health, not contribution "
+        "state. An obsolete repair is not withdrawn; its Result is judged stale on arrival and "
+        "takes `record_late_effect`.",
+        ("development.agent_running", "development.waiting_ci", "handoff.awaiting_submission"),
+        edges=(("development.agent_running", "record_publish_success"),
+               ("development.agent_running", "record_late_effect"),
+               ("development.waiting_ci", "nominate_for_handoff")),
+        highlighted=(("development.agent_running", "record_late_effect"),),
     ),
-    Decision(
+    Item(
         "Late Results during handoff",
-        "What a late published Result does in the handoff states.",
-        "No handoff state has a Result transition, so a late Result changes nothing there. The "
-        "controller today folds a late published Result in handoff and moves to `waiting_ci`.",
-        (("A", "Keep the table: ignore late Results in handoff."),
-         ("B", "Record them with `record_late_effect`, as in `parked.idle`."),
-         ("C", "Accept them only before `handoff.waiting_upstream_pr`.")),
-        ("handoff.awaiting_submission", "handoff.waiting_upstream_pr", "parked.idle"),
-        edges=(("parked.idle", "record_late_effect"),
-               ("handoff.waiting_upstream_pr", "record_audit_observation")),
-        candidates=(Candidate("handoff.awaiting_submission", "record_late_effect",
-                              "handoff.awaiting_submission", "B"),
-                    Candidate("handoff.waiting_upstream_pr", "record_late_effect",
-                              "handoff.waiting_upstream_pr", "B")),
+        "What a late Result does in the handoff states.",
+        "One rule for every state: a Result that does not match the current generation, "
+        "revision, and requested Work is recorded by `record_late_effect` and never changes "
+        "state. `record_head_change` leads from `handoff.awaiting_submission` to "
+        "`development.waiting_ci`, bumps the revision, and clears the CI evidence. "
+        "`return_for_repair` from `handoff.waiting_ci` also fires when the head differs from the "
+        "clean head.",
+        ("handoff.awaiting_submission", "handoff.waiting_ci", "development.waiting_ci",
+         "development.fix_needed"),
+        edges=(("handoff.awaiting_submission", "record_late_effect"),
+               ("handoff.awaiting_submission", "record_head_change"),
+               ("handoff.waiting_ci", "return_for_repair")),
+        highlighted=(("handoff.awaiting_submission", "record_late_effect"),
+                     ("handoff.awaiting_submission", "record_head_change"),
+                     ("handoff.waiting_ci", "return_for_repair")),
     ),
-    Decision(
+    Item(
         "Budget keys",
         "Whether budgets get their own `policy.json` keys.",
-        "`dispatch_recovery`, `work_recovery`, `publish_recovery`, `operation_launch`, "
-        "`provisioning_attempts`, `internal_pr_closure`, and `submission_comment` share "
-        "`retries.infrastructure_per_head_failure`; `investigation_attempts` and "
-        "`repair_attempts_total` share `retries.max_attempts_per_contribution`. The "
-        "`record_reminder` interval of 7 days is not a policy key.",
-        (("A", "One policy key per budget, plus a reminder interval key."),
-         ("B", "Keep shared keys.")),
-        ("development.agent_running", "development.waiting_human", "parked.idle",
-         "handoff.closing_internal_pr", "handoff.waiting_internal_pr"),
-        edges=(("development.agent_running", "retry_dispatch"),
-               ("development.agent_running", "allocate_work_retry"),
-               ("development.agent_running", "schedule_publish_retry"),
-               ("development.agent_running", "exhaust_dispatch_recovery"),
-               ("development.agent_running", "exhaust_work_recovery"),
-               ("handoff.closing_internal_pr", "retry_internal_pr_closure"),
-               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries")),
-        contested=(("development.agent_running", "retry_dispatch"),
-                   ("development.agent_running", "allocate_work_retry"),
-                   ("development.agent_running", "schedule_publish_retry"),
-                   ("handoff.closing_internal_pr", "retry_internal_pr_closure")),
+        "Keys are split by what is spent. `work_total` reads "
+        "`retries.max_attempts_per_contribution`, `work_recovery` reads `retries.work_recovery`, "
+        "`investigation_attempts` reads `retries.investigation_attempts`, and the infrastructure "
+        "budgets share `retries.infrastructure_per_head_failure`. The reminder interval reads "
+        "`human_sla_business_days.reminder`. Each Result records its token usage in the events.",
+        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human"),
+        edges=(("investigation.agent_running", "retry_dispatch"),
+               ("investigation.agent_running", "allocate_work_retry"),
+               ("investigation.agent_running", "reject_dossier"),
+               ("investigation.agent_running", "exhaust_dispatch_recovery"),
+               ("investigation.waiting_human", "record_reminder")),
+        highlighted=(("investigation.agent_running", "allocate_work_retry"),
+                     ("investigation.agent_running", "reject_dossier"),
+                     ("investigation.waiting_human", "record_reminder")),
     ),
-    Decision(
+    Item(
         "Flaky CI reruns",
-        "How a CI failure is classified flaky before `rerun_failed_ci` is taken.",
-        "`rerun_failed_ci` charges `flaky_reruns`; when it is exhausted or the failure is not "
-        "flaky, `record_ci_failure` is taken. The classification is not defined.",
-        (("A", "The worker classifies the failure and requests a rerun."),
-         ("B", "The collector classifies from job logs."),
-         ("C", "Drop `rerun_failed_ci` and repair every failure.")),
-        ("development.waiting_ci", "development.fix_needed"),
-        edges=(("development.waiting_ci", "rerun_failed_ci"),
-               ("development.waiting_ci", "record_ci_failure")),
-        contested=(("development.waiting_ci", "rerun_failed_ci"),),
+        "How a CI failure is classified before a rerun.",
+        "The repair worker classifies. A Result reporting a failure not caused by the patch takes "
+        "`request_ci_rerun` from `development.agent_running` to `development.waiting_ci` and "
+        "charges `flaky_reruns`; it replaces `record_no_change`. When `flaky_reruns` is "
+        "exhausted, the outcome counts as `reject_patch_proposal`. The collector reruns on its "
+        "own only jobs that were cancelled or lost their runner, in `development.waiting_ci` and "
+        "`handoff.waiting_ci`, within `interrupted_reruns` per head. Upstream CI is never rerun.",
+        ("development.agent_running", "development.waiting_ci", "development.fix_needed",
+         "handoff.waiting_ci"),
+        edges=(("development.agent_running", "request_ci_rerun"),
+               ("development.agent_running", "reject_patch_proposal"),
+               ("development.waiting_ci", "record_ci_failure"),
+               ("development.waiting_ci", "rerun_interrupted_ci"),
+               ("handoff.waiting_ci", "rerun_interrupted_ci")),
+        highlighted=(("development.agent_running", "request_ci_rerun"),
+                     ("development.waiting_ci", "rerun_interrupted_ci"),
+                     ("handoff.waiting_ci", "rerun_interrupted_ci")),
     ),
-    Decision(
+    Item(
         "Revision bumps",
-        "Whether the `revision` effect of every row is the complete revision rule.",
-        "Each row states whether it bumps the revision. Examples: `allocate_work_retry` and "
-        "`confirm_provisioning` bump, `resume_pause` does not, `resume_block` does.",
-        (("A", "The table is the complete rule."),
-         ("B", "Bump only on changed requested work, and drop the bumps the table adds beyond it.")),
-        ("development.waiting_ci", "development.waiting_ci+paused", "development.waiting_ci+blocked",
-         "development.agent_running"),
-        edges=(("development.waiting_ci", "pause"),
-               ("development.waiting_ci+paused", "resume_pause"),
-               ("development.waiting_ci", "block"),
-               ("development.waiting_ci+blocked", "resume_block"),
-               ("development.agent_running", "allocate_work_retry")),
-        contested=(("development.waiting_ci+paused", "resume_pause"),
-                   ("development.waiting_ci+blocked", "resume_block"),
-                   ("development.agent_running", "allocate_work_retry")),
+        "Which rows bump the revision.",
+        "One rule: revision +1 on every transition that invalidates requested or approved work, "
+        "and on every resume, flags included. No other row bumps; `confirm_provisioning` lost "
+        "its bump. `python -m lifecycle check` enforces the rule on every row.",
+        ("provisioning.idle", "development.fix_needed", "handoff.closing_internal_pr",
+         "handoff.waiting_human", "release_wait.idle", "release_wait.waiting_human"),
+        edges=(("provisioning.idle", "confirm_provisioning"),
+               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
+               ("handoff.waiting_human", "resume_internal_pr_closure"),
+               ("release_wait.idle", "require_release_intervention"),
+               ("release_wait.waiting_human", "resume_release_observation")),
+        highlighted=(("provisioning.idle", "confirm_provisioning"),
+                     ("handoff.waiting_human", "resume_internal_pr_closure"),
+                     ("release_wait.waiting_human", "resume_release_observation")),
     ),
-    Decision(
+    Item(
         "Blocked flag",
-        "Whether `block` changes the activity.",
-        "`block` only sets `blocked_reason`. The controller today also sets the activity to "
-        "`waiting_human`.",
-        (("A", "Keep the table."),
-         ("B", "Also enter the phase's `waiting_human` activity.")),
-        ("development.waiting_ci", "development.waiting_ci+blocked", "development.waiting_human+blocked"),
-        edges=(("development.waiting_ci", "block"),
-               ("development.waiting_ci+blocked", "resume_block")),
-        contested=(("development.waiting_ci", "block"),),
-        candidates=(Candidate("development.waiting_ci", "block<br/>/upstreaming block",
-                              "development.waiting_human+blocked", "B"),),
+        "Whether a block changes the activity, and whether `blocked` is a flag of its own.",
+        "A block does not change the activity. `blocked` is merged into `paused`: one flag with "
+        "a reason and who set it, a human or the controller. The controller sets it when the "
+        "upstream identity changes. The `block` command is retired; `pause` accepts an optional "
+        "reason.",
+        ("development.waiting_ci", "development.waiting_ci+paused"),
+        edges=(("development.waiting_ci", "pause"),
+               ("development.waiting_ci", "pause_on_identity_change"),
+               ("development.waiting_ci+paused", "resume_pause")),
+        highlighted=(("development.waiting_ci", "pause"),
+                     ("development.waiting_ci", "pause_on_identity_change")),
     ),
-    Decision(
+    Item(
         "Remote operation states",
-        "Whether remote operations get their own table beside this one.",
-        "The table names operation receipts as triggers but does not model the operation's own "
-        "states (planned, applying, uncertain, confirmed, failed, not launched). Publication "
-        "retries live in `pending_publication`.",
-        (("A", "Add an operation table with the same tests."),
-         ("B", "Leave operations outside the table."),
-         ("C", "Move publication retries into the operation table.")),
-        ("provisioning.idle", "provisioning.waiting_human", "development.idle"),
-        edges=(("provisioning.idle", "start_operation"),
-               ("provisioning.idle", "require_provisioning_intervention"),
-               ("provisioning.idle", "confirm_provisioning")),
-        contested=(("provisioning.idle", "start_operation"),),
+        "Whether remote operations get their own table.",
+        "They do: an operation table with the states planned, applying, uncertain, confirmed, "
+        "failed, and not launched, under the same checks. `/upstreaming resolve-operation` lives "
+        "there. The human waits of the handoff operations are one `handoff.waiting_human`. "
+        "Later: publication retries move into the operation table.",
+        operations=True,
     ),
 )
+
+FURTHER_CHANGES: tuple[Item, ...] = (
+    Item(
+        "Dossier refresh after a stop",
+        "When a stop of unknown length makes the dossier stale.",
+        "The dossier is refreshed after a park (`restart_generation` always runs the complete "
+        "investigation) and after a pause or human wait longer than `refresh.stale_after_days` "
+        "(7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads "
+        "to `queued.idle` with the effects of `refresh_investigation`; the clock is the older of "
+        "`paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry "
+        "the complementary guard, so exactly one applies. `resume_stale` also requires that no "
+        "Work is requested, no operation is open, and no publication is pending. A pause in "
+        "investigation needs no "
+        "rule because the Work was cleared. Handoff, upstream review, and release waits are "
+        "never refreshed automatically; in `handoff.awaiting_submission` and "
+        "`handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.",
+        ("provisioning.waiting_human", "provisioning.idle", "development.waiting_ci+paused",
+         "development.waiting_ci", "queued.idle"),
+        edges=(("provisioning.waiting_human", "resume_provisioning"),
+               ("provisioning.waiting_human", "resume_stale"),
+               ("development.waiting_ci+paused", "resume_pause"),
+               ("development.waiting_ci+paused", "resume_stale")),
+        highlighted=(("provisioning.waiting_human", "resume_stale"),
+                     ("development.waiting_ci+paused", "resume_stale")),
+    ),
+    Item(
+        "Budgets",
+        "What each budget counts and where its exhaustion leads.",
+        "Every row that allocates or reallocates Work charges the per-generation `work_total`. "
+        "`provisioning_attempts` and `repair_attempts_total` are removed. Exhaustion of an "
+        "infrastructure budget leads to a human wait of the same phase and never ends the "
+        "generation. The budgets table of the lifecycle table page lists every budget with its "
+        "charge, counter, limit, and exhaustion.",
+        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human"),
+        edges=(("investigation.idle", "dispatch_investigation"),
+               ("investigation.idle", "exhaust_work_total"),
+               ("investigation.agent_running", "allocate_work_retry"),
+               ("investigation.agent_running", "exhaust_work_recovery")),
+        highlighted=(("investigation.idle", "dispatch_investigation"),
+                     ("investigation.idle", "exhaust_work_total"),
+                     ("investigation.agent_running", "exhaust_work_recovery")),
+    ),
+    Item(
+        "No automatic park from upstream review",
+        "A generation restarted after an automatic park would write the fork ref that is the "
+        "upstream PR head.",
+        "`exhaust_work_recovery` and `exhaust_repair_attempts` no longer park from "
+        "`upstream_review`; they wait for a human. `restart_generation` requires that no "
+        "upstream PR is open.",
+        ("upstream_review.agent_running", "upstream_review.fix_needed",
+         "upstream_review.waiting_human", "parked.idle", "queued.idle"),
+        edges=(("upstream_review.agent_running", "exhaust_work_recovery"),
+               ("upstream_review.fix_needed", "exhaust_repair_attempts"),
+               ("upstream_review.waiting_human", "park_contribution"),
+               ("parked.idle", "restart_generation")),
+        highlighted=(("upstream_review.agent_running", "exhaust_work_recovery"),
+                     ("upstream_review.fix_needed", "exhaust_repair_attempts"),
+                     ("parked.idle", "restart_generation")),
+    ),
+    Item(
+        "Every Work allocation is charged",
+        "`request_patch` and `record_no_change` charged nothing, so the first patch could "
+        "loop without bound, and with CI evidence on the head it had no automatic exit.",
+        "`request_patch` charges `work_total`, `request_ci_rerun` replaces `record_no_change`, "
+        "and `replan_development` leads to `development.fix_needed`.",
+        ("development.agent_running", "development.waiting_ci", "development.fix_needed"),
+        edges=(("development.fix_needed", "request_patch"),
+               ("development.agent_running", "replan_development"),
+               ("development.agent_running", "request_ci_rerun"),
+               ("development.fix_needed", "request_repair")),
+        highlighted=(("development.fix_needed", "request_patch"),
+                     ("development.agent_running", "replan_development")),
+    ),
+    Item(
+        "Reminders for every human step",
+        "`handoff.awaiting_submission` had no reminder although it is the only mandatory human "
+        "step.",
+        "`record_reminder` is a rule of the `gate`, `human_wait`, and `locked` kinds.",
+        ("handoff.awaiting_submission", "handoff.cleaning_debug"),
+        edges=(("handoff.awaiting_submission", "record_reminder"),
+               ("handoff.awaiting_submission", "submit_upstream")),
+        highlighted=(("handoff.awaiting_submission", "record_reminder"),),
+    ),
+    Item(
+        "Head change in upstream review",
+        "`upstream_review.waiting_ci` had no head-change row.",
+        "A head change that the pipeline did not publish takes `record_head_change` to "
+        "`upstream_review.waiting_human`.",
+        ("upstream_review.waiting_ci", "upstream_review.waiting_human"),
+        edges=(("upstream_review.waiting_ci", "record_head_change"),),
+        highlighted=(("upstream_review.waiting_ci", "record_head_change"),),
+    ),
+    Item(
+        "Explanations in upstream review",
+        "Replies to reviewers are only safe on the development PR.",
+        "In `upstream_review`, `record_explanation` records the comment and surfaces it on the "
+        "tracking issue; nothing is posted on the upstream PR.",
+        ("upstream_review.waiting_ci",),
+        edges=(("upstream_review.waiting_ci", "record_explanation"),),
+        highlighted=(("upstream_review.waiting_ci", "record_explanation"),),
+    ),
+    Item(
+        "Infrastructure failure of the debug cleanup",
+        "`handoff.cleaning_debug` had no row for an infrastructure failure of the lease write.",
+        "`retry_debug_cleanup` retries within `debug_cleanup`, and "
+        "`exhaust_debug_cleanup_retries` leads to the human wait `handoff.waiting_human`, like "
+        "the other two handoff operations.",
+        ("handoff.cleaning_debug", "handoff.waiting_human", "handoff.waiting_ci"),
+        edges=(("handoff.cleaning_debug", "retry_debug_cleanup"),
+               ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+               ("handoff.waiting_human", "resume_debug_cleanup"),
+               ("handoff.cleaning_debug", "confirm_clean_head")),
+        highlighted=(("handoff.cleaning_debug", "retry_debug_cleanup"),
+                     ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+                     ("handoff.waiting_human", "resume_debug_cleanup")),
+    ),
+    Item(
+        "Resumes of handoff and release waits bump the revision",
+        "`resume_internal_pr_closure`, `resume_submission_preparation`, and "
+        "`resume_release_observation` did not bump the revision.",
+        "They bump it, like every resume.",
+        ("handoff.preparing_submission", "handoff.waiting_human"),
+        edges=(("handoff.preparing_submission", "exhaust_comment_retries"),
+               ("handoff.waiting_human", "resume_submission_preparation")),
+        highlighted=(("handoff.waiting_human", "resume_submission_preparation"),),
+    ),
+    Item(
+        "Three exits from the locked upstream-PR wait",
+        "`handoff.waiting_upstream_pr` was defined as having exactly two exits.",
+        "It has three: `verify_upstream_pr`, `retract_submission`, and `refresh_investigation`, "
+        "the last with the guards of `retract_submission` (exact revision, exact clean head, "
+        "quiescent). The check enforces the three exits.",
+        ("handoff.waiting_upstream_pr", "upstream_review.waiting_ci", "development.fix_needed",
+         "queued.idle"),
+        edges=(("handoff.waiting_upstream_pr", "verify_upstream_pr"),
+               ("handoff.waiting_upstream_pr", "retract_submission"),
+               ("handoff.waiting_upstream_pr", "refresh_investigation")),
+        highlighted=(("handoff.waiting_upstream_pr", "refresh_investigation"),),
+    ),
+)
+
+SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
+    Item(
+        "Merge `development.idle` and `development.fix_needed`",
+        "Whether the two states in which development Work is due become one.",
+        "One state, `development.fix_needed`: development Work is due. `confirm_provisioning` "
+        "enters it. `request_patch` applies while the head has no CI evidence and no feedback "
+        "is recorded; `request_repair` applies once CI evidence or feedback is recorded. "
+        "`development.idle` and its own exhaustion row are removed, also from the states that "
+        "accept `refresh_investigation`.",
+        ("provisioning.idle", "development.fix_needed", "development.agent_running",
+         "parked.idle"),
+        edges=(("provisioning.idle", "confirm_provisioning"),
+               ("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair"),
+               ("development.fix_needed", "exhaust_repair_attempts")),
+        highlighted=(("provisioning.idle", "confirm_provisioning"),
+                     ("development.fix_needed", "request_patch"),
+                     ("development.fix_needed", "request_repair")),
+    ),
+    Item(
+        "State after a pause that clears requested Work",
+        "Which state a contribution is in after `pause` cleared its requested Work.",
+        "`pause` in an `agent_running` state leads to the state in which the Work is due again: "
+        "`investigation.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. It is "
+        "the one exception to a flag keeping phase and activity, and the description of the "
+        "flag states it.",
+        ("investigation.agent_running", "investigation.idle+paused", "development.agent_running",
+         "development.fix_needed+paused", "upstream_review.agent_running",
+         "upstream_review.fix_needed+paused"),
+        edges=(("investigation.agent_running", "pause"),
+               ("development.agent_running", "pause"),
+               ("upstream_review.agent_running", "pause")),
+        highlighted=(("investigation.agent_running", "pause"),
+                     ("development.agent_running", "pause"),
+                     ("upstream_review.agent_running", "pause")),
+    ),
+    Item(
+        "The `block` command after the flag merge",
+        "Whether `/upstreaming block` stays a command once `blocked` is merged into `paused`.",
+        "It is retired. `pause` accepts an optional reason, and a pause set by the controller "
+        "always records one.",
+        ("development.waiting_ci", "development.waiting_ci+paused"),
+        edges=(("development.waiting_ci", "pause"),
+               ("development.waiting_ci", "pause_on_identity_change"),
+               ("development.waiting_ci+paused", "resume_pause")),
+        highlighted=(("development.waiting_ci", "pause"),
+                     ("development.waiting_ci", "pause_on_identity_change")),
+    ),
+    Item(
+        "`resume_stale` with an open operation",
+        "Whether `resume_stale` needs quiescence, as `refresh_investigation` does.",
+        "It does: `resume_stale` requires that no Work is requested, no operation is open, and "
+        "no publication is pending. Until then no resume applies, and the rejection names the "
+        "open operation.",
+        ("provisioning.idle", "provisioning.idle+paused", "queued.idle"),
+        edges=(("provisioning.idle+paused", "resume_pause"),
+               ("provisioning.idle+paused", "resume_stale")),
+        highlighted=(("provisioning.idle+paused", "resume_stale"),),
+    ),
+    Item(
+        "Resume while paused in a human wait",
+        "Which transition one `/upstreaming resume` takes when a contribution is both paused "
+        "and in a human wait.",
+        "Two resumes. The first clears the flag; its reply states that the contribution still "
+        "waits for a human and names the pending action. The second leaves the human wait.",
+        ("development.waiting_human+paused", "development.waiting_human",
+         "development.fix_needed"),
+        edges=(("development.waiting_human+paused", "resume_pause"),
+               ("development.waiting_human", "resume_development")),
+        highlighted=(("development.waiting_human+paused", "resume_pause"),
+                     ("development.waiting_human", "resume_development")),
+    ),
+    Item(
+        "Resume after a budget is exhausted",
+        "What a resume does to the counter whose exhaustion caused the human wait.",
+        "The resume starts again the one counter named in `pending_human_action.counter`, and "
+        "no other. The event records the actor, the counter, and its count at that point. It "
+        "was settled for `exhaust_work_total`, `exhaust_investigation_recovery`, and "
+        "`exhaust_repair_attempts` in upstream review; O14 extends it to every exhaustion that "
+        "leads to a human wait.",
+        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human",
+         "upstream_review.fix_needed", "upstream_review.waiting_human"),
+        edges=(("investigation.idle", "exhaust_work_total"),
+               ("investigation.agent_running", "exhaust_investigation_recovery"),
+               ("investigation.waiting_human", "resume_investigation"),
+               ("upstream_review.fix_needed", "exhaust_repair_attempts"),
+               ("upstream_review.waiting_human", "resume_upstream_revision")),
+        highlighted=(("investigation.waiting_human", "resume_investigation"),
+                     ("upstream_review.waiting_human", "resume_upstream_revision")),
+    ),
+    Item(
+        "Budget for collector reruns",
+        "Whether reruns of cancelled or runner-lost jobs are bounded.",
+        "They are: `rerun_interrupted_ci` charges the budget `interrupted_reruns`, counted per "
+        "head, which reads the shared `retries.infrastructure_per_head_failure`. When it is "
+        "exhausted, `exhaust_interrupted_reruns` leads to the human wait of the phase with "
+        "`pending_human_action=ci_interrupted`, and `resume_ci` returns to the CI wait, "
+        "reruns the jobs, and starts `interrupted_reruns` again for the head (O14).",
+        ("development.waiting_ci", "development.waiting_human", "handoff.waiting_ci",
+         "handoff.waiting_human"),
+        edges=(("development.waiting_ci", "rerun_interrupted_ci"),
+               ("development.waiting_ci", "exhaust_interrupted_reruns"),
+               ("development.waiting_human", "resume_ci"),
+               ("handoff.waiting_ci", "rerun_interrupted_ci"),
+               ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+               ("handoff.waiting_human", "resume_ci")),
+        highlighted=(("development.waiting_ci", "exhaust_interrupted_reruns"),
+                     ("development.waiting_human", "resume_ci"),
+                     ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+                     ("handoff.waiting_human", "resume_ci")),
+    ),
+    Item(
+        "Limits and names chosen without a decision",
+        "Values and names the decisions left open.",
+        "`retries.max_attempts_per_contribution` stays 24, `retries.work_recovery` stays 2, and "
+        "the verb names stay. The three human waits of handoff are one "
+        "`handoff.waiting_human`: four resume verbs leave it, each guarded by its "
+        "`pending_human_action`, so exactly one applies.",
+        ("handoff.cleaning_debug", "handoff.waiting_ci", "handoff.closing_internal_pr",
+         "handoff.preparing_submission", "handoff.waiting_human"),
+        edges=(("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+               ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
+               ("handoff.preparing_submission", "exhaust_comment_retries"),
+               ("handoff.waiting_human", "resume_debug_cleanup"),
+               ("handoff.waiting_human", "resume_ci"),
+               ("handoff.waiting_human", "resume_internal_pr_closure"),
+               ("handoff.waiting_human", "resume_submission_preparation")),
+        highlighted=(("handoff.waiting_human", "resume_debug_cleanup"),
+                     ("handoff.waiting_human", "resume_ci"),
+                     ("handoff.waiting_human", "resume_internal_pr_closure"),
+                     ("handoff.waiting_human", "resume_submission_preparation")),
+    ),
+    Item(
+        "Reminder of the locked upstream-PR wait",
+        "Whether the reminder rule also covers the `locked` kind.",
+        "It does: the rule covers the `gate`, `human_wait`, and `locked` kinds, and the "
+        "separate row is removed. In `handoff.waiting_upstream_pr` the package link is part of "
+        "the reminder text. The reminder keeps the state, so the locked wait still has exactly "
+        "its three exits.",
+        ("handoff.awaiting_submission", "handoff.waiting_upstream_pr", "handoff.waiting_human"),
+        edges=(("handoff.awaiting_submission", "record_reminder"),
+               ("handoff.waiting_upstream_pr", "record_reminder"),
+               ("handoff.waiting_human", "record_reminder")),
+        highlighted=(("handoff.waiting_upstream_pr", "record_reminder"),),
+    ),
+    Item(
+        "Where a development PR mismatch is observed",
+        "From which states `record_pr_mismatch` leads to `development.waiting_human`.",
+        "From `development.waiting_ci` only, where the development PR is observed.",
+        ("development.waiting_ci", "development.waiting_human"),
+        edges=(("development.waiting_ci", "record_pr_mismatch"),),
+        highlighted=(("development.waiting_ci", "record_pr_mismatch"),),
+    ),
+    Item(
+        "Admission override against a park or close decision",
+        "Which dossier decisions a recorded `admission_override` overrides.",
+        "A decision park only: with a recorded override, `admit_development` accepts a verified "
+        "dossier that decides park. A verified decision close still takes "
+        "`close_investigation`, and the reply states that the override was not applied.",
+        ("investigation.agent_running", "provisioning.idle", "parked.idle", "closed.idle"),
+        edges=(("investigation.agent_running", "admit_development"),
+               ("investigation.agent_running", "park_investigation"),
+               ("investigation.agent_running", "close_investigation")),
+        highlighted=(("investigation.agent_running", "admit_development"),
+                     ("investigation.agent_running", "close_investigation")),
+    ),
+    Item(
+        "Resume after a reviewer was answered",
+        "Where the resume leads when the pending action was to answer the reviewer.",
+        "Two verbs. `resume_upstream_review` leads to `upstream_review.waiting_ci` when the "
+        "pending action is `pr_closed_unmerged` (the PR is observed open again), "
+        "`answer_reviewer`, or `upstream_head_changed`; after `answer_reviewer` it clears the "
+        "pending feedback. `resume_upstream_revision` leads to `upstream_review.fix_needed` "
+        "only when revision Work failed: dispatch, Work, publication, or budget exhaustion. "
+        "`record_upstream_ci_failure` fires once per head and CI run, so the failure that was "
+        "answered does not request a revision again.",
+        ("upstream_review.waiting_ci", "upstream_review.fix_needed",
+         "upstream_review.agent_running", "upstream_review.waiting_human"),
+        edges=(("upstream_review.waiting_ci", "record_upstream_ci_failure"),
+               ("upstream_review.agent_running", "require_reviewer_answer"),
+               ("upstream_review.waiting_human", "resume_upstream_review"),
+               ("upstream_review.waiting_human", "resume_upstream_revision")),
+        highlighted=(("upstream_review.waiting_ci", "record_upstream_ci_failure"),
+                     ("upstream_review.waiting_human", "resume_upstream_review"),
+                     ("upstream_review.waiting_human", "resume_upstream_revision")),
+    ),
+    Item(
+        "The revision rule as checked",
+        "Which rows count as invalidating requested or approved work.",
+        "The rule stays derived from the effects: a resume, a generation bump, a fresh Work "
+        "graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, "
+        "an observed head change, and a rejected Result after which the same Work is due again. "
+        "Under it `replan_development` bumps and `park_investigation` does not, because a park "
+        "is a stop and the restart bumps.",
+        ("investigation.agent_running", "parked.idle", "development.agent_running",
+         "development.fix_needed"),
+        edges=(("investigation.agent_running", "park_investigation"),
+               ("development.agent_running", "replan_development")),
+        highlighted=(("investigation.agent_running", "park_investigation"),
+                     ("development.agent_running", "replan_development")),
+    ),
+    Item(
+        "The rerun counter after `resume_ci`",
+        "Whether `resume_ci` starts `interrupted_reruns` again for the head.",
+        "It does, in both `development.waiting_human` and `handoff.waiting_human`. The rule has "
+        "no exception: every exhaustion that leads to a human wait names its counter in "
+        "`pending_human_action.counter`, and every resume from that wait starts exactly that "
+        "counter again. This holds for the budgets spent on infrastructure failures too: "
+        "`dispatch_recovery`, `work_recovery`, `publish_recovery`, `operation_launch`, "
+        "`debug_cleanup`, `internal_pr_closure`, `submission_comment`, and "
+        "`interrupted_reruns`. `require_provisioning_intervention` names `operation_launch` "
+        "when that budget is the cause and no counter for its other causes. `resume_stale` "
+        "starts the named counter again like every other resume. The check verifies the rule "
+        "for every exhaustion and every resume.",
+        ("development.waiting_ci", "development.waiting_human", "handoff.waiting_ci",
+         "handoff.closing_internal_pr", "handoff.waiting_human"),
+        edges=(("development.waiting_ci", "exhaust_interrupted_reruns"),
+               ("development.waiting_human", "resume_ci"),
+               ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+               ("handoff.waiting_human", "resume_ci"),
+               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
+               ("handoff.waiting_human", "resume_internal_pr_closure")),
+        highlighted=(("development.waiting_human", "resume_ci"),
+                     ("handoff.waiting_human", "resume_ci")),
+    ),
+    Item(
+        "The first patch after a rejected proposal",
+        "Which verb requests Work when a proposal was rejected before the head had any CI "
+        "evidence.",
+        "`request_patch`: a rejected proposal is neither CI evidence nor recorded feedback. "
+        "`request_patch` charges `work_total` and requires that `no_progress` remains; it does "
+        "not charge `repair_attempts_cluster`.",
+        ("development.fix_needed", "development.agent_running", "queued.idle", "parked.idle"),
+        edges=(("development.fix_needed", "request_patch"),
+               ("development.agent_running", "reject_patch_proposal"),
+               ("development.fix_needed", "request_repair"),
+               ("development.fix_needed", "refresh_on_exhaustion"),
+               ("development.fix_needed", "exhaust_repair_attempts")),
+        highlighted=(("development.fix_needed", "request_patch"),
+                     ("development.agent_running", "reject_patch_proposal")),
+    ),
+    Item(
+        "Exhaustion of `work_total` found while Work is running",
+        "Whether the resume after `exhaust_work_recovery` starts `work_total` again when "
+        "`work_total` was the exhausted budget.",
+        "It does. When a Work retry cannot be allocated because `work_total` is exhausted, "
+        "`exhaust_work_recovery` records `pending_human_action.counter=work_total`, and one "
+        "resume starts it again, in investigation, development, and upstream review. When "
+        "`work_recovery` itself is exhausted, it names `work_recovery`. The slice shows "
+        "investigation and development; in upstream review `resume_upstream_revision` does the "
+        "same.",
+        ("investigation.agent_running", "investigation.waiting_human", "investigation.idle",
+         "development.agent_running", "development.waiting_human", "development.fix_needed"),
+        edges=(("investigation.agent_running", "exhaust_work_recovery"),
+               ("investigation.waiting_human", "resume_investigation"),
+               ("development.agent_running", "exhaust_work_recovery"),
+               ("development.waiting_human", "resume_development")),
+        highlighted=(("investigation.agent_running", "exhaust_work_recovery"),
+                     ("investigation.waiting_human", "resume_investigation"),
+                     ("development.agent_running", "exhaust_work_recovery"),
+                     ("development.waiting_human", "resume_development")),
+    ),
+    Item(
+        "Names and values chosen for the settled items",
+        "Names and values the decisions left open.",
+        "They stay. `interrupted_reruns` allows as many reruns per head as "
+        "`retries.infrastructure_per_head_failure` (2), without a free first one. Its "
+        "exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in "
+        "both `development.waiting_human` and `handoff.waiting_human`. The pending actions of "
+        "the handoff wait are `debug_cleanup_failed`, `internal_pr_closure_failed`, "
+        "`submission_comment_failed`, and `ci_interrupted`. An exhaustion names its counter in "
+        "`pending_human_action.counter`.",
+        ("handoff.cleaning_debug", "handoff.waiting_ci", "handoff.closing_internal_pr",
+         "handoff.preparing_submission", "handoff.waiting_human"),
+        edges=(("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+               ("handoff.waiting_ci", "rerun_interrupted_ci"),
+               ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
+               ("handoff.preparing_submission", "exhaust_comment_retries"),
+               ("handoff.waiting_human", "resume_ci")),
+        highlighted=(("handoff.waiting_ci", "rerun_interrupted_ci"),
+                     ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+                     ("handoff.waiting_human", "resume_ci")),
+    ),
+    Item(
+        "Exhaustion of `work_total` found when development Work is due",
+        "Where `work_total` exhaustion leads when it is found at `development.fix_needed`.",
+        "To the human wait, as in the other phases. At `development.fix_needed`, exhaustion of "
+        "`work_total` takes `exhaust_work_total` to `development.waiting_human` with "
+        "`pending_human_action.counter=work_total`, and one resume starts it again. "
+        "`exhaust_repair_attempts` parks only for `repair_attempts_cluster` and `no_progress`, "
+        "after `refresh_on_exhaustion` is used. The reply at exhaustion states the number of "
+        "Work allocations spent and names both `/upstreaming resume` and `/upstreaming park`. "
+        "The guards of `request_patch`, `request_repair`, `refresh_on_exhaustion`, "
+        "`exhaust_repair_attempts`, and `exhaust_work_total` are mutually exclusive, and the "
+        "check verifies it: the first four require that `work_total` remains.",
+        ("development.fix_needed", "development.agent_running", "development.waiting_human",
+         "queued.idle", "parked.idle"),
+        edges=(("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair"),
+               ("development.fix_needed", "refresh_on_exhaustion"),
+               ("development.fix_needed", "exhaust_repair_attempts"),
+               ("development.fix_needed", "exhaust_work_total"),
+               ("development.waiting_human", "resume_development"),
+               ("development.waiting_human", "park_contribution")),
+        highlighted=(("development.fix_needed", "exhaust_work_total"),
+                     ("development.fix_needed", "exhaust_repair_attempts"),
+                     ("development.waiting_human", "resume_development")),
+    ),
+)
+
+OPEN_ITEMS: tuple[Item, ...] = ()
