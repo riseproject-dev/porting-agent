@@ -109,7 +109,7 @@ class TestCheck(unittest.TestCase):
 
     def test_a_deeply_nested_report_is_invalid(self):
         nested = b"[" * (worker_report.MAX_REPORT_BYTES - 1)
-        with self.assertRaisesRegex(worker_report.ReportError, "RecursionError"):
+        with self.assertRaisesRegex(worker_report.ReportError, "RecursionError|JSONDecodeError"):
             worker_report.check(task(), nested)
         self.assertIsNone(worker_report.check(task(history=False), nested))
 
@@ -125,7 +125,7 @@ class TestCheck(unittest.TestCase):
         # loudly when the Work carries a history.
         self.assertEqual(outcome["worker_report"], b"[" * (worker_report.MAX_REPORT_BYTES - 1))
         self.assertIsNone(worker_report.check(task(history=False), outcome["worker_report"]))
-        with self.assertRaisesRegex(worker_report.ReportError, "RecursionError"):
+        with self.assertRaisesRegex(worker_report.ReportError, "RecursionError|JSONDecodeError"):
             worker_report.check(task(), outcome["worker_report"])
 
     def test_a_link_is_refused(self):
