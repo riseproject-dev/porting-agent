@@ -81,6 +81,27 @@ These table mutations break a settled decision but still pass the check:
 - **`restart_generation`** from `parked.idle` takes no class, paths, or reason, so `admission_override` stays empty; `force-develop` remains the legacy way to override a dossier park.
 - **Required:** the provisioning prerequisite check, collector reruns, and the `resume` arguments of the command grammar.
 
+## A pause during the first development patch makes the next Work a repair
+
+- **Where:** `pause` (and `pause_on_processing_error`) in `development.agent_running`; `controller._actionable` in `development.fix_needed`.
+- **Today:** the pause moves the record to `development.fix_needed`, as the table says. The legacy selection there always requests `development_repair`, so after the resume the first patch is requested as a repair, with only the dossier as its reason.
+- **Table:** in `development.fix_needed`, `request_patch` applies when no failing CI job is recorded for the head, and `request_repair` when one is.
+- **Required:** select development Work through `request_patch` and `request_repair`.
+
+## A leftover pending action can turn a short pause into a refresh
+
+- **Where:** `engine.stopped_since`, used by `resume_stale` and `resume_pause`.
+- **Today:** the stop is measured from the older of `paused_at` and `pending_human_action.requested_at` in any state. The legacy CI observation moves `development.waiting_human` to `development.waiting_ci` and keeps the pending action, so a record that carries a pending action older than 7 days refreshes after a pause of one day.
+- **Table:** the clock is the older of `paused_at` and `pending_human_action.requested_at`.
+- **Required:** clear the pending action whenever a legacy path leaves a human wait, so the clock only sees a wait that is still current.
+
+## The locked-wait reminder lacks the package link and exact head
+
+- **Where:** `record_reminder` in `handoff.waiting_upstream_pr`, `status_ledger.py`.
+- **Today:** the generic reminder text is used.
+- **Table:** the reminder in that state carries the package link and the exact head, and states when the observed upstream PR does not match.
+- **Required:** render the reminder from the posted package once the handoff operations exist. Nothing reaches the state while `submit-upstream` is held.
+
 ## Records written before `budget.reruns` existed
 
 The migrated live record has no `budget.reruns`. The schema makes it optional and the engine counts from zero. Make the field required once every record carries it.
@@ -102,6 +123,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - The flag migration turns a block's human wait without a pending action into the `idle` activity of its phase, as the old `resume` did (for `development` that is the legacy `development.idle`), records `paused_at` as the record's `updated_at`, and records the controller's identity block with `paused_reason` `upstream_identity_changed`, the reason the table names.
 - `pause_on_identity_change` is guarded by `not paused`: an identity change observed while a contribution is paused sets nothing; the controller still selects no Work for it while the identity differs.
 - The reminder interval is counted in whole days from the exact time of the request or of the last reminder; a day counts when it ends on a weekday (UTC). Any pending action in a human wait of the table gets reminders, including the pending actions that only the legacy paths write (for example `task_without_outcome`).
+- A reminder is suppressed while paused and counted from the request, so after a long pause the resume and an overdue reminder can be posted in the same tick.
 - `/upstreaming resume` on a contribution that is neither paused nor in a human wait or in `parked.idle` is answered with `not paused`.
 - A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
 

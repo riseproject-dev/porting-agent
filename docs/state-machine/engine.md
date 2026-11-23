@@ -144,12 +144,12 @@ Before the lifecycle table, passing CI moved a contribution to the phase `handof
 
 The tracking-issue entry for the migration event states that the fork, development PR, head, revision, and CI evidence are unchanged, that the earlier request to run `approve-handoff` no longer applies, and shows the `submit-upstream` command for the exact revision and head.
 
-### Flag migration
+## Flag migration
 
 Before the stop flag was merged, a `block` wrote `blocked_reason` and a human wait in place, a pause did not record `paused_at`, and a stop did not always clear what was held for publication. The controller rewrites such a record in the same way, in its own state-only commit with one appended event of kind `paused_flag_migrated` (cause `migration`, `paused-flag-merge`), before the ordinary tick:
 
 - A `blocked_reason` becomes `paused`: `paused_by` `controller` and `paused_reason` `upstream_identity_changed` for the controller's block on a changed upstream identity, `paused_by` `human` and the block's reason otherwise. `blocked_reason` becomes null; the schema admits no other value. A block's human wait without a pending action becomes `idle`, as the old `resume` left it; with a pending action the wait is kept.
-- A paused record without `paused_at` gets its `updated_at`.
+- A paused record without `paused_at` gets its `updated_at`, and one without `paused_by` gets `human`.
 - A paused, parked, or terminal record loses the requested Work, the pending publication, and a held proposal, as the table's stops clear them.
 - Nothing else changes. A blocked record in the handoff phase, or a block over a human wait that the table does not have, has no migration: the controller stops with an error and writes nothing. A record that needs none of this is not touched. The migration is idempotent.
 
