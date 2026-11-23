@@ -880,7 +880,7 @@ flowchart TB
 
 Which rows count as invalidating requested or approved work.
 
-**Decision.** The rule stays derived from the effects: a resume, a generation bump, a fresh Work graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, an observed head change, and a rejected Result after which the same Work is due again. Under it `replan_development` bumps and `park_investigation` does not, because a park is a stop and the restart bumps.
+**Decision.** The rule stays derived from the effects: a resume, a generation bump, a fresh Work graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, a recorded head change (observed, or read back by a Result), and a rejected Result after which the same Work is due again. Under it `replan_development` bumps and `park_investigation` does not, because a park is a stop and the restart bumps.
 
 ```mermaid
 flowchart TB
@@ -1283,16 +1283,18 @@ flowchart TB
 
 `upstream_review.waiting_ci` had no head-change row.
 
-**Change.** A head change that the pipeline did not publish takes `record_head_change` to `upstream_review.waiting_human`.
+**Change.** A head change that the pipeline did not publish takes `record_head_change` to `upstream_review.waiting_human`. The head a revision of the pipeline published is recorded by `record_revision_publish_success`, at a new revision, from the head the publisher read back on `riscv64`; a publication whose push was not read back is a failed publication.
 
 ```mermaid
 flowchart TB
     subgraph upstream_review["upstream_review"]
+        upstream_agent_running["upstream_review.agent_running"]
         upstream_waiting_ci["upstream_review.waiting_ci"]
         upstream_waiting_human["upstream_review.waiting_human"]
     end
 
     upstream_waiting_ci ==>|record_head_change| upstream_waiting_human
+    upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
 ```
 
 ### Explanations in upstream review

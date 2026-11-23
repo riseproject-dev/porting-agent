@@ -48,7 +48,7 @@ import schemas
 import state
 import submission
 import work
-from common import DEV_REF, INTAKE_LABEL, load_policy, repository_root, safe_id
+from common import DEV_REF, INTAKE_LABEL, UPSTREAM_REF, load_policy, repository_root, safe_id
 
 
 @dataclass
@@ -833,14 +833,46 @@ def _charged_launch(held: dict, outcome: dict) -> bool:
 
 
 # The states whose Results ``fold_patch_result`` folds, and the rows that
-# differ between them: the success row, and what a `no_change` report and a
-# stale proposal take.
+# differ between them: the success row, the Result statuses it folds, what a
+# `no_change` report and a stale proposal take, and the statuses that are a
+# failed publication. In upstream review the success row records the head
+# read back on `riscv64`, so a publication whose push was not read back
+# (`uncertain`) is a failed publication there.
 WORK_RESULT_STATES = {
     "development.agent_running": {"published": "record_publish_success",
+                                  "success": ("published", "uncertain"),
+                                  "failed": ("infra_error",),
                                   "stale": "replan_development"},
     "upstream_review.agent_running": {"published": "record_revision_publish_success",
+                                      "success": ("published",),
+                                      "failed": ("infra_error", "uncertain"),
                                       "no_change": "require_reviewer_answer"},
 }
+
+_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def published_head(outcome: dict) -> str:
+    """The head a published Result read back on `riscv64`, which
+    ``record_revision_publish_success`` records in ``upstream_pr.head_sha``:
+    the commit of its branch operation, which the publisher confirmed by
+    reading the branch back after the push, or, for a publish-only retry
+    that found the push of an earlier attempt on the branch (no operation),
+    the candidate it read there. A head that was not read back is refused."""
+    op = outcome.get("operation")
+    candidate = outcome.get("candidate")
+    head = candidate
+    if op:
+        head = (op.get("proposed") or {}).get("commit")
+        if op.get("status") != "confirmed" or op.get("kind") not in (
+                "branch_update", "branch_rewrite") \
+                or (op.get("target") or {}).get("ref") != UPSTREAM_REF \
+                or (candidate is not None and candidate != head):
+            head = None
+    if not (isinstance(head, str) and _SHA.fullmatch(head)):
+        raise lifecycle.TransitionError(
+            f"the published revision names no head read back on {UPSTREAM_REF}")
+    return head
 
 
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
@@ -849,9 +881,12 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     ``development.agent_running``, or of revision Work through the rows of
     ``upstream_review.agent_running``.
 
-    In upstream review the rows are the same but three: a published or
-    uncertain Result takes ``record_revision_publish_success`` (which also
-    clears exactly the carried feedback), a ``no_change`` report takes
+    In upstream review the rows are the same but four: a published Result
+    takes ``record_revision_publish_success`` (which also clears exactly the
+    carried feedback, records the head read back on `riscv64` in
+    ``upstream_pr.head_sha``, and bumps the revision), an uncertain Result
+    (its push was not read back) is a failed publication like an
+    infrastructure error, a ``no_change`` report takes
     ``require_reviewer_answer`` (a human answers the reviewer; nothing is
     posted on the upstream PR), and a proposal rejected as stale takes
     ``reject_patch_proposal`` like any other rejection, as no row replans
@@ -867,9 +902,10 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
       by the patch): ``request_ci_rerun`` when the Work carries no feedback
       and ``flaky_reruns`` remains, ``reject_patch_proposal`` otherwise;
     * rejected as stale (the fork head moved): ``replan_development``;
-    * an infrastructure error of the publication: ``schedule_publish_retry``
-      holds the same Result for a publish-only retry within
-      ``publish_recovery``, ``exhaust_publish_recovery`` once it is spent.
+    * an infrastructure error of the publication (in upstream review also an
+      uncertain Result): ``schedule_publish_retry`` holds the same Result for
+      a publish-only retry within ``publish_recovery``,
+      ``exhaust_publish_recovery`` once it is spent.
 
     The Result of a publish-only retry ends the held publication: every row
     that folds it is taken with ``pending_publication`` cleared beside it.
@@ -896,7 +932,8 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         details["failure_class"] = fclass
     if outcome.get("reason"):
         details["reason"] = str(outcome["reason"])[:500]
-    if status == "infra_error" and held and not rec.get("active_work") \
+    failed = status in rows["failed"]
+    if failed and held and not rec.get("active_work") \
             and _charged_launch(held, outcome):
         # The failed publication of this launch is already charged, by the
         # wait for its Result: the late Result is recorded once, for audit,
@@ -910,11 +947,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                             "charged when its Result did not arrive within "
                             f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"})
         return rec, staged + [("contributions", rec), ("events", event)]
-    if status == "infra_error":
+    if failed:
         out = _fail_publication(rec, run, str(outcome.get("reason") or ""), now=now,
                                 policy=policy, cause=cause, details=details)
     else:
-        if status in ("published", "uncertain"):
+        if status in rows["success"]:
             verb = rows["published"]
             facts = {"result_published" if verb == "record_publish_success" else "revision_published"}
         elif status == "rejected" and fclass == "stale" and "stale" in rows:
@@ -944,6 +981,10 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             values = {"proposal_artifact": artifact,
                       "publication_operation_id": (op or {}).get("operation_id")
                       or rec.get("publication_operation_id")}
+        if verb == "record_revision_publish_success":
+            head = published_head(outcome)
+            values["upstream_pr.head_sha"] = head
+            details.update(head=head, previous_head=lifecycle.recorded_head(rec))
         if status == "worker_blocked":
             evidence = _rehearsal_evidence(rec, outcome, run, policy, now)
             staged.append(("evidence", evidence))

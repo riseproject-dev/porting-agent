@@ -531,9 +531,14 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Head change in upstream review",
         "`upstream_review.waiting_ci` had no head-change row.",
         "A head change that the pipeline did not publish takes `record_head_change` to "
-        "`upstream_review.waiting_human`.",
-        ("upstream_review.waiting_ci", "upstream_review.waiting_human"),
-        edges=(("upstream_review.waiting_ci", "record_head_change"),),
+        "`upstream_review.waiting_human`. The head a revision of the pipeline published is "
+        "recorded by `record_revision_publish_success`, at a new revision, from the head the "
+        "publisher read back on `riscv64`; a publication whose push was not read back is a "
+        "failed publication.",
+        ("upstream_review.agent_running", "upstream_review.waiting_ci",
+         "upstream_review.waiting_human"),
+        edges=(("upstream_review.waiting_ci", "record_head_change"),
+               ("upstream_review.agent_running", "record_revision_publish_success")),
         highlighted=(("upstream_review.waiting_ci", "record_head_change"),),
     ),
     Item(
@@ -903,7 +908,8 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "Which rows count as invalidating requested or approved work.",
         "The rule stays derived from the effects: a resume, a generation bump, a fresh Work "
         "graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, "
-        "an observed head change, and a rejected Result after which the same Work is due again. "
+        "a recorded head change (observed, or read back by a Result), and a rejected Result "
+        "after which the same Work is due again. "
         "Under it `replan_development` bumps and `park_investigation` does not, because a park "
         "is a stop and the restart bumps.",
         ("investigation.agent_running", "parked.idle", "development.agent_running",

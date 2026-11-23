@@ -23,8 +23,10 @@ import capacity
 import collect
 import commands
 import engine
+import fork_publish
 import lifecycle
 import reconcile
+import recovery
 import release
 import review_response
 import schemas
@@ -106,6 +108,31 @@ def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feed
                              dispatcher_runs=[], queue_works={})
     out.reads = reads
     return out
+
+
+def branch_operation(rec, head, *, confirmed=True):
+    """The branch operation of a publication to `riscv64` that put ``head``
+    there: confirmed by reading the branch back, or uncertain."""
+    op = recovery.plan(contribution_id=rec["contribution_id"], revision=rec["revision"],
+                       kind="branch_update", policy_version=POLICY["policy_version"],
+                       reason_ids=[f"publish:{head[:12]}"],
+                       target={"repository_id": 2, "repository": "riseproject-upstreaming/proj",
+                               "ref": "riscv64", "expected_head": SHA_A, "base_sha": SHA_C},
+                       proposed={"commit": head, "tree": "d" * 40, "parents": [SHA_A],
+                                 "marker": None, "content_digest": "0" * 64,
+                                 "changed_files": ["a"]}, now=NOW)
+    op = recovery.mark_applying(op, NOW, facts=fork_publish.PUSH_FACTS)
+    op = recovery.mark_result(op, response_ok=None if not confirmed else True,
+                              external_ids={}, now=NOW)
+    if confirmed:
+        op = recovery.record_discovery(op, "confirmed", f"riscv64 at {head}", NOW)
+    return op
+
+
+def published(rec, head, **fields):
+    """A published Result of revision Work whose push put ``head`` on `riscv64`."""
+    op = branch_operation(rec, head)
+    return dict(publication(rec, "published"), candidate=head, operation=op, **fields)
 
 
 def final(output, rec):
@@ -196,21 +223,15 @@ class TestObservation(unittest.TestCase):
         out = tick(rec, pr=pull(merged=True, state="closed"), branch=None)
         self.assertEqual(kinds(out), ["record_merge"])
 
-    def test_the_head_the_pipeline_published_is_recorded_without_a_row(self):
-        op = {"operation_id": "op-1", "contribution_id": "example--proj/12",
-              "kind": "branch_update", "status": "confirmed",
-              "target": {"ref": "riscv64", "expected_head": SHA_A},
-              "proposed": {"commit": SHA_B}}
-        rec = record(publication_operation_id="op-1")
-        out = tick(rec, pr=pull(head=SHA_B), branch=SHA_B, operations={"op-1": op},
-                   verdict="failed")
-        after = final(out, rec)
-        self.assertEqual(kinds(out), ["record_upstream_ci_failure"])
-        self.assertEqual((after["upstream_pr"]["head_sha"], after["revision"]),
-                         (SHA_B, rec["revision"]))
-        # Another head on the branch is a change the pipeline did not publish.
-        out = tick(rec, pr=pull(head=SHA_C), branch=SHA_C, operations={"op-1": op})
+    def test_a_head_other_than_the_recorded_one_is_an_external_change(self):
+        # Even with a confirmed publication operation that put the head on
+        # `riscv64`: only the row that folds its Result records that head.
+        op = branch_operation(record(), SHA_B)
+        rec = record(publication_operation_id=op["operation_id"])
+        out = tick(rec, pr=pull(head=SHA_B), branch=SHA_B, operations={op["operation_id"]: op})
         self.assertEqual(kinds(out), ["record_head_change"])
+        after = final(out, rec)
+        self.assertEqual(after["pending_human_action"]["kind"], "upstream_head_changed")
 
     def test_states_without_an_observation_row_are_not_read(self):
         pending = {"kind": "answer_reviewer", "requested_at": NOW, "reminded_at": None,
@@ -285,8 +306,8 @@ class TestRevisionResults(unittest.TestCase):
 
     def test_each_publisher_result_takes_its_row(self):
         expected = {
-            "published": ("record_revision_publish_success", "upstream_review.waiting_ci", False),
-            "uncertain": ("record_revision_publish_success", "upstream_review.waiting_ci", False),
+            "published": ("record_revision_publish_success", "upstream_review.waiting_ci", True),
+            "uncertain": ("schedule_publish_retry", "upstream_review.agent_running", False),
             "no_change": ("require_reviewer_answer", "upstream_review.waiting_human", False),
             "proposal": ("reject_patch_proposal", "upstream_review.fix_needed", True),
             "rejected_validation": ("reject_patch_proposal", "upstream_review.fix_needed", True),
@@ -297,7 +318,10 @@ class TestRevisionResults(unittest.TestCase):
         for name, (verb, state, bumped) in expected.items():
             with self.subTest(result=name):
                 rec = self.running()
-                out = tick(rec, [publication(rec, name)])
+                result = (published(rec, SHA_B) if name == "published"
+                          else publication(rec, name))
+                at = SHA_B if name == "published" else SHA_A
+                out = tick(rec, [result], pr=pull(head=at), branch=at)
                 self.assertEqual(out.failures, [])
                 self.assertEqual(kinds(out)[0], verb)
                 after = final(out, rec)
@@ -312,6 +336,68 @@ class TestRevisionResults(unittest.TestCase):
                                      ["review-old", "review-new"])
                 if verb == "require_reviewer_answer":
                     self.assertEqual(after["pending_human_action"]["kind"], "answer_reviewer")
+
+    def test_the_published_head_is_recorded_by_the_row(self):
+        rec = self.running()
+        # In the tick that folds it, the upstream PR is already at the head.
+        out = tick(rec, [published(rec, SHA_B)], pr=pull(head=SHA_B), branch=SHA_B)
+        self.assertEqual(out.failures, [])
+        self.assertEqual(kinds(out), ["record_revision_publish_success"])
+        event = staged(out, "events")[0]
+        self.assertEqual((event["details"]["head"], event["details"]["previous_head"]),
+                         (SHA_B, SHA_A))
+        self.assertTrue(event["revision_bumped"])
+        after = final(out, rec)
+        self.assertEqual((after["upstream_pr"]["head_sha"], after["revision"]),
+                         (SHA_B, rec["revision"] + 1))
+        # The published head is not a head change: its CI is read.
+        out = tick(after, pr=pull(head=SHA_B), branch=SHA_B, verdict="failed")
+        self.assertEqual(kinds(out), ["record_upstream_ci_failure"])
+        failed = final(out, after)
+        self.assertEqual((failed["upstream_pr"]["head_sha"], failed["revision"]),
+                         (SHA_B, after["revision"]))
+        # A push by someone else after it still is.
+        out = tick(after, pr=pull(head=SHA_C), branch=SHA_C)
+        self.assertEqual(kinds(out), ["record_head_change"])
+        self.assertEqual(engine.state_key(final(out, after)), "upstream_review.waiting_human")
+
+    def test_the_next_revision_work_has_a_fresh_id(self):
+        rec = self.running()
+        after = final(tick(rec, [published(rec, SHA_B)], pr=pull(head=SHA_B), branch=SHA_B), rec)
+        failed = tick(after, pr=pull(head=SHA_B), branch=SHA_B, verdict="failed")
+        due = final(failed, after)
+        evidence = {e["evidence_id"]: e for e in staged(failed, "evidence")}
+        out = tick(due, pr=pull(head=SHA_B), branch=SHA_B, evidence=evidence, capacity_ok=True)
+        self.assertEqual(kinds(out), ["request_upstream_revision"])
+        work = final(out, due)["active_work"]
+        self.assertEqual(work["revision"], rec["revision"] + 1)
+        self.assertNotEqual(work["dedupe_key"], rec["active_work"]["dedupe_key"])
+        self.assertNotIn("allocate_work_retry", kinds(out))
+
+    def test_a_head_that_was_not_read_back_is_not_recorded(self):
+        rec = self.running()
+        # The push was not read back: a failed publication, the head is kept.
+        out = tick(rec, [publication(rec, "uncertain")])
+        self.assertEqual(kinds(out), ["schedule_publish_retry"])
+        held = final(out, rec)
+        self.assertEqual((held["upstream_pr"]["head_sha"], held["revision"]),
+                         (SHA_A, rec["revision"]))
+        # The publish-only retry reads the earlier push back on the branch.
+        out = tick(held, [dict(publication(held, "published", artifact_id=1000), candidate=SHA_B,
+                                attempt=2)], pr=pull(head=SHA_B), branch=SHA_B)
+        self.assertEqual(kinds(out), ["record_revision_publish_success"])
+        after = final(out, held)
+        self.assertEqual(after["upstream_pr"]["head_sha"], SHA_B)
+        self.assertIsNone(after["pending_publication"])
+        # A published Result whose operation is not confirmed, or that names
+        # no head, is refused and changes nothing.
+        unconfirmed = dict(published(rec, SHA_B), operation=branch_operation(
+            rec, SHA_B, confirmed=False))
+        for result in (unconfirmed, publication(rec, "published")):
+            with self.subTest(result=result.get("operation") and "unconfirmed"):
+                out = tick(rec, [result])
+                self.assertEqual(len(out.failures), 1)
+                self.assertNotIn("record_revision_publish_success", kinds(out))
 
     def test_publish_retries_then_a_human_wait(self):
         rec = self.running()

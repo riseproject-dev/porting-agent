@@ -282,10 +282,10 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             if rec["phase"] == "upstream_review" and not human_wait_without_observation(rec):
                 # The upstream PR, not the branch, is what upstream review
                 # observes: a merged PR whose branch was deleted is still
-                # recorded. The branch is read to recognize a head the
-                # pipeline published.
-                _observe_upstream_review(api, obs, entry, rec, head, contracts=contracts,
-                                         policy=policy, now=now, operations=operations)
+                # recorded. The branch is read only to discover its
+                # operations above.
+                _observe_upstream_review(api, obs, entry, rec, contracts=contracts,
+                                         policy=policy, now=now)
                 obs.report.append(entry)
                 continue
             if head is None:
@@ -640,21 +640,6 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
     # Otherwise repeated observation of the candidate head keeps the gate.
 
 
-def _pipeline_published(rec: dict, branch: dict | None, pr_head: str,
-                        operations: dict[str, dict]) -> bool:
-    """Whether the pipeline published ``pr_head``: the publication operation
-    the record names (``publication_operation_id``, recorded by
-    ``record_revision_publish_success``) is confirmed and discovers as its
-    effect on `riscv64`, whose head is the upstream PR head."""
-    op = operations.get(rec.get("publication_operation_id") or "")
-    if not op or op.get("status") != "confirmed" or branch is None or branch.get("head") != pr_head:
-        return False
-    if op.get("kind") not in ("branch_update", "branch_rewrite") \
-            or (op.get("target") or {}).get("ref") != UPSTREAM_REF:
-        return False
-    return recovery.discover_branch(op, branch) == "confirmed"
-
-
 def _upstream_feedback(api: collect.Api, record: dict, *, policy: dict, now: str
                        ) -> tuple[tuple[str, dict, dict] | None, tuple[str, dict, dict, list] | None]:
     """New authorized feedback on the upstream PR for its recorded head: the
@@ -669,14 +654,13 @@ def _upstream_feedback(api: collect.Api, record: dict, *, policy: dict, now: str
                               head=record["upstream_pr"]["head_sha"])
 
 
-def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, rec: dict,
-                             branch: dict | None, *, contracts: dict, policy: dict, now: str,
-                             operations: dict[str, dict]) -> None:
+def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, rec: dict, *,
+                             contracts: dict, policy: dict, now: str) -> None:
     """Observe ``upstream_review.waiting_ci`` by its rows, in order:
     ``record_merge`` for a merged upstream PR, ``record_pr_closed_unmerged``
-    for one closed without merge, ``record_head_change`` for a head the
-    pipeline did not publish (a head it published is recorded beside the
-    observation), ``record_explanation`` for an explanation-only comment,
+    for one closed without merge, ``record_head_change`` for a head other
+    than the recorded one (the head the pipeline published is recorded by
+    ``record_revision_publish_success``), ``record_explanation`` for an explanation-only comment,
     ``record_actionable_review`` for an actionable review (the observation
     then ends in ``upstream_review.fix_needed``), and
     ``record_upstream_ci_failure`` for an executed blocking failure of a CI
@@ -726,23 +710,16 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
     cur = rec
     head = pr["head_sha"]
     if head != lifecycle.recorded_head(cur):
-        if _pipeline_published(cur, branch, head, operations):
-            # The head of the revision the pipeline published: no row of the
-            # table records it, so it is recorded beside the observation, and
-            # the head's CI and review are read below.
-            cur = dict(cur, upstream_pr=dict(cur["upstream_pr"], head_sha=head),
-                       next_poll_at=None, updated_at=now)
-            schemas.validate("contribution", cur)
-            obs.staged.append(("contributions", cur))
-            entry["published_head"] = head
-        else:
-            _take(obs, cur, "record_head_change", policy=policy, now=now,
-                  cause_id=f"upstream-head:{head[:12]}",
-                  facts={"upstream_head_changed_externally"},
-                  values={"upstream_pr.head_sha": head},
-                  details={"head": head, "previous_head": lifecycle.recorded_head(cur)})
-            entry.update(head_changed=True, activity="waiting_human")
-            return
+        # The head a revision of the pipeline published is recorded by
+        # `record_revision_publish_success` when its Result is folded, so any
+        # other head is a change the pipeline did not publish.
+        _take(obs, cur, "record_head_change", policy=policy, now=now,
+              cause_id=f"upstream-head:{head[:12]}",
+              facts={"upstream_head_changed_externally"},
+              values={"upstream_pr.head_sha": head},
+              details={"head": head, "previous_head": lifecycle.recorded_head(cur)})
+        entry.update(head_changed=True, activity="waiting_human")
+        return
     review, inquiry = _upstream_feedback(api, cur, policy=policy, now=now)
     if inquiry:
         cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)

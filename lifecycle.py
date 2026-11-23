@@ -1319,10 +1319,15 @@ LIFECYCLE: dict[str, State] = {
             ("record_revision_publish_success", "upstream_review.waiting_ci"): Transition(
                 _R, None,
                 ("the revision is published to the upstream PR head",),
-                _E(work="clear", sets=("proposal_artifact", "publication_operation_id"),
+                _E(revision="bump", work="clear",
+                  sets=("proposal_artifact", "publication_operation_id", "upstream_pr.head_sha"),
                   clears=(CARRIED_FEEDBACK,)),
                 description="The published revision answers exactly the feedback its Work "
-                            "carried."),
+                            "carried. `upstream_pr.head_sha` records the head the publisher read "
+                            "back on `riscv64` after its push. A publication whose push was not "
+                            "read back (`uncertain`) does not take this row: it is a failed "
+                            "publication (`schedule_publish_retry`), and the publish-only retry "
+                            "reads back the head a lost push left without pushing again."),
             ("reject_patch_proposal", "upstream_review.fix_needed"): Transition(
                 _R, None,
                 ("the proposal is rejected for the current revision, or the worker reports it is "
@@ -2435,7 +2440,8 @@ DIAGRAM_PHASE_IDS = {"upstream_review": "upstream"}
 # and the same kind of Work is due again. No other transition bumps it.
 # Setting a field in ``REVISION_SET_FIELDS`` or clearing one in
 # ``REVISION_CLEAR_FIELDS`` changes the requested or approved work; so does
-# an observed head (``REVISION_OBSERVED_FIELDS`` set by an observation).
+# a recorded head (``REVISION_OBSERVED_FIELDS`` set by an observation, or by
+# a Result that read the head back).
 REVISION_SET_FIELDS = ("scope_paths", "pending_feedback_evidence_ids", "refresh")
 REVISION_CLEAR_FIELDS = ("scope_paths", "dossier_evidence_id", "handoff_request",
                          "handoff_approval", "clean_head_sha")
@@ -2491,7 +2497,7 @@ def must_bump(edge: Edge) -> bool:
         return True
     if sets & set(REVISION_SET_FIELDS) or clears & set(REVISION_CLEAR_FIELDS):
         return True
-    if t.trigger == Trigger.OBSERVATION and sets & set(REVISION_OBSERVED_FIELDS):
+    if t.trigger in (Trigger.OBSERVATION, Trigger.RESULT) and sets & set(REVISION_OBSERVED_FIELDS):
         return True
     target = LIFECYCLE.get(edge.target)
     return bool(t.trigger == Trigger.RESULT and e.work == "clear" and edge.target != edge.source

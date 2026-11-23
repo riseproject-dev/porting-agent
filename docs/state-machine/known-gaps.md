@@ -45,10 +45,10 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 
 ## An uncertain publication is recorded before it is confirmed
 
-- **Where:** `record_publish_success` and `record_revision_publish_success` in `reconcile.fold_patch_result`.
-- **Today:** a publication whose push response was lost (`uncertain`) takes `record_publish_success` (in upstream review `record_revision_publish_success`) when its Result is folded; the branch operation is discovered afterwards by the branch observation, and the head it pushed is recorded by `record_head_change` (in upstream review beside the observation, see "The head the pipeline published in upstream review has no row").
+- **Where:** `record_publish_success` in `reconcile.fold_patch_result`.
+- **Today:** a publication whose push response was lost (`uncertain`) takes `record_publish_success` when its Result is folded; the branch operation is discovered afterwards by the branch observation, and the head it pushed is recorded by `record_head_change`. In upstream review an uncertain Result is a failed publication instead (`schedule_publish_retry`), whose publish-only retry reads back the head a lost push left.
 - **Table:** the guard is "the Result is published, or uncertain and later confirmed".
-- **Required:** keep the Result in `development.agent_running` (or `upstream_review.agent_running`) until discovery confirms the branch operation, without the Work recovery taking the completed Work graph for a lost Result.
+- **Required:** keep the Result in `development.agent_running` until discovery confirms the branch operation, without the Work recovery taking the completed Work graph for a lost Result.
 
 ## CI on the clean head is not rerun
 
@@ -91,13 +91,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Today:** an attempt is launched again after 300 seconds without a receipt and closed as failed once its last allowed launch is 300 seconds old. A `handoff.yml` run may take up to 20 minutes (its job timeouts) and waits in the shared concurrency group `porting-fork-writer` behind other runs, so a slow but healthy run can be closed as spent while it still runs. The effects are idempotent (the lease write, the close of the exact PR, the package found by its marker), so the next attempt finds the effect in place and reads it back, and the late receipt is not folded; the cost is a charged attempt.
 - **Table:** `operation_launch` counts launches; it states no interval tied to the run timeout or the queueing of the workflow.
 - **Required:** an interval at least as long as the workflow's timeout plus its queueing, or a check of the run's status before an attempt is closed as spent.
-
-## The head the pipeline published in upstream review has no row
-
-- **Where:** `upstream_review.waiting_ci`; the upstream review observation in `observe_ci.py`.
-- **Today:** after `record_revision_publish_success` the upstream PR head is the head the pipeline pushed to `riscv64`, but `upstream_pr.head_sha` still names the head before it. When the record's publication operation (`publication_operation_id`) is confirmed and `riscv64` is its effect at the observed PR head, the observation records that head in `upstream_pr.head_sha` beside the observation, without a row, an event, or a revision bump, and then reads review and CI on it. Any other head takes `record_head_change` to the human wait. The revision is not bumped, so the next revision Work can name a Work graph that already returned a Result and is allocated afresh by `allocate_work_retry`.
-- **Table:** `record_revision_publish_success` sets the published Result and clears the carried feedback; `record_head_change` in `upstream_review.waiting_ci` applies only to a head the pipeline did not publish. No row records the head the pipeline published.
-- **Required:** a table decision on how the published head is recorded (for example `record_revision_publish_success` records it, or a row of `upstream_review.waiting_ci` for the head of the pipeline's own publication), then take it.
 
 ## Release acceptance has no recorded contract
 
@@ -175,7 +168,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
 - `begin_investigation` is taken in the tick that allocates the investigation Work (or exhausts its budget), not as soon as a request is in `queued.idle`: a request waiting for a worker slot stays in `queued.idle`, where removing the intake label still withdraws it.
 - The task that `request_patch` asks for is a patch, or a repair when feedback is pending for the Work to answer; `request_repair` always asks for a repair. A refreshed dossier that returns to the fork without a failing CI job or pending feedback is therefore answered by a patch.
-- Every rejected or blocked outcome charges `no_progress`, whatever progress the worker reports, because `reject_patch_proposal` charges it unconditionally; a published or uncertain Result starts it again, as `BUDGETS` states, although no row lists that restart.
+- Every rejected or blocked outcome charges `no_progress`, whatever progress the worker reports, because `reject_patch_proposal` charges it unconditionally; a published Result (in development also an uncertain one) starts it again, as `BUDGETS` states, although no row lists that restart.
 - The failing CI job of the head is the first executed blocking job of the evidence at `last_ci_evidence_id` that did not succeed, else the first job the evidence names as failing the runner-label check. Its name is the key of `budget.clusters`; existing keys are kept.
 - A Work payload without `generation` and `dedupe_key` is generation 0, also when the record is in a later generation: its Result is then late. A payload that names only one of them matches no Work.
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.

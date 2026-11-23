@@ -422,7 +422,12 @@ class TestTableDecisions(unittest.TestCase):
             upstream, "record_revision_publish_success", policy=POLICY, now=NOW,
             facts={"revision_published"},
             values={"proposal_artifact": dict(SAMPLE["proposal_artifact"]),
-                    "publication_operation_id": "op-publish-1"})
+                    "publication_operation_id": "op-publish-1",
+                    "upstream_pr.head_sha": SHA_C})
+        self.assertTrue(revised.accepted, revised.reason)
+        # It records the published head at a new revision.
+        self.assertEqual((revised.record["upstream_pr"]["head_sha"], revised.record["revision"]),
+                         (SHA_C, upstream["revision"] + 1))
         self.assertEqual(revised.record["pending_feedback_evidence_ids"], ["review-9"])
 
     def test_a_publish_retry_and_a_fresh_work_graph_carry_the_same_feedback(self):
