@@ -39,6 +39,7 @@ import compat
 import controller
 import dossier_gate
 import engine
+import handoff
 import isolation
 import lifecycle
 import observe_ci
@@ -56,6 +57,10 @@ class Snapshot:
     consumed: dict[int, dict]
     projects: dict[str, dict]
     evidence: dict[str, dict]
+    # What the locked upstream-PR wait already recorded for audit, by
+    # contribution: the observation keys of its `record_audit_observation`
+    # events, so each observation is recorded once.
+    audited: dict[str, set[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,6 +102,7 @@ def migration_report(
         "provision_requests": [],
         "publication_retries": [],
         "dev_pr_requests": [],
+        "handoff_requests": [],
     }
 
 
@@ -666,7 +672,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
 
 # The lists of a tick report that name what the tick asks the workflow to launch.
 _EFFECT_LISTS = ("requested_effects", "dispatch_relaunch", "provision_requests",
-                 "dev_pr_requests", "publication_retries")
+                 "dev_pr_requests", "publication_retries", "handoff_requests")
 
 
 def _touched(out: TickOutput, contribution_id: str) -> list[str]:
@@ -824,14 +830,100 @@ def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
                                    values={"paused_reason": reason}, details=details)
 
 
+def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions: dict[str, dict],
+                          by_cid: dict[str, str], snap: Snapshot, out: TickOutput, *,
+                          policy: dict, now: str, skip: frozenset[str]) -> list[dict]:
+    """Fold the verified receipts of the handoff operations.
+
+    A receipt is folded only for the open operation the record runs in the
+    state of its kind. A confirmed receipt is read back independently (the
+    branch and the clean series, the closed development PR, or the App-authored
+    package comment); the operation then takes `begin_effect`,
+    `record_response`, and `confirm_by_discovery` and fires the confirm row.
+    A failed receipt takes `record_failure` and fires the retry row within the
+    budget of the state, the exhaustion row beyond it, or, for a cleanup that
+    cannot produce an admissible clean head, `return_for_repair`. A receipt of
+    an attempt the workflow refused before any effect is not folded."""
+    report = []
+    for receipt in receipts:
+        cid = receipt.get("contribution_id")
+        if cid not in by_cid or cid in skip:
+            continue
+        with isolation.contribution(cid, "handoff_receipt"):
+            key = by_cid[cid]
+            c = contributions[key]
+            op = snap.operations.get(receipt.get("operation_id"))
+            if not op or handoff.receipt_problem(c, op, receipt):
+                continue
+            kind, result = op["kind"], receipt.get("result")
+            run = {"handoff_run_id": str(receipt.get("run_id") or "")}
+            entry = {"contribution": cid, "operation": op["operation_id"], "kind": kind}
+            if result == "applied":
+                checked = handoff.readback(api, c, op, receipt)
+                if isinstance(checked, str):
+                    report.append(dict(entry, outcome="readback mismatch", detail=checked))
+                    continue
+                external_ids, values, detail = checked
+                new_op = recovery.fold_receipt(op, external_ids=external_ids, detail=detail, now=now)
+                details = {"attempt": int(handoff.reason_value(op, "attempt") or 0)}
+                if kind == "debug_cleanup":
+                    details.update(head=values["clean_head_sha"],
+                                   rewritten=bool(receipt.get("rewritten")),
+                                   removed_commits=list(receipt.get("removed_commits") or [])[:50])
+                elif kind == "internal_pr_closure":
+                    details.update(pr_number=receipt.get("pr_number"))
+                else:
+                    values = {"handoff_request": {"command_id": op["operation_id"],
+                                                  "head": c["clean_head_sha"],
+                                                  "revision": c["revision"]}}
+                    details.update(package_url=external_ids["comment_url"],
+                                   head=c["clean_head_sha"])
+                fired = recovery.fire(c, new_op, policy=policy, now=now,
+                                      facts={handoff.CONFIRM_FACTS[kind]}, values=values,
+                                      counts={}, details=details)
+            elif result == "failed":
+                invalid = kind == "debug_cleanup" and receipt.get("failure") == handoff.INVALID
+                facts = {handoff.INVALID_FACT} if invalid else {handoff.FAILURE_FACTS[kind]}
+                counts = {} if invalid else {kind: handoff.attempt_count(op)}
+                verbs = [verb for verb in recovery.fired_verbs(c, op, "failed")
+                         if engine.refusal(c, verb, policy=policy, now=now, facts=facts,
+                                           counts=counts) is None]
+                if len(verbs) != 1:
+                    raise lifecycle.TransitionError(
+                        f"a failed {kind} attempt fires {verbs or 'no row'} in {engine.state_key(c)}")
+                exhausted = verbs[0] in lifecycle.BUDGETS[kind].exhaustion_verbs
+                new_op = recovery.fold_failure_receipt(
+                    op, external_ids=dict(run, failure=str(receipt.get("failure") or "unknown")[:40],
+                                          exhausted=int(exhausted)), now=now)
+                fired = recovery.fire(
+                    c, new_op, policy=policy, now=now, facts=facts, counts=counts,
+                    details={"attempt": int(handoff.reason_value(op, "attempt") or 0),
+                             "count": handoff.attempt_count(op),
+                             "reason": isolation.clean_text(receipt.get("reason") or "", 300)})
+            else:
+                report.append(dict(entry, outcome=f"not folded: {str(result)[:40]}",
+                                   detail=isolation.clean_text(receipt.get("reason") or "", 300)))
+                continue
+            if fired is None or not fired.accepted:
+                raise lifecycle.TransitionError(
+                    f"{kind} receipt fires no row in {engine.state_key(c)}: "
+                    f"{fired.reason if fired else 'none bound'}")
+            contributions[key] = fired.record
+            snap.operations[op["operation_id"]] = new_op
+            out.staged.extend([("operations", new_op), ("contributions", fired.record),
+                               ("events", fired.event)])
+            report.append(dict(entry, outcome=new_op["status"], verb=fired.verb))
+    return report
+
+
 def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          publications: list[dict], pressure: capacity.Pressure,
          issues: list[dict] | None = None, comments: list[dict] | None = None,
-         verified_prs: dict[str, dict] | None = None, acceptances: dict[int, int] | None = None,
+         acceptances: dict[int, int] | None = None,
          observe: bool = True, dispatcher_runs: list[dict] | None = None,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
-         development_prs: list[dict] | None = None,
+         development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
          skip: frozenset[str] = frozenset()) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
     process. Every step that works on one contribution runs in an
@@ -895,6 +987,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                            op["operation_id"], iso, False))])
             dev_pr_report.append({"contribution": cid, "status": "confirmed", "pr_number": pr["number"]})
     out.report["development_prs"] = dev_pr_report
+
+    # Verified receipts of the handoff operations, each read back
+    # independently before its operation fires a row of the table.
+    out.report["handoffs"] = fold_handoff_receipts(
+        api, handoffs or [], contributions, by_cid, snap, out, policy=policy, now=iso, skip=skip)
 
     # Verified administrative provisioning receipts are separate from model
     # artifact Results. Re-read the actual fork/ref before advancing state.
@@ -1123,7 +1220,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                  unadmitted_work=provably_unadmitted_work(
                                      contributions, runs=dispatcher_runs, queue_works=queue_works,
                                      skip=skip),
-                                 skip=skip)
+                                 skip=skip, audited=snap.audited)
         for kind, r in obs.staged:
             if kind == "contributions":
                 contributions[by_cid[r["contribution_id"]]] = r
@@ -1142,10 +1239,14 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # evidence this tick recorded.
     evidence = dict(snap.evidence)
     evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
+    handoff_observations = {item["contribution"]: item["handoff"]
+                            for item in out.report.get("observation") or []
+                            if isinstance(item.get("handoff"), dict)}
     res = controller.tick(contributions=contributions, operations=snap.operations, consumed=snap.consumed,
                           projects=snap.projects, policy=policy,
                           inputs=controller.Inputs(now=now, issues=issues or [], comments=comments or [],
-                                                   pressure=pressure, verified_prs=verified_prs or {},
+                                                   pressure=pressure,
+                                                   handoff_observations=handoff_observations,
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {},
@@ -1158,6 +1259,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["requested_effects"] = res.requested_effects
     out.report["provision_requests"] = res.report["provision_requests"]
     out.report["dev_pr_requests"] = res.report["dev_pr_requests"]
+    out.report["handoff_requests"] = res.report["handoff_requests"]
     # 4. Publish-only retries due now (infrastructure failures; no model call).
     retries = []
     max_launches = 1 + policy["retries"]["infrastructure_per_head_failure"]
@@ -1214,8 +1316,9 @@ def load_snapshot(root: Path, policy: dict):
     import state
 
     store = state.StateStore(root, policy)
+    contributions = dict(store.load_all("contributions"))
     return store, Snapshot(
-        contributions=dict(store.load_all("contributions")),
+        contributions=contributions,
         operations={
             value["operation_id"]: value for value in store.load_all("operations").values()
         },
@@ -1226,7 +1329,25 @@ def load_snapshot(root: Path, policy: dict):
         evidence={
             value["evidence_id"]: value for value in store.load_all("evidence").values()
         },
+        audited=audited_observations(store, contributions),
     )
+
+
+def audited_observations(store, contributions: dict[str, dict]) -> dict[str, set[str]]:
+    """The observation keys the locked upstream-PR wait already recorded, by
+    contribution: from the `record_audit_observation` events of the
+    contributions in that state. No event is read when none is in it."""
+    waiting = {record["contribution_id"] for record in contributions.values()
+               if engine.state_key(record) == "handoff.waiting_upstream_pr"}
+    audited: dict[str, set[str]] = {}
+    if not waiting:
+        return audited
+    for event in store.load_all("events").values():
+        key = (event.get("details") or {}).get("observation_key")
+        if event.get("kind") == "record_audit_observation" and key \
+                and event.get("contribution_id") in waiting:
+            audited.setdefault(event["contribution_id"], set()).add(key)
+    return audited
 
 
 def reconcile_snapshot(root: Path, policy: dict) -> Snapshot:
@@ -1269,6 +1390,10 @@ def _receipt_outcomes(directory: str | None, *, kind: str) -> list[dict]:
         artifact_id = path.parent / "artifact-id"
         if kind == "development_pr":
             receipt["development_pr_artifact_id"] = (
+                int(artifact_id.read_text()) if artifact_id.exists() else None
+            )
+        elif kind == "handoff":
+            receipt["handoff_artifact_id"] = (
                 int(artifact_id.read_text()) if artifact_id.exists() else None
             )
         else:
@@ -1343,6 +1468,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     publications = _publication_outcomes(args.publications)
     development_prs = _receipt_outcomes(args.development_prs, kind="development_pr")
     provisions = _receipt_outcomes(args.provisions, kind="provision")
+    handoffs = _receipt_outcomes(getattr(args, "handoffs", None), kind="handoff")
     issues = [] if args.offline else collect.intake_issues(api)
     tracking = sorted(
         {record["tracking_issue"]["number"] for record in snapshot.contributions.values()}
@@ -1406,6 +1532,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             upstream_snapshots=source_snapshots,
             provisions=provisions,
             development_prs=development_prs,
+            handoffs=handoffs,
         )
     except isolation.TickFailure as failure:
         # A pipeline failure: nothing is written, so nothing is committed.
@@ -1461,6 +1588,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publications")
     parser.add_argument("--provisions")
     parser.add_argument("--development-prs")
+    parser.add_argument("--handoffs")
     parser.add_argument("--report")
     parser.add_argument("--since")
     parser.add_argument("--offline", action="store_true")

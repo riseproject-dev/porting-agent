@@ -441,6 +441,24 @@ FIRES: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
         "confirmed": ("confirm_provisioning",),
         "failed": ("require_provisioning_intervention",),
     },
+    # The handoff operations. A failed attempt takes its retry row within the
+    # budget of its state and the exhaustion row beyond it; the caller
+    # supplies that budget's count (the attempt's count, ``handoff.counts``).
+    # A failed cleanup that cannot produce an admissible clean head, or whose
+    # lease conflicts, returns to development instead: its caller establishes
+    # ``cleanup_invalid`` and supplies no count, so neither budget row applies.
+    ("handoff.cleaning_debug", "debug_cleanup"): {
+        "confirmed": ("confirm_clean_head",),
+        "failed": ("retry_debug_cleanup", "exhaust_debug_cleanup_retries", "return_for_repair"),
+    },
+    ("handoff.closing_internal_pr", "internal_pr_closure"): {
+        "confirmed": ("confirm_internal_pr_closed",),
+        "failed": ("retry_internal_pr_closure", "exhaust_internal_pr_retries"),
+    },
+    ("handoff.preparing_submission", "submission_comment"): {
+        "confirmed": ("confirm_submission_package",),
+        "failed": ("retry_submission_comment", "exhaust_comment_retries"),
+    },
 }
 
 
@@ -464,19 +482,22 @@ def release(record: dict, op: dict, now: str) -> dict:
 
 def fire(record: dict, op: dict, *, policy: dict, now: str, facts=(), values=None,
          cause_id: str | None = None, details: dict | None = None,
-         open_operations: tuple[str, ...] | None = None) -> engine.Outcome | None:
+         open_operations: tuple[str, ...] | None = None,
+         counts: dict[str, int] | None = None) -> engine.Outcome | None:
     """Take the lifecycle row an operation fires on reaching ``confirmed`` or
     ``failed``, through the transition engine, and release the record's
     reference to the closed operation. ``None`` when no row is bound to the
     operation in the record's state. A refused row leaves the record as it
-    is (the reason is in the outcome)."""
+    is (the reason is in the outcome). ``counts`` are the counts of budgets
+    that live outside the record (the operation's launches by default)."""
     verbs = fired_verbs(record, op)
     if not verbs:
         return None
+    counts = launch_count(op) if counts is None else counts
     reasons, admitted = [], []
     for verb in verbs:
         why = engine.refusal(record, verb, policy=policy, now=now, facts=facts,
-                             counts=launch_count(op), open_operations=open_operations)
+                             counts=counts, open_operations=open_operations)
         (reasons if why else admitted).append(why or verb)
     if len(admitted) > 1:
         raise RecoveryError(f"{', '.join(admitted)} apply together")
@@ -484,7 +505,7 @@ def fire(record: dict, op: dict, *, policy: dict, now: str, facts=(), values=Non
         return engine.Outcome(record, False, "; ".join(dict.fromkeys(reasons)), None)
     out = engine.apply_transition(record, admitted[0], policy=policy, now=now,
                                   cause_id=cause_id or op["operation_id"], facts=facts,
-                                  values=values, counts=launch_count(op),
+                                  values=values, counts=counts,
                                   open_operations=open_operations,
                                   details={"operation": op["operation_id"], **(details or {})})
     out.record = release(out.record, op, now)

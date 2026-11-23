@@ -16,7 +16,12 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * at ``handoff.awaiting_submission``, take the table's rows for what is
   observed on the candidate head: ``record_explanation`` for an
   explanation-only comment, then ``return_for_repair`` for a CI failure, or
-  else ``record_actionable_review`` for an actionable review.
+  else ``record_actionable_review`` for an actionable review;
+* in ``handoff.waiting_ci``, take ``accept_clean_head_ci`` or
+  ``return_for_repair`` for CI on the clean head;
+* in the locked ``handoff.waiting_upstream_pr``, discover the upstream PR
+  read-only and take ``verify_upstream_pr`` for exactly one that matches, or
+  record what does not match once (``record_audit_observation``).
 
 A contribution that waits for a human in a state of the table without an
 observation row (``compat.waits_for_human``) is not observed: only the rows
@@ -35,6 +40,7 @@ import ci_evidence
 import collect
 import compat
 import engine
+import handoff
 import isolation
 import lifecycle
 import recovery
@@ -164,11 +170,103 @@ def _record_gate_review(obs: Observation, entry: dict, cur: dict, eid: str, ev: 
     return new
 
 
+def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
+                           contracts: dict[str, dict], *, policy: dict, now: str) -> None:
+    """``handoff.waiting_ci``: CI on the clean head.
+
+    ``accept_clean_head_ci`` when every required job executed and passed on
+    the clean head, ``return_for_repair`` for a blocking failure there or a
+    fork head that is not the clean head. Anything else (CI still running,
+    missing, or not executed) keeps the wait; nothing is rerun."""
+    clean = rec["clean_head_sha"]
+    if head != clean:
+        out = engine.apply_transition(
+            rec, "return_for_repair", policy=policy, now=now, cause_id=f"branch:{head[:12]}",
+            facts={"clean_head_needs_repair"}, details={"head": head, "clean_head": clean})
+        obs.staged.extend([("contributions", out.record), ("events", out.event)])
+        entry.update(returned_to_development=True, reason="the fork head is not the clean head")
+        return
+    snap = collect.ci_snapshot(api, rec["fork"]["name"], clean)
+    ctr = contract_for(rec, contracts)
+    verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
+                                        expected_wheels=ctr["expected_wheels"],
+                                        required_runner_label=ctr["required_runner_label"])
+    entry["ci"] = {"repository": rec["fork"]["name"], "state": verdict.state,
+                   "problems": verdict.problems[:10]}
+    latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == clean])
+    if verdict.state not in ("passed", "failed") or not latest:
+        entry["note"] = "CI on the clean head is not complete"
+        return
+    run = max(latest, key=lambda r: r["id"])
+    eid = _evidence_id(snap.repository["id"], run)
+    ev = ci_evidence.evidence_record(
+        evidence_id=eid, contribution_id=rec["contribution_id"],
+        policy_version=policy["policy_version"], collected_at=now, repository=snap.repository,
+        run=run, jobs=[j for r in latest for j in snap.jobs_by_run.get(r["id"], [])],
+        base_sha=rec["upstream"].get("base_sha"), test_merge_sha=None,
+        expected_wheels=ctr["expected_wheels"], artifacts=[], verdict=verdict,
+        debug_present=False, limitations=[] if verdict.state == "passed" else ["see problems"])
+    obs.staged.append(("evidence", ev))
+    if verdict.state == "passed":
+        out = engine.apply_transition(
+            rec, "accept_clean_head_ci", policy=policy, now=now, cause_id=eid,
+            facts={"ci_passed_on_clean_head"}, values={"last_ci_evidence_id": eid},
+            details={"evidence_id": eid, "head": clean})
+    else:
+        out = engine.apply_transition(
+            rec, "return_for_repair", policy=policy, now=now, cause_id=eid,
+            facts={"clean_head_needs_repair"}, details={"evidence_id": eid, "head": clean})
+        entry["returned_to_development"] = True
+    obs.staged.extend([("contributions", out.record), ("events", out.event)])
+    entry["evidence"] = eid
+
+
+def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
+                         *, policy: dict, now: str, audited: dict[str, set[str]]) -> None:
+    """``handoff.waiting_upstream_pr``, the locked wait: read-only discovery
+    of the upstream PR the package asked for.
+
+    Exactly one candidate that satisfies every filter (``handoff.pull_mismatch``)
+    takes ``verify_upstream_pr``. Anything else that does not match (another
+    fork head, a candidate that fails a filter, several matching candidates)
+    is recorded once by ``record_audit_observation`` and never changes the
+    state; the reminder states it."""
+    cid = rec["contribution_id"]
+    authority = policy["command_authority"]["actor_ids"]
+    matching, rejected = handoff.matching_upstream_prs(
+        rec, collect.upstream_pull_requests(api, rec), authority)
+    if len(matching) == 1:
+        pr = matching[0]
+        out = engine.apply_transition(
+            rec, "verify_upstream_pr", policy=policy, now=now, cause_id=f"upstream-pr-{pr['id']}",
+            facts={"upstream_pr_open_on_base", "upstream_pr_at_clean_head",
+                   "upstream_pr_human_author"},
+            values={"upstream_pr": handoff.upstream_pr_value(pr)},
+            details={"pr_number": pr["number"], "url": pr["url"], "head": pr["head_sha"],
+                     "author": pr["user"]["login"]})
+        obs.staged.extend([("contributions", out.record), ("events", out.event)])
+        entry["verified_upstream_pr"] = pr["number"]
+        return
+    key = handoff.observation_key(head, rec, rejected, len(matching))
+    mismatch = handoff.mismatch_text(head, rec, rejected, len(matching))
+    entry["handoff"] = {"observed_head": head, "mismatch": mismatch}
+    if key is None or key in audited.get(cid, set()):
+        return
+    out = engine.apply_transition(
+        rec, "record_audit_observation", policy=policy, now=now, cause_id=f"audit-{key}",
+        facts={"unverified_upstream_observation"},
+        details={"observation_key": key, "observed_head": head, "mismatch": mismatch})
+    obs.staged.append(("events", out.event))
+    audited.setdefault(cid, set()).add(key)
+    entry["audit_observation"] = key
+
+
 def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dict[str, dict],
             contracts: dict[str, dict], policy: dict, now: str,
             evidence: dict[str, dict] | None = None,
             unadmitted_work: set[str] | None = None,
-            skip: frozenset[str] = frozenset()) -> Observation:
+            skip: frozenset[str] = frozenset(),
+            audited: dict[str, set[str]] | None = None) -> Observation:
     """Observe every watched contribution that is not in ``skip``.
 
     Each contribution is observed in its own ``isolation.contribution``
@@ -176,6 +274,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
     the contribution that was being observed."""
     obs = Observation()
     evidence = dict(evidence or {})
+    audited = {cid: set(keys) for cid, keys in (audited or {}).items()}
     for rec in contributions.values():
         if rec["phase"] not in WATCH_PHASES or not rec.get("fork"):
             continue
@@ -214,6 +313,16 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 # `resume_stale`). It has no observation row: the head, CI,
                 # and review are read again once a human has resumed it.
                 entry["note"] = f"{engine.state_key(rec)} waits for a human and is not observed"
+                obs.report.append(entry)
+                continue
+            if engine.state_key(rec) == "handoff.waiting_ci":
+                _observe_clean_head_ci(api, obs, entry, rec, head["head"], contracts,
+                                       policy=policy, now=now)
+                obs.report.append(entry)
+                continue
+            if engine.state_key(rec) == "handoff.waiting_upstream_pr":
+                _observe_upstream_pr(api, obs, entry, rec, head["head"], policy=policy, now=now,
+                                     audited=audited)
                 obs.report.append(entry)
                 continue
             if rec["phase"] == "handoff" and engine.state_key(rec) != "handoff.awaiting_submission":

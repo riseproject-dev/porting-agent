@@ -26,8 +26,9 @@ unless every guard is established. The engine never performs remote effects.
 engine: the handoff states and the moves into them, the stop flag and the
 stop, resume, and refresh commands in every state of the table, the
 reminders of a pending human step, the allocation of Work and the exhaustion
-of its budgets, late Results, and the rows of the fork provisioning operation
-(the operation table itself has its engine in ``recovery``). Every other verb of the table is in
+of its budgets, late Results, and the rows of the fork provisioning and
+handoff operations (the operation table itself has its engine in
+``recovery``). Every other verb of the table is in
 ``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it yet
 and the corresponding behavior still runs through ``compat``. The two sets
 partition the table, so the share of the table the pipeline obeys is
@@ -708,7 +709,9 @@ PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
     "resume", "park", "refresh", "retract-pr", "abandon", "resolve-operation"))
 
 # Verbs that pipeline code takes through ``apply_transition``, with the module
-# that takes them.
+# that takes them. ``return_for_repair`` is taken by observation at the gate
+# and in ``handoff.waiting_ci``, and fired by a cleanup that cannot produce an
+# admissible clean head.
 PIPELINE_VERBS: dict[str, str] = {
     # Entering and leaving the submission gate, by observation, and the
     # review comments observed at the gate.
@@ -778,6 +781,23 @@ PIPELINE_VERBS: dict[str, str] = {
     "start_operation": "controller",
     "require_provisioning_intervention": "controller",
     "confirm_provisioning": "recovery",
+    # The handoff operations (debug cleanup, closing the development PR, the
+    # submission package): the rows each attempt fires through
+    # ``recovery.fire`` when its verified receipt is folded.
+    "confirm_clean_head": "recovery",
+    "retry_debug_cleanup": "recovery",
+    "exhaust_debug_cleanup_retries": "recovery",
+    "confirm_internal_pr_closed": "recovery",
+    "retry_internal_pr_closure": "recovery",
+    "exhaust_internal_pr_retries": "recovery",
+    "confirm_submission_package": "recovery",
+    "retry_submission_comment": "recovery",
+    "exhaust_comment_retries": "recovery",
+    # CI on the clean head, and the locked wait for the upstream PR, by
+    # observation.
+    "accept_clean_head_ci": "observe_ci",
+    "verify_upstream_pr": "observe_ci",
+    "record_audit_observation": "observe_ci",
 }
 
 def table_commands() -> frozenset[str]:
@@ -814,23 +834,10 @@ def table_verbs() -> set[str]:
 UNWIRED_VERBS: frozenset[str] = frozenset(table_verbs() - set(PIPELINE_VERBS))
 
 # Commands the grammar and the engine accept but the controller holds: the
-# operations their transition starts are not run by this controller, and a
-# contribution taken into that state would stay there. The controller checks
-# the command against the table, then refuses it with this reason and changes
-# nothing.
-HELD_COMMANDS: dict[str, str] = {
-    "submit-upstream": (
-        "the command is valid for this revision and head, but this controller does not run "
-        "the submission preparation it authorizes (debug cleanup, CI on the clean head, "
-        "closing the development PR, and the submission package); the contribution stays in "
-        "`handoff.awaiting_submission` with its fork, development PR, head, and evidence "
-        "unchanged"),
-    "retract-pr": (
-        "the command is valid for this revision and clean head, but this controller does not "
-        "run the handoff operations that lead to the upstream PR wait or that a retraction "
-        "ends (the submission package and its reminders); the contribution stays in "
-        "`handoff.waiting_upstream_pr` unchanged"),
-}
+# controller checks such a command against the table, then refuses it with
+# this reason and changes nothing. No command is held: every command of the
+# table is applied as its row states.
+HELD_COMMANDS: dict[str, str] = {}
 
 
 def resolve(state: str, verb: str) -> tuple[lc.Transition, str]:

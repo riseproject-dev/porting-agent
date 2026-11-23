@@ -29,6 +29,7 @@ import capacity
 import collect
 import compat
 import engine
+import handoff
 import intake
 import isolation
 import lifecycle
@@ -54,7 +55,9 @@ class Inputs:
     upstream_snapshots: dict[str, dict] = field(default_factory=dict)  # verified source ID / initial base
     comments: list[dict] = field(default_factory=list)        # {"issue_number", "comment", "event_body"}
     pressure: capacity.Pressure | None = None
-    verified_prs: dict[str, dict] = field(default_factory=dict)  # url -> verified PR resource
+    # What the observation of the locked upstream-PR wait found this tick, by
+    # contribution: the reminder states a mismatch.
+    handoff_observations: dict[str, dict] = field(default_factory=dict)
     resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
@@ -404,7 +407,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             out = engine.apply_transition(c, "record_reminder", policy=policy, now=now,
                                           cause_id=f"reminder-{c['revision']}",
-                                          details=reminder_details(c))
+                                          details=reminder_details(
+                                              c, operations, inputs.handoff_observations.get(cid)))
             by_id[cid] = out.record
             res.stage("contributions", out.record)
             res.stage("events", out.event)
@@ -426,6 +430,18 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                           "next_discovery": due.isoformat() if due else None})
                 for a in recovery.alerts(op, inputs.now):
                     rep["alerts"].append({"operation": op["operation_id"], "alert": a})
+
+    # The handoff operations. In a handoff state that runs one, the controller
+    # records the intent of the next attempt when none is open, and launches
+    # the planned attempt through the trusted workflow. No row of the table
+    # launches it: its launches are counted like `operation_launch`, on the
+    # operation, and it is not launched while the contribution is paused.
+    res.report["handoff_requests"] = []
+    for cid, c in list(by_id.items()):
+        if cid in skip or engine.state_key(c) not in handoff.KINDS:
+            continue
+        with isolation.contribution(cid, "handoff_operation"):
+            _launch_handoff(c, by_id, operations, res, inputs, now, policy)
 
     # Provisioning is a trusted administrative workflow, not a model task.
     # Persist its normal operation intent before dispatch, with no second queue.
@@ -873,17 +889,72 @@ def _legacy_patch(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
                                 updated_at=now, active_work=request, budget=budget)
 
 
-def reminder_details(record: dict) -> dict:
+def reminder_details(record: dict, operations: dict | None = None,
+                     observation: dict | None = None) -> dict:
     """What a reminder repeats: the pending human action, when it was
-    requested, and, where the step binds to a head, the revision and head."""
+    requested, and, where the step binds to a head, the revision and head.
+    In the locked upstream-PR wait it also carries the link to the posted
+    package, the human who requested the submission, and what the
+    observation of this tick found that does not match."""
     pending = record["pending_human_action"]
     heads = {"handoff.awaiting_submission": (record.get("handoff_request") or {}).get("head"),
              "handoff.waiting_upstream_pr": record.get("clean_head_sha")}
     state = engine.state_key(record)
-    return {"pending_human_action": pending["kind"], "requested_at": pending["requested_at"],
-            "previous_reminder_at": pending.get("reminded_at"),
-            **({"bound_to": {"revision": record["revision"], "head": heads[state]}}
-               if state in heads else {})}
+    details = {"pending_human_action": pending["kind"], "requested_at": pending["requested_at"],
+               "previous_reminder_at": pending.get("reminded_at"),
+               **({"bound_to": {"revision": record["revision"], "head": heads[state]}}
+                  if state in heads else {})}
+    if state == "handoff.waiting_upstream_pr":
+        package = (operations or {}).get((record.get("handoff_request") or {}).get("command_id"))
+        details["package_url"] = ((package or {}).get("external_ids") or {}).get("comment_url")
+        details["submitter"] = ((record.get("handoff_approval") or {}).get("actor") or {}).get("login")
+        details["mismatch"] = (observation or {}).get("mismatch")
+    return details
+
+
+def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inputs: Inputs,
+                    now: str, policy: dict) -> None:
+    """Record the next attempt of the handoff operation of the record's state
+    when none is open, and launch the planned attempt when it is due."""
+    cid, state = c["contribution_id"], engine.state_key(c)
+    kind = handoff.KINDS[state]
+    rep = res.report
+    if c.get("paused"):
+        rep["deferred"].append({"contribution": cid, "why": f"paused in {state}"})
+        return
+    active = c.get("active_operation_id")
+    op = operations.get(active) if active else None
+    if active and op is None:
+        raise lifecycle.TransitionError(f"{state} names the operation {active}, which the store "
+                                        "does not hold")
+    if op is None:
+        op = handoff.plan_attempt(c, operations, policy=policy, now=now)
+        if op["operation_id"] in operations:
+            raise lifecycle.TransitionError(f"the next {kind} attempt {op['operation_id']} exists")
+        c = dict(c, active_operation_id=op["operation_id"], updated_at=now)
+        schemas.validate("contribution", c)
+        by_id[cid] = c
+        operations[op["operation_id"]] = op
+        res.stage("contributions", c)
+        res.stage("operations", op)
+    if op["kind"] != kind or op["status"] != "planned":
+        return
+    launches = recovery.launch_attempts(op)
+    limit = lifecycle.budget_limit("operation_launch", policy)
+    if launches >= limit:
+        if (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
+                >= LAUNCH_INTERVAL_SECONDS:
+            rep["alerts"].append({"contribution": cid, "operation": op["operation_id"],
+                                  "alert": f"{kind} launches spent without a receipt"})
+        return
+    if launches and (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
+            < LAUNCH_INTERVAL_SECONDS:
+        return
+    launched = recovery.charge_launch(op, now)
+    operations[op["operation_id"]] = launched
+    res.stage("operations", launched)
+    rep["handoff_requests"].append({"operation_id": op["operation_id"], "contribution_id": cid,
+                                    "kind": kind, "attempt": launches + 1})
 
 
 def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
@@ -999,12 +1070,21 @@ def admission_override(cmd: Command) -> dict | None:
     return override
 
 
-def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict) -> dict:
+def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict, operations: dict,
+                    policy: dict, now: str) -> dict:
     """The values of the fields a command's row sets that the engine cannot
-    derive: the refresh a refresh or a stale resume records, and the
-    admission override of a restart."""
+    derive: the refresh a refresh or a stale resume records, the admission
+    override of a restart, and the approval and the first debug cleanup
+    operation of a submission."""
     if verb == "restart_generation":
         return {"admission_override": admission_override(cmd)}
+    if verb == "submit_upstream":
+        approved = dict(rec, handoff_approval=handoff.approval(
+            rec, command_id=receipt["command_id"], actor=receipt["actor"], head=cmd.args["head"]))
+        op = handoff.plan_attempt(approved, operations, policy=policy, now=now,
+                                  kind="debug_cleanup")
+        return {"handoff_approval": approved["handoff_approval"],
+                "active_operation_id": op["operation_id"]}
     if verb not in ("refresh_investigation", "resume_stale"):
         return {}
     fork = rec.get("fork") or {}
@@ -1051,7 +1131,8 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
                          policy: dict, now: str) -> engine.Outcome:
     """Apply a command to a record in a table state, as the table defines it."""
     open_ops = _open_operations(rec, operations)
-    counts = recovery.launch_count(operations.get(rec.get("active_operation_id")))
+    counts = {**recovery.launch_count(operations.get(rec.get("active_operation_id"))),
+              **handoff.counts(rec, operations)}
     facts = _command_facts(rec, cmd)
     verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now, counts=counts,
                                        open_operations=open_ops, facts=facts)
@@ -1063,7 +1144,7 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
     if cmd.verb in engine.HELD_COMMANDS:
         return engine.Outcome(rec, False, engine.HELD_COMMANDS[cmd.verb], None, verb)
     try:
-        values = _command_values(rec, verb, cmd, receipt)
+        values = _command_values(rec, verb, cmd, receipt, operations, policy, now)
     except ValueError as error:
         return engine.Outcome(rec, False, str(error), None, verb)
     details = {}
@@ -1174,6 +1255,14 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
     if out.event:
         res.stage("events", out.event)
     _restart_launches(out, operations, res, now)
+    if out.verb == "submit_upstream":
+        # The intent of the first debug cleanup attempt, whose id the row
+        # recorded; it is launched by the handoff step of this tick.
+        op = handoff.plan_attempt(out.record, operations, policy=policy, now=now)
+        if op["operation_id"] != out.record["active_operation_id"]:
+            raise lifecycle.TransitionError("the debug cleanup intent differs from the approval")
+        operations[op["operation_id"]] = op
+        res.stage("operations", op)
     return receipt
 
 

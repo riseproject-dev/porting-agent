@@ -29,6 +29,7 @@ on:
       - Fork Provisioning
       - Development PR
       - Publish Retry
+      - Handoff
     types: [completed]
   workflow_dispatch:
 
@@ -213,6 +214,24 @@ jobs:
             unzip -q -o -j "development-prs/$run/a.zip" -d "development-prs/$run" || continue
             printf '%s' "$id" > "development-prs/$run/artifact-id"
           done
+      - name: Collect trusted handoff receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p handoffs
+          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/handoff.yml/runs?status=completed&branch=main&event=workflow_dispatch&per_page=20" \
+            --jq '.workflow_runs[].id') || runs=
+          printf '%s\n' "$runs" | while read -r run; do
+            [ -n "$run" ] || continue
+            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+              --jq '[.artifacts[] | select(.name == "porting-handoff" and (.expired | not))][0].id // empty') || continue
+            [ -n "$id" ] || continue
+            mkdir -p "handoffs/$run"
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "handoffs/$run/a.zip" || continue
+            unzip -q -o -j "handoffs/$run/a.zip" -d "handoffs/$run" || continue
+            printf '%s' "$id" > "handoffs/$run/artifact-id"
+          done
       - name: Reconcile deterministic state locally
         env:
           GH_TOKEN: ${{ github.token }}
@@ -220,7 +239,8 @@ jobs:
           set -euo pipefail
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
           uv run --locked python -m reconcile --publications publications \
-            --provisions provisions --development-prs development-prs --report report.json \
+            --provisions provisions --development-prs development-prs --handoffs handoffs \
+            --report report.json \
             ${gh_aw:+--gh-aw "$gh_aw"}
           {
             echo '## Porting reconciliation'
@@ -376,6 +396,16 @@ jobs:
           set -euo pipefail
           jq -r '.dev_pr_requests[].operation_id' report.json | while read -r operation; do
             gh workflow run dev-pr.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f operation-id="$operation"
+          done
+      - name: Launch durable handoff operations
+        if: steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          jq -r '.handoff_requests[].operation_id' report.json | while read -r operation; do
+            gh workflow run handoff.yml --repo "$GITHUB_REPOSITORY" --ref main \
               -f operation-id="$operation"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

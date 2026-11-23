@@ -30,6 +30,9 @@ ACTIVITY_LABELS = {
     "waiting_ci": "waiting for CI",
     "waiting_human": "waiting for human",
     "awaiting_submission": "waiting for a human to request submission",
+    "cleaning_debug": "removing debug commits",
+    "closing_internal_pr": "closing the development PR",
+    "preparing_submission": "posting the submission package",
     "waiting_upstream_pr": "waiting for a human to open the upstream PR",
 }
 

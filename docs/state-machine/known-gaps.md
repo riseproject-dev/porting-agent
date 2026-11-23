@@ -15,20 +15,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 {:toc}
 </details>
 
-## Submission is requested but not yet accepted
-
-- **Where:** `handoff.awaiting_submission`, verb `submit_upstream`.
-- **Today:** the tracking issue asks an authorized human to post `/upstreaming submit-upstream revision=N head=<head>`. The controller validates the command against the table, then refuses it and changes nothing.
-- **Table:** `submit_upstream` leads to `handoff.cleaning_debug`, followed by clean-head CI, closing the development PR, and posting the submission package with a prefilled compare link. None of these operations runs yet, so accepting the command would leave the contribution in a state nothing advances.
-- **Required:** implement the handoff operations, then accept the command.
-
-## Retraction is checked but not accepted
-
-- **Where:** `handoff.waiting_upstream_pr`, verb `retract_submission`.
-- **Today:** `/upstreaming retract-pr revision=N head=<clean head>` is checked against the table (exact revision, exact clean head, quiescent) and then refused without change, like `submit-upstream`. Nothing reaches the state while `submit-upstream` is held.
-- **Table:** `retract_submission` leads to `development.fix_needed`, stops the reminders, and unlocks branch work.
-- **Required:** accept the command together with the handoff operations.
-
 ## A publication held in a legacy state is not stopped by the table
 
 - **Where:** a Result held for a publish retry; the legacy publication outcome in `reconcile.py` and `compat.legacy_pause`.
@@ -82,17 +68,32 @@ These table mutations break a settled decision but still pass the check:
 - **`resume_ci`** in `development.waiting_human` and `handoff.waiting_human` leads to the CI wait, but the rerun of the interrupted jobs that the row states is not launched. No record enters a wait with the pending action `ci_interrupted` yet.
 - **Required:** collector reruns.
 
-## The locked-wait reminder lacks the package link and exact head
+## CI on the clean head is not rerun
 
-- **Where:** `record_reminder` in `handoff.waiting_upstream_pr`, `status_ledger.py`.
-- **Today:** the generic reminder text is used.
-- **Table:** the reminder in that state carries the package link and the exact head, and states when the observed upstream PR does not match.
-- **Required:** render the reminder from the posted package once the handoff operations exist. Nothing reaches the state while `submit-upstream` is held.
+- **Where:** `handoff.waiting_ci`, rows `rerun_interrupted_ci` and `exhaust_interrupted_reruns`; the CI observation in `observe_ci.py`.
+- **Today:** the observation takes `accept_clean_head_ci` or `return_for_repair`. A required job that was cancelled or lost its runner is a job that did not execute: the contribution stays in `handoff.waiting_ci` and nothing reruns it, so `interrupted_reruns` is never charged and its exhaustion wait is never entered. `pause` and `park` still apply there.
+- **Table:** the collector reruns the interrupted jobs on the exact head within `interrupted_reruns` and waits for a human with `ci_interrupted` once it is exhausted.
+- **Required:** a trusted rerun of the interrupted jobs on the exact head and attempt, then take the two rows.
+
+## A handoff operation whose launches end without a receipt
+
+- **Where:** `handoff.cleaning_debug`, `handoff.closing_internal_pr`, `handoff.preparing_submission`; the launches in `controller.py`.
+- **Today:** every attempt that runs writes a receipt, also when a step of its job fails. A run that ends with no receipt at all (a lost runner, a cancelled run, a refused final check) leaves the attempt `planned`; it is launched again within `operation_launch` and then only reported as an alert. The contribution stays in the work state, and `park` is refused while the operation is open.
+- **Table:** the retry and exhaustion rows of the state fire on a failed attempt; the table has no row for an attempt that never reports.
+- **Required:** a table decision for an attempt that never reports (for example, its spent launches as a failed attempt), or a producer of resolution evidence.
+
+## The development PR stays closed after a retraction
+
+- **Where:** `retract_submission` and `refresh_investigation` from `handoff.waiting_upstream_pr`; the development PR plans in `controller.py`.
+- **Today:** the development PR was closed during the handoff. After a retraction or a refresh nothing reopens it: the development PR plans start only for a fork without a recorded PR, so later development heads have no open development PR for CI and review.
+- **Table:** `retract_submission` unlocks branch work; no row reopens or creates the development PR.
+- **Required:** decide where the development PR operation sits in the table (see "Development PR operations have no row").
+
 
 ## A legacy pending action in upstream review has no resume
 
 - **Where:** `upstream_review.waiting_human` with `pending_human_action` `task_without_outcome`, written by the legacy Work deadline in `reconcile.py`.
-- **Today:** no resume row's guard admits that pending action, and `restart_generation` is refused while the upstream PR is open, so the only exit is `park` then `abandon`. Nothing reaches the state while `submit-upstream` is held.
+- **Today:** no resume row's guard admits that pending action, and `restart_generation` is refused while the upstream PR is open, so the only exit is `park` then `abandon`.
 - **Table:** Work that ends without a Result takes `allocate_work_retry` within its budget and `exhaust_work_recovery` into the human wait with a pending action that `resume_upstream_revision` admits.
 - **Required:** replace the legacy Work deadline by the table's Work recovery verbs before upstream review becomes reachable.
 
@@ -107,7 +108,7 @@ These table mutations break a settled decision but still pass the check:
 
 - **Where:** `reconcile.apply_publication`, for Results of development and upstream revision Work.
 - **Today, development:** a rejected or blocked outcome charges `no_progress` and nothing else, bumps the revision, and leads to `fix_needed`, as `reject_patch_proposal` does, but it is written by the legacy outcome: a blocked outcome also records its rehearsal evidence as pending feedback and clears `proposal_artifact`, a rejected one records its artifact in `proposal_artifact`. A stale rejection leads to the legacy `development.idle` without a revision bump; `no_change` leads to `development.idle`; a published or uncertain Result leads to `waiting_ci` and starts `no_progress` again, without clearing the feedback its Work carried.
-- **Today, upstream review** (from `upstream_review.agent_running`; nothing reaches it while `submit-upstream` is held):
+- **Today, upstream review** (from `upstream_review.agent_running`):
   - published or uncertain: `upstream_review.waiting_ci`, `no_progress` started again, the carried feedback kept (table: `record_revision_publish_success`, which clears exactly the carried feedback);
   - `no_change`: the legacy `upstream_review.idle`, which the next CI observation moves to `upstream_review.waiting_ci` with no pending action (table: `require_reviewer_answer` to `upstream_review.waiting_human` with the pending action `answer_reviewer`);
   - `proposal`, which no publisher produces any more: rejected in trusted validation, as below;
@@ -176,7 +177,6 @@ These follow the literal reading of a decision and are kept until a decision say
 - `abandon` records `terminal_reason` `abandoned`; the reason the human gives is kept in the event only. A paused record stays paused when it is abandoned, and a later `resume` of the closed record takes `resume_pause`, which clears the flag and changes nothing else (the clearer of the flag has no terminal guard).
 - A command field that the row taken does not read is refused, not ignored: `head` on a `refresh` outside `handoff.waiting_upstream_pr`, `class` and `paths` outside `parked.idle`.
 - The terminal migration records `terminal_reason` `withdrawn` for a request whose intake label was removed (recognized by the reason the controller wrote), `abandoned` for every other `abandoned` record, and the name of the old phase (`no_work`, `deferred`, `already_released`) for the others.
-- `retract-pr` is held like `submit-upstream`: checked against the table, then refused without change.
 - A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
 - `begin_investigation` is taken in the tick that allocates the investigation Work (or exhausts its budget), not as soon as a request is in `queued.idle`: a request waiting for a worker slot stays in `queued.idle`, where removing the intake label still withdraws it.
 - The task that `request_patch` asks for is a patch, or a repair when feedback is pending for the Work to answer; `request_repair` always asks for a repair. A refreshed dossier that returns to the fork without a failing CI job or pending feedback is therefore answered by a patch.
@@ -207,6 +207,18 @@ These follow the literal reading of a decision and are kept until a decision say
 - A worker outcome `proposal`, which no publisher produces any more, is folded as an outcome rejected in trusted validation.
 - A Result of Work that the record holds but that its phase does not request (investigation Work outside `investigation`, patch Work outside `development`, revision Work outside `upstream_review`) is late, and so are a dossier outside `investigation`, any other Result in `investigation`, and the Result of a held publication outside `development` and `upstream_review`.
 - The provisioning migration treats the retired `provision_fork` wait like the provisioning wait without a pending action: the fork is provisioned automatically from `provisioning.idle`. Development without a fork returns to `provisioning.idle`, and a proposal held on the provisioned fork is discarded for fresh patch Work in `development.idle`; both at a new revision.
+- `submit_upstream` records `handoff_approval` with the CI evidence and the dossier the approval saw (`evidence_ids`), and the first debug cleanup attempt as `active_operation_id`.
+- The handoff operations are launched without a row, like the development PR operations: within `operation_launch`, again after 300 seconds without a receipt, and not while the contribution is paused. The trusted workflow accepts an attempt of an earlier revision when the record names it as its active operation (a pause and its resume bump the revision).
+- The counter of `debug_cleanup`, `internal_pr_closure`, and `submission_comment` ("the handoff operation's attempts") is the number of attempts in the current round, recorded on each attempt as `count:<k>`: a failed attempt with a count below `retries.infrastructure_per_head_failure` plus one takes the retry row, which the next attempt (count plus one) charges; at that count it takes the exhaustion row. After the resume of that exhaustion the next attempt counts from one. A pause does not start the count again.
+- A cleanup that cannot produce an admissible clean head (a conflict once the debug commits are removed, a merge commit, nothing left, a validation problem) or whose exact-head lease conflicts (the branch is neither the approved head nor the clean head) is not charged to `debug_cleanup`: it takes `return_for_repair`, whatever the count.
+- A cleanup without a debug commit writes nothing, and the CI evidence already recorded for that exact head is CI on the clean head: `accept_clean_head_ci` can be taken in the tick that confirms the clean head.
+- `return_for_repair` from `handoff.cleaning_debug` and `handoff.waiting_ci` keeps `handoff_approval`, as its row clears only the clean head, `handoff_request`, and the pending action; the next `submit_upstream` replaces it.
+- In the locked wait `handoff_request.command_id` names the submission package operation; the reminder links the comment that operation read back.
+- "A compatible human author" of the upstream PR is a `User` account whose id is in `command_authority.actor_ids`; it need not be the human who requested the submission. A draft pull request is open.
+- An observation of the locked wait that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.
+- The submission package's title is the subject of the one commit of the clean series, or `Build riscv64 wheels` for several commits; its description is the commit body (each commit with its body for a series), a `Testing` section from the CI evidence of the clean head, and the open issues of the upstream repository that the dossier's history records.
+- Handoff receipts are read only from completed `handoff.yml` runs on `main` dispatched by `workflow_dispatch`, and only for the open operation the record runs.
+- A handoff operation that a human resolves with `resolve-operation` fires no row: the confirm rows need the receipt and its readback, and the retry and exhaustion rows a reported failure. The record releases the operation and the controller plans the next attempt, which finds the cleanup, the closure, or the package already in place and reads it back.
 
 ## Code still outside the engine
 

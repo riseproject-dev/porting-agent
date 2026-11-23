@@ -363,16 +363,24 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
             self.assertEqual(result.staged, [])
             self.assertIsNone(controller._actionable(record))
 
-    def test_submit_upstream_is_checked_against_the_table_then_held(self):
+    def test_submit_upstream_is_accepted_by_the_table(self):
         record = migrated()
         output = self.tick(record, comments=[comment(SUBMIT)])
         receipt = next(r for kind, r in output.staged if kind == "commands")
         self.assertEqual((receipt["verb"], receipt["result"], receipt["revision"]),
-                         ("submit-upstream", "rejected", 6))
-        self.assertEqual(receipt["reason"], engine.HELD_COMMANDS["submit-upstream"])
-        self.assertEqual(self.final(output, record), record)
-        self.assertEqual(self.events(output), [])
+                         ("submit-upstream", "accepted", 6))
+        after = self.final(output, record)
+        self.assertEqual(engine.state_key(after), "handoff.cleaning_debug")
+        self.assertEqual(self.events(output), ["submit_upstream"])
+        self.assertEqual((after["revision"], after["fork"], after["last_ci_evidence_id"]),
+                         (6, FORK, CI_EVIDENCE))
+        self.assertEqual(after["handoff_approval"]["head"], HEAD)
+        self.assertIsNone(after["pending_human_action"])
+        op = next(r for kind, r in output.staged if kind == "operations")
+        self.assertEqual((op["kind"], op["operation_id"]), ("debug_cleanup", after["active_operation_id"]))
         self.assertEqual(output.report["requested_effects"], [])
+        self.assertEqual([r["operation_id"] for r in output.report["handoff_requests"]],
+                         [op["operation_id"]])
         wrong = (
             (f"/upstreaming submit-upstream revision=5 head={HEAD}", "stale revision 5, current is 6"),
             (f"/upstreaming submit-upstream revision=6 head={'c' * 40}",
@@ -384,6 +392,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 receipt = next(r for kind, r in output.staged if kind == "commands")
                 self.assertEqual((receipt["result"], receipt["reason"]), ("rejected", reason))
                 self.assertEqual(self.final(output, record), record)
+                self.assertEqual(output.report["handoff_requests"], [])
 
     def test_retired_and_inapplicable_commands_are_rejected_and_change_nothing(self):
         record = migrated()

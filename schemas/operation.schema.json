@@ -44,7 +44,10 @@
         "fork_archive",
         "issue_close",
         "issue_body_repair",
-        "fork_provision"
+        "fork_provision",
+        "debug_cleanup",
+        "internal_pr_closure",
+        "submission_comment"
       ]
     },
     "policy_version": {

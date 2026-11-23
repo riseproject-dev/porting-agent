@@ -149,17 +149,15 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
                          (False, "`head` does not apply to `/upstreaming refresh` in "
                                  "`development.waiting_ci`"))
 
-    def test_retract_pr_is_validated_then_refused_without_change(self):
+    def test_retract_pr_is_taken_by_the_table(self):
         rec = record_in("handoff.waiting_upstream_pr")
         out = self.take(rec, f"/upstreaming retract-pr revision=3 head={SHA_A}")
         self.assertEqual((out.accepted, out.reason, out.verb),
-                         (False, engine.HELD_COMMANDS["retract-pr"], "retract_submission"))
-        self.assertIs(out.record, rec)
-        # The engine takes the row exactly as the table states it.
-        taken = engine.apply_command(rec, commands.parse(
-            f"/upstreaming retract-pr revision=3 head={SHA_A}"), policy={}, now=NOW,
-            command_id="c")
-        self.assertEqual(engine.state_key(taken.record), "development.fix_needed")
+                         (True, None, "retract_submission"))
+        self.assertEqual(engine.state_key(out.record), "development.fix_needed")
+        self.assertEqual(out.record["revision"], 4)
+        for name in ("pending_human_action", "handoff_request", "handoff_approval"):
+            self.assertIsNone(out.record[name], name)
         for text, reason in (
                 (f"/upstreaming retract-pr revision=3 head={SHA_B}", "head is not the clean head"),
                 (f"/upstreaming retract-pr revision=2 head={SHA_A}",

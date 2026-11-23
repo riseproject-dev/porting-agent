@@ -66,7 +66,38 @@ MESSAGES = {
                      "and development PR are kept."),
     "restart_generation": ("Resumed from parked: a new generation starts with a complete "
                            "investigation."),
-    "retract_submission": "Retracted the submission: branch work is unlocked.",
+    "retract_submission": ("Retracted the submission package: reminders stop and branch work is "
+                           "unlocked. Development Work is due again; no upstream resource was "
+                           "changed."),
+    "submit_upstream": ("Accepted the upstream submission request. The handoff preparation runs "
+                        "now: debug commits are removed from the branch, CI is checked on the "
+                        "clean head, the development PR is closed, and the submission package "
+                        "is posted on this issue."),
+    "confirm_clean_head": "Published and read back the clean head.",
+    "retry_debug_cleanup": ("Removing the debug commits failed with an infrastructure error; it "
+                            "is attempted again."),
+    "exhaust_debug_cleanup_retries": (
+        "Removing the debug commits failed repeatedly (`debug_cleanup` is spent). The "
+        "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
+        "current revision attempts it again."),
+    "accept_clean_head_ci": "Required CI passed on the clean head.",
+    "confirm_internal_pr_closed": "Closed the development PR and read it back closed.",
+    "retry_internal_pr_closure": "Closing the development PR failed; it is attempted again.",
+    "exhaust_internal_pr_retries": (
+        "Closing the development PR failed repeatedly (`internal_pr_closure` is spent). The "
+        "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
+        "current revision attempts it again."),
+    "retry_submission_comment": "Posting the submission package failed; it is attempted again.",
+    "exhaust_comment_retries": (
+        "Posting the submission package failed repeatedly (`submission_comment` is spent). The "
+        "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
+        "current revision attempts it again."),
+    "resume_debug_cleanup": "Resumed: the debug commits are removed again.",
+    "resume_internal_pr_closure": "Resumed: closing the development PR is attempted again.",
+    "resume_submission_preparation": "Resumed: posting the submission package is attempted again.",
+    "record_audit_observation": ("Recorded an observation of the upstream pull request wait for "
+                                 "audit. It does not verify the requested pull request; the "
+                                 "state is unchanged."),
     "resume_investigation": "Resumed: the investigation continues.",
     "resume_provisioning": "Resumed: provisioning continues.",
     "resume_ci": "Resumed: CI on the head is observed again.",
@@ -134,13 +165,6 @@ MESSAGES = {
 }
 
 
-SUBMIT_HOLD = ("This controller does not run the submission preparation that the command "
-               "authorizes (debug cleanup, CI on the clean head, closing the development PR, and "
-               "the submission package), so for now it refuses the command and changes nothing: "
-               "the contribution stays in `handoff.awaiting_submission` with its fork, "
-               "development PR, head, and evidence.")
-
-
 def submit_command(revision: int, head: str) -> str:
     return f"/upstreaming submit-upstream revision={revision} head={head}"
 
@@ -176,6 +200,69 @@ def _quotable(text, limit: int = 300) -> str:
     HTML comment, or carry a credential."""
     body = isolation.clean_text(text or "", limit)
     return body.replace("<!--", "").replace("-->", "").replace("`", "'")
+
+
+def _link(url) -> str | None:
+    """A GitHub URL the pipeline recorded, or ``None``."""
+    url = str(url or "")
+    return url if url.startswith("https://github.com/") and not any(c in url for c in " ()<>[]") \
+        else None
+
+
+def _handoff_message(event: dict, record: dict) -> str | None:
+    """The entry of a handoff step that names its head, its package, or the
+    upstream pull request."""
+    details = event.get("details") or {}
+    kind = event["kind"]
+    head = _quotable(details.get("head"), 40)
+    if kind == "confirm_clean_head":
+        removed = len(details.get("removed_commits") or [])
+        how = (f"{removed} debug commit{'s' if removed != 1 else ''} removed under the exact-head "
+               "lease" if details.get("rewritten") else
+               "no debug commit to remove, so nothing was written")
+        return (f"Published and read back the clean head `{head}` ({how}). CI on the clean head "
+                "is checked next.")
+    if kind == "accept_clean_head_ci":
+        return f"Required CI passed on the clean head `{head}`. The development PR is closed next."
+    if kind == "confirm_internal_pr_closed":
+        return (f"Closed the development PR #{_quotable(details.get('pr_number'), 12)} and read it "
+                "back closed. The submission package is posted next.")
+    if kind == "confirm_submission_package":
+        link = _link(details.get("package_url"))
+        package = f"[submission package]({link})" if link else "submission package"
+        return (f"Posted the {package} for the exact clean head `{head}`. An authorized human "
+                "opens the upstream pull request from it under their own account; the pipeline "
+                "verifies it by observation and never opens it.")
+    if kind == "verify_upstream_pr":
+        link = _link(details.get("url"))
+        number = _quotable(details.get("pr_number"), 12)
+        pr = f"[#{number}]({link})" if link else f"#{number}"
+        return (f"Verified the upstream pull request {pr} by @{_quotable(details.get('author'), 39)} "
+                f"at the exact clean head `{head}`. Upstream review is observed now.")
+    if kind == "return_for_repair" and details.get("from_state") in ("handoff.cleaning_debug",
+                                                                      "handoff.waiting_ci"):
+        why = ("the debug cleanup cannot produce an admissible clean head, or the exact-head "
+               "lease conflicts" if details.get("from_state") == "handoff.cleaning_debug" else
+               "a blocking CI failure on the clean head, or the fork head is not the clean head")
+        return f"Left the handoff preparation: {why}. A repair is due."
+    if kind == "record_audit_observation" and details.get("mismatch"):
+        return (MESSAGES[kind] + f" Observed: {_quotable(details['mismatch'], 600)}.")
+    if kind == "record_reminder" and details.get("from_state") == "handoff.waiting_upstream_pr":
+        bound = details.get("bound_to") or {}
+        link = _link(details.get("package_url"))
+        package = f"[submission package]({link})" if link else "submission package"
+        who = f" @{_quotable(details['submitter'], 39)}" if details.get("submitter") else ""
+        text = (f"Reminder{who}: the {package} for the exact clean head "
+                f"`{_quotable(bound.get('head'), 40)}` still waits for the upstream pull request.")
+        if details.get("mismatch"):
+            text += (f" The observation does not match: {_quotable(details['mismatch'], 600)}. "
+                     "Do not submit from the package; to withdraw it, post the `retract-pr` "
+                     "command below.")
+        else:
+            text += (" The branch still resolves to that head: open the pull request from the "
+                     "package's link under your own account, or withdraw it with `retract-pr`.")
+        return text
+    return None
 
 
 def _processing_error(event: dict) -> str:
@@ -338,21 +425,19 @@ def render(event: dict, record: dict, run_url: str) -> str:
     elif kind == "close_investigation" and details.get("admission_override_not_applied"):
         message += (" The recorded admission override was not applied: it applies against a "
                     "dossier decision park only.")
+    handoff_message = _handoff_message(event, record)
+    if handoff_message:
+        message = handoff_message
     request = _submission_request(event, record)
     if request:
         message = request[0]
     visible = f"**Upstreaming r{revision} · {phase}/{activity}** -- {message} [Workflow run]({run_url})"
-    held = "submit-upstream" in engine.HELD_COMMANDS
     if request:
         visible += f"\n\n```text\n{request[1]}\n```"
-        if held:
-            visible += f"\n\n{SUBMIT_HOLD}"
     lines = _command_lines(record)
     details = ""
     if lines:
         details = "\n\n<details>\n<summary>Possible next commands</summary>\n\n```text\n" + "\n".join(lines) + "\n```\n"
-        if held and any(line.startswith("/upstreaming submit-upstream ") for line in lines):
-            details += "\n`submit-upstream` is refused for now and changes nothing.\n"
         details += "</details>"
     marker = f"<!-- upstreaming-ledger:{record['contribution_id']}:{event['sequence']} -->"
     return visible + details + "\n\n" + marker

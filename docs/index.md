@@ -8,7 +8,7 @@ permalink: /
 
 [`riseproject-dev/porting-agent`](https://github.com/riseproject-dev/porting-agent) is the trusted control plane for AI-assisted RISC-V porting work. The active profile helps upstream Python projects build, test, and publish Linux `riscv64` wheels through their own release processes.
 
-A request starts as an issue labelled `upstreaming-request` in the control repository. The controller records the request in committed lifecycle state under `.state/`, runs an investigation that produces a verified dossier, provisions a fork in `riseproject-upstreaming`, and drives bounded development until continuous integration passes on the exact head. A human then submits the contribution upstream under their own identity.
+A request starts as an issue labelled `upstreaming-request` in the control repository. The controller records the request in committed lifecycle state under `.state/`, runs an investigation that produces a verified dossier, provisions a fork in `riseproject-upstreaming`, and drives bounded development until continuous integration passes on the exact head. A human then requests submission with `/upstreaming submit-upstream`: trusted workflows remove debug commits, check CI on the clean head, close the development PR, and post a submission package with a prefilled pull request link on the tracking issue. The human opens the upstream pull request under their own identity, and the controller verifies it by observation.
 
 ## How the pipeline is built
 

@@ -388,6 +388,38 @@ def branch_head(api: Api, full_name: str, ref: str) -> dict | None:
     return {"head": c["sha"], "tree": c["commit"]["tree"]["sha"], "parents": [p["sha"] for p in c["parents"]]}
 
 
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def compare_commits(api: Api, full_name: str, base: str, head: str) -> dict:
+    """The comparison of two exact commits of a repository: its commits
+    (oldest first), files, and how far ``head`` is ahead of and behind
+    ``base``. Only full SHAs are accepted, so the ``...`` of the route is
+    the one dot sequence in the path."""
+    if not _REPO_RE.match(full_name) or ".." in full_name \
+            or not _FULL_SHA.match(base) or not _FULL_SHA.match(head):
+        raise CollectError("refusing an unexpected comparison")
+    data = api._request(f"{api.base}/repos/{full_name}/compare/{base}...{head}?per_page=100")[0]
+    if not isinstance(data, dict):
+        raise CollectError("comparison response is malformed")
+    return data
+
+
+def upstream_pull_requests(api: Api, record: dict, ref: str = "riscv64") -> list[dict]:
+    """The open pull requests of the upstream repository whose head is a
+    branch ``ref`` of the fork's owner: the candidates the submission
+    package can lead to. They are filtered by ``handoff.matching_upstream_prs``."""
+    import handoff
+
+    owner = record["fork"]["name"].split("/", 1)[0]
+    query = urllib.parse.urlencode({"state": "open", "head": f"{owner}:{ref}", "per_page": 100})
+    pulls = api.get(f"/repos/{record['upstream']['full_name']}/pulls?{query}")
+    if not isinstance(pulls, list):
+        raise CollectError("pull request inventory is malformed")
+    return [handoff.normalize_pull(pr) for pr in pulls]
+
+
 def dev_pull_request(api: Api, fork: str, ref: str = "riscv64") -> dict | None:
     owner = fork.split("/")[0]
     prs = api.get(f"/repos/{fork}/pulls?state=open&head={owner}:{ref}&per_page=10")

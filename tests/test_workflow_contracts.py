@@ -194,6 +194,58 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(token["with"]["permission-administration"], "write")
         self.assertEqual(token["with"]["repositories"], "${{ steps.target.outputs.fork_name }}")
 
+    def test_handoff_tokens_are_minimal_and_never_face_upstream(self):
+        handoff = workflow("handoff.yml")
+        self.assertEqual(handoff["permissions"], {"contents": "read"})
+        self.assertEqual(handoff["concurrency"]["group"], "porting-fork-writer")
+        jobs = handoff["jobs"]
+        self.assertEqual(jobs["target"]["if"], "github.ref == 'refs/heads/main'")
+        expected = {
+            "debug-cleanup": ("riseproject-upstreaming", "${{ needs.target.outputs.fork_name }}",
+                              {"permission-contents": "write", "permission-workflows": "write"}),
+            "internal-pr-closure": ("riseproject-upstreaming",
+                                    "${{ needs.target.outputs.fork_name }}",
+                                    {"permission-pull-requests": "write"}),
+            "submission-comment": ("riseproject-dev", "porting-agent",
+                                   {"permission-issues": "write"}),
+        }
+        for name, (owner, repositories, permissions) in expected.items():
+            with self.subTest(job=name):
+                job = jobs[name]
+                self.assertEqual(job["needs"], ["target"])
+                self.assertIn("needs.target.outputs.kind ==", job["if"])
+                self.assertNotIn("permissions", job)
+                tokens = [step for step in job["steps"]
+                          if "create-github-app-token" in str(step.get("uses"))]
+                self.assertEqual(len(tokens), 1)
+                given = tokens[0]["with"]
+                self.assertEqual((given["owner"], given["repositories"]), (owner, repositories))
+                self.assertEqual({k: v for k, v in given.items() if k.startswith("permission-")},
+                                 permissions)
+                for step in job["steps"]:
+                    if step.get("uses"):
+                        self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
+                runs = [step["run"] for step in job["steps"] if "run" in step]
+                self.assertTrue(all("python -m handoff" in run for run in runs))
+        # Only the target job reads the operation before a token exists, and
+        # no job holds a token for any repository outside the fork and the
+        # control repository: nothing can write upstream.
+        text = (WORKFLOWS / "handoff.yml").read_text()
+        self.assertNotIn("closeio", text)
+        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 2)
+        self.assertNotIn("permission-administration", text)
+        continuation = jobs["continuation"]
+        self.assertEqual(continuation["if"], "always()")
+        self.assertIn("gh workflow run controller.yml", str(continuation))
+
+    def test_controller_collects_handoff_receipts_from_main_only(self):
+        text = (WORKFLOWS / "controller.yml").read_text()
+        self.assertIn("handoff.yml/runs?status=completed&branch=main&event=workflow_dispatch",
+                      text)
+        self.assertIn('name == "porting-handoff"', text)
+        self.assertIn("--handoffs handoffs", text)
+        self.assertIn("jq -r '.handoff_requests[].operation_id' report.json", text)
+
     def test_provisioning_administration_is_restricted_to_one_verified_fork(self):
         provision = workflow("provision.yml")
         token = next(
@@ -229,6 +281,7 @@ class TestWorkflowContracts(unittest.TestCase):
             WORKFLOWS / "dev-pr.yml",
             WORKFLOWS / "publish-retry.yml",
             WORKFLOWS / "worker.md",
+            WORKFLOWS / "handoff.yml",
         ]
         for path in paths:
             text = path.read_text()
@@ -262,10 +315,11 @@ class TestWorkflowContracts(unittest.TestCase):
                 "Fork Provisioning",
                 "Development PR",
                 "Publish Retry",
+                "Handoff",
             },
         )
         self.assertIn("workflow_run", controller["jobs"]["filter"]["if"])
-        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml"):
+        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml", "handoff.yml"):
             continuation = workflow(name)["jobs"]["continuation"]
             self.assertEqual(continuation["if"], "always()")
             self.assertIn("gh workflow run controller.yml", str(continuation))
@@ -273,7 +327,7 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_development_writers_do_not_wait_for_environment_review(self):
         worker = source("worker")
         self.assertNotIn("environment", worker["jobs"]["publish"])
-        for name in ("provision.yml", "publish-retry.yml", "dev-pr.yml"):
+        for name in ("provision.yml", "publish-retry.yml", "dev-pr.yml", "handoff.yml"):
             data = workflow(name)
             for job in data["jobs"].values():
                 self.assertNotIn("environment", job, name)
@@ -441,6 +495,7 @@ class TestWorkflowContracts(unittest.TestCase):
                 "provision.yml",
                 "dev-pr.yml",
                 "publish-retry.yml",
+                "handoff.yml",
             },
         )
         text = "\n".join(path.read_text() for path in WORKFLOWS.iterdir() if path.is_file())
@@ -459,6 +514,6 @@ class TestWorkflowContracts(unittest.TestCase):
             launches,
             {
                 "controller.yml", "dispatcher.lock.yml", "provision.yml",
-                "dev-pr.yml", "publish-retry.yml",
+                "dev-pr.yml", "publish-retry.yml", "handoff.yml",
             },
         )

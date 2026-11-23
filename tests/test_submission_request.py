@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """The tracking issue asks for `submit-upstream` at the submission gate, and
-says honestly what the command does."""
+says what the command does."""
 
 import tempfile
 import unittest
@@ -33,9 +33,9 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
         self.assertIn(f"```text\n{SUBMIT}\n```", visible)
         self.assertIn(HEAD, visible)
         self.assertIn("`approve-handoff` no longer applies", visible)
-        # The request states honestly what the command does at present.
-        self.assertIn(status_ledger.SUBMIT_HOLD, visible)
-        self.assertIn("refuses the command and changes nothing", visible)
+        # The command is accepted: nothing says it is refused.
+        self.assertNotIn("refuse", body)
+        self.assertNotIn("changes nothing", body)
         self.assertIn(SUBMIT, folded)
         self.assertNotIn("/upstreaming approve-handoff", body)
         self.assertNotIn("/upstreaming abandon", body)
@@ -67,13 +67,8 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
                           [call[1] for call in api.calls if call[0] == "POST"])
             self.assertIn(SUBMIT, api.comment["body"])
 
-    def test_command_feedback_for_the_held_and_the_retired_command(self):
-        receipt = {"comment_id": 900, "actor": OWNER, "verb": "submit-upstream", "revision": 6,
-                   "result": "rejected", "reason": engine.HELD_COMMANDS["submit-upstream"]}
-        body = command_feedback.render(receipt, {"body": SUBMIT, "user": OWNER})
-        self.assertIn("does not run the submission preparation", body)
-        self.assertIn("**Nothing was changed.**", body)
-        self.assertNotIn("Expected form", body)
+    def test_command_feedback_for_the_retired_command(self):
+        self.assertEqual(engine.HELD_COMMANDS, {})
         retired = {"comment_id": 901, "actor": OWNER, "verb": "", "revision": None,
                    "result": "rejected", "reason": commands.RETIRED["approve-handoff"]}
         body = command_feedback.render(
@@ -96,7 +91,7 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
         self.assertTrue(body.startswith("**Upstreaming r5 · handoff/awaiting_submission** -- "))
         self.assertIn(f"Required CI passed on the exact head `{SHA_A}`", visible)
         self.assertIn(f"```text\n/upstreaming submit-upstream revision=5 head={SHA_A}\n```", visible)
-        self.assertIn(status_ledger.SUBMIT_HOLD, visible)
+        self.assertNotIn("refuse", body)
         self.assertNotIn("approve-handoff", body)
 
     def test_entries_at_the_gate_offer_the_table_commands(self):
@@ -113,7 +108,7 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
              f"/upstreaming submit-upstream revision=7 head={SHA_A}",
              '/upstreaming refresh revision=7 reason="..."',
              '/upstreaming park revision=7 reason="..."'])
-        self.assertIn("`submit-upstream` is refused for now and changes nothing.", folded)
+        self.assertNotIn("refused", folded)
         paused = dict(record, paused=True, paused_at=NOW, paused_by="human")
         folded = status_ledger.render(event, paused, "https://github.com/run").partition("<details>")[2]
         self.assertEqual(

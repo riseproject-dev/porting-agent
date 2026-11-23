@@ -214,6 +214,7 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
                 "Fork Provisioning",
                 "Development PR",
                 "Publish Retry",
+                "Handoff",
             },
         )
         self.assertIn("for workflow in investigator.lock.yml worker.lock.yml", controller_text)

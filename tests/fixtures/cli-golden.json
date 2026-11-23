@@ -71,7 +71,8 @@
         "note": "read-only: requested effects are reported, not executed",
         "would_stage": [],
         "requested_effects": [],
-        "canary_recovery_requests": []
+        "canary_recovery_requests": [],
+        "handoff_requests": []
       },
       "stderr": "",
       "files": []
@@ -104,13 +105,16 @@
           "alerts": [],
           "provision_requests": [],
           "dev_pr_requests": [],
-          "canary_recovery_requests": []
+          "canary_recovery_requests": [],
+          "handoff_requests": []
         },
         "requested_effects": [],
         "provision_requests": [],
         "dev_pr_requests": [],
         "publication_retries": [],
-        "written": []
+        "written": [],
+        "handoff_requests": [],
+        "handoffs": []
       },
       "stderr": "",
       "files": []

@@ -365,7 +365,8 @@ class TestReminders(unittest.TestCase):
                                                              reminded_at=first))
         text = status_ledger.render(dict(event, sequence=24), after, "https://run")
         self.assertIn(f"/upstreaming submit-upstream revision=6 head={HEAD}", text)
-        self.assertIn(status_ledger.SUBMIT_HOLD, text)
+        self.assertNotIn("refuse", text)
+        self.assertNotIn("changes nothing", text)
         self.assertIn("Reminder", text)
         # The next one is three business days later: Thursday, Friday, Monday.
         self.assertEqual(self.ticks(after, "2026-11-30T22:54:12.110884+00:00")[1], [])

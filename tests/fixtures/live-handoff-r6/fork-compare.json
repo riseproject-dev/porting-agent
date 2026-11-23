@@ -1,0 +1,32 @@
+{
+  "ahead_by": 1,
+  "behind_by": 0,
+  "commits": [
+    {
+      "commit": {
+        "author": {
+          "date": "2026-11-22T09:20:59Z",
+          "name": "riseproject-upstreaming[bot]"
+        },
+        "message": "Build riscv64 wheels on Linux\n\nAdd a native riscv64 row to the wheel build matrix, following the\nexisting native ubuntu-24.04-arm (aarch64) and windows-11-arm (ARM64)\nrows. The job runs on the ubuntu-24.04-riscv runner provided by\nRISC-V GitHub Runners [1].\n\nThe legacy cibuildwheel 3.x step is skipped on riscv64: it always uses\nactions/setup-python, which has no riscv64 interpreters, and Python 3.8\nhas no riscv64 manylinux build identifier in cibuildwheel 4.x either.\ncibuildwheel 4.x falls back to the runner's python3 on riscv64 and\nbuilds and tests the CPython 3.9+ wheels.\n\nAlso add riscv64 to the default Linux archs in pyproject.toml so local\ncibuildwheel runs match CI.\n\n[1]: https://ci.riseproject.dev/"
+      },
+      "sha": "b29a8f49374004d650cf312e9c31848953e5ae60"
+    }
+  ],
+  "files": [
+    {
+      "additions": 4,
+      "deletions": 0,
+      "filename": ".github/workflows/build-wheels.yml",
+      "status": "modified"
+    },
+    {
+      "additions": 1,
+      "deletions": 1,
+      "filename": "pyproject.toml",
+      "status": "modified"
+    }
+  ],
+  "status": "ahead",
+  "total_commits": 1
+}

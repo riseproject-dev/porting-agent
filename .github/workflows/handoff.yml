@@ -1,0 +1,181 @@
+# SPDX-FileCopyrightText: 2026 The RISE Project
+# SPDX-License-Identifier: MIT
+# Trusted handoff operations after an accepted `/upstreaming submit-upstream`:
+# remove debug commits from the one verified fork under an exact-head lease,
+# close the recorded development PR, and post the submission package on the
+# tracking issue. Each job validates the controller-recorded operation against
+# committed state before any effect and uploads a receipt the controller reads
+# back. No model runs here and no credential can write upstream.
+name: Handoff
+run-name: "Handoff ${{ inputs.operation-id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      operation-id:
+        description: Controller-recorded handoff operation
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: porting-fork-writer
+  cancel-in-progress: false
+jobs:
+  target:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      kind: ${{ steps.target.outputs.kind }}
+      fork_name: ${{ steps.target.outputs.fork_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - name: Validate the operation and name the one fork it may write
+        id: target
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+        run: uv run --locked python -m handoff target --operation-id "$OPERATION"
+
+  debug-cleanup:
+    needs: [target]
+    if: needs.target.outputs.kind == 'debug_cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: fork-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ needs.target.outputs.fork_name }}
+          permission-contents: write
+          permission-workflows: write
+      - name: Remove debug commits under the exact-head lease and read back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation-id }}
+          UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
+        run: uv run --locked python -m handoff cleanup --operation-id "$OPERATION" --out handoff/outcome.json
+      - name: Record a failed attempt
+        if: failure()
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+        run: uv run --locked python -m handoff failed --operation-id "$OPERATION" --out handoff/outcome.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: porting-handoff
+          path: handoff/outcome.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  internal-pr-closure:
+    needs: [target]
+    if: needs.target.outputs.kind == 'internal_pr_closure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: fork-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ needs.target.outputs.fork_name }}
+          permission-pull-requests: write
+      - name: Close the recorded development PR and read it back
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+          UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
+        run: uv run --locked python -m handoff close --operation-id "$OPERATION" --out handoff/outcome.json
+      - name: Record a failed attempt
+        if: failure()
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+        run: uv run --locked python -m handoff failed --operation-id "$OPERATION" --out handoff/outcome.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: porting-handoff
+          path: handoff/outcome.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  submission-comment:
+    needs: [target]
+    if: needs.target.outputs.kind == 'submission_comment'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: issue-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-issues: write
+      - name: Post or discover the submission package and read it back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation-id }}
+          UPSTREAMING_ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
+        run: uv run --locked python -m handoff comment --operation-id "$OPERATION" --out handoff/outcome.json
+      - name: Record a failed attempt
+        if: failure()
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+        run: uv run --locked python -m handoff failed --operation-id "$OPERATION" --out handoff/outcome.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: porting-handoff
+          path: handoff/outcome.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  continuation:
+    needs: [target, debug-cleanup, internal-pr-closure, submission-comment]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: control-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+          owner: riseproject-dev
+          repositories: porting-agent
+          permission-contents: read
+          permission-actions: write
+      - name: Continue reconciliation after the handoff operation
+        env:
+          GH_TOKEN: ${{ steps.control-token.outputs.token }}
+        run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
