@@ -39,7 +39,7 @@
     "head": "b29a8f49374004d650cf312e9c31848953e5ae60",
     "revision": 6
   },
-  "last_ci_evidence_id": "ci-1467208233-45008094068-1",
+  "last_ci_evidence_id": "ci-1467208233-45150934812-1",
   "merge": null,
   "next_poll_at": null,
   "owners": {
@@ -113,7 +113,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-23T10:00:00+00:00",
+  "updated_at": "2026-11-23T10:24:36.615111+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
