@@ -95,13 +95,6 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** a verified dossier decision close leads to `closed.idle` and sets `terminal_reason`.
 - **Required:** take the dossier fold through the table's verbs.
 
-## A leftover pending action can turn a short pause into a refresh
-
-- **Where:** `engine.stopped_since`, used by `resume_stale` and `resume_pause`.
-- **Today:** the stop is measured from the older of `paused_at` and `pending_human_action.requested_at` in any state. The legacy CI observation moves `development.waiting_human` to `development.waiting_ci` and keeps the pending action, so a record that carries a pending action older than 7 days refreshes after a pause of one day.
-- **Table:** the clock is the older of `paused_at` and `pending_human_action.requested_at`.
-- **Required:** clear the pending action whenever a legacy path leaves a human wait, so the clock only sees a wait that is still current.
-
 ## The locked-wait reminder lacks the package link and exact head
 
 - **Where:** `record_reminder` in `handoff.waiting_upstream_pr`, `status_ledger.py`.
@@ -123,11 +116,18 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** patch Work is requested only from `development.fix_needed`, where an exhausted budget takes `exhaust_work_total`, `refresh_on_exhaustion`, or `exhaust_repair_attempts`.
 - **Required:** migrate `development.idle` to the table's development states.
 
-## Worker outcomes in development are folded by legacy code
+## Worker outcomes in development and upstream review are folded by legacy code
 
 - **Where:** `reconcile.apply_publication`, for Results of development and upstream revision Work.
-- **Today:** a rejected or blocked outcome charges `no_progress` and nothing else, bumps the revision, and leads to `fix_needed`, as `reject_patch_proposal` does, but it is written by the legacy outcome: a blocked outcome also records its rehearsal evidence as pending feedback and clears `proposal_artifact`, a rejected one records its artifact in `proposal_artifact`. A stale rejection leads to the legacy `development.idle` without a revision bump; `no_change` leads to `development.idle`; a published or uncertain Result leads to `waiting_ci` and starts `no_progress` again, without clearing the feedback its Work carried.
-- **Table:** `reject_patch_proposal`, `replan_development` (to `development.fix_needed` with a revision bump), `request_ci_rerun`, `record_publish_success` (clears exactly the carried feedback), `schedule_publish_retry`, `exhaust_publish_recovery`.
+- **Today, development:** a rejected or blocked outcome charges `no_progress` and nothing else, bumps the revision, and leads to `fix_needed`, as `reject_patch_proposal` does, but it is written by the legacy outcome: a blocked outcome also records its rehearsal evidence as pending feedback and clears `proposal_artifact`, a rejected one records its artifact in `proposal_artifact`. A stale rejection leads to the legacy `development.idle` without a revision bump; `no_change` leads to `development.idle`; a published or uncertain Result leads to `waiting_ci` and starts `no_progress` again, without clearing the feedback its Work carried.
+- **Today, upstream review** (from `upstream_review.agent_running`; nothing reaches it while `submit-upstream` is held):
+  - published or uncertain: `upstream_review.waiting_ci`, `no_progress` started again, the carried feedback kept (table: `record_revision_publish_success`, which clears exactly the carried feedback);
+  - `no_change`: the legacy `upstream_review.idle`, which the next CI observation moves to `upstream_review.waiting_ci` with no pending action (table: `require_reviewer_answer` to `upstream_review.waiting_human` with the pending action `answer_reviewer`);
+  - `proposal`: the legacy `upstream_review.waiting_capacity` holding the proposal, which nothing publishes; the next CI observation moves it to `upstream_review.waiting_ci` (the table has no row for it);
+  - `infra_error` within the retry limit: the legacy `upstream_review.waiting_capacity` with the pending publication, which the next CI observation moves to `upstream_review.waiting_ci` while the publish-only retry is still scheduled (table: `schedule_publish_retry`, which keeps `upstream_review.agent_running`); beyond the limit, `upstream_review.waiting_human` with the pending action `publication_infrastructure_failure` and no `counter` (table: `exhaust_publish_recovery`, whose pending action names `publish_recovery`);
+  - rejected for validation, or blocked: `upstream_review.fix_needed` with a revision bump and `no_progress` charged, as `reject_patch_proposal` does; a blocked outcome also records its rehearsal evidence as pending feedback;
+  - rejected as stale: the legacy `upstream_review.idle` without a revision bump, then `upstream_review.waiting_ci` (the table has no row for it).
+- **Table:** in development `reject_patch_proposal`, `replan_development` (to `development.fix_needed` with a revision bump), `request_ci_rerun`, `record_publish_success` (clears exactly the carried feedback), `schedule_publish_retry`, `exhaust_publish_recovery`; in upstream review `record_revision_publish_success`, `reject_patch_proposal`, `require_reviewer_answer`, `schedule_publish_retry`, `exhaust_publish_recovery`.
 - **Required:** take the publication outcome through the table's rows.
 
 ## A completed Work graph whose Result is not collected yet is retried
@@ -179,6 +179,8 @@ These follow the literal reading of a decision and are kept until a decision say
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.
 - `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
 - In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
+- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table (the legacy provisioning wait), is still handled by the legacy paths: the legacy provisioning plan starts from `provisioning.waiting_human` only without a pending action.
+- A record whose `last_ci_evidence_id` names evidence that the store does not hold, in a state where Work is allocated, is an unexpected error of that contribution and takes `pause_on_processing_error`; the pause names the missing evidence id.
 
 ## Code still outside the engine
 

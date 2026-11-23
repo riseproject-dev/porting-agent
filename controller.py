@@ -296,7 +296,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 if not operation or operation.get("kind") != "fork_provision":
                     continue
                 if (record.get("phase") != "provisioning" or record.get("fork") is not None
-                        or not record.get("dossier_evidence_id")):
+                        or not record.get("dossier_evidence_id")
+                        or compat.waits_for_human(record)):
                     continue
                 if operation.get("status") != "planned":
                     destination_blocked.add(cid)
@@ -504,6 +505,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                         })
                         break
                 if c.get("fork") is None and c["phase"] == "development" \
+                        and not compat.waits_for_human(c) \
                         and (c.get("proposal_artifact") or {}).get("outcome") == "proposal":
                     prior = [op for op in operations.values()
                              if op.get("contribution_id") == cid and op.get("kind") == "fork_provision"]
@@ -544,7 +546,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if c["phase"] != "provisioning" or c.get("paused") \
                     or c.get("active_operation_id") or cid in source_blocked:
                 continue
-            if (c.get("pending_human_action") or {}).get("kind") not in (None, "provision_fork"):
+            if c.get("pending_human_action"):
+                # A human wait of the table is left only by its own rows.
                 continue
             if not c.get("dossier_evidence_id") or not c.get("admission_class") \
                     or not c.get("scope_paths") \
@@ -623,7 +626,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             fork = c.get("fork") or {}
             artifact = c.get("proposal_artifact") or {}
             pubop = operations.get(c.get("publication_operation_id"))
-            if c["phase"] != "development" or c.get("paused") \
+            if c["phase"] != "development" or c.get("paused") or compat.waits_for_human(c) \
                     or c.get("active_operation_id") or fork.get("pr_number") is not None \
                     or not fork.get("repository_id") or not fork.get("head_sha") \
                     or fork.get("head_sha") == c["upstream"].get("base_sha") \
@@ -665,7 +668,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         with isolation.contribution(cid, "development_pr"):
             fork = c.get("fork") or {}
             artifact = c.get("proposal_artifact") or {}
-            if c["phase"] != "development" or c.get("paused") \
+            if c["phase"] != "development" or c.get("paused") or compat.waits_for_human(c) \
                     or c.get("active_operation_id") or fork.get("pr_number") is None \
                     or c.get("last_ci_evidence_id") or artifact.get("outcome") != "published":
                 continue
@@ -713,6 +716,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if (not policy.get("destination_writes", False)
                     or c["phase"] != "development"
                     or compat.stopped(c)
+                    # A wait for a human is left only by its own rows.
+                    or compat.waits_for_human(c)
                     or artifact.get("outcome") != "proposal"
                     or not artifact.get("run_id")
                     or not fork.get("repository_id")
@@ -767,7 +772,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             due = _begun(c, policy, now)
             if due is None:
                 continue
-            ci = evidence.get(due.get("last_ci_evidence_id") or "")
+            ci = _recorded_ci_evidence(due, evidence)
             ops = _open_operations(due, operations)
             spent = next((verb for verb in EXHAUSTIONS.get(engine.state_key(due), ())
                           if engine.refusal(due, verb, policy=policy, now=now, ci_evidence=ci,
@@ -851,6 +856,25 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     if policy["read_only"]:
         rep["note"] = "read-only: requested effects are reported, not executed"
     return res
+
+
+class MissingEvidence(LookupError):
+    """The evidence a record names is not in the state store."""
+
+
+def _recorded_ci_evidence(record: dict, evidence: dict[str, dict]) -> dict | None:
+    """The evidence at ``last_ci_evidence_id``, which the allocation and
+    exhaustion rows read to decide the failing CI job of the head.
+
+    Evidence is never removed from the store, so a record that names
+    evidence the store does not hold cannot be decided: it is an unexpected
+    error of that contribution (``isolation.ProcessingError``), which
+    ``pause_on_processing_error`` records and posts on its tracking issue."""
+    evidence_id = record.get("last_ci_evidence_id")
+    if evidence_id and evidence_id not in evidence:
+        raise MissingEvidence(f"last_ci_evidence_id {evidence_id} names evidence that is "
+                              "not in the state store")
+    return evidence.get(evidence_id or "")
 
 
 def _take(record: dict, verb: str, res: TickResult, policy: dict, now: str, **kwargs) -> dict:

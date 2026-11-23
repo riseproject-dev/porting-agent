@@ -261,3 +261,18 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         self.assertEqual(parked["previous_phase"], "development")
         self.assertIn("no_progress", parked["parked_reason"])
         self.assertIsNone(parked["active_work"])
+
+    def test_other_blocked_or_mutated_proposals_are_not_reclassified(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / RUN_ID
+            shutil.copytree(FIXTURE, directory)
+            proposal_path = directory / "proposal.json"
+            proposal = json.loads(proposal_path.read_text())
+            proposal["failure_cluster"] = "dependency-missing"
+            proposal_path.write_text(json.dumps(proposal))
+            outcome = worker_recovery.normalize(directory, RUN_ID)
+        self.assertEqual(outcome["status"], "proposal")
+
+
+if __name__ == "__main__":
+    unittest.main()

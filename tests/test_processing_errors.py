@@ -258,6 +258,26 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assert_isolated(output, a, baseline, "work_selection")
         self.assertEqual(output.report["requested_effects"], [])
 
+    def test_ci_evidence_missing_from_the_store(self):
+        """A record that names CI evidence the store does not hold is not
+        deferred silently: the error is attributed to it, it is paused with
+        ``pause_on_processing_error``, and the other contribution is
+        processed."""
+        a = contribution(activity="fix_needed", dossier_evidence_id="dossier-1",
+                         scope_paths=["a"], scope_coverage_complete=True,
+                         last_ci_evidence_id="ci-gone")
+        b = other_waiting()
+        output = tick([a, b], observe=False)
+        paused = record_of(output, A)
+        self.assertTrue(paused["paused"])
+        self.assertIn("MissingEvidence", paused["paused_reason"])
+        self.assertIn("ci-gone", paused["paused_reason"])
+        self.assertEqual(kinds(output, A), [VERB])
+        self.assertEqual([(e["contribution"], e["step"], e["error_class"])
+                          for e in output.report["processing_errors"]],
+                         [(A, "work_selection", "MissingEvidence")])
+        self.assertEqual(output.report["requested_effects"], [])
+
     def test_the_other_contribution_gets_the_worker_slot(self):
         """The errored contribution requests nothing; the slot it would have
         taken goes to the next candidate in the same tick."""

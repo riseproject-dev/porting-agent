@@ -261,6 +261,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         return "late Result during handoff"
     if not _may_hold_work(rec):
         return "late Result for a stopped contribution"
+    if compat.waits_for_human(rec):
+        # A wait for a human has no Result row; only its own rows leave it.
+        return "late Result while the contribution waits for a human"
     task = pub.get("task") or {}
     generation, key = work.task_identity(task)
     if generation is None:

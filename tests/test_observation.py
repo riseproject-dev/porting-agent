@@ -13,7 +13,7 @@ import ci_evidence
 import collect
 import commands
 import controller
-import engine
+import isolation
 import observe_ci
 import recovery
 import release
@@ -412,12 +412,13 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         claimed = [r for kind, r in selected.staged if kind == "contributions"][-1]
         self.assertEqual(claimed["budget"]["clusters"],
                          {"Build - ubuntu-24.04-riscv (riscv64)": 1})
-        # Without the evidence the record names, no Work is requested.
-        unknown = controller.tick(
-            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
-            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
-        self.assertEqual(unknown.requested_effects, [])
-        self.assertIn(engine.UNKNOWN_EVIDENCE, unknown.report["deferred"][0]["why"])
+        # Evidence the record names but the store does not hold is an
+        # unexpected error of the contribution, never a silent deferral.
+        with self.assertRaises(isolation.ProcessingError) as raised:
+            controller.tick(
+                contributions={"c": final}, operations={}, consumed={}, projects={},
+                policy=policy(), inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertIsInstance(raised.exception.error, controller.MissingEvidence)
 
 
 class TestCapacityBudgets(unittest.TestCase):

@@ -84,6 +84,17 @@ class TestCanaryRecovery(unittest.TestCase):
         self.policy = policy(read_only=False)
         canary.validate_mismatch(LIVE_RECORD, operation_id=None)
 
+    def test_the_investigation_is_recognized_by_either_work_id(self):
+        """The defective record names its Work as it was named before the
+        Work id carried the generation; the same request named now is the
+        same defect, and any other Work id is not."""
+        renamed = copy.deepcopy(LIVE_RECORD)
+        renamed["active_work"]["dedupe_key"] = "closeio--ciso8601/1@g0.r0:investigation"
+        canary.validate_mismatch(renamed, operation_id=None)
+        renamed["active_work"]["dedupe_key"] = "closeio--ciso8601/1@g1.r0:investigation"
+        with self.assertRaises(canary.CanaryError):
+            canary.validate_mismatch(renamed, operation_id=None)
+
     def prepared(self, directory):
         root = Path(directory)
         operation = canary.operation_for(LIVE_RECORD, policy=self.policy, now=NOW)

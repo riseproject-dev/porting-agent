@@ -40,6 +40,7 @@ from lifecycle import (
     ACTIVITIES,
     FLAGS,
     LIFECYCLE,
+    REMINDER_KINDS,
     TERMINAL,
     Outcome,
     TransitionError,
@@ -57,6 +58,25 @@ LEGACY_STATES = frozenset(
     # where the table keeps the state whose guard does not hold yet.
     {f"{phase}.{activity}" for phase in _LEGACY_PHASES for activity in _LEGACY_ACTIVITIES}
 ) - frozenset(LIFECYCLE)
+
+# The states of the table that wait for a human (kinds `human_wait`, `gate`,
+# and `locked`). Only the rows the table lists for one leave it, so a legacy
+# write never changes the phase or activity of a record in one
+# (``waits_for_human``).
+HUMAN_WAITS = frozenset(key for key, spec in LIFECYCLE.items() if spec.kind in REMINDER_KINDS)
+
+
+def waits_for_human(record: dict) -> bool:
+    """Whether ``record`` is in a wait of the table for a human: a state of
+    kind ``gate`` or ``locked``, or of kind ``human_wait`` with a recorded
+    ``pending_human_action``. Only the rows the table lists for the state
+    leave it. A ``waiting_human`` activity without a pending action is a
+    shape the paths before the table wrote (the legacy provisioning wait,
+    a block recorded in place); the legacy paths keep handling it."""
+    state = engine.state_key(record)
+    if state not in HUMAN_WAITS:
+        return False
+    return LIFECYCLE[state].kind != "human_wait" or bool(record.get("pending_human_action"))
 
 # The call sites that still write lifecycle state outside the table, by the
 # identifier each passes to ``legacy_update``.
@@ -428,7 +448,7 @@ def legacy_assign(record: dict, site: str, **fields: Any) -> None:
     """``legacy_update`` in place, for code that builds its result on a copy."""
     if site not in LEGACY_SITES:
         raise TransitionError(f"{site} is not a registered legacy write site")
-    before = {k: record.get(k) for k in engine.FENCED_FIELDS}
+    before = {k: record.get(k) for k in (*engine.FENCED_FIELDS, "pending_human_action")}
     record.update(fields)
     _check_legacy_write(before, record, site)
 
@@ -438,6 +458,9 @@ def _check_legacy_write(before: dict, after: dict, site: str) -> None:
         return
     if "handoff" in (before["phase"], after["phase"]):
         raise TransitionError(f"{site}: handoff states are written by the transition engine only")
+    if waits_for_human(before) and engine.state_key(before) != engine.state_key(after):
+        raise TransitionError(f"{site}: {engine.state_key(before)} waits for a human and is left "
+                              "only by the rows the table lists for it")
     problem = state_problem(after)
     if problem:
         raise TransitionError(f"{site}: {problem}")

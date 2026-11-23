@@ -10,12 +10,18 @@ import hashlib
 import compat
 import recovery
 import schemas
+import work as work_queue
 from common import CONTROL_REPO
 
 ISSUE_ID = 6536262483
 ISSUE_NUMBER = 1
 ISSUE_TITLE = "[upstreaming] ciso8601 riscv64 wheel support"
 CONTRIBUTION_ID = "closeio--ciso8601/1"
+# The Work id of the undispatched intake investigation: as the defective
+# record names it (written before the Work id carried the generation), and
+# as the same request is named now.
+INVESTIGATION_WORK_IDS = (f"{CONTRIBUTION_ID}@0:investigation",
+                          work_queue.work_key(CONTRIBUTION_ID, 0, 0, "investigation"))
 PROJECT_ID = "closeio--ciso8601"
 UPSTREAM = "closeio/ciso8601"
 UPSTREAM_REPOSITORY_ID = 20633992
@@ -173,7 +179,7 @@ def validate_mismatch(record: dict, *, operation_id: str | None) -> None:
         work.get("task") == "investigation"
         and work.get("revision") == 0
         and work.get("attempt") == 1
-        and work.get("dedupe_key") == f"{CONTRIBUTION_ID}@0:investigation"
+        and work.get("dedupe_key") in INVESTIGATION_WORK_IDS
         and work.get("dispatched_run_id") is None
         and work.get("reason_ids") == [],
         "canary Work request is not the exact undispatched investigation",

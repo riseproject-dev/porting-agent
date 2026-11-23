@@ -20,6 +20,7 @@ import ci_evidence
 import commands
 import controller
 import engine
+import isolation
 import lifecycle as lc
 import reconcile
 import work
@@ -400,10 +401,10 @@ class TestExhaustion(unittest.TestCase):
         res, after = select(other, evidence={"ci-10": ci_record("ci-10", SHA_A, failing="other job")})
         self.assertEqual(kinds(res), ["request_repair"])
         self.assertEqual(after["budget"]["clusters"]["other job"], 2)
-        # Unknown evidence decides nothing.
-        res, same = select(record)
-        self.assertEqual((kinds(res), same), ([], record))
-        self.assertIn(engine.UNKNOWN_EVIDENCE, res.report["deferred"][0]["why"])
+        # Evidence missing from the store is an error of the contribution.
+        with self.assertRaises(isolation.ProcessingError) as raised:
+            select(record)
+        self.assertIsInstance(raised.exception.error, controller.MissingEvidence)
 
     def test_upstream_revision_exhaustion_names_the_counter(self):
         record = contribution(phase="upstream_review", activity="fix_needed",

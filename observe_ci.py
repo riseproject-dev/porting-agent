@@ -18,6 +18,10 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   explanation-only comment, then ``return_for_repair`` for a CI failure, or
   else ``record_actionable_review`` for an actionable review.
 
+A contribution that waits for a human in a state of the table without an
+observation row (``compat.waits_for_human``) is not observed: only the rows
+the table lists for the wait leave it.
+
 Returns staged records for the state publisher. Never writes remotely.
 """
 
@@ -112,6 +116,15 @@ def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdic
                    or _terminal_blocking_ci(reason, head_sha) for reason in reasons)
 
 
+def human_wait_without_observation(record: dict) -> bool:
+    """Whether ``record`` waits for a human (``compat.waits_for_human``) in a
+    state that has no observation row. Observation changes nothing there."""
+    if not compat.waits_for_human(record):
+        return False
+    return not any(edge.transition.trigger == lifecycle.Trigger.OBSERVATION
+                   for edge in lifecycle.state_edges(engine.state_key(record)))
+
+
 def holds_requested_work(record: dict) -> bool:
     """Whether the record holds requested Work, or a Result held for a
     publish retry that is not exhausted."""
@@ -188,6 +201,14 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 obs.report.append(entry)
                 continue
             cur = rec
+            if human_wait_without_observation(rec):
+                # A human wait is left only by the rows the table lists for it
+                # (a resume, `park_contribution`, `refresh_investigation`,
+                # `resume_stale`). It has no observation row: the head, CI,
+                # and review are read again once a human has resumed it.
+                entry["note"] = f"{engine.state_key(rec)} waits for a human and is not observed"
+                obs.report.append(entry)
+                continue
             if rec["phase"] == "handoff" and engine.state_key(rec) != "handoff.awaiting_submission":
                 # The other handoff states belong to the handoff operations; this
                 # observation has no table row for them and changes nothing.
