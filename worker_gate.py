@@ -74,12 +74,6 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
     schemas.validate("proposal", proposal)
     if task.get("task") not in WRITE_TASKS:
         raise WorkerGateError("worker gate accepts only patch tasks")
-    # The report of the run: required when the Work carries a history; it is
-    # stored for later Work only if this Result is accepted and published.
-    try:
-        worker_report.check_path(task, report_path)
-    except worker_report.ReportError as error:
-        raise WorkerGateError(f"the worker report is missing or invalid: {error}") from None
     for proposal_key, task_key in (
         ("contribution_id", "contribution_id"),
         ("expected_revision", "revision"),
@@ -194,6 +188,16 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
             "reproduction-image-infrastructure"
         ) else "blocked"
         failure_class = "infrastructure" if gate_status == "infrastructure_blocked" else "code"
+    else:
+        # The report of the run, checked once the Result is otherwise valid
+        # and classified: required when the Work carries a history, and
+        # stored for later Work only if this Result is accepted and
+        # published. A blocked Result is classified as blocked whatever its
+        # report, which is discarded with it.
+        try:
+            worker_report.check_path(task, report_path)
+        except worker_report.ReportError as error:
+            raise WorkerGateError(f"the worker report is missing or invalid: {error}") from None
     return {
         "status": gate_status,
         "failure_class": failure_class,

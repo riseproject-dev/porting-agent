@@ -782,9 +782,11 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "before, so it doesn't flip flop\", and decided: \"I want the report from a successful "
         "worker to be saved for future worker only. If a worker failed, you can just discard "
         "the report\". Every patch, repair, revision, submission rewrite and submission review "
-        "Work returns a report (`schemas/worker_report.schema.json`); a Work whose payload "
-        "carries a history and returns no valid report is rejected by the trusted gate "
-        "(`reject_patch_proposal`, or Work without a usable Result at submission). The report "
+        "Work returns a report (`schemas/worker_report.schema.json`, at most 32 KiB, a limit "
+        "the worker is told); a Work whose payload carries a history and returns an otherwise "
+        "acceptable Result without a valid report is rejected by the trusted gate "
+        "(`reject_patch_proposal`, or Work without a usable Result at submission), while a "
+        "blocked Result stays `worker_blocked` whatever its report. The report "
         "is stored as `worker_report` evidence only when one of six rows folds the Result: "
         "`record_publish_success`, `record_revision_publish_success`, "
         "`accept_submission_rewrite`, `accept_submission_review`, and the two accepted "
@@ -836,7 +838,9 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "digest. All of this text is untrusted: redacted, bounded, never rendered on the "
         "tracking issue or the status page, and given to agents as a data file separate from "
         "their instructions. If GitHub cannot be read for it, the contribution is skipped for "
-        "the tick and the Work is not allocated without it.",
+        "the tick and the Work is not allocated without it, except that a list GitHub answers "
+        "as gone or not accessible (404, 410 or 451) is named as unreadable in the history, "
+        "which no retry would change.",
         ("development.fix_needed", "development.agent_running", "planning.idle",
          "planning.agent_running"),
         edges=(("development.fix_needed", "request_patch"),

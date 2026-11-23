@@ -34,7 +34,12 @@ _PATH_RE = re.compile(r"^/[A-Za-z0-9_./%?&=,:+-]*$")
 
 
 class CollectError(RuntimeError):
-    pass
+    """A failed GitHub read. ``status`` is the HTTP status of a read that
+    GitHub answered with an error, else ``None``."""
+
+    def __init__(self, message: str = "", status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class BranchRenamed(CollectError):
@@ -102,7 +107,7 @@ class Api:
                 body = r.read()
                 headers = dict(r.headers)
         except urllib.error.HTTPError as e:
-            raise CollectError(f"GET {url}: HTTP {e.code}") from None
+            raise CollectError(f"GET {url}: HTTP {e.code}", status=e.code) from None
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(url, e) from e
         if not body:
@@ -129,7 +134,7 @@ class Api:
             with self._open(req, timeout=60) as r:
                 data = r.read(max_bytes + 1)
         except urllib.error.HTTPError as e:
-            raise CollectError(f"GET {path}: HTTP {e.code}") from None
+            raise CollectError(f"GET {path}: HTTP {e.code}", status=e.code) from None
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(path, e) from e
         if len(data) > max_bytes:
@@ -414,6 +419,13 @@ STEERING_PAGES = 5
 # The ``omitted`` key suffix of a steering list read in full: the list may
 # hold newer items than were read.
 STEERING_CAP_SUFFIX = "_list_cap_reached"
+# The HTTP statuses of a steering list that no retry will read: the
+# repository or pull request is gone, private to the App, or unavailable for
+# legal reasons. Such a list is recorded as unreadable instead of holding the
+# contribution on every tick.
+STEERING_GONE = (404, 410, 451)
+# Review states kept with an empty body: the verdict itself is the feedback.
+STEERING_REVIEW_STATES = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
 # Accounts of the upstream repository whose reviews on the upstream PR are
 # recorded as maintainer feedback (never as steering).
 MAINTAINER_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
@@ -446,32 +458,51 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     ``authority`` true, on every source. On the upstream PR only, accounts
     whose association is OWNER, MEMBER or COLLABORATOR are kept with
     ``authority`` false: maintainer review feedback, never steering.
-    Everything else (other accounts, bots, empty bodies) is counted per
-    source in ``omitted``; a list that filled every page is flagged there
-    with ``STEERING_CAP_SUFFIX``, since newer items may be unread. Returns ``{"items": [...], "omitted": {...}}``;
-    the text is untrusted and is bounded where it is stored. A failed read
-    raises ``CollectError``."""
+    A review with an empty body is kept when its state is a verdict
+    (``STEERING_REVIEW_STATES``); its version is its submission time and the
+    digest of its state and body, since GitHub gives an edited review no new
+    time. Everything else (other accounts, bots, empty bodies) is counted
+    per source in ``omitted``; a list that filled every page is flagged
+    there with ``STEERING_CAP_SUFFIX``, since newer items may be unread.
+    Returns ``{"items": [...], "omitted": {...}, "unreadable": [...]}``; the
+    text is untrusted and is bounded where it is stored. A list GitHub
+    answers with a status of ``STEERING_GONE`` is named in ``unreadable``;
+    any other failed read raises ``CollectError``."""
     from common import sha256_text
 
     allowed = {int(value) for value in authority}
     items: list[dict] = []
     omitted: dict[str, int] = {}
+    unreadable: list[str] = []
 
-    def keep(source: str, raw: dict, *, maintainers: bool, **keys) -> None:
+    def keep(source: str, raw: dict, *, maintainers: bool, review: bool = False,
+             **keys) -> None:
         user = raw.get("user") or {}
         body = raw.get(keys.get("body_key", "body")) or ""
         trusted = user.get("id") in allowed
         maintainer = maintainers and raw.get("author_association") in MAINTAINER_ASSOCIATIONS \
             and user.get("type") != "Bot"
-        if not isinstance(body, str) or not body.strip() or not (trusted or maintainer):
+        verdict = review and raw.get("state") in STEERING_REVIEW_STATES
+        if not isinstance(body, str) or not (body.strip() or verdict) \
+                or not (trusted or maintainer):
             omitted[source] = omitted.get(source, 0) + 1
             return
-        items.append(_steering_item(source, raw, authority=trusted, **keys))
+        item = _steering_item(source, raw, authority=trusted, **keys)
+        if review:
+            digest = sha256_text(f"{raw.get('state')}\n{body}")[:16]
+            item["version"] = f"{raw.get('submitted_at')}#{digest}"
+        items.append(item)
 
     def read(source: str, path: str) -> list:
         # Each list is read oldest first; one that fills every page may hold
         # newer items than were read, which is recorded, never silent.
-        raws = api.paginate(path, max_pages=STEERING_PAGES)
+        try:
+            raws = api.paginate(path, max_pages=STEERING_PAGES)
+        except CollectError as error:
+            if getattr(error, "status", None) not in STEERING_GONE:
+                raise
+            unreadable.append(source)
+            return []
         if len(raws) >= STEERING_PAGES * 100:
             omitted[source + STEERING_CAP_SUFFIX] = 1
         return raws
@@ -501,15 +532,15 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     for prefix, repository, number, maintainers in pulls:
         for raw in read(f"{prefix}_review",
                         f"/repos/{repository}/pulls/{number}/reviews?per_page=100"):
-            keep(f"{prefix}_review", raw, maintainers=maintainers, created_key="submitted_at",
-                 updated_key="submitted_at")
+            keep(f"{prefix}_review", raw, maintainers=maintainers, review=True,
+                 created_key="submitted_at", updated_key="submitted_at")
         for raw in read(f"{prefix}_review_comment",
                         f"/repos/{repository}/pulls/{number}/comments?per_page=100"):
             keep(f"{prefix}_review_comment", raw, maintainers=maintainers)
         for raw in read(f"{prefix}_comment",
                         f"/repos/{repository}/issues/{number}/comments?per_page=100"):
             keep(f"{prefix}_comment", raw, maintainers=maintainers)
-    return {"items": items, "omitted": omitted}
+    return {"items": items, "omitted": omitted, "unreadable": unreadable}
 
 
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,

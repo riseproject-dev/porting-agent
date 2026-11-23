@@ -2003,17 +2003,24 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
                                 "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
-    # 5. The history of every Work the record requests, recorded in the tick
-    # that allocates it (or in the first tick after this step existed): the
-    # new human steering of the contribution, then the history built from
-    # all its evidence. A failed read skips the contribution for this tick,
-    # so the allocation and its history are committed together or not at all.
+    # 5. The history of every requested Work that has none yet, normally
+    # recorded in the tick that allocates it: the new human steering of the
+    # contribution, then the history built from all its evidence. A failed
+    # read skips the contribution for this tick, so the allocation and its
+    # history are committed together or not at all; a steering list that is
+    # gone for good is recorded as unreadable instead.
     if observe:
         out.report["work_history"] = work_histories(
             api, contributions, out, snap, policy=policy, now=iso,
             tracking_issues=tracking_issues or {}, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
     return out
+
+
+# The bound of the ``human_steering`` records one contribution stages in one
+# tick: well above what the bounded steering lists can fill
+# (``collect.STEERING_PAGES`` pages of each list over ``steering.MAX_ITEMS``).
+STEERING_RECORDS_PER_TICK = 64
 
 
 def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOutput,
@@ -2048,12 +2055,24 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
             collected = collect.steering(
                 api, record, authority,
                 issue=tracking_issues.get(record["tracking_issue"]["number"]))
-            new = steering.new_evidence(record, collected, evidence, policy=policy, now=now)
-            if new is not None:
+            # One record holds at most ``steering.MAX_ITEMS`` items; the
+            # rest are recorded in further records of the same tick, so the
+            # history holds the newest steering too.
+            recorded, deferred = [], 0
+            for _ in range(STEERING_RECORDS_PER_TICK):
+                new = steering.new_evidence(record, collected, evidence, policy=policy, now=now)
+                if new is None:
+                    deferred = 0
+                    break
                 evidence[new["evidence_id"]] = new
                 out.staged.append(("evidence", new))
+                recorded.append(new["evidence_id"])
+                deferred = new["data"]["deferred"]
+                if not deferred:
+                    break
             history = work_history.build(record, record["active_work"], evidence,
-                                         policy=policy, now=now)
+                                         policy=policy, now=now, deferred=deferred,
+                                         unreadable=collected.get("unreadable") or [])
             evidence[eid] = history
             out.staged.append(("evidence", history))
             data = history["data"]
@@ -2061,7 +2080,8 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                            "evidence_id": eid, "steering": len(data["steering"]),
                            "timeline": len(data["timeline"]),
                            "condensed": data["condensed"],
-                           "steering_evidence_id": (new or {}).get("evidence_id")})
+                           "steering_evidence_ids": recorded,
+                           "steering_unreadable": list(collected.get("unreadable") or [])})
     return report
 
 

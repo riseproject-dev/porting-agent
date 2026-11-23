@@ -67,7 +67,7 @@ class TestSchema(unittest.TestCase):
         schemas.validate("worker_report", report(history_digest=None))
 
     def test_malformed_reports_are_refused(self):
-        for broken in (report(summary=""), report(summary="x" * 1201), report(approaches=[]),
+        for broken in (report(summary=""), report(summary="x" * 1001), report(approaches=[]),
                        report(attempted=[]), report(task="planning"),
                        report(approaches=[dict(report()["approaches"][0], outcome="maybe")]),
                        report(extra=1), report(history_digest="xyz"),
@@ -185,6 +185,23 @@ class TestGates(unittest.TestCase):
             gate = json.loads((Path(directory) / "gate.json").read_text())
             self.assertEqual((code, gate["status"]), (1, "rejected"))
             self.assertIn("worker report", gate["reason"])
+
+    def test_a_blocked_result_is_classified_whatever_its_report(self):
+        # A blocked worker's report is discarded, so a missing one does not
+        # turn an infrastructure blocker into a validation rejection.
+        from tests import test_milestone5_worker as m5
+        own = dict(m5.task(), context={"history": {"sha256": HISTORY}})
+        exact = m5.IMAGE + "@sha256:" + "b" * 64
+        candidate = m5.TestWorkerGate._no_change(None, m5.proposal(m5.mbox()))
+        candidate.update(outcome="blocked",
+                         failure_cluster="reproduction-image-infrastructure-docker")
+        candidate["reproduction"]["commands"] = [
+            {"command": "docker run --rm --platform linux/riscv64 " + exact + " make test",
+             "exit_status": 1, "log_sha256": "c" * 64}]
+        with tempfile.TemporaryDirectory() as directory:
+            gate = worker_gate.validate(own, candidate, Path(directory) / "patches.mbox",
+                                        Path(directory) / "report.json")
+        self.assertEqual(gate["status"], "infrastructure_blocked")
 
     def test_the_submission_checks_refuse_a_result_without_its_report(self):
         rewrite_task = {"task": "submission_rewrite", "contribution_id": CID, "revision": 3,

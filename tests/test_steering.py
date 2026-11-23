@@ -108,10 +108,57 @@ class TestCollect(unittest.TestCase):
         out = collect.steering(Api({issue_comments: full[:-1]}), rec, [OWNER["id"]], issue=None)
         self.assertEqual(out["omitted"], {"tracking_issue_comment": len(full) - 1})
 
+    def test_a_review_verdict_without_a_body_is_kept(self):
+        rec = record()
+        base = f"/repos/{rec['fork']['name']}/pulls/5/reviews"
+        api = Api({base: [
+            dict(comment(20, OWNER, "", state="APPROVED"), submitted_at="2026-11-21T00:00:00Z"),
+            dict(comment(21, OWNER, "", state="COMMENTED"), submitted_at="2026-11-21T01:00:00Z")]})
+        out = collect.steering(api, rec, [OWNER["id"]], issue=None)
+        [kept] = out["items"]
+        self.assertEqual((kept["id"], kept["review_state"], kept["body"]), (20, "APPROVED", ""))
+        self.assertEqual(out["omitted"], {"development_pr_review": 1})
+
+    def test_an_edited_review_is_a_new_version(self):
+        # GitHub gives an edited review no new time: its version is the
+        # submission time and the digest of its state and body.
+        rec = record()
+        path = f"/repos/{rec['fork']['name']}/pulls/5/reviews"
+        review = dict(comment(20, OWNER, "Use the QEMU row.", state="CHANGES_REQUESTED"),
+                      submitted_at="2026-11-21T00:00:00Z")
+        first = collect.steering(Api({path: [review]}), rec, [OWNER["id"]], issue=None)
+        known_record = steering.new_evidence(rec, first, {}, policy=POLICY, now=NOW)
+        known = {known_record["evidence_id"]: known_record}
+        edited = collect.steering(Api({path: [dict(review, body="Use the QEMU row, and a "
+                                                   "changelog entry.")]}),
+                                  rec, [OWNER["id"]], issue=None)
+        new = steering.new_evidence(rec, edited, known, policy=POLICY, now=NOW)
+        [version] = new["data"]["items"]
+        self.assertEqual(version["supersedes"], first["items"][0]["version"])
+        self.assertTrue(version["version"].startswith("2026-11-21T00:00:00Z#"))
+        known[new["evidence_id"]] = new
+        self.assertIsNone(steering.new_evidence(rec, edited, known, policy=POLICY, now=NOW))
+
+    def test_a_list_that_is_gone_is_unreadable_not_a_failure(self):
+        rec = record(upstream_pr={"number": 9, "head_sha": "a" * 40})
+        issue_comments = f"/repos/{CONTROL_REPO}/issues/{rec['tracking_issue']['number']}/comments"
+
+        class Gone(Api):
+            def paginate(self, path, **kwargs):
+                if path.startswith(f"/repos/{rec['upstream']['full_name']}/"):
+                    raise collect.CollectError("GET: HTTP 404", status=404)
+                return super().paginate(path, **kwargs)
+
+        out = collect.steering(Gone({issue_comments: [comment(1, OWNER, "Keep going.")]}), rec,
+                               [OWNER["id"]], issue=None)
+        self.assertEqual([i["id"] for i in out["items"]], [1])
+        self.assertEqual(out["unreadable"], ["upstream_pr_review", "upstream_pr_review_comment",
+                                             "upstream_pr_comment"])
+
     def test_a_failed_read_raises(self):
         class Failing(Api):
             def paginate(self, path, **kwargs):
-                raise collect.CollectError("GET: HTTP 502")
+                raise collect.CollectError("GET: HTTP 502", status=502)
 
         with self.assertRaises(collect.CollectError):
             collect.steering(Failing(), record(), [OWNER["id"]], issue=None)

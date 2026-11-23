@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Worker report of one Work run (untrusted)",
-  "description": "What the worker attempted and why, each approach and its outcome, what failed with its evidence, what remains open and the verification done. Trusted code stores it as worker_report evidence only when the Result of the run is accepted.",
+  "description": "What the worker attempted and why, each approach and its outcome, what failed with its evidence, what remains open and the verification done. The file is refused, and the Result with it, when it is larger than 32 KiB (32768 bytes) as written, so not every list and field can be at its maximum: summarise logs and cite commands, exit statuses, digests and links instead of pasting output. Trusted code stores it as worker_report evidence only when the Result of the run is accepted.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -53,13 +53,13 @@
     },
     "summary": {
       "type": "string",
-      "maxLength": 1200,
+      "maxLength": 1000,
       "minLength": 1
     },
     "attempted": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 20,
+      "maxItems": 8,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -70,12 +70,12 @@
         "properties": {
           "what": {
             "type": "string",
-            "maxLength": 600,
+            "maxLength": 300,
             "minLength": 1
           },
           "why": {
             "type": "string",
-            "maxLength": 1000,
+            "maxLength": 400,
             "minLength": 1
           }
         }
@@ -84,7 +84,7 @@
     "approaches": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 30,
+      "maxItems": 10,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -98,12 +98,12 @@
         "properties": {
           "title": {
             "type": "string",
-            "maxLength": 200,
+            "maxLength": 150,
             "minLength": 1
           },
           "description": {
             "type": "string",
-            "maxLength": 2000,
+            "maxLength": 600,
             "minLength": 1
           },
           "outcome": {
@@ -116,11 +116,11 @@
           },
           "evidence": {
             "type": "string",
-            "maxLength": 2000
+            "maxLength": 600
           },
           "lesson": {
             "type": "string",
-            "maxLength": 600
+            "maxLength": 250
           }
         }
       }
@@ -128,7 +128,7 @@
     "failures": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 30,
+      "maxItems": 8,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -139,12 +139,12 @@
         "properties": {
           "what": {
             "type": "string",
-            "maxLength": 600,
+            "maxLength": 300,
             "minLength": 1
           },
           "evidence": {
             "type": "string",
-            "maxLength": 2000
+            "maxLength": 500
           }
         }
       }
@@ -152,17 +152,17 @@
     "open_items": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 30,
+      "maxItems": 10,
       "items": {
         "type": "string",
-        "maxLength": 1000,
+        "maxLength": 300,
         "minLength": 1
       }
     },
     "verification": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 40,
+      "maxItems": 12,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -174,7 +174,7 @@
         "properties": {
           "check": {
             "type": "string",
-            "maxLength": 600,
+            "maxLength": 300,
             "minLength": 1
           },
           "result": {
@@ -186,7 +186,7 @@
           },
           "evidence": {
             "type": "string",
-            "maxLength": 1000
+            "maxLength": 300
           }
         }
       }
@@ -194,7 +194,7 @@
     "revisited": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 20,
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -205,12 +205,12 @@
         "properties": {
           "history_entry": {
             "type": "string",
-            "maxLength": 200,
+            "maxLength": 150,
             "minLength": 1
           },
           "new_evidence": {
             "type": "string",
-            "maxLength": 1500,
+            "maxLength": 500,
             "minLength": 1
           }
         }

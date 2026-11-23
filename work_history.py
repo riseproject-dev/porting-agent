@@ -18,9 +18,9 @@ of the evidence of the contribution, all generations included:
 Every entry is untrusted recorded data, never instructions. The record is
 bounded to ``HISTORY_MAX_BYTES`` by condensing deterministically, never by
 dropping: the oldest timeline entries become a short form first (the
-worker's own summary and one line per approach), then the oldest steering
-items, then the oldest condensed entries are folded into one counted
-``earlier`` entry. The newest report and every entry after it are condensed
+worker's own summary and each approach's title, outcome and lesson), then
+the oldest steering items, then the oldest condensed entries are folded into
+one counted ``earlier`` entry. The newest report and every entry after it are condensed
 last. A condensed entry names the evidence file that holds it in full.
 
 The Work payload names the record by pinned commit and SHA-256
@@ -92,17 +92,32 @@ def _ci_entry(ev: dict) -> dict:
             "after_report": None}
 
 
-def _feedback_entry(ev: dict, steered: set[int]) -> dict:
+# The kind of GitHub object each list of review feedback holds, and the
+# kind of each steering source: ids are unique only within one kind.
+_FEEDBACK_KINDS = {"reviews": "review", "comments": "review_comment",
+                   "conversation_comments": "comment"}
+
+
+def _steering_kind(source: str) -> str | None:
+    """The kind of GitHub object of a steering source, or ``None`` for the
+    tracking issue description."""
+    for suffix in ("review_comment", "review", "comment"):
+        if source.endswith("_" + suffix):
+            return suffix
+    return None
+
+
+def _feedback_entry(ev: dict, steered: set[tuple[str, int]]) -> dict:
     data = ev.get("data") or {}
     items = []
-    for key in ("reviews", "comments", "conversation_comments"):
+    for key, object_kind in _FEEDBACK_KINDS.items():
         for item in data.get(key) or []:
             entry = {"id": item.get("id"), "reviewer": _text(item.get("reviewer") or "", 100),
                      "url": _text(item.get("url") or "", 300)}
             for name in ("path", "line"):
                 if item.get(name) is not None:
                     entry[name] = item[name] if name == "line" else _text(item[name], 300)
-            if item.get("id") in steered:
+            if (object_kind, item.get("id")) in steered:
                 entry["body"] = "(in the steering section)"
             else:
                 entry["body"] = _text(item.get("body") or "", worker_report.MAX_FIELD)
@@ -139,8 +154,9 @@ def _short(full: dict) -> dict:
         entry.update(generation=full.get("generation"), work=full.get("work"),
                      head_before=full.get("head_before"), head_after=full.get("head_after"),
                      summary=report.get("summary"),
-                     approaches=[_text(f"{a.get('title')}: {a.get('outcome')}: "
-                                       f"{a.get('lesson') or ''}", SHORT)
+                     approaches=[{"title": _text(a.get("title") or "", SHORT),
+                                  "outcome": a.get("outcome"),
+                                  "lesson": _text(a.get("lesson") or "", SHORT)}
                                  for a in report.get("approaches") or []])
     elif kind == "ci":
         entry.update(head=full.get("head"), state=full.get("state"),
@@ -170,10 +186,11 @@ def _fold(earlier: dict | None, entry: dict) -> dict:
     if eid and eid not in earlier["evidence_ids"]:
         earlier["evidence_ids"].append(eid)
     if entry["kind"] == "worker_report":
-        for line in entry.get("approaches") or []:
-            parts = line.split(": ")
-            if len(parts) > 1 and parts[1] in ("failed", "abandoned"):
-                earlier["failed_approaches"].append(_text(line, 120))
+        for approach in entry.get("approaches") or []:
+            if approach.get("outcome") in ("failed", "abandoned"):
+                earlier["failed_approaches"].append(
+                    {"title": _text(approach.get("title") or "", 120),
+                     "outcome": approach["outcome"]})
     return earlier
 
 
@@ -201,13 +218,22 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
     steer = [dict(i) for i in items if i.get("authority") is True]
     steer.sort(key=lambda i: (str(i.get("created_at") or ""), str(i.get("source")),
                               str(i.get("id")), str(i.get("version"))))
-    steered = {i.get("id") for i in steer if isinstance(i.get("id"), int)}
+    steered = {(_steering_kind(str(i.get("source"))), i["id"]) for i in steer
+               if isinstance(i.get("id"), int)}
+    # What the newest collection left out: every collection counts the whole
+    # of each list again, so the counts are not added up across records.
     omitted: dict[str, int] = {}
-    for e in own:
-        if e.get("kind") == steering.KIND:
+    collections = sorted((e for e in own if e.get("kind") == steering.KIND),
+                         key=lambda e: (str(e.get("collected_at") or ""),
+                                        str(e.get("evidence_id") or "")))
+    if collections:
+        newest = collections[-1].get("collected_at")
+        for e in collections:
+            if e.get("collected_at") != newest:
+                continue
             for source, count in ((e.get("data") or {}).get("omitted") or {}).items():
                 if isinstance(count, int):
-                    omitted[source] = omitted.get(source, 0) + count
+                    omitted[source] = max(omitted.get(source, 0), count)
     timeline = []
     for e in own:
         kind = e.get("kind")
@@ -249,38 +275,77 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
     return steer, timeline, omitted, sources
 
 
-def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
+def _element_size(value: Any) -> int:
+    """The bytes one element adds to a non-empty list that is a value of
+    the document (its text, indentation and separator)."""
+    return _size({"k": [value, value]}) - _size({"k": [value]})
+
+
+def _key_size(key: str, value: Any) -> int:
+    """The bytes one key adds to the document that has other keys."""
+    return _size({"a": 0, key: value}) - _size({"a": 0})
+
+
+def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: int = 0,
+             unreadable: list[str] | tuple[str, ...] = ()) -> dict:
     """The history document of ``work`` (``data`` of the evidence), at most
-    ``HISTORY_MAX_BYTES`` in canonical JSON."""
+    ``HISTORY_MAX_BYTES`` in canonical JSON. ``deferred`` is the number of
+    collected steering items not recorded yet, and ``unreadable`` the
+    steering lists that could not be read (``collect.steering``); both are
+    stated in the document."""
     steer, timeline, omitted, sources = _entries(record, evidence)
-    if len(sources) > MAX_SOURCES:
-        sources = sources[-MAX_SOURCES:]
+    if deferred:
+        omitted["steering_deferred"] = int(deferred)
     doc = {"work": {"dedupe_key": work["dedupe_key"], "task": work["task"],
                     "generation": int(work.get("generation", 0)),
                     "revision": work.get("revision")},
            "notice": NOTICE, "steering": steer, "timeline": timeline, "omitted": omitted,
            "sources": sources,
            "condensed": {"timeline_short": 0, "steering_short": 0, "folded": 0}}
+    if len(sources) > MAX_SOURCES:
+        doc["sources"] = sources[-MAX_SOURCES:]
+        doc["sources_not_listed"] = len(sources) - MAX_SOURCES
+    if unreadable:
+        doc["steering_unreadable"] = sorted({_text(source, 100) for source in unreadable})
+    # The size of the document is kept up to date by the size change of
+    # each step, so that the document is serialized in full only when it
+    # may fit. The counters of ``condensed`` are not tracked: they only
+    # grow, so the estimate is never above the exact size.
+    estimate = _size(doc)
+
     def fits() -> bool:
-        return _size(doc) <= HISTORY_MAX_BYTES
+        nonlocal estimate
+        if estimate > HISTORY_MAX_BYTES:
+            return False
+        estimate = _size(doc)
+        return estimate <= HISTORY_MAX_BYTES
 
     def condense(index: int) -> None:
+        nonlocal estimate
         if not timeline[index].get("condensed"):
+            before = _element_size(timeline[index])
             timeline[index] = _short(timeline[index])
+            estimate += _element_size(timeline[index]) - before
             doc["condensed"]["timeline_short"] += 1
 
     def fold(protected: int) -> int:
         """Fold the oldest entries into ``earlier`` until the document fits,
         leaving the last ``protected`` entries. Returns how many remain
         unfolded after the ``earlier`` entry."""
+        nonlocal estimate
         while not fits():
             first = 1 if timeline and timeline[0]["kind"] == "earlier" else 0
             if len(timeline) - first <= protected:
                 break
             earlier = timeline.pop(0) if first else None
-            earlier = _fold(earlier, timeline.pop(0))
+            if earlier is not None:
+                estimate -= _element_size(earlier)
+            entry = timeline.pop(0)
+            estimate -= _element_size(entry)
+            earlier = _fold(earlier, entry)
             _cap_earlier(earlier)
             timeline.insert(0, earlier)
+            estimate += _element_size(earlier)
             doc["condensed"]["folded"] += 1
         return protected
 
@@ -297,8 +362,10 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
     # 2. Steering items, oldest first.
     for item in steer:
         if not item.get("condensed"):
+            before = _element_size(item)
             item["body"] = _text(item.get("body") or "", SHORT)
             item["condensed"] = True
+            estimate += _element_size(item) - before
             doc["condensed"]["steering_short"] += 1
             if fits():
                 return doc
@@ -317,6 +384,9 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
     folded_ids: set[str] = set()
     while not fits() and steer:
         item = steer.pop(0)
+        estimate = (estimate - _element_size(item)) if steer else _size(doc)
+        folded = doc.get("steering_earlier")
+        before = _key_size("steering_earlier", folded) if folded is not None else 0
         folded = doc.setdefault("steering_earlier", {
             "kind": "earlier_steering", "condensed": True, "items": 0,
             "first_at": item.get("created_at"), "evidence_ids": []})
@@ -326,6 +396,7 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
             folded_ids.add(item["evidence_id"])
             folded["evidence_ids"].append(item["evidence_id"])
             _cap_list(folded, "evidence_ids", 100)
+        estimate += _key_size("steering_earlier", folded) - before
         doc["condensed"]["folded"] += 1
     if not fits():
         raise ValueError(f"the history of {work['dedupe_key']} cannot be condensed to "
@@ -334,10 +405,12 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
 
 
 def build(record: dict, work: dict, evidence: dict[str, dict], *, policy: dict,
-          now: str) -> dict:
+          now: str, deferred: int = 0, unreadable: list[str] | tuple[str, ...] = ()) -> dict:
     """The ``work_history`` evidence of ``work`` (the record's
-    ``active_work``), from ``evidence`` (the store's and the tick's)."""
-    doc = document(record, work, evidence)
+    ``active_work``), from ``evidence`` (the store's and the tick's), and
+    what the steering collection of the tick could not record
+    (``deferred``) or read (``unreadable``)."""
+    doc = document(record, work, evidence, deferred=deferred, unreadable=unreadable)
     reports = sum(1 for t in doc["timeline"] if t["kind"] == "worker_report")
     ci = sum(1 for t in doc["timeline"] if t["kind"] == "ci")
     record_ = {
@@ -347,7 +420,12 @@ def build(record: dict, work: dict, evidence: dict[str, dict], *, policy: dict,
         "summary": (f"History of {work['task']} Work: {len(doc['steering'])} steering items, "
                     f"{len(doc['timeline'])} timeline entries ({reports} worker reports, "
                     f"{ci} CI runs); condensed {doc['condensed']}"),
-        "limitations": [NOTICE],
+        "limitations": [NOTICE] + ([
+            "Steering unreadable: GitHub answered that these lists are gone or not "
+            "accessible, so their newer text is missing: "
+            + ", ".join(doc["steering_unreadable"])] if doc.get("steering_unreadable") else [])
+        + ([f"Steering deferred: {deferred} collected items are not recorded yet."]
+           if deferred else []),
         "data": doc,
         "digests": {"work": hashlib.sha256(work["dedupe_key"].encode()).hexdigest()},
     }

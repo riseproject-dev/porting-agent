@@ -813,6 +813,23 @@ class TestHistoryAndReports(unittest.TestCase):
             self.assertIn(needle, worker)
         self.assertIn("Read its `steering` section\nfirst", planner)
 
+    def test_the_worker_is_told_the_report_size_limit(self):
+        # The worker learns the cap the gate and the artifact extraction
+        # apply, before it spends a run on a report that is refused.
+        import artifact
+        import worker_report
+
+        self.assertEqual(worker_report.MAX_REPORT_BYTES, 32 * 1024)
+        self.assertEqual(artifact.ALLOWED["report.json"], worker_report.MAX_REPORT_BYTES)
+        worker = (WORKFLOWS / "worker.md").read_text().split("---", 2)[2]
+        section = worker[worker.index("## The worker report"):
+                         worker.index("## The submission rewrite task")]
+        flat = " ".join(section.split())
+        self.assertIn("at most 32 KiB (32768 bytes) as written", flat)
+        self.assertIn("a larger report is refused with the Result", flat)
+        schema = json.loads((ROOT / "schemas" / "worker_report.schema.json").read_text())
+        self.assertIn("larger than 32 KiB (32768 bytes) as written", schema["description"])
+
     def test_the_publish_jobs_check_and_keep_the_report(self):
         worker = (WORKFLOWS / "worker.md").read_text()
         self.assertIn("--report ../in/report.json --out ../in/worker-gate.json", worker)

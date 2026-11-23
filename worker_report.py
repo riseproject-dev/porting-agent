@@ -38,7 +38,8 @@ import state
 from common import canonical_json, safe_id
 
 MAX_REPORT_BYTES = 32 * 1024
-# The longest string the schema admits in a report.
+# The longest text kept from one string of a report or one feedback item;
+# the schema admits no longer report string.
 MAX_FIELD = 2000
 REDACTED = "[redacted]"
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -123,7 +124,12 @@ def _load(raw: bytes | dict | None) -> dict | None:
     if raw is None:
         return None
     if isinstance(raw, dict):
-        data = canonical_json(raw).encode("utf-8")
+        # A report already parsed from its file, which ``artifact.extract``
+        # and the gate bounded: measured in compact JSON, which is never
+        # larger than the file it was read from. The indented canonical form
+        # is larger than a compact file, so measuring it would refuse at the
+        # fold a report the gate accepted.
+        data = json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     elif isinstance(raw, (bytes, bytearray)):
         data = bytes(raw)
     else:

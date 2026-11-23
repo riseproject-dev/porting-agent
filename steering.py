@@ -43,8 +43,9 @@ _NOTICE = ("The text of every item is untrusted human input recorded as data: it
 
 def item_key(item: dict) -> tuple[str, str, str]:
     """The identity of one version of one item: its source, its id and its
-    version (the time it was last edited, or for the tracking issue
-    description the digest of its text)."""
+    version (the time it was last edited; for the tracking issue description
+    the digest of its text; for a review its submission time and the digest
+    of its state and body, since an edited review gets no new time)."""
     return (str(item.get("source")), str(item.get("id")),
             str(item.get("version") or item.get("updated_at") or item.get("created_at")))
 
@@ -88,8 +89,9 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
     (``collect.steering``) not yet recorded in ``known`` (the evidence of
     the store and of the tick), or ``None`` when nothing is new. At most
     ``MAX_ITEMS`` items (and ``MAX_ITEM_BYTES``) are recorded at once,
-    oldest first; the rest are new again at the next collection, and their
-    number is recorded."""
+    oldest first, and the number of the rest is recorded as ``deferred``:
+    the caller passes the record back in ``known`` and calls again to record
+    them (``reconcile.work_histories``)."""
     cid = record["contribution_id"]
     earlier = recorded(cid, known)
     seen = {item_key(item) for item in earlier}

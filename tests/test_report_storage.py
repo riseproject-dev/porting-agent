@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import copy
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import engine
 import reconcile
 import state
 import work_history
+import worker_report
+from common import canonical_json
 from tests import test_development_table as dev
 from tests import test_upstream_review_table as up
 from tests.helpers import NOW, SHA_A, SHA_B, policy
@@ -40,6 +44,38 @@ def with_report(rec: dict, outcome: dict, *, task: str | None = None, **report_f
                                       expected_revision=rec["revision"], task=name,
                                       **report_fields)
     return outcome
+
+
+def compact(value: dict) -> bytes:
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def large(**fields) -> dict:
+    """Report fields that make a schema-valid report of just under 32 KiB in
+    compact JSON (as a worker's ``json.dump`` writes it), whose indented
+    canonical form is larger than 32 KiB."""
+    base = report(**fields)
+    filler = [{"what": f"step {i} " + "w" * 280, "why": "y" * 400} for i in range(8)]
+    approaches = [{"title": f"approach {i}: fix: use foo", "description": "d" * 600,
+                   "outcome": "failed" if i % 2 else "adopted", "evidence": "e" * 600,
+                   "lesson": "l" * 250} for i in range(10)]
+    verification = [{"check": f"check {i}", "result": "passed", "evidence": "v" * 300}
+                     for i in range(12)]
+    base.update(attempted=filler, approaches=approaches, verification=verification)
+    # Pad the summary, then the open items, up to the target size.
+    target = worker_report.MAX_REPORT_BYTES - 120
+    items = []
+    while len(compact(dict(base, open_items=items + ["o" * 300]))) < target and len(items) < 10:
+        items.append("o" * 300)
+    base["open_items"] = items
+    missing = target - len(compact(base))
+    base["failures"] = [{"what": "f", "evidence": "x" * min(500, max(0, missing - 30 - 60 * i))}
+                        for i in range(max(1, min(8, missing // 500 + 1)))]
+    while len(compact(base)) > target:
+        base["failures"][-1]["evidence"] = base["failures"][-1]["evidence"][:-50]
+    return {k: v for k, v in base.items()
+            if k not in ("schema_version", "contribution_id", "expected_revision", "task",
+                         "history_digest")}
 
 
 def fold(rec, outcome):
@@ -212,6 +248,73 @@ class TestSubmission(unittest.TestCase):
         self.assertEqual(entry["work"]["task"], "submission_rewrite")
         self.assertEqual(entry["report"]["summary"], report()["summary"])
         self.assertEqual(world.record["active_work"]["task"], "submission_review")
+
+
+class TestLargeReport(unittest.TestCase):
+    """A compact report just under the cap that the gate accepts is stored
+    by every success fold, although its indented canonical form is larger
+    than the cap."""
+
+    def check_accepted(self, outcome: dict) -> None:
+        value = outcome["worker_report"]
+        data = compact(value)
+        self.assertLess(len(data), worker_report.MAX_REPORT_BYTES)
+        self.assertGreater(len(canonical_json(value).encode()), worker_report.MAX_REPORT_BYTES)
+        # The check the worker gate and the submission checks run on the file.
+        self.assertEqual(worker_report.check(outcome["task"], data), value)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_bytes(data)
+            self.assertEqual(worker_report.check_path(outcome["task"], path), value)
+
+    def test_every_development_and_revision_success_fold_stores_it(self):
+        cases = [(dev.running, lambda rec, name: (dev.rerun_outcome(rec) if name == "no_change"
+                                                  else publication(rec, name)), name, verb)
+                 for name, verb in (("published", "record_publish_success"),
+                                    ("no_change", "request_ci_rerun"))]
+        def revision():
+            return up.record("agent_running", active_work=dict(up.REVISION_WORK))
+        cases += [(revision, lambda rec, name: (up.published(rec, SHA_B) if name == "published"
+                                                else publication(rec, name)), name, verb)
+                  for name, verb in (("published", "record_revision_publish_success"),
+                                     ("no_change", "require_reviewer_answer"))]
+        for make, result, name, verb in cases:
+            with self.subTest(result=name, verb=verb):
+                rec = make()
+                outcome = with_report(rec, result(rec, name), **large())
+                self.check_accepted(outcome)
+                _new, staged = fold(rec, outcome)
+                [evidence] = stored(staged)
+                self.assertEqual(events(staged)[0]["kind"], verb)
+                self.assertEqual(events(staged)[0]["details"]["report_evidence_id"],
+                                 evidence["evidence_id"])
+                self.assertEqual(len(evidence["data"]["report"]["approaches"]), 10)
+
+    def test_the_submission_success_folds_store_it(self):
+        from tests import test_handoff as th
+        world = th.submitted()
+        outcome = with_report(world.record, world.rewrite_outcome(), task="submission_rewrite",
+                              **large())
+        self.check_accepted(outcome)
+        out = world.tick(th.at(1), publications=[outcome])
+        self.assertEqual([e["data"]["verb"] for e in stored(out.staged)],
+                         ["accept_submission_rewrite"])
+        outcome = with_report(world.record, world.review_outcome(), task="submission_review",
+                              **large())
+        self.check_accepted(outcome)
+        out = world.tick(th.at(2), publications=[outcome])
+        self.assertEqual([e["data"]["verb"] for e in stored(out.staged)],
+                         ["accept_submission_review"])
+
+    def test_a_dict_over_the_cap_in_compact_json_is_still_refused(self):
+        rec = dev.running()
+        outcome = with_report(rec, publication(rec, "published"), **large())
+        outcome["worker_report"]["summary"] = "s" * 1000
+        outcome["worker_report"]["open_items"] = ["o" * 300] * 10
+        self.assertGreater(len(compact(outcome["worker_report"])),
+                           worker_report.MAX_REPORT_BYTES)
+        with self.assertRaises(worker_report.ReportError):
+            worker_report.check(outcome["task"], outcome["worker_report"])
 
 
 if __name__ == "__main__":

@@ -157,6 +157,90 @@ class TestBuild(unittest.TestCase):
                                    now=NOW)
         self.assertEqual(canonical_json(again), canonical_json(history))
 
+    def test_a_failed_approach_whose_title_has_a_colon_is_listed_when_folded(self):
+        evidence = {}
+        for i in range(60):
+            evidence[f"report-{i}"] = report_evidence(
+                f"report-{i}", at=f"2026-11-{1 + i // 24:02d}T{i % 24:02d}:00:00+00:00",
+                summary="w" * 1000, approaches=[{
+                    "title": f"fix: use foo {i}", "description": "d" * 1900,
+                    "outcome": "failed" if i % 2 else "adopted", "evidence": "e" * 1900,
+                    "lesson": "l" * 500}])
+        data = work_history.document(record(), WORK, evidence)
+        earlier = data["timeline"][0]
+        self.assertEqual(earlier["kind"], "earlier")
+        folded = [t for t in range(earlier["entries"]) if t % 2]
+        self.assertEqual(earlier["failed_approaches"],
+                         [{"title": f"fix: use foo {i}", "outcome": "failed"} for i in folded])
+        short = next(t for t in data["timeline"] if t.get("condensed") and t["kind"] ==
+                     "worker_report")
+        self.assertEqual(set(short["approaches"][0]), {"title", "outcome", "lesson"})
+
+    def test_steering_replaces_only_the_feedback_of_the_same_kind_and_id(self):
+        relay = {"schema_version": 1, "evidence_id": "relay-1", "contribution_id": CID,
+                 "kind": "human_relay", "policy_version": "p",
+                 "collected_at": "2026-11-21T00:00:00+00:00", "summary": "s", "data": {
+                     "reviews": [], "conversation_comments": [],
+                     "comments": [{"id": 5, "reviewer": "owner", "url": "u",
+                                   "body": "Rename the job."}]}}
+        # Steering comment 5 is a tracking issue comment, not review comment 5.
+        evidence = {"relay-1": relay, "steering-1": steering_evidence(
+            "steering-1", [steer(5, "Keep QEMU.", at="2026-11-20T00:00:00Z")],
+            at="2026-11-20T00:00:00+00:00")}
+        [entry] = work_history.document(record(), WORK, evidence)["timeline"]
+        self.assertEqual(entry["items"][0]["body"], "Rename the job.")
+        evidence["steering-2"] = steering_evidence(
+            "steering-2", [steer(5, "Rename the job.", at="2026-11-21T00:00:00Z",
+                                 source="development_pr_review_comment")],
+            at="2026-11-21T00:00:00+00:00")
+        [entry] = work_history.document(record(), WORK, evidence)["timeline"]
+        self.assertEqual(entry["items"][0]["body"], "(in the steering section)")
+
+    def test_omitted_counts_are_those_of_the_newest_collection(self):
+        evidence = {"steering-1": steering_evidence("steering-1", [], at="2026-11-20T00:00:00Z"),
+                    "steering-2": steering_evidence("steering-2", [], at="2026-11-21T00:00:00Z")}
+        evidence["steering-2"]["data"]["omitted"] = {"tracking_issue_comment": 3}
+        data = work_history.document(record(), WORK, evidence)
+        self.assertEqual(data["omitted"], {"tracking_issue_comment": 3})
+
+    def test_deferred_and_unreadable_steering_are_stated(self):
+        history = work_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW,
+                                     deferred=4, unreadable=["upstream_pr_review"])
+        data = history["data"]
+        self.assertEqual(data["omitted"]["steering_deferred"], 4)
+        self.assertEqual(data["steering_unreadable"], ["upstream_pr_review"])
+        self.assertTrue(any("upstream_pr_review" in v for v in history["limitations"]))
+        plain = work_history.build(record(), WORK, self.evidence(), policy=POLICY, now=NOW)
+        self.assertNotIn("steering_unreadable", plain["data"])
+        self.assertEqual(plain["limitations"], [work_history.NOTICE])
+
+    def test_sources_left_out_are_counted(self):
+        evidence = {f"ci-{i:03d}": ci_evidence(f"ci-{i:03d}", SHA_A, at=f"2026-11-01T00:{i % 60:02d}:00Z")
+                    for i in range(work_history.MAX_SOURCES + 7)}
+        data = work_history.document(record(), WORK, evidence)
+        self.assertEqual(len(data["sources"]), work_history.MAX_SOURCES)
+        self.assertEqual(data["sources_not_listed"], 7)
+
+    def test_condensation_serializes_the_whole_document_rarely(self):
+        evidence = {}
+        for i in range(600):
+            evidence[f"report-{i}"] = report_evidence(
+                f"report-{i}", at=f"2026-{1 + i // 300:02d}-{1 + (i // 24) % 12:02d}T"
+                f"{i % 24:02d}:00:00+00:00", summary="w" * 900)
+        real = work_history._size
+        whole = []
+
+        def counting(value):
+            if isinstance(value, dict) and "timeline" in value:
+                whole.append(1)
+            return real(value)
+
+        with mock.patch("work_history._size", side_effect=counting):
+            data = work_history.document(record(), WORK, evidence)
+        self.assertGreater(data["condensed"]["folded"], 100)
+        self.assertLess(len(whole), 20)
+        self.assertLessEqual(len(canonical_json(data).encode()), work_history.HISTORY_MAX_BYTES)
+
     def test_a_condensation_cut_never_creates_a_credential_match(self):
         # Each body is clean on its own: the AWS key id is followed by more
         # capitals, so it has no word boundary. The condensation cut at
@@ -268,6 +352,35 @@ class TestTick(unittest.TestCase):
         # Steering changed no field of the record.
         rec = dev.final(out, None)
         self.assertNotIn("Please keep", json.dumps(rec))
+
+    def test_many_steering_items_are_recorded_in_the_same_tick(self):
+        many = [steer(i, "z" * 3900, at=f"2026-11-{1 + i // 24:02d}T{i % 24:02d}:00:00Z")
+                for i in range(1, 450)]
+        with mock.patch("collect.steering", return_value={"items": many, "omitted": {}}):
+            out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
+        records = [e for k, e in out.staged if k == "evidence" and e["kind"] == "human_steering"]
+        self.assertGreater(len(records), 2)
+        self.assertEqual(sum(len(r["data"]["items"]) for r in records), len(many))
+        self.assertEqual(records[-1]["data"]["deferred"], 0)
+        [history] = [e for k, e in out.staged if k == "evidence" and e["kind"] == "work_history"]
+        # Every item is in the history, the oldest folded into a count, and
+        # the newest kept.
+        data = history["data"]
+        self.assertEqual(len(data["steering"]) + data["steering_earlier"]["items"], len(many))
+        self.assertEqual(data["steering"][-1]["id"], many[-1]["id"])
+        self.assertNotIn("steering_deferred", history["data"]["omitted"])
+        self.assertEqual(out.report["work_history"][0]["steering_evidence_ids"],
+                         [r["evidence_id"] for r in records])
+
+    def test_an_unreadable_steering_list_does_not_hold_the_work(self):
+        collected = {"items": [], "omitted": {}, "unreadable": ["development_pr_review"]}
+        with mock.patch("collect.steering", return_value=collected):
+            out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
+        self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
+        [history] = [e for k, e in out.staged if k == "evidence" and e["kind"] == "work_history"]
+        self.assertEqual(history["data"]["steering_unreadable"], ["development_pr_review"])
+        self.assertEqual(out.report["work_history"][0]["steering_unreadable"],
+                         ["development_pr_review"])
 
     def test_an_offline_tick_builds_nothing(self):
         out = dev.tick(dev.running(), observe=False)
