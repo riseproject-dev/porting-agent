@@ -71,7 +71,7 @@ These table mutations break a settled decision but still pass the check:
 ## CI on the clean head is not rerun
 
 - **Where:** `handoff.waiting_ci`, rows `rerun_interrupted_ci` and `exhaust_interrupted_reruns`; the CI observation in `observe_ci.py`.
-- **Today:** the observation takes `accept_clean_head_ci` or `return_for_repair`. A required job that was cancelled or lost its runner is a job that did not execute: the contribution stays in `handoff.waiting_ci` and nothing reruns it, so `interrupted_reruns` is never charged and its exhaustion wait is never entered. `pause` and `park` still apply there.
+- **Today:** the observation takes `accept_clean_head_ci` or `return_for_repair`. A required job that was cancelled or lost its runner is a job that did not execute: nothing reruns it, so `interrupted_reruns` is never charged and its exhaustion wait is never entered; the contribution stays in `handoff.waiting_ci` until the bounded wait of `require_clean_head_ci` asks a human. `pause` and `park` still apply there.
 - **Table:** the collector reruns the interrupted jobs on the exact head within `interrupted_reruns` and waits for a human with `ci_interrupted` once it is exhausted.
 - **Required:** a trusted rerun of the interrupted jobs on the exact head and attempt, then take the two rows.
 
@@ -109,20 +109,6 @@ These table mutations break a settled decision but still pass the check:
 - **Today:** an attempt is launched again after 300 seconds without a receipt and closed as failed once its last allowed launch is 300 seconds old. A `handoff.yml` run may take up to 20 minutes (its job timeouts) and waits in the shared concurrency group `porting-fork-writer` behind other runs, so a slow but healthy run can be closed as spent while it still runs. The effects are idempotent (the lease write, the close of the exact PR, the package found by its marker), so the next attempt finds the effect in place and reads it back, and the late receipt is not folded; the cost is a charged attempt.
 - **Table:** `operation_launch` counts launches; it states no interval tied to the run timeout or the queueing of the workflow.
 - **Required:** an interval at least as long as the workflow's timeout plus its queueing, or a check of the run's status before an attempt is closed as spent.
-
-## CI on a rebuilt `riscv64` head may never run
-
-- **Where:** `handoff.waiting_ci`, `accept_clean_head_ci`; the CI observation in `observe_ci.py`.
-- **Today:** when the reviewed series has the tree of the candidate head (the approved series had no debug commit), the CI evidence of the candidate head on `riscv64-dev` is read for the clean head. Otherwise CI must run on the head of `riscv64`, which has no pull request in the fork: it runs only if the project's workflows run on a push to any branch. When they do not, no run appears, and the contribution waits in `handoff.waiting_ci` with nothing to rerun and no deadline; `park` and `pause` still apply.
-- **Table:** `accept_clean_head_ci` requires every required job to execute and pass on the clean head.
-- **Required:** a trusted way to run CI on the head of `riscv64` (for example a workflow dispatch or a second, marked fork PR), or a table decision on a deadline for the wait.
-
-## Upstream review observes `riscv64` against the development head
-
-- **Where:** head observation in `upstream_review` (`observe_ci.observe`, `compat.observe_head`); upstream revision Work.
-- **Today:** in upstream review the observation reads `riscv64`, the branch of the upstream PR, but `fork.head_sha` still names the approved head of `riscv64-dev`. The first observation after `verify_upstream_pr` therefore records the head of `riscv64` as a head change through the legacy head observation, with a revision bump; revision Work then builds on that head and publishes to `riscv64` (`lifecycle.work_ref`). The commit rules of the dossier are checked by the worker gate there, but no submission review runs on a revision.
-- **Table:** `verify_upstream_pr` records `upstream_pr` only; `record_head_change` in `upstream_review.waiting_ci` is for a head the pipeline did not publish.
-- **Required:** a table decision on the head upstream review records at `verify_upstream_pr`, together with the migration of upstream review to the table's rows.
 
 ## A legacy pending action in upstream review has no resume
 
@@ -244,6 +230,8 @@ These follow the literal reading of a decision and are kept until a decision say
 - `submit_upstream` records `handoff_approval` with the CI evidence and the dossier the approval saw (`evidence_ids`); it records no operation. The review Work is allocated in `handoff.review_due` by `request_submission_review`, in the same tick when a worker slot is free.
 - The submission rewrite reshapes the commits of the approved series "only if CONTRIBUTING or reviewers require it" for a squash or a split; that requirement is the model's judgment, checked by the separate review Work, and trusted code checks that every commit is valid upstream and holds only content of the base or of the approved series, that the final tree is unchanged, and that the measurable rules, including `max_commits`, hold.
 - The revision is bumped when the rewrite is accepted (`accept_submission_rewrite`), since the review is new Work of the next revision and the revision rule requires a bump on a Result that leads to a state where Work is due; the package names the approval's revision, and the `retract-pr` command it carries names the current one.
+- The required CI workflow the build of `riscv64` dispatches on the clean head is the workflow of the latest required CI run on the candidate head (`workflow_path` of its evidence), read at the clean head as data: dispatchable when its triggers include `workflow_dispatch` and none of its inputs is required without a default. A project whose required jobs span several workflows gets that one dispatched; the others run only if a push triggers them, and the bounded wait of 12 hours then asks a human (`require_clean_head_ci`).
+- In upstream review the recorded head is `upstream_pr.head_sha` (`lifecycle.recorded_head`), the field the table's `record_head_change` there updates; `fork.head_sha` keeps the approved head of `riscv64-dev`. A head change in upstream review is still recorded by the legacy head observation, which updates both.
 - A rewrite is expired once its evidence is 29 days old (`handoff.rewrite_expired`): the publication artifact that holds the series is kept 30 days, and the day of margin covers a review or build that starts just before the expiry. The trusted workflow also refuses an artifact GitHub reports as expired; that attempt fails as an infrastructure failure, and the next plan finds the rewrite expired by its age.
 - A dossier of schema version 1 records no measurable rules and no template sections: the submission check then applies the rules and sections the review reports having found in the project. They are untrusted but can only refuse a submission, never admit one.
 - A required template section is present when the description has a Markdown heading with the same words (case and emphasis ignored). Whether every checklist item is answered honestly is the review's judgment; the check does not parse checklists.

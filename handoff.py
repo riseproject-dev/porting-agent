@@ -758,7 +758,21 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
         if cmp.get("behind_by") != 0 or not series or len(series) > MAX_COMMITS \
                 or [_message(c).rstrip("\n") for c in series] != messages:
             return f"{UPSTREAM_REF} is not the reviewed series on the frozen base"
-        return (dict(run, clean_head=clean), {"clean_head_sha": clean},
+        ci = {"ci_dispatch": receipt.get("ci_dispatch") or NOT_NEEDED}
+        if ci["ci_dispatch"] not in (NOT_NEEDED, DISPATCHED, EXISTS, UNSUPPORTED):
+            return "the receipt names no outcome of the CI dispatch"
+        if ci["ci_dispatch"] != NOT_NEEDED:
+            path = str(receipt.get("ci_workflow") or "")
+            if path and not _WORKFLOW_PATH.match(path):
+                return "the receipt names an invalid CI workflow"
+            ci["ci_workflow"] = path
+        if ci["ci_dispatch"] in (DISPATCHED, EXISTS):
+            # The run is read back by the head it runs on.
+            runs = _runs_for(api, target["repository"], ci["ci_workflow"].rsplit("/", 1)[1], clean)
+            if not runs:
+                return "no CI run on the clean head is read back"
+            ci["ci_run_id"] = int(max(r.get("id") or 0 for r in runs))
+        return (dict(run, clean_head=clean, **ci), {"clean_head_sha": clean},
                 f"{UPSTREAM_REF} at {clean}")
     comment_id = receipt.get("comment_id")
     if not isinstance(comment_id, int):
@@ -914,7 +928,8 @@ def upstream_branch_blocked(read_api: collect.Api, record: dict) -> str | None:
 def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
                           token: str | None, series: bytes, workdir: Path | None = None,
                           push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess]
-                          | None = None) -> dict:
+                          | None = None,
+                          dispatch: Callable[[str, dict], Any] | None = None) -> dict:
     """``upstream_branch``: rebuild the reviewed series, check it again, and
     create `riscv64` at its head or replace it under an exact-head lease,
     never while an upstream PR is open from it; read it back.
@@ -987,11 +1002,140 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
         after = collect.branch_head(read_api, fork, UPSTREAM_REF)
         if not after or after["head"] != built["head"]:
             raise HandoffError("the ref readback does not show the reviewed head")
+        ci = {"ci_dispatch": NOT_NEEDED}
+        if review.get("clean_tree") != review.get("candidate_tree"):
+            # The clean head has another tree than the candidate head: CI must
+            # run on it, and `riscv64` has no pull request to trigger it.
+            ci = dispatch_clean_head_ci(read_api, fork=fork, head=built["head"],
+                                        workflow_path=_candidate_workflow(root, record),
+                                        dispatch=dispatch)
         return {"result": "applied", "clean_head": built["head"], "replaced": observed,
-                "written": observed != built["head"]}
+                "written": observed != built["head"], **ci}
     finally:
         if tmp:
             tmp.cleanup()
+
+
+# What the build of `riscv64` did for CI on its clean head
+# (``external_ids.ci_dispatch`` of the confirmed operation): nothing was
+# needed (the clean head has the candidate's tree), the project's required
+# workflow was dispatched on `riscv64` and its run read back by head, a run of
+# it already exists for the head, or the workflow cannot be dispatched.
+NOT_NEEDED, DISPATCHED, EXISTS, UNSUPPORTED = "not_needed", "dispatched", "exists", "unsupported"
+_WORKFLOW_PATH = re.compile(r"^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$")
+MAX_WORKFLOW_BYTES = 512 * 1024
+
+
+def _candidate_workflow(root: Path, record: dict) -> str | None:
+    """The workflow of the required CI run on the candidate head, from its
+    committed evidence."""
+    try:
+        ci = json.loads((root / ".state/evidence"
+                         / f"{safe_id(record.get('last_ci_evidence_id') or '')}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    path = str((ci.get("ci") or {}).get("workflow_path") or "")
+    return path if _WORKFLOW_PATH.match(path) else None
+
+
+def workflow_dispatchable(text: str) -> bool:
+    """Whether a workflow file, read as data, can be dispatched with no
+    input: its triggers include ``workflow_dispatch`` and every input it
+    declares has a default or is optional. Nothing in it is run."""
+    import yaml
+
+    if len(text.encode()) > MAX_WORKFLOW_BYTES:
+        return False
+    try:
+        workflow = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(workflow, dict):
+        return False
+    on = workflow.get("on", workflow.get(True))
+    if on == "workflow_dispatch":
+        return True
+    if isinstance(on, list):
+        return "workflow_dispatch" in on
+    if not isinstance(on, dict) or "workflow_dispatch" not in on:
+        return False
+    inputs = ((on.get("workflow_dispatch") or {}).get("inputs") or {}) \
+        if isinstance(on.get("workflow_dispatch") or {}, dict) else {}
+    return isinstance(inputs, dict) and all(
+        not (isinstance(i, dict) and i.get("required") and i.get("default") is None)
+        for i in inputs.values())
+
+
+def _runs_for(read_api: collect.Api, fork: str, workflow: str, head: str) -> list[dict]:
+    query = urllib.parse.urlencode({"branch": UPSTREAM_REF, "head_sha": head, "per_page": 20})
+    data = read_api.get(f"/repos/{fork}/actions/workflows/{workflow}/runs?{query}") or {}
+    return [r for r in data.get("workflow_runs") or [] if isinstance(r, dict)
+            and r.get("head_sha") == head]
+
+
+def dispatch_clean_head_ci(read_api: collect.Api, *, fork: str, head: str,
+                           workflow_path: str | None, dispatch: Callable[[str, dict], Any] | None,
+                           wait: Callable[[float], None] | None = None,
+                           readbacks: int = 6) -> dict:
+    """Run the project's required CI workflow on the clean head of `riscv64`.
+
+    The workflow of the required CI run on the candidate head is read at the
+    clean head, as data. When it can be dispatched (``workflow_dispatch``
+    with no required input), it is dispatched on `riscv64` with the fork
+    token (``actions: write`` on the one fork) unless a run of it already
+    exists for the head, and the run is read back by its head SHA. A
+    workflow that cannot be dispatched is reported as such: the CI wait then
+    waits for a human (``require_clean_head_ci``). A failed dispatch or a run
+    that is not read back is an infrastructure failure of the attempt."""
+    import base64
+    import time
+
+    if not workflow_path:
+        return {"ci_dispatch": UNSUPPORTED, "ci_workflow": ""}
+    name = workflow_path.rsplit("/", 1)[1]
+    try:
+        content = read_api.get(f"/repos/{fork}/contents/{urllib.parse.quote(workflow_path)}"
+                               f"?ref={head}") or {}
+        text = base64.b64decode(content.get("content") or "").decode("utf-8")
+    except (collect.CollectError, ValueError, UnicodeDecodeError):
+        return {"ci_dispatch": UNSUPPORTED, "ci_workflow": workflow_path}
+    if not workflow_dispatchable(text):
+        return {"ci_dispatch": UNSUPPORTED, "ci_workflow": workflow_path}
+    runs = _runs_for(read_api, fork, name, head)
+    if runs:
+        return {"ci_dispatch": EXISTS, "ci_workflow": workflow_path,
+                "ci_run_id": int(max(r.get("id") or 0 for r in runs))}
+    if dispatch is None:
+        raise HandoffError("dispatching CI on the clean head needs the fork token")
+    try:
+        dispatch(f"/repos/{fork}/actions/workflows/{name}/dispatches", {"ref": UPSTREAM_REF})
+    except Exception as error:  # every failure of the write is a failed attempt
+        raise HandoffError(f"the CI dispatch failed: {isolation.clean_text(error, 200)}") from None
+    for attempt in range(readbacks):
+        (wait or time.sleep)(5 * (attempt + 1))
+        runs = _runs_for(read_api, fork, name, head)
+        if runs:
+            return {"ci_dispatch": DISPATCHED, "ci_workflow": workflow_path,
+                    "ci_run_id": int(max(r.get("id") or 0 for r in runs))}
+    raise HandoffError(f"no run of {workflow_path} is read back for the clean head")
+
+
+def clean_head_ci_missing(record: dict, operations: dict, now: str, *, has_runs: bool) -> bool:
+    """Whether CI on the clean head waited long enough (``require_clean_head_ci``):
+    no run exists and the build reported that the workflow cannot be
+    dispatched, or the bounded wait since the clean head was confirmed (or
+    since the last resume) has passed."""
+    from datetime import datetime, timedelta
+
+    since = record.get("clean_head_ci_since") or record.get("updated_at")
+    if datetime.fromisoformat(now) - datetime.fromisoformat(since) \
+            >= timedelta(hours=lifecycle.CLEAN_HEAD_CI_WAIT_HOURS):
+        return True
+    confirmed = [op for op in attempts(record, operations, "upstream_branch")
+                 if op.get("status") == "confirmed"]
+    status = ((confirmed[-1].get("external_ids") or {}).get("ci_dispatch")
+              if confirmed else None)
+    return status == UNSUPPORTED and not has_runs
 
 
 def ci_head(record: dict, review: dict) -> str:
@@ -1107,10 +1251,17 @@ def reviewed_series(root: Path, operation_id: str, series: Path | None,
         raise HandoffInvalid("the reviewed series is missing")
     record = json.loads(meta.read_text())
     if record.get("id") != ids.get("publication_artifact_id") \
-            or record.get("name") != "porting-publication" or record.get("expired") \
+            or record.get("name") != "porting-publication" \
             or str((record.get("workflow_run") or {}).get("id")) != str(ids.get("publication_run_id")):
         raise HandoffInvalid("the reviewed series is not from the accepted review's run")
-    return series.read_bytes()
+    if record.get("expired"):
+        # Not a verdict on the series: the controller leads an expired
+        # rewrite back to a fresh one (`expire_submission_rewrite`).
+        raise HandoffError("the artifact of the rewritten series expired")
+    data = series.read_bytes()
+    if hashlib.sha256(data).hexdigest() != (op.get("proposed") or {}).get("content_digest"):
+        raise HandoffInvalid("the reviewed series does not match the accepted review")
+    return data
 
 
 def receipt(op_meta: dict, result: dict | None = None, *, error: BaseException | None = None) -> dict:
@@ -1127,6 +1278,22 @@ def receipt(op_meta: dict, result: dict | None = None, *, error: BaseException |
                    else BLOCKED if isinstance(error, HandoffBlocked) else INFRASTRUCTURE)
     out["reason"] = isolation.clean_text(error, 300)
     return out
+
+
+def _dispatcher(token: str | None) -> Callable[[str, dict], Any] | None:
+    """The one write of the CI dispatch, with the fork token."""
+    if not token:
+        return None
+    import provisioning
+
+    api = provisioning.WriteApi(token)
+
+    def dispatch(path: str, body: dict) -> Any:
+        if not re.fullmatch(r"/repos/riseproject-upstreaming/[A-Za-z0-9_.-]+/actions/workflows/"
+                            r"[A-Za-z0-9_.-]+\.ya?ml/dispatches", path):
+            raise HandoffError("unexpected dispatch path")
+        return api.write("POST", path, body)
+    return dispatch
 
 
 def _operation_meta(root: Path, operation_id: str) -> dict:
@@ -1164,7 +1331,8 @@ def main(argv: list[str] | None = None) -> int:
     from common import load_policy
 
     parser = argparse.ArgumentParser(prog="python -m handoff", description=__doc__)
-    parser.add_argument("action", choices=("target", "check", "branch", "comment", "failed"))
+    parser.add_argument("action", choices=("target", "check", "series", "branch", "comment",
+                                           "failed"))
     parser.add_argument("--operation-id", required=True)
     parser.add_argument("--kind")
     parser.add_argument("--out", type=Path)
@@ -1207,6 +1375,21 @@ def main(argv: list[str] | None = None) -> int:
             args.out.write_text(json.dumps(result, indent=2))
             print(json.dumps({k: result.get(k) for k in ("operation_id", "kind", "result", "reason")}))
             return 1
+    if args.action == "series":
+        # Before the job mints its token: the downloaded series is the
+        # accepted rewrite's, from its run's publication artifact, and has
+        # its digest. A refusal is the attempt's receipt.
+        try:
+            reviewed_series(root, args.operation_id, args.series, args.artifact_meta)
+            return 0
+        except (HandoffError, OSError, ValueError) as error:
+            result = receipt(meta, error=error if isinstance(error, HandoffError)
+                             else HandoffInvalid(f"the reviewed series cannot be read: {error}"))
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(result, indent=2))
+            print(json.dumps({k: result.get(k) for k in ("operation_id", "kind", "result",
+                                                         "failure", "reason")}))
+            return 1
     if args.action == "failed":
         # A step of the job failed before the attempt wrote its receipt.
         if args.out.exists():
@@ -1216,9 +1399,10 @@ def main(argv: list[str] | None = None) -> int:
         read_api = collect.Api(token=os.environ.get("GH_TOKEN") or None)
         try:
             if args.action == "branch":
+                token = os.environ.get("UPSTREAMING_FORK_TOKEN") or None
                 result = build_upstream_branch(
                     root, args.operation_id, policy=policy, read_api=read_api,
-                    token=os.environ.get("UPSTREAMING_FORK_TOKEN") or None,
+                    token=token, dispatch=_dispatcher(token),
                     series=reviewed_series(root, args.operation_id, args.series,
                                            args.artifact_meta))
             else:

@@ -653,6 +653,7 @@ for _guard, _name in (
     (lc.REVIEW_PASSED, "submission_review_passed"),
     (lc.REVIEW_FAILED, "submission_review_failed"),
     (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),
+    (lc.CLEAN_HEAD_CI_MISSING, "clean_head_ci_missing"),
     ("a blocking CI failure on the clean head, or the observed `riscv64` head differs from the "
      "clean head", "clean_head_needs_repair"),
     ("posting the package failed", "submission_comment_failed"),
@@ -778,6 +779,7 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_development": "controller",
     "resume_submission_review": "controller",
     "resume_upstream_branch": "controller",
+    "resume_clean_head_ci": "controller",
     "resume_submission_preparation": "controller",
     "resume_upstream_review": "controller",
     "resume_upstream_revision": "controller",
@@ -819,6 +821,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # CI on the clean head, and the locked wait for the upstream PR, by
     # observation.
     "accept_clean_head_ci": "observe_ci",
+    "require_clean_head_ci": "observe_ci",
     "verify_upstream_pr": "observe_ci",
     "record_audit_observation": "observe_ci",
 }
@@ -929,7 +932,7 @@ def refusal(record: dict, verb: str, *, policy: dict, now: str, command: Command
 def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
     if name == "paused":
         return True, True
-    if name in ("paused_at", "pending_human_action.reminded_at"):
+    if name in ("paused_at", "pending_human_action.reminded_at", "clean_head_ci_since"):
         return True, ctx.now
     if name == "previous_phase":
         return True, ctx.record["phase"]
@@ -988,6 +991,7 @@ def reset_generation(record: dict) -> dict:
         "pending_feedback_evidence_ids": [], "active_work": None,
         "dossier_evidence_id": None, "scope_coverage_complete": False,
         "scope_paths": None, "debug_commits": [], "clean_head_sha": None,
+        "clean_head_ci_since": None,
         "submission_rewrite_id": None,
         "submission_review_id": None,
         "handoff_request": None, "handoff_approval": None,

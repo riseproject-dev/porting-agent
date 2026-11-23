@@ -458,6 +458,15 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual((world.record["upstream_pr"]["head_ref"],
                           world.record["upstream_pr"]["head_sha"]), ("riscv64", CLEAN))
         self.assertIsNone(world.record["pending_human_action"])
+        # Upstream review works on `riscv64` at the head of the upstream PR:
+        # observing it there is no head change and bumps no revision.
+        revision = world.record["revision"]
+        self.assertEqual(lifecycle.recorded_head(world.record), CLEAN)
+        out = world.tick(at(5))
+        self.assertNotIn("head_changed", world.kinds(out))
+        self.assertNotIn("record_head_change", world.kinds(out))
+        self.assertEqual(world.record["revision"], revision)
+        self.assertEqual(world.record["upstream_pr"]["head_sha"], CLEAN)
         # `riscv64-dev` and the development PR were never touched; the only
         # writes were `riscv64` and the tracking issue.
         self.assertEqual(world.gh.branches["riscv64-dev"], HEAD)
@@ -723,6 +732,79 @@ class TestInfrastructureRetries(unittest.TestCase):
         self.assertEqual(world.kinds(out)[0], "return_for_repair")
 
 
+class TestCleanHeadCiDispatch(unittest.TestCase):
+    """The trusted build dispatches the project's required CI workflow on
+    `riscv64` when it can, and reads its run back by head."""
+
+    FORK = "riseproject-upstreaming/proj"
+    PATH = ".github/workflows/build.yml"
+
+    class Api:
+        def __init__(self, text, runs=()):
+            import base64
+            self.content = {"content": base64.b64encode(text.encode()).decode()}
+            self.runs = list(runs)
+            self.paths = []
+
+        def get(self, path):
+            self.paths.append(path)
+            if "/contents/" in path:
+                return self.content
+            return {"workflow_runs": [dict(r) for r in self.runs]}
+
+    def go(self, api, dispatch=None):
+        return handoff.dispatch_clean_head_ci(api, fork=self.FORK, head=CLEAN,
+                                              workflow_path=self.PATH, dispatch=dispatch,
+                                              wait=lambda _s: None, readbacks=2)
+
+    def test_dispatchable_workflows_are_read_as_data(self):
+        yes = ["on: workflow_dispatch\n", "on: [push, workflow_dispatch]\n",
+               "on:\n  workflow_dispatch:\n  pull_request:\n",
+               "on:\n  workflow_dispatch:\n    inputs:\n      x:\n        default: a\n"
+               "        required: true\n"]
+        no = ["on: pull_request\n", "on:\n  pull_request:\n",
+              "on:\n  workflow_dispatch:\n    inputs:\n      x:\n        required: true\n",
+              "!!python/object/apply:os.system ['x']", "[", "x" * (600 * 1024)]
+        for text in yes:
+            self.assertTrue(handoff.workflow_dispatchable(text), text)
+        for text in no:
+            self.assertFalse(handoff.workflow_dispatchable(text), text[:40])
+
+    def test_dispatch_and_readback(self):
+        api = self.Api("on: [pull_request, workflow_dispatch]\n")
+        calls = []
+
+        def dispatch(path, body):
+            calls.append((path, body))
+            api.runs = [{"id": 7, "head_sha": CLEAN}]
+
+        out = self.go(api, dispatch)
+        self.assertEqual(out, {"ci_dispatch": handoff.DISPATCHED, "ci_workflow": self.PATH,
+                               "ci_run_id": 7})
+        self.assertEqual(calls, [(f"/repos/{self.FORK}/actions/workflows/build.yml/dispatches",
+                                  {"ref": "riscv64"})])
+        self.assertIn(f"/repos/{self.FORK}/contents/.github/workflows/build.yml?ref={CLEAN}",
+                      api.paths)
+        # A run that already exists for the head is not dispatched again.
+        out = self.go(self.Api("on: workflow_dispatch\n", runs=[{"id": 8, "head_sha": CLEAN}]),
+                       lambda *_a: self.fail("dispatched again"))
+        self.assertEqual(out["ci_dispatch"], handoff.EXISTS)
+
+    def test_what_cannot_be_dispatched_or_read_back(self):
+        out = self.go(self.Api("on: pull_request\n"), lambda *_a: self.fail("dispatched"))
+        self.assertEqual(out["ci_dispatch"], handoff.UNSUPPORTED)
+        self.assertEqual(handoff.dispatch_clean_head_ci(
+            self.Api(""), fork=self.FORK, head=CLEAN, workflow_path=None,
+            dispatch=None)["ci_dispatch"], handoff.UNSUPPORTED)
+        with self.assertRaisesRegex(handoff.HandoffError, "no run"):
+            self.go(self.Api("on: workflow_dispatch\n"), lambda *_a: None)
+        with self.assertRaisesRegex(handoff.HandoffError, "dispatch failed"):
+            self.go(self.Api("on: workflow_dispatch\n"),
+                     lambda *_a: (_ for _ in ()).throw(RuntimeError("HTTP 403")))
+        with self.assertRaisesRegex(handoff.HandoffError, "needs the fork token"):
+            self.go(self.Api("on: workflow_dispatch\n"), None)
+
+
 class TestCleanHeadCi(unittest.TestCase):
     def test_a_failure_or_a_moved_head_returns_for_repair(self):
         world = reviewed()
@@ -771,6 +853,60 @@ class TestCleanHeadCi(unittest.TestCase):
         self.assertEqual(world.kinds(out), ["confirm_clean_head"])
         self.assertEqual(world.state, "handoff.waiting_ci")
         self.assertEqual(world.tick(at(3)).report["handoff_requests"], [])
+
+
+    def other_tree(self):
+        """The live record whose rewritten series has another tree than the
+        candidate head: CI must run on the clean head of `riscv64`."""
+        world = submitted()
+        world.tick(at(1), publications=[world.rewrite_outcome(clean_tree="9" * 40, commits=[
+            {"message": REVIEWED_MESSAGE, "tree": "9" * 40}])])
+        world.tick(at(1), publications=[world.review_outcome()])
+        world.gh.trees[CLEAN] = "9" * 40
+        return world
+
+    @staticmethod
+    def no_runs(world):
+        world.gh.ci_snapshot = lambda _api, name, head: collect.CiSnapshot(
+            repository={"id": FORK["repository_id"], "full_name": name}, head_sha=head, runs=[],
+            jobs_by_run={}, artifacts_by_run={})
+
+    def test_a_workflow_that_cannot_be_dispatched_waits_for_a_human_at_once(self):
+        world = self.other_tree()
+        self.no_runs(world)
+        receipt = dict(world.run_workflow(), ci_dispatch=handoff.UNSUPPORTED,
+                       ci_workflow=".github/workflows/lint.yml")
+        out = world.tick(at(2), receipts=[receipt])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head", "require_clean_head_ci"])
+        self.assertEqual((world.state, world.record["pending_human_action"]["kind"]),
+                         ("handoff.waiting_human", "clean_head_ci_missing"))
+        build = next(op for op in world.operations.values() if op["kind"] == "upstream_branch")
+        self.assertEqual(build["external_ids"]["ci_dispatch"], handoff.UNSUPPORTED)
+        # Reminders apply; the resume observes CI on the clean head again.
+        out = world.tick(at(0, "2026-11-27"))
+        self.assertEqual(world.kinds(out), ["record_reminder"])
+        world.gh.ci_snapshot = FakeGitHub.ci_snapshot.__get__(world.gh)
+        out = world.tick(at(1, "2026-11-27"), comments=[comment(
+            f'/upstreaming resume revision={world.record["revision"]} reason="ran CI"', cid=991)])
+        self.assertEqual(world.kinds(out), ["resume_clean_head_ci"])
+        out = world.tick(at(2, "2026-11-27"))
+        self.assertEqual(world.kinds(out)[0], "accept_clean_head_ci")
+        self.assertEqual(world.state, "handoff.preparing_submission")
+
+    def test_a_dispatched_run_that_never_completes_waits_after_the_bounded_wait(self):
+        world = self.other_tree()
+        self.no_runs(world)
+        out = world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head"])
+        since = world.record["clean_head_ci_since"]
+        self.assertEqual(world.kinds(world.tick(at(2 + 11 * 60))), [])
+        out = world.tick(at(3 + 12 * 60))
+        self.assertEqual(world.kinds(out), ["require_clean_head_ci"])
+        out = world.tick(at(4 + 12 * 60), comments=[comment(
+            f'/upstreaming resume revision={world.record["revision"]} reason="x"', cid=992)])
+        self.assertEqual(world.kinds(out), ["resume_clean_head_ci"])
+        self.assertNotEqual(world.record["clean_head_ci_since"], since)
+        self.assertEqual(world.state, "handoff.waiting_ci")
 
 
 class TestLockedWait(unittest.TestCase):
@@ -1161,6 +1297,7 @@ class TestValidationBeforeAnyWrite(unittest.TestCase):
     def test_the_series_comes_from_the_accepted_review_run(self):
         world = reviewed()
         op = world.active
+        op["proposed"]["content_digest"] = hashlib.sha256(b"From x\n").hexdigest()
         meta = {"id": op["external_ids"]["publication_artifact_id"], "name": "porting-publication",
                 "expired": False, "workflow_run": {"id": int(op["external_ids"]["publication_run_id"])}}
         with tempfile.TemporaryDirectory() as directory:
@@ -1171,14 +1308,27 @@ class TestValidationBeforeAnyWrite(unittest.TestCase):
             for name, change in {"ok": {}, "other artifact": {"id": 1},
                                  "other name": {"name": "porting-out"}, "expired": {"expired": True},
                                  "other run": {"workflow_run": {"id": 1}}}.items():
+                series.write_bytes(b"From x\n")
                 with self.subTest(meta=name):
                     meta_path.write_text(json.dumps(dict(meta, **change)))
                     if name == "ok":
                         self.assertEqual(handoff.reviewed_series(root, op["operation_id"], series,
                                                                  meta_path), b"From x\n")
+                    elif name == "expired":
+                        # Not a verdict on the series: an infrastructure
+                        # failure; the controller leads the expired rewrite
+                        # back to a fresh one.
+                        with self.assertRaises(handoff.HandoffError) as caught:
+                            handoff.reviewed_series(root, op["operation_id"], series, meta_path)
+                        self.assertNotIsInstance(caught.exception, handoff.HandoffInvalid)
                     else:
                         with self.assertRaises(handoff.HandoffInvalid):
                             handoff.reviewed_series(root, op["operation_id"], series, meta_path)
+            # Another series than the accepted one is refused before any token.
+            meta_path.write_text(json.dumps(meta))
+            series.write_bytes(b"From y\n")
+            with self.assertRaisesRegex(handoff.HandoffInvalid, "does not match"):
+                handoff.reviewed_series(root, op["operation_id"], series, meta_path)
 
 
 class TestNoReceipt(unittest.TestCase):

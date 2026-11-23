@@ -148,8 +148,8 @@ jobs:
             printf '%s\n' "$runs" | while read -r run; do
               [ -n "$run" ] || continue
               id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
-                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))][0].id // empty') \
-                || { echo "publication artifact inventory unavailable for $run" >&2; continue; }
+                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))] | if length == 1 then .[0].id elif length == 0 then empty else error("expected one publication artifact") end') \
+                || { echo "publication artifact inventory unavailable or ambiguous for $run" >&2; continue; }
               [ -n "$id" ] || continue
               mkdir -p "publications/$run"
               gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "publications/$run/a.zip" \

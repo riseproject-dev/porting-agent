@@ -80,6 +80,18 @@ def work_ref(record: dict) -> str:
     return UPSTREAM_REF if record.get("phase") in ("handoff", "upstream_review") else DEV_REF
 
 
+def recorded_head(record: dict) -> str | None:
+    """The recorded head of the branch the record's phase works on
+    (``work_ref``): in upstream review the head of the upstream PR from
+    `riscv64` (``upstream_pr.head_sha``, which ``verify_upstream_pr``
+    records and ``record_head_change`` there updates), elsewhere the head of
+    the development branch (``fork.head_sha``)."""
+    upstream = record.get("upstream_pr") or {}
+    if record.get("phase") == "upstream_review" and upstream.get("head_sha"):
+        return upstream["head_sha"]
+    return (record.get("fork") or {}).get("head_sha")
+
+
 def publication_check(record: dict, *, expected_revision: int, expected_head: str | None,
                       observed_head: str | None, ref: str, repository: str,
                       expected_generation: int = 0, work_key: str | None = None) -> str | None:
@@ -173,6 +185,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "dossier_evidence_id": None,
         "debug_commits": [],
         "clean_head_sha": None,
+        "clean_head_ci_since": None,
         "submission_rewrite_id": None,
         "submission_review_id": None,
         "handoff_request": None,
@@ -590,6 +603,13 @@ REVIEW_FAILED = "the review of exactly the rewritten series and text fails"
 # which GitHub keeps 30 days.
 REWRITE_EXPIRED = "the publication artifact of the rewritten series expired or expires within a day"
 REWRITE_CURRENT = "the publication artifact of the rewritten series is current"
+# CI on the clean head of `riscv64` is waited for this long before a human
+# is asked: `riscv64` has no pull request, so the project's CI runs on it
+# only when the trusted build dispatched its workflow or a push triggers it.
+CLEAN_HEAD_CI_WAIT_HOURS = 12
+CLEAN_HEAD_CI_MISSING = ("CI on the clean head is not complete, and either no run exists and its "
+                         "workflow cannot be dispatched, or "
+                         f"{CLEAN_HEAD_CI_WAIT_HOURS} hours have passed since the wait began")
 CLEAN_HEAD_CI_PASSED = ("every required CI job executed and passed on the clean head, or on the "
                         "candidate head when the clean head has its tree")
 # Work that carries feedback is never answered by a CI rerun.
@@ -652,8 +672,8 @@ _EXHAUST_INTERRUPTED_RERUNS = Transition(
 _RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
 _RESUME_CI_NOTE = ("Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` "
                    "(`budget.reruns.interrupted`) again for the head.")
-_LEAVE_HANDOFF = ("clean_head_sha", "submission_rewrite_id", "submission_review_id", "handoff_request",
-                  "pending_human_action")
+_LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_id",
+                  "submission_review_id", "handoff_request", "pending_human_action")
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
 _PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
                   "processed_pr_conversation_comment_ids")
@@ -1086,7 +1106,11 @@ LIFECYCLE: dict[str, State] = {
             ("confirm_clean_head", "handoff.waiting_ci"): Transition(
                 _P, None,
                 ("the lease write and ref readback match the reviewed series",),
-                _E(sets=("clean_head_sha", RERUNS))),
+                _E(sets=("clean_head_sha", "clean_head_ci_since", RERUNS)),
+                description="When the clean head has another tree than the candidate head, the "
+                            "same trusted attempt dispatches the project's required CI workflow "
+                            "on `riscv64` if it can be dispatched, and reads its run back by "
+                            "head; the outcome is recorded on the operation."),
             ("return_for_repair", "development.fix_needed"): Transition(
                 _P, None,
                 ("the reviewed series does not rebuild to the reviewed head, or the lease on "
@@ -1131,6 +1155,13 @@ LIFECYCLE: dict[str, State] = {
                 ("a blocking CI failure on the clean head, or the observed `riscv64` head "
                  "differs from the clean head",),
                 _RETURN_FOR_REPAIR),
+            ("require_clean_head_ci", "handoff.waiting_human"): Transition(
+                _O, None,
+                (CLEAN_HEAD_CI_MISSING,),
+                _E(sets=("pending_human_action=clean_head_ci_missing",)),
+                description="The pending action names the missing CI on the clean head; a "
+                            "human runs it (or makes it runnable) and resumes, which observes "
+                            "CI on the clean head again."),
         }),
     "handoff.preparing_submission": State(
         "work", False, False,
@@ -1172,6 +1203,12 @@ LIFECYCLE: dict[str, State] = {
             ("resume_ci", "handoff.waiting_ci"): Transition(
                 _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted")), _RESUME_CI,
                 description=_RESUME_CI_NOTE),
+            ("resume_clean_head_ci", "handoff.waiting_ci"): Transition(
+                _C, RESUME, (EXACT_REVISION, pending_is("clean_head_ci_missing")),
+                _E(revision="bump", sets=("clean_head_ci_since",),
+                   clears=("pending_human_action",)),
+                description="CI on the clean head is observed again, and its bounded wait "
+                            "starts again."),
             ("resume_submission_preparation", "handoff.preparing_submission"): Transition(
                 _C, RESUME, (EXACT_REVISION, pending_is("submission_comment_failed")),
                 _resume_restarting("submission_comment")),
@@ -2249,6 +2286,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.building_upstream_branch", "confirm_clean_head"),
                  ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
                  ("handoff.waiting_human", "resume_ci"),
+                 ("handoff.waiting_ci", "require_clean_head_ci"),
+                 ("handoff.waiting_human", "resume_clean_head_ci"),
                  ("handoff.waiting_ci", "accept_clean_head_ci"),
                  ("handoff.preparing_submission", "retry_submission_comment"),
                  ("handoff.preparing_submission", "exhaust_comment_retries"),
@@ -2261,7 +2300,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "is open from `riscv64`, or a missing `riscv64-dev`, waits there at once. "
                      "A rewritten series whose artifact expires before `riscv64` is built "
                      "leads back to a fresh rewrite, never to an endless wait. `pending_human_action` names the step, and "
-                     "exactly one of the four resume verbs applies: it returns to that step. "
+                     "exactly one of the five resume verbs applies: it returns to that step. CI that "
+                     "never runs on the clean head of `riscv64` waits there too, after a bounded "
+                     "wait. "
                      "Recovery does not need another `submit-upstream`."),
             Diagram(
                 "Success case 2: upstream review, merge, and release",

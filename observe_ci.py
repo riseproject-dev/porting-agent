@@ -187,7 +187,7 @@ def _record_gate_review(obs: Observation, entry: dict, cur: dict, eid: str, ev: 
 
 def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
                            contracts: dict[str, dict], *, policy: dict, now: str,
-                           evidence: dict[str, dict]) -> None:
+                           evidence: dict[str, dict], operations: dict[str, dict]) -> None:
     """``handoff.waiting_ci``: CI on the clean head of `riscv64`.
 
     ``accept_clean_head_ci`` when every required job executed and passed on
@@ -217,6 +217,15 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
     latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == clean])
     if verdict.state not in ("passed", "failed") or not latest:
         entry["note"] = "CI on the clean head is not complete"
+        if handoff.clean_head_ci_missing(rec, operations, now, has_runs=bool(latest)):
+            # `riscv64` has no pull request: CI that was not dispatched, or
+            # that never completes, waits for a human after a bounded wait.
+            out = engine.apply_transition(
+                rec, "require_clean_head_ci", policy=policy, now=now,
+                cause_id=f"clean-head-ci-{clean[:12]}", facts={"clean_head_ci_missing"},
+                details={"head": clean, "ci_state": verdict.state})
+            obs.staged.extend([("contributions", out.record), ("events", out.event)])
+            entry["waiting_for_human"] = "clean_head_ci_missing"
         return
     run = max(latest, key=lambda r: r["id"])
     eid = _evidence_id(snap.repository["id"], run)
@@ -341,7 +350,8 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 continue
             if engine.state_key(rec) == "handoff.waiting_ci":
                 _observe_clean_head_ci(api, obs, entry, rec, head["head"], contracts,
-                                       policy=policy, now=now, evidence=evidence)
+                                       policy=policy, now=now, evidence=evidence,
+                                       operations=operations)
                 obs.report.append(entry)
                 continue
             if engine.state_key(rec) == "handoff.waiting_upstream_pr":
@@ -355,7 +365,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 entry["note"] = f"{engine.state_key(rec)} is not observed here"
                 obs.report.append(entry)
                 continue
-            if head["head"] != (rec["fork"].get("head_sha")) and rec["phase"] != "handoff" \
+            if head["head"] != lifecycle.recorded_head(rec) and rec["phase"] != "handoff" \
                     and holds_requested_work(rec):
                 # The table records no head change while Work is requested or
                 # its Result is held for publication: the Result is folded at
@@ -364,7 +374,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 entry["note"] = "head change is recorded once the requested Work ends"
                 obs.report.append(entry)
                 continue
-            if head["head"] != (rec["fork"].get("head_sha")):
+            if head["head"] != lifecycle.recorded_head(rec):
                 if rec["phase"] == "handoff":
                     out = engine.apply_transition(
                         rec, "record_head_change", policy=policy, now=now,

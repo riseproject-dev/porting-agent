@@ -749,7 +749,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "contribution_id": c["contribution_id"],
                 "generation": aw["generation"],
                 "revision": aw["revision"],
-                "expected_head": (claimed.get("fork") or {}).get("head_sha"),
+                "expected_head": lifecycle.recorded_head(claimed),
                 "task": kind,
                 "reason_ids": aw["reason_ids"],
                 "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or []),

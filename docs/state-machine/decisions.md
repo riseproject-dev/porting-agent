@@ -1438,3 +1438,22 @@ flowchart TB
     handoff_building_upstream_branch ==>|require_branch_intervention| handoff_waiting_human
     handoff_waiting_human -->|resume_upstream_branch<br/>/upstreaming resume| handoff_building_upstream_branch
 ```
+
+### CI on a clean head of `riscv64` that has no pull request
+
+How CI runs on a rebuilt `riscv64` head that has another tree than the candidate head, and what happens when it never runs.
+
+**Change.** The build of `riscv64` (`confirm_clean_head`) dispatches the project's required CI workflow on `riscv64` when the workflow, read as data at the clean head, accepts `workflow_dispatch` with no required input, and reads its run back by head; the fork token gains `actions: write` on the one fork for it. `confirm_clean_head` records when the wait for CI began (`clean_head_ci_since`). `require_clean_head_ci` leads from `handoff.waiting_ci` to `handoff.waiting_human` with the pending action `clean_head_ci_missing` at once when no run exists and the workflow cannot be dispatched, and in any case when CI is not complete 12 hours after the wait began; reminders apply, and `resume_clean_head_ci` returns to `handoff.waiting_ci`, observes CI again, and starts the wait again.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+
+    handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
+    handoff_waiting_ci ==>|require_clean_head_ci| handoff_waiting_human
+    handoff_waiting_human ==>|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
+```

@@ -571,6 +571,13 @@
       ],
       "pattern": "^[0-9a-f]{40}$"
     },
+    "clean_head_ci_since": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
     "submission_rewrite_id": {
       "anyOf": [
         {

@@ -318,13 +318,14 @@ class TestLifecycleTable(unittest.TestCase):
             {e.verb: e.target for e in lc.state_edges("handoff.waiting_human")
              if e.transition.command == lc.RESUME},
             {"resume_submission_review": "handoff.review_due",
+             "resume_clean_head_ci": "handoff.waiting_ci",
              "resume_upstream_branch": "handoff.building_upstream_branch",
              "resume_ci": "handoff.waiting_ci",
              "resume_submission_preparation": "handoff.preparing_submission"})
         self.assertEqual(lc.pending_kinds("handoff.waiting_human"),
                          {"work_budget_exhausted", "dispatch_failed", "work_failed",
                           "upstream_branch_failed", "upstream_branch_blocked", "ci_interrupted",
-                          "submission_comment_failed"})
+                          "submission_comment_failed", "clean_head_ci_missing"})
         for key in ("handoff.waiting_human", "development.waiting_human",
                     "upstream_review.waiting_human"):
             resumes = [e for e in lc.state_edges(key)
@@ -698,7 +699,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             "ci_interrupted")
         self.assertReports(
             self.with_row("handoff.waiting_human", "resume_ci", guard=(lc.EXACT_REVISION,)),
-            "one of 4 resumes of the wait, so exactly one pending-action guard is required")
+            "one of 5 resumes of the wait, so exactly one pending-action guard is required")
         self.assertReports(
             self.with_row("handoff.building_upstream_branch", "exhaust_upstream_branch_retries",
                           effects=lc.Effects(sets=("pending_human_action",))),

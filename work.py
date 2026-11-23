@@ -108,7 +108,7 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
         "fork_name": (fork.get("name") or "/").split("/", 1)[1] or None,
         "fork_repository_id": fork.get("repository_id"),
         "ref": lifecycle.work_ref(record),
-        "expected_head": fork.get("head_sha"),
+        "expected_head": lifecycle.recorded_head(record),
         "upstream_facing": record.get("upstream_pr") is not None,
         "allowed_operations": ALLOWED_OPERATIONS[task],
         "allowed_paths": allowed_paths,
@@ -194,10 +194,9 @@ def request_from_active(rec: dict) -> dict | None:
     if not aw or rec.get("paused") or aw.get("revision") != rec["revision"] \
             or work_generation(aw) != int(rec.get("generation", 0)):
         return None
-    fork = rec.get("fork") or {}
     request = {"type": "submit_work", "dedupe_key": aw["dedupe_key"],
                "contribution_id": rec["contribution_id"], "revision": rec["revision"],
-               "expected_head": fork.get("head_sha"), "task": aw["task"],
+               "expected_head": lifecycle.recorded_head(rec), "task": aw["task"],
                "reason_ids": aw.get("reason_ids") or []}
     if "generation" in aw:
         # Work requested before the identity carried the generation keeps the

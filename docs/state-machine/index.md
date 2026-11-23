@@ -680,6 +680,8 @@ flowchart TB
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
     handoff_waiting_human -->|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
+    handoff_waiting_ci -->|require_clean_head_ci| handoff_waiting_human
+    handoff_waiting_human -->|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
     handoff_waiting_ci -->|accept_clean_head_ci| handoff_preparing_submission
     handoff_preparing_submission -->|retry_submission_comment| handoff_preparing_submission
     handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
@@ -687,7 +689,7 @@ flowchart TB
     handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
 ```
 
-The rewrite and review Work, the lease write of `riscv64`, the reruns of interrupted CI, and the package each retry within their budget and then wait for a human in the one `handoff.waiting_human`; a pull request that is open from `riscv64`, or a missing `riscv64-dev`, waits there at once. A rewritten series whose artifact expires before `riscv64` is built leads back to a fresh rewrite, never to an endless wait. `pending_human_action` names the step, and exactly one of the four resume verbs applies: it returns to that step. Recovery does not need another `submit-upstream`.
+The rewrite and review Work, the lease write of `riscv64`, the reruns of interrupted CI, and the package each retry within their budget and then wait for a human in the one `handoff.waiting_human`; a pull request that is open from `riscv64`, or a missing `riscv64-dev`, waits there at once. A rewritten series whose artifact expires before `riscv64` is built leads back to a fresh rewrite, never to an endless wait. `pending_human_action` names the step, and exactly one of the five resume verbs applies: it returns to that step. CI that never runs on the clean head of `riscv64` waits there too, after a bounded wait. Recovery does not need another `submit-upstream`.
 
 ### Success case 2: upstream review, merge, and release
 
@@ -905,6 +907,7 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming resume` | `restart_generation` | `parked.idle` | `queued.idle` |
 | `/upstreaming resume` | `resume_ci` | `development.waiting_human` | `development.waiting_ci` |
 | `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
+| `/upstreaming resume` | `resume_clean_head_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
 | `/upstreaming resume` | `resume_investigation` | `investigation.waiting_human` | `investigation.idle` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |

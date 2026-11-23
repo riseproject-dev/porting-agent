@@ -202,7 +202,8 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(jobs["target"]["if"], "github.ref == 'refs/heads/main'")
         expected = {
             "upstream-branch": ("riseproject-upstreaming", "${{ needs.target.outputs.fork_name }}",
-                                {"permission-contents": "write", "permission-workflows": "write"}),
+                                {"permission-contents": "write", "permission-workflows": "write",
+                                 "permission-actions": "write"}),
             "submission-comment": ("riseproject-dev", "porting-agent",
                                    {"permission-issues": "write"}),
         }
@@ -269,6 +270,13 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn('[[ "$ARTIFACT" =~ ^[1-9][0-9]{0,19}$ ]]', run)
         self.assertEqual(steps[download]["env"]["GH_TOKEN"], "${{ github.token }}")
         self.assertNotIn("UPSTREAMING_FORK_TOKEN", str(steps[download]))
+        # The artifact's id, name, run, and the series digest are checked
+        # before the token is minted.
+        check = next(i for i, s in enumerate(steps) if "python -m handoff series" in str(s.get("run")))
+        self.assertLess(download, check)
+        self.assertLess(check, mint)
+        self.assertNotIn("UPSTREAMING_FORK_TOKEN", str(steps[check]))
+        self.assertIn("--artifact-meta review/artifact.json", steps[check]["run"])
         branch = next(s for s in steps if "python -m handoff branch" in str(s.get("run")))
         self.assertIn("--artifact-meta review/artifact.json", branch["run"])
         self.assertIn("--series review/files/patches.mbox", branch["run"])
@@ -358,6 +366,10 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("actions/workflows/$workflow/runs?per_page=20", text)
         self.assertNotIn("actions/workflows/$workflow/runs?status=completed", text)
         self.assertIn('name == "porting-publication"', text)
+        # Exactly one publication artifact per run, never the first of several.
+        self.assertIn('if length == 1 then .[0].id elif length == 0 then empty else '
+                      'error("expected one publication artifact") end', text)
+        self.assertNotIn("\"porting-publication\" and (.expired | not))][0]", text)
 
     def test_controller_chains_every_pipeline_completion_and_has_schedule_fallback(self):
         controller = workflow("controller.yml")

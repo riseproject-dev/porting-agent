@@ -33,6 +33,7 @@ import copy
 from typing import Any
 
 import engine
+import lifecycle
 import schemas
 from commands import URGENT, Command
 from common import INTAKE_LABEL
@@ -675,13 +676,15 @@ def _bump(rec: dict) -> None:
 def observe_head(record: dict, new_head: str, *, now: str, cause_id: str | None = None) -> Outcome:
     """Record an observed fork head. A changed head is changed requested work:
     bump the revision and invalidate head-bound readiness and approval."""
-    fork = record.get("fork") or {}
-    if fork.get("head_sha") == new_head:
+    if lifecycle.recorded_head(record) == new_head:
         return Outcome(record, True, "unchanged", None)
     if record["phase"] == "handoff":
         raise TransitionError("handoff states are written by the transition engine only")
     rec = copy.deepcopy(record)
     rec["fork"]["head_sha"] = new_head
+    if record["phase"] == "upstream_review" and rec.get("upstream_pr"):
+        # The head of the upstream PR from `riscv64` changed.
+        rec["upstream_pr"]["head_sha"] = new_head
     rec["last_ci_evidence_id"] = None
     if rec.get("upstream_pr") is None:
         rec["handoff_approval"] = None

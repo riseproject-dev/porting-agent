@@ -1,10 +1,12 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 # Trusted handoff operations after an accepted `/upstreaming submit-upstream`
-# and its checked submission review: build the upstream branch riscv64 of the
-# one verified fork from the reviewed series under an exact-head lease (never
-# while an upstream PR is open from it; riscv64-dev and the development PR are
-# not touched), and post the submission package on the tracking issue. Each job checks out the state at the head of main, checks
+# and its checked submission rewrite and review: build the upstream branch
+# riscv64 of the one verified fork from the reviewed series under an
+# exact-head lease (never while a pull request is open from it or riscv64-dev
+# is missing; riscv64-dev and the development PR are not touched), dispatch
+# the project's required CI workflow on riscv64 when the clean head needs its
+# own CI and the workflow can be dispatched, and post the submission package on the tracking issue. Each job checks out the state at the head of main, checks
 # that it is still the head and still runs the controller-recorded operation
 # before it mints a token, validates the operation again before any effect, and
 # uploads a receipt the controller reads back. No model runs here and no
@@ -88,6 +90,10 @@ jobs:
           gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT/zip" > review/artifact.zip
           unzip -q -o -j review/artifact.zip -d review/files
           [ -f review/files/patches.mbox ] && [ ! -L review/files/patches.mbox ] || { echo "no reviewed series"; exit 1; }
+      - name: Check the artifact and the digest of the reviewed series before any token is minted
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+        run: uv run --locked python -m handoff series --operation-id "$OPERATION" --series review/files/patches.mbox --artifact-meta review/artifact.json --out handoff/outcome.json
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         id: fork-token
         with:
@@ -97,6 +103,9 @@ jobs:
           repositories: ${{ needs.target.outputs.fork_name }}
           permission-contents: write
           permission-workflows: write
+          # Dispatches the project's required CI workflow on riscv64 when the
+          # clean head has another tree than the candidate head.
+          permission-actions: write
       - name: Build riscv64 from the reviewed series under the exact-head lease and read back
         env:
           GH_TOKEN: ${{ github.token }}

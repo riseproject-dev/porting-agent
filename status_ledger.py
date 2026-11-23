@@ -95,6 +95,10 @@ MESSAGES = {
                                  "The reasons are recorded as review evidence and are the "
                                  "feedback of the next development Work."),
     "confirm_clean_head": "Built `riscv64` from the reviewed series and read it back.",
+    "require_clean_head_ci": ("CI on the clean head of `riscv64` has not run or not completed: "
+                              "its workflow cannot be dispatched, or the bounded wait passed. "
+                              "Run the project's required CI on that head, then resume."),
+    "resume_clean_head_ci": "Resumed: CI on the clean head of `riscv64` is observed again.",
     "retry_upstream_branch": ("Writing `riscv64` failed with an infrastructure error; it is "
                               "attempted again."),
     "exhaust_upstream_branch_retries": (
