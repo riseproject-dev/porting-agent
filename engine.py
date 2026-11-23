@@ -556,53 +556,60 @@ SOURCE_READ_FIELDS = ("source_unavailable_since", "source_unavailable_at",
 
 
 # Ticks do not come on time: a scheduled run is delayed or skipped, and most
-# ticks come from issue, comment, and push events. Two counted reads are
-# spaced by four fifths of the nominal spacing (the minutes divided by the
-# count), so that a read a little early is still counted and the count is
-# reached about when the minimum time has passed, while a burst of ticks
-# still counts once.
-SOURCE_READ_TOLERANCE = 0.8
+# ticks come from issue, comment, and push events. The time since the first
+# failed read of a run (`budget.source_unavailable_since`) is cut into slots
+# of `retries.source_unavailable_minutes` divided by
+# `retries.source_unavailable_reads`, and a failed read is counted when it
+# falls in a later slot than the last counted one: a burst of ticks counts
+# once, a tick a little early or late still counts, and a regular tick
+# counts at most once per slot whatever its jitter.
 
 
-def source_read_spacing(policy: dict) -> timedelta:
-    """The least time between two counted failed reads:
-    ``SOURCE_READ_TOLERANCE`` of ``retries.source_unavailable_minutes``
-    divided by the count of ``source_reads``. The count may be reached
-    before the minimum time; ``source_reads_spent`` requires both."""
+def source_read_slot_length(policy: dict) -> timedelta:
+    """The length of a spacing slot: ``retries.source_unavailable_minutes``
+    divided by the count of ``source_reads``."""
     minutes = int(lc.policy_value(policy, lc.SOURCE_READS_MINUTES_KEY))
-    nominal = timedelta(minutes=minutes) / max(1, lc.budget_limit("source_reads", policy))
-    return nominal * SOURCE_READ_TOLERANCE
+    return timedelta(minutes=minutes) / max(1, lc.budget_limit("source_reads", policy))
+
+
+def _source_read_slot(since: str, at: str, policy: dict) -> int:
+    elapsed = datetime.fromisoformat(at) - datetime.fromisoformat(since)
+    return max(0, elapsed // source_read_slot_length(policy))
 
 
 def source_read_counted(record: dict, policy: dict, now: str) -> bool:
     """Whether a failed read at ``now`` is counted: the first of a run, or
-    one at least ``source_read_spacing`` after the last counted read. A read
-    in between writes nothing, so a burst of ticks adds no events."""
+    one in a later spacing slot since ``budget.source_unavailable_since``
+    than the last counted read (``budget.source_unavailable_at``). A read in
+    the same slot writes nothing, so a burst of ticks adds no events."""
     budget = record.get("budget") or {}
-    last = budget.get("source_unavailable_at")
-    if not int(budget.get("source_unavailable", 0)) or not last:
+    since, last = budget.get("source_unavailable_since"), budget.get("source_unavailable_at")
+    if not int(budget.get("source_unavailable", 0)) or not since or not last:
         return True
-    return datetime.fromisoformat(now) - datetime.fromisoformat(last) \
-        >= source_read_spacing(policy)
+    return _source_read_slot(since, now, policy) > _source_read_slot(since, last, policy)
 
 
 def source_reads_spent(record: dict, policy: dict, now: str) -> bool:
-    """Whether ``source_reads`` is exhausted: the count of consecutive failed
-    reads (``budget.source_unavailable``) reached its limit, and at least
-    ``retries.source_unavailable_minutes`` minutes passed since the first of
-    them (``budget.source_unavailable_since``). A burst of ticks (issue,
-    comment, and push events tick too) never exhausts it alone. A count
-    recorded without its start time is not exhausted: the next charge records
-    the start."""
+    """Whether a failed read at ``now`` exhausts ``source_reads``: at least
+    ``retries.source_unavailable_minutes`` minutes passed since the first
+    failed read of the run (``budget.source_unavailable_since``), and the
+    counted failed reads (``budget.source_unavailable``), this one included
+    when it is counted (``source_read_counted``), reached
+    ``retries.source_unavailable_reads``. A read that meets both is not held
+    back by the spacing, and a burst of ticks (issue, comment, and push
+    events tick too) never exhausts it alone. A count recorded without its
+    start time is not exhausted: the next charge records the start."""
     budget = record.get("budget") or {}
-    if int(budget.get("source_unavailable", 0)) < lc.budget_limit("source_reads", policy):
-        return False
     since = budget.get("source_unavailable_since")
-    if not since:
+    count = int(budget.get("source_unavailable", 0))
+    if not count or not since:
         return False
     minutes = int(lc.policy_value(policy, lc.SOURCE_READS_MINUTES_KEY))
-    elapsed = datetime.fromisoformat(now) - datetime.fromisoformat(since)
-    return elapsed >= timedelta(minutes=minutes)
+    if datetime.fromisoformat(now) - datetime.fromisoformat(since) < timedelta(minutes=minutes):
+        return False
+    if source_read_counted(record, policy, now):
+        count += 1
+    return count >= lc.budget_limit("source_reads", policy)
 
 
 def exhausted(record: dict, names: tuple[str, ...], *, policy: dict, now: str,

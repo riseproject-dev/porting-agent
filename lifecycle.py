@@ -536,10 +536,12 @@ READS_CAUSED_WAIT = ("the wait was entered because reads kept failing, not becau
 RENAME_CAUSED_WAIT = ("the wait was entered because GitHub named the recorded repository "
                       "otherwise: its pending action names no counter")
 BASE_BRANCH_UNAVAILABLE = "base_branch_unavailable"
-# `source_reads` is exhausted only once its count is reached and this many
-# minutes have passed since the first failed read of the run: the controller
-# ticks on issue, comment, and push events too, so a count of ticks alone can
-# be spent in minutes.
+# `source_reads` is exhausted only once this many minutes have passed since
+# the first failed read of the run and a small count of reads in distinct
+# spacing slots failed: the controller ticks on issue, comment, and push
+# events too, so a count of ticks alone can be spent in minutes, and a
+# scheduled tick may come hours apart, so a large count alone would wait
+# for days.
 SOURCE_READS_MINUTES_KEY = "retries.source_unavailable_minutes"
 UPSTREAM_UNAVAILABLE = "upstream_unavailable"
 # The upstream renamed the base branch while the upstream PR is open: GitHub
@@ -1684,13 +1686,13 @@ RULES: dict[str, Rule] = {
             description="A network error, a server error, a rate limit, or a repository that "
                         "cannot be read: the contribution stays, and a later tick reads the "
                         "upstream again. A failed read is charged only when it is the first of "
-                        "a run, or once the spacing (four fifths of "
-                        "`retries.source_unavailable_minutes` divided by "
-                        "`retries.source_unavailable_ticks`, so that a tick that comes a little "
-                        "early still counts) has passed since the last charged read; a failed "
-                        "read in between writes nothing, so a burst of ticks adds no events, "
-                        "and a read after a long pause counts once. A tick that reads the "
-                        "upstream starts `source_reads` again."),
+                        "a run, or when it falls in a later spacing slot than the last charged "
+                        "read (slots of `retries.source_unavailable_minutes` divided by "
+                        "`retries.source_unavailable_reads`, counted from the first failed "
+                        "read, so that a tick a little early or late still counts); a failed "
+                        "read in the same slot writes nothing, so a burst of ticks adds no "
+                        "events, and a read after a long pause counts once. A tick that reads "
+                        "the upstream starts `source_reads` again."),
         "every state in which the controller needs the upstream base branch: "
         "`queued.idle`, `planning.idle`, `provisioning.idle`, `development.fix_needed`, "
         "`handoff.review_due`, `handoff.review_pending`, and `upstream_review.fix_needed`",
@@ -1777,13 +1779,18 @@ _REQUIRE_UPSTREAM_ACCESS = Transition(
     exhausts=("source_reads",))
 _REQUIRE_RENAMED_UPSTREAM = Transition(
     _O, None, (UPSTREAM_RENAMED, NOT_PAUSED, QUIESCENT),
-    _E(sets=(f"pending_human_action={UPSTREAM_UNAVAILABLE}",)),
+    _E(sets=(f"pending_human_action={UPSTREAM_UNAVAILABLE}", "upstream.repository_id")),
     description="Taken at once, with no counter: the answer cannot change by reading again. "
-                "Records the repository and the name GitHub now gives it. The upstream is still "
-                "read on every tick, and once GitHub answers for the same repository under its "
-                "recorded name again the wait ends without a human "
-                "(`resume_renamed_upstream`); a resume while it is still named otherwise waits "
-                "again at once. A repository that moved is a new request: the contribution is "
+                "Records the repository and the name GitHub now gives it, and "
+                "`upstream.repository_id` becomes the id GitHub answered for (the recorded one "
+                "when it is bound; for a request not bound yet, the id of the renamed "
+                "repository, so that no other repository later created under the recorded "
+                "name is taken for it). The upstream is still read on every tick, and once "
+                "GitHub answers for the same repository id under its recorded name again the "
+                "wait ends without a human (`resume_renamed_upstream`); a resume while it is "
+                "still named otherwise waits again at once. Once it is answered for under its "
+                "recorded name but its base branch is missing, `require_base_branch` replaces "
+                "the wait. A repository that moved is a new request: the contribution is "
                 "parked, then abandoned.")
 for _state, _wait in BASE_BRANCH_WAITS.items():
     LIFECYCLE[_state].transitions[("require_base_branch", _wait)] = _REQUIRE_BASE_BRANCH
@@ -1841,6 +1848,22 @@ for _wait, _to in UPSTREAM_READ_RESUMES.items():
     LIFECYCLE[_wait].transitions[("resume_upstream_read", _to)] = _resume_upstream_read(*_restarts)
     LIFECYCLE[_wait].transitions[("resume_renamed_upstream", _to)] = \
         _resume_renamed_upstream(*_restarts)
+
+# The wait a renamed repository caused, once GitHub answers for the recorded
+# repository id under its recorded name again but the upstream says that the
+# base branch is missing or was renamed: the wait of the base branch replaces
+# it, with the entry `require_base_branch` posts from the state it was due in.
+_REPLACE_RENAME_WAIT = Transition(
+    _K, None, (RENAME_CAUSED_WAIT, BASE_BRANCH_GONE, NOT_PAUSED, QUIESCENT),
+    _E(sets=(f"pending_human_action={BASE_BRANCH_UNAVAILABLE}",)),
+    description="Taken once the repository is read under its recorded name and id again and the "
+                "upstream says that the base branch does not exist or was renamed: the wait "
+                "stays, and its cause becomes the base branch, as `require_base_branch` records "
+                "it from the state the step was due in. " + _UNAVAILABLE_NOTE + " Once the "
+                "branch exists again, a resume continues; to continue on another branch, the "
+                "contribution is parked first and then restarted on that branch.")
+for _wait in UPSTREAM_READ_RESUMES:
+    LIFECYCLE[_wait].transitions[("require_base_branch", SELF)] = _REPLACE_RENAME_WAIT
 
 # A renamed base branch of an open upstream PR: the record follows the
 # rename, in the states of upstream review that read the base branch, and
@@ -1992,16 +2015,17 @@ BUDGETS: dict[str, Budget] = {
         "one publish-only retry of the same verified Result",
         "`pending_publication.attempts`", ("exhaust_publish_recovery",), infrastructure=True),
     "source_reads": Budget(
-        "retries.source_unavailable_ticks", 0,
+        "retries.source_unavailable_reads", 0,
         "one failed read of the upstream repository or base branch without a definitive "
-        "answer, counted at most once per spacing (four fifths of "
-        "`retries.source_unavailable_minutes` divided by `retries.source_unavailable_ticks`)",
+        "answer, counted at most once per spacing slot (`retries.source_unavailable_minutes` "
+        "divided by `retries.source_unavailable_reads`, counted from the first failed read)",
         "`budget.source_unavailable`, the counted failed reads, since "
         "`budget.source_unavailable_since`, the last at `budget.source_unavailable_at`, of which "
         "`budget.source_unavailable_repository` could not read the repository itself: a tick "
-        "that reads the upstream starts it again. It is exhausted only once both the count is "
-        "reached and `retries.source_unavailable_minutes` minutes have passed since the first "
-        "failed read",
+        "that reads the upstream starts it again. It is exhausted by the first failed read "
+        "once `retries.source_unavailable_minutes` minutes have passed since the first failed "
+        "read and the count, that read included when it is counted, is reached: that read is "
+        "never held back by the spacing",
         ("exhaust_source_reads", "require_upstream_access")),
     "operation_launch": Budget(
         INFRASTRUCTURE_KEY, 1,
@@ -2596,8 +2620,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "redirects it to the branch it was renamed to, the contribution waits for a "
                      "human in its phase at once; a read that fails otherwise (network, server "
                      "error, rate limit) is retried within `source_reads`, which counts at most "
-                     "one failed read per spacing and is exhausted only once both its count and "
-                     "its minimum time have passed, and its exhaustion leads to the same wait. "
+                     "one failed read per spacing slot and is exhausted by the first failed read "
+                     "once both its minimum time has passed and its small count is reached, and "
+                     "its exhaustion leads to the same wait. "
                      "A wait that failed reads caused heals itself: the upstream is still read, "
                      "and `resume_upstream_read` ends the wait once it can be read again. A wait "
                      "the upstream's own answer caused is not read again until an authorized "
@@ -2620,24 +2645,29 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("planning.idle", "require_renamed_upstream"),
                  ("planning.waiting_human", "resume_planning"),
                  ("planning.waiting_human", "resume_renamed_upstream"),
+                 ("planning.waiting_human", "require_base_branch"),
                  ("provisioning.idle", "require_upstream_access"),
                  ("provisioning.idle", "require_renamed_upstream"),
                  ("provisioning.waiting_human", "resume_provisioning"),
                  ("provisioning.waiting_human", "resume_renamed_upstream"),
+                 ("provisioning.waiting_human", "require_base_branch"),
                  ("development.fix_needed", "require_upstream_access"),
                  ("development.fix_needed", "require_renamed_upstream"),
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "resume_renamed_upstream"),
+                 ("development.waiting_human", "require_base_branch"),
                  ("handoff.review_due", "require_upstream_access"),
                  ("handoff.review_due", "require_renamed_upstream"),
                  ("handoff.review_pending", "require_upstream_access"),
                  ("handoff.review_pending", "require_renamed_upstream"),
                  ("handoff.waiting_human", "resume_submission_review"),
                  ("handoff.waiting_human", "resume_renamed_upstream"),
+                 ("handoff.waiting_human", "require_base_branch"),
                  ("upstream_review.fix_needed", "require_upstream_access"),
                  ("upstream_review.fix_needed", "require_renamed_upstream"),
                  ("upstream_review.waiting_human", "resume_upstream_revision"),
-                 ("upstream_review.waiting_human", "resume_renamed_upstream")),
+                 ("upstream_review.waiting_human", "resume_renamed_upstream"),
+                 ("upstream_review.waiting_human", "require_base_branch")),
                 text="When GitHub answers for the recorded repository id under another name "
                      "(renamed or transferred), `require_renamed_upstream` waits at once with "
                      "the pending action `upstream_unavailable` and no counter; when most "
@@ -2649,8 +2679,11 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`resume_renamed_upstream` ends the first, and once the repository can be "
                      "read again, `resume_upstream_read` (drawn in failure case 2) ends the "
                      "second. A resume of the first while the repository is still named "
-                     "otherwise waits again at once; a repository that moved is parked and "
-                     "abandoned, and a new request names its new name."),
+                     "otherwise waits again at once. Once GitHub answers for the same "
+                     "repository under its recorded name but the upstream says that the base "
+                     "branch is missing or was renamed, `require_base_branch` replaces the "
+                     "first wait with the wait of the base branch. A repository that moved is "
+                     "parked and abandoned, and a new request names its new name."),
             Diagram(
                 "Failure case 4: park, then restart as a clean generation or abandon",
                 ("development.fix_needed", "parked.idle", "queued.idle", "closed.idle"),
@@ -2915,7 +2948,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 "Rule: the upstream base branch cannot be read", (), (),
                 rule="record_source_unavailable",
                 text="A read that fails without a definitive answer charges `source_reads` and "
-                     "keeps the state, at most once per spacing; its exhaustion takes "
+                     "keeps the state, at most once per spacing slot; its exhaustion takes "
                      "`exhaust_source_reads`, or `require_upstream_access` when most failed "
                      "reads could not read the repository itself, drawn with the human waits."),
         ),

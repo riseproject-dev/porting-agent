@@ -30,7 +30,7 @@
     "max_attempts_per_contribution": 24,
     "planning_attempts": 3,
     "work_recovery": 2,
-    "source_unavailable_ticks": 12,
+    "source_unavailable_reads": 3,
     "source_unavailable_minutes": 60
   },
   "refresh": {

@@ -146,6 +146,8 @@ def scenario(state, verb, t):
                       work_total=lc.budget_limit("work_total", POLICY))
     if lc.READS_CAUSED_WAIT in guards:
         rec["pending_human_action"]["counter"] = "source_reads"
+    if lc.RENAME_CAUSED_WAIT in guards:
+        rec["pending_human_action"].update(kind=lc.UPSTREAM_UNAVAILABLE, counter=None)
     if verb == "require_provisioning_intervention":
         facts.add("provisioning_blocked")
     if verb in ("exhaust_source_reads", "require_upstream_access"):

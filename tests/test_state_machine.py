@@ -692,9 +692,9 @@ class TestLifecycleTable(unittest.TestCase):
             "interrupted_reruns": infrastructure,
             "operation_launch": infrastructure, "upstream_branch": infrastructure,
             "submission_comment": infrastructure,
-            "source_reads": "retries.source_unavailable_ticks",
+            "source_reads": "retries.source_unavailable_reads",
         })
-        self.assertEqual(policy_value("retries.source_unavailable_ticks"), 12)
+        self.assertEqual(policy_value("retries.source_unavailable_reads"), 3)
         # The base branch is needed in each state of `BASE_BRANCH_WAITS`; its
         # wait is that of the phase, or of planning for a request in `queued`.
         for state, wait in lc.BASE_BRANCH_WAITS.items():

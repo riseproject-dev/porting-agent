@@ -1201,9 +1201,9 @@ class TestBaseBranchUnavailable(unittest.TestCase):
 
     SNAPSHOT = {"repository_id": 1, "base_ref": "main", "base_sha": SHA_B}
     MISSING = {"error": "upstream base branch 'main' does not exist", "ref": "main",
-               "base_ref": "main", "missing": True}
+               "base_ref": "main", "missing": True, "repository_id": 1}
     RENAMED = {"error": "upstream base branch 'master' was renamed", "ref": "master",
-               "base_ref": "master", "missing": True, "renamed_to": "main"}
+               "base_ref": "master", "missing": True, "renamed_to": "main", "repository_id": 1}
     TRANSIENT = {"error": "GET /repos/example/proj/branches/main: HTTP 503", "ref": "main",
                  "scope": "branch"}
     REPOSITORY = {"error": "GET /repos/example/proj: HTTP 404", "ref": "main",
@@ -1310,7 +1310,8 @@ class TestBaseBranchUnavailable(unittest.TestCase):
             ("missing", self.Api(branches=()), dict(self.MISSING)),
             ("renamed", self.Api(branches={"main": "trunk"}),
              {"error": "upstream base branch 'main' was renamed", "ref": "main",
-              "base_ref": "main", "missing": True, "renamed_to": "trunk"}),
+              "base_ref": "main", "missing": True, "renamed_to": "trunk",
+              "repository_id": 1}),
             ("repository unavailable", self.Api(fail="HTTP 503"),
              {"error": "GET /repos/example/proj: HTTP 503", "ref": "main",
               "scope": "repository"}),
@@ -1449,12 +1450,12 @@ class TestBaseBranchUnavailable(unittest.TestCase):
 
     def test_the_bound_needs_both_the_count_and_the_time(self):
         import status_ledger
-        limit, minutes = 12, 60
-        spacing = timedelta(minutes=minutes) / limit
+        limit, minutes = 3, 60
+        slot = timedelta(minutes=minutes) / limit
         start = T + timedelta(seconds=20)
         rec = self.queued()
         # A burst: one counted read, and nothing written for the others.
-        for i in range(2 * limit):
+        for i in range(8 * limit):
             res = self.tick(rec, dict(self.TRANSIENT), now=start + timedelta(seconds=10 * i))
             rec = self.final(res, rec)
             self.assertEqual(engine.state_key(rec), "queued.idle", i)
@@ -1474,17 +1475,22 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                                  [{"contribution": rec["contribution_id"],
                                    "why": "upstream read failed; counted at most once per "
                                           "spacing"}])
-        # One counted read per spacing reaches the count before the time:
-        # still no human.
+        # One counted read per spacing slot reaches the count before the
+        # time: still no human.
         for n in range(1, limit):
-            res = self.tick(rec, dict(self.TRANSIENT), now=start + n * spacing)
+            res = self.tick(rec, dict(self.TRANSIENT), now=start + n * slot)
             rec = self.final(res, rec)
             self.assertEqual([e["kind"] for e in self.events(res)], ["record_source_unavailable"])
             self.assertEqual(rec["budget"]["source_unavailable"], n + 1)
             self.assertEqual(engine.state_key(rec), "queued.idle")
         self.assertEqual(rec["budget"]["source_unavailable_since"], start.isoformat())
         self.assertEqual(rec["budget"]["source_unavailable_at"],
-                         (start + (limit - 1) * spacing).isoformat())
+                         (start + (limit - 1) * slot).isoformat())
+        # A read just before the minimum time, in the slot already counted,
+        # writes nothing.
+        res = self.tick(rec, dict(self.TRANSIENT),
+                        now=start + timedelta(minutes=minutes) - timedelta(seconds=30))
+        self.assertEqual(res.staged, [])
         # Once the minimum time has passed too, the next failed read waits.
         res = self.tick(rec, dict(self.TRANSIENT), now=start + timedelta(minutes=minutes))
         final = self.final(res, rec)
@@ -1503,58 +1509,93 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertIn("continues on its own once it can be read again", text)
         self.assertNotIn("pending_human_action", text)
 
+    def _entered(self, times, burst=0):
+        """The time at which failed reads at ``times`` (each followed by
+        ``burst`` more ticks 15 seconds apart) lead to the wait, with the
+        record that waits; every tick of a burst writes nothing."""
+        rec = self.queued()
+        for at in times:
+            for b in range(burst + 1):
+                res = self.tick(rec, dict(self.TRANSIENT), now=at + timedelta(seconds=15 * b))
+                rec = self.final(res, rec)
+                if engine.state_key(rec) == "planning.waiting_human":
+                    return at + timedelta(seconds=15 * b), rec
+                if b:
+                    self.assertEqual(res.staged, [], (at, b))
+        return None, rec
+
     def test_late_ticks_still_count_and_bursts_count_once(self):
         # The scheduled tick comes up to a minute late, and each is followed
-        # by a burst of event ticks: every scheduled tick is counted, no
-        # tick of a burst is, and the wait begins at the first tick once the
-        # minimum time has passed, not later with each late tick.
+        # by a burst of event ticks: no tick of a burst is counted, and the
+        # wait begins at the first scheduled tick once the minimum time has
+        # passed, not later with each late tick.
         import random
         rng = random.Random(5)
         start = T + timedelta(seconds=20)
         times = [start] + [start + timedelta(minutes=5 * k, seconds=rng.uniform(0, 59))
                            for k in range(1, 20)]
-        expected = next(k for k in range(12, 20) if times[k] - times[0] >= timedelta(minutes=60))
-        self.assertLess(times[expected] - times[0], timedelta(minutes=66))
-        rec, entered = self.queued(), None
-        for k, at in enumerate(times):
-            for burst in range(3):
-                res = self.tick(rec, dict(self.TRANSIENT), now=at + timedelta(seconds=15 * burst))
-                rec = self.final(res, rec)
-                if engine.state_key(rec) == "planning.waiting_human":
-                    entered = k
-                    break
-                if burst:
-                    self.assertEqual(res.staged, [], (k, burst))
-            if entered is not None:
-                break
-            self.assertEqual(rec["budget"]["source_unavailable"], k + 1)
+        expected = next(t for t in times if t - start >= timedelta(minutes=60))
+        self.assertLess(expected - start, timedelta(minutes=66))
+        entered, rec = self._entered(times, burst=2)
         self.assertEqual(entered, expected)
         self.assertEqual(rec["pending_human_action"]["counter"], "source_reads")
+
+    def test_jittered_late_and_frequent_ticks_wait_at_the_minimum_time(self):
+        # Spacing slots are counted from the first failed read, not from the
+        # last counted one: whatever the jitter of a regular tick, the wait
+        # begins at the first tick once the minimum time has passed.
+        import random
+        rng = random.Random(7)
+        start = T + timedelta(seconds=20)
+        schedules = {
+            "every 5 minutes, +-1 minute": [start] + sorted(
+                start + timedelta(minutes=5 * k + rng.uniform(-1, 1)) for k in range(1, 30)),
+            "every 5 minutes, up to 3 minutes late": [start] + [
+                start + timedelta(minutes=5 * k + rng.uniform(0, 3)) for k in range(1, 30)],
+            "every 3 minutes": [start + timedelta(minutes=3 * k) for k in range(40)],
+        }
+        for name, times in schedules.items():
+            with self.subTest(name):
+                expected = next(t for t in times if t - start >= timedelta(minutes=60))
+                entered, rec = self._entered(times)
+                self.assertEqual(entered, expected)
+                self.assertLess(entered - start, timedelta(minutes=65))
+                self.assertEqual(rec["pending_human_action"]["counter"], "source_reads")
 
     def test_reads_hours_apart_each_count_once(self):
         # GitHub's schedule may skip runs for hours: each read after a long
         # pause counts once, a burst after it still counts once, and the
-        # wait begins at the read that reaches the count.
+        # wait begins at the third spaced read, the minimum time having
+        # passed long before.
         start = T + timedelta(seconds=20)
         rec = self.queued()
-        for n in range(13):
-            at = start + timedelta(hours=3 * n)
+        for n in range(3):
+            at = start + timedelta(hours=8 * n)
             rec = self.final(self.tick(rec, dict(self.TRANSIENT), now=at), rec)
-            if n < 12:
+            if n < 2:
                 self.assertEqual(engine.state_key(rec), "queued.idle", n)
                 self.assertEqual(rec["budget"]["source_unavailable"], n + 1)
                 res = self.tick(rec, dict(self.TRANSIENT), now=at + timedelta(seconds=30))
                 self.assertEqual(res.staged, [])
         self.assertEqual(engine.state_key(rec), "planning.waiting_human")
+        self.assertEqual(rec["pending_human_action"]["counter"], "source_reads")
 
     def test_the_count_alone_reached_after_a_long_run_waits(self):
         rec = self.queued()
-        rec["budget"] = dict(rec["budget"], source_unavailable=12,
+        rec["budget"] = dict(rec["budget"], source_unavailable=3,
                              source_unavailable_since=(T - timedelta(hours=2)).isoformat())
         res = self.tick(rec, dict(self.TRANSIENT))
         self.assertEqual([e["kind"] for e in self.events(res)], ["exhaust_source_reads"])
+        # The read that exhausts the budget is not held back by the spacing:
+        # the last counted read is in the same slot.
+        rec["budget"].update(source_unavailable_since=(T - timedelta(minutes=130)).isoformat(),
+                             source_unavailable_at=(T - timedelta(minutes=1)).isoformat())
+        self.assertFalse(engine.source_read_counted(rec, policy(), T.isoformat()))
+        res = self.tick(rec, dict(self.TRANSIENT))
+        [event] = self.events(res)
+        self.assertEqual((event["kind"], event["details"]["count"]), ("exhaust_source_reads", 3))
         # A count recorded without its start time starts its clock first.
-        rec["budget"] = dict(rec["budget"], source_unavailable=12)
+        rec["budget"] = dict(rec["budget"], source_unavailable=3)
         del rec["budget"]["source_unavailable_since"]
         res = self.tick(rec, dict(self.TRANSIENT))
         final = self.final(res, rec)
@@ -1603,7 +1644,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
     def test_a_read_starts_the_count_again(self):
         rec = self.queued()
         for n in range(3):
-            rec = self.final(self.tick(rec, dict(self.TRANSIENT), now=T + timedelta(minutes=5 * n)),
+            rec = self.final(self.tick(rec, dict(self.TRANSIENT), now=T + timedelta(minutes=20 * n)),
                              rec)
         self.assertEqual(rec["budget"]["source_unavailable"], 3)
         res = self.tick(rec, dict(self.SNAPSHOT))
@@ -1969,7 +2010,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
     def test_a_counted_read_records_its_cause(self):
         rec = self.queued()
         rec = self.final(self.tick(rec, dict(self.REPOSITORY)), rec)
-        rec = self.final(self.tick(rec, dict(self.TRANSIENT), now=T + timedelta(minutes=5)), rec)
+        rec = self.final(self.tick(rec, dict(self.TRANSIENT), now=T + timedelta(minutes=20)), rec)
         self.assertEqual((rec["budget"]["source_unavailable"],
                           rec["budget"]["source_unavailable_repository"]), (2, 1))
 
@@ -2041,6 +2082,153 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                                                "development.waiting_human",
                                                "development.fix_needed"))
         self.assertIn("can be read again under its recorded name", self.render(event, resumed))
+
+    def _rename_waits(self):
+        """Every state that reads the upstream base branch, with a record in
+        it that GitHub answers for under another name, and that answer."""
+        for state in lifecycle.BASE_BRANCH_WAITS:
+            phase, activity = state.split(".")
+            if state == "queued.idle":
+                rec = self.queued()
+            elif phase == "upstream_review":
+                rec = self.reviewing(activity)
+            else:
+                rec = contribution(phase=phase, activity=activity)
+            yield state, rec, dict(self.MOVED, ref=rec["upstream"]["base_ref"])
+
+    def test_a_human_resume_of_the_rename_wait_waits_again_in_every_state(self):
+        # The entry of the wait offers a resume: in every wait it is
+        # accepted, provisioning included, and while GitHub still names the
+        # repository otherwise the contribution waits again at once.
+        for state, rec, moved in self._rename_waits():
+            with self.subTest(state):
+                wait = self.final(self.tick(rec, moved), rec)
+                self.assertEqual(engine.state_key(wait), lifecycle.BASE_BRANCH_WAITS[state])
+                self.assertEqual((wait["pending_human_action"]["kind"],
+                                  wait["pending_human_action"]["counter"]),
+                                 ("upstream_unavailable", None))
+                self.assertIn(f"/upstreaming resume revision={wait['revision']}",
+                              self.render(self.events(self.tick(rec, moved))[-1], wait))
+                res = self.tick(wait, dict(moved), self.resume(wait))
+                self.assertEqual(res.report["commands"][0]["result"], "accepted",
+                                 res.report["commands"])
+                kinds = [e["kind"] for e in self.events(res)]
+                self.assertEqual(len(kinds), 2, kinds)
+                self.assertEqual(kinds[1], "require_renamed_upstream")
+                again = self.final(res, wait)
+                self.assertEqual(engine.state_key(again), engine.state_key(wait))
+                self.assertEqual((again["pending_human_action"]["kind"],
+                                  again["pending_human_action"]["counter"]),
+                                 ("upstream_unavailable", None))
+
+    def test_the_rename_wait_of_a_request_heals_only_on_the_same_repository(self):
+        # A request not bound yet records the id GitHub answered for, so that
+        # another repository created later under the recorded name is never
+        # bound in its place.
+        rec = self.queued()
+        wait = self.final(self.tick(rec, dict(self.MOVED)), rec)
+        self.assertEqual(wait["upstream"]["repository_id"], 1)
+        [event] = self.events(self.tick(rec, dict(self.MOVED)))
+        self.assertEqual(event["details"]["repository_id"], 1)
+        res = self.tick(wait, dict(self.SNAPSHOT, repository_id=9))
+        kinds = [e["kind"] for e in self.events(res)]
+        self.assertNotIn("resume_renamed_upstream", kinds)
+        self.assertEqual(self.final(res, wait)["upstream"]["repository_id"], 1)
+        self.assertIsNone(self.final(res, wait)["upstream"]["base_sha"])
+        res = self.tick(wait, dict(self.SNAPSHOT))
+        self.assertIn("resume_renamed_upstream", [e["kind"] for e in self.events(res)])
+        healed = self.final(res, wait)
+        self.assertEqual((healed["upstream"]["repository_id"], healed["upstream"]["base_sha"]),
+                         (1, SHA_B))
+        # Without an id from GitHub, nothing is bound and the wait stays
+        # until a human resumes it; its entry says so.
+        unknown = self.final(self.tick(rec, dict(self.MOVED, renamed_repository_id=None)), rec)
+        self.assertEqual(engine.state_key(unknown), "planning.waiting_human")
+        self.assertIsNone(unknown["upstream"]["repository_id"])
+        [event] = self.events(self.tick(rec, dict(self.MOVED, renamed_repository_id=None)))
+        self.assertIn("does not continue on its own", self.render(event, unknown))
+        for snapshot in (dict(self.SNAPSHOT), dict(self.SNAPSHOT, repository_id=9),
+                         dict(self.MISSING)):
+            res = self.tick(unknown, snapshot)
+            self.assertEqual(res.staged, [], snapshot)
+            if snapshot.get("error"):
+                continue
+            self.assertIn({"contribution": unknown["contribution_id"],
+                           "why": "the renamed upstream repository has no recorded id; a "
+                                  "resume continues"}, res.report["deferred"])
+        res = self.tick(unknown, dict(self.SNAPSHOT), self.resume(unknown))
+        self.assertEqual(res.report["commands"][0]["result"], "accepted")
+        self.assertEqual(engine.state_key(self.final(res, unknown)), "planning.idle")
+
+    def test_a_renamed_repository_back_without_its_branch_waits_for_the_branch(self):
+        import status_ledger
+        rec = contribution(phase="development", activity="fix_needed")
+        wait = self.final(self.tick(rec, dict(self.MOVED)), rec)
+        api = self.Api(branches=())
+        missing = collect.upstream_snapshots(api, [wait], [], policy())["example/proj"]
+        self.assertEqual(missing, dict(self.MISSING))
+        renamed = dict(self.MISSING, error="upstream base branch 'main' was renamed",
+                       renamed_to="trunk")
+        for snapshot, cause in (
+                (missing, "Cause: the upstream says the base branch `main` does not exist."),
+                (renamed, "Cause: the upstream renamed the base branch `main` to `trunk`.")):
+            with self.subTest(cause):
+                res = self.tick(wait, dict(snapshot))
+                [event] = self.events(res)
+                self.assertEqual(event["kind"], "require_base_branch")
+                final = self.final(res, wait)
+                self.assertEqual(engine.state_key(final), "development.waiting_human")
+                self.assertEqual((final["pending_human_action"]["kind"],
+                                  final["pending_human_action"]["counter"]),
+                                 ("base_branch_unavailable", None))
+                self.assertEqual(final["revision"], wait["revision"])
+                self.assertTrue(status_ledger.notifies(dict(event, sequence=1),
+                                                       "development.waiting_human",
+                                                       "development.waiting_human"))
+                text = self.render(event, final)
+                self.assertIn(cause, text)
+                self.assertIn("Once the branch can be read again, resume.", text)
+                # The usual wait of the base branch: it is not read again
+                # until a resume is posted.
+                api = self.Api()
+                self.assertEqual(collect.upstream_snapshots(api, [final], [], policy()), {})
+        # Another repository under the recorded name says nothing about it.
+        res = self.tick(wait, dict(self.MISSING, repository_id=9))
+        self.assertNotIn("require_base_branch", [e["kind"] for e in self.events(res)])
+
+    def test_the_rename_wait_stays_while_paused_or_an_operation_is_open(self):
+        rec = contribution(phase="development", activity="fix_needed")
+        wait = self.final(self.tick(rec, dict(self.MOVED)), rec)
+        paused = dict(wait, paused=True, paused_at=NOW, paused_by="human",
+                      paused_reason="hold")
+        busy = dict(wait, active_operation_id="op-1")
+        for name, held in (("paused", paused), ("open operation", busy)):
+            for snapshot in (dict(self.SNAPSHOT), dict(self.MISSING), dict(self.MOVED)):
+                with self.subTest(name, snapshot=snapshot.get("error", "read")):
+                    res = self.tick(held, snapshot)
+                    kinds = [e["kind"] for e in self.events(res)]
+                    self.assertFalse({"resume_renamed_upstream", "require_base_branch",
+                                      "require_renamed_upstream"} & set(kinds), kinds)
+                    final = self.final(res, held)
+                    self.assertEqual(engine.state_key(final), "development.waiting_human")
+                    self.assertEqual(final["pending_human_action"]["kind"],
+                                     "upstream_unavailable")
+
+    def test_a_human_resume_with_a_readable_snapshot_is_taken_as_posted(self):
+        # The resume is applied before the automatic end, which then has
+        # nothing to end: one transition, the one the human posted.
+        for state, rec, moved in self._rename_waits():
+            with self.subTest(state):
+                wait = self.final(self.tick(rec, moved), rec)
+                snapshot = dict(self.SNAPSHOT, base_ref=wait["upstream"]["base_ref"] or "main")
+                res = self.tick(wait, snapshot, self.resume(wait))
+                self.assertEqual(res.report["commands"][0]["result"], "accepted",
+                                 res.report["commands"])
+                kinds = [e["kind"] for e in self.events(res)]
+                self.assertNotIn("resume_renamed_upstream", kinds)
+                self.assertNotIn("require_renamed_upstream", kinds)
+                self.assertTrue(kinds[0].startswith("resume_"), kinds)
+                self.assertIsNone(self.final(res, wait)["pending_human_action"])
 
     def test_a_queued_request_on_the_default_branch_heals_through_the_tick(self):
         rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",

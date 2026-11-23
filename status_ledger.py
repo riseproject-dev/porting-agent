@@ -306,10 +306,15 @@ def _unavailable_guidance(record: dict, event: dict) -> str:
     if pending["kind"] == lifecycle.UPSTREAM_UNAVAILABLE and by_reads:
         return (" The pipeline keeps reading it and continues on its own once it can be read "
                 "again; a resume reads it again at once." + moved)
+    if pending["kind"] == lifecycle.UPSTREAM_UNAVAILABLE \
+            and record["upstream"].get("repository_id") is None:
+        return (" GitHub did not say which repository it is, so the pipeline does not continue "
+                "on its own: once the repository is back under its recorded name, a resume "
+                "continues; while GitHub names it otherwise, a resume only waits again." + moved)
     if pending["kind"] == lifecycle.UPSTREAM_UNAVAILABLE:
         return (" The pipeline keeps reading it and continues on its own if GitHub answers for "
-                "it under its recorded name again; while GitHub names it otherwise, a resume "
-                "only waits again." + moved)
+                "the same repository under its recorded name again; while GitHub names it "
+                "otherwise, a resume only waits again." + moved)
     if by_reads:
         text = (" The pipeline keeps reading the branch and continues on its own once it can be "
                 "read again; a resume reads it again at once.")
@@ -562,7 +567,9 @@ def render(event: dict, record: dict, run_url: str) -> str:
 #   human must know about (`NOTICE_VERBS`): the record followed a base
 #   branch the upstream renamed (while the upstream PR is open, or before
 #   it was opened, when `verify_upstream_pr` names the rename), or a wait
-#   that failed reads caused ended once the upstream was read again.
+#   that failed reads caused ended once the upstream was read again;
+# - a wait for an unavailable upstream (`UNAVAILABLE_KINDS`), also when it
+#   replaces another wait of the same state.
 #
 # Replies to commands are posted by `command_feedback` and `command_reactions`.
 
@@ -617,6 +624,11 @@ def event_states(events: list[dict]) -> list[tuple[str | None, str | None]]:
 def notifies(event: dict, source: str | None, target: str | None) -> bool:
     """Whether ``event`` is posted on the tracking issue (see above)."""
     if lifecycle.current_name(event["kind"]) in NOTICE_VERBS:
+        return True
+    # A wait for an unavailable upstream is announced even when it replaces
+    # another wait of the same state (a renamed repository that is back
+    # under its recorded name, its base branch missing).
+    if lifecycle.current_name(event["kind"]) in UNAVAILABLE_KINDS:
         return True
     if lifecycle.current_name(event["kind"]) == "verify_upstream_pr" \
             and (event.get("details") or {}).get("renamed_to"):

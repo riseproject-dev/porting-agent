@@ -263,6 +263,7 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
                 entered = edge.source != edge.target
                 expected = (edge.verb in status_ledger.REMINDER_VERBS
                             or edge.verb in status_ledger.NOTICE_VERBS
+                            or edge.verb in status_ledger.UNAVAILABLE_KINDS
                             or (kind in human and (entered or bumped))
                             or (kind in ("generation_end", "terminal") and entered))
                 self.assertEqual(self.notifies(event), expected)

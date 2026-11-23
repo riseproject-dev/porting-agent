@@ -425,8 +425,9 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
     ``branch`` otherwise. When the upstream answered definitively that the
     base branch is not there (it does not exist, or GitHub redirects it to
     the branch it was renamed to), the snapshot also carries ``base_ref``,
-    ``missing: True``, and for a rename ``renamed_to``; the controller then
-    takes ``require_base_branch`` at once. For a rename of the base branch of
+    ``missing: True``, the ``repository_id`` read, and for a rename
+    ``renamed_to``; the controller then takes ``require_base_branch`` at
+    once. For a rename of the base branch of
     a contribution in upstream review, the upstream PR is read too:
     ``pr_base`` is its verified base when it follows the rename
     (``_renamed_base_in_pr``), and a failed read of it makes the snapshot an
@@ -514,7 +515,7 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
             except BranchRenamed as e:
                 snapshot = {"error": f"upstream base branch {base_ref!r} was renamed",
                             "ref": ref, "base_ref": base_ref, "missing": True,
-                            "renamed_to": e.name[:255]}
+                            "renamed_to": e.name[:255], "repository_id": repo["id"]}
                 try:
                     pr_base = _renamed_base_in_pr(api, active.get(name), repo, base_ref,
                                                   e.name[:255])
@@ -529,7 +530,8 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
                 continue
             if base is None:
                 snapshots[name] = {"error": f"upstream base branch {base_ref!r} does not exist",
-                                   "ref": ref, "base_ref": base_ref, "missing": True}
+                                   "ref": ref, "base_ref": base_ref, "missing": True,
+                                   "repository_id": repo["id"]}
                 continue
             snapshots[name] = {"repository_id": repo["id"], "base_ref": base_ref, "base_sha": base["head"]}
         except CollectError as e:
