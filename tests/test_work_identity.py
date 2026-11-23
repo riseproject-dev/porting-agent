@@ -340,6 +340,25 @@ class TestExhaustion(unittest.TestCase):
                                                           now=T, policy=POLICY)
         self.assertEqual(new["pending_human_action"]["counter"], "work_total")
 
+    def test_terminal_work_retry_is_refused_without_the_bound_identity(self):
+        # A record holding Work always has the identity bound (see
+        # `controller.terminal_work`); were it unbound, the controller
+        # neither allocates a fresh graph nor exhausts the recovery.
+        record = requested(contribution(revision=2))
+        for missing in ("repository_id", "base_ref", "base_sha"):
+            with self.subTest(missing=missing):
+                unbound = dict(record, upstream=dict(record["upstream"], **{missing: None}))
+                out = engine.apply_transition(
+                    unbound, "allocate_work_retry", policy=POLICY, now=T.isoformat(),
+                    facts={"work_terminal_without_result"},
+                    values={"active_work": dict(unbound["active_work"])})
+                self.assertFalse(out.accepted)
+                self.assertIn("upstream identity and base not bound", out.reason)
+                new, event, decision = controller.terminal_work(
+                    unbound, unbound["active_work"], "completed", now=T, policy=POLICY)
+                self.assertEqual((new, event), (None, None))
+                self.assertTrue(decision.startswith("terminal Work: "), decision)
+
     def test_terminal_work_retry_is_a_new_graph(self):
         record = requested(contribution(generation=2, revision=7))
         new, event, _decision = reconcile._terminal_work(record, record["active_work"], "cancelled",

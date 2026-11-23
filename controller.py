@@ -191,6 +191,14 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
             res.stage("contributions", out.record)
             res.stage("events", out.event)
         return
+    if c["upstream"].get("base_sha") is None \
+            and c["upstream"].get("base_ref") not in (None, snapshot["base_ref"]):
+        # The base is bound from a snapshot of the branch the record names
+        # (the target branch the request asked for) only; a snapshot read
+        # at another branch binds nothing, and a later tick reads it again.
+        rep["deferred"].append({"contribution": cid,
+                                "why": "upstream snapshot is not of the requested base branch"})
+        return
     updated = dict(c["upstream"])
     for key in ("repository_id", "base_ref", "base_sha"):
         if updated.get(key) is None:
@@ -757,6 +765,14 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                  generation=generation, revision=revision, requested_at=iso,
                  deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
                  dispatched_run_id=None)
+    # `allocate_work_retry` is guarded by the bound upstream identity, and a
+    # refusal here would fall through to `exhaust_work_recovery`. A record
+    # without it never reaches this point: it holds Work only once a row
+    # guarded by the same identity allocated it, the identity is cleared
+    # only by `restart_generation`, which clears the Work in the same row,
+    # and binding fills unbound fields only. Were it unbound all the same,
+    # the exhaustion row refuses too while its budgets remain, and nothing
+    # is decided for the record.
     out = engine.apply_transition(c, "allocate_work_retry", policy=policy, now=iso,
                                   cause_id=f"queue-{queue_state}", facts=facts,
                                   values={"active_work": fresh}, details=details)
@@ -1452,7 +1468,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
     else:
         tracking_issues = collect.tracking_issues(api, contributions.values(), issues)
         upstream_snapshots = collect.upstream_snapshots(
-            api, contributions.values(), issues, policy, comments
+            api, contributions.values(), issues, policy, comments, consumed
         )
     result = tick(
         contributions=contributions,

@@ -140,6 +140,20 @@ def canonical_branch(value: str) -> str | None:
     return branch
 
 
+def requested_target_branch(tracking_issue: dict) -> str | None:
+    """The upstream target branch the request asked for, from the issue
+    description frozen at intake: None when the form names none, when the
+    request used a form without the field, or when the record froze no
+    description (records created before intake-level freezing)."""
+    body = tracking_issue.get("description")
+    if not isinstance(body, str):
+        return None
+    try:
+        return canonical_branch(parse_issue_form(body).get("target_branch", ""))
+    except IntakeError:
+        return None
+
+
 def canonical_repo(url: str) -> str:
     """Accept canonical GitHub repository URLs only. No credentials, other
     hosts, query strings, fragments or extra path components."""

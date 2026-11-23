@@ -40,6 +40,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import ci_evidence
+import intake
 import lifecycle as lc
 import schemas
 from commands import Command
@@ -1053,7 +1054,10 @@ def reset_generation(record: dict) -> dict:
     """A record with every mutable lifecycle field reset; identity, events,
     evidence, and replay fences are kept. The `paused` flag and its fields
     are kept too: only the rows of the flag clear it, so a restart accepted
-    while paused leaves the new generation paused until a resume."""
+    while paused leaves the new generation paused until a resume. The
+    upstream identity and base are cleared, except the target branch the
+    request asked for at intake: the new generation is bound to that branch
+    again, and to the upstream default branch only when none was asked for."""
     rec = copy.deepcopy(record)
     rec.update({
         "generation": int(record.get("generation", 0)) + 1, "refresh": None,
@@ -1064,7 +1068,8 @@ def reset_generation(record: dict) -> dict:
         "admission_class": None, "admission_override": None,
         "automatic_refresh_used": False,
         "upstream": {"repository_id": None, "full_name": record["upstream"]["full_name"],
-                     "base_ref": None, "base_sha": None},
+                     "base_ref": intake.requested_target_branch(record["tracking_issue"]),
+                     "base_sha": None},
         "fork": None, "upstream_pr": None, "target_contract_id": None,
         "prerequisite_ids": [], "active_operation_id": None,
         "queue_work_id": None, "queue_claim_handle": None, "queue_result_id": None,

@@ -310,25 +310,43 @@ def _review_feedback(api: Api, record: dict, repository: str, number: int, head:
 
 
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
-                       comments: Iterable[dict] = ()) -> dict[str, dict]:
+                       comments: Iterable[dict] = (),
+                       consumed: Iterable[int] = ()) -> dict[str, dict]:
     """Verify source IDs and initial immutable bases before task admission.
     Errors are data: urgent commands must still run when an upstream is absent.
 
     A parked contribution whose tracking issue carries a refresh command in
-    ``comments`` is read too, at the upstream default branch: a restart
-    clears the identity and base, and the controller binds them again in the
-    tick that restarts it."""
+    ``comments`` is read too: a restart clears the identity and base, and
+    the controller binds them again in the tick that restarts it. Only a
+    command the controller can still take is counted: one that parses as
+    ``refresh`` (``commands.parse``), by an actor of ``command_authority``,
+    whose comment id is not in ``consumed`` (the command ledger). The
+    upstream is read at the target branch the request asked for at intake,
+    or at its default branch when none was asked for."""
+    import commands
     import intake
     import lifecycle
     contributions = list(contributions)
     parked = {c["upstream"]["full_name"] for c in contributions if c["phase"] == "parked"}
     refs = {c["upstream"]["full_name"]: c["upstream"].get("base_ref") for c in contributions
             if c["phase"] not in lifecycle.TERMINAL | {"parked"}}
-    refreshed = {int(item["issue_number"]) for item in comments
-                 if "/upstreaming refresh" in str((item.get("comment") or {}).get("body") or "")}
+    authority = set(policy["command_authority"]["actor_ids"])
+    seen = set(consumed)
+    refreshed = set()
+    for item in comments:
+        comment = item.get("comment") or {}
+        if comment.get("id") in seen or (comment.get("user") or {}).get("id") not in authority:
+            continue
+        try:
+            verb = commands.parse(comment.get("body") or "").verb
+        except commands.CommandError:
+            continue
+        if verb == "refresh":
+            refreshed.add(int(item["issue_number"]))
     for c in contributions:
         if c["phase"] == "parked" and c["tracking_issue"]["number"] in refreshed:
-            refs.setdefault(c["upstream"]["full_name"], None)
+            refs.setdefault(c["upstream"]["full_name"],
+                            intake.requested_target_branch(c["tracking_issue"]))
     known = {c["tracking_issue"]["id"] for c in contributions}
     for issue in issues:
         if issue["id"] in known:

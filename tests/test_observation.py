@@ -24,6 +24,7 @@ from tests.helpers import (
     OWNER,
     SHA_A,
     SHA_B,
+    STRANGER,
     apply_command,
     ci_record,
     comment,
@@ -1076,6 +1077,180 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
         self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy(), [other]), {})
         self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy(), [refresh]),
                          {"example/proj": dict(self.SNAPSHOT)})
+
+    def test_the_collector_counts_only_a_refresh_the_controller_can_take(self):
+        class Api:
+            def __init__(self):
+                self.paths = []
+
+            def get(self, path):
+                self.paths.append(path)
+                if path == "/repos/example/proj":
+                    return {"id": 1, "full_name": "example/proj", "default_branch": "trunk"}
+                return {"name": "trunk", "commit": {"sha": SHA_B, "commit": {"tree": {"sha": SHA_A}},
+                                                   "parents": []}}
+
+        rec = self.parked()
+        body = "/upstreaming refresh contribution=example--proj/12 revision=4 reason=r"
+        read = {"example/proj": dict(self.SNAPSHOT)}
+        cases = (
+            # commands.parse accepts runs of spaces between the prefix, the
+            # verb, and the fields: the collector reads what it accepts.
+            ("spaced", comment("/upstreaming   refresh  revision=4   reason=r", cid=41), (), read),
+            ("consumed", comment(body, cid=42), (42,), {}),
+            ("unauthorized", comment(body, actor=STRANGER, cid=43), (), {}),
+            ("quoted", comment("> " + body, cid=44), (), {}),
+            ("malformed", comment("/upstreaming refresh revision=four", cid=45), (), {}),
+        )
+        for name, item, consumed, expected in cases:
+            with self.subTest(name):
+                api = Api()
+                got = collect.upstream_snapshots(api, [rec], [], policy(),
+                                                 [{"issue_number": 12, "comment": item}], consumed)
+                self.assertEqual(got, expected)
+                self.assertEqual(bool(api.paths), bool(expected))
+
+    def test_the_collector_reads_a_parked_upstream_at_the_requested_branch(self):
+        class Api:
+            def __init__(self):
+                self.paths = []
+
+            def get(self, path):
+                self.paths.append(path)
+                if path == "/repos/example/proj":
+                    return {"id": 1, "full_name": "example/proj", "default_branch": "trunk"}
+                name = path.rsplit("/", 1)[1]
+                return {"name": name, "commit": {"sha": SHA_B, "commit": {"tree": {"sha": SHA_A}},
+                                                 "parents": []}}
+
+        refresh = {"issue_number": 12, "comment": comment(
+            "/upstreaming refresh revision=4 reason=r", cid=46)}
+        for branch, expected in (("release-2", "release-2"), (None, "trunk")):
+            with self.subTest(branch=branch):
+                api = Api()
+                got = collect.upstream_snapshots(api, [self.parked_from(branch)], [], policy(),
+                                                 [refresh])
+                self.assertEqual(got, {"example/proj": dict(self.SNAPSHOT, base_ref=expected)})
+                self.assertEqual(api.paths[-1], f"/repos/example/proj/branches/{expected}")
+
+    def parked_from(self, branch):
+        """A parked record whose request asked for ``branch`` (None: no
+        branch) at intake, bound to it in the generation that parked."""
+        body = ("### Upstream repository\n\nhttps://github.com/example/proj\n\n"
+                "### Upstream target branch\n\n" + (branch or "_No response_") + "\n")
+        rec = self.parked()
+        return dict(rec, tracking_issue=dict(rec["tracking_issue"], description=body),
+                    upstream=dict(rec["upstream"], base_ref=branch or "main"))
+
+    def test_a_restart_keeps_the_requested_target_branch(self):
+        rec = self.parked_from("release-2")
+        res = self.tick(rec, {"example/proj": dict(self.SNAPSHOT, base_ref="release-2")})
+        final = self.final(res)
+        self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
+                                             "base_ref": "release-2", "base_sha": SHA_B})
+        self.assertEqual(final["activity"], "agent_running")
+        self.assertEqual(len(res.requested_effects), 1)
+        # A snapshot of another branch binds nothing: the record waits.
+        res = self.tick(rec, {"example/proj": dict(self.SNAPSHOT)})
+        final = self.final(res)
+        self.assertEqual(final["upstream"], {"repository_id": None, "full_name": "example/proj",
+                                             "base_ref": "release-2", "base_sha": None})
+        self.assertEqual(res.requested_effects, [])
+        self.assertIn({"contribution": "example--proj/12",
+                       "why": "upstream snapshot is not of the requested base branch"},
+                      res.report["deferred"])
+
+    def test_a_restart_without_a_requested_branch_binds_the_default_branch(self):
+        res = self.tick(self.parked_from(None), {"example/proj": dict(self.SNAPSHOT)})
+        final = self.final(res)
+        self.assertEqual(final["upstream"]["base_ref"], "trunk")
+        self.assertEqual(len(res.requested_effects), 1)
+
+    def test_a_restart_while_paused_binds_the_identity_and_allocates_nothing(self):
+        rec = dict(self.parked(), paused=True, paused_at=NOW, paused_by="human")
+        res = self.tick(rec, {"example/proj": dict(self.SNAPSHOT)})
+        self.assertEqual(res.report["commands"][0]["result"], "accepted")
+        self.assertEqual([e["kind"] for k, e in res.staged if k == "events"],
+                         ["restart_generation"])
+        final = self.final(res)
+        self.assertEqual((final["phase"], final["activity"], final["paused"]),
+                         ("queued", "idle", True))
+        self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
+                                             "base_ref": "trunk", "base_sha": SHA_B})
+        self.assertIsNone(final["active_work"])
+        self.assertEqual(res.requested_effects, [])
+
+
+class _Stop(Exception):
+    pass
+
+
+class TestEntryPointsPassCommandsToTheCollector(unittest.TestCase):
+    """`controller observe` and `reconcile` hand the command comments and
+    the command ledger they read to the upstream snapshot collector, which
+    reads a parked upstream for a refresh the controller can still take."""
+
+    COMMENTS = [{"issue_number": 12, "comment": comment(
+        "/upstreaming refresh revision=4 reason=r", cid=51)}]
+
+    def setUp(self):
+        import tempfile
+
+        import state
+        from common import canonical_json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        rec = contribution(phase="parked", activity="idle", generation=1, revision=4,
+                           parked_reason="old attempt", previous_phase="development")
+        receipt = {"actor": dict(OWNER), "args": {"reason": "r", "revision": "3"},
+                   "command_id": "comment-50", "command_version": 1, "comment_id": 50,
+                   "content_digest": "0" * 64, "contribution_id": rec["contribution_id"],
+                   "issue_number": 12, "reason": None, "received_at": NOW,
+                   "result": "accepted", "revision": 3, "schema_version": 1, "verb": "refresh"}
+        for kind, value in (("contributions", rec), ("commands", receipt)):
+            path = self.root / state.record_path(kind, value)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(canonical_json(value))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_entry(self, entry, args, load_policy):
+        calls = []
+
+        def snapshots(*a, **k):
+            calls.append((a, k))
+            raise _Stop()
+
+        with mock.patch(load_policy, return_value=policy()), \
+                mock.patch("collect.Api"), \
+                mock.patch("collect.intake_issues", return_value=[]), \
+                mock.patch("collect.command_comments", return_value=list(self.COMMENTS)), \
+                mock.patch("collect.tracking_issues", return_value={}), \
+                mock.patch("collect.usage", side_effect=RuntimeError("offline")), \
+                mock.patch("collect.upstream_snapshots", side_effect=snapshots):
+            with self.assertRaises(_Stop):
+                entry(args)
+        self.assertEqual(len(calls), 1)
+        a, k = calls[0]
+        self.assertEqual(a[4], self.COMMENTS)
+        self.assertEqual(set(a[5]), {50})
+
+    def test_observe(self):
+        from types import SimpleNamespace
+        self.run_entry(controller.cmd_observe,
+                       SimpleNamespace(root=str(self.root), offline=False),
+                       "controller.load_policy")
+
+    def test_reconcile(self):
+        from types import SimpleNamespace
+
+        import reconcile
+        self.run_entry(reconcile.cmd_reconcile,
+                       SimpleNamespace(root=str(self.root), report=None, publications=None,
+                                       provisions=None, development_prs=None, since=None,
+                                       offline=False, gh_aw=None),
+                       "reconcile.load_policy")
 
 
 if __name__ == "__main__":
