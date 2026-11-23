@@ -23,8 +23,9 @@ import engine
 import isolation
 import lifecycle as lc
 import reconcile
+import schemas
 import work
-from tests.helpers import NOW, SHA_A, SHA_B, apply_command, ci_record, contribution, policy
+from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, apply_command, ci_record, contribution, policy
 from tests.test_late_results import UPSTREAM_PR, events, final, publication, tick
 
 T = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
@@ -487,6 +488,31 @@ class TestFailingJob(unittest.TestCase):
         self.assertEqual(engine.recorded_failing_job(upstream, ci_record("ci-1", SHA_A,
                                                                          failing="x")),
                          (True, None))
+
+    def test_failing_evidence_of_a_clean_head_is_evidence_of_its_candidate(self):
+        failing = ci_record("ci-1", SHA_C, failing="build riscv64")
+        same = ci_evidence.for_clean_head(failing, candidate=SHA_C, ref="riscv64",
+                                          dev_ref="riscv64-dev")
+        self.assertIs(same, failing)
+        before = copy.deepcopy(failing)
+        annotated = ci_evidence.for_clean_head(failing, candidate=SHA_A, ref="riscv64",
+                                               dev_ref="riscv64-dev")
+        self.assertEqual(failing, before)
+        self.assertEqual((annotated["ci"]["head_sha"], annotated["ci"]["candidate_head_sha"]),
+                         (SHA_C, SHA_A))
+        self.assertEqual(annotated["limitations"][0],
+                         f"CI ran on the clean head {SHA_C} of `riscv64`: the series of {SHA_A} "
+                         "on `riscv64-dev` without its debug commits")
+        schemas.validate("evidence", annotated)
+        self.assertEqual(ci_evidence.failing_job(annotated, SHA_C), "build riscv64")
+        self.assertEqual(ci_evidence.failing_job(annotated, SHA_A), "build riscv64")
+        self.assertIsNone(ci_evidence.failing_job(annotated, SHA_B))
+        self.assertIsNone(ci_evidence.failing_job(failing, SHA_A))
+        rec = contribution(activity="fix_needed", last_ci_evidence_id="ci-1")
+        rec["fork"]["head_sha"] = SHA_A
+        self.assertEqual(engine.recorded_failing_job(rec, annotated), (True, "build riscv64"))
+        rec["fork"]["head_sha"] = SHA_B
+        self.assertEqual(engine.recorded_failing_job(rec, annotated), (True, None))
 
 
 class TestLiveRecord(unittest.TestCase):

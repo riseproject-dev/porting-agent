@@ -777,6 +777,8 @@ _RESUME_CI_NOTE = ("Starts `interrupted_reruns` (`budget.reruns.interrupted`) ag
                    "through `rerun_interrupted_ci`, charging the restarted counter.")
 _LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_id",
                   "submission_review_id", "handoff_request", "pending_human_action")
+# The effect of a return to development with no CI verdict: the recorded CI
+# evidence is kept. A return for a CI failure also records its evidence.
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
 _PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
                   "processed_pr_conversation_comment_ids")
@@ -1321,7 +1323,12 @@ LIFECYCLE: dict[str, State] = {
                 _O, None,
                 ("a blocking CI failure on the clean head, or the observed `riscv64` head "
                  "differs from the clean head",),
-                _RETURN_FOR_REPAIR),
+                _E(revision="bump", sets=("last_ci_evidence_id",), clears=_LEAVE_HANDOFF),
+                description="A blocking failure records the failing evidence of the clean head "
+                            "as `last_ci_evidence_id`, so the repair requested in "
+                            "`development.fix_needed` names the failing job and charges its "
+                            "cluster. A `riscv64` head that is not the clean head has no CI "
+                            "verdict: the recorded evidence of the candidate head is kept."),
             ("require_clean_head_ci", "handoff.waiting_human"): Transition(
                 _O, None,
                 (CLEAN_HEAD_CI_MISSING,),
@@ -2667,7 +2674,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 text="Before the package is posted, a changed candidate head, a rewrite that "
                      "fails the trusted check, a failed review, a reviewed series that does not rebuild, a "
                      "lease conflict on `riscv64`, or blocking CI on the clean head returns to "
-                     "development; a failed review records its reasons as the pending feedback "
+                     "development; blocking CI on the clean head records its failing evidence, "
+                     "which names the candidate head it was built from, so the repair names the "
+                     "failing job; a failed review records its reasons as the pending feedback "
                      "of the next development Work, and nothing is posted. At the gate, a CI "
                      "failure on the candidate head takes `return_for_repair` and records the "
                      "failing evidence; an actionable review takes `record_actionable_review` "
@@ -3227,7 +3236,8 @@ CONTROLLED_REF = "the upstream PR head is the controlled fork ref"
 def _check_settled_rows(problems: list[str]) -> None:
     """Rows whose shape a settled decision fixes beyond the general rules:
     review feedback is recorded as pending feedback and never as CI
-    evidence; a CI failure at the gate records its evidence and no feedback;
+    evidence; a CI failure at the gate or on the clean head records its
+    evidence and no feedback and leaves the handoff;
     an explanation keeps the CI evidence; a feedback-only upstream revision
     charges no `no_progress` and keeps the controlled-ref guard; the first
     patch is admitted by write admission only; the resume of development
@@ -3256,15 +3266,19 @@ def _check_settled_rows(problems: list[str]) -> None:
                             "last_ci_evidence_id")
         if state == gate and not set(_LEAVE_HANDOFF) <= set(t.effects.clears):
             problems.append(f"{where}: leaving the gate clears {', '.join(_LEAVE_HANDOFF)}")
-    t = row(gate, "return_for_repair")
-    if t is not None:
+    for state in (gate, "handoff.waiting_ci"):
+        t = row(state, "return_for_repair")
+        if t is None:
+            continue
+        where = f"{state} --return_for_repair-->"
         sets = {_field_name(x) for x in t.effects.sets}
         if "last_ci_evidence_id" not in sets:
-            problems.append(f"{gate} --return_for_repair-->: a CI failure at the gate records "
-                            "its evidence in last_ci_evidence_id")
+            problems.append(f"{where}: a CI failure records its evidence in "
+                            "last_ci_evidence_id")
         if "pending_feedback_evidence_ids" in sets:
-            problems.append(f"{gate} --return_for_repair-->: a CI failure records no pending "
-                            "feedback")
+            problems.append(f"{where}: a CI failure records no pending feedback")
+        if not set(_LEAVE_HANDOFF) <= set(t.effects.clears):
+            problems.append(f"{where}: leaving the handoff clears {', '.join(_LEAVE_HANDOFF)}")
     t = row(gate, "record_explanation")
     if t is not None and "last_ci_evidence_id" in touched(t):
         problems.append(f"{gate} --record_explanation-->: an explanation keeps "

@@ -15,13 +15,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 {:toc}
 </details>
 
-## The failing evidence of the clean head is not recorded
-
-- **Where:** `handoff.waiting_ci`, row `return_for_repair`; the CI observation in `observe_ci.py`.
-- **Today:** a blocking CI failure on a clean head that the cleanup rewrote stores the failing evidence and takes `return_for_repair`, which sets nothing. The record keeps `last_ci_evidence_id` of the candidate head, whose CI passed, so in `development.fix_needed` the repair is requested against passing evidence of a head that is no longer the fork head: it names no failing job, and the clean head's failure is in the event details only.
-- **Table:** `return_for_repair` from `handoff.waiting_ci` bumps the revision and clears the clean head, `handoff_request`, and the pending action; it sets no evidence. `return_for_repair` from `handoff.awaiting_submission` records the failing evidence.
-- **Required:** a table decision that `return_for_repair` from `handoff.waiting_ci` sets `last_ci_evidence_id` to the failing evidence of the clean head, then set it in the observation.
-
 ## A repository renamed during upstream review is not followed
 
 - **Where:** `upstream_review.*`; `require_upstream_access` and `resume_upstream_revision` in `upstream_review.waiting_human`; the collector (`collect.upstream_snapshots`).
@@ -196,7 +189,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - The counter of `upstream_branch` and `submission_comment` ("the handoff operation's attempts") is the number of attempts in the current round, recorded on each attempt as `count:<k>`: a failed attempt with a count below `retries.infrastructure_per_head_failure` plus one takes the retry row, which the next attempt (count plus one) charges; at that count it takes the exhaustion row. After the resume of that exhaustion the next attempt counts from one. A pause does not start the count again.
 - A build of `riscv64` whose reviewed series does not rebuild to the reviewed head, or whose lease on `riscv64` conflicts (the branch moved between the read and the push), is not charged to `upstream_branch`: it takes `return_for_repair`, whatever the count; one that finds an upstream PR open from `riscv64` takes `require_branch_intervention`.
 - When the reviewed series has the tree of the candidate head, `accept_clean_head_ci` can be taken in the tick that confirms the clean head, from the CI evidence already recorded for the candidate head.
-- `return_for_repair` from `handoff.building_upstream_branch` and `handoff.waiting_ci` keeps `handoff_approval`, as its row clears only the clean head, the review, `handoff_request`, and the pending action; the next `submit_upstream` replaces it.
+- `return_for_repair` from `handoff.building_upstream_branch` and `handoff.waiting_ci` keeps `handoff_approval`, as its row clears only the clean head, the review, `handoff_request`, and the pending action (the row from `handoff.waiting_ci` also records the failing CI evidence of the clean head); the next `submit_upstream` replaces it.
 - In the locked wait `handoff_request.command_id` names the submission package operation; the reminder links the comment that operation read back.
 - "A compatible human author" of the upstream PR is a `User` account whose id is in `command_authority.actor_ids`; it need not be the human who requested the submission. A draft pull request is open.
 - An observation of the locked wait that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.

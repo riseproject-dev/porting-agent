@@ -457,7 +457,7 @@ flowchart TB
 
 What a late Result does in the handoff states.
 
-**Decision.** One rule for every state: a Result that does not match the current generation, revision, and requested Work is recorded by `record_late_effect` and never changes state. `record_head_change` leads from `handoff.awaiting_submission` to `development.waiting_ci`, bumps the revision, and clears the CI evidence. `return_for_repair` from `handoff.waiting_ci` also fires when the head differs from the clean head.
+**Decision.** One rule for every state: a Result that does not match the current generation, revision, and requested Work is recorded by `record_late_effect` and never changes state. `record_head_change` leads from `handoff.awaiting_submission` to `development.waiting_ci`, bumps the revision, and clears the CI evidence. `return_for_repair` from `handoff.waiting_ci` also fires when the head differs from the clean head, and then keeps the recorded CI evidence.
 
 ```mermaid
 flowchart TB
@@ -1259,6 +1259,26 @@ flowchart TB
     development_agent_running -->|exhaust_publish_recovery| development_waiting_human
     development_agent_running ==>|record_publish_success| development_waiting_ci
     development_agent_running -->|replan_development| development_fix_needed
+```
+
+### O29. A CI failure on the clean head
+
+What a blocking CI failure on the clean head of `riscv64` records when it returns the contribution to development.
+
+**Decision.** Its evidence. `return_for_repair` from `handoff.waiting_ci` sets `last_ci_evidence_id` to the failing evidence of the clean head. When the clean head is another commit than the development head, that evidence names the candidate head it was built from (`ci.candidate_head_sha`), so the failing job is the job of the head and `request_repair` charges its cluster. A moved `riscv64` has no CI verdict and keeps the recorded evidence of the candidate head. `return_for_repair` from `handoff.building_upstream_branch` reads no CI and sets none.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+
+    handoff_waiting_ci ==>|return_for_repair| development_fix_needed
+    development_fix_needed ==>|request_repair| development_agent_running
 ```
 
 ## Further settled changes

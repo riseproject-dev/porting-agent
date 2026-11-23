@@ -265,6 +265,8 @@ class TestLifecycleTable(unittest.TestCase):
                          ("development.fix_needed", lc.Trigger.OBSERVATION, "bump", ()))
         due_review = due_review.transition
         repair = lc.find_edge(gate, "return_for_repair").transition
+        clean = "handoff.waiting_ci"
+        clean_repair = lc.find_edge(clean, "return_for_repair").transition
         explain = lc.find_edge(gate, "record_explanation").transition
         revision = lc.find_edge("upstream_review.fix_needed", "request_review_revision").transition
         patch = lc.find_edge("development.fix_needed", "request_patch").transition
@@ -291,6 +293,15 @@ class TestLifecycleTable(unittest.TestCase):
             (gate, "return_for_repair",
              {"sets": (*repair.effects.sets, "pending_feedback_evidence_ids")},
              "records no pending feedback"),
+            (clean, "return_for_repair",
+             {"sets": self.without(clean_repair.effects.sets, "last_ci_evidence_id")},
+             "records its evidence"),
+            (clean, "return_for_repair",
+             {"sets": (*clean_repair.effects.sets, "pending_feedback_evidence_ids")},
+             "records no pending feedback"),
+            (clean, "return_for_repair",
+             {"clears": self.without(clean_repair.effects.clears, "handoff_request")},
+             "leaving the handoff clears"),
             (gate, "record_explanation",
              {"clears": (*explain.effects.clears, "last_ci_evidence_id")},
              "keeps last_ci_evidence_id"),
@@ -1151,7 +1162,7 @@ class TestDiagrams(unittest.TestCase):
         for d in (*DECISIONS, *FURTHER_CHANGES):
             self.assertTrue(d.text and not d.options and not d.candidates, d.title)
             self.assertTrue(d.operations or d.highlighted, d.title)
-        self.assertEqual(len(SETTLED_OPEN_ITEMS), 28)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 29)
         self.assertEqual(OPEN_ITEMS, ())
         for d in SETTLED_OPEN_ITEMS:
             self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)

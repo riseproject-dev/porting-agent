@@ -34,7 +34,8 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   jobs that lost their runner classified: ``rerun_interrupted_ci`` with a
   ``ci_rerun`` operation (``exhaust_interrupted_reruns`` once its budget is
   spent), ``accept_clean_head_ci`` (passing CI behind an open operation
-  keeps the state), ``return_for_repair``, or ``require_clean_head_ci``
+  keeps the state), ``return_for_repair`` (a blocking failure records its
+  evidence, a moved head keeps the recorded one), or ``require_clean_head_ci``
   once the bounded wait for CI that is not complete has passed;
 * in the locked ``handoff.waiting_upstream_pr``, discover the upstream PR
   read-only and take ``verify_upstream_pr`` for exactly one that matches, or
@@ -136,7 +137,8 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
                            evidence: dict[str, dict], operations: dict[str, dict]) -> None:
     """``handoff.waiting_ci``: CI on the clean head of `riscv64`.
 
-    A `riscv64` head that is not the clean head takes ``return_for_repair``.
+    A `riscv64` head that is not the clean head takes ``return_for_repair``
+    and keeps the recorded CI evidence of the candidate head.
     CI is a function of the tree: when the reviewed series has the tree of
     the candidate head, the CI of the candidate head is read
     (``handoff.ci_head``), with jobs that lost their runner classified as
@@ -148,12 +150,18 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
     spent); CI that is not complete keeps the wait until its bounded wait
     takes ``require_clean_head_ci``; passing CI takes
     ``accept_clean_head_ci``, except behind an open operation, which keeps
-    the wait; a blocking failure takes ``return_for_repair``."""
+    the wait; a blocking failure takes ``return_for_repair`` and records its
+    evidence as ``last_ci_evidence_id``, annotated with the candidate head it
+    was built from when the clean head is another commit
+    (``ci_evidence.for_clean_head``), so the repair names the failing job."""
     clean = rec["clean_head_sha"]
     if head != clean:
+        # No CI verdict: the recorded evidence of the candidate head is kept.
+        kept = rec.get("last_ci_evidence_id")
         out = engine.apply_transition(
             rec, "return_for_repair", policy=policy, now=now, cause_id=f"branch:{head[:12]}",
-            facts={"clean_head_needs_repair"}, details={"head": head, "clean_head": clean})
+            facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": kept},
+            details={"head": head, "clean_head": clean, "kept_evidence_id": kept})
         obs.staged.extend([("contributions", out.record), ("events", out.event)])
         entry.update(returned_to_development=True,
                      reason=f"the {UPSTREAM_REF} head is not the clean head")
@@ -190,6 +198,11 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
             obs.staged.extend([("contributions", out.record), ("events", out.event)])
             entry["waiting_for_human"] = "clean_head_ci_missing"
         return
+    if verdict.state == "failed":
+        # Failing evidence of a clean head that is another commit names the
+        # candidate head it was built from.
+        ev = ci_evidence.for_clean_head(ev, candidate=rec["fork"]["head_sha"], ref=UPSTREAM_REF,
+                                        dev_ref=DEV_REF)
     eid = ev["evidence_id"]
     if verdict.state == "passed" and recovery.open_operations(
             rec["contribution_id"], operations, rec.get("active_operation_id")):
@@ -207,7 +220,9 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
     else:
         out = engine.apply_transition(
             rec, "return_for_repair", policy=policy, now=now, cause_id=eid,
-            facts={"clean_head_needs_repair"}, details={"evidence_id": eid, "head": clean})
+            facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": eid},
+            details={"evidence_id": eid, "head": clean,
+                     "candidate_head": rec["fork"]["head_sha"]})
         entry["returned_to_development"] = True
     obs.staged.extend([("contributions", out.record), ("events", out.event)])
     entry["evidence"] = eid

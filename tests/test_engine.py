@@ -553,6 +553,33 @@ class TestTableDecisions(unittest.TestCase):
             failed.record, "record_actionable_review", policy=POLICY, now=NOW,
             values=values).accepted)
 
+    def test_a_failure_on_the_clean_head_records_its_evidence(self):
+        waiting = awaiting_submission(activity="waiting_ci", pending_human_action=None,
+                                      clean_head_sha=SHA_B, clean_head_ci_since=NOW)
+        failed = engine.apply_transition(
+            waiting, "return_for_repair", policy=POLICY, now=NOW,
+            facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": "ci-2-9-1"})
+        self.assertTrue(failed.accepted, failed.reason)
+        self.assertEqual(engine.state_key(failed.record), "development.fix_needed")
+        self.assertEqual(failed.record["revision"], waiting["revision"] + 1)
+        self.assertEqual(failed.record["last_ci_evidence_id"], "ci-2-9-1")
+        for name in lc._LEAVE_HANDOFF:
+            self.assertIsNone(failed.record.get(name), name)
+        with self.assertRaisesRegex(lc.TransitionError, "a value is required"):
+            engine.apply_transition(waiting, "return_for_repair", policy=POLICY, now=NOW,
+                                    facts={"clean_head_needs_repair"})
+        # The return from the build of `riscv64` read no CI: it sets none.
+        building = dict(waiting, activity="building_upstream_branch", clean_head_sha=None,
+                        clean_head_ci_since=None)
+        with self.assertRaisesRegex(lc.TransitionError, "does not set last_ci_evidence_id"):
+            engine.apply_transition(building, "return_for_repair", policy=POLICY, now=NOW,
+                                    facts={"upstream_branch_invalid"},
+                                    values={"last_ci_evidence_id": "ci-2-9-1"})
+        back = engine.apply_transition(building, "return_for_repair", policy=POLICY, now=NOW,
+                                       facts={"upstream_branch_invalid"})
+        self.assertTrue(back.accepted, back.reason)
+        self.assertEqual(back.record["last_ci_evidence_id"], "ci-2-7-1")
+
     def test_explanation_at_the_gate_keeps_everything(self):
         gate = awaiting_submission()
         out = engine.apply_transition(

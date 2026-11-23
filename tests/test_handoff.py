@@ -876,13 +876,21 @@ class TestCleanHeadCiDispatch(unittest.TestCase):
 class TestCleanHeadCi(unittest.TestCase):
     def test_a_failure_or_a_moved_head_returns_for_repair(self):
         world = reviewed()
+        gate_evidence = world.record["last_ci_evidence_id"]
         world.gh.ci_state = "failure"
+        # A failure after a pass is a new attempt: its evidence has a new id.
+        world.gh.ci_attempt = 2
         out = world.tick(at(2), receipts=[world.run_workflow()])
         # The repair is requested in the same tick, on `riscv64-dev`.
         self.assertEqual(world.kinds(out), ["confirm_clean_head", "return_for_repair",
                                             "request_repair"])
         self.assertEqual(world.state, "development.agent_running")
         self.assertEqual(world.record["active_work"]["task"], "development_repair")
+        failed = world.record["last_ci_evidence_id"]
+        self.assertNotEqual(failed, gate_evidence)
+        self.assertEqual(world.evidence[failed]["ci"]["head_sha"], HEAD)
+        self.assertNotIn("candidate_head_sha", world.evidence[failed]["ci"])
+        self.assertIn(failed, world.record["active_work"]["reason_ids"])
         world = reviewed()
         receipt = world.run_workflow()
         with mock.patch.object(FakeGitHub, "ci_snapshot", lambda self, a, f, h: collect.CiSnapshot(
@@ -898,10 +906,40 @@ class TestCleanHeadCi(unittest.TestCase):
                 artifacts_by_run={})):
             self.assertEqual(world.kinds(world.tick(at(3))), [])
         world.gh.branches["riscv64"] = "e" * 40
+        kept = world.record["last_ci_evidence_id"]
         out = world.tick(at(4))
+        # No CI verdict: the passing evidence of the candidate head is kept.
         self.assertEqual(world.kinds(out), ["return_for_repair", "request_patch"])
         returned = next(e for e in world.events if e["kind"] == "return_for_repair")
         self.assertEqual(returned["details"]["head"], "e" * 40)
+        self.assertEqual(returned["details"]["kept_evidence_id"], kept)
+        self.assertEqual(world.record["last_ci_evidence_id"], kept)
+
+    def test_a_failure_on_another_tree_records_its_evidence(self):
+        world = submitted()
+        gate_evidence = world.record["last_ci_evidence_id"]
+        world.tick(at(1), publications=[world.rewrite_outcome(clean_tree="9" * 40, commits=[
+            {"message": REVIEWED_MESSAGE, "tree": "9" * 40}])])
+        world.tick(at(1), publications=[world.review_outcome()])
+        world.gh.trees[CLEAN] = "9" * 40
+        world.gh.ci_state = "failure"
+        world.gh.ci_attempt = 3
+        out = world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head", "return_for_repair",
+                                            "request_repair"])
+        self.assertEqual(world.gh.ci_heads[-1], CLEAN)
+        returned = next(e for e in world.events if e["kind"] == "return_for_repair")
+        failed = world.record["last_ci_evidence_id"]
+        self.assertEqual(failed, returned["details"]["evidence_id"])
+        self.assertNotEqual(failed, gate_evidence)
+        ci = world.evidence[failed]["ci"]
+        self.assertEqual((ci["head_sha"], ci["candidate_head_sha"]),
+                         (CLEAN, world.record["fork"]["head_sha"]))
+        self.assertTrue(world.evidence[failed]["limitations"][0].startswith(
+            f"CI ran on the clean head {CLEAN} of `riscv64`"))
+        self.assertIn(failed, world.record["active_work"]["reason_ids"])
+        self.assertEqual(world.record["budget"]["clusters"]
+                         .get("Build - ubuntu-24.04-riscv (riscv64)"), 1)
 
     def test_another_tree_needs_ci_on_the_clean_head(self):
         world = submitted()

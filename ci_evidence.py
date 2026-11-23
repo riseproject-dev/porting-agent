@@ -10,6 +10,7 @@ identity; duplicate check names are kept apart by job ID.
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -196,17 +197,39 @@ def _evidence_job(job: dict) -> dict[str, Any]:
 _RUNNER_LABEL_PROBLEM = re.compile(r"^job '(.+)' failed runner-label check ")
 
 
+def for_clean_head(evidence: dict, *, candidate: str, ref: str, dev_ref: str) -> dict:
+    """The failing evidence of CI on a clean head, as evidence of the
+    development head ``candidate`` on ``dev_ref`` it was built from; CI ran
+    on ``ref``.
+
+    Evidence of ``candidate`` itself is returned unchanged. Otherwise a copy
+    records ``ci.candidate_head_sha`` and a first limitation, written by the
+    pipeline from commit ids and branch names only, that says where CI ran,
+    so the repair Work learns it; ``evidence`` is not changed."""
+    if evidence["ci"]["head_sha"] == candidate:
+        return evidence
+    out = copy.deepcopy(evidence)
+    out["ci"]["candidate_head_sha"] = candidate
+    out["limitations"] = [
+        f"CI ran on the clean head {out['ci']['head_sha']} of `{ref}`: the series of "
+        f"{candidate} on `{dev_ref}` without its debug commits",
+        *(out.get("limitations") or [])]
+    return out
+
+
 def failing_job(evidence: dict | None, head_sha: str | None) -> str | None:
     """The failing CI job recorded for ``head_sha``: the first executed
-    blocking job of that head in ``evidence`` that did not succeed, else the
-    first job the evidence names as failing the runner-label check. ``None``
-    for evidence of another head, for passing evidence, and for evidence that
-    is not CI evidence (review feedback, a rehearsal). This name is the
-    cluster that ``repair_attempts_cluster`` counts."""
+    blocking job in ``evidence`` of that head, or of the clean head built
+    from it (``ci.candidate_head_sha``, see ``for_clean_head``), that did not
+    succeed, else the first job the evidence names as failing the
+    runner-label check. ``None`` for evidence of another head, for passing
+    evidence, and for evidence that is not CI evidence (review feedback, a
+    rehearsal). This name is the cluster that ``repair_attempts_cluster``
+    counts."""
     if not evidence or evidence.get("kind") != "ci" or not head_sha:
         return None
     ci = evidence.get("ci") or {}
-    if ci.get("head_sha") != head_sha:
+    if head_sha not in (ci.get("head_sha"), ci.get("candidate_head_sha")):
         return None
     for job in ci.get("jobs") or []:
         name = str(job.get("name") or "")

@@ -354,7 +354,7 @@ DECISIONS: tuple[Item, ...] = (
         "state. `record_head_change` leads from `handoff.awaiting_submission` to "
         "`development.waiting_ci`, bumps the revision, and clears the CI evidence. "
         "`return_for_repair` from `handoff.waiting_ci` also fires when the head differs from the "
-        "clean head.",
+        "clean head, and then keeps the recorded CI evidence.",
         ("handoff.awaiting_submission", "handoff.waiting_ci", "development.waiting_ci",
          "development.fix_needed"),
         edges=(("handoff.awaiting_submission", "record_late_effect"),
@@ -1319,6 +1319,23 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                ("development.agent_running", "record_publish_success"),
                ("development.agent_running", "replan_development")),
         highlighted=(("development.agent_running", "record_publish_success"),),
+    ),
+    Item(
+        "A CI failure on the clean head",
+        "What a blocking CI failure on the clean head of `riscv64` records when it returns the "
+        "contribution to development.",
+        "Its evidence. `return_for_repair` from `handoff.waiting_ci` sets `last_ci_evidence_id` "
+        "to the failing evidence of the clean head. When the clean head is another commit than "
+        "the development head, that evidence names the candidate head it was built from "
+        "(`ci.candidate_head_sha`), so the failing job is the job of the head and "
+        "`request_repair` charges its cluster. A moved `riscv64` has no CI verdict and keeps "
+        "the recorded evidence of the candidate head. `return_for_repair` from "
+        "`handoff.building_upstream_branch` reads no CI and sets none.",
+        ("handoff.waiting_ci", "development.fix_needed", "development.agent_running"),
+        edges=(("handoff.waiting_ci", "return_for_repair"),
+               ("development.fix_needed", "request_repair")),
+        highlighted=(("handoff.waiting_ci", "return_for_repair"),
+                     ("development.fix_needed", "request_repair")),
     ),
 )
 

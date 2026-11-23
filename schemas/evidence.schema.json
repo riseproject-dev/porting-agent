@@ -82,6 +82,10 @@
           "type": "string",
           "pattern": "^[0-9a-f]{40}$"
         },
+        "candidate_head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
         "base_sha": {
           "type": [
             "string",
