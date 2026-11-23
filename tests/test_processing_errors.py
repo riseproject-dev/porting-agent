@@ -457,6 +457,51 @@ class TestPipelineFailures(unittest.TestCase):
                                     facts={"processing_error"}, values={"paused_reason": " "})
 
 
+class TestReportPauses(unittest.TestCase):
+    """An accepted Result whose report cannot be stored pauses its own
+    contribution only: any number of them leave the tick going, and the
+    paused Result is read again once, as a late Result."""
+
+    def test_two_report_errors_in_one_tick_pause_both_and_stop_nothing(self):
+        import worker_report
+
+        a = contribution(activity="agent_running", active_work=dict(WORK))
+        b = other(activity="agent_running", active_work=dict(WORK, dedupe_key=f"{B}@0:x"))
+
+        def refuse(record, *_args, **_kwargs):
+            raise worker_report.ReportError(f"the report of {record['contribution_id']} is lost")
+        out = tick([a, b], publications=[publication(a, "published", artifact_id=1),
+                                         dict(publication(b, "published", artifact_id=2),
+                                              task={"contribution_id": B,
+                                                    "revision": b["revision"]})],
+                   patches=[("reconcile.apply_publication", refuse)])
+        self.assertEqual(kinds(out, A), [VERB])
+        self.assertEqual(kinds(out, B), [VERB])
+        self.assertTrue(all(isinstance(f, isolation.ContributionPause) for f in out.failures))
+        self.assertEqual({e["contribution"] for e in out.report["processing_errors"]}, {A, B})
+        for cid in (A, B):
+            paused = record_of(out, cid)
+            self.assertTrue(paused["paused"])
+            self.assertIn("is lost", paused["paused_reason"])
+
+    def test_the_paused_result_is_read_once_more_as_a_late_result(self):
+        import worker_report
+
+        a = contribution(activity="agent_running", active_work=dict(WORK))
+        pub = publication(a, "published", artifact_id=7)
+
+        def refuse(*_args, **_kwargs):
+            raise worker_report.ReportError("the report is lost")
+        first = tick([a], publications=[pub], patches=[("reconcile.apply_publication", refuse)])
+        paused = record_of(first, A)
+        second = tick([paused], publications=[pub])
+        self.assertEqual(kinds(second, A), ["record_late_effect"])
+        after = record_of(second, A)
+        self.assertIn(7, after["processed_publications"])
+        third = tick([after], publications=[pub])
+        self.assertNotIn("record_late_effect", kinds(third, A))
+
+
 class TestExpectedRejections(unittest.TestCase):
     """Rejected with a reason; no pause, and the tick is computed once."""
 

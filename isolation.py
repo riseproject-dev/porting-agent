@@ -9,6 +9,11 @@ is attributed to that contribution and classified:
 * ``CollectorFailure``: the collector could not read GitHub for it
   (``COLLECTOR_ERRORS``). The contribution is skipped for the tick, with no
   state change and no pause.
+* ``ContributionPause``: a ``PauseRequest`` raised by trusted code that
+  refuses to go on with one contribution (an accepted Result whose report
+  cannot be stored, ``worker_report.ReportError``). It is handled as a
+  processing error, but it is expected and is specific to its contribution,
+  so it never counts toward the limit that stops the tick.
 * ``ProcessingError``: any other exception. It is unexpected: the expected
   rejections (a refused transition of a command, a rejected command, an
   intake error) are handled where they occur and never leave the block.
@@ -62,6 +67,16 @@ class ProcessingError(ContributionFailure):
     """An unexpected exception while one contribution was processed."""
 
 
+class ContributionPause(ProcessingError):
+    """A ``PauseRequest`` of one contribution: it is paused like after a
+    processing error, and any number of them in one tick stops nothing."""
+
+
+class PauseRequest(Exception):
+    """Raised by trusted code that refuses to go on with one contribution:
+    the contribution is paused with the reason, and the tick goes on."""
+
+
 class TickFailure(RuntimeError):
     """A pipeline failure: the whole tick stops and nothing is committed.
     ``failures`` are the contribution failures that led to it, if any."""
@@ -80,6 +95,8 @@ def contribution(contribution_id: str, step: str):
         raise
     except COLLECTOR_ERRORS as error:
         raise CollectorFailure(contribution_id, step, error) from error
+    except PauseRequest as error:
+        raise ContributionPause(contribution_id, step, error) from error
     except Exception as error:
         raise ProcessingError(contribution_id, step, error) from error
 

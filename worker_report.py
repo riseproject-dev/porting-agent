@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import isolation
 import schemas
 import state
 from common import canonical_json, safe_id
@@ -52,8 +53,10 @@ REDACTED = "[redacted]"
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
-class ReportError(ValueError):
-    """The report is missing, malformed, or does not answer the Work."""
+class ReportError(ValueError, isolation.PauseRequest):
+    """The report is missing, malformed, or does not answer the Work. Raised
+    by a success fold, it pauses that one contribution and never stops the
+    tick (``isolation.ContributionPause``)."""
 
 
 def _redact(text: str) -> str:
@@ -216,8 +219,11 @@ def check_path(task: dict, path: Path | None) -> dict | None:
     return check(task, raw)
 
 
-def evidence_id(rec: dict, run: str) -> str:
-    return safe_id(f"report-{rec['contribution_id'].replace('/', '--')}-r{rec['revision']}-{run}")
+def evidence_id(rec: dict, run: str, revision: int | None = None) -> str:
+    """The id of the report of worker run ``run`` of the record's revision,
+    or of ``revision`` when the Result answers another one."""
+    revision = rec["revision"] if revision is None else revision
+    return safe_id(f"report-{rec['contribution_id'].replace('/', '--')}-r{revision}-{run}")
 
 
 def head_after(outcome: dict, verb: str) -> str | None:
@@ -242,7 +248,8 @@ def head_after(outcome: dict, verb: str) -> str | None:
 
 
 def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
-             run: str) -> dict | None:
+             run: str, head_verb: str | None = None,
+             revision: int | None = None) -> dict | None:
     """The ``worker_report`` evidence of a Result folded by ``verb``, or
     ``None`` when the Work carries no history and its Result no usable
     report. The report is checked again against the Work the Result
@@ -255,7 +262,12 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
     or the evidence cannot be built, this raises ``ReportError`` instead of
     dropping it. The fold runs inside the contribution's isolation block,
     so the contribution is paused with the reason and its Result stays
-    unfolded until a human looks at it."""
+    unfolded until a human looks at it.
+
+    ``head_verb`` names the success row whose published head the report
+    records when ``verb`` is another one (``record_late_effect`` of a
+    Result whose push landed), and ``revision`` the revision of the Work
+    when the record has left it."""
     task = outcome.get("task") or {}
     try:
         report = check(task, outcome.get("worker_report"))
@@ -278,13 +290,13 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
         "verb": verb,
         "result_status": outcome.get("status"),
         "head_before": task.get("expected_head"),
-        "head_after": head_after(outcome, verb),
+        "head_after": head_after(outcome, head_verb or verb),
         "changed_files": changed,
         "report": cleaned,
         "artifact": {"run_id": str(run), "artifact_id": outcome.get("publication_artifact_id")},
     }
     record = {
-        "schema_version": 1, "evidence_id": evidence_id(rec, str(run)),
+        "schema_version": 1, "evidence_id": evidence_id(rec, str(run), revision),
         "contribution_id": rec["contribution_id"], "kind": "worker_report",
         "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
         "summary": cleaned["summary"],

@@ -452,14 +452,53 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     return "late Result without matching requested Work"
 
 
-def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str) -> dict:
+def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
+                 extra: dict | None = None) -> dict:
     """The audit event of ``record_late_effect`` for one Result."""
     task = pub.get("task") or {}
     generation, key = work.task_identity(task)
     return engine.record_late_effect(
         rec, policy=policy, now=now, cause_id=_result_cause(pub, pub.get("worker_run_id")),
         details={"result_status": pub.get("status"), "task_revision": task.get("revision"),
-                 "task_generation": generation, "task_work": key, "why": why})
+                 "task_generation": generation, "task_work": key, "why": why,
+                 **(extra or {})})
+
+
+def late_report_evidence(rec: dict, pub: dict, *, now: str, policy: dict,
+                         known: dict[str, dict], details: dict) -> list[tuple[str, dict]]:
+    """The report of a Result that takes ``record_late_effect`` although its
+    push landed (a ``published`` Result whose head was read back): the head
+    is on the branch and CI runs on it, so the report is stored as
+    ``worker_report`` evidence of the Work it answers, and the next repair
+    reads what was tried on that head. A Result that published nothing
+    stores nothing. A report that cannot be stored is recorded as such in
+    ``details`` and never stops the fold of the late Result, which changes
+    nothing else; an id already in ``known`` is not stored again."""
+    if pub.get("status") != "published":
+        return []
+    task = pub.get("task") or {}
+    landed = ("record_revision_publish_success" if task.get("task") == "upstream_revision"
+              else "record_publish_success")
+    if worker_report.head_after(pub, landed) is None:
+        return []
+    run = str(pub.get("worker_run_id") or (pub.get("artifact") or {}).get("run_id") or "0")
+    revision = task.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        revision = None
+    try:
+        evidence = worker_report.evidence(rec, pub, verb="record_late_effect", now=now,
+                                          policy=policy, run=run, head_verb=landed,
+                                          revision=revision)
+    except worker_report.ReportError as error:
+        details["report"] = f"not stored: {isolation.clean_text(error)}"
+        return []
+    if evidence is None:
+        details["report"] = "absent"
+        return []
+    details["report_evidence_id"] = evidence["evidence_id"]
+    if evidence["evidence_id"] in known:
+        return []
+    return [("evidence", evidence)]
 
 
 def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
@@ -1316,6 +1355,10 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
       is listed under ``alerts`` and ``processing_errors``. A contribution
       that is already stopped, or terminal, is not paused again and gets no
       event.
+    * A pause requested by trusted code (``isolation.ContributionPause``,
+      such as an accepted Result whose report cannot be stored) is handled
+      like an unexpected error of its contribution, but never counts toward
+      the limit below: any number of them leave the tick going.
     * Unexpected errors in two or more contributions, a pause that cannot be
       applied, and every exception outside a contribution stop the tick:
       ``isolation.TickFailure`` or the original exception is raised and
@@ -1337,7 +1380,10 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     f"{failure.contribution_id} was processed although it is skipped: {failure}"
                 ) from failure
             failures[failure.contribution_id] = failure
-            errors = [f for f in failures.values() if isinstance(f, isolation.ProcessingError)]
+            # A pause requested by trusted code (``ContributionPause``) is
+            # specific to its contribution and never stops the tick.
+            errors = [f for f in failures.values() if isinstance(f, isolation.ProcessingError)
+                      and not isinstance(f, isolation.ContributionPause)]
             if len(errors) > 1:
                 raise isolation.TickFailure(
                     "processing failed for more than one contribution in one tick; the tick "
@@ -1868,8 +1914,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # the current generation, revision, and requested Work is recorded
                 # for audit and never folded, in every state. A branch effect it
                 # carried is seen by head observation.
-                out.staged.extend([("contributions", rec), ("events", _late_effect(
-                    rec, pub, unrequested, policy=policy, now=iso))])
+                extra: dict[str, Any] = {}
+                reported = late_report_evidence(rec, pub, now=iso, policy=policy,
+                                                known=snap.evidence, details=extra)
+                out.staged.extend(reported + [("contributions", rec), ("events", _late_effect(
+                    rec, pub, unrequested, policy=policy, now=iso, extra=extra))])
                 pubs_report.append({"contribution": cid, "ignored": unrequested})
                 continue
             rec, staged = apply_publication(rec, pub, now=iso, policy=policy,

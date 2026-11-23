@@ -138,6 +138,55 @@ class TestDevelopment(unittest.TestCase):
                          ["record_late_effect"])
         self.assertEqual(stored(out.staged), [])
 
+    def test_a_late_result_whose_push_landed_stores_its_report(self):
+        """A late Result whose head was read back on the branch is the work
+        of a successful worker: CI runs on that head, so the next repair
+        must read what was tried there."""
+        rec = dev.running()
+        late = with_report(rec, publication(rec, "published"), summary="Pinned the QEMU row.")
+        late["candidate"] = SHA_B
+        late["task"]["revision"] = late["worker_report"]["expected_revision"] = rec["revision"] + 7
+        out = dev.tick(rec, [late], observe=False)
+        self.assertEqual(dev.kinds(out), ["record_late_effect"])
+        [evidence] = stored(out.staged)
+        self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_after"]),
+                         ("record_late_effect", SHA_B))
+        self.assertIn(f"-r{rec['revision'] + 7}-", evidence["evidence_id"])
+        event = events(out.staged)[0]
+        self.assertEqual(event["details"]["report_evidence_id"], evidence["evidence_id"])
+        # The repair after failing CI on that head reads the report.
+        from tests.test_work_history import ci_evidence
+        ci = dict(ci_evidence("ci-9", SHA_B, at="2026-11-23T10:00:00+00:00"),
+                  contribution_id=rec["contribution_id"])
+        doc = work_history.document(rec, {"dedupe_key": "k", "task": "development_repair"},
+                                    {evidence["evidence_id"]: evidence, "ci-9": ci})
+        [report_entry, ci_entry] = doc["timeline"]
+        self.assertEqual(report_entry["report"]["summary"], "Pinned the QEMU row.")
+        self.assertEqual(ci_entry["after_report"], evidence["evidence_id"])
+
+    def test_a_late_result_that_published_nothing_stores_nothing(self):
+        rec = dev.running()
+        for name in ("rejected_validation", "uncertain", "infra_error"):
+            with self.subTest(result=name):
+                late = with_report(rec, publication(rec, name))
+                late["candidate"] = SHA_B
+                late["task"]["revision"] = rec["revision"] + 7
+                out = dev.tick(rec, [late], observe=False)
+                self.assertEqual(dev.kinds(out), ["record_late_effect"])
+                self.assertEqual(stored(out.staged), [])
+
+    def test_a_late_result_whose_report_cannot_be_stored_is_recorded_as_such(self):
+        rec = dev.running()
+        late = with_report(rec, publication(rec, "published"))
+        late["candidate"] = SHA_B
+        late["task"]["revision"] = rec["revision"] + 7
+        late["worker_report"]["expected_revision"] += 1
+        out = dev.tick(rec, [late], observe=False)
+        self.assertEqual(dev.kinds(out), ["record_late_effect"])
+        self.assertEqual(stored(out.staged), [])
+        self.assertTrue(events(out.staged)[0]["details"]["report"].startswith("not stored: "))
+        self.assertFalse(out.failures)
+
     def test_a_held_result_stores_its_report_when_the_retry_publishes(self):
         rec = dev.running()
         failed = with_report(rec, publication(rec, "infra_error"))
