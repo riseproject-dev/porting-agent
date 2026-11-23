@@ -457,11 +457,14 @@ class TestCondensationOrder(unittest.TestCase):
                 self.assertEqual(doc["timeline"][-1]["kind"], "ci")
 
     def test_maintainer_feedback_never_displaces_owner_steering(self):
-        for count, length in ((20, 3000), (35, 300), (40, 1500), (70, 300), (150, 1500),
-                              (400, 400)):
-            with self.subTest(maintainer_comments=count, length=length):
-                evidence = self.maintainers(self.reports(2, steering=8, length=500), count,
-                                            length)
+        rows = [(0.7, 5, count, length) for count, length in ((20, 3000), (40, 1500),
+                                                              (150, 1500), (400, 400))]
+        # Reports of about 32, 10, 10 and 17 KiB under realistic feedback.
+        rows += [(0.7, 8, 35, 300), (0.18, 8, 70, 300), (0.18, 8, 40, 800), (0.35, 8, 45, 400)]
+        for scale, steering, count, length in rows:
+            with self.subTest(scale=scale, maintainer_comments=count, length=length):
+                evidence = self.maintainers(self.reports(2, scale=scale, steering=steering,
+                                                         length=500), count, length)
                 doc = self.check(evidence, steering_whole=True)
                 self.assertNotIn("steering_earlier", doc)
 

@@ -804,8 +804,9 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "(`work_history` evidence, derived from the Work id) in the same commit: the steering "
         "of the owner and one chronological timeline of every successful report, the CI runs "
         "and reviews that followed, and the submission verdicts, all generations included. It "
-        "is capped at 64 KiB and condensed deterministically, oldest first, never dropped "
-        "uncounted. The payload names it by pinned commit and SHA-256, and a trusted pre-agent "
+        "is capped at 64 KiB and condensed deterministically, never dropped uncounted: the "
+        "newest report with its linked CI, then the owner's steering, are kept longest, and "
+        "everything else gives way first, oldest first. The payload names it by pinned commit and SHA-256, and a trusted pre-agent "
         "step fetches and verifies it; the dispatcher defers Work whose history is not "
         "committed yet, within `retry_dispatch`. No record field changes.",
         ("development.agent_running", "development.waiting_ci",
