@@ -808,6 +808,14 @@ Then call `work_queue_claim_finish` with `outcome: "completed"`. If you
 cannot produce a useful result, stage `report_incomplete` explaining why and
 finish with `outcome: "cancelled"`.
 
+Your run is stopped 120 minutes after the job starts, and a stopped run
+returns nothing: no Result, no report, and the queue starts the same task
+again from the beginning. Write `porting-out/` and finish by 95 minutes into
+the run at the latest, with the outcome your evidence supports and the
+validation you could not complete named in `validation_not_performed`. Never
+start a command or a wait (`sleep`, a polling loop, a long test suite) that
+can run past that point; bound each one with a timeout.
+
 You cannot push, open PRs, comment or change any repository. A trusted job
 re-applies your series in a fresh repository, validates it against the
 approved scope and pushes it to the task's `ref` itself. Anything outside

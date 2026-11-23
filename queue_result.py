@@ -32,6 +32,7 @@ import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 # Native safe-output tool accepts path, not a name override. Uploading the
 # porting-out directory yields claim-<hash>-porting-out.
@@ -158,6 +159,32 @@ def work_states(projection: dict | None) -> dict[str, str]:
     does not exist yet is empty."""
     works = ((projection or {}).get("works") or {}).values()
     return {w["graph_id"]: w.get("state") or "unknown" for w in works if w.get("graph_id")}
+
+
+def work_retries(projection: dict | None) -> dict[str, dict]:
+    """``graph_id -> retry`` for every available Work of a replayed queue
+    whose earlier Claim ended without a Result: the worker run was
+    cancelled, timed out or lost its runner, and gh-aw cancelled its Claim
+    and holds the Work for another attempt (``attempts`` Claims so far, at
+    most ``max_attempts``, the retry Policy of its pool) once ``retry_at``
+    (its ``retry_not_before``) has passed. Once the attempts are spent gh-aw
+    cancels the Work itself, so it is not listed."""
+    projection = projection or {}
+    pools = ((projection.get("policy") or {}).get("pools")) or {}
+    retries: dict[str, dict] = {}
+    for item in (projection.get("works") or {}).values():
+        attempts, at = item.get("attempts"), item.get("retry_not_before")
+        if item.get("state") != "available" or not item.get("graph_id") \
+                or not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 1 \
+                or not isinstance(at, int) or isinstance(at, bool) or at < 0:
+            continue
+        limit = ((pools.get(item.get("pool")) or {}).get("retry") or {}).get("max_attempts")
+        retries[item["graph_id"]] = {
+            "attempts": attempts,
+            "max_attempts": limit if isinstance(limit, int) and not isinstance(limit, bool) else None,
+            "retry_at": datetime.fromtimestamp(at / 1000, tz=timezone.utc),
+        }
+    return retries
 
 
 def queue_work_states(gh_aw: str, repo: str, timeout: int = 600) -> dict[str, str]:

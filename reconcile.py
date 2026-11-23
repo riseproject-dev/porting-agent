@@ -140,6 +140,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                       queue_works: dict[str, str] | None, now: datetime, policy: dict,
                       skip: frozenset[str] = frozenset(), queue_policy: dict | None = None,
                       evidence: dict[str, dict] | None = None,
+                      queue_retries: dict[str, dict] | None = None,
                       ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
 
@@ -156,9 +157,10 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
       (the launch itself was lost; no run ended, so no row is taken);
     * otherwise a dispatcher run ended without its Work being claimed. The
       table's ``retry_dispatch`` launches the dispatcher again within
-      ``dispatch_recovery`` (it replays the same committed request, so the
-      queue sees the identical Work), and ``exhaust_dispatch_recovery`` waits
-      for a human once that budget is spent. Its count is the number of
+      ``dispatch_recovery`` (the dispatcher never submits Work the queue
+      already holds again: it dispatches the queued Work as it was first
+      submitted), and ``exhaust_dispatch_recovery`` waits for a human once
+      that budget is spent. Its count is the number of
       dispatcher runs that ended since the request. Each
       ended run is decided once: the record names the last one it decided
       in ``active_work.dispatched_run_id``.
@@ -182,6 +184,16 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     human wait of ``exhaust_dispatch_recovery``. Once the history is
     committed, the dispatcher runs are counted from the later of the request
     and the time the history was recorded.
+
+    ``queue_retries`` (``queue_result.work_retries``) names the available
+    Work whose earlier Claim ended without a Result (a worker run that was
+    cancelled, timed out or lost its runner): the queue retries it, within
+    the retry attempts of its Policy, once its backoff has passed. Such a
+    retry is not a lost dispatch. The dispatcher runs are counted from the
+    retry time, and when none was created since, the dispatcher is launched
+    at once without a row and nothing is charged. A retry the queue exhausts
+    cancels the Work, which ``allocate_work_retry`` or
+    ``exhaust_work_recovery`` then decides.
 
     Returns (relaunch requests, staged records, report). No model is involved
     in deciding; a relaunch is an ordinary dispatcher run.
@@ -224,9 +236,17 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 except ValueError:
                     recorded = requested
                 requested = max(requested, recorded)
+            retry = (queue_retries or {}).get(work.graph_id(aw["dedupe_key"])) \
+                if state == "available" else None
+            if retry is not None:
+                requested = max(requested, retry["retry_at"])
             after = [r for r in runs if datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) >= requested]
             entry = {"contribution": c["contribution_id"], "task": aw["task"], "queue_state": state,
                      "dispatcher_runs": [r["id"] for r in after]}
+            if retry is not None:
+                entry["queue_retry"] = {"attempts": retry["attempts"],
+                                        "max_attempts": retry.get("max_attempts"),
+                                        "retry_at": retry["retry_at"].isoformat()}
             if state in ("completed", "cancelled"):
                 # Work graphs are immutable and terminal. Reusing the same graph
                 # can only fail: the table allocates a fresh graph at a new
@@ -252,6 +272,17 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                                    "Policy refuses every dispatch until the "
                                                    "dispatcher reinstalls it"})
                 continue
+            if not after and retry is not None:
+                # The worker run of the last Claim ended without a Result
+                # and no dispatcher ran since: the queue holds the Work for
+                # its next attempt, which only a dispatcher run claims.
+                if now < retry["retry_at"]:
+                    report.append(entry | {"decision": "waiting for the queue's retry backoff"})
+                    continue
+                relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
+                report.append(entry | {"decision": "relaunch: the queue retries the Work after "
+                                                   "its worker run ended without a Result"})
+                continue
             if not after:
                 if now - requested < timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
                     report.append(entry | {"decision": "waiting for the dispatcher to start"})
@@ -276,7 +307,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
                                                   policy=policy,
                                                   history_missing=history is False,
-                                                  evidence=evidence)
+                                                  evidence=evidence, retry=retry)
             if new is None:
                 report.append(entry | {"decision": decision})
                 continue
@@ -365,7 +396,7 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
 
 def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                    policy: dict, history_missing: bool = False,
-                   evidence: dict[str, dict] | None = None
+                   evidence: dict[str, dict] | None = None, retry: dict | None = None
                    ) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work that a dispatcher run left absent
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
@@ -375,7 +406,9 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     ``evidence`` is the committed evidence the payload is measured from
     (``payload_cause``). ``history_missing`` says that the history of the
     Work was never recorded (``HISTORY_WAIT`` has passed), which the event states as the
-    cause in plain words."""
+    cause in plain words. ``retry`` is the queue's retry of the Work after a
+    worker run that ended without a Result (``queue_result.work_retries``),
+    which the event states too."""
     iso = now.isoformat()
     if engine.state_key(c) not in lifecycle.LIFECYCLE:
         return None, None, (f"dispatch lost in {engine.state_key(c)}, a state the table does "
@@ -391,6 +424,14 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
             "requested, and the dispatcher dispatches no Work without its history, so no "
             "worker ever received it. The controller reports of those ticks say why the "
             "history was not recorded"))
+    if retry is not None:
+        details["queue_retry"] = {"attempts": retry["attempts"],
+                                  "max_attempts": retry.get("max_attempts")}
+        causes.append(
+            f"the worker run of attempt {retry['attempts']} of this Work ended without a Result "
+            "(it was cancelled, timed out or lost its runner) and the queue holds the Work for "
+            "its next attempt, but the dispatcher runs since then did not start a worker for it. "
+            "The Dispatcher runs of the tracking issue entry show why")
     cause = "; ".join(text for text in causes if text)
     if cause:
         details["why"] = cause
@@ -1811,6 +1852,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          acceptances: dict[int, int] | None = None,
          observe: bool = True, dispatcher_runs: list[dict] | None = None,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
+         queue_retries: dict[str, dict] | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
          ci_reruns: list[dict] | None = None,
@@ -2083,7 +2125,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # dispatcher (bounded), then wait for a human.
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
                                               now=now, policy=policy, skip=skip,
-                                              queue_policy=queue_policy, evidence=snap.evidence)
+                                              queue_policy=queue_policy, evidence=snap.evidence,
+                                              queue_retries=queue_retries)
     out.staged.extend(staged)
     out.report["dispatch_recovery"] = rep
     # 1d. A dispatch refused by the installed work-queue Policy: re-arm it
@@ -2585,16 +2628,17 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             api, issues, INTAKE_LABEL, policy["command_authority"]["actor_ids"]
         )
     )
-    runs = queue = queue_state = None
+    runs = queue = queue_state = retries = None
     if not args.offline and args.gh_aw:
         try:
             runs = collect.dispatcher_runs(api)
             projection = queue_result.queue_projection(args.gh_aw, collect.CONTROL_REPO)
             queue = queue_result.work_states(projection)
+            retries = queue_result.work_retries(projection)
             queue_state = queue_policy_facts.status(
                 projection or {}, queue_policy_facts.load_compiled(repository=collect.CONTROL_REPO))
         except (collect.CollectError, OSError, ValueError) as error:
-            runs = queue = queue_state = None
+            runs = queue = queue_state = retries = None
             print(f"dispatch recovery skipped this tick: {error}", file=sys.stderr)
     if args.offline:
         observed_pressure = capacity.Pressure(ok=False, reason="offline")
@@ -2622,6 +2666,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             observe=not args.offline,
             dispatcher_runs=runs,
             queue_works=queue,
+            queue_retries=retries,
             queue_policy=queue_state,
             acceptances=acceptances,
             tracking_issues=issue_snapshots,

@@ -84,6 +84,10 @@ steps:
   # No `if: hashFiles(...)` here: hashFiles only sees the workspace, so a
   # plan under /tmp always looked absent and the step was skipped. The
   # script checks for the file itself.
+  # A Work is immutable in the queue, and the payload built for one Work
+  # changes with the pinned control commit and its history: Work the queue
+  # already holds (a retry after a cancelled worker run, a relaunch after
+  # its history was recorded) is never submitted again, only dispatched.
   - name: Stage the plan as trusted queue intents
     uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
     with:
@@ -92,10 +96,12 @@ steps:
         const path = require("node:path");
         const file = "/tmp/gh-aw/agent/porting-plan.json";
         if (!fs.existsSync(file)) { core.info("No actionable porting work"); return; }
-        const plan = JSON.parse(fs.readFileSync(file, "utf8"));
-        const { stagePlanIntents } = require(path.join(process.env.RUNNER_TEMP, "gh-aw/actions/work_queue_intents.cjs"));
-        stagePlanIntents(path.join(process.env.RUNNER_TEMP, "gh-aw/safeoutputs/work-queue/work-queue.intents.jsonl"), plan);
-        core.info(`Staged ${plan.nodes.length} porting task(s)`);
+        const { main } = require(path.join(process.env.GITHUB_WORKSPACE, "scripts/work_queue_stage.cjs"));
+        await main({ github, context, core,
+                     actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
+                     planPath: file,
+                     intentsPath: path.join(process.env.RUNNER_TEMP, "gh-aw/safeoutputs/work-queue/work-queue.intents.jsonl"),
+                     run: { id: String(context.runId), attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1) } });
 jobs:
   continuation:
     needs: [safe_outputs]
@@ -132,7 +138,9 @@ policyless ledger or a tool error is a failure, not an empty backlog.
 The trusted preparation step read the task the porting controller
 requested in the committed `.state/` and staged at most one task
 (for the `planner` or `worker` profile) followed by
-`{"pool":"default","max_claims":1,"max_dispatches":1}`. Explain the
+`{"pool":"default","max_claims":1,"max_dispatches":1}`. When the queue
+already holds that task's Work, it staged only the dispatch request: the
+queued Work is dispatched as it was first submitted. Explain the
 staged plan in one short paragraph: the contribution, the task kind and the
 reason it was selected. Do not submit again, choose a winner, dispatch
 directly, or emit `noop`. A staged request is not a launch.

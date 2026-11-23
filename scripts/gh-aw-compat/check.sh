@@ -16,8 +16,10 @@ cp "$root/scripts/gh-aw-compat/tests/upload_artifact_work_queue.test.cjs" \
     "$tmp/source/actions/setup/js/upload_artifact_work_queue.test.cjs"
 cp "$root/scripts/gh-aw-compat/tests/work_queue_policy_reinstall.test.cjs" \
     "$tmp/source/actions/setup/js/work_queue_policy_reinstall.test.cjs"
+cp "$root/scripts/gh-aw-compat/tests/work_queue_stage.test.cjs" \
+    "$tmp/source/actions/setup/js/work_queue_stage.test.cjs"
 cd "$tmp/source/actions/setup/js"
 npm ci --ignore-scripts --no-audit --no-fund
 PORTING_AGENT_ROOT=$root npx --no-install vitest run --no-file-parallelism \
     upload_artifact_work_queue.test.cjs work_queue_resource_scope.test.cjs \
-    work_queue_policy_reinstall.test.cjs
+    work_queue_policy_reinstall.test.cjs work_queue_stage.test.cjs
