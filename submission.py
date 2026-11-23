@@ -75,6 +75,9 @@ MAX_TITLE = 256
 # most this much of it.
 MAX_BODY = 12000
 MAX_REASONS = 30
+# The most commits a reviewed series may have, as for any upstream-facing
+# series the publisher validates.
+MAX_COMMITS = publisher.MAX_COMMITS
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -135,19 +138,27 @@ def reconstruct(work: Path, *, fork: str, upstream: str, base: str, approved: st
     ``fork_publish.PublishRejected`` when the series does not apply."""
     import handoff
 
+    if len(commit_rules.mbox_starts(mbox)) > MAX_COMMITS:
+        raise fork_publish.PublishRejected(f"the series has more than {MAX_COMMITS} commits")
     try:
         head = fork_publish.rebuild(work, fork=fork, upstream=upstream, expected_head=approved,
                                     base_sha=base, mbox=mbox, operation="rewrite",
                                     read_token=read_token)
     except fork_publish.PublishInfraError as error:
         raise CheckError(str(error)) from None
+    reviewed = _revs(work, base, head)
+    if len(reviewed) > MAX_COMMITS:
+        # Refused before any commit is validated, so a long series costs no
+        # per-commit work.
+        raise fork_publish.PublishRejected(
+            f"the series has {len(reviewed)} commits, more than {MAX_COMMITS}")
     try:
         clean, _removed = handoff.rebuild_without_debug(work, base=base, head=approved)
     except handoff.HandoffInvalid as error:
         raise fork_publish.PublishRejected(f"the approved series: {error}") from None
     commits = [{"sha": sha, "message": _message(work, sha),
                 "tree": _out(work, "rev-parse", f"{sha}^{{tree}}")}
-               for sha in _revs(work, base, head)]
+               for sha in reviewed]
     approved_messages = [_message(work, sha) for sha in _revs(work, base, clean)]
     scope = publisher.Scope(allowed_globs=list(scope_paths), upstream_facing=True,
                             history="rewrite")

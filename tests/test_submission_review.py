@@ -6,7 +6,9 @@ they answer, and the table rows they decide."""
 import copy
 import hashlib
 import tempfile
+import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import commit_rules
@@ -200,6 +202,30 @@ class TestCheck(unittest.TestCase):
             RULES, max_commits=1, title_prefix_required=False, body_required=False,
             signed_off_by_required=False)))
         self.assertIn("check: the series has 2 commits, more than 1", out["reasons"])
+
+    def test_a_long_series_is_refused_before_any_commit_is_validated(self):
+        steps = [({"setup.py": "b\n" if i % 2 == 0 else "c\n"}, (), f"Step {i}")
+                 for i in range(submission.MAX_COMMITS + 9)]
+        mbox = self.intermediate(*steps)
+        never = unittest.mock.Mock(side_effect=AssertionError("validated a commit"))
+        with unittest.mock.patch("publisher.validate_update", never), \
+                unittest.mock.patch("submission.intermediate_problems", never), \
+                unittest.mock.patch("handoff.rebuild_without_debug", never):
+            # The mbox is counted before anything is rebuilt.
+            with unittest.mock.patch("fork_publish.rebuild", never):
+                started = time.monotonic()
+                out = self.check(mbox)
+                self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(out["verdict"], "fail")
+            self.assertIn("more than 50 commits", "\n".join(out["reasons"]))
+            # The rebuilt series is counted before any commit is validated,
+            # whatever the mbox count.
+            with unittest.mock.patch("commit_rules.mbox_starts", return_value=[]):
+                out = self.check(mbox)
+            self.assertEqual(out["verdict"], "fail")
+            self.assertIn(f"has {submission.MAX_COMMITS + 11} commits, more than 50",
+                          "\n".join(out["reasons"]))
+        never.assert_not_called()
 
     def test_measurable_rules_and_template_sections(self):
         mbox = self.series("build riscv64 wheels.", "Test riscv64 wheels")

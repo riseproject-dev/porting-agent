@@ -273,11 +273,16 @@ def attribution_problems(messages: list[str], approved: list[str]) -> list[str]:
     return problems
 
 
+def mbox_starts(data: bytes) -> list[int]:
+    """Where each message of a ``git format-patch`` mbox starts."""
+    return [m.start() for m in _MBOX_FROM.finditer(data or b"")]
+
+
 def mbox_messages(data: bytes) -> list[str]:
     """The commit messages of a ``git format-patch`` mbox, in order: the
     subject without its ``[PATCH ...]`` prefix, a blank line, and the body up
     to the first ``---`` line, as ``git am`` reads them."""
-    starts = [m.start() for m in _MBOX_FROM.finditer(data)]
+    starts = mbox_starts(data)
     messages = []
     for i, start in enumerate(starts):
         chunk = data[start: starts[i + 1] if i + 1 < len(starts) else len(data)]
