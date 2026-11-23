@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The trusted check of the submission review Result, the Work it answers,
-and the table rows it decides."""
+"""The trusted checks of the submission rewrite and review Results, the Work
+they answer, and the table rows they decide."""
 
 import copy
 import hashlib
@@ -72,7 +72,7 @@ class TestCheck(unittest.TestCase):
         return git(repo, "format-patch", "--stdout", self.base).encode() + b"\n"
 
     def task(self, **context):
-        return {"task": "submission_review", "contribution_id": "example--proj/12", "revision": 4,
+        return {"task": "submission_rewrite", "contribution_id": "example--proj/12", "revision": 4,
                 "expected_head": self.approved, "base_sha": self.base,
                 "fork": "riseproject-upstreaming/proj", "upstream": "example/proj",
                 "allowed_paths": ["setup.py", "ci.yml"], "context": context}
@@ -81,15 +81,14 @@ class TestCheck(unittest.TestCase):
         value = {"schema_version": 1, "contribution_id": "example--proj/12",
                  "expected_revision": 4, "expected_head": self.approved, "verdict": "pass",
                  "reasons": [], "title": "Build riscv64 wheels", "body": BODY,
-                 "series_digest": hashlib.sha256(mbox).hexdigest(),
-                 "expectations": [{"expectation": "One commit per change", "met": True}]}
+                 "series_digest": hashlib.sha256(mbox).hexdigest()}
         value.update(over)
         return value
 
     def check(self, mbox, task=None, **over):
         self.checks = getattr(self, "checks", 0) + 1
-        return submission.check(task or self.task(), self.review(mbox, **over), mbox,
-                                workdir=self.root / f"check-{self.checks}")
+        return submission.check_rewrite(task or self.task(), self.review(mbox, **over), mbox,
+                                        workdir=self.root / f"check-{self.checks}")
 
     def test_a_passing_review(self):
         mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF,
@@ -184,7 +183,7 @@ class TestCheck(unittest.TestCase):
         out = self.check(b"", verdict="fail", reasons=["A CHANGELOG entry is missing"],
                          series_digest=None)
         self.assertEqual((out["verdict"], out["reasons"]),
-                         ("fail", ["review: A CHANGELOG entry is missing"]))
+                         ("fail", ["rewrite: A CHANGELOG entry is missing"]))
 
     def test_a_code_change_is_refused(self):
         mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels",
@@ -219,7 +218,10 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(out["verdict"], "fail")
         self.assertTrue(any("{debug}" in r for r in out["reasons"]), out["reasons"])
 
-    def test_the_review_must_answer_the_work_and_match_its_series(self):
+    def test_an_unusable_rewrite_is_not_a_verdict(self):
+        """A rewrite that does not answer the Work, has no series, or is
+        malformed is Work without a usable Result (a Work retry), never a
+        failed submission."""
         mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
         for over, problem in (({"expected_head": "e" * 40}, "expected_head"),
                               ({"expected_revision": 3}, "expected_revision"),
@@ -229,9 +231,12 @@ class TestCheck(unittest.TestCase):
                               ({"unknown": 1}, "malformed")):
             with self.subTest(problem=problem):
                 out = self.check(mbox, **over)
-                self.assertEqual(out["verdict"], "fail")
-                self.assertTrue(any(problem in r for r in out["reasons"]), out["reasons"])
-        out = submission.check(dict(self.task(), task="development_patch"), self.review(mbox), mbox)
+                self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
+                self.assertIn(problem, out["reason"])
+        out = submission.check_rewrite(dict(self.task(), task="development_patch"),
+                                       self.review(mbox), mbox)
+        self.assertEqual(out["status"], "rejected")
+        out = submission.check_rewrite(self.task(), self.review(mbox), None)
         self.assertEqual(out["status"], "rejected")
 
     def test_a_series_that_does_not_apply_is_refused(self):
@@ -252,28 +257,94 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(out["verdict"], "pass")
 
 
+class TestReviewCheck(unittest.TestCase):
+    """The review of exactly the rewritten series and text."""
+
+    REWRITE = {"evidence_id": "submission-rewrite-x-r5-7001", "head": "c" * 40,
+               "series_digest": "5" * 64, "text_digest": submission.text_digest("T", "B"),
+               "run_id": "7001", "artifact_id": 77}
+
+    def task(self, **over):
+        value = {"task": "submission_review", "contribution_id": "example--proj/12", "revision": 5,
+                 "expected_head": "a" * 40, "base_sha": "b" * 40,
+                 "context": {"rewrite": dict(self.REWRITE)}}
+        value.update(over)
+        return value
+
+    def review(self, **over):
+        value = {"schema_version": 1, "contribution_id": "example--proj/12", "expected_revision": 5,
+                 "expected_head": "a" * 40, "verdict": "pass", "reasons": [],
+                 "series_digest": "5" * 64, "text_digest": self.REWRITE["text_digest"],
+                 "expectations": [{"expectation": "The template's Testing section is filled",
+                                   "source": "pull_request_template", "met": True}]}
+        value.update(over)
+        return value
+
+    def test_a_pass_and_a_fail(self):
+        out = submission.check_review(self.task(), self.review())
+        self.assertEqual((out["status"], out["verdict"], out["reasons"], out["rewrite_evidence_id"]),
+                         ("submission_review", "pass", [], self.REWRITE["evidence_id"]))
+        out = submission.check_review(self.task(), self.review(
+            verdict="fail", reasons=["The CHANGELOG entry the contributing guide asks for is missing"]))
+        self.assertEqual((out["verdict"], out["reasons"]), (
+            "fail", ["review: The CHANGELOG entry the contributing guide asks for is missing"]))
+        # A pass that lists an unmet expectation blocks.
+        out = submission.check_review(self.task(), self.review(expectations=[
+            {"expectation": "Commits are signed off", "met": False}]))
+        self.assertEqual((out["verdict"], out["reasons"]),
+                         ("fail", ["review: expectation not met: Commits are signed off"]))
+
+    def test_an_unusable_review_is_not_a_verdict(self):
+        for task, review in (
+                (self.task(), self.review(series_digest="6" * 64)),
+                (self.task(), self.review(text_digest="6" * 64)),
+                (self.task(), self.review(expected_revision=4)),
+                (self.task(), self.review(expectations=[])),
+                (self.task(), self.review(title="a review may not write text")),
+                (self.task(), {"verdict": "pass"}),
+                (self.task(context={}), self.review()),
+                (self.task(task="submission_rewrite"), self.review())):
+            with self.subTest(review=review, task=task.get("task")):
+                out = submission.check_review(task, review)
+                self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
+
+
 class TestReviewWork(unittest.TestCase):
-    def test_the_review_task_is_uncredentialed_and_writes_nothing(self):
-        self.assertNotIn(work.SUBMISSION_REVIEW, work.WRITE_TASKS)
-        self.assertEqual(work.ALLOWED_OPERATIONS[work.SUBMISSION_REVIEW], [])
-        self.assertEqual(work.profile_for(work.SUBMISSION_REVIEW), work.WORKER_PROFILE)
-        contract = work.effect_contract(work.SUBMISSION_REVIEW)
-        self.assertEqual([o["type"] for o in contract["outputs"] if o.get("min")],
-                         ["upload_artifact"])
+    def test_the_submission_tasks_are_uncredentialed_and_write_nothing(self):
+        for task in (work.SUBMISSION_REWRITE, work.SUBMISSION_REVIEW):
+            self.assertNotIn(task, work.WRITE_TASKS)
+            self.assertEqual(work.ALLOWED_OPERATIONS[task], [])
+            self.assertEqual(work.profile_for(task), work.WORKER_PROFILE)
+            contract = work.effect_contract(task)
+            self.assertEqual([o["type"] for o in contract["outputs"] if o.get("min")],
+                             ["upload_artifact"])
 
     def test_the_review_carries_the_rules_and_the_sections(self):
         data = dossier()
         self.assertEqual(commit_rules.sections_from_dossier(data), SECTIONS)
         self.assertEqual(commit_rules.from_dossier(data)["title_max_length"], 72)
 
-    def test_the_table_rows_of_the_review(self):
-        accept = lc.find_edge("handoff.agent_running", "accept_submission_review")
-        reject = lc.find_edge("handoff.agent_running", "reject_submission_review")
+    def test_the_table_rows_of_the_rewrite_and_the_review(self):
+        accept = lc.find_edge("handoff.agent_running", "accept_submission_rewrite")
+        reject = lc.find_edge("handoff.agent_running", "reject_submission_rewrite")
+        self.assertEqual((accept.target, reject.target),
+                         ("handoff.review_pending", "development.fix_needed"))
+        self.assertEqual(accept.transition.effects.revision, "bump")
+        accept = lc.find_edge("handoff.reviewing", "accept_submission_review")
+        reject = lc.find_edge("handoff.reviewing", "reject_submission_review")
         self.assertEqual((accept.target, reject.target),
                          ("handoff.building_upstream_branch", "development.fix_needed"))
         self.assertIn("pending_feedback_evidence_ids", reject.transition.effects.sets)
         self.assertEqual(reject.transition.effects.revision, "bump")
         self.assertEqual(accept.transition.effects.revision, "keep")
+        for state in ("handoff.agent_running", "handoff.reviewing"):
+            self.assertEqual(lc.find_edge(state, "allocate_work_retry").target, state)
+            self.assertEqual(lc.find_edge(state, "exhaust_work_recovery").target,
+                             "handoff.waiting_human")
+        # An expired rewrite leads back to a fresh rewrite.
+        for state in ("handoff.review_pending", "handoff.building_upstream_branch"):
+            self.assertEqual(lc.find_edge(state, "expire_submission_rewrite").target,
+                             "handoff.review_due")
         # No row of the review posts or builds anything; only the build of
         # `riscv64` writes the fork in handoff.
         self.assertEqual([k for k, s in lc.LIFECYCLE.items()
@@ -282,7 +353,7 @@ class TestReviewWork(unittest.TestCase):
 
     def test_the_check_finds_a_review_that_skips_the_build(self):
         from unittest import mock
-        broken = copy.deepcopy(lc.LIFECYCLE["handoff.agent_running"])
+        broken = copy.deepcopy(lc.LIFECYCLE["handoff.reviewing"])
         transitions = dict(broken.transitions)
         accept = transitions.pop(("accept_submission_review", "handoff.building_upstream_branch"))
         transitions[("accept_submission_review", "handoff.waiting_ci")] = accept
@@ -292,7 +363,7 @@ class TestReviewWork(unittest.TestCase):
             lc.Effects(revision="bump", work="clear", clears=reject.effects.clears))
         broken = lc.State(broken.kind, broken.launches, broken.writes, broken.description,
                           transitions)
-        with mock.patch.dict(lc.LIFECYCLE, {"handoff.agent_running": broken}):
+        with mock.patch.dict(lc.LIFECYCLE, {"handoff.reviewing": broken}):
             problems = lc.check_table()
         self.assertTrue(any("reachable from handoff.awaiting_submission without "
                             "handoff.building_upstream_branch" in p for p in problems), problems)

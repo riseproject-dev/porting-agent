@@ -646,6 +646,10 @@ for _guard, _name in (
      "conflicts", "upstream_branch_invalid"),
     (("a pull request is open from `riscv64` (upstream or in the fork), `riscv64-dev` is "
                  "missing, or the record's development branch is not `riscv64-dev`"), "upstream_branch_blocked"),
+    (lc.REWRITE_PASSED, "submission_rewrite_passed"),
+    (lc.REWRITE_FAILED, "submission_rewrite_failed"),
+    (lc.REWRITE_EXPIRED, "submission_rewrite_expired"),
+    (lc.REWRITE_CURRENT, "submission_rewrite_current"),
     (lc.REVIEW_PASSED, "submission_review_passed"),
     (lc.REVIEW_FAILED, "submission_review_failed"),
     (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),
@@ -694,6 +698,8 @@ FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") 
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
 CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
+                       ("submission_rewrite_passed", "submission_rewrite_failed"),
+                       ("submission_rewrite_current", "submission_rewrite_expired"),
                        ("submission_review_passed", "submission_review_failed"))
 
 
@@ -789,9 +795,13 @@ PIPELINE_VERBS: dict[str, str] = {
     "start_operation": "controller",
     "require_provisioning_intervention": "controller",
     "confirm_provisioning": "recovery",
-    # The submission review Work: its allocation and the exhaustion of
-    # `work_total` where it is due, and its Result, which the trusted check
-    # decides.
+    # The submission rewrite and review Work: their allocation and the
+    # exhaustion of `work_total` where they are due, their Results, which the
+    # trusted checks decide, and a rewrite whose artifact expired.
+    "request_submission_rewrite": "controller",
+    "accept_submission_rewrite": "reconcile",
+    "reject_submission_rewrite": "reconcile",
+    "expire_submission_rewrite": "controller",
     "request_submission_review": "controller",
     "accept_submission_review": "reconcile",
     "reject_submission_review": "reconcile",
@@ -978,6 +988,7 @@ def reset_generation(record: dict) -> dict:
         "pending_feedback_evidence_ids": [], "active_work": None,
         "dossier_evidence_id": None, "scope_coverage_complete": False,
         "scope_paths": None, "debug_commits": [], "clean_head_sha": None,
+        "submission_rewrite_id": None,
         "submission_review_id": None,
         "handoff_request": None, "handoff_approval": None,
         "last_ci_evidence_id": None, "merge": None, "retirement": None,

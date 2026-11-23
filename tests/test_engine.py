@@ -44,6 +44,7 @@ SAMPLE = {
     "scope_paths": ["pyproject.toml"], "parked_reason": "no bounded patch",
     "terminal_reason": "not applicable", "last_ci_evidence_id": "ci-2-8-1",
     "clean_head_sha": SHA_B, "submission_review_id": "submission-review-1",
+    "submission_rewrite_id": "submission-rewrite-1",
     "handoff_request": {"command_id": "observation-ci-2-8-1", "head": SHA_A, "revision": 0},
     "handoff_approval": {"command_id": "comment-1", "actor": OWNER, "head": SHA_A, "revision": 0,
                          "evidence_ids": ["ci-2-7-1"]},

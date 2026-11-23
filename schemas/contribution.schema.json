@@ -79,6 +79,8 @@
         "waiting_human",
         "awaiting_submission",
         "review_due",
+        "review_pending",
+        "reviewing",
         "building_upstream_branch",
         "preparing_submission",
         "waiting_upstream_pr"
@@ -568,6 +570,17 @@
         "null"
       ],
       "pattern": "^[0-9a-f]{40}$"
+    },
+    "submission_rewrite_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+        }
+      ]
     },
     "submission_review_id": {
       "anyOf": [

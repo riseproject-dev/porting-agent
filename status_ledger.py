@@ -75,16 +75,25 @@ MESSAGES = {
                         "checked series, CI is checked on its head, and the submission package "
                         "is posted on this issue. `riscv64-dev` and the development PR stay as "
                         "they are."),
-    "request_submission_review": "Requested the submission review Work.",
-    "accept_submission_review": ("The submission review passed the trusted check: the reviewed "
-                                 "series has the tree of the approved series without its debug "
-                                 "commits and follows the dossier's measurable rules. `riscv64` "
-                                 "is built from it next."),
-    "reject_submission_review": ("The submission review did not pass, or its series or pull "
-                                 "request text broke a rule of the project. Nothing was posted "
-                                 "and `riscv64` was not written. The reasons are recorded as "
-                                 "review evidence and are the feedback of the next development "
-                                 "Work."),
+    "request_submission_rewrite": "Requested the submission rewrite Work.",
+    "accept_submission_rewrite": ("The submission rewrite passed the trusted check: every "
+                                  "commit is valid upstream, the series has the tree of the "
+                                  "approved series without its debug commits, and it follows "
+                                  "the dossier's measurable rules. Its review is next."),
+    "reject_submission_rewrite": ("The submission rewrite did not pass the trusted check, or "
+                                  "the series cannot be shaped without a code change. Nothing "
+                                  "was posted and `riscv64` was not written. The reasons are "
+                                  "recorded as rewrite evidence and are the feedback of the "
+                                  "next development Work."),
+    "expire_submission_rewrite": ("The rewritten series expired before `riscv64` was built; a "
+                                  "fresh rewrite and review are due."),
+    "request_submission_review": "Requested the review of the rewritten series and text.",
+    "accept_submission_review": ("The review of the rewritten series and pull request text "
+                                 "passed. `riscv64` is built from the series next."),
+    "reject_submission_review": ("The review of the rewritten series and pull request text did "
+                                 "not pass. Nothing was posted and `riscv64` was not written. "
+                                 "The reasons are recorded as review evidence and are the "
+                                 "feedback of the next development Work."),
     "confirm_clean_head": "Built `riscv64` from the reviewed series and read it back.",
     "retry_upstream_branch": ("Writing `riscv64` failed with an infrastructure error; it is "
                               "attempted again."),
@@ -102,7 +111,7 @@ MESSAGES = {
         "Posting the submission package failed repeatedly (`submission_comment` is spent). The "
         "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
         "current revision attempts it again."),
-    "resume_submission_review": "Resumed: the submission review Work is due again.",
+    "resume_submission_review": "Resumed: the submission rewrite Work is due again.",
     "resume_upstream_branch": "Resumed: building `riscv64` is attempted again.",
     "resume_submission_preparation": "Resumed: posting the submission package is attempted again.",
     "record_audit_observation": ("Recorded an observation of the upstream pull request wait for "

@@ -387,10 +387,10 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual((receipt["verb"], receipt["result"], receipt["revision"]),
                          ("submit-upstream", "accepted", 6))
         after = self.final(output, record)
-        # The review Work is allocated in the same tick; nothing is written to
+        # The rewrite Work is allocated in the same tick; nothing is written to
         # the fork and no handoff operation is launched yet.
         self.assertEqual(engine.state_key(after), "handoff.agent_running")
-        self.assertEqual(self.events(output), ["submit_upstream", "request_submission_review"])
+        self.assertEqual(self.events(output), ["submit_upstream", "request_submission_rewrite"])
         self.assertEqual((after["revision"], after["fork"], after["last_ci_evidence_id"]),
                          (6, FORK, CI_EVIDENCE))
         self.assertEqual(after["handoff_approval"]["head"], HEAD)
@@ -399,7 +399,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertFalse(any(kind == "operations" for kind, _r in output.staged))
         [work] = output.report["requested_effects"]
         self.assertEqual((work["task"], work["expected_head"], work["effect_contract"]),
-                         ("submission_review", HEAD, {"kind": "none"}))
+                         ("submission_rewrite", HEAD, {"kind": "none"}))
         self.assertEqual(output.report["handoff_requests"], [])
         wrong = (
             (f"/upstreaming submit-upstream revision=5 head={HEAD}", "stale revision 5, current is 6"),

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Submission rewrite Result of the uncredentialed rewrite Work (untrusted)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contribution_id", "expected_revision", "expected_head", "verdict", "reasons", "title", "body", "series_digest"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "contribution_id": {"type": "string", "minLength": 1, "maxLength": 127},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "expected_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "verdict": {"enum": ["pass", "fail"]},
+    "reasons": {"type": "array", "maxItems": 30, "items": {"type": "string", "minLength": 5, "maxLength": 2000}},
+    "title": {"type": "string", "maxLength": 256},
+    "body": {"type": "string", "maxLength": 60000},
+    "series_digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "commit_rules": {"type": ["object", "null"]},
+    "template_sections": {"type": ["array", "null"], "maxItems": 30, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+    "checklist": {
+      "type": "array", "maxItems": 50,
+      "items": {"type": "object", "additionalProperties": false, "required": ["item", "answer"],
+                "properties": {"item": {"type": "string", "minLength": 1, "maxLength": 500},
+                               "answer": {"enum": ["yes", "no", "not_applicable"]},
+                               "note": {"type": "string", "maxLength": 1000}}}
+    },
+    "expectations": {
+      "type": "array", "maxItems": 60,
+      "items": {"type": "object", "additionalProperties": false, "required": ["expectation", "met"],
+                "properties": {"expectation": {"type": "string", "minLength": 5, "maxLength": 1000},
+                               "met": {"type": "boolean"},
+                               "note": {"type": "string", "maxLength": 1000}}}
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"verdict": {"const": "fail"}}},
+     "then": {"properties": {"reasons": {"minItems": 1}}}},
+    {"if": {"properties": {"verdict": {"const": "pass"}}},
+     "then": {"properties": {"title": {"minLength": 1}, "body": {"minLength": 1},
+                             "series_digest": {"type": "string"}}}}
+  ]
+}

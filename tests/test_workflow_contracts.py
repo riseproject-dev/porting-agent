@@ -273,17 +273,28 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("--artifact-meta review/artifact.json", branch["run"])
         self.assertIn("--series review/files/patches.mbox", branch["run"])
 
-    def test_the_review_task_is_checked_without_a_token(self):
+    def test_the_rewrite_and_review_tasks_are_checked_without_a_token(self):
         worker = workflow("worker.lock.yml")
         publish = worker["jobs"]["publish"]
         step = next(s for s in publish["steps"] if s.get("id") == "result")
         run = step["run"]
-        review = run.index("submission_review")
-        self.assertIn("python -m submission check", run[review:])
-        self.assertIn('echo "publish=false"', run[review:run.index("python -m submission check")])
-        # The token step runs only for a publication, which the review never is.
+        start = run.index("submission_rewrite")
+        self.assertIn('echo "publish=false"', run[start:run.index("python -m submission check")])
+        self.assertIn("python -m submission check-rewrite", run[start:])
+        self.assertIn("python -m submission check-review", run[start:])
+        # An artifact that cannot be read is Work without a usable Result.
+        self.assertIn('status:"rejected", failure_class:"validation"', run[start:])
+        # The token step runs only for a publication, which neither ever is.
         token = next(s for s in publish["steps"] if s.get("id") == "fork-token")
         self.assertEqual(token["if"], "steps.result.outputs.publish == 'true'")
+
+    def test_the_review_reads_exactly_the_rewrite_it_is_given(self):
+        text = (WORKFLOWS / "worker.md").read_text()
+        pre = text[text.index("Check out the contribution fork"):text.index("post-steps:")]
+        for needle in ('.name == "porting-publication"', "(.expired | not)",
+                       ".workflow_run.id | tostring", "series digest mismatch",
+                       "text digest mismatch", ".context.rewrite.artifact_id"):
+            self.assertIn(needle, pre)
 
     def test_controller_collects_handoff_receipts_from_main_only(self):
         text = (WORKFLOWS / "controller.yml").read_text()

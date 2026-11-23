@@ -92,6 +92,8 @@ def _actionable(c: dict) -> str | None:
     if c["phase"] == "upstream_review" and c["activity"] == "fix_needed":
         return "upstream_revision"
     if engine.state_key(c) == "handoff.review_due":
+        return work_queue.SUBMISSION_REWRITE
+    if engine.state_key(c) == "handoff.review_pending":
         return work_queue.SUBMISSION_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
@@ -106,7 +108,8 @@ def _actionable(c: dict) -> str | None:
 # contribution waits for a human instead of being retried blindly.
 WORK_DEADLINE_HOURS = 6
 
-PRIORITY = {"upstream_revision": 0, "submission_review": 0, "development_repair": 1,
+PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
+            "development_repair": 1,
             "development_patch": 2, "investigation": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
@@ -117,7 +120,8 @@ WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 ALLOCATIONS = {
     "investigation.idle": ("dispatch_investigation",),
     "development.fix_needed": ("request_repair", "request_patch"),
-    "handoff.review_due": ("request_submission_review",),
+    "handoff.review_due": ("request_submission_rewrite",),
+    "handoff.review_pending": ("request_submission_review",),
     "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
 }
 # The rows taken instead when a budget of that Work is exhausted. They need no
@@ -127,6 +131,7 @@ EXHAUSTIONS = {
     "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
     "handoff.review_due": ("exhaust_work_total",),
+    "handoff.review_pending": ("exhaust_work_total",),
     "upstream_review.fix_needed": ("exhaust_repair_attempts",),
 }
 # The facts the controller establishes for an allocation it is about to take.
@@ -138,6 +143,8 @@ def task_for(verb: str, record: dict) -> str:
     for a repair when the record holds pending feedback for it to answer."""
     if verb == "dispatch_investigation":
         return "investigation"
+    if verb == "request_submission_rewrite":
+        return work_queue.SUBMISSION_REWRITE
     if verb == "request_submission_review":
         return work_queue.SUBMISSION_REVIEW
     if verb in ("request_upstream_revision", "request_review_revision"):
@@ -662,13 +669,29 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             ci = _recorded_ci_evidence(due, evidence)
             ops = _open_operations(due, operations)
+            facts = ALLOCATION_FACTS
+            if engine.state_key(due) == "handoff.review_pending":
+                # The review reads the rewritten series from its artifact:
+                # an expired one is never reviewed, a fresh rewrite is due.
+                if handoff.rewrite_expired(due, evidence, inputs.now):
+                    out = engine.apply_transition(
+                        due, "expire_submission_rewrite", policy=policy, now=now,
+                        facts={"submission_rewrite_expired"}, open_operations=ops,
+                        cause_id=f"expired-{due.get('submission_rewrite_id')}")
+                    if out.accepted:
+                        by_id[c["contribution_id"]] = out.record
+                        res.stage("contributions", out.record)
+                        res.stage("events", out.event)
+                        continue
+                else:
+                    facts = ALLOCATION_FACTS | {"submission_rewrite_current"}
             spent = next((verb for verb in EXHAUSTIONS.get(engine.state_key(due), ())
                           if engine.refusal(due, verb, policy=policy, now=now, ci_evidence=ci,
                                             open_operations=ops) is None), None)
             if spent:
                 _exhaust(c, due, spent, ci, by_id, res, policy, now)
                 continue
-            verb, why = _allocation_verb(due, ci, ops, policy, now)
+            verb, why = _allocation_verb(due, ci, ops, policy, now, facts)
             if verb is None:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                 continue
@@ -705,13 +728,16 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 cluster = engine.recorded_failing_job(claimed, ci)[1]
                 request = _work_request(claimed, kind, inputs, now)
                 claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
-                                facts=ALLOCATION_FACTS, values={"active_work": request},
+                                facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
+                                                          if verb == "request_submission_review"
+                                                          else set()),
+                                values={"active_work": request},
                                 ci_evidence=ci,
                                 open_operations=_open_operations(claimed, operations),
                                 details={"task": kind, "work": request["dedupe_key"],
                                          **({"cluster": cluster} if cluster else {})})
                 carried = claimed["active_work"].get("feedback_evidence_ids") or []
-                if kind != work_queue.SUBMISSION_REVIEW \
+                if kind not in work_queue.SUBMISSION_TASKS \
                         and carried != list(c.get("pending_feedback_evidence_ids") or []):
                     raise lifecycle.TransitionError(
                         f"{verb}: the Work carries {carried}, not the pending feedback")
@@ -729,7 +755,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or []),
                 "effect_contract": (
                     {"kind": "none"}
-                    if kind in ("investigation", work_queue.SUBMISSION_REVIEW)
+                    if kind == "investigation" or kind in work_queue.SUBMISSION_TASKS
                     else {
                         "kind": "fork_branch",
                         "repository": (claimed.get("fork") or {}).get("name"),
@@ -786,12 +812,12 @@ def _begun(record: dict, policy: dict, now: str) -> dict | None:
 
 
 def _allocation_verb(record: dict, ci: dict | None, ops: tuple[str, ...], policy: dict,
-                     now: str) -> tuple[str | None, str | None]:
+                     now: str, facts: frozenset = ALLOCATION_FACTS) -> tuple[str | None, str | None]:
     """The row that allocates the Work due in this state, once a worker slot
     and capacity are free, or the reason none applies."""
     reasons = []
     for verb in ALLOCATIONS.get(engine.state_key(record), ()):
-        why = engine.refusal(record, verb, policy=policy, now=now, facts=ALLOCATION_FACTS,
+        why = engine.refusal(record, verb, policy=policy, now=now, facts=facts,
                              ci_evidence=ci, open_operations=ops)
         if why is None:
             return verb, None
@@ -850,9 +876,9 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
 
     generation, revision = int(record.get("generation", 0)), record["revision"]
     reason_ids: list[str] = []
-    if kind == work_queue.SUBMISSION_REVIEW:
+    if kind in work_queue.SUBMISSION_TASKS:
         # The dossier (with its contribution guidelines) and the CI evidence
-        # of the candidate head the review describes.
+        # of the candidate head the rewrite and the review describe.
         reason_ids = [i for i in (record.get("dossier_evidence_id"),
                                   record.get("last_ci_evidence_id")) if i]
     if kind in ("development_repair", "upstream_revision"):
@@ -940,6 +966,20 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
     if active and op is None:
         raise lifecycle.TransitionError(f"{state} names the operation {active}, which the store "
                                         "does not hold")
+    if state == lifecycle.UPSTREAM_BRANCH_WRITER and (op is None or not recovery.is_open(op)) \
+            and handoff.rewrite_expired(c, evidence, inputs.now, review=True):
+        # The series `riscv64` would be built from is no longer available: a
+        # fresh rewrite and review are due, never an endless wait.
+        out = engine.apply_transition(
+            c, "expire_submission_rewrite", policy=policy, now=now,
+            facts={"submission_rewrite_expired"}, open_operations=_open_operations(c, operations),
+            cause_id=f"expired-{c.get('submission_rewrite_id')}")
+        if not out.accepted:
+            raise lifecycle.TransitionError(f"expire_submission_rewrite refused: {out.reason}")
+        by_id[cid] = out.record
+        res.stage("contributions", out.record)
+        res.stage("events", out.event)
+        return
     if op is None:
         op = handoff.plan_attempt(c, operations, policy=policy, now=now, evidence=evidence)
         if op["operation_id"] in operations:

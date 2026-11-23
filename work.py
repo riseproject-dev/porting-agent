@@ -46,16 +46,21 @@ PROFILE_WORKFLOWS = {WORKER_PROFILE: ".github/workflows/worker.lock.yml",
 PROPOSAL_ARTIFACT = "porting-out"
 
 WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
-# The review at submission: uncredentialed like every Work, and it writes
-# nothing. Its reshaped series is checked by trusted code in the worker's
-# publish job without a token, and only the trusted handoff workflow builds
-# `riscv64` from it.
+# The two Work tasks at submission, run one after the other in fresh
+# contexts: the rewrite reshapes the series and writes the pull request
+# text; the review reviews exactly that series and text and can change
+# nothing. Both are uncredentialed like every Work and write nothing: the
+# rewrite is checked by trusted code in the worker's publish job without a
+# token, and only the trusted handoff workflow builds `riscv64` from it.
+SUBMISSION_REWRITE = "submission_rewrite"
 SUBMISSION_REVIEW = "submission_review"
+SUBMISSION_TASKS = (SUBMISSION_REWRITE, SUBMISSION_REVIEW)
 ALLOWED_OPERATIONS = {
     "development_patch": ["append", "rewrite"],
     "development_repair": ["append", "rewrite"],
     "upstream_revision": ["append"],   # history policy may widen this per project
     "investigation": [],
+    SUBMISSION_REWRITE: [],
     SUBMISSION_REVIEW: [],
 }
 
@@ -69,7 +74,7 @@ def effect_contract(task: str) -> dict:
         # The dossier comes back as an artifact too, but investigations must
         # not need a write-capable Claim: they report via artifact only.
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
-    if task in WRITE_TASKS or task == SUBMISSION_REVIEW:
+    if task in WRITE_TASKS or task in SUBMISSION_TASKS:
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
     raise ValueError(f"unknown task {task}")
 
@@ -139,7 +144,7 @@ def _identity(request: dict) -> dict:
 def profile_for(task: str) -> str:
     if task == "investigation":
         return INVESTIGATOR_PROFILE
-    if task in WRITE_TASKS or task == SUBMISSION_REVIEW:
+    if task in WRITE_TASKS or task in SUBMISSION_TASKS:
         return WORKER_PROFILE
     raise ValueError(f"unknown task {task}")
 
@@ -253,14 +258,20 @@ _PLANS = {
     "upstream_revision": (
         "Address the current maintainer feedback/CI failures identified by reason_ids on the "
         "upstream-facing riscv64 branch. No {debug} commits. Return the proposal and series."),
+    SUBMISSION_REWRITE: (
+        "Prepare the upstream submission of the approved riscv64-dev series at expected_head. "
+        "Reshape its non-debug commits on base_sha after the project's commit conventions "
+        "(squash or split only where its contributing instructions or reviewers require it, "
+        "keeping the final tree identical and every intermediate tree a state of the approved "
+        "series), and write the upstream PR title and description following the project's "
+        "pull request template exactly and its contributing instructions. Change no code. "
+        "Return the rewrite and the reshaped series as the artifact."),
     SUBMISSION_REVIEW: (
-        "Prepare and review the upstream submission of the approved riscv64-dev series at "
-        "expected_head. Reshape its non-debug commits on base_sha after the project's commit "
-        "conventions (squash or split only where its contributing instructions or reviewers "
-        "require it, keeping the final tree identical), write the upstream PR title and "
-        "description following the project's pull request template exactly and its "
-        "contributing instructions, and review the whole against the reviewers' expectations. "
-        "Change no code. Return the review and the reshaped series as the artifact."),
+        "Review exactly the rewritten series and pull request text in context.rewrite, which "
+        "the trusted pre-agent step downloaded and verified, against the project's pull "
+        "request template, contributing instructions, commit conventions, and the reviewers' "
+        "expectations. Report pass or fail with one reason per problem. Change nothing. "
+        "Return the review as the artifact."),
 }
 
 
@@ -375,6 +386,20 @@ def _reason_item(evidence: dict) -> dict:
     return item
 
 
+def rewrite_reference(evidence: dict | None) -> dict:
+    """The accepted rewrite a review Work reviews, as the payload names it.
+    Raises ``ValueError`` when the record names no accepted rewrite."""
+    data = (evidence or {}).get("data") or {}
+    artifact = data.get("artifact") or {}
+    if (evidence or {}).get("kind") != SUBMISSION_REWRITE or data.get("verdict") != "pass" \
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", str(artifact.get("run_id"))) \
+            or not isinstance(artifact.get("artifact_id"), int):
+        raise ValueError("the review Work names no accepted submission rewrite")
+    return {"evidence_id": evidence["evidence_id"], "head": data["head"],
+            "series_digest": data["series_digest"], "text_digest": data["text_digest"],
+            "run_id": str(artifact["run_id"]), "artifact_id": int(artifact["artifact_id"])}
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     import reconcile
 
@@ -422,7 +447,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
         dossier = (snapshot.evidence.get(record.get("dossier_evidence_id") or "") or {}).get("data")
         rules = commit_rules.from_dossier(dossier) if request["task"] != "investigation" else None
         sections = (commit_rules.sections_from_dossier(dossier)
-                    if request["task"] == SUBMISSION_REVIEW else None)
+                    if request["task"] in SUBMISSION_TASKS else None)
+        rewrite = (rewrite_reference(snapshot.evidence.get(record.get("submission_rewrite_id")
+                                                           or ""))
+                   if request["task"] == SUBMISSION_REVIEW else None)
         reason_evidence = []
         for evidence_id in request.get("reason_ids") or []:
             evidence = snapshot.evidence.get(evidence_id)
@@ -452,6 +480,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     # which the submission check requires in the reviewed
                     # description.
                     **({"template_sections": sections} if sections is not None else {}),
+                    # The rewrite a review reviews: the trusted pre-agent
+                    # step downloads its series and text from this artifact
+                    # and checks them against these digests.
+                    **({"rewrite": rewrite} if rewrite is not None else {}),
                 },
             )
         )

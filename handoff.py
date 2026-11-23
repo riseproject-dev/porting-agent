@@ -206,6 +206,33 @@ def review_evidence(record: dict, evidence: dict) -> dict:
     return review
 
 
+# The worker's publication artifact, which holds the rewritten series, is
+# kept this long; a rewrite is treated as expired a day before.
+ARTIFACT_RETENTION_DAYS = 30
+EXPIRY_MARGIN_DAYS = 1
+
+
+def rewrite_expired(record: dict, evidence: dict, now, *, review: bool = False) -> bool:
+    """Whether the publication artifact of the record's accepted rewrite has
+    expired or expires within a day (``expire_submission_rewrite``). With
+    ``review``, the rewrite is the one the accepted review passed."""
+    from datetime import datetime, timedelta
+
+    if review:
+        accepted = evidence.get(record.get("submission_review_id") or "") or {}
+        eid = ((accepted.get("data") or {}).get("rewrite_evidence_id")
+               or record.get("submission_rewrite_id"))
+        rewrite = evidence.get(eid or "") or accepted
+    else:
+        rewrite = evidence.get(record.get("submission_rewrite_id") or "") or {}
+    collected = rewrite.get("collected_at")
+    if not collected:
+        return False
+    now = now if isinstance(now, datetime) else datetime.fromisoformat(str(now))
+    age = now - datetime.fromisoformat(collected)
+    return age >= timedelta(days=ARTIFACT_RETENTION_DAYS - EXPIRY_MARGIN_DAYS)
+
+
 def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,
                  kind: str | None = None, evidence: dict | None = None) -> dict:
     """``record_intent`` of the next attempt of the operation the record's

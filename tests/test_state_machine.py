@@ -238,7 +238,8 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_investigation", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
-                          "request_submission_review", "allocate_work_retry"})
+                          "request_submission_rewrite", "request_submission_review",
+                          "allocate_work_retry"})
         for e in allocating:
             self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
 

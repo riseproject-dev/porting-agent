@@ -626,34 +626,42 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "worker Work, publication, the development PR, its CI, and head observation use it. It "
         "is never changed for upstreaming, and the development PR is never closed: the "
         "development PR closure, its operation, budget, state, and resume are removed. "
-        "`submit_upstream` leads to `handoff.review_due`, where `request_submission_review` "
-        "allocates uncredentialed review Work (`handoff.agent_running`). The review reshapes the "
-        "non-debug commits of the approved series after the dossier's measured commit "
+        "`submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` "
+        "allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes "
+        "the non-debug commits of the approved series after the dossier's measured commit "
         "conventions (squashing or splitting only where the contributing instructions or "
-        "reviewers require it), writes the upstream PR title and description after the pull "
+        "reviewers require it) and writes the upstream PR title and description after the pull "
         "request template and contributing instructions, which take precedence over the "
-        "pipeline's instructions, and reviews the whole against the reviewers' expectations. "
-        "Trusted code checks the same final tree, the measurable rules, and the template's "
-        "required sections: `accept_submission_review` leads to "
-        "`handoff.building_upstream_branch`, which creates `riscv64` from the reviewed series "
-        "or replaces it under a lease, never while an upstream PR is open from it "
-        "(`require_branch_intervention`); `reject_submission_review` returns to development "
-        "with the reasons as pending feedback and posts nothing. CI runs on the clean head of "
+        "pipeline's instructions for content and style. Trusted code checks every commit, the "
+        "same final tree, the attribution trailers, the measurable rules, and the template's "
+        "required sections: `accept_submission_rewrite` bumps the revision and leads to "
+        "`handoff.review_pending`, where `request_submission_review` allocates separate "
+        "uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews "
+        "exactly the rewritten series and text against the template, the contributing "
+        "instructions, the commit conventions, and the reviewers' expectations and can change "
+        "nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which "
+        "creates `riscv64` from the rewritten series or replaces it under a lease, never while "
+        "an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check "
+        "(`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns "
+        "to development with the reasons as pending feedback and posts nothing; a Result that "
+        "is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a "
+        "verdict. A rewrite whose artifact expires before `riscv64` is built "
+        "(`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of "
         "`riscv64` as before, the package names `riscv64` and the reviewed title and "
         "description, and verification, reminders, and the retraction refer to `riscv64`. A "
         "retraction leaves `riscv64` as it is.",
         ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
-         "handoff.building_upstream_branch", "handoff.waiting_human", "development.fix_needed"),
+         "handoff.review_pending", "handoff.reviewing", "development.fix_needed"),
         edges=(("handoff.awaiting_submission", "submit_upstream"),
-               ("handoff.review_due", "request_submission_review"),
-               ("handoff.agent_running", "accept_submission_review"),
-               ("handoff.agent_running", "reject_submission_review"),
-               ("handoff.building_upstream_branch", "require_branch_intervention"),
-               ("handoff.waiting_human", "resume_upstream_branch")),
-        highlighted=(("handoff.review_due", "request_submission_review"),
-                     ("handoff.agent_running", "accept_submission_review"),
-                     ("handoff.agent_running", "reject_submission_review"),
-                     ("handoff.building_upstream_branch", "require_branch_intervention")),
+               ("handoff.review_due", "request_submission_rewrite"),
+               ("handoff.agent_running", "accept_submission_rewrite"),
+               ("handoff.agent_running", "reject_submission_rewrite"),
+               ("handoff.review_pending", "request_submission_review"),
+               ("handoff.reviewing", "reject_submission_review")),
+        highlighted=(("handoff.review_due", "request_submission_rewrite"),
+                     ("handoff.agent_running", "accept_submission_rewrite"),
+                     ("handoff.agent_running", "reject_submission_rewrite"),
+                     ("handoff.reviewing", "reject_submission_review")),
     ),
     Item(
         "When `riscv64` may not be written",
