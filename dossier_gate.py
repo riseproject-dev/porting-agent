@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 
+import commit_rules
 import schemas
 from common import sha256_text, validate_scope_paths
 
@@ -22,10 +23,85 @@ RESEARCH_CATEGORIES = (
     "documentation", "website", "mailing_lists", "blogs", "maintainer_reviews", "release_repositories", "ecosystem_report",
 )
 OPTIONALLY_ABSENT = {"website", "mailing_lists", "blogs", "release_repositories", "ecosystem_report"}
+# The schema version of a dossier the gate admits: it records the contribution
+# guidelines. A stored dossier of version 1 stays readable; no new one is
+# admitted.
+DOSSIER_VERSION = 2
+# Where the investigator must have looked, as (what, words every one of the
+# searched locations of that kind names). Each kind must be searched; "none
+# found" is admitted only with that evidence.
+TEMPLATE_LOCATIONS = (
+    ("the repository root", lambda s: s.startswith("pull_request_template")),
+    ("`.github/`", lambda s: s.startswith(".github/") and "pull_request_template" in s),
+    ("`docs/`", lambda s: s.startswith("docs/") and "pull_request_template" in s),
+)
+CONTRIBUTING_LOCATIONS = (
+    ("a root CONTRIBUTING file", lambda s: s.startswith("contributing")),
+    ("`.github/CONTRIBUTING`", lambda s: s.startswith(".github/contributing")),
+    ("`docs/` contributing pages", lambda s: s.startswith("docs/") and "contributing" in s),
+    ("DEVELOPMENT.md", lambda s: "development" in s),
+)
 
 
 class DossierError(ValueError):
     pass
+
+
+def _searched(section: dict, locations, what: str) -> None:
+    searched = [str(s).strip().removeprefix("./").casefold() for s in section["searched"]]
+    for name, matches in locations:
+        if not any(matches(s) for s in searched):
+            raise DossierError(f"{what}: the search does not cover {name}")
+
+
+def validate_guidelines(dossier: dict) -> None:
+    """The contribution guidelines a new dossier must record: the pull
+    request templates, the contributing instructions, the measured commit
+    conventions, and the reviewers of the paths the contribution changes.
+    Each may be "none found" only with the record of the search."""
+    if dossier.get("schema_version") != DOSSIER_VERSION or "contribution_guidelines" not in dossier:
+        raise DossierError(f"a new dossier must be schema version {DOSSIER_VERSION} and record "
+                           "the contribution guidelines")
+    found = dossier["contribution_guidelines"]
+    template = found["pull_request_template"]
+    _searched(template, TEMPLATE_LOCATIONS, "pull_request_template")
+    if (template["status"] == "found") != bool(template["templates"]):
+        raise DossierError("pull_request_template: a found template is recorded, and only then")
+    sources = {s["url"] for s in template["sources"]}
+    for item in template["templates"]:
+        if item["url"] not in sources:
+            raise DossierError(f"pull_request_template: {item['path']} is not cited in sources")
+    contributing = found["contributing"]
+    _searched(contributing, CONTRIBUTING_LOCATIONS, "contributing")
+    if (contributing["status"] == "found") != bool(contributing["documents"]):
+        raise DossierError("contributing: a found document is recorded, and only then")
+    if contributing["status"] == "found" and not contributing["instructions"]:
+        raise DossierError("contributing: a found document needs its instructions")
+    sources = {s["url"] for s in contributing["sources"]}
+    for item in contributing["documents"]:
+        if item["url"] not in sources:
+            raise DossierError(f"contributing: {item['path']} is not cited in sources")
+    conventions = found["commit_conventions"]
+    try:
+        commit_rules.normalize(conventions["rules"])
+        commit_rules.sections_from_dossier(dossier)
+    except commit_rules.RuleError as exc:
+        raise DossierError(f"commit_conventions: {exc}") from None
+    lengths = conventions["title_lengths"]
+    if not lengths["median"] <= lengths["p90"] <= lengths["max"]:
+        raise DossierError("commit_conventions: the title lengths are not ordered")
+    reviewers = found["reviewers"]
+    named = [r for entry in reviewers["paths"] for r in (*entry["codeowners"], *entry["reviewers"])]
+    if (reviewers["status"] == "found") != bool(named):
+        raise DossierError("reviewers: a reviewer or code owner is recorded, and only when found")
+    if reviewers["status"] == "found" and not reviewers["expectations"]:
+        raise DossierError("reviewers: found reviewers need their expectations")
+    decision = dossier["proposal"]
+    if decision["decision"] == "develop":
+        covered = {entry["path"] for entry in reviewers["paths"]}
+        missing = [p for p in decision["allowed_paths"] if p not in covered]
+        if missing:
+            raise DossierError(f"reviewers: no reviewer research for the paths {missing[:8]}")
 
 
 def validate(dossier: dict, proposal: dict, task: dict) -> None:
@@ -78,6 +154,7 @@ def validate(dossier: dict, proposal: dict, task: dict) -> None:
             fnmatch.fnmatchcase(path, allowed) for allowed in decision["allowed_paths"])]
         if missing:
             raise DossierError(f"allowed_paths omit researched riscv64 paths: {sorted(set(missing))}")
+    validate_guidelines(dossier)
 
 
 def scope_problem(decision: dict, *, admission_class: str | None,

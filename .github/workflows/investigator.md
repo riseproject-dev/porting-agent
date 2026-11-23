@@ -418,6 +418,53 @@ You MUST investigate the project's upstream history, not just its checkout:
    `PIP_PREFER_BINARY=true`. The latter prefers an available wheel but preserves
    a source fallback. Distinguish pip/cibuildwheel resolution from uv, which
    requires its corresponding `UV_*` index settings as well.
+8. Research how this project wants a contribution shaped, and record it in
+   `dossier.contribution_guidelines` with evidence links. These findings bind
+   the worker and the submission review, and the project's own contributing
+   instructions take precedence over the pipeline's instructions wherever they
+   differ.
+   - `pull_request_template`: look for every pull request template: the root
+     (`PULL_REQUEST_TEMPLATE.md`, `pull_request_template.md`), `.github/`
+     (`.github/PULL_REQUEST_TEMPLATE.md`, `.github/pull_request_template.md`,
+     and every file in `.github/PULL_REQUEST_TEMPLATE/`), and `docs/`
+     (`docs/PULL_REQUEST_TEMPLATE.md`, `docs/pull_request_template.md`). List
+     every location you checked in `searched`. For each template found, record
+     its path, URL, its content verbatim (or a faithful summary when it is
+     longer than the field allows), every required section heading exactly as
+     written, and every checklist item. When none exists, use
+     `status: "none_found"` with the searched locations and a source that shows
+     the absence (for example the directory listing).
+   - `contributing`: read `CONTRIBUTING.md`/`CONTRIBUTING.rst` at the root and
+     in `.github/`, `docs/contributing*`, `DEVELOPMENT.md`, and the developer
+     sections of the documentation they link. List every location checked in
+     `searched`. Record each document with a summary, and every instruction a
+     contributor must follow (tests to run, changelog or news entries, sign-off,
+     CLA, commit or branch rules, review process) as a separate entry of
+     `instructions`.
+   - `commit_conventions`: measure the commit message conventions from recent
+     history of the base branch (at least the last 100 non-merge commits when
+     the history has them, and the commits of recently merged pull requests
+     that touch the paths in `allowed_paths`). Record the sample, the title
+     length median, 90th percentile and maximum, and the measurable rules:
+     `title_max_length` (the limit the project keeps, or null when it keeps
+     none), `title_prefixes` (literal prefixes or scopes such as `ci:` or
+     `build(wheels):`) and whether one is required, the capitalization of the
+     first word after a prefix (`upper`, `lower` or `any`), whether a title may
+     end with a period, whether a body is required, the body wrap width (or
+     null), whether every commit needs a `Signed-off-by:` trailer, and the
+     largest number of commits a contribution should have (or null). Describe
+     what a machine cannot measure (imperative mood, issue references, other
+     trailers, squash policy) in `observations`, and quote typical titles in
+     `examples`.
+   - `reviewers`: for every path in `allowed_paths`, record the code owners
+     (`CODEOWNERS` in the root, `.github/` or `docs/`) and the people who
+     reviewed or merged recent pull requests that changed that path, each with
+     links to their reviews and what they ask of contributors there. Read their
+     review comments: record recurring requests (style, structure, tests,
+     documentation, changelog, commit layout) as concrete guidance in
+     `expectations`, including what they expect to be tested and how. Use
+     `status: "none_found"` only when no code owner and no reviewer of those
+     paths exists, with the search that shows it.
 
 For every research category, record the exact queries, source URLs, findings,
 search scope and whether pagination/discussion review is complete. Link concrete
@@ -435,13 +482,14 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
 `claim-<hash>-porting-out`):
 
 - `dossier.json`: MUST satisfy `schemas/dossier.schema.json`.
-  Include `schema_version: 1`, this task's `contribution_id`,
+  Include `schema_version: 2`, this task's `contribution_id`,
   `expected_revision: task.revision`, and
   `tracking_issue_description_digest: task.context.tracking_issue.description_digest`.
   Every `history` item is a JSON object with keys `url`, `outcome`, `decision`,
   `reviewers`, and `review_urls`; arrays/tuples are invalid. The schema requires
   `summary`, `research`, `history`, `maintainers`,
-  `dependency_graph`, `ecosystem_report`, and `proposal`. Every `research` category requires
+  `dependency_graph`, `ecosystem_report`, `proposal`, and
+  `contribution_guidelines` (step 8). Every `research` category requires
   `status`, `queries`, `coverage: {complete: true, scope: "..."}`, `sources`
   (URL and finding pairs), and `findings`. Only genuinely absent website,
   mailing-list, blog or separate-release-repo channels may be `not_applicable`,

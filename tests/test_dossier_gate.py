@@ -37,12 +37,60 @@ def proposal():
             "progress": "new_causal_evidence", "reconstruction_base": None, "diagnosis": "Completed upstream research."}
 
 
+REPO = "https://github.com/example/proj"
+
+
+def guidelines(paths=(".github/workflows/*", "README.rst")):
+    """The contribution guidelines of a schema version 2 dossier."""
+    template = f"{REPO}/blob/main/.github/PULL_REQUEST_TEMPLATE.md"
+    contributing = f"{REPO}/blob/main/CONTRIBUTING.md"
+    return {
+        "pull_request_template": {
+            "status": "found",
+            "searched": ["PULL_REQUEST_TEMPLATE.md", ".github/PULL_REQUEST_TEMPLATE.md",
+                         ".github/PULL_REQUEST_TEMPLATE/", "docs/pull_request_template.md"],
+            "sources": [{"url": template, "finding": "The template asks for a summary and testing."}],
+            "templates": [{"path": ".github/PULL_REQUEST_TEMPLATE.md", "url": template,
+                           "content": "## Summary\n\n## Testing\n\n- [ ] Tests added",
+                           "required_sections": ["Summary", "Testing"],
+                           "checklist_items": ["Tests added"]}]},
+        "contributing": {
+            "status": "found",
+            "searched": ["CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/contributing.rst",
+                         "DEVELOPMENT.md"],
+            "sources": [{"url": contributing, "finding": "Contributors add a changelog entry."}],
+            "documents": [{"path": "CONTRIBUTING.md", "url": contributing,
+                           "summary": "Run the tests and add a changelog entry for every change."}],
+            "instructions": ["Add a CHANGELOG entry for every user-visible change."]},
+        "commit_conventions": {
+            "sources": [{"url": f"{REPO}/commits/main", "finding": "Two hundred recent commits read."}],
+            "sample": {"commits": 200, "range": "main, the last 200 commits"},
+            "title_lengths": {"median": 42, "p90": 64, "max": 88},
+            "rules": {"title_max_length": 72, "title_prefixes": [], "title_prefix_required": False,
+                      "title_capitalization": "upper", "title_trailing_period": "forbidden",
+                      "body_required": False, "body_line_max_length": 72,
+                      "signed_off_by_required": False, "max_commits": None},
+            "observations": "Imperative titles, no scopes, issue references as Fixes #N in the body.",
+            "examples": ["Add aarch64 wheels to the build matrix"]},
+        "reviewers": {
+            "status": "found",
+            "searched": [".github/CODEOWNERS", "pulls?q=is:merged path:.github/workflows"],
+            "sources": [{"url": f"{REPO}/pull/7", "finding": "The maintainer reviewed the wheel matrix."}],
+            "paths": [{"path": path, "codeowners": [],
+                       "reviewers": [{"login": "maintainer", "role": "Release maintainer",
+                                      "review_urls": [f"{REPO}/pull/7"],
+                                      "expectations": "Asks for one commit per architecture."}]}
+                      for path in paths],
+            "expectations": ["Keep the matrix sorted by architecture."]},
+    }
+
+
 def dossier():
     entry = {"status": "searched", "queries": ["riscv64 all states"],
              "coverage": {"complete": True, "scope": "All matching open and closed discussions reviewed, including all result pages."},
              "sources": [{"url": ISSUE_URL, "finding": "Read the description and all discussion comments."}],
              "findings": "The linked discussions establish architecture requirements and prior reviewer decisions."}
-    d = {"schema_version": 1, "contribution_id": "example--proj/12", "expected_revision": 1,
+    d = {"schema_version": 2, "contribution_id": "example--proj/12", "expected_revision": 1,
          "tracking_issue_description_digest": task()["context"]["tracking_issue"]["description_digest"],
          "summary": "Research covers project history, dependencies, documentation and maintainer review decisions.",
          "research": {category: copy.deepcopy(entry) for category in dossier_gate.RESEARCH_CATEGORIES},
@@ -69,6 +117,7 @@ def dossier():
                           {"area": "native_sources", "paths": [], "assessment": "No architecture-specific native source dispatch exists."}
                       ]}}
     d["research"]["ecosystem_report"]["sources"][0]["url"] = REPORT_URL
+    d["contribution_guidelines"] = guidelines()
     return d
 
 
@@ -110,6 +159,69 @@ class TestDossierCompleteness(unittest.TestCase):
         d = dossier()
         d["proposal"]["path_coverage"][1]["area"] = "build"
         with self.assertRaisesRegex(dossier_gate.DossierError, "each required area"):
+            dossier_gate.validate(d, proposal(), task())
+
+    def test_the_contribution_guidelines_are_required(self):
+        d = dossier()
+        del d["contribution_guidelines"]
+        with self.assertRaises(schemas.SchemaError):
+            dossier_gate.validate(d, proposal(), task())
+        d["schema_version"] = 1
+        with self.assertRaisesRegex(dossier_gate.DossierError, "schema version 2"):
+            dossier_gate.validate(d, proposal(), task())
+        for section in ("pull_request_template", "contributing", "commit_conventions", "reviewers"):
+            d = dossier()
+            del d["contribution_guidelines"][section]
+            with self.assertRaises(schemas.SchemaError, msg=section):
+                dossier_gate.validate(d, proposal(), task())
+
+    def test_none_found_needs_the_record_of_the_search(self):
+        d = dossier()
+        g = d["contribution_guidelines"]
+        g["pull_request_template"].update(status="none_found", templates=[])
+        g["contributing"].update(status="none_found", documents=[], instructions=[])
+        dossier_gate.validate(d, proposal(), task())
+        for section, missing in (("pull_request_template", "docs/pull_request_template.md"),
+                                 ("contributing", "DEVELOPMENT.md")):
+            bad = copy.deepcopy(d)
+            bad["contribution_guidelines"][section]["searched"].remove(missing)
+            with self.assertRaisesRegex(dossier_gate.DossierError, "does not cover", msg=section):
+                dossier_gate.validate(bad, proposal(), task())
+        bad = copy.deepcopy(d)
+        bad["contribution_guidelines"]["pull_request_template"]["status"] = "found"
+        with self.assertRaisesRegex(dossier_gate.DossierError, "found template"):
+            dossier_gate.validate(bad, proposal(), task())
+        d = dossier()
+        for entry in d["contribution_guidelines"]["reviewers"]["paths"]:
+            entry["reviewers"] = []
+        with self.assertRaisesRegex(dossier_gate.DossierError, "only when found"):
+            dossier_gate.validate(d, proposal(), task())
+        d["contribution_guidelines"]["reviewers"]["status"] = "none_found"
+        dossier_gate.validate(d, proposal(), task())
+
+    def test_found_documents_are_cited_and_rules_are_measurable(self):
+        d = dossier()
+        d["contribution_guidelines"]["pull_request_template"]["templates"][0]["url"] = REPO + "/x"
+        with self.assertRaisesRegex(dossier_gate.DossierError, "not cited"):
+            dossier_gate.validate(d, proposal(), task())
+        d = dossier()
+        d["contribution_guidelines"]["commit_conventions"]["rules"].update(
+            title_prefix_required=True, title_prefixes=[])
+        with self.assertRaisesRegex(dossier_gate.DossierError, "commit_conventions"):
+            dossier_gate.validate(d, proposal(), task())
+        d = dossier()
+        d["contribution_guidelines"]["commit_conventions"]["title_lengths"]["median"] = 99
+        with self.assertRaisesRegex(dossier_gate.DossierError, "not ordered"):
+            dossier_gate.validate(d, proposal(), task())
+        d = dossier()
+        d["contribution_guidelines"]["commit_conventions"]["rules"]["title_max_length"] = 5
+        with self.assertRaises(schemas.SchemaError):
+            dossier_gate.validate(d, proposal(), task())
+
+    def test_every_changed_path_has_reviewer_research(self):
+        d = dossier()
+        d["contribution_guidelines"]["reviewers"]["paths"].pop()
+        with self.assertRaisesRegex(dossier_gate.DossierError, "README.rst"):
             dossier_gate.validate(d, proposal(), task())
 
     def test_every_category_is_required(self):

@@ -10,9 +10,11 @@ from datetime import datetime
 from pathlib import Path
 
 import capacity
+import dossier_gate
 import investigation_recovery
 import reconcile
 from tests.helpers import policy
+from tests.test_dossier_gate import guidelines
 
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "tests/fixtures/investigation-record-failure"
@@ -20,10 +22,26 @@ RUN_ID = "44974390332"
 
 
 class TestInvestigationRecordRecovery(unittest.TestCase):
-    def directory(self, temporary):
+    def directory(self, temporary, *, version=2):
+        """The live run's partial publication. Its dossier is of schema
+        version 1; with ``version=2`` it records the contribution guidelines
+        a dossier must now record."""
         directory = Path(temporary) / RUN_ID
         shutil.copytree(FIXTURE, directory)
+        if version == 2:
+            path = directory / "dossier.json"
+            dossier = json.loads(path.read_text())
+            dossier.update(schema_version=2, contribution_guidelines=guidelines(
+                dossier["proposal"]["allowed_paths"]))
+            path.write_text(json.dumps(dossier))
         return directory
+
+    def test_a_dossier_without_the_contribution_guidelines_is_not_recovered(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = self.directory(temporary, version=1)
+            with self.assertRaisesRegex(dossier_gate.DossierError, "schema version 2"):
+                investigation_recovery.recover(directory, RUN_ID)
+            self.assertFalse((directory / "outcome.json").exists())
 
     def test_live_verified_result_is_revalidated_and_reintroduced(self):
         with tempfile.TemporaryDirectory() as temporary:
