@@ -11,7 +11,9 @@ from pathlib import Path
 import yaml
 
 import capacity
+import compat
 import controller
+import engine
 import fork_publish
 import publisher
 from tests.helpers import policy
@@ -60,7 +62,7 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
             },
             consumed={},
             projects={project["project_id"]: project},
-            policy=policy(read_only=False, destination_writes=True),
+            policy=policy(read_only=False),
             inputs=controller.Inputs(
                 now=datetime.fromisoformat(NOW),
                 pressure=capacity.Pressure(ok=True),
@@ -70,6 +72,13 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
 
     def test_existing_planned_operation_is_launched_without_replanning(self):
         record, operation, recovery, project = fixtures()
+        # The record waits in the provisioning shape of an earlier
+        # controller; the record migration rewrites it as `provisioning.idle`
+        # with the planned operation, which the table's row then launches.
+        self.assertEqual(engine.state_key(record), "provisioning.waiting_capacity")
+        record, event = compat.migrate_provisioning(record, operation=operation, now=NOW)
+        self.assertEqual(engine.state_key(record), "provisioning.idle")
+        self.assertEqual(event["revision_bumped"], False)
         result = self.tick(record, operation, recovery, project)
         self.assertEqual(
             result.report["provision_requests"],
@@ -86,8 +95,14 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
         self.assertEqual(staged["status"], "planned")
         self.assertEqual(staged["external_ids"]["launch_attempts"], 1)
         self.assertEqual(result.report["selected"], [])
+        self.assertIn("start_operation", [value["kind"] for kind, value in result.staged
+                                          if kind == "events"])
 
-    def test_pre_fork_proposal_rearms_exact_not_launched_operation(self):
+    def test_a_deferred_fork_intent_is_planned_again_at_a_new_revision(self):
+        """Development without a fork (a fork intent an earlier controller
+        retired while destination writes were disabled, and a proposal made
+        before the fork) returns to provisioning; the new intent never reuses
+        the retired operation."""
         record, operation, recovery, project = fixtures()
         record = copy.deepcopy(record)
         operation = dict(operation, status="not_launched")
@@ -107,18 +122,21 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
                 "result_commit": "q_" + "b" * 64,
             },
         )
-        result = self.tick(record, operation, recovery, project)
+        migrated, event = compat.migrate_provisioning(record, operation=None, now=NOW)
+        self.assertEqual((engine.state_key(migrated), migrated["revision"],
+                          migrated["proposal_artifact"]),
+                         ("provisioning.idle", record["revision"] + 1, None))
+        self.assertTrue(event["revision_bumped"])
+        result = self.tick(migrated, operation, recovery, project)
         final = [value for kind, value in result.staged if kind == "contributions"][-1]
-        self.assertEqual(final["phase"], "provisioning")
-        self.assertEqual(final["active_operation_id"], operation["operation_id"])
+        self.assertEqual(engine.state_key(final), "provisioning.idle")
+        self.assertNotEqual(final["active_operation_id"], operation["operation_id"])
         self.assertEqual(result.report["provision_requests"][0]["attempt"], 1)
-        self.assertTrue(any(
-            kind == "events" and value["kind"] == "destination_operation_rearmed"
-            for kind, value in result.staged
-        ))
+        self.assertEqual(result.report["provision_requests"][0]["operation_id"],
+                         final["active_operation_id"])
+        self.assertEqual(result.report["selected"], [])
 
-
-    def test_verified_pre_fork_proposal_launch_is_durably_fenced(self):
+    def test_a_proposal_held_on_the_provisioned_fork_is_discarded(self):
         record, operation, recovery, project = fixtures()
         record = copy.deepcopy(record)
         operation = dict(operation, status="confirmed")
@@ -144,15 +162,19 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
                 "digest": "sha256:" + "a" * 64,
                 "result_commit": "q_" + "b" * 64,
             },
+            pending_publication={"worker_run_id": "44990000000", "attempts": 1,
+                                 "last_reason": "x", "next_attempt_at": NOW,
+                                 "exhausted": False},
         )
-        result = self.tick(record, operation, recovery, project)
-        request = result.report["proposal_publications"][0]
-        self.assertEqual(request["worker_run_id"], "44990000000")
-        self.assertEqual(request["attempt"], 1)
-        final = [value for kind, value in result.staged if kind == "contributions"][-1]
-        self.assertEqual(final["pending_publication"]["attempts"], 1)
-        self.assertEqual(final["activity"], "waiting_capacity")
-        self.assertEqual(result.report["selected"], [])
+        migrated, _event = compat.migrate_provisioning(record, operation=None, now=NOW)
+        self.assertEqual((engine.state_key(migrated), migrated["revision"],
+                          migrated["proposal_artifact"], migrated["pending_publication"]),
+                         ("development.idle", record["revision"] + 1, None, None))
+        result = self.tick(migrated, operation, recovery, project)
+        # A fresh patch is requested on the fork; nothing held is published.
+        self.assertEqual(result.report["selected"][0]["task"], "development_patch")
+        self.assertEqual(result.requested_effects[0]["effect_contract"]["kind"], "fork_branch")
+        self.assertNotIn("proposal_publications", result.report)
 
 
 class TestDestinationTokenBoundaries(unittest.TestCase):
@@ -187,7 +209,9 @@ class TestDestinationTokenBoundaries(unittest.TestCase):
 
 
 class TestPublicationAndPRContracts(unittest.TestCase):
-    def test_pre_fork_proposal_binds_only_to_verified_base_fork(self):
+    def test_a_task_without_the_recorded_fork_is_never_published(self):
+        """Patch Work always names the provisioned fork and its head: a task
+        that names none is rejected before any token exists."""
         from tests.test_milestone5_worker import mbox, proposal, task
 
         task_value = task()
@@ -199,7 +223,6 @@ class TestPublicationAndPRContracts(unittest.TestCase):
             phase="development",
             active_operation_id=None,
             active_work=None,
-            proposal_artifact={"outcome": "proposal", "run_id": "9"},
             fork={
                 "repository_id": 55,
                 "name": "riseproject-upstreaming/ciso8601",
@@ -211,6 +234,7 @@ class TestPublicationAndPRContracts(unittest.TestCase):
         task_value["base_sha"] = record["upstream"]["base_sha"]
         task_value["fork"] = None
         task_value["fork_repository_id"] = None
+        task_value["expected_head"] = None
         proposal_value["reconstruction_base"] = record["upstream"]["base_sha"]
         result = fork_publish.preflight(
             record=record,
@@ -222,16 +246,22 @@ class TestPublicationAndPRContracts(unittest.TestCase):
                 "archived": False,
             },
         )
-        self.assertTrue(result["publish"])
-        moved = copy.deepcopy(record)
-        moved["fork"]["head_sha"] = "f" * 40
-        rejected = fork_publish.preflight(
-            record=moved,
-            task=task_value,
-            proposal=proposal_value,
-            fork_lookup=lambda _name: {},
-        )
-        self.assertFalse(rejected["publish"])
+        self.assertFalse(result["publish"])
+        self.assertEqual(result["status"], "rejected")
+        self.assertFalse(hasattr(fork_publish, "bind_provisioned_task"))
+
+    def test_destination_writes_have_no_policy_switch(self):
+        """Patch Work always writes the provisioned fork: the policy has no
+        switch that defers destination writes, and no module reads one."""
+        import schemas
+        from common import load_policy
+        current = load_policy()
+        self.assertNotIn("destination_writes", current)
+        with self.assertRaises(schemas.SchemaError):
+            schemas.validate("policy", dict(current, destination_writes=False))
+        for module in ROOT.glob("*.py"):
+            with self.subTest(module=module.name):
+                self.assertNotIn("destination_writes", module.read_text())
 
     def test_publication_is_exact_head_leased_and_recoverable(self):
         self.assertEqual(
@@ -262,7 +292,6 @@ class TestPublicationAndPRContracts(unittest.TestCase):
             "porting-provisioning",
             "porting-development-pr",
             "provision_requests",
-            "proposal_publications",
             "publication_retries",
             "dev_pr_requests",
         ):
@@ -270,6 +299,7 @@ class TestPublicationAndPRContracts(unittest.TestCase):
         self.assertIn("gh workflow run provision.yml", text)
         self.assertIn("gh workflow run publish-retry.yml", text)
         self.assertIn("gh workflow run dev-pr.yml", text)
+        self.assertNotIn("proposal_publications", text)
 
 
 if __name__ == "__main__":

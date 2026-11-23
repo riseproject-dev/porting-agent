@@ -360,16 +360,16 @@ class TestOneContributionErrors(unittest.TestCase):
         held = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
                 "next_attempt_at": "2026-11-24T09:00:00+00:00", "exhausted": False}
         artifact = {"work_id": "w", "claim_id": "c", "artifact_id": 5, "name": "n",
-                    "digest": "sha256:" + "0" * 64, "run_id": "555", "result_commit": None,
-                    "outcome": "proposal"}
+                    "digest": "sha256:" + "0" * 64, "run_id": "555", "result_commit": "d" * 40,
+                    "outcome": "published"}
         a = waiting(activity="waiting_capacity", pending_publication=held,
                     proposal_artifact=artifact)
         output = tick([a, other_waiting()], head=branch_head(FORK_A))
         paused = record_of(output, A)
+        # The published Result is kept; what is held for publication is not.
         self.assertEqual((paused["paused"], paused["pending_publication"],
-                          paused["proposal_artifact"]), (True, None, None))
+                          paused["proposal_artifact"]), (True, None, artifact))
         self.assertEqual(output.report["publication_retries"], [])
-        self.assertEqual(output.report["proposal_publications"], [])
 
 
 class TestPipelineFailures(unittest.TestCase):

@@ -58,8 +58,8 @@ class WriteApi(collect.Api):
 def validate_request(record: dict, operation: dict, policy: dict) -> None:
     schemas.validate("contribution", record)
     schemas.validate("operation", operation)
-    if policy.get("read_only", True) or not policy.get("destination_writes", False):
-        raise ProvisionError("destination writes are disabled by policy")
+    if policy.get("read_only", True):
+        raise ProvisionError("the policy is read-only")
     if record["phase"] != "provisioning" or record.get("paused"):
         raise ProvisionError("contribution is not authorized for provisioning")
     if not record.get("dossier_evidence_id") or not record.get("admission_class"):

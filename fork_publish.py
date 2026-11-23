@@ -301,9 +301,6 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         if policy.get("read_only", True):
             return Outcome("rejected", "policy is read-only; validated but not pushed", candidate=cand,
                            tree=rep.final_tree, report=report, failure_class="stale")
-        if not policy.get("destination_writes", False):
-            return Outcome("rejected", "destination writes are disabled by policy", candidate=cand,
-                           tree=rep.final_tree, report=report, failure_class="stale")
         # Last re-read immediately before the effect: the final check. When it
         # does not pass, no effect is begun and no intent is recorded.
         try:
@@ -372,45 +369,11 @@ def publish_attempt_reasons(attempt: int) -> list[str]:
     return [f"publish-attempt:{attempt}"] if attempt > 1 else []
 
 
-def bind_provisioned_task(record: dict, task: dict) -> dict:
-    """Bind a verified pre-fork proposal to the newly provisioned base branch."""
-    if task.get("fork") is not None or task.get("expected_head") is not None:
-        return task
-    fork = record.get("fork") or {}
-    artifact = record.get("proposal_artifact") or {}
-    if (task.get("task") != "development_patch"
-            or task.get("fork_repository_id") is not None
-            or task.get("revision") != record.get("revision")
-            or task.get("base_sha") != record.get("upstream", {}).get("base_sha")
-            or artifact.get("outcome") != "proposal"
-            or not fork.get("repository_id")
-            or fork.get("head_sha") != record.get("upstream", {}).get("base_sha")
-            or record.get("upstream_pr") is not None):
-        raise PublishRejected("pre-fork proposal cannot bind to current provisioned state")
-    bound = dict(task)
-    bound["fork"] = fork["name"]
-    bound["fork_name"] = fork["name"].split("/", 1)[1]
-    bound["fork_repository_id"] = fork["repository_id"]
-    bound["expected_head"] = fork["head_sha"]
-    return bound
-
-
-def bind_provisioned_proposal(original_task: dict, bound_task: dict, proposal: dict) -> dict:
-    if original_task.get("expected_head") is None and bound_task.get("expected_head") is not None:
-        if proposal.get("expected_head") is not None:
-            raise PublishRejected("pre-fork proposal unexpectedly names a head")
-        return dict(proposal, expected_head=bound_task["expected_head"])
-    return proposal
-
-
 def preflight(*, record: dict, task: dict, proposal: dict, fork_lookup: Callable[[str], dict]) -> dict:
     """Run before any token exists. Decides whether a push is even possible and
     returns the single fork name to mint a token for, taken from the trusted
     task and confirmed against the fork's current repository ID and org."""
     try:
-        original_task = task
-        task = bind_provisioned_task(record, task)
-        proposal = bind_provisioned_proposal(original_task, task, proposal)
         check_proposal(proposal, record, task, allow_no_change=True)
     except (PublishRejected, schemas.SchemaError) as e:
         return {"publish": False, "status": "rejected", "reason": str(e), "fork_name": "",
@@ -465,15 +428,6 @@ def main(argv=None) -> int:
         text = json.dumps(res, indent=2)
         (a.out.write_text(text) if a.out else print(text))
         return 0
-    try:
-        original_task = task
-        task = bind_provisioned_task(record, task)
-        proposal = bind_provisioned_proposal(original_task, task, proposal)
-    except PublishRejected as error:
-        result = {"status": "rejected", "reason": str(error), "failure_class": "stale"}
-        text = json.dumps(result, indent=2)
-        (a.out.write_text(text) if a.out else print(text))
-        return 1
     policy = load_policy()
     token = os.environ.pop("UPSTREAMING_FORK_TOKEN", None)
     api = Api(token=token)

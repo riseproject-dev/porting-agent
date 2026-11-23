@@ -22,7 +22,7 @@ The contribution lifecycle is defined by one table in `lifecycle.py`. That table
 - every budget exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, every resume from that wait starts exactly that counter again, and no other transition starts a counter again;
 - every state of kind `gate`, `human_wait`, or `locked` has a reminder from the rule, and a late Result is recorded in every state without changing it;
 - `handoff.waiting_upstream_pr` has exactly its three exits;
-- a stop set by the controller records its reason, and every stop clears the pending publication and a held proposal that is not published;
+- a stop set by the controller records its reason, and every stop clears the pending publication;
 - every row that allocates patch or revision Work carries the pending feedback, only a published Result clears the feedback its Work carried, and Work that carries feedback takes no CI rerun;
 - patch Work is requested only from a `fix_needed` state under write admission, `repair_attempts_cluster` is charged exactly when a failing CI job is recorded for the head, and the rows that apply when Work is due exclude each other;
 - exactly the rows that record a new head start the rerun counts of `budget.reruns` again, and a CI failure and a review at the submission gate exclude each other;
@@ -434,7 +434,7 @@ flowchart TB
 
 ## Pause, waiting-human, and park cases
 
-Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and resume from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work. A stop therefore clears the requested Work, the pending publication, and a held proposal that is not published, so nothing is published after it.
+Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and resume from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work. A stop therefore clears the requested Work and the pending publication, so nothing is published after it.
 
 ### Success case 1: temporary pause and resume
 

@@ -324,9 +324,6 @@ class TestWorkflowContracts(unittest.TestCase):
             "Launch durable fork provisioning operations": [
                 (".provision_requests[]", report["provision_requests"]),
             ],
-            "Publish verified pre-fork proposals without another model call": [
-                (".proposal_publications[]", report["proposal_publications"]),
-            ],
             "Launch due publication retries": [
                 (".publication_retries[]", report["publication_retries"]),
             ],
@@ -335,6 +332,9 @@ class TestWorkflowContracts(unittest.TestCase):
             ],
         }
         by_name = {step.get("name"): step for step in steps}
+        # No patch is proposed before the fork exists, so nothing publishes one.
+        self.assertFalse(any("proposal_publications" in (step.get("run") or "")
+                             for step in steps))
         for name, fields in consumers.items():
             script = by_name[name]["run"]
             self.assertIn("report.json", script)

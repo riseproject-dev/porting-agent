@@ -1,0 +1,89 @@
+{
+  "active_operation_id": "op-eedfbd35ac6db9c814795d66",
+  "active_work": null,
+  "activity": "waiting_capacity",
+  "admission_class": "configuration_integration",
+  "blocked_reason": null,
+  "budget": {
+    "attempts_used": 0,
+    "clusters": {},
+    "no_progress_streak": 0,
+    "policy_id": "2026-11-18.1-proposed",
+    "spent_estimate_usd_cents": 0
+  },
+  "clean_head_sha": null,
+  "contribution_id": "closeio--ciso8601/1",
+  "created_at": "2026-11-22T01:09:36.980391+00:00",
+  "debug_commits": [],
+  "distributions": [
+    "ciso8601"
+  ],
+  "dossier_evidence_id": "dossier-closeio--ciso8601--1-r2",
+  "follows": null,
+  "fork": null,
+  "generation": 0,
+  "handoff_approval": null,
+  "handoff_request": null,
+  "last_ci_evidence_id": null,
+  "merge": null,
+  "next_poll_at": null,
+  "owners": {
+    "backup": null,
+    "handoff_reviewer": null,
+    "primary": null,
+    "submitter": null
+  },
+  "parked_reason": null,
+  "paused": true,
+  "paused_at": "2026-11-22T02:33:53.701661+00:00",
+  "paused_by": "human",
+  "paused_reason": "hold",
+  "pending_human_action": null,
+  "pending_publication": null,
+  "phase": "provisioning",
+  "prerequisite_ids": [],
+  "previous_phase": null,
+  "processed_pr_conversation_comment_ids": [],
+  "processed_publications": [
+    14734929090,
+    14736190358,
+    14735532559
+  ],
+  "processed_review_comment_ids": [],
+  "processed_review_ids": [],
+  "project_id": "closeio--ciso8601",
+  "proposal_artifact": null,
+  "publication_operation_id": null,
+  "queue_claim_handle": null,
+  "queue_result_id": null,
+  "queue_work_id": null,
+  "refresh": null,
+  "release_acceptance": null,
+  "retirement": null,
+  "revision": 3,
+  "schema_version": 1,
+  "scope_coverage_complete": true,
+  "scope_paths": [
+    ".github/workflows/build-wheels.yml",
+    "pyproject.toml",
+    "CHANGELOG.md"
+  ],
+  "target_contract_id": null,
+  "terminal_reason": null,
+  "tracking_issue": {
+    "description": "### Upstream repository\n\nhttps://github.com/closeio/ciso8601\n\n### PyPI distributions\n\nciso8601 (import: ciso8601)\n\n### Upstream target branch\n\nmaster\n\n### Additional notes\n\nMigration canary based on https://github.com/riseproject-dev/python-wheels/issues/631.\nThe downstream riscv64 wheel build was added in python-wheels#625.\nThe earlier investigation found that PyPI ciso8601 2.4.1 had no riscv64 wheel,\nupstream issue closeio/ciso8601#181 requested support, and the project is a pure\nC extension using setuptools and cibuildwheel with no third-party native library.\nThe earlier proposal selected configuration_integration and these bounded paths:\n.github/workflows/build-wheels.yml, pyproject.toml, CHANGELOG.md, and tox.ini.\nThe expected topology is an ubuntu-24.04-riscv row with CIBW_ARCHS=riscv64,\nfollowing the project's existing native aarch64 row.\nThe previous implementation reached handoff/waiting_human at revision 9 and\nreported clean head 9339ec54ae594458b0b9c6039bb55e9b2b13eff7.\nTreat all previous dossier, CI, fork, PR, and head data as migration evidence.\nDo not treat it as current authorization or verified state without the migration\nand readback gates in this plan.\n",
+    "description_digest": "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
+    "id": 6536262483,
+    "notes": "Migration canary based on https://github.com/riseproject-dev/python-wheels/issues/631.\nThe downstream riscv64 wheel build was added in python-wheels#625.\nThe earlier investigation found that PyPI ciso8601 2.4.1 had no riscv64 wheel,\nupstream issue closeio/ciso8601#181 requested support, and the project is a pure\nC extension using setuptools and cibuildwheel with no third-party native library.\nThe earlier proposal selected configuration_integration and these bounded paths:\n.github/workflows/build-wheels.yml, pyproject.toml, CHANGELOG.md, and tox.ini.\nThe expected topology is an ubuntu-24.04-riscv row with CIBW_ARCHS=riscv64,\nfollowing the project's existing native aarch64 row.\nThe previous implementation reached handoff/waiting_human at revision 9 and\nreported clean head 9339ec54ae594458b0b9c6039bb55e9b2b13eff7.\nTreat all previous dossier, CI, fork, PR, and head data as migration evidence.\nDo not treat it as current authorization or verified state without the migration\nand readback gates in this plan.",
+    "number": 1,
+    "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+  },
+  "updated_at": "2026-11-22T02:33:53.701661+00:00",
+  "upstream": {
+    "base_ref": "master",
+    "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "full_name": "closeio/ciso8601",
+    "repository_id": 20633992
+  },
+  "upstream_pr": null
+}

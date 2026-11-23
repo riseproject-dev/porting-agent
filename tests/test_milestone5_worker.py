@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 import capacity
+import compat
 import controller
 import reconcile
 import worker_gate
@@ -183,7 +184,10 @@ class TestImageContract(unittest.TestCase):
 
 
 class TestAutomaticProposalAdmission(unittest.TestCase):
-    def test_current_planned_destination_intent_is_retired_before_worker_selection(self):
+    def test_no_patch_work_is_selected_before_the_fork_exists(self):
+        """A record of an earlier controller that waits for its planned fork
+        intent is migrated to `provisioning.idle`; the intent is launched by
+        the table and no patch Work is requested before the fork."""
         record = json.loads(
             (ROOT / "tests/fixtures/canary-m5-provisioning-state.json").read_text()
         )
@@ -203,6 +207,8 @@ class TestAutomaticProposalAdmission(unittest.TestCase):
             "body": record["tracking_issue"]["description"],
             "labels": [{"name": "upstreaming-request"}],
         }
+        record, _event = compat.migrate_provisioning(record, operation=operation,
+                                                     now="2026-11-22T03:00:00+00:00")
         result = controller.tick(
             contributions={"c": record},
             operations={
@@ -211,30 +217,24 @@ class TestAutomaticProposalAdmission(unittest.TestCase):
             },
             consumed={},
             projects={project["project_id"]: project},
-            policy=policy(read_only=False, destination_writes=False),
+            policy=policy(read_only=False),
             inputs=controller.Inputs(
                 now=datetime.fromisoformat("2026-11-22T03:00:00+00:00"),
                 pressure=capacity.Pressure(ok=True),
                 tracking_issues={1: issue},
             ),
         )
-        retired = next(
+        launched = next(
             item for kind, item in result.staged
             if kind == "operations" and item["operation_id"] == operation["operation_id"]
         )
         final = [item for kind, item in result.staged if kind == "contributions"][-1]
-        self.assertEqual(retired["status"], "not_launched")
-        self.assertEqual(result.report["provision_requests"], [])
-        self.assertEqual(result.report["selected"][0]["task"], "development_patch")
-        self.assertEqual(result.requested_effects[0]["effect_contract"],
-                         {"kind": "proposal_artifact"})
-        self.assertEqual((final["phase"], final["activity"]),
-                         ("development", "agent_running"))
-        self.assertEqual(final["active_work"]["task"], "development_patch")
-        self.assertTrue(any(
-            kind == "events" and item["kind"] == "destination_operation_deferred"
-            for kind, item in result.staged
-        ))
+        self.assertEqual(launched["status"], "planned")
+        self.assertEqual(result.report["provision_requests"][0]["operation_id"],
+                         operation["operation_id"])
+        self.assertEqual(result.report["selected"], [])
+        self.assertEqual(result.requested_effects, [])
+        self.assertEqual((final["phase"], final["activity"]), ("provisioning", "idle"))
 
 
 class TestWorkerContract(unittest.TestCase):
@@ -332,7 +332,10 @@ class TestWorkerFailureClassification(unittest.TestCase):
 
 
 class TestProposalOnlyReconciliation(unittest.TestCase):
-    def test_verified_proposal_waits_without_destination_effect(self):
+    def test_a_proposal_without_a_fork_write_is_rejected(self):
+        """No patch is held without a write to the provisioned fork: an
+        outcome ``proposal`` is rejected in trusted validation, at a new
+        revision, and nothing is held for publication."""
         record = contribution(
             phase="development",
             activity="agent_running",
@@ -360,8 +363,11 @@ class TestProposalOnlyReconciliation(unittest.TestCase):
             worker_run_id="9",
         )
         self.assertIsNone(updated["active_work"])
-        self.assertEqual(updated["activity"], "waiting_capacity")
-        self.assertEqual(updated["proposal_artifact"]["outcome"], "proposal")
+        self.assertEqual((updated["activity"], updated["revision"]), ("fix_needed", 4))
+        self.assertEqual(updated["proposal_artifact"]["outcome"], "rejected")
+        self.assertIsNone(updated["pending_publication"])
+        self.assertEqual([r["kind"] for kind, r in staged if kind == "events"],
+                         ["worker_proposal_rejected"])
         self.assertFalse(any(kind == "operations" for kind, _record in staged))
 
 

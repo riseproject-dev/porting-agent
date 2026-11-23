@@ -37,15 +37,20 @@ from tests.helpers import NOW, OWNER, SHA_A, SHA_B, apply_command, contribution,
 
 T = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
 POLICY = policy()
-WRITES = policy(destination_writes=True)
+WRITES = policy(read_only=False)
 
 
 def _dossier(decision):
+    coverage = [{"area": area, "paths": ["a"] if area == "build" else [], "assessment": "x" * 20}
+                for area in ("build", "test", "release", "packaging", "documentation",
+                             "native_sources")]
     return {"proposal": {"decision": decision, "rationale": "r",
-                         "admission_class": "configuration_integration", "allowed_paths": ["a"]}}
+                         "admission_class": "configuration_integration", "allowed_paths": ["a"],
+                         "path_coverage": coverage}}
 
 
-# One Result of every outcome status the publisher and the queue produce.
+# One Result of every outcome status the publisher and the queue produce, and
+# the outcome `proposal` that no publisher produces any more.
 RESULTS = {
     "published": {"status": "published"},
     "uncertain": {"status": "uncertain"},
@@ -332,31 +337,26 @@ class TestStopWithAPendingPublication(unittest.TestCase):
             outputs.append(output)
         return record, outputs
 
-    def pending(self, kind):
-        """A development record whose verified Result waits for publication:
-        a held proposal, or a publish-only retry after an infrastructure error."""
+    def pending(self, kind="retry"):
+        """A development record whose verified Result waits for a publish-only
+        retry after an infrastructure error."""
         record = running("development")
-        result = dict(publication(record, "proposal" if kind == "proposal" else "infra_error"),
-                      artifact=dict(ARTIFACT))
+        result = dict(publication(record, "infra_error"), artifact=dict(ARTIFACT))
         record, outputs = self.ticks(record, [result], 2)
         self.assertEqual(record["pending_publication"]["worker_run_id"], "555")
         self.assertIsNone(record["active_work"])
-        self.assertEqual((record["proposal_artifact"] or {}).get("outcome"),
-                         "proposal" if kind == "proposal" else None)
-        launched = [o.report["proposal_publications"] + o.report["publication_retries"]
-                    for o in outputs]
+        self.assertIsNone(record["proposal_artifact"])
+        launched = [o.report["publication_retries"] for o in outputs]
         self.assertTrue(any(launched), "the publication is launched while the record runs")
         return record, result
 
     def test_stop_clears_it_and_every_publisher_result_is_recorded_once(self):
-        for kind, verb in itertools.product(("proposal", "retry"), RESUME):
+        for kind, verb in itertools.product(("retry",), RESUME):
             pending, first = self.pending(kind)
             out = command(pending, f'/upstreaming {verb} reason="stop"')
             self.assertTrue(out.accepted, out.reason)
             stopped_record = out.record
             self.assertIsNone(stopped_record["pending_publication"])
-            # A held proposal is cleared with it; nothing is left to publish.
-            self.assertIsNone(stopped_record["proposal_artifact"])
             self.assertEqual(stopped_record["revision"], pending["revision"])
             self.assertTrue(compat.stopped(stopped_record))
             for name in PUBLISHER_RESULTS:
@@ -372,7 +372,6 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                                       if e["kind"] != "activity"], ["record_late_effect"])
                     for output in outputs:
                         self.assertEqual(output.report["publication_retries"], [])
-                        self.assertEqual(output.report["proposal_publications"], [])
                         self.assertEqual(output.report["requested_effects"], [])
                         self.assertEqual([k for k, _ in output.staged
                                           if k in ("operations", "evidence")], [])
@@ -391,46 +390,20 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                         self.assertEqual(engine.state_key(resumed.record), "queued.idle")
                         self.assertEqual(resumed.record["generation"], record["generation"] + 1)
 
-    def test_nothing_held_is_published_after_a_stop(self):
-        """A proposal that is held and not published does not survive a stop:
-        after the resume no publication is launched for it, and its
-        publication Result is late. A published proposal is kept."""
-        held = dict(ARTIFACT, result_commit=None, outcome="proposal")
-        for verb in ("pause",):
-            with self.subTest(verb=verb):
-                record = contribution(phase="development", activity="waiting_capacity",
-                                      proposal_artifact=dict(held))
-                out = command(record, f'/upstreaming {verb} reason="stop"')
-                self.assertIsNone(out.record["proposal_artifact"])
-                resumed = command(out.record, "/upstreaming resume revision=0 reason=go").record
-                self.assertEqual((resumed["proposal_artifact"], resumed["pending_publication"],
-                                  resumed["activity"]), (None, None, "idle"))
-                result = dict(publication(record, "published", artifact_id=1000),
-                              artifact=dict(ARTIFACT))
-                after, outputs = self.ticks(resumed, [result], 3)
-                for output in outputs:
-                    self.assertEqual(output.report["proposal_publications"], [])
-                    self.assertEqual(output.report["publication_retries"], [])
-                self.assertEqual([e["kind"] for o in outputs for e in events(o)
-                                  if e["kind"] == "record_late_effect"], ["record_late_effect"])
-                self.assertIsNone(after["proposal_artifact"])
-        # A record that was stopped before stops cleared the proposal: the
-        # resume clears it.
-        old = contribution(phase="development", activity="waiting_capacity", paused=True,
-                           proposal_artifact=dict(held))
-        self.assertIsNone(command(old, "/upstreaming resume revision=0 reason=go")
-                          .record["proposal_artifact"])
-        parked = compat.park(contribution(phase="development", activity="waiting_capacity",
-                                          proposal_artifact=dict(held)), "stop")
-        self.assertIsNone(parked["proposal_artifact"])
-        published = dict(held, outcome="published")
+    def test_a_stop_keeps_a_published_result(self):
+        """`proposal_artifact` only ever holds a published Result, which a stop
+        keeps; nothing is held unpublished."""
+        published = dict(ARTIFACT, outcome="published")
         kept = command(contribution(phase="development", activity="waiting_ci",
                                     proposal_artifact=dict(published)),
                        '/upstreaming pause reason="stop"').record
         self.assertEqual(kept["proposal_artifact"], published)
+        parked = compat.park(contribution(phase="development", activity="waiting_ci",
+                                          proposal_artifact=dict(published)), "stop")
+        self.assertEqual(parked["proposal_artifact"], published)
 
     def test_no_publish_retry_while_paused(self):
-        for kind in ("proposal", "retry"):
+        for kind in ("retry",):
             with self.subTest(pending=kind):
                 # A record that was stopped before the stop cleared the publication.
                 pending, first = self.pending(kind)
@@ -438,7 +411,6 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                 record, outputs = self.ticks(record, [first], 6)
                 for output in outputs:
                     self.assertEqual(output.report["publication_retries"], [])
-                    self.assertEqual(output.report["proposal_publications"], [])
                 self.assertEqual(record["pending_publication"], pending["pending_publication"])
         # The same record, not stopped, is retried.
         pending, first = self.pending("retry")
@@ -539,7 +511,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     if compat.stopped(after):
                         self.assertIsNone(after["pending_publication"])
                     count += 1
-        self.assertGreater(count, 3000)
+        self.assertGreater(count, 2500)
 
     # One function of every step of the tick that works on one contribution.
     INJECTIONS = {
@@ -588,7 +560,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     self.assertEqual((after["paused_by"], after["active_work"],
                                       after["pending_publication"], after["revision"]),
                                      ("controller", None, None, record["revision"]))
-        self.assertGreater(count, 1000)
+        self.assertGreater(count, 800)
         self.assertGreater(errored, 350)
 
     def test_no_stopped_state_retains_a_pending_publication(self):
@@ -596,9 +568,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
         clears it, and no later Result or publish step sets it again."""
         stops = ('/upstreaming park reason="x"', '/upstreaming abandon reason="x"',
                  "/upstreaming pause")
-        held = {"retry": {"pending_publication": dict(PENDING)},
-                "proposal": {"pending_publication": dict(PENDING),
-                             "proposal_artifact": dict(ARTIFACT, outcome="proposal")}}
+        held = {"retry": {"pending_publication": dict(PENDING)}}
         count = 0
         for (key, record), (kind, fields) in itertools.product(self.records(), held.items()):
             if "|None|work=False" not in key:
@@ -628,9 +598,8 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                         self.assertTrue(compat.stopped(after))
                         self.assertIsNone(after["pending_publication"])
                         self.assertEqual(output.report["publication_retries"], [])
-                        self.assertEqual(output.report["proposal_publications"], [])
                         count += 1
-        self.assertGreater(count, 1200)
+        self.assertGreater(count, 500)
 
 
 if __name__ == "__main__":

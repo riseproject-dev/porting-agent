@@ -332,15 +332,12 @@ class TestProcessingErrorStop(unittest.TestCase):
     def test_follows_the_pause_semantics(self):
         rec = contribution(phase="development", activity="agent_running",
                            active_work=dict(SAMPLE["active_work"]),
-                           pending_publication=dict(SAMPLE["pending_publication"]),
-                           proposal_artifact=dict(SAMPLE["proposal_artifact"], result_commit=None,
-                                                  outcome="proposal"))
+                           pending_publication=dict(SAMPLE["pending_publication"]))
         paused = self.take(rec).record
         # Work cleared: the state in which it is due again; nothing held is kept.
         self.assertEqual(engine.state_key(paused), "development.fix_needed")
         self.assertEqual((paused["active_work"], paused["pending_publication"],
-                          paused["proposal_artifact"], paused["revision"]),
-                         (None, None, None, rec["revision"]))
+                          paused["revision"]), (None, None, rec["revision"]))
         resumed = engine.apply_command(
             paused, commands.parse("/upstreaming resume revision=0 reason=fixed"), policy=POLICY,
             now=NOW, command_id="c")
@@ -371,7 +368,7 @@ class TestEnginePage(unittest.TestCase):
         page = (ROOT / "docs/state-machine/engine.md").read_text()
         for verb in engine.PIPELINE_VERBS:
             self.assertIn(f"`{verb}`", page)
-        names = (*engine.HELD_COMMANDS, *commands.RETIRED, *commands.DEPRECATED,
+        names = (*engine.HELD_COMMANDS, *commands.RETIRED,
                  *(command.split()[-1] for command in engine.PAUSED_COMMANDS))
         for name in names:
             self.assertIn(f"`{name}`", page)
@@ -826,32 +823,24 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual((engine.state_key(abandoned.record),
                           abandoned.record["pending_publication"]), ("closed.idle", None))
 
-    def test_every_stop_clears_a_held_proposal_and_keeps_a_published_one(self):
-        artifact = dict(SAMPLE["proposal_artifact"], result_commit=None)
-        held = contribution(phase="development", activity="fix_needed",
-                            proposal_artifact=dict(artifact, outcome="proposal"))
-        published = dict(held, proposal_artifact=dict(artifact, outcome="published"))
-        park = commands.parse('/upstreaming park reason="stop"')
-        pause = commands.parse("/upstreaming pause")
-        for command in (pause, park):
+    def test_every_stop_keeps_a_published_result(self):
+        """`proposal_artifact` only ever holds a published Result: no stop
+        clears it, and no row clears a part of it."""
+        self.assertNotIn("held proposal_artifact", lc.QUALIFIED_CLEARS)
+        published = contribution(phase="development", activity="fix_needed",
+                                 proposal_artifact=dict(SAMPLE["proposal_artifact"],
+                                                        outcome="published"))
+        for command in (commands.parse('/upstreaming park reason="stop"'),
+                        commands.parse("/upstreaming pause")):
             with self.subTest(command=command.verb):
-                out = engine.apply_command(held, command, policy=POLICY, now=NOW, command_id="c",
-                                           open_operations=())
-                self.assertTrue(out.accepted, out.reason)
-                self.assertIsNone(out.record["proposal_artifact"])
                 kept = engine.apply_command(published, command, policy=POLICY, now=NOW,
                                             command_id="c", open_operations=())
-                self.assertEqual(kept.record["proposal_artifact"], published["proposal_artifact"])
-        identity = engine.apply_transition(held, "pause_on_identity_change", policy=POLICY,
+                self.assertTrue(kept.accepted, kept.reason)
+                self.assertEqual(kept.record["proposal_artifact"],
+                                 published["proposal_artifact"])
+        identity = engine.apply_transition(published, "pause_on_identity_change", policy=POLICY,
                                            now=NOW, facts={"upstream_identity_changed"})
-        self.assertIsNone(identity.record["proposal_artifact"])
-        # After the stop nothing is held, so the resume has nothing to publish.
-        paused = engine.apply_command(held, pause, policy=POLICY, now=NOW, command_id="c").record
-        resumed = engine.apply_command(
-            paused, commands.parse("/upstreaming resume revision=0 reason=r"), policy=POLICY,
-            now=NOW, command_id="c")
-        self.assertEqual((resumed.verb, resumed.record["proposal_artifact"],
-                          resumed.record["pending_publication"]), ("resume_pause", None, None))
+        self.assertEqual(identity.record["proposal_artifact"], published["proposal_artifact"])
 
     def test_a_long_stop_in_development_resumes_into_a_refresh(self):
         stale = contribution(phase="development", activity="fix_needed", paused=True,

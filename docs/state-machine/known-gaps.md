@@ -59,40 +59,28 @@ These table mutations break a settled decision but still pass the check:
 - `record_explanation` at the gate clearing `last_ci_evidence_id`.
 - `request_review_revision` charging `no_progress`, or losing the controlled-ref guard.
 - `request_patch` gaining guards beyond write admission.
-- `resume_development` keeping a held proposal or pending publication.
+- `resume_development` keeping a pending publication.
 
 **Required:** add a check for each.
 
-## Legacy stop paths do not clear everything the table clears
-
-- **Dossier park** (`park_investigation`, legacy site in `reconcile.py`) does not clear a held proposal or pending publication. It is inert today because nothing is retried while stopped and resume from park starts a new generation.
-- **Required:** take the dossier park through the engine.
-
 ## The stop flag in states the table does not have
 
-- **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (for example `development.idle`, `development.waiting_capacity`, `upstream_review.idle`).
+- **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (the development and upstream review states the table does not have, for example `development.idle`, `development.waiting_capacity`, `upstream_review.idle`).
 - **Today:** such a state has no row, so the engine cannot take `pause`, `pause_on_identity_change`, or `pause_on_processing_error` there. `compat.legacy_pause` records the same fields and clears the same things, but the activity that held the Work or a publication becomes `idle` instead of the table's state in which the Work is due. `resume` and `park` on such a record are applied by the legacy command code: its resume has no `resume_stale` (a long stop is not followed by a refresh). Its park is refused while an operation is open, as the table's. `refresh` and `abandon`, which no row of such a state takes, are refused there.
 - **Table:** the flag verbs apply in every non-terminal state, with `set_moves`; `resume_stale` applies after a long stop in provisioning and development; `park_contribution` requires no open operation.
-- **Required:** migrate the legacy states to table states (investigation, provisioning, and development rows), then remove the legacy branches.
+- **Required:** migrate the legacy states to table states (development and upstream review rows), then remove the legacy branches.
+
+## No dossier decides close
+
+- **Where:** `close_investigation` from `investigation.agent_running`; the dossier contract (`schemas/dossier.schema.json`, `dossier_gate.py`, the investigator's instructions).
+- **Today:** the reconciler takes `close_investigation` for a verified dossier whose decision is close, with `terminal_reason` `no_work`. But the dossier schema and the investigator's instructions admit the decisions develop and park only, so the research gate refuses a dossier that decides close before it reaches the reconciler, and no contribution is closed by its dossier.
+- **Table:** a verified dossier decision close leads to `closed.idle` and sets `terminal_reason`.
+- **Required:** a decision on when an investigation decides close (for example riscv64 wheels already published for the latest release), then the decision in the dossier contract and the investigator's instructions.
 
 ## Some resumes lead where nothing continues yet
 
 - **`resume_ci`** in `development.waiting_human` and `handoff.waiting_human` leads to the CI wait, but the rerun of the interrupted jobs that the row states is not launched. No record enters a wait with the pending action `ci_interrupted` yet.
 - **Required:** collector reruns.
-
-## The admission override is recorded but not applied
-
-- **Where:** `restart_generation` from `parked.idle`, the dossier fold in `reconcile.py` (`admit_development`, `park_investigation`), and the deprecated `/upstreaming force-develop` in `compat.apply_command`.
-- **Today:** `/upstreaming resume` from `parked.idle` records `class`, `paths`, and the reason as `admission_override`, but the legacy dossier fold ignores it: a dossier that decides park parks the contribution again, and a dossier that decides develop does not clear the override. `force-develop`, which the decisions retire, is kept as the override that takes effect: from `parked.idle` it moves the record to `provisioning.idle` with the command's class and paths, without a row of the table. Its tracking-issue entry and its rejection name the replacement.
-- **Table:** `admit_development` accepts a verified dossier decision develop, or decision park with a recorded `admission_override`, and clears the override; `park_investigation` requires no override; the grammar has no `force-develop`.
-- **Required:** take the dossier fold through `admit_development`, `readmit_development`, and `park_investigation`, then retire `force-develop`.
-
-## A dossier decision close does not close the contribution
-
-- **Where:** the dossier fold in `reconcile.py`, verb `close_investigation`.
-- **Today:** a dossier whose decision is close is treated as a stale contract: investigation is due again at a new revision, and no budget is charged. (A Result without a dossier, or with a decision that is none of develop, park, and close, takes `reject_dossier` or `exhaust_investigation_recovery`.)
-- **Table:** a verified dossier decision close leads to `closed.idle` and sets `terminal_reason`.
-- **Required:** take the dossier fold through the table's verbs.
 
 ## The locked-wait reminder lacks the package link and exact head
 
@@ -110,7 +98,7 @@ These table mutations break a settled decision but still pass the check:
 
 ## The first patch in `development.idle` is selected outside the table
 
-- **Where:** `controller._legacy_patch`, for a record in `development.idle` without CI evidence (the legacy provisioning confirmation, the dossier fold without destination writes, and the legacy `no_change` and stale outcomes leave records there).
+- **Where:** `controller._legacy_patch`, for a record in `development.idle` without CI evidence (the legacy `no_change` and stale outcomes, and the provisioning migration of a proposal held on the fork, leave records there).
 - **Today:** the controller requests `development_patch` itself. Like `request_patch`, the Work carries the pending feedback and the allocation charges `work_total`, and no Work is requested while `work_total` or `no_progress` is exhausted; but the record then stays in `development.idle`, deferred, with no exhaustion row and no human wait.
 - **Table:** patch Work is requested only from `development.fix_needed`, where an exhausted budget takes `exhaust_work_total`, `refresh_on_exhaustion`, or `exhaust_repair_attempts`.
 - **Required:** migrate `development.idle` to the table's development states.
@@ -122,7 +110,7 @@ These table mutations break a settled decision but still pass the check:
 - **Today, upstream review** (from `upstream_review.agent_running`; nothing reaches it while `submit-upstream` is held):
   - published or uncertain: `upstream_review.waiting_ci`, `no_progress` started again, the carried feedback kept (table: `record_revision_publish_success`, which clears exactly the carried feedback);
   - `no_change`: the legacy `upstream_review.idle`, which the next CI observation moves to `upstream_review.waiting_ci` with no pending action (table: `require_reviewer_answer` to `upstream_review.waiting_human` with the pending action `answer_reviewer`);
-  - `proposal`: the legacy `upstream_review.waiting_capacity` holding the proposal, which nothing publishes; the next CI observation moves it to `upstream_review.waiting_ci` (the table has no row for it);
+  - `proposal`, which no publisher produces any more: rejected in trusted validation, as below;
   - `infra_error` within the retry limit: the legacy `upstream_review.waiting_capacity` with the pending publication, which the next CI observation moves to `upstream_review.waiting_ci` while the publish-only retry is still scheduled (table: `schedule_publish_retry`, which keeps `upstream_review.agent_running`); beyond the limit, `upstream_review.waiting_human` with the pending action `publication_infrastructure_failure` and no `counter` (table: `exhaust_publish_recovery`, whose pending action names `publish_recovery`);
   - rejected for validation, or blocked: `upstream_review.fix_needed` with a revision bump and `no_progress` charged, as `reject_patch_proposal` does; a blocked outcome also records its rehearsal evidence as pending feedback;
   - rejected as stale: the legacy `upstream_review.idle` without a revision bump, then `upstream_review.waiting_ci` (the table has no row for it).
@@ -135,20 +123,6 @@ These table mutations break a settled decision but still pass the check:
 - **Today:** the reconciler establishes the fact "the Work graph is terminal without a usable Result" for a graph the queue reports `completed` or `cancelled` while the record still holds its Work. A graph completed by a worker whose publication artifact the tick has not collected yet is therefore retried at a new revision, and the Result that arrives later takes `record_late_effect`.
 - **Table:** `allocate_work_retry` applies to terminal Work without a usable Result.
 - **Required:** establish the fact only once the Result of a completed graph is known to be missing (its worker run finished without a publication artifact).
-
-## Provisioning planned before the operation table drove it
-
-- **Where:** `controller.py` (the provisioning plan and launches) and `reconcile.py` (the provisioning receipt), legacy sites `controller.plan_provisioning` and `reconcile.confirm_provisioning`.
-- **Today:** from `provisioning.idle` the table's rows run provisioning. A record in a shape the table does not have, `provisioning.waiting_human` without a pending action (written before the table), is still planned by the legacy code into `provisioning.waiting_capacity`; such a record is launched again without `start_operation`, within the same launch limit, has no exhaustion wait, and its receipt moves it to the legacy `development.idle` with a revision bump instead of `confirm_provisioning`.
-- **Table:** provisioning is planned and launched from `provisioning.idle` only (`start_operation`, `require_provisioning_intervention`, `confirm_provisioning` to `development.fix_needed` without a revision bump).
-- **Required:** migrate the legacy provisioning shapes to `provisioning.idle`, then remove the legacy branches.
-
-## Operation status changes without a row
-
-- **Where:** `controller.defer_destination_operation` and `controller.rearm_provisioning` (`recovery.LEGACY_SITES`).
-- **Today:** while destination writes are disabled, the controller retires a planned fork provisioning intent as `not_launched` by itself, and rearms it as `planned` when destination writes are enabled again. The state publisher admits exactly these two transitions (`recovery.LEGACY_TRANSITIONS`).
-- **Table:** a planned operation becomes `not_launched` only by `resolve_not_launched`, and a closed operation never changes status.
-- **Required:** remove the path that defers destination writes, with the pre-fork proposal.
 
 ## Development PR operations have no row
 
@@ -188,7 +162,6 @@ The stop flag is `paused` alone, and the schema admits only null for `blocked_re
 
 These follow the literal reading of a decision and are kept until a decision says otherwise:
 
-- Every stop, and `resume_development` and `resume_upstream_revision`, clears a held unpublished proposal together with the pending publication.
 - `resume_upstream_review` still clears pending feedback after `answer_reviewer`, although the pending-feedback decision says every resume keeps it.
 - When a CI failure and a review arrive together at the gate, the failure wins.
 - `record_actionable_review` does not list the processed comment and review ids; the collector records them beside the row.
@@ -204,7 +177,6 @@ These follow the literal reading of a decision and are kept until a decision say
 - A command field that the row taken does not read is refused, not ignored: `head` on a `refresh` outside `handoff.waiting_upstream_pr`, `class` and `paths` outside `parked.idle`.
 - The terminal migration records `terminal_reason` `withdrawn` for a request whose intake label was removed (recognized by the reason the controller wrote), `abandoned` for every other `abandoned` record, and the name of the old phase (`no_work`, `deferred`, `already_released`) for the others.
 - `retract-pr` is held like `submit-upstream`: checked against the table, then refused without change.
-- The tracking-issue entries offer the deprecated `force-develop` in `parked.idle`, beside `resume` and `abandon`, while it is the override that takes effect.
 - A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
 - `begin_investigation` is taken in the tick that allocates the investigation Work (or exhausts its budget), not as soon as a request is in `queued.idle`: a request waiting for a worker slot stays in `queued.idle`, where removing the intake label still withdraws it.
 - The task that `request_patch` asks for is a patch, or a repair when feedback is pending for the Work to answer; `request_repair` always asks for a repair. A refreshed dossier that returns to the fork without a failing CI job or pending feedback is therefore answered by a patch.
@@ -214,7 +186,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.
 - `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
 - In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
-- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table (the legacy provisioning wait), is still handled by the legacy paths: the legacy provisioning plan starts from `provisioning.waiting_human` only without a pending action.
+- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table, is still handled by the legacy paths in development and upstream review; in provisioning it is rewritten by the provisioning migration.
 - A planned operation that a trusted workflow runs stays `planned` across its launches; `begin_effect`, `record_response`, and `confirm_by_discovery` are taken together when its verified receipt is folded with the exact readback. The receipt establishes the facts of `begin_effect` (capacity available, the contribution not paused, the final check passed): the workflow's own final check read them before the effect. A push establishes "capacity available" without a runner reservation.
 - A branch operation that the store holds as `applying` lost the response of its push: the branch observation takes `record_response` ("its response was lost") before discovering it, as the publisher hands an operation over only after it recorded the response.
 - When the publisher's final check before a push does not pass (the head re-read fails or moved), no intent is recorded and the outcome carries no operation, instead of a `failed` operation, because `planned` has no row to `failed` other than a resolution.
@@ -223,12 +195,19 @@ These follow the literal reading of a decision and are kept until a decision say
 - `require_provisioning_intervention` for exhausted launches is taken once the last allowed launch is 300 seconds old without a receipt, and not while the contribution is paused. Its pending action is `provisioning_launch_exhausted` with the counter `operation_launch`; after the provisioning operation failed (a human resolves it `failed`, or a verified receipt reports a definite failure), it is `provisioning_operation_failed` without a counter.
 - A human `/upstreaming resume` in `provisioning.waiting_human` whose pending action is one the controller writes there (`provisioning_launch_exhausted` with the counter `operation_launch`, or `provisioning_operation_failed`) is the human's assertion that the prerequisite is corrected: the controller establishes "the prerequisite is corrected" for that command. Another pending action in that wait establishes nothing.
 - After the resume of exhausted launches the same planned operation is launched again, from a launch count of zero, although the resume bumped the revision; the provisioning workflow accepts an operation of an earlier revision when the record names it as its active operation, and the receipt carries the record's revision.
-- A verified provisioning receipt whose status is a string other than `provisioned` reports a definite failure of the effect; it is folded only for a `planned` or `applying` operation of a record in `provisioning.idle` (which fires `require_provisioning_intervention`) or in a human wait of the table (which keeps the wait). In a provisioning shape the table does not have it is not folded.
+- A verified provisioning receipt whose status is a string other than `provisioned` reports a definite failure of the effect; it is folded only for a `planned` or `applying` operation of a record in `provisioning.idle` (which fires `require_provisioning_intervention`) or in `provisioning.waiting_human` (which keeps the wait).
 - The attempt that makes the operation of a publish-only retry its own is the attempt the retry was dispatched with (`UPSTREAMING_PUBLISH_ATTEMPT`); the first attempt adds nothing, so its id is unchanged. A CI bootstrap `dev_pr_update` planned again counts the earlier ones for the same head that the store holds.
 - An operation the tick stages that the state publisher's check would refuse is an unexpected error of its contribution (step `operation_check`): the contribution is paused by the controller and the commit goes ahead for the others.
 - A provisioning operation resolved `confirmed` by a human fires no row: `confirm_provisioning` needs the receipt and the readback. A receipt that arrives while the contribution waits for a human closes the operation and keeps the state.
 - A record whose `last_ci_evidence_id` names evidence that the store does not hold, in a state where Work is allocated, is an unexpected error of that contribution and takes `pause_on_processing_error`; the pause names the missing evidence id.
+- A verified dossier that decides close closes the contribution with `terminal_reason` `no_work` (shown as "not applicable"); the dossier's rationale is kept in the event.
+- `park_investigation` records `previous_phase` `investigation` and keeps a recorded refresh; like every row that ends the generation it does not bump the revision. `parked_reason` is the dossier's rationale.
+- An admission override applies against a decision park only when it names both a class and paths; one that names only one of them does not admit, and the Result takes `reject_dossier`, so the next investigation runs with the override still recorded, within `investigation_attempts`. The override's paths are the human's scope: the dossier's path coverage is recorded for them in `scope_coverage_complete` but does not refuse them. With a decision develop the dossier's class and paths are admitted and the override is cleared.
+- "The verified dossier names `scope_paths`, and `scope_coverage_complete` holds" is established when the admitted scope has an admission class, names 1 to 32 safe scope paths, and matches every path of the dossier's `path_coverage`; a dossier without `path_coverage` has an incomplete scope. `admit_development` and `readmit_development` do not list `scope_coverage_complete`; the reconciler records it beside the row, as repair Work reads it.
+- A worker outcome `proposal`, which no publisher produces any more, is folded as an outcome rejected in trusted validation.
+- A Result of Work that the record holds but that its phase does not request (investigation Work outside `investigation`, patch Work outside `development`, revision Work outside `upstream_review`) is late, and so are a dossier outside `investigation`, any other Result in `investigation`, and the Result of a held publication outside `development` and `upstream_review`.
+- The provisioning migration treats the retired `provision_fork` wait like the provisioning wait without a pending action: the fork is provisioned automatically from `provisioning.idle`. Development without a fork returns to `provisioning.idle`, and a proposal held on the provisioned fork is discarded for fresh patch Work in `development.idle`; both at a new revision.
 
 ## Code still outside the engine
 
-Transitions not yet taken through `engine.py` are written by the compatibility layer in `compat.py`, which keeps a registry of every remaining write site and every legacy state still admitted. Operation status changes without a row are listed in `recovery.LEGACY_SITES`. `python -m engine` prints how many table verbs the pipeline takes through the engine, how many legacy write sites remain, and the operation verbs taken through `recovery.py` with its remaining legacy sites.
+Transitions not yet taken through `engine.py` are written by the compatibility layer in `compat.py`, which keeps a registry of every remaining write site and every legacy state still admitted. Every operation status change is a row of the operation table. `python -m engine` prints how many table verbs the pipeline takes through the engine, how many legacy write sites remain, and the operation verbs taken through `recovery.py`.

@@ -470,8 +470,7 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   change was made unless it is present in the delivered series.
   `patch_digest` is the sha256 of `patches.mbox`, or null.
 - `patches.mbox`: for `append`, run `git -C fork format-patch --stdout` from
-  `expected_head` when it is present, otherwise from `base_sha` for a pre-fork
-  proposal; for `rewrite`, use `base_sha`. Omit it
+  `expected_head`; for `rewrite`, use `base_sha`. Omit it
   when `operation` is `none`.
 
 Then call `work_queue_claim_finish` with `outcome: "completed"`. If you

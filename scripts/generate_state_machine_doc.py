@@ -237,7 +237,7 @@ def render_index() -> str:
         "and a late Result is recorded in every state without changing it;",
         "- `handoff.waiting_upstream_pr` has exactly its three exits;",
         "- a stop set by the controller records its reason, and every stop clears the pending "
-        "publication and a held proposal that is not published;",
+        "publication;",
         "- every row that allocates patch or revision Work carries the pending feedback, only a "
         "published Result clears the feedback its Work carried, and Work that carries feedback "
         "takes no CI rerun;",

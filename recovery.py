@@ -28,9 +28,8 @@ of a contribution's state:
 
 The launches of a planned operation are counted on the operation
 (``external_ids.launch_attempts``): the counter of the budget
-``operation_launch``. ``LEGACY_SITES`` lists the call sites that still change
-a status the table has no row for; the store admits only their transitions
-(``LEGACY_TRANSITIONS``) beside the table's.
+``operation_launch``. No status changes without a row of the table: the
+store admits the table's transitions only.
 """
 
 from __future__ import annotations
@@ -492,30 +491,6 @@ def fire(record: dict, op: dict, *, policy: dict, now: str, facts=(), values=Non
     return out
 
 
-# --------------------------------------------------------------------------
-# Status changes the table has no row for
-
-# The call sites that still change an operation status without a row of the
-# table, and the transitions they write. Both are removed with the path that
-# retires a planned fork intent while destination writes are disabled.
-LEGACY_SITES = frozenset({
-    "controller.defer_destination_operation",
-    "controller.rearm_provisioning",
-})
-LEGACY_TRANSITIONS = frozenset({("planned", "not_launched"), ("not_launched", "planned")})
-
-
-def legacy_status(op: dict, status: str, *, site: str, now: str, **extra: Any) -> dict:
-    if site not in LEGACY_SITES:
-        raise RecoveryError(f"{site} is not a registered legacy operation site")
-    if (op["status"], status) not in LEGACY_TRANSITIONS:
-        raise RecoveryError(f"{site}: {op['status']} -> {status} is not a legacy transition")
-    new = copy.deepcopy(op)
-    new.update(extra, status=status, updated_at=now)
-    schemas.validate("operation", new)
-    return new
-
-
 def reachable(status: str) -> frozenset[str]:
     """The statuses rows of the table can lead to from ``status``."""
     seen, todo = {status}, [status]
@@ -532,7 +507,7 @@ def transition_problem(before: dict | None, after: dict) -> str | None:
     sequence of rows leads to (a closed operation never changes status)."""
     old = before["status"] if before else lc.OPERATION_INITIAL_STATE
     new = after["status"]
-    if new in reachable(old) or (before and (old, new) in LEGACY_TRANSITIONS):
+    if new in reachable(old):
         return None
     return f"operation status {old} cannot become {new}"
 

@@ -181,25 +181,6 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
     return rec
 
 
-def proposal_admission(record: dict) -> str | None:
-    """Gate uncredentialed patch proposal Work before any fork exists.
-
-    The lifecycle table has no such Work: patch Work is requested only from
-    ``development.fix_needed``, under ``write_admission``, and the scope
-    checks made here are a guard of ``admit_development``. Only the
-    ``destination_writes=false`` path of the controller, registered in
-    ``compat.LEGACY_SITES``, still calls this."""
-    if not record.get("admission_class"):
-        return "admission class not approved"
-    if not record.get("dossier_evidence_id"):
-        return "no verified dossier"
-    if not record.get("scope_paths") or record.get("scope_coverage_complete") is not True:
-        return "verified patch scope is incomplete"
-    if record["upstream"].get("base_sha") is None:
-        return "no immutable upstream base SHA in the dossier"
-    return None
-
-
 def write_admission(record: dict) -> str | None:
     """Gate before any destination write-capable work is submitted."""
     if not record.get("admission_class"):
@@ -515,23 +496,17 @@ CALLER_REASONS = ("pause_on_processing_error",)
 HELD_RESULT = "pending_publication"
 STOP_KINDS = ("generation_end", "terminal")
 # Clears that take only a part of a field, as (field, the part cleared).
-# A stop also clears a proposal the record holds without having published
-# it, so nothing is published after the stop; a published proposal is kept.
 # A published Result clears exactly the feedback its Work carried.
-HELD_PROPOSAL = "held proposal_artifact"
 CARRIED_FEEDBACK = "carried pending_feedback_evidence_ids"
 QUALIFIED_CLEARS: dict[str, tuple[str, str]] = {
-    HELD_PROPOSAL: (
-        "proposal_artifact",
-        "cleared only while it holds a proposal that is not published (its `outcome` is "
-        "`proposal`); a published proposal is kept"),
     CARRIED_FEEDBACK: (
         "pending_feedback_evidence_ids",
         "exactly the ids in `active_work.feedback_evidence_ids`, the pending feedback present "
         "when the Work was allocated; feedback recorded later stays pending"),
 }
-# What every stop clears beside the requested Work.
-_HELD = (HELD_RESULT, HELD_PROPOSAL)
+# What every stop clears beside the requested Work. `proposal_artifact` only
+# ever holds a published Result, which a stop keeps.
+_HELD = (HELD_RESULT,)
 # The pending feedback a Work request carries: the ids present at allocation.
 # A fresh Work graph for the same task and a publish retry of its Result carry
 # the same ids.
@@ -1252,8 +1227,7 @@ RULES: dict[str, Rule] = {
             ("a reason is given", ANY_REVISION, "no open operation"),
             _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD),
             description="Ends the current generation; evidence is kept for audit. A Result held "
-                        "for publication and a held proposal are not published. Accepted while "
-                        "paused."),
+                        "for publication is not published. Accepted while paused."),
         "every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, "
         "`release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`",
         kinds=("auto_wait", "work", "human_wait", "gate", "locked"),
@@ -1337,7 +1311,7 @@ FLAGS: dict[str, Flag] = {
         "a pause set by the controller always records one: `pause_on_identity_change` names "
         "it in the table, and `pause_on_processing_error` records the error. Setting it clears "
         "the requested "
-        "Work, the pending publication, and a held proposal that is not published, and "
+        "Work and the pending publication, and "
         "records `paused_at`; nothing held is published after the stop, and no publish retry "
         "is launched while paused. Phase, "
         "activity, evidence, and pending feedback are kept. "
@@ -1931,8 +1905,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
         "approach is not working or a human said stop; it ends the current generation, and resume "
         "from parked performs a clean reset. A Result is reused only while the pipeline ran "
         "continuously: after a pause, a human wait, or a park, the next step is fresh Work. A "
-        "stop therefore clears the requested Work, the pending publication, and a held proposal "
-        "that is not published, so nothing is published after it.",
+        "stop therefore clears the requested Work and the pending publication, so nothing is "
+        "published after it.",
         (
             Diagram(
                 "Success case 1: temporary pause and resume",
@@ -2449,9 +2423,7 @@ def stop_transitions():
 
 def _check_stops(problems: list[str]) -> None:
     """A stop invalidates what is held: every stop that clears the requested
-    Work, and every stop by command, also clears the pending publication and
-    a held proposal that is not published. No transition clears one of the
-    two without the other."""
+    Work, and every stop by command, also clears the pending publication."""
     for where, t in stop_transitions():
         if t.effects.work != "clear" and t.trigger != Trigger.COMMAND:
             continue
@@ -2459,13 +2431,6 @@ def _check_stops(problems: list[str]) -> None:
             if held not in t.effects.clears:
                 problems.append(f"{where}: a stop that clears the requested Work, or a stop by "
                                 f"command, must also clear {held}")
-    flag_rows = [(f"flag {n} {v}", t) for n, f in FLAGS.items()
-                 for v, t in (*f.set_by.items(), *f.cleared_by.items())]
-    for where, t in (*((f"{e.source} --{e.verb}--> {e.target}", e.transition)
-                       for e in table_edges()), *flag_rows):
-        clears = t.effects.clears
-        if (HELD_RESULT in clears) != (HELD_PROPOSAL in clears):
-            problems.append(f"{where}: {HELD_RESULT} and {HELD_PROPOSAL} are cleared together")
 
 
 def _is_patch_work(edge: Edge) -> bool:

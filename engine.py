@@ -736,6 +736,12 @@ PIPELINE_VERBS: dict[str, str] = {
     "exhaust_work_recovery": "reconcile",
     "reject_dossier": "reconcile",
     "exhaust_investigation_recovery": "reconcile",
+    # The verified dossier decides: development on a new fork or on the
+    # recorded one, a park, or a close.
+    "admit_development": "reconcile",
+    "readmit_development": "reconcile",
+    "park_investigation": "reconcile",
+    "close_investigation": "reconcile",
     # The submission command, the stop and resume commands, and refresh, on a
     # record in a state of the table, and the controller's own stops.
     "submit_upstream": "controller",
@@ -1010,10 +1016,7 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
 
 def _clear(rec: dict, before: dict, name: str) -> None:
     """Clear a field, or the part of it a qualified clear names."""
-    if name == lc.HELD_PROPOSAL:
-        if (before.get("proposal_artifact") or {}).get("outcome") == "proposal":
-            rec["proposal_artifact"] = None
-    elif name == lc.CARRIED_FEEDBACK:
+    if name == lc.CARRIED_FEEDBACK:
         carried = set(carried_feedback(before))
         rec["pending_feedback_evidence_ids"] = [
             i for i in before.get("pending_feedback_evidence_ids") or [] if i not in carried]
@@ -1291,7 +1294,6 @@ def coverage() -> dict[str, Any]:
                              for kind in ("record", "fact")},
         "fired_lifecycle_verbs": sorted({v for fires in recovery.FIRES.values()
                                          for verbs in fires.values() for v in verbs}),
-        "legacy_operation_sites": sorted(recovery.LEGACY_SITES),
     }
 
 
@@ -1303,8 +1305,8 @@ def main() -> int:
     print(f"{len(report['pipeline_verbs'])} of {report['table_verbs']} verbs are taken by the "
           f"pipeline; {len(report['legacy_write_sites'])} legacy write sites remain")
     print(f"operation table: {report['operation_rows']} rows, "
-          f"{len(report['operation_verbs'])} verbs taken through recovery; "
-          f"{len(report['legacy_operation_sites'])} legacy operation status sites remain")
+          f"{len(report['operation_verbs'])} verbs taken through recovery; every operation "
+          "status change is a row of the table")
     return 0
 
 

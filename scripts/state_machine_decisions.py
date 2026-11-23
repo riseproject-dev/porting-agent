@@ -58,9 +58,9 @@ RULES_BEHIND: tuple[str, ...] = (
     "Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation "
     "counter, `work_total`. `lifecycle check` verifies this.",
     "Prefer a guard or a derived status over a new state or flag.",
-    "Every stop that clears the requested Work also clears `pending_publication` and a held "
-    "proposal that is not published: the flag set verbs, `park_contribution`, `abandon`, and "
-    "every other transition that ends the generation. `lifecycle check` verifies this.",
+    "Every stop that clears the requested Work also clears `pending_publication`: the flag "
+    "set verbs, `park_contribution`, `abandon`, and every other transition that ends the "
+    "generation. `lifecycle check` verifies this.",
 )
 
 DECISIONS: tuple[Item, ...] = (
@@ -594,8 +594,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "before the tick: a set verb of `paused` that applies in every non-terminal state and "
         "keeps the state. It records the error class, the message, and the run id in "
         "`paused_reason`, `paused_by=controller`, and `paused_at`, and follows the pause "
-        "semantics: the requested Work, the pending publication, and a held proposal are "
-        "cleared, and `resume_pause` bumps the revision. The error is posted on the tracking "
+        "semantics: the requested Work and the pending publication are cleared, and `resume_pause` bumps the revision. The error is posted on the tracking "
         "issue and listed in the tick report under `alerts`. Errors in two or more "
         "contributions in one tick are a pipeline failure: the whole tick stops, nothing is "
         "committed, and no contribution is paused. An error outside any contribution (state "
@@ -1034,8 +1033,8 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "entered after `confirm_provisioning`. The guard of `request_patch` is write admission "
         "only. The checks on `scope_paths` and `scope_coverage_complete` are a guard of "
         "`admit_development`, so an incomplete patch scope is refused before a fork is "
-        "provisioned. A stop also clears a proposal that is held and not published, together "
-        "with the pending publication, so nothing is published after a stop.",
+        "provisioned. No proposal is held without a write to the fork, so a stop clears the "
+        "pending publication and nothing is published after it.",
         ("investigation.agent_running", "provisioning.idle", "development.fix_needed",
          "development.agent_running", "development.fix_needed+paused"),
         edges=(("investigation.agent_running", "admit_development"),

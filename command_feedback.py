@@ -14,7 +14,7 @@ from common import CONTROL_REPO
 from status_ledger import Api, LedgerError, issue_comments
 
 TEMPLATES = {
-    "force-develop": '/upstreaming force-develop revision=N class=configuration_integration paths=".github/workflows/release.yml" reason="..."',
+    "resume-override": commands.OVERRIDE_FORM,
     "submit-upstream": "/upstreaming submit-upstream revision=N head=FULL_SHA",
     "retract-pr": "/upstreaming retract-pr revision=N head=FULL_SHA",
     "pause": '/upstreaming pause revision=N reason="..."',
@@ -34,6 +34,7 @@ REPLACEMENTS = {
     "restart": "resume",
     "clarify": "resume",
     "revise-scope": "refresh",
+    "force-develop": "resume-override",
 }
 
 
@@ -79,8 +80,6 @@ def render(receipt: dict, original: dict) -> str:
         if revision is not None:
             template = template.replace("revision=N", f"revision={revision}")
         text += f"\n\n**Expected form:**\n```text\n{template}\n```"
-    if verb in commands.DEPRECATED:
-        text += f"\n\n**Deprecated:** {commands.DEPRECATED[verb]}."
     return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
 
 

@@ -473,8 +473,10 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
     that appears sufficient.
 
   A `develop` decision automatically provisions the fork and starts development;
-  it does not wait for scope approval. A `park` decision stops work but can be
-  overridden later by an authorized `force-develop` command. Preserve the facts needed to
+  it does not wait for scope approval. A `park` decision stops work; an
+  authorized human can later resume the parked contribution with an admission
+  class and paths (`resume class=... paths=...`), which a new investigation's
+  `park` decision then admits. Preserve the facts needed to
   approve scope, with evidence:
   - release coverage: which platforms and architectures the latest release
     ships wheels for on PyPI, and whether riscv64 is already there;

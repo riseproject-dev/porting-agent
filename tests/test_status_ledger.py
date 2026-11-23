@@ -49,7 +49,8 @@ class TestStatusLedger(unittest.TestCase):
         self.assertTrue(body.startswith("**Upstreaming r4 · parked/idle**"))
         self.assertIn("<details>", body)
         self.assertIn("<summary>Possible next commands</summary>", body)
-        self.assertIn("/upstreaming force-develop revision=4", body)
+        self.assertIn("/upstreaming resume revision=4 class=configuration_integration", body)
+        self.assertNotIn("force-develop", body)
         self.assertIn("<!-- upstreaming-ledger:", body)
 
     def test_paused_feedback_ledger_does_not_claim_work_was_requested(self):
@@ -168,9 +169,7 @@ class TestStatusLedger(unittest.TestCase):
                     self.assertNotIn(verb, commands.RETIRED)
                     self.assertIn(verb, commands.GRAMMAR)
                     parsed = commands.parse(line.replace("...", "x"))
-                    if verb == "force-develop":
-                        self.assertEqual(state, "parked.idle")
-                    elif verb not in ("pause", "park", "resume") or state in lifecycle.LIFECYCLE:
+                    if verb not in ("pause", "park", "resume") or state in lifecycle.LIFECYCLE:
                         # Every other offer is a command the table takes here.
                         self.assertTrue(engine.command_verbs(record, parsed), line)
                 if state == "closed.idle" and not paused:
@@ -186,7 +185,27 @@ class TestStatusLedger(unittest.TestCase):
         body = status_ledger.render(event, record, "https://github.com/run")
         self.assertIn("The admission override is recorded (class `optimized_backend`, paths "
                       "`setup.py`)", body)
-        self.assertIn("`force-develop` from `parked.idle` is the override that takes effect", body)
+        self.assertIn("a dossier that decides park then admits development with the override's "
+                      "class and paths", body)
+        self.assertNotIn("force-develop", body)
+
+    def test_the_dossier_admission_states_the_override_it_applied(self):
+        record = contribution(phase="provisioning", activity="idle", revision=10, fork=None)
+        before = dict(record, phase="investigation", activity="agent_running", revision=9)
+        override = {"class": "optimized_backend", "paths": ["setup.py"], "reason": "r"}
+        event = lifecycle._event(before, record, "admit_development", "result", "1", NOW, True)
+        event["sequence"] = 10
+        event["details"] = {"admission_override": override}
+        body = status_ledger.render(event, record, "https://github.com/run")
+        self.assertIn("the recorded admission override (class `optimized_backend`, paths "
+                      "`setup.py`) admitted development instead", body)
+        closed = contribution(phase="closed", activity="idle", terminal_reason="no_work")
+        event = lifecycle._event(before, closed, "close_investigation", "result", "1", NOW, False)
+        event["sequence"] = 11
+        event["details"] = {"admission_override_not_applied": override}
+        body = status_ledger.render(event, closed, "https://github.com/run")
+        self.assertIn("closed the contribution", body)
+        self.assertIn("The recorded admission override was not applied", body)
 
     def test_publish_appends_one_app_authored_comment_for_written_event(self):
         with tempfile.TemporaryDirectory() as td:

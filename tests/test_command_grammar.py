@@ -1,9 +1,8 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """The command grammar is the lifecycle table's: its commands, the intake
-commands, and nothing else but the deprecated ``force-develop``. Retired
-commands name their replacement; each table command applies exactly in the
-states whose rows take it."""
+commands, and nothing else. Retired commands name their replacement; each
+table command applies exactly in the states whose rows take it."""
 
 import copy
 import unittest
@@ -60,9 +59,8 @@ class TestGrammarIsTheTable(unittest.TestCase):
               for t in (*flag.set_by.values(), *flag.cleared_by.values()))) if text}
         self.assertEqual(table, set(engine.TABLE_COMMANDS))
         self.assertEqual(commands.INTAKE_COMMANDS, {"authorize-followup", "resolve-operation"})
-        self.assertEqual(set(commands.GRAMMAR) - set(commands.DEPRECATED),
-                         table | commands.INTAKE_COMMANDS)
-        self.assertEqual(set(commands.DEPRECATED), {"force-develop"})
+        self.assertEqual(set(commands.GRAMMAR), table | commands.INTAKE_COMMANDS)
+        self.assertFalse(hasattr(commands, "DEPRECATED"))
         self.assertFalse(set(commands.RETIRED) & set(commands.GRAMMAR))
 
     def test_every_retired_command_is_rejected_with_its_replacement(self):
@@ -71,7 +69,8 @@ class TestGrammarIsTheTable(unittest.TestCase):
             "/upstreaming submit-upstream", "register-upstream-pr": "/upstreaming submit-upstream",
             "block": "/upstreaming pause", "approve-scope": "/upstreaming resume",
             "provision": "/upstreaming resume", "restart": "/upstreaming resume",
-            "clarify": "/upstreaming resume", "revise-scope": "/upstreaming refresh"}
+            "clarify": "/upstreaming resume", "revise-scope": "/upstreaming refresh",
+            "force-develop": "/upstreaming resume revision=N class="}
         self.assertEqual(set(replacements), set(commands.RETIRED))
         for verb, replacement in replacements.items():
             with self.subTest(verb=verb), self.assertRaises(commands.CommandError) as raised:
@@ -79,9 +78,9 @@ class TestGrammarIsTheTable(unittest.TestCase):
             self.assertTrue(str(raised.exception).startswith(f"`{verb}` is retired."))
             self.assertIn(replacement, str(raised.exception))
 
-    def test_the_deprecated_command_names_its_replacement(self):
-        self.assertIn("/upstreaming resume revision=N class=", commands.DEPRECATED["force-develop"])
-        self.assertIn("`parked.idle`", commands.DEPRECATED["force-develop"])
+    def test_force_develop_names_the_resume_with_an_override_from_parked(self):
+        self.assertIn("/upstreaming resume revision=N class=", commands.RETIRED["force-develop"])
+        self.assertIn("`parked.idle`", commands.RETIRED["force-develop"])
 
     def test_optional_fields(self):
         resume = commands.parse('/upstreaming resume revision=2 class=optimized_backend '
@@ -186,13 +185,12 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
                 self.assertEqual(out.accepted and out.event["kind"] == "restart_generation",
                                  state == "parked.idle")
 
-    def test_force_develop_is_deprecated_but_still_overrides_a_park(self):
-        rec = record_in("parked.idle")
-        out = self.take(rec, '/upstreaming force-develop revision=3 class=configuration_integration '
-                             'paths=".github/workflows/*" reason=r')
-        self.assertTrue(out.accepted, out.reason)
-        self.assertEqual(engine.state_key(out.record), "provisioning.idle")
-        self.assertEqual(out.event["kind"], "command:force-develop")
+    def test_force_develop_is_retired(self):
+        with self.assertRaises(commands.CommandError) as raised:
+            commands.parse('/upstreaming force-develop revision=3 class=configuration_integration '
+                           'paths=".github/workflows/*" reason=r')
+        self.assertTrue(str(raised.exception).startswith("`force-develop` is retired."))
+        self.assertNotIn("force-develop", compat.LEGACY_COMMANDS)
 
 
 if __name__ == "__main__":

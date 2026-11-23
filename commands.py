@@ -63,9 +63,6 @@ GRAMMAR: dict[str, dict[str, str]] = {
         "evidence": _ID,
     },
     "authorize-followup": {"contribution": _ID, "revision": _INT, "proposal": _ID},
-    # Deprecated: see DEPRECATED.
-    "force-develop": {"contribution": _ID, "revision": _INT, "class": _CLASS, "paths": _PATHS,
-                      "reason": _REASON},
 }
 
 # Commands outside the lifecycle table: they act on intake and on operations.
@@ -109,14 +106,10 @@ RETIRED["revise-scope"] = (
     f"`{REFRESH_FORM}` keeps the fork and development PR, and a contribution in "
     f"`parked.idle` resumes with `{OVERRIDE_FORM}` to record an admission override")
 
-# Commands still accepted while their replacement is not in effect, with the
-# reply that names it.
-DEPRECATED: dict[str, str] = {
-    "force-develop": (
-        "`force-develop` is deprecated. Its replacement is a resume from `parked.idle` with an "
-        f"admission override, `{OVERRIDE_FORM}`; until the dossier admission applies that "
-        "override, `force-develop` from `parked.idle` remains the override that takes effect"),
-}
+RETIRED["force-develop"] = (
+    "`force-develop` is retired. A contribution in `parked.idle` resumes with an admission "
+    f"override, `{OVERRIDE_FORM}`: a new investigation runs, and a dossier that decides park "
+    "admits development with the override's class and paths")
 
 # Commands that stop work; processed before everything else in a tick.
 URGENT = frozenset({"pause", "park", "abandon"})

@@ -37,6 +37,7 @@ import capacity
 import collect
 import compat
 import controller
+import dossier_gate
 import engine
 import isolation
 import lifecycle
@@ -94,7 +95,6 @@ def migration_report(
         "requested_effects": [],
         "dispatch_relaunch": [],
         "provision_requests": [],
-        "proposal_publications": [],
         "publication_retries": [],
         "dev_pr_requests": [],
     }
@@ -242,14 +242,19 @@ def _may_hold_work(rec: dict) -> bool:
     return rec["phase"] in compat.WORK_PHASES and not rec.get("paused")
 
 
+# The phase in which the table requests Work of each task.
+WORK_PHASE = {"investigation": "investigation", "development_patch": "development",
+              "development_repair": "development", "upstream_revision": "upstream_review"}
+
+
 def result_mismatch(rec: dict, pub: dict) -> str | None:
     """Why a Result does not match what the record requests, or ``None``.
 
     A Result is folded only when it matches the Work identity: the current
     generation and revision of the record, and the requested Work, which is
     the Work the record holds (its Work id), or the held Result of the same
-    worker run (a publish-only retry, or a verified proposal the record
-    holds). Everything else takes ``record_late_effect``. Park, abandon, and
+    worker run (a publish-only retry). Everything else takes
+    ``record_late_effect``. Park, abandon, and
     pause clear the Work and the pending publication, so a matching revision
     alone does not prove a match.
 
@@ -275,7 +280,16 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if revision != rec["revision"]:
         return f"late Result of revision {revision}, current is {rec['revision']}"
     run = str(pub.get("worker_run_id"))
+    if (pub.get("status") == "investigation") != (rec["phase"] == "investigation"):
+        # A dossier answers investigation Work only, and investigation Work
+        # is answered by a dossier only.
+        return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
     requested = rec.get("active_work")
+    if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
+        # Each phase requests its own Work only: a Result of Work of another
+        # phase has no row of this one.
+        return (f"late Result: {requested.get('task')} Work is not requested in the "
+                f"{rec['phase']} phase")
     if requested and work.work_generation(requested) == current \
             and requested.get("revision") == revision \
             and (requested.get("dedupe_key") == key if key is not None else True) \
@@ -284,10 +298,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         # The Work id names the task; a dossier answers investigation Work
         # only, and investigation Work is answered by a dossier only.
         return None
-    if (rec.get("pending_publication") or {}).get("worker_run_id") == run:
-        return None
-    proposal = rec.get("proposal_artifact") or {}
-    if proposal.get("outcome") == "proposal" and str(proposal.get("run_id")) == run:
+    if (rec.get("pending_publication") or {}).get("worker_run_id") == run \
+            and rec["phase"] in ("development", "upstream_review"):
+        # A Result is held for a publish retry only where patch Work runs.
         return None
     return "late Result without matching requested Work"
 
@@ -351,24 +364,27 @@ def _restart_no_progress(record: dict) -> None:
     record["budget"] = dict(record["budget"], no_progress_streak=0)
 
 
-# The investigation Results without a usable dossier: no dossier, or a
-# decision that is none of develop, park, and close.
+# The decisions of a verified dossier. A Result without a dossier, or with a
+# decision that is none of these, has no usable dossier.
 DOSSIER_DECISIONS = ("develop", "park", "close")
+# The `terminal_reason` of a contribution closed by its dossier.
+DOSSIER_CLOSE_REASON = "no_work"
 
 
 def _reject_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
-                    worker_run_id: str | None, evidence: dict | None) -> tuple[dict, list[tuple[str, dict]]] | None:
+                    worker_run_id: str | None, evidence: dict | None,
+                    why: str) -> tuple[dict, list[tuple[str, dict]]]:
     """Take ``reject_dossier``, or ``exhaust_investigation_recovery`` once
     ``investigation_attempts`` is exhausted, for an investigation Result
-    without a usable dossier. ``None`` when the record is not in the state
-    the rows leave (a state outside the table keeps the legacy fold)."""
-    if engine.state_key(rec) != "investigation.agent_running":
-        return None
+    without a usable dossier: no dossier, an invalid one (an incomplete
+    patch scope included), or a decision that is none of develop, park, and
+    close."""
     staged: list[tuple[str, dict]] = [("evidence", evidence)] if evidence else []
     facts = {"dossier_rejected", "no_usable_dossier"}
     details = {"result_status": outcome.get("status"),
                "decision": ((outcome.get("dossier") or {}).get("proposal") or {}).get("decision")
                if isinstance(outcome.get("dossier"), dict) else None,
+               "why": why[:500],
                **({"evidence_id": evidence["evidence_id"]} if evidence else {})}
     cause = _result_cause(outcome, worker_run_id)
     for verb in ("reject_dossier", "exhaust_investigation_recovery"):
@@ -381,12 +397,134 @@ def _reject_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
                                     f"dossier in {engine.state_key(rec)}: {out.reason}")
 
 
+def _admitted_scope(rec: dict, decision: dict) -> tuple[str | None, list | None]:
+    """The admission class and scope paths a dossier decision admits: the
+    dossier's own for a decision develop, the recorded ``admission_override``
+    for a decision park (the override applies against a park only)."""
+    if decision.get("decision") == "park":
+        override = rec.get("admission_override") or {}
+        return override.get("class"), override.get("paths")
+    return decision.get("admission_class"), decision.get("allowed_paths")
+
+
+def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
+                 worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+    """Fold an investigation Result through the table's rows of
+    ``investigation.agent_running``.
+
+    * no dossier, a decision that is none of develop, park, and close, or a
+      patch scope that is incomplete where ``admit_development`` checks it:
+      ``reject_dossier`` (``exhaust_investigation_recovery`` once
+      ``investigation_attempts`` is exhausted);
+    * develop, or park with a recorded ``admission_override``:
+      ``readmit_development`` to the recorded fork when a refresh began with
+      the fork and development PR the record still holds, otherwise
+      ``admit_development`` to provisioning. Both clear the override;
+    * park without an override: ``park_investigation``;
+    * close: ``close_investigation`` with ``terminal_reason`` ``no_work``; a
+      recorded override is not applied, and the event says so.
+
+    The dossier is recorded as evidence first. The rows set the dossier, the
+    admission class, and the scope paths; the complete coverage the scope
+    was checked for is recorded beside them in ``scope_coverage_complete``.
+    """
+    if engine.state_key(rec) != "investigation.agent_running":
+        raise lifecycle.TransitionError(
+            f"an investigation Result is folded in investigation.agent_running only, not in "
+            f"{engine.state_key(rec)}")
+    dossier = outcome.get("dossier")
+    staged: list[tuple[str, dict]] = []
+    evidence = None
+    if isinstance(dossier, dict):
+        eid = safe_id(f"dossier-{rec['contribution_id'].replace('/', '--')}-r{rec['revision']}")
+        evidence = {"schema_version": 1, "evidence_id": eid, "contribution_id": rec["contribution_id"],
+                    "kind": "dossier", "policy_version": policy.get("policy_version", "unknown"),
+                    "collected_at": now,
+                    "summary": str((outcome.get("proposal") or {}).get("diagnosis")
+                                   or "investigation dossier")[:8000],
+                    "limitations": [], "data": dossier,
+                    "digests": {"artifact": (outcome.get("artifact") or {}).get("digest") or ""}}
+    decision = (dossier.get("proposal") if isinstance(dossier, dict) else None)
+    decision = decision if isinstance(decision, dict) else {}
+    kind = decision.get("decision")
+    common = dict(policy=policy, now=now, worker_run_id=worker_run_id, evidence=evidence)
+    if evidence is None:
+        return _reject_dossier(rec, outcome, why="the Result has no dossier", **common)
+    if kind not in DOSSIER_DECISIONS:
+        return _reject_dossier(rec, outcome, why=f"the dossier decision {kind!r} is not develop, "
+                               "park, or close", **common)
+    staged.append(("evidence", evidence))
+    cause = _result_cause(outcome, worker_run_id)
+    override = rec.get("admission_override")
+    rationale = str(decision.get("rationale") or "")[:2000]
+    details = {"decision": kind, "evidence_id": evidence["evidence_id"]}
+    if kind == "close":
+        if override:
+            details["admission_override_not_applied"] = override
+        out = engine.apply_transition(
+            rec, "close_investigation", policy=policy, now=now, cause_id=cause,
+            facts={"dossier_decision_close"},
+            values={"terminal_reason": DOSSIER_CLOSE_REASON},
+            details=details | {"rationale": rationale})
+    elif kind == "park" and not override:
+        out = engine.apply_transition(
+            rec, "park_investigation", policy=policy, now=now, cause_id=cause,
+            facts={"dossier_decision_park"},
+            values={"parked_reason": rationale or "the dossier decided park"},
+            details=details)
+    else:
+        admission_class, paths = _admitted_scope(rec, decision)
+        refresh = rec.get("refresh") or {}
+        fork = rec.get("fork") or {}
+        readmit = bool(refresh and refresh.get("head_sha") and fork.get("repository_id")
+                       and fork.get("pr_number") == refresh.get("pr_number"))
+        # The scope is a guard of `admit_development`. An override is checked
+        # whichever row admits it, since nothing else names its class and
+        # paths; its paths are the human's scope, so the dossier's coverage
+        # is recorded for it but does not refuse it.
+        problem = dossier_gate.scope_problem(decision, admission_class=admission_class,
+                                             allowed_paths=paths)
+        refused = (dossier_gate.scope_problem(decision, admission_class=admission_class,
+                                              allowed_paths=paths, coverage=False)
+                   if kind == "park" else problem)
+        if refused and (kind == "park" or not readmit):
+            return _reject_dossier(
+                rec, outcome, why=f"the admitted patch scope is incomplete: {refused}",
+                **common)
+        if override and kind == "park":
+            details["admission_override"] = override
+        elif override:
+            details["admission_override_cleared"] = override
+        values = {"dossier_evidence_id": evidence["evidence_id"],
+                  "admission_class": admission_class,
+                  "scope_paths": list(paths) if isinstance(paths, list) else paths}
+        if readmit:
+            out = engine.apply_transition(
+                rec, "readmit_development", policy=policy, now=now, cause_id=cause,
+                facts={"development_admitted", "recorded_fork_matches"}, values=values,
+                details=details)
+        else:
+            out = engine.apply_transition(
+                rec, "admit_development", policy=policy, now=now, cause_id=cause,
+                facts={"development_admitted", "patch_scope_complete", "fresh_fork_required"},
+                values=values, details=details)
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"the dossier decision {kind} is refused in "
+                                        f"{engine.state_key(rec)}: {out.reason}")
+    new = out.record
+    if out.verb in ("admit_development", "readmit_development"):
+        # The scope was checked complete for the dossier it came from.
+        new = dict(new, scope_coverage_complete=problem is None)
+    staged.extend([("events", out.event), ("contributions", new)])
+    return new, staged
+
+
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one publication outcome (from fork_publish / queue_result) into the record.
 
+    * investigation         -> the dossier decides, by the table (``fold_dossier``)
     * published / uncertain -> waiting_ci (observation confirms the head)
-    * proposal              -> waiting_capacity (verified patch, no destination write yet)
     * no_change             -> idle (preserved; no revision bump, no repair)
     * rejected, validation  -> fix_needed (a new agent task at a new revision),
                                charged to the attempt budget; exhaustion parks
@@ -396,14 +534,23 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
                                of the same worker run with backoff; after
                                ``retries.infrastructure_per_head_failure``
                                attempts, wait for a human (no model call ever)
+
+    An outcome ``proposal`` (a patch held without a destination write) is
+    not produced by the publish job, whose every patch Work writes the
+    provisioned fork; one that arrives is rejected in trusted validation.
     """
     from datetime import datetime as _dt
     from datetime import timedelta
+    if outcome.get("status") == "investigation":
+        return fold_dossier(rec, outcome, now=now, policy=policy or {},
+                            worker_run_id=worker_run_id)
     staged: list[tuple[str, dict]] = []
     new = copy.deepcopy(rec)
     new["active_work"] = None          # any outcome ends the requested task
     status = outcome.get("status")
     fclass = outcome.get("failure_class")
+    if status == "proposal":
+        status, fclass = "rejected", "validation"
     pending = new.get("pending_publication")
     if status == "infra_error":
         attempts = (pending or {}).get("attempts", 0) + 1 if (pending or {}).get("worker_run_id") == worker_run_id \
@@ -430,16 +577,15 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         return new, staged
     new["pending_publication"] = None
     art = outcome.get("artifact")
-    if outcome.get("status") not in ("investigation", "worker_blocked") and art \
+    if status != "worker_blocked" and art \
             and all(k in art for k in ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")):
         new["proposal_artifact"] = {k: art[k] for k in ("work_id", "claim_id", "artifact_id", "name",
                                                         "digest", "run_id")} | {
-            "result_commit": art.get("result_commit"), "outcome": outcome.get("status")}
+            "result_commit": art.get("result_commit"), "outcome": status}
     op = outcome.get("operation")
     if op:
         staged.append(("operations", op))
         new["publication_operation_id"] = op["operation_id"]
-    status = outcome.get("status")
     if status in ("published", "uncertain") and op:
         changed_files = (op.get("proposed") or {}).get("changed_files") or []
         if changed_files:
@@ -452,9 +598,6 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     elif status == "uncertain":
         compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_ci")   # discovery happens in observe_ci
         _restart_no_progress(new)
-    elif status == "proposal":
-        compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_capacity")
-        new["pending_human_action"] = None
     elif status == "worker_blocked":
         proposal = outcome.get("proposal") or {}
         run = str(worker_run_id or (outcome.get("artifact") or {}).get("run_id") or "0")
@@ -516,75 +659,6 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             rec, new, "worker_proposal_rejected",
             "result", _result_cause(outcome, worker_run_id), now, fclass != "stale",
         )))
-    elif status == "investigation":
-        # Investigation artifacts are evidence, never patch proposals. Keeping
-        # one in proposal_artifact would make base-branch CI look like patch CI
-        # and suppress the first development task.
-        new["proposal_artifact"] = None
-        # The dossier is recorded as evidence. Its validated decision either
-        # enters automatic provisioning or parks without launching a writer.
-        dossier = outcome.get("dossier")
-        eid = None
-        if isinstance(dossier, dict):
-            eid = safe_id(f"dossier-{new['contribution_id'].replace('/', '--')}-r{new['revision']}")
-            ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": new["contribution_id"],
-                  "kind": "dossier", "policy_version": (policy or {}).get("policy_version", "unknown"),
-                  "collected_at": now,
-                  "summary": str((outcome.get("proposal") or {}).get("diagnosis") or "investigation dossier")[:8000],
-                  "limitations": [], "data": dossier,
-                  "digests": {"artifact": (outcome.get("artifact") or {}).get("digest") or ""}}
-            staged.append(("evidence", ev))
-        new["dossier_evidence_id"] = eid
-        refresh = new.get("refresh")
-        # The refreshed dossier returns to development on the recorded fork
-        # (`readmit_development`) only when the refresh began with a fork,
-        # and its development PR, that the record still holds; otherwise
-        # development is admitted afresh (`admit_development`).
-        fork = new.get("fork") or {}
-        readmit = bool(refresh and refresh.get("head_sha") and fork.get("repository_id")
-                       and fork.get("pr_number") == refresh.get("pr_number"))
-        decision = (dossier.get("proposal") or {}).get("decision") if isinstance(dossier, dict) else None
-        if not eid or decision not in DOSSIER_DECISIONS:
-            rejected = _reject_dossier(rec, outcome, now=now, policy=policy or {},
-                                       worker_run_id=worker_run_id,
-                                       evidence=staged[-1][1] if eid else None)
-            if rejected is not None:
-                return rejected
-        if not eid:
-            compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_human")
-            new["pending_human_action"] = {"kind": "investigation_without_dossier", "requested_at": now,
-                                           "reminded_at": None, "escalated_at": None}
-        elif decision not in ("develop", "park"):
-            compat.legacy_assign(new, "reconcile.publication_outcome", phase="investigation", activity="idle",
-                                 revision=new["revision"] + 1)
-            new["pending_human_action"] = None
-            staged.append(("events", lifecycle._event(rec, new, "dossier_contract_stale", "observation",
-                                                       str(worker_run_id or eid), now, True)))
-        elif decision == "park":
-            new["previous_phase"] = (refresh or {}).get("from_phase") or new["phase"]
-            compat.legacy_assign(new, "reconcile.publication_outcome", phase="parked", activity="idle",
-                                 revision=new["revision"] + 1)
-            new["parked_reason"] = dossier["proposal"]["rationale"][:2000]
-            new["pending_human_action"] = None
-            new["refresh"] = None
-            staged.append(("events", lifecycle._event(rec, new, "dossier_parked", "observation",
-                                                       str(worker_run_id or eid), now, True)))
-        else:
-            compat.legacy_assign(
-                new, "reconcile.publication_outcome",
-                activity="fix_needed" if readmit else "idle",
-                phase=("development"
-                       if readmit or not (policy or {}).get("destination_writes", False)
-                       else "provisioning"),
-                revision=new["revision"] + 1)
-            new["admission_class"] = dossier["proposal"]["admission_class"]
-            new["scope_paths"] = list(dossier["proposal"]["allowed_paths"])
-            new["scope_coverage_complete"] = True
-            new["pending_human_action"] = None
-            new["refresh"] = None
-            kind = "dossier_refreshed" if readmit else "dossier_develop"
-            staged.append(("events", lifecycle._event(rec, new, kind, "observation",
-                                                       str(worker_run_id or eid), now, True)))
     new["updated_at"] = now
     staged.append(("contributions", new))
     return new, staged
@@ -592,7 +666,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
 
 # The lists of a tick report that name what the tick asks the workflow to launch.
 _EFFECT_LISTS = ("requested_effects", "dispatch_relaunch", "provision_requests",
-                 "dev_pr_requests", "proposal_publications", "publication_retries")
+                 "dev_pr_requests", "publication_retries")
 
 
 def _touched(out: TickOutput, contribution_id: str) -> list[str]:
@@ -731,8 +805,8 @@ def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
     """Take the table's ``pause_on_processing_error`` on the committed record.
 
     It sets ``paused`` with the error as ``paused_reason``, ``paused_by``
-    ``controller`` and ``paused_at``, and clears the requested Work, the
-    pending publication, and a held proposal; from an ``agent_running`` state
+    ``controller`` and ``paused_at``, and clears the requested Work and the
+    pending publication; from an ``agent_running`` state
     it leads to the state in which the Work is due. The engine takes it for a
     record in a state of the table, ``compat.legacy_pause`` for one in a
     legacy state. The outcome is not accepted, and nothing changes, when the
@@ -847,14 +921,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             if receipt["status"] != "provisioned":
                 # The trusted workflow reports a definite failure: the
                 # operation takes `record_failure` and, from
-                # `provisioning.idle`, fires `require_provisioning_intervention`.
+                # `provisioning.idle`, fires `require_provisioning_intervention`;
+                # in the provisioning wait the state is kept.
                 fired = None
-                if op["status"] not in ("planned", "applying") or (
-                        not recovery.fired_verbs(c, op, "failed")
-                        and not compat.waits_for_human(c)):
-                    # Only a launched operation fails by a receipt, and a
-                    # provisioning shape the table does not have keeps its
-                    # legacy launches.
+                if op["status"] not in ("planned", "applying"):
+                    # Only a launched operation fails by a receipt.
                     provision_report.append({"contribution": cid, "status": "failure not folded"})
                     continue
                 new_op = recovery.fold_failure_receipt(op, external_ids=external_ids, now=iso)
@@ -910,24 +981,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     raise lifecycle.TransitionError(
                         f"confirm_provisioning refused in {engine.state_key(c)}: {fired.reason}")
                 new, event = fired.record, fired.event
-            elif compat.waits_for_human(c):
-                # A wait of the table has no row for the operation: the state
-                # is kept and the closed operation is released.
-                new, event = recovery.release(c, new_op, iso), None
             else:
-                has_pre_fork_proposal = (c.get("proposal_artifact") or {}).get("outcome") == "proposal"
-                new = compat.legacy_update(
-                    c, "reconcile.confirm_provisioning",
-                    fork=fork,
-                    phase="development",
-                    activity="waiting_capacity" if has_pre_fork_proposal else "idle",
-                    active_operation_id=None,
-                    pending_human_action=None,
-                    revision=c["revision"] if has_pre_fork_proposal else c["revision"] + 1,
-                    updated_at=iso,
-                )
-                event = lifecycle._event(c, new, "fork_provisioned", "observation", op["operation_id"],
-                                         iso, not has_pre_fork_proposal)
+                # The provisioning wait has no row for the operation: the
+                # state is kept and the closed operation is released.
+                new, event = recovery.release(c, new_op, iso), None
             schemas.validate("contribution", new)
             contributions[key] = new
             snap.operations[op["operation_id"]] = new_op
@@ -1101,7 +1158,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["requested_effects"] = res.requested_effects
     out.report["provision_requests"] = res.report["provision_requests"]
     out.report["dev_pr_requests"] = res.report["dev_pr_requests"]
-    out.report["proposal_publications"] = res.report["proposal_publications"]
     # 4. Publish-only retries due now (infrastructure failures; no model call).
     retries = []
     max_launches = 1 + policy["retries"]["infrastructure_per_head_failure"]

@@ -357,17 +357,6 @@ jobs:
             gh workflow run provision.yml --repo "$GITHUB_REPOSITORY" --ref main \
               -f operation-id="$operation"
           done
-      - name: Publish verified pre-fork proposals without another model call
-        if: steps.policy.outputs.read_only == 'false'
-        env:
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          jq -r '.proposal_publications[] | "\(.worker_run_id) \(.attempt)"' report.json \
-            | while read -r run attempt; do
-              gh workflow run publish-retry.yml --repo "$GITHUB_REPOSITORY" --ref main \
-                -f worker-run-id="$run" -f attempt="$attempt"
-            done
       - name: Launch due publication retries
         if: steps.policy.outputs.read_only == 'false'
         env:

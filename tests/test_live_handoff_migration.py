@@ -223,7 +223,7 @@ class TestControllerMigratesByItself(unittest.TestCase):
         # A migration-only tick launches nothing.
         self.assertEqual(report["controller"], {"canary_recovery_requests": []})
         for key in ("requested_effects", "dispatch_relaunch", "provision_requests",
-                    "proposal_publications", "publication_retries", "dev_pr_requests"):
+                    "publication_retries", "dev_pr_requests"):
             self.assertEqual(report[key], [], key)
         changed = sorted(line.strip() for line in git(
             self.repo, "status", "--porcelain", "--untracked-files=all").split("\n"))
@@ -350,7 +350,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 self.assertEqual(output.report["requested_effects"], [])
                 self.assertEqual(output.report["dispatch_relaunch"], [])
                 self.assertEqual(output.report["controller"]["selected"], [])
-                for key in ("provision_requests", "dev_pr_requests", "proposal_publications",
+                for key in ("provision_requests", "dev_pr_requests",
                             "publication_retries"):
                     self.assertEqual(output.report[key], [], key)
 
@@ -406,8 +406,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
             ("/upstreaming resume revision=6 class=optimized_backend reason=x",
              "not paused"),
             ('/upstreaming force-develop revision=6 class=configuration_integration paths=a '
-             'reason="x"', "`/upstreaming force-develop` does not apply in "
-                           "`handoff.awaiting_submission`"),
+             'reason="x"', "`force-develop` is retired."),
         )
         for body, reason in cases:
             with self.subTest(body=body):
@@ -417,6 +416,8 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 self.assertIn(reason, receipt["reason"])
                 if "`restart`" in reason:
                     self.assertIn('/upstreaming resume revision=N reason="..."', receipt["reason"])
+                elif "`force-develop`" in reason:
+                    self.assertIn("/upstreaming resume revision=N class=", receipt["reason"])
                 elif "retired" in reason and "block" not in reason:
                     self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
                                   receipt["reason"])

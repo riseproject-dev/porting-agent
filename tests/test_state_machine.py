@@ -124,18 +124,12 @@ class TestLifecycleTable(unittest.TestCase):
                       "development.fix_needed --exhaust_repair_attempts-->",
                       "parked.idle --abandon-->"):
             self.assertIn(lc.HELD_RESULT, stops[where].effects.clears, where)
-            self.assertIn(lc.HELD_PROPOSAL, stops[where].effects.clears, where)
         for where, t in stops.items():
             if t.effects.work == "clear" or t.trigger == lc.Trigger.COMMAND:
                 self.assertIn(lc.HELD_RESULT, t.effects.clears, where)
-                self.assertIn(lc.HELD_PROPOSAL, t.effects.clears, where)
-        # A stop that clears the pending publication but keeps a held proposal is reported.
-        pause = lc.FLAGS["paused"].set_by["pause"]
-        only_result = dataclasses.replace(pause.effects, clears=(lc.HELD_RESULT,))
-        with mock.patch.dict(lc.FLAGS["paused"].set_by,
-                             {"pause": dataclasses.replace(pause, effects=only_result)}):
-            self.assertTrue(any(p.startswith("flag paused pause: a stop")
-                                and lc.HELD_PROPOSAL in p for p in lc.check_table(POLICY)))
+            # `proposal_artifact` holds a published Result only; no stop clears it.
+            self.assertNotIn("proposal_artifact", t.effects.clears, where)
+        self.assertFalse(hasattr(lc, "HELD_PROPOSAL"))
         # The check reports a stop row, a rule, or a flag verb that keeps it.
         keep = lc.Effects(work="clear", sets=("parked_reason", "previous_phase"))
         park = lc.RULES["park_contribution"].transition
@@ -810,7 +804,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertEqual(stop.guard, (lc.NOT_PAUSED, "not terminal", lc.PROCESSING_ERROR))
         self.assertEqual(stop.effects, lc.Effects(
             work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller"),
-            clears=(lc.HELD_RESULT, lc.HELD_PROPOSAL)))
+            clears=(lc.HELD_RESULT,)))
         self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))
 
         def problems_with(**changes):

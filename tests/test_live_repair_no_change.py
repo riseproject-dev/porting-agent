@@ -94,7 +94,7 @@ def tick(record, *, publications=(), queue_works=None, runs=None, now="2026-11-2
          mock.patch("observe_ci.collect.ci_snapshot", return_value=observed):
         return reconcile.tick(
             object(), reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, dict(REASONS)),
-            policy=policy(read_only=False, destination_writes=True),
+            policy=policy(read_only=False),
             now=datetime.fromisoformat(now), publications=list(publications),
             pressure=capacity.Pressure(ok=True), issues=[], comments=[],
             dispatcher_runs=runs, queue_works=queue_works)
@@ -294,7 +294,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
                     "stage": "worker_gate", "proposal": dict(load("proposal.json"), outcome="patch")}
         new, staged = reconcile.apply_publication(
             record, rejected, now="2026-11-22T11:20:00+00:00",
-            policy=policy(read_only=False, destination_writes=True), worker_run_id=R6_RUN)
+            policy=policy(read_only=False), worker_run_id=R6_RUN)
         self.assertEqual(new["revision"], 7)
         # `work_total` was charged when the Work was allocated; the rejected
         # outcome charges `no_progress`, now exhausted. Its exhaustion is
@@ -313,7 +313,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
                     "stage": "worker_gate", "proposal": dict(load("proposal.json"), outcome="patch")}
         fix_needed, _staged = reconcile.apply_publication(
             record, rejected, now="2026-11-22T11:20:00+00:00",
-            policy=policy(read_only=False, destination_writes=True), worker_run_id=R6_RUN)
+            policy=policy(read_only=False), worker_run_id=R6_RUN)
 
         def select(rec):
             # Outside the canary's own recovery, which holds this record.

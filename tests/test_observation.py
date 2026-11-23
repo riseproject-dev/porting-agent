@@ -787,7 +787,7 @@ class TestTick(unittest.TestCase):
         out = reconcile.tick(
             None,
             snap,
-            policy=policy(read_only=False, destination_writes=False),
+            policy=policy(read_only=False),
             now=T,
             publications=[legacy, pub],
             pressure=capacity.Pressure(ok=True),
@@ -798,19 +798,25 @@ class TestTick(unittest.TestCase):
         self.assertEqual(ev[0]["data"], dossier())
         final = [r for k, r in out.staged if k == "contributions"][-1]
         self.assertEqual(final["dossier_evidence_id"], ev[0]["evidence_id"])
+        # `admit_development`: the fork is provisioned before any patch Work.
         self.assertEqual(
             (final["phase"], final["activity"], final["revision"]),
-            ("development", "agent_running", 1),
+            ("provisioning", "idle", 1),
         )
         self.assertEqual(final["admission_class"], "configuration_integration")
         self.assertEqual(final["scope_paths"], [".github/workflows/*", "README.rst"])
         self.assertTrue(final["scope_coverage_complete"])
         self.assertIsNone(final["pending_human_action"])
         self.assertIsNone(final["proposal_artifact"])
-        self.assertEqual(out.report["provision_requests"], [])
+        self.assertEqual(len(out.report["provision_requests"]), 1)
+        self.assertEqual(final["active_operation_id"],
+                         out.report["provision_requests"][0]["operation_id"])
         self.assertTrue(any(item.get("ignored") == "superseded publication artifact"
                             for item in out.report["publications"]))
-        self.assertEqual(out.report["requested_effects"][0]["task"], "development_patch")
+        self.assertEqual(out.report["requested_effects"], [])
+        kinds = [r["kind"] for k, r in out.staged if k == "events"]
+        self.assertIn("admit_development", kinds)
+        self.assertIn("start_operation", kinds)
 
     def test_refresh_dossier_returns_to_existing_pr_and_requires_worker_pass(self):
         import commands
@@ -865,8 +871,9 @@ class TestTick(unittest.TestCase):
         out = reconcile.tick(None, snap, policy=policy(read_only=False), now=T, publications=[pub],
                              pressure=capacity.Pressure(ok=True), observe=False)
         final = [r for k, r in out.staged if k == "contributions"][-1]
+        # `park_investigation` ends the generation without a revision bump.
         self.assertEqual((final["phase"], final["activity"], final["active_work"], final["revision"]),
-                         ("parked", "idle", None, 1))
+                         ("parked", "idle", None, 0))
         self.assertIn("No concrete upstream patch", final["parked_reason"])
         self.assertEqual(out.report["provision_requests"], [])
 

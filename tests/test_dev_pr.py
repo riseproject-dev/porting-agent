@@ -103,7 +103,6 @@ class TestDevelopmentPR(unittest.TestCase):
         rec["publication_operation_id"] = branch["operation_id"]
         tick = controller.tick(contributions={"c": rec}, operations={branch["operation_id"]: branch},
                                consumed={}, projects={}, policy={"policy_version": "test", "read_only": False,
-                               "destination_writes": True,
                                "concurrency": {"coding_workers": 1}, "retries": {}, "capacity": {}},
                                inputs=controller.Inputs(now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True)))
         self.assertEqual(len(tick.report["dev_pr_requests"]), 1)
@@ -120,7 +119,7 @@ class TestDevelopmentPR(unittest.TestCase):
                        "contribution_id": rec["contribution_id"], "revision": 2,
                        "repository": FORK, "repository_id": 9, "pr_id": 77, "pr_number": 4,
                        "head_sha": SHA_B, "base_ref": "main", "development_pr_run_id": 100}
-            result = reconcile.tick(api, snap, policy=policy(read_only=False, destination_writes=True),
+            result = reconcile.tick(api, snap, policy=policy(read_only=False),
                                     now=datetime.fromisoformat(NOW), publications=[],
                                     pressure=capacity.Pressure(ok=True), observe=False,
                                     development_prs=[receipt])

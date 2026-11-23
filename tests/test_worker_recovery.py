@@ -180,7 +180,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                 reconcile.Snapshot(
                     {"c": record}, operations, {}, {project["project_id"]: project}, {}
                 ),
-                policy=policy(read_only=False, destination_writes=True),
+                policy=policy(read_only=False),
                 now=datetime.fromisoformat(now),
                 publications=[publication],
                 pressure=capacity.Pressure(ok=True),
@@ -226,7 +226,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                 record,
                 outcome,
                 now=f"2026-11-22T05:3{attempt}:00+00:00",
-                policy=policy(read_only=False, destination_writes=True),
+                policy=policy(read_only=False),
                 worker_run_id=str(100 + attempt),
             )
         # Each blocked outcome charges `no_progress` only; `work_total` and

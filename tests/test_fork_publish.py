@@ -324,7 +324,7 @@ class TestPublishRetryIdentity(_ForkFixture, unittest.TestCase):
             record=self.record, task=self.task, proposal=self.proposal(), mbox=self.mbox,
             token=None, observe_head=self.fork_head,
             scope=publisher.Scope(allowed_globs=[".github/workflows/*"]),
-            policy=policy(read_only=False, destination_writes=True), now=NOW,
+            policy=policy(read_only=False), now=NOW,
             save_operation=ops.append, workdir=self.root / f"attempt-{n}-{len(self.ops)}",
             push=push, attempt=n)
         self.ops.append(ops[-1])

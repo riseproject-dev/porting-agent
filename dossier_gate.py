@@ -80,6 +80,37 @@ def validate(dossier: dict, proposal: dict, task: dict) -> None:
             raise DossierError(f"allowed_paths omit researched riscv64 paths: {sorted(set(missing))}")
 
 
+def scope_problem(decision: dict, *, admission_class: str | None,
+                  allowed_paths: list[str] | None, coverage: bool = True) -> str | None:
+    """Why the patch scope admitted for a dossier is incomplete, or ``None``.
+
+    The scope is complete when it has an admission class, names 1..32 safe
+    scope paths, and, with ``coverage``, matches every path the dossier's
+    ``path_coverage`` lists as possibly needing a riscv64 change. The
+    reconciler asserts the fact "the verified dossier names `scope_paths`,
+    and `scope_coverage_complete` holds" of ``admit_development`` from this."""
+    if not isinstance(admission_class, str) or not admission_class:
+        return "no admission class"
+    if not isinstance(allowed_paths, list) or not all(isinstance(p, str) for p in allowed_paths):
+        return "no scope paths"
+    try:
+        validate_scope_paths(allowed_paths)
+    except ValueError as exc:
+        return str(exc)
+    if not coverage:
+        return None
+    areas = decision.get("path_coverage") if isinstance(decision, dict) else None
+    if not isinstance(areas, list) or not all(
+            isinstance(entry, dict) and isinstance(entry.get("paths"), list) for entry in areas):
+        return "no path coverage"
+    covered = [path for entry in areas for path in entry["paths"]]
+    missing = sorted({path for path in covered if not isinstance(path, str) or not any(
+        fnmatch.fnmatchcase(path, allowed) for allowed in allowed_paths)}, key=str)
+    if missing:
+        return f"the scope omits researched riscv64 paths: {missing[:8]}"
+    return None
+
+
 def _read(root: Path, relative: Path, limit: int = 256 * 1024) -> str:
     if root.is_symlink() or relative.is_absolute() or ".." in relative.parts:
         raise DossierError("invalid or symlinked staging path")

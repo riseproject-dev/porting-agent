@@ -27,7 +27,7 @@ This page records the decisions behind the [lifecycle table]({{ '/state-machine/
 4. The dossier is refreshed after a park, and after a pause or human wait longer than 7 days in provisioning or development. It is never refreshed automatically from `handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses `/upstreaming refresh`.
 5. Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation counter, `work_total`. `lifecycle check` verifies this.
 6. Prefer a guard or a derived status over a new state or flag.
-7. Every stop that clears the requested Work also clears `pending_publication` and a held proposal that is not published: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
+7. Every stop that clears the requested Work also clears `pending_publication`: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
 
 ## Open items
 
@@ -1146,7 +1146,7 @@ flowchart TB
 
 Whether patch Work can be requested before `confirm_provisioning`.
 
-**Decision.** It cannot. Patch Work is requested only from `development.fix_needed`, which is entered after `confirm_provisioning`. The guard of `request_patch` is write admission only. The checks on `scope_paths` and `scope_coverage_complete` are a guard of `admit_development`, so an incomplete patch scope is refused before a fork is provisioned. A stop also clears a proposal that is held and not published, together with the pending publication, so nothing is published after a stop.
+**Decision.** It cannot. Patch Work is requested only from `development.fix_needed`, which is entered after `confirm_provisioning`. The guard of `request_patch` is write admission only. The checks on `scope_paths` and `scope_coverage_complete` are a guard of `admit_development`, so an incomplete patch scope is refused before a fork is provisioned. No proposal is held without a write to the fork, so a stop clears the pending publication and nothing is published after it.
 
 ```mermaid
 flowchart TB
@@ -1377,7 +1377,7 @@ flowchart TB
 
 Whether an unexpected error while the controller processes one contribution stops the tick for every contribution.
 
-**Change.** It does not. Staging is all or nothing per contribution: everything the tick staged for the contribution (record, events, operations, evidence) is discarded, none of its effects is requested, and the tick continues with the other contributions. The controller then takes `pause_on_processing_error` on the record as it was committed before the tick: a set verb of `paused` that applies in every non-terminal state and keeps the state. It records the error class, the message, and the run id in `paused_reason`, `paused_by=controller`, and `paused_at`, and follows the pause semantics: the requested Work, the pending publication, and a held proposal are cleared, and `resume_pause` bumps the revision. The error is posted on the tracking issue and listed in the tick report under `alerts`. Errors in two or more contributions in one tick are a pipeline failure: the whole tick stops, nothing is committed, and no contribution is paused. An error outside any contribution (state load, policy, schema validation of the store, the commit) stops the whole tick as before. Expected rejections (a refused transition of a command, a rejected command, an intake error) are rejected with a reason and pause nothing. A collector failure for one contribution skips that contribution for the tick with no state change and no pause, and the report records it. Stop commands are still applied first; when applying one fails, the contribution is treated as errored and nothing is launched for it in that tick.
+**Change.** It does not. Staging is all or nothing per contribution: everything the tick staged for the contribution (record, events, operations, evidence) is discarded, none of its effects is requested, and the tick continues with the other contributions. The controller then takes `pause_on_processing_error` on the record as it was committed before the tick: a set verb of `paused` that applies in every non-terminal state and keeps the state. It records the error class, the message, and the run id in `paused_reason`, `paused_by=controller`, and `paused_at`, and follows the pause semantics: the requested Work and the pending publication are cleared, and `resume_pause` bumps the revision. The error is posted on the tracking issue and listed in the tick report under `alerts`. Errors in two or more contributions in one tick are a pipeline failure: the whole tick stops, nothing is committed, and no contribution is paused. An error outside any contribution (state load, policy, schema validation of the store, the commit) stops the whole tick as before. Expected rejections (a refused transition of a command, a rejected command, an intake error) are rejected with a reason and pause nothing. A collector failure for one contribution skips that contribution for the tick with no state change and no pause, and the report records it. Stop commands are still applied first; when applying one fails, the contribution is treated as errored and nothing is launched for it in that tick.
 
 ```mermaid
 flowchart TB

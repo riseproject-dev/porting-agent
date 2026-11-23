@@ -25,7 +25,7 @@ import schemas
 from tests.helpers import NOW, OWNER, SHA_A, SHA_C, STRANGER, apply_command, contribution, policy
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICY = policy(read_only=False, destination_writes=True)
+POLICY = policy(read_only=False)
 T = datetime.fromisoformat(NOW)
 EVIDENCE = {"schema_version": 1, "evidence_id": "ev-9", "kind": "resolution",
             "policy_version": "p", "collected_at": NOW, "summary": "the run never started"}
@@ -191,8 +191,7 @@ class TestStoreFence(unittest.TestCase):
         for before in lc.OPERATIONS:
             for after in lc.OPERATIONS:
                 why = recovery.transition_problem(operation(before), operation(after))
-                legal = after in recovery.reachable(before) or \
-                    (before, after) in recovery.LEGACY_TRANSITIONS
+                legal = after in recovery.reachable(before)
                 with self.subTest(before=before, after=after):
                     self.assertEqual(why is None, legal)
         for end in ("confirmed", "failed", "not_launched"):
@@ -605,13 +604,6 @@ class TestProvisioningWaitExits(ReceiptWorld, unittest.TestCase):
                          ("planned", resumed["revision"], 1))
         self.assertEqual(ops[failed["operation_id"]], failed)
         self.assertEqual(resumed["active_operation_id"], fresh["operation_id"])
-
-    def test_a_failure_receipt_in_a_legacy_shape_is_not_folded(self):
-        rec, op, receipt, api = self.receipt_world(provisioning_record(activity="waiting_capacity"))
-        result = self.fold(rec, op, dict(receipt, status="failed"), api)
-        self.assertEqual(result.report["provisions"],
-                         [{"contribution": rec["contribution_id"], "status": "failure not folded"}])
-        self.assertEqual([r for k, r in result.staged if k == "operations"], [])
 
     def waits(self):
         """Every wait of provisioning the pipeline reaches, with its store."""

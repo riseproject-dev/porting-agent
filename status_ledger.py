@@ -33,8 +33,7 @@ MESSAGES = {
                                "phase for work that is not needed, `closed`, with its reason in "
                                "`terminal_reason`. Nothing else changed."),
     "command:force-develop": ("Overrode the dossier park: automatic development starts with the "
-                              "admission class and paths of the command. "
-                              f"{commands.DEPRECATED['force-develop']}."),
+                              "admission class and paths of the command."),
     "dossier_develop": "Verified the investigation dossier and admitted automatic development.",
     "dossier_parked": "Verified the investigation dossier and parked the contribution because no bounded patch is actionable.",
     "fork_provisioned": "Provisioned and verified the contribution fork and exact `riscv64` base.",
@@ -105,6 +104,18 @@ MESSAGES = {
                               "fresh Work."),
     "reject_dossier": ("Rejected the investigation Result: it has no usable dossier. A new "
                        "investigation is due."),
+    "admit_development": ("Verified the investigation dossier and admitted development: the "
+                          "fork is provisioned automatically, then patch Work is due."),
+    "readmit_development": ("Verified the refreshed investigation dossier: development "
+                            "continues on the recorded fork and development PR."),
+    "park_investigation": ("Verified the investigation dossier and parked the contribution: the "
+                           "dossier decided that no bounded patch is actionable."),
+    "close_investigation": ("Verified the investigation dossier and closed the contribution: "
+                            "the dossier decided that the work is not needed."),
+    compat.PROVISIONING_MIGRATED: (
+        "Recorded this contribution in the state of the lifecycle table its provisioning shape "
+        "stands for. Provisioning is planned and launched from `provisioning.idle`, and patch "
+        "Work is requested only on the provisioned fork."),
     "exhaust_investigation_recovery": (
         "Rejected the investigation Result: it has no usable dossier, and the investigation "
         "attempts are exhausted. The contribution waits for a human: `/upstreaming resume` at "
@@ -199,6 +210,12 @@ def _budget_note(event: dict) -> str:
     return ""
 
 
+def _override_text(override: dict) -> str:
+    """The class and paths of an admission override, quoted for the issue."""
+    return (f"class `{_quotable(override.get('class') or 'not given', 60)}`, paths "
+            f"`{_quotable(', '.join(override.get('paths') or []) or 'not given', 300)}`")
+
+
 def _quoted_comments(event: dict) -> str:
     """The comments an explanation event recorded, for the tracking issue."""
     lines = []
@@ -226,10 +243,11 @@ _HEAD_TEMPLATES = {
 # The head a command names in a state of the table.
 _HEADS = {"handoff.awaiting_submission": lambda r: (r.get("handoff_request") or {}).get("head"),
           "handoff.waiting_upstream_pr": lambda r: r.get("clean_head_sha")}
-# The deprecated override of a dossier park, offered in `parked.idle` until
-# the dossier admission applies the override a resume records.
-FORCE_DEVELOP = ('/upstreaming force-develop revision={revision} class={admission} '
-                 'paths="{paths}" reason="..."')
+# The resume from `parked.idle` that records an admission override, offered
+# beside the plain resume: a dossier that decides park then admits
+# development with the override's class and paths.
+RESUME_OVERRIDE = ('/upstreaming resume revision={revision} class={admission} '
+                   'paths="{paths}" reason="..."')
 
 
 def _table_command_lines(record: dict) -> list[str]:
@@ -253,8 +271,8 @@ def _table_command_lines(record: dict) -> list[str]:
     lines = [_HEAD_TEMPLATES.get((state, c), _TEMPLATES[c]).format(
                  revision=record["revision"], head=head)
              for c in offered if c in _TEMPLATES and c.split()[-1] in commands.GRAMMAR]
-    if state == "parked.idle":
-        lines.append(FORCE_DEVELOP.format(
+    if state == "parked.idle" and not paused:
+        lines.append(RESUME_OVERRIDE.format(
             revision=record["revision"],
             admission=record.get("admission_class") or "configuration_integration",
             paths=",".join(record.get("scope_paths") or [".github/workflows/*"])))
@@ -307,14 +325,19 @@ def render(event: dict, record: dict, run_url: str) -> str:
     if kind == "pause_on_processing_error":
         message += _processing_error(event)
     message += _budget_note(event)
-    override = (event.get("details") or {}).get("admission_override")
+    details = event.get("details") or {}
+    override = details.get("admission_override")
     if kind == "restart_generation" and override:
-        message += (f" The admission override is recorded (class "
-                    f"`{_quotable(override.get('class') or 'not given', 60)}`, paths "
-                    f"`{_quotable(', '.join(override.get('paths') or []) or 'not given', 300)}`). "
-                    "The new investigation still runs; until the dossier admission applies the "
-                    "override, a dossier that decides park parks the contribution again, and "
-                    "`force-develop` from `parked.idle` is the override that takes effect.")
+        message += (f" The admission override is recorded ({_override_text(override)}). "
+                    "The new investigation still runs; a dossier that decides park then admits "
+                    "development with the override's class and paths, and a dossier that "
+                    "decides develop or close is applied as it decides.")
+    elif kind in ("admit_development", "readmit_development") and override:
+        message += (f" The dossier decided park; the recorded admission override "
+                    f"({_override_text(override)}) admitted development instead.")
+    elif kind == "close_investigation" and details.get("admission_override_not_applied"):
+        message += (" The recorded admission override was not applied: it applies against a "
+                    "dossier decision park only.")
     request = _submission_request(event, record)
     if request:
         message = request[0]

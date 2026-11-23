@@ -18,10 +18,10 @@ For a record in a state of ``LEGACY_STATES`` the verbs that set ``paused``
 are written by ``legacy_pause``, and ``pause``, ``resume``, and ``park`` by
 ``apply_command``; in a state of the table the engine takes them. Every
 other command of the table applies in states of the table only.
-``apply_command`` also applies the deprecated ``force-develop`` and the
-intake command ``authorize-followup``. The reviewed record migrations
-(``migrate_handoff_wait``, ``migrate_flags``, ``migrate_terminal``) bring
-records written before the table to the shapes it describes.
+``apply_command`` also applies the intake command ``authorize-followup``.
+The reviewed record migrations (``migrate_handoff_wait``, ``migrate_flags``,
+``migrate_terminal``, ``migrate_provisioning``) bring records written before
+the table to the shapes it describes.
 
 ``LEGACY_SITES`` and ``LEGACY_STATES`` shrink as call sites are converted;
 when both are empty this module is deleted.
@@ -35,7 +35,7 @@ from typing import Any
 import engine
 import schemas
 from commands import URGENT, Command
-from common import INTAKE_LABEL, validate_scope_paths
+from common import INTAKE_LABEL
 from lifecycle import (
     ACTIVITIES,
     FLAGS,
@@ -48,8 +48,9 @@ from lifecycle import (
 )
 
 # States that are not in the lifecycle table and that legacy paths still
-# write. Each is removed together with the paths that write it.
-_LEGACY_PHASES = ("investigation", "provisioning", "development", "upstream_review")
+# write. Each is removed together with the paths that write it. Every state
+# of the investigation and provisioning phases is a state of the table.
+_LEGACY_PHASES = ("development", "upstream_review")
 _LEGACY_ACTIVITIES = ("idle", "agent_running", "waiting_ci", "fix_needed", "waiting_capacity",
                       "waiting_human")
 LEGACY_STATES = frozenset(
@@ -83,17 +84,12 @@ def waits_for_human(record: dict) -> bool:
 LEGACY_SITES = frozenset({
     "canary.repair_mismatch",
     "controller.select_work",
-    "controller.defer_destination_operation",
-    "controller.rearm_provisioning",
-    "controller.plan_provisioning",
     "controller.plan_development_pr",
     "controller.plan_ci_bootstrap",
-    "controller.publish_pre_fork_proposal",
     "observe_ci.review_feedback",
     "observe_ci.ci_passed",
     "observe_ci.withdraw_obsolete_repair",
     "reconcile.confirm_development_pr",
-    "reconcile.confirm_provisioning",
     "reconcile.publication_outcome",
     "reconcile.work_timeout",
     "reconcile.dispatch_exhausted",
@@ -279,10 +275,12 @@ def _flags_migrated(record: dict) -> tuple[dict, list[str]]:
             if rec["activity"] == "agent_running":
                 moves = FLAGS["paused"].set_moves.get(engine.state_key(rec))
                 rec["activity"] = moves.split(".", 1)[1] if moves else "idle"
-        for name, value in held_cleared(rec).items():
-            if rec.get(name) is not None:
-                rec[name] = value
-                changed.append(name)
+        if rec.get("pending_publication") is not None:
+            rec["pending_publication"] = None
+            changed.append("pending_publication")
+        if holds_unpublished_proposal(rec):
+            rec["proposal_artifact"] = None
+            changed.append("proposal_artifact")
     return rec, changed
 
 
@@ -385,7 +383,7 @@ def terminal_shape_problem(record: dict) -> str | None:
     for name, value in expected.items():
         if record.get(name) != value:
             return f"{name} is {record.get(name)!r}, not {value!r}"
-    if (record.get("proposal_artifact") or {}).get("outcome") == "proposal":
+    if holds_unpublished_proposal(record):
         return "a proposal is held without having been published"
     return None
 
@@ -429,6 +427,167 @@ def migrate_terminal(record: dict, *, now: str) -> tuple[dict, dict]:
     return new, event
 
 
+# The shapes of the investigation and provisioning phases, and of the path
+# that proposed a patch before the fork existed, that the table does not
+# have. Provisioning is planned and launched from `provisioning.idle` only,
+# and patch Work is requested only on a provisioned fork. ``migrate_provisioning``
+# rewrites exactly these shapes:
+#
+# * `provisioning.waiting_capacity` (a planned or launched provisioning
+#   intent) becomes `provisioning.idle`; the planned operation is kept and
+#   launched by `start_operation`;
+# * `provisioning.waiting_human` without a pending action, or with the
+#   retired `provision_fork`, becomes `provisioning.idle`;
+# * `development.idle` or `development.waiting_capacity` without a
+#   provisioned fork (a deferred fork intent, or a patch proposed before the
+#   fork) becomes `provisioning.idle` at a new revision;
+# * `development.idle` or `development.waiting_capacity` holding a proposal
+#   that was never published on the provisioned fork becomes
+#   `development.idle` at a new revision, so fresh patch Work is requested.
+#
+# A proposal held without having been published is cleared, together with
+# the publication pending for it. Any other record in an investigation or
+# provisioning state outside the table, or holding such a proposal, has no
+# reviewed migration and fails closed.
+
+PROVISIONING_MIGRATION = "provisioning-table-states"
+PROVISIONING_MIGRATED = "provisioning_state_migrated"
+# The pending action of the provisioning wait before the table: a human was
+# asked to provision the fork with the retired `/upstreaming provision`.
+RETIRED_PROVISIONING_WAIT = "provision_fork"
+_PRE_FORK_STATES = ("development.idle", "development.waiting_capacity")
+
+
+def needs_provisioning_migration(record: dict) -> bool:
+    """Whether a record is in a shape ``migrate_provisioning`` rewrites or
+    refuses: a state of the investigation or provisioning phase that the
+    table does not have, the provisioning wait without a pending action the
+    table writes, development without a provisioned fork, or a proposal held
+    without having been published."""
+    if not isinstance(record, dict) or not isinstance(record.get("phase"), str):
+        return False
+    state = engine.state_key(record)
+    if record["phase"] in ("investigation", "provisioning") and state not in LIFECYCLE:
+        return True
+    pending = (record.get("pending_human_action") or {}).get("kind")
+    if state == "provisioning.waiting_human" and pending in (None, RETIRED_PROVISIONING_WAIT):
+        return True
+    if state in _PRE_FORK_STATES and not (record.get("fork") or {}).get("repository_id"):
+        return True
+    return holds_unpublished_proposal(record)
+
+
+def provisioning_shape_problem(record: dict, operation: dict | None, *,
+                               check_operation: bool = True) -> str | None:
+    """Why a record that ``needs_provisioning_migration`` is not exactly a
+    shape the migration rewrites. ``operation`` is the store's record of the
+    operation the record names as active; ``check_operation=False`` judges
+    the record alone."""
+    state = engine.state_key(record)
+    if record.get("active_work") is not None:
+        return "Work is requested"
+    held = holds_unpublished_proposal(record)
+    pending_publication = record.get("pending_publication")
+    if pending_publication is not None and not (
+            held and str(pending_publication.get("worker_run_id"))
+            == str(record["proposal_artifact"].get("run_id"))):
+        return "a publication is pending"
+    if state == "provisioning.waiting_capacity":
+        op_id = record.get("active_operation_id")
+        if op_id is not None and check_operation and (
+                operation is None or operation.get("operation_id") != op_id
+                                  or operation.get("kind") != "fork_provision"
+                                  or operation.get("status") != "planned"):
+            return "the active operation is not a planned fork provisioning operation"
+        return None
+    if record.get("active_operation_id") is not None:
+        return "an operation is active"
+    if state == "provisioning.waiting_human":
+        if (record.get("pending_human_action") or {}).get("kind") not in (
+                None, RETIRED_PROVISIONING_WAIT):
+            return "the provisioning wait holds a pending action of the table"
+        return None
+    if state in _PRE_FORK_STATES:
+        if waits_for_human(record):
+            return "the record waits for a human"
+        return None
+    if held:
+        return f"a proposal is held without having been published in {state}"
+    return f"{state} is not a state of the table"
+
+
+def _provisioning_target(record: dict) -> tuple[str, bool]:
+    """The state a migrated record is in, and whether the revision moves."""
+    state = engine.state_key(record)
+    if state in _PRE_FORK_STATES:
+        if not (record.get("fork") or {}).get("repository_id"):
+            return "provisioning.idle", True
+        return "development.idle", True
+    return "provisioning.idle", False
+
+
+def awaits_provisioning_migration(record: dict) -> bool:
+    """Whether the provisioning migration rewrites this record without
+    refusing it, judged from the record alone (the operation it names is
+    checked when the migration runs)."""
+    if not needs_provisioning_migration(record):
+        return False
+    try:
+        migrate_provisioning(record, operation=None, now=record["updated_at"],
+                             check_operation=False)
+    except (TransitionError, schemas.SchemaError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def migrate_provisioning(record: dict, *, operation: dict | None, now: str,
+                         check_operation: bool = True) -> tuple[dict, dict]:
+    """The record in the state of the table its shape stands for, with its
+    event (see the shapes above). The planned operation, the fork, the
+    dossier, the scope, the flag, the budgets, and the replay fences are
+    kept; a pending human action of the retired provisioning wait is
+    cleared, and a proposal held without having been published is cleared
+    with the publication pending for it. The revision moves when development
+    without a fork returns to provisioning and when a held proposal is
+    discarded, so no Work or operation of the earlier revision is reused.
+    Raises ``TransitionError`` for any other shape."""
+    if not needs_provisioning_migration(record):
+        raise TransitionError("the record needs no provisioning migration")
+    problem = provisioning_shape_problem(record, operation, check_operation=check_operation)
+    if problem:
+        raise TransitionError(f"no reviewed provisioning migration for this record: {problem}")
+    target, bump = _provisioning_target(record)
+    new = copy.deepcopy(record)
+    changed: list[str] = []
+    if new.get("pending_human_action") is not None:
+        new["pending_human_action"] = None
+        changed.append("pending_human_action")
+    if holds_unpublished_proposal(new):
+        new["proposal_artifact"] = None
+        changed.append("proposal_artifact")
+        bump = True
+    if new.get("pending_publication") is not None:
+        new["pending_publication"] = None
+        changed.append("pending_publication")
+    new["phase"], new["activity"] = target.split(".", 1)
+    if bump:
+        new["revision"] = record["revision"] + 1
+    new["updated_at"] = now
+    problem = state_problem(new)
+    if problem:
+        raise TransitionError(f"no reviewed provisioning migration for this record: {problem}")
+    schemas.validate("contribution", new)
+    event = _event(record, new, PROVISIONING_MIGRATED, "migration", PROVISIONING_MIGRATION, now,
+                   bump)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": target,
+                        "changed": changed,
+                        "pending_human_action": (record.get("pending_human_action") or {}).get(
+                            "kind"),
+                        "active_operation_id": new.get("active_operation_id")}
+    schemas.validate("event", event)
+    return new, event
+
+
 def legacy_update(record: dict, site: str, **fields: Any) -> dict:
     """A copy of ``record`` with ``fields`` set, for a call site that is not
     converted to a table verb yet.
@@ -467,7 +626,7 @@ def _check_legacy_write(before: dict, after: dict, site: str) -> None:
 
 
 # The phases whose states can request Work outside the handoff phase.
-WORK_PHASES = frozenset(_LEGACY_PHASES)
+WORK_PHASES = frozenset({"investigation", "provisioning", "development", "upstream_review"})
 
 
 def record_late_effect(record: dict, *, policy: dict, now: str, cause_id: str | None,
@@ -501,14 +660,12 @@ def stopped(record: dict) -> bool:
     return bool(record.get("paused") or record["phase"] in TERMINAL | {"parked"})
 
 
-def held_cleared(record: dict) -> dict[str, Any]:
-    """The fields a stop clears beside the requested Work, as the table's
-    stop rows do: the pending publication, and a proposal the record holds
-    without having published it. A published proposal is kept."""
-    fields: dict[str, Any] = {"pending_publication": None}
-    if (record.get("proposal_artifact") or {}).get("outcome") == "proposal":
-        fields["proposal_artifact"] = None
-    return fields
+def holds_unpublished_proposal(record: dict) -> bool:
+    """Whether a record holds a worker proposal it never published (the
+    `outcome` `proposal` of the removed path that proposed a patch before the
+    fork existed). No path writes one any more; the record migrations clear
+    or refuse it."""
+    return (record.get("proposal_artifact") or {}).get("outcome") == "proposal"
 
 
 def _bump(rec: dict) -> None:
@@ -567,15 +724,15 @@ def park(rec: dict, reason: str) -> dict:
 
     The completed generation is retained for audit and late-effect
     reconciliation; only exact-revision ``resume`` restarts it. A pending
-    publication and a held proposal end with the generation. Callers own
-    revision bumps and the event."""
+    publication ends with the generation. Callers own revision bumps and the
+    event."""
     if rec["phase"] == "handoff":
         raise TransitionError("handoff states are written by the transition engine only")
     rec["previous_phase"] = rec["phase"]
     rec["phase"] = "parked"
     rec["parked_reason"] = reason[:2000]
     rec["activity"] = "idle"
-    rec.update(held_cleared(rec))
+    rec["pending_publication"] = None
     return rec
 
 
@@ -590,18 +747,15 @@ def _end_requested(record: dict, rec: dict) -> None:
         rec["active_work"] = None
         if rec["activity"] == "agent_running":
             rec["activity"] = "idle"
-    # A stop also clears the pending publication and a held proposal that is
-    # not published, as the table's stop rows do: what is held is invalidated
-    # and its publication Result takes ``record_late_effect``. A branch the
-    # worker run already pushed is recorded by head observation. The command
-    # that ends a stop clears them too, so nothing held is published after a
-    # stop that began before this rule.
+    # A stop also clears the pending publication, as the table's stop rows
+    # do: what is held is invalidated and its publication Result takes
+    # ``record_late_effect``. A branch the worker run already pushed is
+    # recorded by head observation. The command that ends a stop clears it
+    # too, so nothing held is published after a stop that began before this
+    # rule.
     if stopped(rec) or stopped(record):
-        cleared = held_cleared(rec)
-        waited_on_held = bool(rec.get("pending_publication")) or (
-            "proposal_artifact" in cleared and rec["phase"] == "development"
-            and not rec.get("active_operation_id"))
-        rec.update(cleared)
+        waited_on_held = bool(rec.get("pending_publication"))
+        rec["pending_publication"] = None
         if waited_on_held and rec["activity"] in ("agent_running", "waiting_capacity"):
             rec["activity"] = "idle"
 
@@ -625,8 +779,7 @@ def legacy_pause(record: dict, verb: str, *, reason: str | None, now: str,
     does in a state of the table.
 
     The flag records ``paused_at``, ``paused_by`` and ``paused_reason``; the
-    requested Work, the pending publication, and a held proposal are
-    cleared. A legacy state has no row to move to, so the activity that held
+    requested Work and the pending publication are cleared. A legacy state has no row to move to, so the activity that held
     the Work or the publication (``agent_running``, ``waiting_capacity``)
     becomes ``idle``, as the legacy paths always did. The outcome is not
     accepted, and nothing changes, when the record is already paused or is
@@ -658,18 +811,17 @@ def legacy_pause(record: dict, verb: str, *, reason: str | None, now: str,
 
 
 # The commands ``apply_command`` applies itself: the stop and resume commands
-# on a record in a state of ``LEGACY_STATES``, the deprecated
-# ``force-develop``, and the intake command ``authorize-followup``. Every
-# other command of the table applies in states of the table only.
-LEGACY_COMMANDS = frozenset({"pause", "resume", "park", "force-develop", "authorize-followup"})
+# on a record in a state of ``LEGACY_STATES``, and the intake command
+# ``authorize-followup``. Every other command of the table applies in states
+# of the table only.
+LEGACY_COMMANDS = frozenset({"pause", "resume", "park", "authorize-followup"})
 
 
 def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict,
                   now: str) -> Outcome:
     """Apply an already authenticated, not-yet-consumed command that the
     engine does not take (``engine.takes_command``): ``pause``, ``resume``,
-    or ``park`` on a record in a legacy state, the deprecated
-    ``force-develop``, and ``authorize-followup``. Any other command of the
+    or ``park`` on a record in a legacy state, and ``authorize-followup``. Any other command of the
     table on a record in a legacy state is rejected with the states it
     applies in.
 
@@ -725,23 +877,6 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict,
         if phase == "parked":
             return _reject(record, "already parked")
         park(rec, a["reason"])
-    elif v == "force-develop":
-        # Deprecated: see ``commands.DEPRECATED``.
-        if phase != "parked":
-            return _reject(record, f"force-develop needs phase parked, not {phase}")
-        paths = [g for g in a["paths"].split(",") if g]
-        try:
-            validate_scope_paths(paths)
-        except ValueError as exc:
-            return _reject(record, str(exc))
-        rec["phase"] = "provisioning"
-        rec["activity"] = "idle"
-        rec["parked_reason"] = None
-        rec["admission_class"] = a["class"]
-        rec["scope_paths"] = paths
-        rec["pending_human_action"] = None
-        _bump(rec)
-        bumped = True
     elif v == "authorize-followup":
         if phase not in ("release_wait", "released"):
             return _reject(record, "follow-ups need a merged contribution")

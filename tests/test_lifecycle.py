@@ -392,19 +392,25 @@ class TestScopeAndProvision(unittest.TestCase):
                     f"`/upstreaming submit-upstream` does not apply in `{phase}.{activity}`; it "
                     "applies in `handoff.awaiting_submission`")
 
-    def test_human_can_force_parked_dossier_into_automatic_development(self):
+    def test_human_overrides_a_dossier_park_with_a_resume_from_parked(self):
         parked = dict(self.rec, phase="parked", activity="idle", parked_reason="No current patch")
-        out = self.apply(parked, '/upstreaming force-develop revision=1 class=configuration_integration '
-                                 'paths=".github/workflows/*,pyproject.toml" reason="Proceed with a concrete reviewed scope."')
+        with self.assertRaises(commands.CommandError) as raised:
+            commands.parse('/upstreaming force-develop revision=1 class=configuration_integration '
+                           'paths=".github/workflows/*" reason="Proceed."')
+        self.assertIn("/upstreaming resume revision=N class=", str(raised.exception))
+        out = self.apply(parked, '/upstreaming resume revision=1 class=configuration_integration '
+                                 'paths=".github/workflows/*,pyproject.toml" '
+                                 'reason="Proceed with a concrete reviewed scope."')
         self.assertTrue(out.accepted, out.reason)
-        self.assertEqual((out.record["phase"], out.record["revision"], out.record["activity"]),
-                         ("provisioning", 2, "idle"))
-        self.assertEqual(out.record["scope_paths"], [".github/workflows/*", "pyproject.toml"])
-        self.assertIsNone(out.record["parked_reason"])
-        self.assertFalse(self.apply(self.rec, '/upstreaming force-develop revision=1 class=configuration_integration '
-                                             'paths=".github/workflows/*" reason="Not parked."').accepted)
-        self.assertFalse(self.apply(parked, '/upstreaming force-develop revision=1 class=configuration_integration '
-                                             'paths="*" reason="Scope is too broad."').accepted)
+        self.assertEqual((out.record["phase"], out.record["activity"], out.record["generation"]),
+                         ("queued", "idle", 1))
+        self.assertEqual(out.record["admission_override"],
+                         {"class": "configuration_integration",
+                          "paths": [".github/workflows/*", "pyproject.toml"],
+                          "reason": "Proceed with a concrete reviewed scope."})
+        self.assertFalse(self.apply(parked, '/upstreaming resume revision=1 '
+                                            'class=configuration_integration paths="*" '
+                                            'reason="Scope is too broad."').accepted)
 
     def test_retired_scope_and_provisioning_commands_name_their_replacement(self):
         for text, replacement in (

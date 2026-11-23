@@ -322,7 +322,6 @@ class TestStateDiff(unittest.TestCase):
             "requested_effects",
             "dispatch_relaunch",
             "provision_requests",
-            "proposal_publications",
             "publication_retries",
             "dev_pr_requests",
         ):
@@ -365,7 +364,6 @@ class TestStateDiff(unittest.TestCase):
             "requested_effects",
             "dispatch_relaunch",
             "provision_requests",
-            "proposal_publications",
             "publication_retries",
             "dev_pr_requests",
         ):

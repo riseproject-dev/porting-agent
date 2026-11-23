@@ -41,6 +41,7 @@ from tests.helpers import (
     apply_command,
     awaiting_submission,
     contribution,
+    dossier,
     policy,
 )
 from tests.test_late_results import RESULTS, WORK, events, final, publication, running, tick
@@ -274,10 +275,8 @@ class TestStaleResume(unittest.TestCase):
         rec = dict(stale, phase="investigation", activity="agent_running",
                    active_work=dict(WORK, task="investigation"))
         new, _staged = reconcile.apply_publication(
-            rec, {"status": "investigation", "dossier": {"proposal": {
-                "decision": "develop", "rationale": "r",
-                "admission_class": "configuration_integration", "allowed_paths": ["a"]}}},
-            now=NOW, policy=policy(destination_writes=True), worker_run_id="7")
+            rec, {"status": "investigation", "dossier": dossier("develop")},
+            now=NOW, policy=policy(), worker_run_id="7")
         self.assertEqual(engine.state_key(new), "provisioning.idle")
         self.assertIsNone(new["refresh"])
 

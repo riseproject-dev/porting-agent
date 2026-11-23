@@ -46,7 +46,8 @@ class TestCommandFeedback(unittest.TestCase):
                 body = command_feedback.render(receipt, {"body": body_text,
                                                          "user": {"login": "luhenry"}})
                 self.assertIn(f"`{verb}` is retired", body)
-                self.assertIn(f"/upstreaming {replacement} revision=7", body)
+                form = " ".join(command_feedback.TEMPLATES[replacement].split()[:2])
+                self.assertIn(f"{form} revision=7", body)
                 self.assertNotIn(f"**Expected form:**\n```text\n/upstreaming {verb} ", body)
         self.assertEqual(set(command_feedback.REPLACEMENTS), set(commands.RETIRED))
 
@@ -77,9 +78,9 @@ class TestCommandFeedback(unittest.TestCase):
         self.assertIn("> /upstreaming force-develop revision=1", api.created["body"])
         self.assertIn("missing fields: class, paths, reason", api.created["body"])
         self.assertIn("\n\n---\n\n**Reason:**", api.created["body"])
-        self.assertIn("force-develop revision=1 class=configuration_integration", api.created["body"])
-        self.assertIn("**Deprecated:** `force-develop` is deprecated. Its replacement is a resume "
-                      "from `parked.idle`", api.created["body"])
+        self.assertIn("/upstreaming resume revision=1 class=configuration_integration",
+                      api.created["body"])
+        self.assertNotIn("Deprecated", api.created["body"])
         self.assertIn("<!-- upstreaming-command-feedback:42 -->", api.created["body"])
 
     def test_retry_edits_a_stale_marked_reply_instead_of_duplicating(self):

@@ -71,7 +71,7 @@ class TestInvestigationRecordRecovery(unittest.TestCase):
                 {project["project_id"]: project},
                 {},
             ),
-            policy=policy(read_only=False, destination_writes=False),
+            policy=policy(read_only=False),
             now=datetime.fromisoformat("2026-11-22T02:20:00+00:00"),
             publications=publications,
             pressure=capacity.Pressure(ok=False, reason="offline"),
@@ -87,9 +87,12 @@ class TestInvestigationRecordRecovery(unittest.TestCase):
         final = [record for kind, record in output.staged if kind == "contributions"][-1]
         self.assertEqual(dossier["contribution_id"], "closeio--ciso8601/1")
         self.assertEqual(final["dossier_evidence_id"], dossier["evidence_id"])
-        self.assertEqual((final["phase"], final["activity"]), ("development", "idle"))
+        # The dossier admits development: the fork is provisioned first
+        # (without capacity, no launch yet), and no patch Work is requested.
+        self.assertEqual((final["phase"], final["activity"]), ("provisioning", "idle"))
         self.assertIsNone(final["active_work"])
         self.assertEqual(output.report["controller"]["selected"], [])
+        self.assertEqual(output.report["provision_requests"], [])
 
     def test_wrong_run_task_result_or_dossier_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

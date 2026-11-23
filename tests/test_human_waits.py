@@ -28,7 +28,7 @@ import work
 from tests.helpers import OWNER, SHA_A, ci_record, contribution, policy
 from tests.test_late_results import ci_snapshot
 
-P = policy(destination_writes=True)
+P = policy()
 T0 = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
 FAILING = "Build - ubuntu-24.04-riscv (riscv64)"
 
