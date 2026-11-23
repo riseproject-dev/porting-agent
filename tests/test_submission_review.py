@@ -1,0 +1,235 @@
+# SPDX-FileCopyrightText: 2026 The RISE Project
+# SPDX-License-Identifier: MIT
+"""The trusted check of the submission review Result, the Work it answers,
+and the table rows it decides."""
+
+import copy
+import hashlib
+import tempfile
+import unittest
+from pathlib import Path
+
+import commit_rules
+import fork_publish
+import lifecycle as lc
+import submission
+import work
+from tests.helpers import commit_files, git, init_repo
+from tests.test_commit_rules import RULES
+from tests.test_dossier_gate import dossier
+
+SECTIONS = ["Summary", "Testing"]
+BODY = "## Summary\n\nAdd riscv64.\n\n## Testing\n\n- [x] CI"
+
+
+class TestCheck(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = self.root = Path(self.tmp.name)
+        self.saved = (fork_publish.URL_TEMPLATE, list(fork_publish.TEST_EXTRA_CONFIG))
+        fork_publish.URL_TEMPLATE = f"file://{root}/{{}}.git"
+        fork_publish.TEST_EXTRA_CONFIG[:] = ["-c", "protocol.file.allow=always"]
+        self.work = init_repo(root / "work")
+        self.base = commit_files(self.work, {"setup.py": "a\n", "ci.yml": "jobs: []\n"}, msg="base")
+        for name in ("riseproject-upstreaming/proj", "example/proj"):
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            git(root, "init", "-q", "--bare", str(root / f"{name}.git"))
+        git(self.work, "push", "-q", str(root / "example/proj.git"), "HEAD:refs/heads/main")
+        commit_files(self.work, {"setup.py": "b\n"}, msg="Build riscv64")
+        commit_files(self.work, {"ci.yml": "jobs: [debug]\n"}, msg="{debug} lift the fork guard")
+        commit_files(self.work, {"setup.py": "c\n"}, msg="Test riscv64")
+        self.approved = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "push", "-q", str(root / "riseproject-upstreaming/proj.git"),
+            "HEAD:refs/heads/riscv64-dev")
+        self.runs = 0
+
+    def tearDown(self):
+        fork_publish.URL_TEMPLATE, extra = self.saved
+        fork_publish.TEST_EXTRA_CONFIG[:] = extra
+        self.tmp.cleanup()
+
+    def series(self, *messages, change=None, debug=False, squash=False):
+        """A reviewed series on the base: the non-debug commits with new
+        messages, optionally with a code change or a debug commit."""
+        self.runs += 1
+        repo = self.root / f"review-{self.runs}"
+        git(self.root, "clone", "-q", str(self.root / "riseproject-upstreaming/proj.git"), str(repo))
+        git(repo, "checkout", "-q", "-B", "review", self.base)
+        picks = [s for s in git(repo, "rev-list", "--reverse", f"{self.base}..origin/riscv64-dev").split()
+                 if not git(repo, "log", "-1", "--format=%s", s).startswith("{debug}")]
+        if debug:
+            picks = git(repo, "rev-list", "--reverse", f"{self.base}..origin/riscv64-dev").split()
+        for sha, message in zip(picks, messages):
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "cherry-pick", sha)
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--amend",
+                "-m", message)
+        if squash:
+            git(repo, "reset", "-q", "--soft", self.base)
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", messages[0])
+        if change:
+            commit_files(repo, change, msg=messages[-1] + " too")
+        return git(repo, "format-patch", "--stdout", self.base).encode() + b"\n"
+
+    def task(self, **context):
+        return {"task": "submission_review", "contribution_id": "example--proj/12", "revision": 4,
+                "expected_head": self.approved, "base_sha": self.base,
+                "fork": "riseproject-upstreaming/proj", "upstream": "example/proj",
+                "allowed_paths": ["setup.py", "ci.yml"], "context": context}
+
+    def review(self, mbox, **over):
+        value = {"schema_version": 1, "contribution_id": "example--proj/12",
+                 "expected_revision": 4, "expected_head": self.approved, "verdict": "pass",
+                 "reasons": [], "title": "Build riscv64 wheels", "body": BODY,
+                 "series_digest": hashlib.sha256(mbox).hexdigest(),
+                 "expectations": [{"expectation": "One commit per change", "met": True}]}
+        value.update(over)
+        return value
+
+    def check(self, mbox, task=None, **over):
+        self.checks = getattr(self, "checks", 0) + 1
+        return submission.check(task or self.task(), self.review(mbox, **over), mbox,
+                                workdir=self.root / f"check-{self.checks}")
+
+    def test_a_passing_review(self):
+        mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\nSigned-off-by: a <a@b.c>",
+                           "ci: Test riscv64 wheels\n\nBody.\n\nSigned-off-by: a <a@b.c>")
+        out = self.check(mbox, self.task(commit_rules=dict(RULES, max_commits=None),
+                                         template_sections=SECTIONS))
+        self.assertEqual((out["verdict"], out["reasons"]), ("pass", []))
+        self.assertEqual(out["clean_tree"], out["commits"][-1]["tree"])
+        self.assertNotEqual(out["clean_tree"], out["candidate_tree"])
+        self.assertEqual([c["message"].split("\n")[0] for c in out["commits"]],
+                         ["ci: Build riscv64 wheels", "ci: Test riscv64 wheels"])
+        # The head is deterministic: the same series gives the same head.
+        again = self.check(mbox, self.task(commit_rules=dict(RULES, max_commits=None),
+                                           template_sections=SECTIONS))
+        self.assertEqual(again["head"], out["head"])
+
+    def test_a_failed_review_keeps_its_reasons(self):
+        out = self.check(b"", verdict="fail", reasons=["A CHANGELOG entry is missing"],
+                         series_digest=None)
+        self.assertEqual((out["verdict"], out["reasons"]),
+                         ("fail", ["review: A CHANGELOG entry is missing"]))
+
+    def test_a_code_change_is_refused(self):
+        mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels",
+                           change={"setup.py": "d\n"})
+        out = self.check(mbox)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertTrue(any("changes the tree" in r for r in out["reasons"]), out["reasons"])
+
+    def test_a_squash_with_the_same_tree_passes_but_max_commits_counts(self):
+        mbox = self.series("Build and test riscv64 wheels", "x", squash=True)
+        self.assertEqual(self.check(mbox)["verdict"], "pass")
+        mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
+        out = self.check(mbox, self.task(commit_rules=dict(
+            RULES, max_commits=1, title_prefix_required=False, body_required=False,
+            signed_off_by_required=False)))
+        self.assertIn("check: the series has 2 commits, more than 1", out["reasons"])
+
+    def test_measurable_rules_and_template_sections(self):
+        mbox = self.series("build riscv64 wheels.", "Test riscv64 wheels")
+        out = self.check(mbox, self.task(commit_rules=dict(RULES, max_commits=None),
+                                         template_sections=SECTIONS), body="## Summary\n\nx")
+        reasons = "\n".join(out["reasons"])
+        for problem in ("none of the prefixes", "capital letter", "ends with a period",
+                        "no body", "no Signed-off-by", "no section 'Testing'"):
+            self.assertIn(problem, reasons)
+        self.assertEqual(out["verdict"], "fail")
+
+    def test_a_debug_commit_in_the_reviewed_series_is_refused(self):
+        mbox = self.series("Build riscv64", "{debug} lift the fork guard", "Test riscv64",
+                           debug=True)
+        out = self.check(mbox)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertTrue(any("{debug}" in r for r in out["reasons"]), out["reasons"])
+
+    def test_the_review_must_answer_the_work_and_match_its_series(self):
+        mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
+        for over, problem in (({"expected_head": "e" * 40}, "expected_head"),
+                              ({"expected_revision": 3}, "expected_revision"),
+                              ({"series_digest": "0" * 64}, "digest"),
+                              ({"title": "two\nlines"}, "one line"),
+                              ({"body": "x\n" * 7000}, "more than 12000"),
+                              ({"unknown": 1}, "malformed")):
+            with self.subTest(problem=problem):
+                out = self.check(mbox, **over)
+                self.assertEqual(out["verdict"], "fail")
+                self.assertTrue(any(problem in r for r in out["reasons"]), out["reasons"])
+        out = submission.check(dict(self.task(), task="development_patch"), self.review(mbox), mbox)
+        self.assertEqual(out["status"], "rejected")
+
+    def test_a_series_that_does_not_apply_is_refused(self):
+        out = self.check(b"From " + b"0" * 40 + b" Mon Sep 17 00:00:00 2001\nnot a patch\n")
+        self.assertEqual(out["verdict"], "fail")
+
+    def test_a_legacy_dossier_applies_the_rules_the_review_found(self):
+        mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
+        out = self.check(mbox, commit_rules=dict(RULES, max_commits=None),
+                         template_sections=["Checklist"])
+        self.assertEqual(out["verdict"], "fail")
+        self.assertTrue(any("none of the prefixes" in r for r in out["reasons"]))
+        self.assertTrue(any("'Checklist'" in r for r in out["reasons"]))
+        # The dossier's rules, when it records them, are the ones applied.
+        out = self.check(mbox, self.task(commit_rules=commit_rules.normalize({}),
+                                         template_sections=[]),
+                         commit_rules=dict(RULES, max_commits=None), template_sections=["x"])
+        self.assertEqual(out["verdict"], "pass")
+
+
+class TestReviewWork(unittest.TestCase):
+    def test_the_review_task_is_uncredentialed_and_writes_nothing(self):
+        self.assertNotIn(work.SUBMISSION_REVIEW, work.WRITE_TASKS)
+        self.assertEqual(work.ALLOWED_OPERATIONS[work.SUBMISSION_REVIEW], [])
+        self.assertEqual(work.profile_for(work.SUBMISSION_REVIEW), work.WORKER_PROFILE)
+        contract = work.effect_contract(work.SUBMISSION_REVIEW)
+        self.assertEqual([o["type"] for o in contract["outputs"] if o.get("min")],
+                         ["upload_artifact"])
+
+    def test_the_review_carries_the_rules_and_the_sections(self):
+        data = dossier()
+        self.assertEqual(commit_rules.sections_from_dossier(data), SECTIONS)
+        self.assertEqual(commit_rules.from_dossier(data)["title_max_length"], 72)
+
+    def test_the_table_rows_of_the_review(self):
+        accept = lc.find_edge("handoff.agent_running", "accept_submission_review")
+        reject = lc.find_edge("handoff.agent_running", "reject_submission_review")
+        self.assertEqual((accept.target, reject.target),
+                         ("handoff.building_upstream_branch", "development.fix_needed"))
+        self.assertIn("pending_feedback_evidence_ids", reject.transition.effects.sets)
+        self.assertEqual(reject.transition.effects.revision, "bump")
+        self.assertEqual(accept.transition.effects.revision, "keep")
+        # No row of the review posts or builds anything; only the build of
+        # `riscv64` writes the fork in handoff.
+        self.assertEqual([k for k, s in lc.LIFECYCLE.items()
+                          if lc.state_phase(k) == "handoff" and s.writes],
+                         ["handoff.building_upstream_branch"])
+
+    def test_the_check_finds_a_review_that_skips_the_build(self):
+        from unittest import mock
+        broken = copy.deepcopy(lc.LIFECYCLE["handoff.agent_running"])
+        transitions = dict(broken.transitions)
+        accept = transitions.pop(("accept_submission_review", "handoff.building_upstream_branch"))
+        transitions[("accept_submission_review", "handoff.waiting_ci")] = accept
+        reject = transitions.pop(("reject_submission_review", "development.fix_needed"))
+        transitions[("reject_submission_review", "development.fix_needed")] = lc.Transition(
+            reject.trigger, None, reject.guard,
+            lc.Effects(revision="bump", work="clear", clears=reject.effects.clears))
+        broken = lc.State(broken.kind, broken.launches, broken.writes, broken.description,
+                          transitions)
+        with mock.patch.dict(lc.LIFECYCLE, {"handoff.agent_running": broken}):
+            problems = lc.check_table()
+        self.assertTrue(any("reachable from handoff.awaiting_submission without "
+                            "handoff.building_upstream_branch" in p for p in problems), problems)
+        self.assertTrue(any("returns to development.fix_needed with its reasons" in p
+                            for p in problems), problems)
+        writer = copy.deepcopy(lc.LIFECYCLE["handoff.waiting_ci"])
+        writer = lc.State(writer.kind, writer.launches, True, writer.description,
+                          dict(writer.transitions))
+        with mock.patch.dict(lc.LIFECYCLE, {"handoff.waiting_ci": writer}):
+            self.assertTrue(any("not only handoff.building_upstream_branch" in p
+                                for p in lc.check_table()))
+
+
+if __name__ == "__main__":
+    unittest.main()

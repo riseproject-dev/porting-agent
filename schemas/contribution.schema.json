@@ -78,8 +78,8 @@
         "waiting_capacity",
         "waiting_human",
         "awaiting_submission",
-        "cleaning_debug",
-        "closing_internal_pr",
+        "review_due",
+        "building_upstream_branch",
         "preparing_submission",
         "waiting_upstream_pr"
       ]
@@ -401,7 +401,10 @@
               "pattern": "^riseproject-upstreaming/[A-Za-z0-9_.-]+$"
             },
             "head_ref": {
-              "const": "riscv64"
+              "enum": [
+                "riscv64-dev",
+                "riscv64"
+              ]
             },
             "head_sha": {
               "type": [
@@ -565,6 +568,17 @@
         "null"
       ],
       "pattern": "^[0-9a-f]{40}$"
+    },
+    "submission_review_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+        }
+      ]
     },
     "handoff_request": {
       "anyOf": [
@@ -863,8 +877,7 @@
                 "dispatch_recovery",
                 "publish_recovery",
                 "operation_launch",
-                "debug_cleanup",
-                "internal_pr_closure",
+                "upstream_branch",
                 "submission_comment",
                 null
               ]

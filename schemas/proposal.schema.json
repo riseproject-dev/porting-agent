@@ -235,7 +235,10 @@
       ]
     },
     "ref": {
-      "const": "riscv64"
+      "enum": [
+        "riscv64-dev",
+        "riscv64"
+      ]
     },
     "reconstruction_base": {
       "type": [

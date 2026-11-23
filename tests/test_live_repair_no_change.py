@@ -57,7 +57,12 @@ DISPATCHERS = [
 
 
 def load(name):
-    return json.loads((FIXTURE / name).read_text())
+    """A fixture; a record of it develops on `riscv64-dev`, like every record
+    the pipeline processes (the fixture predates the branch split)."""
+    value = json.loads((FIXTURE / name).read_text())
+    if isinstance(value, dict) and isinstance(value.get("fork"), dict):
+        value["fork"]["head_ref"] = "riscv64-dev"
+    return value
 
 
 def publication_dir(temporary, run_id, mutate=None):

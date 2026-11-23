@@ -36,7 +36,7 @@ MESSAGES = {
                               "admission class and paths of the command."),
     "dossier_develop": "Verified the investigation dossier and admitted automatic development.",
     "dossier_parked": "Verified the investigation dossier and parked the contribution because no bounded patch is actionable.",
-    "fork_provisioned": "Provisioned and verified the contribution fork and exact `riscv64` base.",
+    "fork_provisioned": "Provisioned and verified the contribution fork and exact `riscv64-dev` base.",
     "development_pr_created": "Created and verified the same-fork development PR.",
     "development_review_feedback": "Recorded authorized development-PR change feedback and requested repair.",
     "development_review_inquiry": "Recorded an authorized explanation-only development-PR comment. No repair was requested; lifecycle state is unchanged.",
@@ -68,32 +68,42 @@ MESSAGES = {
                            "investigation."),
     "retract_submission": ("Retracted the submission package: reminders stop and branch work is "
                            "unlocked. Development Work is due again; no upstream resource was "
-                           "changed."),
+                           "changed, and `riscv64` is left as it is."),
     "submit_upstream": ("Accepted the upstream submission request. The handoff preparation runs "
-                        "now: debug commits are removed from the branch, CI is checked on the "
-                        "clean head, the development PR is closed, and the submission package "
-                        "is posted on this issue."),
-    "confirm_clean_head": "Published and read back the clean head.",
-    "retry_debug_cleanup": ("Removing the debug commits failed with an infrastructure error; it "
-                            "is attempted again."),
-    "exhaust_debug_cleanup_retries": (
-        "Removing the debug commits failed repeatedly (`debug_cleanup` is spent). The "
-        "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
-        "current revision attempts it again."),
+                        "now: a review shapes the commits of `riscv64-dev` and the pull request "
+                        "text after the project's guidelines, `riscv64` is built from the "
+                        "checked series, CI is checked on its head, and the submission package "
+                        "is posted on this issue. `riscv64-dev` and the development PR stay as "
+                        "they are."),
+    "request_submission_review": "Requested the submission review Work.",
+    "accept_submission_review": ("The submission review passed the trusted check: the reviewed "
+                                 "series has the tree of the approved series without its debug "
+                                 "commits and follows the dossier's measurable rules. `riscv64` "
+                                 "is built from it next."),
+    "reject_submission_review": ("The submission review did not pass, or its series or pull "
+                                 "request text broke a rule of the project. Nothing was posted "
+                                 "and `riscv64` was not written. The reasons are recorded as "
+                                 "review evidence and are the feedback of the next development "
+                                 "Work."),
+    "confirm_clean_head": "Built `riscv64` from the reviewed series and read it back.",
+    "retry_upstream_branch": ("Writing `riscv64` failed with an infrastructure error; it is "
+                              "attempted again."),
+    "exhaust_upstream_branch_retries": (
+        "Writing `riscv64` failed repeatedly (`upstream_branch` is spent). The contribution "
+        "waits for a human: correct the cause, then `/upstreaming resume` at the current "
+        "revision attempts it again."),
+    "require_branch_intervention": (
+        "An upstream pull request is open from `riscv64`, so `riscv64` was not replaced. The "
+        "contribution waits for a human: close that pull request or decide otherwise, then "
+        "`/upstreaming resume` at the current revision builds `riscv64` again."),
     "accept_clean_head_ci": "Required CI passed on the clean head.",
-    "confirm_internal_pr_closed": "Closed the development PR and read it back closed.",
-    "retry_internal_pr_closure": "Closing the development PR failed; it is attempted again.",
-    "exhaust_internal_pr_retries": (
-        "Closing the development PR failed repeatedly (`internal_pr_closure` is spent). The "
-        "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
-        "current revision attempts it again."),
     "retry_submission_comment": "Posting the submission package failed; it is attempted again.",
     "exhaust_comment_retries": (
         "Posting the submission package failed repeatedly (`submission_comment` is spent). The "
         "contribution waits for a human: correct the cause, then `/upstreaming resume` at the "
         "current revision attempts it again."),
-    "resume_debug_cleanup": "Resumed: the debug commits are removed again.",
-    "resume_internal_pr_closure": "Resumed: closing the development PR is attempted again.",
+    "resume_submission_review": "Resumed: the submission review Work is due again.",
+    "resume_upstream_branch": "Resumed: building `riscv64` is attempted again.",
     "resume_submission_preparation": "Resumed: posting the submission package is attempted again.",
     "record_audit_observation": ("Recorded an observation of the upstream pull request wait for "
                                  "audit. It does not verify the requested pull request; the "
@@ -157,7 +167,7 @@ MESSAGES = {
         "launches (`operation_launch`) are spent without a receipt. The contribution waits for "
         "a human: correct the cause, then `/upstreaming resume` at the current revision starts "
         "provisioning again."),
-    "confirm_provisioning": ("Provisioned and verified the contribution fork and exact `riscv64` "
+    "confirm_provisioning": ("Provisioned and verified the contribution fork and exact `riscv64-dev` "
                              "base. Development Work is due."),
     "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "
                                   "Correct the recorded cause, then `resume` at the current revision starts a "
@@ -216,17 +226,20 @@ def _handoff_message(event: dict, record: dict) -> str | None:
     kind = event["kind"]
     head = _quotable(details.get("head"), 40)
     if kind == "confirm_clean_head":
-        removed = len(details.get("removed_commits") or [])
-        how = (f"{removed} debug commit{'s' if removed != 1 else ''} removed under the exact-head "
-               "lease" if details.get("rewritten") else
-               "no debug commit to remove, so nothing was written")
-        return (f"Published and read back the clean head `{head}` ({how}). CI on the clean head "
-                "is checked next.")
+        replaced = _quotable(details.get("replaced"), 40)
+        how = ("it already resolved to that head, so nothing was written"
+               if not details.get("written") else
+               f"replaced `{replaced}` under the exact-head lease" if details.get("replaced")
+               else "created")
+        return (f"Built `riscv64` at the clean head `{head}` from the reviewed series ({how}) and "
+                "read it back. `riscv64-dev` and the development PR are unchanged. CI on the "
+                "clean head is checked next.")
     if kind == "accept_clean_head_ci":
-        return f"Required CI passed on the clean head `{head}`. The development PR is closed next."
-    if kind == "confirm_internal_pr_closed":
-        return (f"Closed the development PR #{_quotable(details.get('pr_number'), 12)} and read it "
-                "back closed. The submission package is posted next.")
+        return (f"Required CI passed on the clean head `{_quotable(details.get('clean_head'), 40)}`"
+                f" (CI of `{head}`). The submission package is posted next."
+                if details.get("clean_head") and details.get("clean_head") != details.get("head")
+                else f"Required CI passed on the clean head `{head}`. The submission package is "
+                     "posted next.")
     if kind == "confirm_submission_package":
         link = _link(details.get("package_url"))
         package = f"[submission package]({link})" if link else "submission package"
@@ -239,11 +252,12 @@ def _handoff_message(event: dict, record: dict) -> str | None:
         pr = f"[#{number}]({link})" if link else f"#{number}"
         return (f"Verified the upstream pull request {pr} by @{_quotable(details.get('author'), 39)} "
                 f"at the exact clean head `{head}`. Upstream review is observed now.")
-    if kind == "return_for_repair" and details.get("from_state") in ("handoff.cleaning_debug",
-                                                                      "handoff.waiting_ci"):
-        why = ("the debug cleanup cannot produce an admissible clean head, or the exact-head "
-               "lease conflicts" if details.get("from_state") == "handoff.cleaning_debug" else
-               "a blocking CI failure on the clean head, or the fork head is not the clean head")
+    if kind == "return_for_repair" and details.get("from_state") in (
+            "handoff.building_upstream_branch", "handoff.waiting_ci"):
+        why = ("the reviewed series does not rebuild to the reviewed head, or the lease on "
+               "`riscv64` conflicts" if details.get("from_state") == "handoff.building_upstream_branch"
+               else "a blocking CI failure on the clean head, or `riscv64` is not at the clean "
+                    "head")
         return f"Left the handoff preparation: {why}. A repair is due."
     if kind == "record_audit_observation" and details.get("mismatch"):
         return (MESSAGES[kind] + f" Observed: {_quotable(details['mismatch'], 600)}.")

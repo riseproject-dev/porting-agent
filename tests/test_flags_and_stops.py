@@ -336,6 +336,7 @@ class TestReminders(unittest.TestCase):
         record, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
                                                      policy=POLICY, now=LIVE_REQUESTED)
         self.assertEqual(record["pending_human_action"]["requested_at"], LIVE_REQUESTED)
+        record["fork"]["head_ref"] = "riscv64-dev"
         return record
 
     def test_the_live_record_is_first_reminded_three_business_days_after_the_request(self):

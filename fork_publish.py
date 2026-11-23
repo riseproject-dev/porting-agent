@@ -8,7 +8,7 @@ record and the task payload that was admitted to the queue.
 
 Steps, all in a fresh bare repository this module creates:
 
-1. Fetch the fork's ``riscv64`` and the approved upstream base by exact SHA
+1. Fetch the fork's branch and the approved upstream base by exact SHA
    over HTTPS. Never reuse the agent's checkout, remotes or Git config.
 2. Re-check the publication preconditions (phase, pause, revision, fork,
    ref and *current* fork head against the expected head).
@@ -19,8 +19,12 @@ Steps, all in a fresh bare repository this module creates:
    trusted base, and check the proposal's claims (changed files, patch
    digest) against what was actually rebuilt.
 5. Persist an operation intent, push with
-   ``--force-with-lease=refs/heads/riscv64:<expected>``, then discover the
+   ``--force-with-lease=refs/heads/<ref>:<expected>``, then discover the
    branch to confirm the effect. A lost response stays ``uncertain``.
+
+The branch is the Work's ``ref``: ``riscv64-dev`` in development, and in
+upstream review ``riscv64``, the branch of the upstream PR
+(``lifecycle.work_ref``).
 
 The token is passed in by the caller (minted for exactly one fork with
 contents/workflows/pull-requests write) and is only placed in a transient
@@ -45,7 +49,7 @@ import lifecycle
 import publisher
 import recovery
 import schemas
-from common import DEV_REF, FORK_ORG, validate_scope_paths
+from common import FORK_ORG, validate_scope_paths
 from work import task_identity as work_identity
 
 MAX_MBOX_BYTES = 4 * 1024 * 1024
@@ -241,7 +245,8 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         return Outcome("rejected", "publication check: the task names no Work identity",
                        failure_class="stale")
     why = lifecycle.publication_check(record, expected_revision=task["revision"], expected_head=expected,
-                                      observed_head=observed_before, ref=DEV_REF, repository=fork,
+                                      observed_head=observed_before, ref=task.get("ref"),
+                                      repository=fork,
                                       expected_generation=generation, work_key=work_key)
     if why and observed_before != expected and previous_candidate and observed_before == previous_candidate:
         # A previous attempt of this same publication already landed (its
@@ -321,7 +326,7 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
                            ([f"artifact:{artifact['artifact_id']}"] if artifact else []) +
                            publish_attempt_reasons(attempt),
                            target={"repository_id": record["fork"]["repository_id"], "repository": fork,
-                                   "ref": DEV_REF, "expected_head": expected,
+                                   "ref": task["ref"], "expected_head": expected,
                                    "base_sha": record["upstream"]["base_sha"]},
                            proposed={"commit": cand, "tree": rep.final_tree, "parents": parents,
                                      "marker": f"artifact:{artifact['artifact_id']}" if artifact else None,
@@ -332,7 +337,7 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         # contribution not paused, and the head re-read matched the lease.
         op = recovery.mark_applying(op, now, facts=PUSH_FACTS)
         save_operation(op)
-        args = publisher.lease_refspec(cand, expected)
+        args = publisher.lease_refspec(cand, expected, task["ref"])
         runner = push or (lambda w, a, auth: _git(w, "push", "--porcelain", _url(fork), *a, check=False,
                                                   env=auth))
         try:
@@ -357,7 +362,7 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         except Exception:
             observed = None
         result = recovery.discover_branch(op, {"head": observed} if observed else None)
-        op = recovery.record_discovery(op, result, f"riscv64 at {observed}", now)
+        op = recovery.record_discovery(op, result, f"{task['ref']} at {observed}", now)
         save_operation(op)
         return Outcome("published" if op["status"] == "confirmed" else "uncertain",
                        None if op["status"] == "confirmed" else "push outcome not yet observable",
@@ -440,7 +445,7 @@ def main(argv=None) -> int:
     mbox = a.mbox.read_bytes() if a.mbox and a.mbox.exists() else b""
     attempt = max(int(os.environ.get("UPSTREAMING_PUBLISH_ATTEMPT", "1")), 1)
     out = publish(record=record, task=task, proposal=proposal, mbox=mbox, token=token,
-                  observe_head=lambda: (branch_head(api, task["fork"], DEV_REF) or {}).get("head"),
+                  observe_head=lambda: (branch_head(api, task["fork"], task["ref"]) or {}).get("head"),
                   scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=policy,
                   now=datetime.now(timezone.utc).isoformat(), save_operation=ops.append, artifact=artifact,
                   previous_candidate=a.previous_candidate, attempt=attempt)

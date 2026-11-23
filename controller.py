@@ -39,6 +39,7 @@ import work as work_queue
 from commands import URGENT, Command
 from common import (
     CONTROL_REPO,
+    DEV_REF,
     INTAKE_LABEL,
     contribution_file_id,
     load_policy,
@@ -90,6 +91,8 @@ def _actionable(c: dict) -> str | None:
         return None
     if c["phase"] == "upstream_review" and c["activity"] == "fix_needed":
         return "upstream_revision"
+    if engine.state_key(c) == "handoff.review_due":
+        return work_queue.SUBMISSION_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
     if c["phase"] in ("queued", "investigation") and c["activity"] == "idle":
@@ -103,8 +106,8 @@ def _actionable(c: dict) -> str | None:
 # contribution waits for a human instead of being retried blindly.
 WORK_DEADLINE_HOURS = 6
 
-PRIORITY = {"upstream_revision": 0, "development_repair": 1, "development_patch": 2,
-            "investigation": 3}
+PRIORITY = {"upstream_revision": 0, "submission_review": 0, "development_repair": 1,
+            "development_patch": 2, "investigation": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
 # The rows of the table that allocate due Work, by the state it is due in, in
@@ -114,6 +117,7 @@ WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 ALLOCATIONS = {
     "investigation.idle": ("dispatch_investigation",),
     "development.fix_needed": ("request_repair", "request_patch"),
+    "handoff.review_due": ("request_submission_review",),
     "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
 }
 # The rows taken instead when a budget of that Work is exhausted. They need no
@@ -122,6 +126,7 @@ EXHAUSTIONS = {
     "investigation.idle": ("exhaust_work_total",),
     "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
+    "handoff.review_due": ("exhaust_work_total",),
     "upstream_review.fix_needed": ("exhaust_repair_attempts",),
 }
 # The facts the controller establishes for an allocation it is about to take.
@@ -133,6 +138,8 @@ def task_for(verb: str, record: dict) -> str:
     for a repair when the record holds pending feedback for it to answer."""
     if verb == "dispatch_investigation":
         return "investigation"
+    if verb == "request_submission_review":
+        return work_queue.SUBMISSION_REVIEW
     if verb in ("request_upstream_revision", "request_review_revision"):
         return "upstream_revision"
     if verb == "request_repair" or record.get("pending_feedback_evidence_ids"):
@@ -441,7 +448,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         if cid in skip or engine.state_key(c) not in handoff.KINDS:
             continue
         with isolation.contribution(cid, "handoff_operation"):
-            _launch_handoff(c, by_id, operations, res, inputs, now, policy)
+            _launch_handoff(c, by_id, operations, res, inputs, now, policy, evidence or {})
 
     # Provisioning is a trusted administrative workflow, not a model task.
     # Persist its normal operation intent before dispatch, with no second queue.
@@ -490,7 +497,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="fork_provision",
                                policy_version=policy["policy_version"], reason_ids=[c["dossier_evidence_id"]],
                                target={"repository": "riseproject-upstreaming/" + c["upstream"]["full_name"].split('/', 1)[1],
-                                       "repository_id": fork.get("repository_id"), "ref": "riscv64",
+                                       "repository_id": fork.get("repository_id"), "ref": DEV_REF,
                                        "expected_head": fork.get("head_sha"), "base_sha": c["upstream"]["base_sha"]},
                                proposed={"commit": c["upstream"]["base_sha"], "marker": f"provision:{cid}:{c['revision']}"},
                                capacity={"selector": "ubuntu-24.04-riscv", "estimated_jobs": 1,
@@ -508,7 +515,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # A published development head gets a same-fork development PR before CI
     # observation. Persist intent first; the trusted workflow creates/discovers
-    # exactly riscv64 -> the frozen upstream base ref and returns a receipt.
+    # exactly riscv64-dev -> the frozen upstream base ref and returns a receipt.
     res.report["dev_pr_requests"] = []
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -559,7 +566,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                policy_version=policy["policy_version"],
                                reason_ids=[c["dossier_evidence_id"], str(artifact["result_commit"])],
                                target={"repository": fork["name"], "repository_id": fork["repository_id"],
-                                       "ref": "riscv64", "expected_head": fork["head_sha"],
+                                       "ref": DEV_REF, "expected_head": fork["head_sha"],
                                        "base_sha": c["upstream"]["base_sha"]},
                                proposed={"marker": marker, "content_digest": artifact["digest"]}, now=now)
             if op["operation_id"] in operations:
@@ -607,7 +614,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                policy_version=policy["policy_version"],
                                reason_ids=[reason] + ([f"replan:{len(prior)}"] if prior else []),
                                target={"repository": fork["name"], "repository_id": fork["repository_id"],
-                                       "ref": "riscv64", "expected_head": fork["head_sha"],
+                                       "ref": DEV_REF, "expected_head": fork["head_sha"],
                                        "base_sha": c["upstream"]["base_sha"]},
                                proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
                                          "content_digest": artifact["digest"]}, now=now)
@@ -704,7 +711,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                 details={"task": kind, "work": request["dedupe_key"],
                                          **({"cluster": cluster} if cluster else {})})
                 carried = claimed["active_work"].get("feedback_evidence_ids") or []
-                if carried != list(c.get("pending_feedback_evidence_ids") or []):
+                if kind != work_queue.SUBMISSION_REVIEW \
+                        and carried != list(c.get("pending_feedback_evidence_ids") or []):
                     raise lifecycle.TransitionError(
                         f"{verb}: the Work carries {carried}, not the pending feedback")
             by_id[c["contribution_id"]] = claimed
@@ -721,11 +729,11 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or []),
                 "effect_contract": (
                     {"kind": "none"}
-                    if kind == "investigation"
+                    if kind in ("investigation", work_queue.SUBMISSION_REVIEW)
                     else {
                         "kind": "fork_branch",
                         "repository": (claimed.get("fork") or {}).get("name"),
-                        "ref": "riscv64",
+                        "ref": lifecycle.work_ref(claimed),
                     }
                 ),
             }
@@ -842,6 +850,11 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
 
     generation, revision = int(record.get("generation", 0)), record["revision"]
     reason_ids: list[str] = []
+    if kind == work_queue.SUBMISSION_REVIEW:
+        # The dossier (with its contribution guidelines) and the CI evidence
+        # of the candidate head the review describes.
+        reason_ids = [i for i in (record.get("dossier_evidence_id"),
+                                  record.get("last_ci_evidence_id")) if i]
     if kind in ("development_repair", "upstream_revision"):
         reason_ids = list(dict.fromkeys(
             list(record.get("pending_feedback_evidence_ids") or [])
@@ -913,7 +926,7 @@ def reminder_details(record: dict, operations: dict | None = None,
 
 
 def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inputs: Inputs,
-                    now: str, policy: dict) -> None:
+                    now: str, policy: dict, evidence: dict) -> None:
     """Record the next attempt of the handoff operation of the record's state
     when none is open, and launch the planned attempt when it is due."""
     cid, state = c["contribution_id"], engine.state_key(c)
@@ -928,7 +941,7 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
         raise lifecycle.TransitionError(f"{state} names the operation {active}, which the store "
                                         "does not hold")
     if op is None:
-        op = handoff.plan_attempt(c, operations, policy=policy, now=now)
+        op = handoff.plan_attempt(c, operations, policy=policy, now=now, evidence=evidence)
         if op["operation_id"] in operations:
             raise lifecycle.TransitionError(f"the next {kind} attempt {op['operation_id']} exists")
         c = dict(c, active_operation_id=op["operation_id"], updated_at=now)
@@ -959,7 +972,7 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
         rep["alerts"].append({"contribution": cid, "operation": op["operation_id"],
                               "alert": f"{kind} {handoff.LAUNCHES_SPENT}: {fired.verb}"})
         if engine.state_key(fired.record) == state:
-            _launch_handoff(fired.record, by_id, operations, res, inputs, now, policy)
+            _launch_handoff(fired.record, by_id, operations, res, inputs, now, policy, evidence)
         return
     if launches and (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
             < LAUNCH_INTERVAL_SECONDS:
@@ -1088,17 +1101,12 @@ def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict, operation
                     policy: dict, now: str) -> dict:
     """The values of the fields a command's row sets that the engine cannot
     derive: the refresh a refresh or a stale resume records, the admission
-    override of a restart, and the approval and the first debug cleanup
-    operation of a submission."""
+    override of a restart, and the approval of a submission."""
     if verb == "restart_generation":
         return {"admission_override": admission_override(cmd)}
     if verb == "submit_upstream":
-        approved = dict(rec, handoff_approval=handoff.approval(
-            rec, command_id=receipt["command_id"], actor=receipt["actor"], head=cmd.args["head"]))
-        op = handoff.plan_attempt(approved, operations, policy=policy, now=now,
-                                  kind="debug_cleanup")
-        return {"handoff_approval": approved["handoff_approval"],
-                "active_operation_id": op["operation_id"]}
+        return {"handoff_approval": handoff.approval(
+            rec, command_id=receipt["command_id"], actor=receipt["actor"], head=cmd.args["head"])}
     if verb not in ("refresh_investigation", "resume_stale"):
         return {}
     fork = rec.get("fork") or {}
@@ -1269,14 +1277,6 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
     if out.event:
         res.stage("events", out.event)
     _restart_launches(out, operations, res, now)
-    if out.verb == "submit_upstream":
-        # The intent of the first debug cleanup attempt, whose id the row
-        # recorded; it is launched by the handoff step of this tick.
-        op = handoff.plan_attempt(out.record, operations, policy=policy, now=now)
-        if op["operation_id"] != out.record["active_operation_id"]:
-            raise lifecycle.TransitionError("the debug cleanup intent differs from the approval")
-        operations[op["operation_id"]] = op
-        res.stage("operations", op)
     return receipt
 
 

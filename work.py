@@ -27,9 +27,9 @@ import subprocess
 from pathlib import Path
 
 import commit_rules
+import lifecycle
 from common import (
     CONTROL_REPO,
-    DEV_REF,
     STATE_ROOT,
     canonical_json,
     load_policy,
@@ -46,11 +46,17 @@ PROFILE_WORKFLOWS = {WORKER_PROFILE: ".github/workflows/worker.lock.yml",
 PROPOSAL_ARTIFACT = "porting-out"
 
 WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
+# The review at submission: uncredentialed like every Work, and it writes
+# nothing. Its reshaped series is checked by trusted code in the worker's
+# publish job without a token, and only the trusted handoff workflow builds
+# `riscv64` from it.
+SUBMISSION_REVIEW = "submission_review"
 ALLOWED_OPERATIONS = {
     "development_patch": ["append", "rewrite"],
     "development_repair": ["append", "rewrite"],
     "upstream_revision": ["append"],   # history policy may widen this per project
     "investigation": [],
+    SUBMISSION_REVIEW: [],
 }
 
 # Diagnostic no-write outputs are always allowed alongside.
@@ -63,7 +69,7 @@ def effect_contract(task: str) -> dict:
         # The dossier comes back as an artifact too, but investigations must
         # not need a write-capable Claim: they report via artifact only.
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
-    if task in WRITE_TASKS:
+    if task in WRITE_TASKS or task == SUBMISSION_REVIEW:
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
     raise ValueError(f"unknown task {task}")
 
@@ -96,7 +102,7 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
         "fork": fork.get("name"),
         "fork_name": (fork.get("name") or "/").split("/", 1)[1] or None,
         "fork_repository_id": fork.get("repository_id"),
-        "ref": DEV_REF,
+        "ref": lifecycle.work_ref(record),
         "expected_head": fork.get("head_sha"),
         "upstream_facing": record.get("upstream_pr") is not None,
         "allowed_operations": ALLOWED_OPERATIONS[task],
@@ -133,7 +139,7 @@ def _identity(request: dict) -> dict:
 def profile_for(task: str) -> str:
     if task == "investigation":
         return INVESTIGATOR_PROFILE
-    if task in WRITE_TASKS:
+    if task in WRITE_TASKS or task == SUBMISSION_REVIEW:
         return WORKER_PROFILE
     raise ValueError(f"unknown task {task}")
 
@@ -247,6 +253,14 @@ _PLANS = {
     "upstream_revision": (
         "Address the current maintainer feedback/CI failures identified by reason_ids on the "
         "upstream-facing riscv64 branch. No {debug} commits. Return the proposal and series."),
+    SUBMISSION_REVIEW: (
+        "Prepare and review the upstream submission of the approved riscv64-dev series at "
+        "expected_head. Reshape its non-debug commits on base_sha after the project's commit "
+        "conventions (squash or split only where its contributing instructions or reviewers "
+        "require it, keeping the final tree identical), write the upstream PR title and "
+        "description following the project's pull request template exactly and its "
+        "contributing instructions, and review the whole against the reviewers' expectations. "
+        "Change no code. Return the review and the reshaped series as the artifact."),
 }
 
 
@@ -407,6 +421,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         ).get("data") or {}
         dossier = (snapshot.evidence.get(record.get("dossier_evidence_id") or "") or {}).get("data")
         rules = commit_rules.from_dossier(dossier) if request["task"] != "investigation" else None
+        sections = (commit_rules.sections_from_dossier(dossier)
+                    if request["task"] == SUBMISSION_REVIEW else None)
         reason_evidence = []
         for evidence_id in request.get("reason_ids") or []:
             evidence = snapshot.evidence.get(evidence_id)
@@ -432,6 +448,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     # dossier, which the trusted worker gate checks. A
                     # dossier of schema version 1 records none.
                     **({"commit_rules": rules} if rules is not None else {}),
+                    # The required sections of the pull request template,
+                    # which the submission check requires in the reviewed
+                    # description.
+                    **({"template_sections": sections} if sections is not None else {}),
                 },
             )
         )

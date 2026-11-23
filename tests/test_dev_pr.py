@@ -21,10 +21,10 @@ FORK = "riseproject-upstreaming/proj"
 def records(root: Path):
     rec = contribution(phase="development", activity="waiting_capacity", revision=2,
                        dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/build.yml"])
-    rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64", "head_sha": SHA_B, "pr_number": None}
+    rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
     op = recovery.plan(contribution_id=rec["contribution_id"], revision=2, kind="dev_pr_create",
                        policy_version="test", reason_ids=["dossier-1", "result-1"],
-                       target={"repository": FORK, "repository_id": 9, "ref": "riscv64",
+                       target={"repository": FORK, "repository_id": 9, "ref": "riscv64-dev",
                                "expected_head": SHA_B, "base_sha": SHA_C},
                        proposed={"marker": "<!-- development-marker -->", "content_digest": "sha256:x"}, now=NOW)
     rec["active_operation_id"] = op["operation_id"]
@@ -44,18 +44,18 @@ class FakeApi:
         self.actions_enabled = True
         self.pr = {"id": 77, "number": 4, "html_url": "https://github.com/riseproject-upstreaming/proj/pull/4",
                    "state": "open", "body": dev_pr.body(rec, op),
-                   "head": {"sha": SHA_B, "ref": "riscv64", "repo": {"id": 9}},
+                   "head": {"sha": SHA_B, "ref": "riscv64-dev", "repo": {"id": 9}},
                    "base": {"ref": "main"}}
 
     def get(self, path):
         if path == f"/repos/{FORK}":
             return {"id": 9, "full_name": FORK, "default_branch": "main", "archived": False,
                     "fork": True, "parent": {"id": 1, "full_name": "example/proj"}}
-        if path == f"/repos/{FORK}/branches/riscv64":
+        if path == f"/repos/{FORK}/branches/riscv64-dev":
             return {"commit": {"sha": SHA_B, "commit": {"tree": {"sha": "d" * 40}}, "parents": []}}
-        if path == f"/repos/{FORK}/contents/.github/workflows?ref=riscv64":
+        if path == f"/repos/{FORK}/contents/.github/workflows?ref=riscv64-dev":
             return [{"type": "file", "name": "build.yml", "path": ".github/workflows/build.yml"}]
-        if path == f"/repos/{FORK}/contents/.github/workflows/build.yml?ref=riscv64":
+        if path == f"/repos/{FORK}/contents/.github/workflows/build.yml?ref=riscv64-dev":
             import base64
             text = "name: CI\npermissions: {contents: read}\njobs: {}\n"
             return {"type": "file", "encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
@@ -93,11 +93,11 @@ class TestDevelopmentPR(unittest.TestCase):
     def test_controller_records_pr_intent_before_launch(self):
         rec = contribution(phase="development", activity="waiting_ci", revision=2,
                            dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/build.yml"])
-        rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64", "head_sha": SHA_B, "pr_number": None}
+        rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
         rec["proposal_artifact"] = {"outcome": "published", "result_commit": "q_result", "digest": "sha256:x"}
         branch = recovery.plan(contribution_id=rec["contribution_id"], revision=2, kind="branch_update",
                                policy_version="test", reason_ids=["result"],
-                               target={"repository": FORK, "repository_id": 9, "ref": "riscv64",
+                               target={"repository": FORK, "repository_id": 9, "ref": "riscv64-dev",
                                        "expected_head": SHA_A, "base_sha": SHA_A}, now=NOW)
         branch = recovery.fold_receipt(branch, external_ids=None, detail="head verified", now=NOW)
         rec["publication_operation_id"] = branch["operation_id"]
@@ -137,7 +137,7 @@ class TestDevelopmentPR(unittest.TestCase):
                 receipt = dev_pr.publish(root, op["operation_id"], "token", "99")
             self.assertEqual((receipt["pr_number"], receipt["head_sha"]), (4, SHA_B))
             pr_write = next(call for call in api.writes if call[0] == "POST")
-            self.assertEqual(pr_write[2]["head"], "riscv64")
+            self.assertEqual(pr_write[2]["head"], "riscv64-dev")
             self.assertEqual(pr_write[2]["base"], "main")
 
     def test_new_registration_reopens_existing_marked_pr_once(self):

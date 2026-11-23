@@ -13,7 +13,7 @@ import jsonschema
 from common import SCHEMA_DIR
 
 KNOWN = ("contribution", "project", "operation", "command", "event",
-         "evidence", "proposal", "policy", "dossier")
+         "evidence", "proposal", "policy", "dossier", "submission_review")
 
 
 class SchemaError(ValueError):

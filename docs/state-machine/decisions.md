@@ -114,7 +114,7 @@ flowchart TB
     end
     subgraph handoff["handoff"]
         handoff_awaiting_submission["handoff.awaiting_submission"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_review_due["handoff.review_due"]
         handoff_waiting_upstream_pr["handoff.waiting_upstream_pr"]
     end
     subgraph upstream_review["upstream_review"]
@@ -122,7 +122,7 @@ flowchart TB
     end
 
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
-    handoff_awaiting_submission ==>|submit_upstream<br/>/upstreaming submit-upstream| handoff_cleaning_debug
+    handoff_awaiting_submission ==>|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
     handoff_waiting_upstream_pr -->|record_reminder| handoff_waiting_upstream_pr
     handoff_waiting_upstream_pr ==>|verify_upstream_pr| upstream_waiting_ci
 ```
@@ -535,7 +535,7 @@ flowchart TB
         development_fix_needed["development.fix_needed"]
     end
     subgraph handoff["handoff"]
-        handoff_closing_internal_pr["handoff.closing_internal_pr"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_human["handoff.waiting_human"]
     end
     subgraph release_wait["release_wait"]
@@ -544,8 +544,8 @@ flowchart TB
     end
 
     provisioning_idle ==>|confirm_provisioning| development_fix_needed
-    handoff_closing_internal_pr -->|exhaust_internal_pr_retries| handoff_waiting_human
-    handoff_waiting_human ==>|resume_internal_pr_closure<br/>/upstreaming resume| handoff_closing_internal_pr
+    handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
+    handoff_waiting_human ==>|resume_upstream_branch<br/>/upstreaming resume| handoff_building_upstream_branch
     release_wait_idle -->|require_release_intervention| release_wait_waiting_human
     release_wait_waiting_human ==>|resume_release_observation<br/>/upstreaming resume| release_wait_idle
 ```
@@ -770,25 +770,27 @@ flowchart TB
 
 Values and names the decisions left open.
 
-**Decision.** `retries.max_attempts_per_contribution` stays 24, `retries.work_recovery` stays 2, and the verb names stay. The three human waits of handoff are one `handoff.waiting_human`: four resume verbs leave it, each guarded by its `pending_human_action`, so exactly one applies.
+**Decision.** `retries.max_attempts_per_contribution` stays 24, `retries.work_recovery` stays 2, and the verb names stay. The human waits of handoff are one `handoff.waiting_human`: four resume verbs leave it, each guarded by its `pending_human_action`, so exactly one applies (the submission review, the branch write, CI on the clean head, and the package).
 
 ```mermaid
 flowchart TB
     subgraph handoff["handoff"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_review_due["handoff.review_due"]
+        handoff_agent_running["handoff.agent_running"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
-        handoff_closing_internal_pr["handoff.closing_internal_pr"]
         handoff_preparing_submission["handoff.preparing_submission"]
         handoff_waiting_human["handoff.waiting_human"]
     end
 
-    handoff_cleaning_debug -->|exhaust_debug_cleanup_retries| handoff_waiting_human
+    handoff_review_due -->|exhaust_work_total| handoff_waiting_human
+    handoff_agent_running -->|exhaust_work_recovery| handoff_waiting_human
+    handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
     handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
-    handoff_closing_internal_pr -->|exhaust_internal_pr_retries| handoff_waiting_human
     handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
-    handoff_waiting_human ==>|resume_debug_cleanup<br/>/upstreaming resume| handoff_cleaning_debug
+    handoff_waiting_human ==>|resume_submission_review<br/>/upstreaming resume| handoff_review_due
+    handoff_waiting_human ==>|resume_upstream_branch<br/>/upstreaming resume| handoff_building_upstream_branch
     handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
-    handoff_waiting_human ==>|resume_internal_pr_closure<br/>/upstreaming resume| handoff_closing_internal_pr
     handoff_waiting_human ==>|resume_submission_preparation<br/>/upstreaming resume| handoff_preparing_submission
 ```
 
@@ -901,7 +903,7 @@ flowchart TB
 
 Whether `resume_ci` starts `interrupted_reruns` again for the head.
 
-**Decision.** It does, in both `development.waiting_human` and `handoff.waiting_human`. The rule has no exception: every exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, and every resume from that wait starts exactly that counter again. This holds for the budgets spent on infrastructure failures too: `dispatch_recovery`, `work_recovery`, `publish_recovery`, `operation_launch`, `debug_cleanup`, `internal_pr_closure`, `submission_comment`, and `interrupted_reruns`. `require_provisioning_intervention` names `operation_launch` when that budget is the cause and no counter for its other causes. `resume_stale` starts the named counter again like every other resume. The check verifies the rule for every exhaustion and every resume.
+**Decision.** It does, in both `development.waiting_human` and `handoff.waiting_human`. The rule has no exception: every exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, and every resume from that wait starts exactly that counter again. This holds for the budgets spent on infrastructure failures too: `dispatch_recovery`, `work_recovery`, `publish_recovery`, `operation_launch`, `upstream_branch`, `submission_comment`, and `interrupted_reruns`. `require_provisioning_intervention` names `operation_launch` when that budget is the cause and no counter for its other causes. `resume_stale` starts the named counter again like every other resume. The check verifies the rule for every exhaustion and every resume.
 
 ```mermaid
 flowchart TB
@@ -911,7 +913,7 @@ flowchart TB
     end
     subgraph handoff["handoff"]
         handoff_waiting_ci["handoff.waiting_ci"]
-        handoff_closing_internal_pr["handoff.closing_internal_pr"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_human["handoff.waiting_human"]
     end
 
@@ -919,8 +921,8 @@ flowchart TB
     development_waiting_human ==>|resume_ci<br/>/upstreaming resume| development_waiting_ci
     handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
     handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
-    handoff_closing_internal_pr -->|exhaust_internal_pr_retries| handoff_waiting_human
-    handoff_waiting_human -->|resume_internal_pr_closure<br/>/upstreaming resume| handoff_closing_internal_pr
+    handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
+    handoff_waiting_human -->|resume_upstream_branch<br/>/upstreaming resume| handoff_building_upstream_branch
 ```
 
 ### O15. The first patch after a rejected proposal
@@ -978,22 +980,20 @@ flowchart TB
 
 Names and values the decisions left open.
 
-**Decision.** They stay. `interrupted_reruns` allows as many reruns per head as `retries.infrastructure_per_head_failure` (2), without a free first one. Its exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in both `development.waiting_human` and `handoff.waiting_human`. The pending actions of the handoff wait are `debug_cleanup_failed`, `internal_pr_closure_failed`, `submission_comment_failed`, and `ci_interrupted`. An exhaustion names its counter in `pending_human_action.counter`.
+**Decision.** They stay. `interrupted_reruns` allows as many reruns per head as `retries.infrastructure_per_head_failure` (2), without a free first one. Its exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in both `development.waiting_human` and `handoff.waiting_human`. The pending actions of the handoff wait are `upstream_branch_failed`, `upstream_branch_blocked`, `submission_comment_failed`, `ci_interrupted`, and those of the review Work (`work_budget_exhausted`, `dispatch_failed`, `work_failed`). An exhaustion names its counter in `pending_human_action.counter`.
 
 ```mermaid
 flowchart TB
     subgraph handoff["handoff"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
-        handoff_closing_internal_pr["handoff.closing_internal_pr"]
         handoff_preparing_submission["handoff.preparing_submission"]
         handoff_waiting_human["handoff.waiting_human"]
     end
 
-    handoff_cleaning_debug -->|exhaust_debug_cleanup_retries| handoff_waiting_human
+    handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
     handoff_waiting_ci ==>|rerun_interrupted_ci| handoff_waiting_ci
     handoff_waiting_ci ==>|exhaust_interrupted_reruns| handoff_waiting_human
-    handoff_closing_internal_pr -->|exhaust_internal_pr_retries| handoff_waiting_human
     handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
     handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
 ```
@@ -1082,11 +1082,11 @@ What an explanation-only comment on the development PR does while the contributi
 flowchart TB
     subgraph handoff["handoff"]
         handoff_awaiting_submission["handoff.awaiting_submission"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_review_due["handoff.review_due"]
     end
 
     handoff_awaiting_submission ==>|record_explanation| handoff_awaiting_submission
-    handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_cleaning_debug
+    handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
 ```
 
 ### O22. Where the rerun counts of a head are kept
@@ -1103,7 +1103,7 @@ flowchart TB
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
     end
 
@@ -1113,7 +1113,7 @@ flowchart TB
     development_waiting_ci -->|rerun_interrupted_ci| development_waiting_ci
     development_waiting_ci -->|exhaust_interrupted_reruns| development_waiting_human
     development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
-    handoff_cleaning_debug ==>|confirm_clean_head| handoff_waiting_ci
+    handoff_building_upstream_branch ==>|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|rerun_interrupted_ci| handoff_waiting_ci
 ```
 
@@ -1272,11 +1272,11 @@ flowchart TB
 flowchart TB
     subgraph handoff["handoff"]
         handoff_awaiting_submission["handoff.awaiting_submission"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_review_due["handoff.review_due"]
     end
 
     handoff_awaiting_submission ==>|record_reminder| handoff_awaiting_submission
-    handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_cleaning_debug
+    handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
 ```
 
 ### Head change in upstream review
@@ -1310,29 +1310,29 @@ flowchart TB
     upstream_waiting_ci ==>|record_explanation| upstream_waiting_ci
 ```
 
-### Infrastructure failure of the debug cleanup
+### Infrastructure failure of the branch write
 
-`handoff.cleaning_debug` had no row for an infrastructure failure of the lease write.
+The handoff state that writes the clean head had no row for an infrastructure failure of the lease write.
 
-**Change.** `retry_debug_cleanup` retries within `debug_cleanup`, and `exhaust_debug_cleanup_retries` leads to the human wait `handoff.waiting_human`, like the other two handoff operations.
+**Change.** The lease write retries within its budget and then leads to the human wait `handoff.waiting_human`, like the other handoff operation. The write is now the one of `riscv64` in `handoff.building_upstream_branch`: `retry_upstream_branch` within `upstream_branch`, then `exhaust_upstream_branch_retries`.
 
 ```mermaid
 flowchart TB
     subgraph handoff["handoff"]
-        handoff_cleaning_debug["handoff.cleaning_debug"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_human["handoff.waiting_human"]
         handoff_waiting_ci["handoff.waiting_ci"]
     end
 
-    handoff_cleaning_debug ==>|retry_debug_cleanup| handoff_cleaning_debug
-    handoff_cleaning_debug ==>|exhaust_debug_cleanup_retries| handoff_waiting_human
-    handoff_waiting_human ==>|resume_debug_cleanup<br/>/upstreaming resume| handoff_cleaning_debug
-    handoff_cleaning_debug -->|confirm_clean_head| handoff_waiting_ci
+    handoff_building_upstream_branch ==>|retry_upstream_branch| handoff_building_upstream_branch
+    handoff_building_upstream_branch ==>|exhaust_upstream_branch_retries| handoff_waiting_human
+    handoff_waiting_human ==>|resume_upstream_branch<br/>/upstreaming resume| handoff_building_upstream_branch
+    handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
 ```
 
 ### Resumes of handoff and release waits bump the revision
 
-`resume_internal_pr_closure`, `resume_submission_preparation`, and `resume_release_observation` did not bump the revision.
+The resume of the development PR closure (retired since: the development PR is never closed), `resume_submission_preparation`, and `resume_release_observation` did not bump the revision.
 
 **Change.** They bump it, like every resume.
 
@@ -1393,4 +1393,31 @@ flowchart TB
     development_agent_running ==>|pause_on_processing_error| development_fix_needed_paused
     development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
     development_fix_needed_paused -->|resume_pause<br/>/upstreaming resume| development_fix_needed
+```
+
+### Development on `riscv64-dev`, upstreaming from a reviewed `riscv64`
+
+Which branches development and the upstream PR use, whether the development PR is closed at submission, and how the upstream PR follows the project's pull request template, contributing instructions, commit conventions, and reviewers.
+
+**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_review` allocates uncredentialed review Work (`handoff.agent_running`). The review reshapes the non-debug commits of the approved series after the dossier's measured commit conventions (squashing or splitting only where the contributing instructions or reviewers require it), writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions, and reviews the whole against the reviewers' expectations. Trusted code checks the same final tree, the measurable rules, and the template's required sections: `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the reviewed series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`); `reject_submission_review` returns to development with the reasons as pending feedback and posts nothing. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+        handoff_review_due["handoff.review_due"]
+        handoff_agent_running["handoff.agent_running"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
+    handoff_review_due ==>|request_submission_review| handoff_agent_running
+    handoff_agent_running ==>|accept_submission_review| handoff_building_upstream_branch
+    handoff_agent_running ==>|reject_submission_review| development_fix_needed
+    handoff_building_upstream_branch ==>|require_branch_intervention| handoff_waiting_human
+    handoff_waiting_human -->|resume_upstream_branch<br/>/upstreaming resume| handoff_building_upstream_branch
 ```

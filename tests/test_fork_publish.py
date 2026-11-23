@@ -27,14 +27,14 @@ class _ForkFixture:
             bare = root / f"{name}.git"
             bare.parent.mkdir(parents=True, exist_ok=True)
             git(root, "init", "-q", "--bare", "-b", "main", str(bare))
-            git(up_work, "push", "-q", str(bare), "HEAD:refs/heads/main", "HEAD:refs/heads/riscv64")
+            git(up_work, "push", "-q", str(bare), "HEAD:refs/heads/main", "HEAD:refs/heads/riscv64-dev")
         self.fork_bare = root / "riseproject-upstreaming/proj.git"
         self._saved = (fork_publish.URL_TEMPLATE, list(fork_publish.TEST_EXTRA_CONFIG))
         fork_publish.URL_TEMPLATE = f"file://{root}/{{}}.git"
         fork_publish.TEST_EXTRA_CONFIG[:] = ["-c", "protocol.file.allow=always"]
         # The agent's checkout and its series.
         self.agent = root / "agent"
-        git(root, "clone", "-q", "-b", "riscv64", str(self.fork_bare), str(self.agent))
+        git(root, "clone", "-q", "-b", "riscv64-dev", str(self.fork_bare), str(self.agent))
         commit_files(self.agent, {".github/workflows/wheels.yml": "on: [push]\njobs: {riscv64: {}}\n"},
                      msg="BLD: build riscv64 wheels")
         self.mbox = git(self.agent, "format-patch", "--stdout", self.base).encode() + b"\n"
@@ -44,7 +44,7 @@ class _ForkFixture:
         self.task = {"contribution_id": self.record["contribution_id"], "revision": 0, "expected_head": self.base,
                      "fork": "riseproject-upstreaming/proj", "fork_repository_id": 2,
                      "allowed_operations": ["append", "rewrite"],
-                     "allowed_paths": [".github/workflows/*"], "reason_ids": ["ci-1"]}
+                     "allowed_paths": [".github/workflows/*"], "reason_ids": ["ci-1"], "ref": "riscv64-dev"}
         self.ops = []
         self.invocations = 0
 
@@ -59,7 +59,7 @@ class _ForkFixture:
              "diagnosis": "add riscv64 row", "progress": "requirement_fixed",
              "changed_files": [".github/workflows/wheels.yml"],
              "patch_digest": hashlib.sha256(self.mbox).hexdigest(),
-             "ref": "riscv64", "reconstruction_base": self.base, "fork_repository_id": 2}
+             "ref": "riscv64-dev", "reconstruction_base": self.base, "fork_repository_id": 2}
         p.update(over)
         return p
 
@@ -78,7 +78,7 @@ class _ForkFixture:
                 {"comment_id": 30, "summary": "Enabled the test workflow."}]), self.record, self.task)
 
     def fork_head(self):
-        return git(self.fork_bare, "rev-parse", "refs/heads/riscv64")
+        return git(self.fork_bare, "rev-parse", f"refs/heads/{self.task['ref']}")
 
     def run_publish(self, proposal=None, mbox=None, pol=None, observe=None, scope=None):
         self.invocations += 1
@@ -137,7 +137,7 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
 
     def test_rejects_stale_head_and_wrong_task(self):
         commit_files(self.agent, {"src/a.c": "int b;\n"}, msg="manual")
-        git(self.agent, "push", "-q", "origin", "HEAD:riscv64")
+        git(self.agent, "push", "-q", "origin", "HEAD:riscv64-dev")
         out = self.run_publish()
         self.assertIn("publication check", out.reason)
         out = self.run_publish(self.proposal(expected_revision=3))
@@ -163,9 +163,9 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
             if calls["n"] == 2:
                 h = real()
                 other = self.root / "other"
-                git(self.root, "clone", "-q", "-b", "riscv64", str(self.fork_bare), str(other))
+                git(self.root, "clone", "-q", "-b", "riscv64-dev", str(self.fork_bare), str(other))
                 commit_files(other, {"src/a.c": "int z;\n"}, msg="race")
-                git(other, "push", "-q", "origin", "HEAD:riscv64")
+                git(other, "push", "-q", "origin", "HEAD:riscv64-dev")
                 return h
             return real()
         out = self.run_publish(observe=observe)
@@ -183,6 +183,8 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
                                       "head_repository_id": 2, "head_ref": "riscv64", "head_sha": self.base,
                                       "base_ref": "main", "registered_by": {"id": 1, "login": "x"}}
         self.record["phase"] = "upstream_review"
+        self.task["ref"] = "riscv64"
+        git(self.fork_bare, "branch", "riscv64", "riscv64-dev")
         git(self.agent, "reset", "-q", "--hard", self.base)
         commit_files(self.agent, {".github/workflows/wheels.yml": "on: [push]\n# fork\n"}, msg="{debug} enable")
         mbox = git(self.agent, "format-patch", "--stdout", self.base).encode() + b"\n"
@@ -236,7 +238,7 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
         out = self.run_publish(self.proposal(operation="rewrite", expected_revision=1, expected_head=head2,
                                              changed_files=[], patch_digest=None), mbox=squash, scope=scope)
         self.assertEqual(out.status, "published", out.reason)
-        self.assertEqual(git(self.fork_bare, "rev-list", "--count", f"{self.base}..riscv64"), "1")
+        self.assertEqual(git(self.fork_bare, "rev-list", "--count", f"{self.base}..riscv64-dev"), "1")
         self.assertEqual(self.ops[-1]["kind"], "branch_rewrite")
         # Empty rewrite = remove every contribution commit.
         head3 = self.fork_head()
@@ -257,7 +259,7 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
     def test_merge_topology_rejected(self):
         git(self.agent, "checkout", "-q", "-b", "side", self.base)
         commit_files(self.agent, {"src/a.c": "int side;\n"}, msg="side")
-        git(self.agent, "checkout", "-q", "riscv64")
+        git(self.agent, "checkout", "-q", "riscv64-dev")
         git(self.agent, "merge", "-q", "--no-ff", "-m", "merge", "side")
         mbox = git(self.agent, "format-patch", "--stdout", self.base).encode() + b"\n"
         # format-patch flattens merges: the rebuilt history is linear and must
@@ -295,7 +297,7 @@ class TestFailureClasses(_ForkFixture, unittest.TestCase):
         out = self.run_publish(self.proposal(expected_revision=9))
         self.assertEqual(out.failure_class, "validation")
         commit_files(self.agent, {"src/a.c": "int b;\n"}, msg="manual")
-        git(self.agent, "push", "-q", "origin", "HEAD:riscv64")
+        git(self.agent, "push", "-q", "origin", "HEAD:riscv64-dev")
         self.assertEqual(self.run_publish().failure_class, "stale")
 
     def test_retry_after_lost_receipt_confirms_instead_of_pushing(self):

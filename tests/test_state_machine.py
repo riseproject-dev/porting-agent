@@ -238,7 +238,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_investigation", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
-                          "allocate_work_retry"})
+                          "request_submission_review", "allocate_work_retry"})
         for e in allocating:
             self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
 
@@ -249,7 +249,8 @@ class TestLifecycleTable(unittest.TestCase):
                 self.assertEqual(e.transition.effects.revision, "bump", (e.source, e.verb))
         self.assertEqual(lc.find_edge("provisioning.idle", "confirm_provisioning").transition.effects.revision,
                          "keep")
-        for state, verb in (("handoff.waiting_human", "resume_internal_pr_closure"),
+        for state, verb in (("handoff.waiting_human", "resume_upstream_branch"),
+                            ("handoff.waiting_human", "resume_submission_review"),
                             ("handoff.waiting_human", "resume_submission_preparation"),
                             ("release_wait.waiting_human", "resume_release_observation")):
             self.assertEqual(lc.find_edge(state, verb).transition.effects.revision, "bump")
@@ -315,11 +316,13 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual(
             {e.verb: e.target for e in lc.state_edges("handoff.waiting_human")
              if e.transition.command == lc.RESUME},
-            {"resume_debug_cleanup": "handoff.cleaning_debug", "resume_ci": "handoff.waiting_ci",
-             "resume_internal_pr_closure": "handoff.closing_internal_pr",
+            {"resume_submission_review": "handoff.review_due",
+             "resume_upstream_branch": "handoff.building_upstream_branch",
+             "resume_ci": "handoff.waiting_ci",
              "resume_submission_preparation": "handoff.preparing_submission"})
         self.assertEqual(lc.pending_kinds("handoff.waiting_human"),
-                         {"debug_cleanup_failed", "ci_interrupted", "internal_pr_closure_failed",
+                         {"work_budget_exhausted", "dispatch_failed", "work_failed",
+                          "upstream_branch_failed", "upstream_branch_blocked", "ci_interrupted",
                           "submission_comment_failed"})
         for key in ("handoff.waiting_human", "development.waiting_human",
                     "upstream_review.waiting_human"):
@@ -346,10 +349,14 @@ class TestLifecycleTable(unittest.TestCase):
                   {"interrupted_reruns"}),
                  ("handoff.waiting_ci", "exhaust_interrupted_reruns", "resume_ci",
                   {"interrupted_reruns"}),
-                 ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries",
-                  "resume_debug_cleanup", {"debug_cleanup"}),
-                 ("handoff.closing_internal_pr", "exhaust_internal_pr_retries",
-                  "resume_internal_pr_closure", {"internal_pr_closure"}),
+                 ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries",
+                  "resume_upstream_branch", {"upstream_branch"}),
+                 ("handoff.review_due", "exhaust_work_total", "resume_submission_review",
+                  {"work_total"}),
+                 ("handoff.agent_running", "exhaust_dispatch_recovery",
+                  "resume_submission_review", {"dispatch_recovery"}),
+                 ("handoff.agent_running", "exhaust_work_recovery", "resume_submission_review",
+                  {"work_recovery", "work_total"}),
                  ("handoff.preparing_submission", "exhaust_comment_retries",
                   "resume_submission_preparation", {"submission_comment"}),
                  ("upstream_review.fix_needed", "exhaust_repair_attempts", "resume_upstream_revision",
@@ -387,9 +394,9 @@ class TestLifecycleTable(unittest.TestCase):
             ("provisioning.waiting_human", "resume_provisioning"),
             ("development.waiting_human", "resume_ci"),
             ("development.waiting_human", "resume_development"),
-            ("handoff.waiting_human", "resume_debug_cleanup"),
+            ("handoff.waiting_human", "resume_submission_review"),
+            ("handoff.waiting_human", "resume_upstream_branch"),
             ("handoff.waiting_human", "resume_ci"),
-            ("handoff.waiting_human", "resume_internal_pr_closure"),
             ("handoff.waiting_human", "resume_submission_preparation"),
             ("upstream_review.waiting_human", "resume_upstream_revision")})
         self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
@@ -515,8 +522,8 @@ class TestLifecycleTable(unittest.TestCase):
             "flaky_reruns": "retries.flaky_reruns",
             "dispatch_recovery": infrastructure, "publish_recovery": infrastructure,
             "interrupted_reruns": infrastructure,
-            "operation_launch": infrastructure, "debug_cleanup": infrastructure,
-            "internal_pr_closure": infrastructure, "submission_comment": infrastructure,
+            "operation_launch": infrastructure, "upstream_branch": infrastructure,
+            "submission_comment": infrastructure,
         })
         self.assertEqual(policy_value("retries.investigation_attempts"), 3)
         self.assertGreater(policy_value("retries.max_attempts_per_contribution"), 12)
@@ -680,19 +687,19 @@ class TestConsistencyCheckViolations(unittest.TestCase):
 
     def test_resumes_of_a_wait_that_overlap_or_leave_a_gap(self):
         edge = lc.find_edge("handoff.waiting_human", "resume_ci")
-        guard = tuple(lc.pending_is("debug_cleanup_failed") if g in lc.PENDING_GUARDS else g
+        guard = tuple(lc.pending_is("upstream_branch_failed") if g in lc.PENDING_GUARDS else g
                       for g in edge.transition.guard)
         self.assertReports(
             self.with_row("handoff.waiting_human", "resume_ci", guard=guard),
             "handoff.waiting_human: several resumes apply when pending_human_action is "
-            "debug_cleanup_failed",
+            "upstream_branch_failed",
             "handoff.waiting_human: not exactly one resume applies when pending_human_action is "
             "ci_interrupted")
         self.assertReports(
             self.with_row("handoff.waiting_human", "resume_ci", guard=(lc.EXACT_REVISION,)),
             "one of 4 resumes of the wait, so exactly one pending-action guard is required")
         self.assertReports(
-            self.with_row("handoff.closing_internal_pr", "exhaust_internal_pr_retries",
+            self.with_row("handoff.building_upstream_branch", "exhaust_upstream_branch_retries",
                           effects=lc.Effects(sets=("pending_human_action",))),
             "handoff.waiting_human: entered without naming the pending action")
         edge = lc.find_edge("upstream_review.waiting_human", "resume_upstream_review")
@@ -741,10 +748,9 @@ class TestConsistencyCheckViolations(unittest.TestCase):
                           effects=dataclasses.replace(edge.transition.effects,
                                                       restarts=("interrupted_reruns", "work_total"))),
             "starts 'work_total' again, but no exhaustion of it names its counter")
-        edge = lc.find_edge("handoff.closing_internal_pr", "exhaust_internal_pr_retries")
         self.assertReports(
-            self.with_row("handoff.closing_internal_pr", "exhaust_internal_pr_retries",
-                          effects=lc.Effects(sets=("pending_human_action=internal_pr_closure_failed",))),
+            self.with_row("handoff.building_upstream_branch", "exhaust_upstream_branch_retries",
+                          effects=lc.Effects(sets=("pending_human_action=upstream_branch_failed",))),
             "exhaustion that leads to a human wait without pending_human_action.counter")
         edge = lc.find_edge("development.agent_running", "exhaust_work_recovery")
         self.assertReports(
@@ -772,8 +778,8 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         problems = lc.check_table(policy)
         self.assertIn("budget work_recovery: policy.json has no integer retries.work_recovery", problems)
         self.assertIn("policy.json has no integer refresh.stale_after_days", problems)
-        budget = dataclasses.replace(lc.BUDGETS["debug_cleanup"], infrastructure=False)
-        with mock.patch.dict(lc.BUDGETS, {"debug_cleanup": budget}):
+        budget = dataclasses.replace(lc.BUDGETS["upstream_branch"], infrastructure=False)
+        with mock.patch.dict(lc.BUDGETS, {"upstream_branch": budget}):
             self.assertTrue(any("is not marked infrastructure" in p for p in lc.check_table(POLICY)))
 
     def test_flag_violations(self):

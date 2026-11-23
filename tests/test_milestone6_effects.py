@@ -148,7 +148,7 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
             fork={
                 "repository_id": 55,
                 "name": "riseproject-upstreaming/ciso8601",
-                "head_ref": "riscv64",
+                "head_ref": "riscv64-dev",
                 "head_sha": record["upstream"]["base_sha"],
                 "pr_number": None,
             },
@@ -226,7 +226,7 @@ class TestPublicationAndPRContracts(unittest.TestCase):
             fork={
                 "repository_id": 55,
                 "name": "riseproject-upstreaming/ciso8601",
-                "head_ref": "riscv64",
+                "head_ref": "riscv64-dev",
                 "head_sha": record["upstream"]["base_sha"],
                 "pr_number": None,
             },
@@ -266,8 +266,8 @@ class TestPublicationAndPRContracts(unittest.TestCase):
     def test_publication_is_exact_head_leased_and_recoverable(self):
         self.assertEqual(
             publisher.lease_refspec("b" * 40, "a" * 40),
-            ["--force-with-lease=refs/heads/riscv64:" + "a" * 40,
-             "b" * 40 + ":refs/heads/riscv64"],
+            ["--force-with-lease=refs/heads/riscv64-dev:" + "a" * 40,
+             "b" * 40 + ":refs/heads/riscv64-dev"],
         )
         retry = (WORKFLOWS / "publish-retry.yml").read_text()
         self.assertIn("python -m queue_result", retry)

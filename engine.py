@@ -46,7 +46,7 @@ import ci_evidence
 import lifecycle as lc
 import schemas
 from commands import Command
-from common import DEV_REF
+from common import UPSTREAM_REF
 
 # The fields only this module (and, until its call sites are converted, the
 # ``compat`` shim) may assign.
@@ -399,8 +399,8 @@ def _exact_candidate_head(ctx: Context) -> str | None:
 def _exact_clean_head(ctx: Context) -> str | None:
     head = _command_arg(ctx, "head")
     clean = ctx.record.get("clean_head_sha")
-    if not clean or clean != (ctx.record.get("fork") or {}).get("head_sha"):
-        return "no clean head is recorded for the current fork head"
+    if not clean:
+        return "no clean head of riscv64 is recorded"
     return None if head == clean else "head is not the clean head"
 
 
@@ -412,7 +412,7 @@ def _write_admission(ctx: Context) -> str | None:
 @_record("the upstream PR head is the controlled fork ref", "upstream_pr_on_controlled_ref")
 def _upstream_pr_on_controlled_ref(ctx: Context) -> str | None:
     pr, fork = ctx.record.get("upstream_pr") or {}, ctx.record.get("fork") or {}
-    if pr and pr.get("head_ref") == DEV_REF and fork.get("repository_id") is not None \
+    if pr and pr.get("head_ref") == UPSTREAM_REF and fork.get("repository_id") is not None \
             and pr.get("head_repository_id") == fork.get("repository_id"):
         return None
     return "the upstream PR head is not the controlled fork ref"
@@ -641,18 +641,21 @@ for _guard, _name in (
     ("the observed fork head differs from the candidate head", "candidate_head_changed"),
     ("the lease write or its readback failed with an infrastructure error",
      "cleanup_infrastructure_error"),
-    ("the lease write and ref readback match", "clean_head_read_back"),
-    ("the cleanup is invalid, or the exact-head lease conflicts", "cleanup_invalid"),
-    ("every required CI job executed and passed on the clean head", "ci_passed_on_clean_head"),
-    ("a blocking CI failure on the clean head, or the observed fork head differs from the clean "
-     "head", "clean_head_needs_repair"),
-    ("the close or its readback failed", "internal_pr_closure_failed"),
-    ("the readback shows the exact development PR closed", "internal_pr_closed"),
+    ("the lease write and ref readback match the reviewed series", "clean_head_read_back"),
+    ("the reviewed series does not rebuild to the reviewed head, or the lease on `riscv64` "
+     "conflicts", "upstream_branch_invalid"),
+    ("an upstream PR is open from `riscv64`", "upstream_branch_blocked"),
+    (lc.REVIEW_PASSED, "submission_review_passed"),
+    (lc.REVIEW_FAILED, "submission_review_failed"),
+    (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),
+    ("a blocking CI failure on the clean head, or the observed `riscv64` head differs from the "
+     "clean head", "clean_head_needs_repair"),
     ("posting the package failed", "submission_comment_failed"),
     ("the package comment is read back", "submission_package_read_back"),
     ("an observation that does not satisfy verify_upstream_pr", "unverified_upstream_observation"),
     ("an open PR against the upstream repository and the frozen base", "upstream_pr_open_on_base"),
-    ("its head is the controlled fork ref at the exact clean head", "upstream_pr_at_clean_head"),
+    ("its head is `riscv64` of the contribution fork at the exact clean head",
+     "upstream_pr_at_clean_head"),
     ("a compatible human author", "upstream_pr_human_author"),
     ("an executed blocking failure on the upstream PR head", "upstream_ci_failed"),
     ("not yet recorded for this head and CI run", "upstream_failure_not_recorded"),
@@ -689,7 +692,8 @@ EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked"})
 FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") | EXTRA_FACTS
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
-CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),)
+CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
+                       ("submission_review_passed", "submission_review_failed"))
 
 
 def table_guards() -> set[str]:
@@ -710,8 +714,8 @@ PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
 
 # Verbs that pipeline code takes through ``apply_transition``, with the module
 # that takes them. ``return_for_repair`` is taken by observation at the gate
-# and in ``handoff.waiting_ci``, and fired by a cleanup that cannot produce an
-# admissible clean head.
+# and in ``handoff.waiting_ci``, and fired by a build of `riscv64` whose
+# reviewed series does not rebuild or whose lease conflicts.
 PIPELINE_VERBS: dict[str, str] = {
     # Entering and leaving the submission gate, by observation, and the
     # review comments observed at the gate.
@@ -737,6 +741,9 @@ PIPELINE_VERBS: dict[str, str] = {
     # Result without a usable dossier.
     "allocate_work_retry": "reconcile",
     "exhaust_work_recovery": "reconcile",
+    # Dispatch recovery spent for the submission review (elsewhere the
+    # legacy dispatch exhaustion writes the wait).
+    "exhaust_dispatch_recovery": "reconcile",
     "reject_dossier": "reconcile",
     "exhaust_investigation_recovery": "reconcile",
     # The verified dossier decides: development on a new fork or on the
@@ -762,8 +769,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_provisioning": "controller",
     "resume_ci": "controller",
     "resume_development": "controller",
-    "resume_debug_cleanup": "controller",
-    "resume_internal_pr_closure": "controller",
+    "resume_submission_review": "controller",
+    "resume_upstream_branch": "controller",
     "resume_submission_preparation": "controller",
     "resume_upstream_review": "controller",
     "resume_upstream_revision": "controller",
@@ -781,16 +788,20 @@ PIPELINE_VERBS: dict[str, str] = {
     "start_operation": "controller",
     "require_provisioning_intervention": "controller",
     "confirm_provisioning": "recovery",
-    # The handoff operations (debug cleanup, closing the development PR, the
-    # submission package): the rows each attempt fires through
-    # ``recovery.fire`` when its verified receipt is folded, or when the
-    # controller closes an attempt whose launches are spent without one.
+    # The submission review Work: its allocation and the exhaustion of
+    # `work_total` where it is due, and its Result, which the trusted check
+    # decides.
+    "request_submission_review": "controller",
+    "accept_submission_review": "reconcile",
+    "reject_submission_review": "reconcile",
+    # The handoff operations (building `riscv64`, the submission package):
+    # the rows each attempt fires through ``recovery.fire`` when its verified
+    # receipt is folded, or when the controller closes an attempt whose
+    # launches are spent without one.
     "confirm_clean_head": "recovery",
-    "retry_debug_cleanup": "recovery",
-    "exhaust_debug_cleanup_retries": "recovery",
-    "confirm_internal_pr_closed": "recovery",
-    "retry_internal_pr_closure": "recovery",
-    "exhaust_internal_pr_retries": "recovery",
+    "retry_upstream_branch": "recovery",
+    "exhaust_upstream_branch_retries": "recovery",
+    "require_branch_intervention": "recovery",
     "confirm_submission_package": "recovery",
     "retry_submission_comment": "recovery",
     "exhaust_comment_retries": "recovery",
@@ -966,6 +977,7 @@ def reset_generation(record: dict) -> dict:
         "pending_feedback_evidence_ids": [], "active_work": None,
         "dossier_evidence_id": None, "scope_coverage_complete": False,
         "scope_paths": None, "debug_commits": [], "clean_head_sha": None,
+        "submission_review_id": None,
         "handoff_request": None, "handoff_approval": None,
         "last_ci_evidence_id": None, "merge": None, "retirement": None,
         "release_acceptance": None, "pending_human_action": None,

@@ -4,8 +4,11 @@
 
 Deterministic, no model. For each contribution in a phase that watches CI:
 
-* read the fork's current ``riscv64`` head (a manual or pipeline push shows
-  up as a head change, which bumps the revision);
+* read the fork's current head of the branch the state watches: the
+  development branch ``riscv64-dev`` in development and at the submission
+  gate, and ``riscv64`` from CI on the clean head on (a manual or pipeline
+  push shows up as a head change, which bumps the revision); a missing
+  branch is reported and changes nothing;
 * resolve uncertain branch operations by discovery;
 * read the CI snapshot for the exact head and evaluate it against the
   dossier's required jobs and expected wheels;
@@ -18,7 +21,8 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   explanation-only comment, then ``return_for_repair`` for a CI failure, or
   else ``record_actionable_review`` for an actionable review;
 * in ``handoff.waiting_ci``, take ``accept_clean_head_ci`` or
-  ``return_for_repair`` for CI on the clean head;
+  ``return_for_repair`` for CI on the clean head of ``riscv64`` (CI of the
+  candidate head when the clean head has its tree);
 * in the locked ``handoff.waiting_upstream_pr``, discover the upstream PR
   read-only and take ``verify_upstream_pr`` for exactly one that matches, or
   record what does not match once (``record_audit_observation``).
@@ -45,9 +49,20 @@ import isolation
 import lifecycle
 import recovery
 import schemas
-from common import DEV_REF, safe_id
+from common import DEV_REF, UPSTREAM_REF, safe_id
 
 WATCH_PHASES = {"development", "handoff", "upstream_review"}
+# The states that watch `riscv64`, the upstream branch: CI on its clean head,
+# the locked wait for the upstream PR from it, and upstream review. Every
+# other watched state watches the development branch `riscv64-dev`.
+UPSTREAM_BRANCH_STATES = ("handoff.waiting_ci", "handoff.waiting_upstream_pr")
+
+
+def watched_ref(record: dict) -> str:
+    """The fork branch the observation of ``record`` reads."""
+    if record["phase"] == "upstream_review" or engine.state_key(record) in UPSTREAM_BRANCH_STATES:
+        return UPSTREAM_REF
+    return DEV_REF
 
 
 @dataclass
@@ -171,21 +186,27 @@ def _record_gate_review(obs: Observation, entry: dict, cur: dict, eid: str, ev: 
 
 
 def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
-                           contracts: dict[str, dict], *, policy: dict, now: str) -> None:
-    """``handoff.waiting_ci``: CI on the clean head.
+                           contracts: dict[str, dict], *, policy: dict, now: str,
+                           evidence: dict[str, dict]) -> None:
+    """``handoff.waiting_ci``: CI on the clean head of `riscv64`.
 
     ``accept_clean_head_ci`` when every required job executed and passed on
     the clean head, ``return_for_repair`` for a blocking failure there or a
-    fork head that is not the clean head. Anything else (CI still running,
-    missing, or not executed) keeps the wait; nothing is rerun."""
+    `riscv64` head that is not the clean head. CI is a function of the tree:
+    when the reviewed series has the tree of the candidate head, the CI of
+    the candidate head is read (``handoff.ci_head``). Anything else (CI still
+    running, missing, or not executed) keeps the wait; nothing is rerun."""
     clean = rec["clean_head_sha"]
     if head != clean:
         out = engine.apply_transition(
             rec, "return_for_repair", policy=policy, now=now, cause_id=f"branch:{head[:12]}",
             facts={"clean_head_needs_repair"}, details={"head": head, "clean_head": clean})
         obs.staged.extend([("contributions", out.record), ("events", out.event)])
-        entry.update(returned_to_development=True, reason="the fork head is not the clean head")
+        entry.update(returned_to_development=True,
+                     reason=f"the {UPSTREAM_REF} head is not the clean head")
         return
+    clean = handoff.ci_head(rec, evidence.get(rec.get("submission_review_id") or "") or {})
+    entry["ci_head"] = clean
     snap = collect.ci_snapshot(api, rec["fork"]["name"], clean)
     ctr = contract_for(rec, contracts)
     verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
@@ -211,7 +232,7 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
         out = engine.apply_transition(
             rec, "accept_clean_head_ci", policy=policy, now=now, cause_id=eid,
             facts={"ci_passed_on_clean_head"}, values={"last_ci_evidence_id": eid},
-            details={"evidence_id": eid, "head": clean})
+            details={"evidence_id": eid, "head": clean, "clean_head": rec["clean_head_sha"]})
     else:
         out = engine.apply_transition(
             rec, "return_for_repair", policy=policy, now=now, cause_id=eid,
@@ -283,8 +304,9 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             continue
         with isolation.contribution(cid, "observation"):
             fork = rec["fork"]["name"]
-            head = collect.branch_head(api, fork, DEV_REF)
-            entry: dict[str, Any] = {"contribution": cid, "fork": fork,
+            ref = watched_ref(rec)
+            head = collect.branch_head(api, fork, ref)
+            entry: dict[str, Any] = {"contribution": cid, "fork": fork, "ref": ref,
                                      "observed_head": head and head["head"]}
             # Uncertain branch operations are resolved by discovery first
             # (`confirm_by_discovery` or `record_discovery` of the operation
@@ -298,12 +320,14 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                     if op["status"] == "applying":
                         op = recovery.mark_result(op, response_ok=None, external_ids=None, now=now)
                     result = recovery.discover_branch(op, head)
-                    new = recovery.record_discovery(op, result, f"{DEV_REF} at {head and head['head']}", now)
+                    new = recovery.record_discovery(op, result, f"{ref} at {head and head['head']}", now)
                     obs.staged.append(("operations", new))
                     operations[op["operation_id"]] = new
                     entry["operation"] = {"id": op["operation_id"], "discovery": result}
             if head is None:
-                entry["note"] = "riscv64 branch missing"
+                # Nothing is decided from a missing branch: it is reported,
+                # and the next tick reads it again.
+                entry["note"] = f"{ref} branch missing"
                 obs.report.append(entry)
                 continue
             cur = rec
@@ -317,7 +341,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 continue
             if engine.state_key(rec) == "handoff.waiting_ci":
                 _observe_clean_head_ci(api, obs, entry, rec, head["head"], contracts,
-                                       policy=policy, now=now)
+                                       policy=policy, now=now, evidence=evidence)
                 obs.report.append(entry)
                 continue
             if engine.state_key(rec) == "handoff.waiting_upstream_pr":

@@ -34,7 +34,7 @@ EVIDENCE = {"schema_version": 1, "evidence_id": "ev-9", "kind": "resolution",
 def operation(status="planned", kind="branch_update", cid="example--proj/12", **over):
     op = recovery.plan(contribution_id=cid, revision=3, kind=kind, policy_version="p",
                        reason_ids=["r-1"], target={"repository": "riseproject-upstreaming/proj",
-                                                   "ref": "riscv64", "expected_head": SHA_A},
+                                                   "ref": "riscv64-dev", "expected_head": SHA_A},
                        proposed={"commit": "b" * 40}, now=NOW)
     op.update(status=status, **over)
     schemas.validate("operation", op)
@@ -419,7 +419,7 @@ class ReceiptWorld:
             contribution_id=rec["contribution_id"], revision=rec["revision"], kind="fork_provision",
             policy_version="test", reason_ids=["dossier-1"],
             target={"repository": "riseproject-upstreaming/proj", "repository_id": None,
-                    "ref": "riscv64", "base_sha": SHA_C, "expected_head": None},
+                    "ref": "riscv64-dev", "base_sha": SHA_C, "expected_head": None},
             proposed={"commit": SHA_C, "marker": "provision"}, now=NOW), NOW)
         rec = dict(rec, active_operation_id=op["operation_id"])
         receipt = {"contribution_id": rec["contribution_id"], "operation_id": op["operation_id"],
@@ -430,7 +430,7 @@ class ReceiptWorld:
 
         class Api:
             def get(self, path):
-                if path.endswith("/branches/riscv64"):
+                if path.endswith("/branches/riscv64-dev"):
                     return {"commit": {"sha": SHA_C, "commit": {"tree": {"sha": "d" * 40}},
                                        "parents": []}}
                 return {"id": 2, "full_name": "riseproject-upstreaming/proj", "fork": True,
@@ -767,7 +767,7 @@ class TestOpenOperationFence(unittest.TestCase):
     def test_no_second_writer_while_an_operation_is_open(self):
         rec = contribution(activity="waiting_ci", active_operation_id="op-" + "1" * 24)
         why = lc.publication_check(rec, expected_revision=0, expected_head=SHA_A,
-                                   observed_head=SHA_A, ref="riscv64",
+                                   observed_head=SHA_A, ref="riscv64-dev",
                                    repository="riseproject-upstreaming/proj")
         self.assertIn("another writer operation", why)
 

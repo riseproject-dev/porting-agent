@@ -720,7 +720,7 @@ class TestTick(unittest.TestCase):
                               policy=policy(), inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(len(res.requested_effects), 1)
         eff = res.requested_effects[0]
-        self.assertEqual(eff["effect_contract"]["ref"], "riscv64")
+        self.assertEqual(eff["effect_contract"]["ref"], "riscv64-dev")
         self.assertEqual(eff["expected_head"], SHA_A)
 
     def test_repair_carries_pending_review_and_latest_ci_evidence(self):

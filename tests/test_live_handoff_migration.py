@@ -35,8 +35,11 @@ from tests.helpers import OWNER, commit_files, git, init_repo, policy
 FIXTURES = Path(__file__).parent / "fixtures" / "live-handoff-r6"
 CID = "closeio--ciso8601/1"
 HEAD = "b29a8f49374004d650cf312e9c31848953e5ae60"
-FORK = {"head_ref": "riscv64", "head_sha": HEAD, "name": "riseproject-upstreaming/ciso8601",
-        "pr_number": 1, "repository_id": 1467208233}
+# The fork as the committed fixture names it, developing on `riscv64`, and as
+# a record developing on `riscv64-dev` names it.
+LEGACY_FORK = {"head_ref": "riscv64", "head_sha": HEAD, "name": "riseproject-upstreaming/ciso8601",
+               "pr_number": 1, "repository_id": 1467208233}
+FORK = dict(LEGACY_FORK, head_ref="riscv64-dev")
 CI_EVIDENCE = "ci-1467208233-45008094068-1"
 RECORD_PATH = ".state/contributions/closeio--ciso8601--1.json"
 EVIDENCE_PATH = f".state/evidence/{CI_EVIDENCE}.json"
@@ -55,9 +58,21 @@ def live():
 
 
 def migrated():
+    """The live record after the handoff wait migration, developing on
+    `riscv64-dev` like every record (its branch was moved outside the
+    pipeline)."""
     record, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
                                                  policy=policy(), now=NOW)
+    record["fork"]["head_ref"] = "riscv64-dev"
     return record
+
+
+def canary_operations() -> dict:
+    """The confirmed repair of the tracking issue that the live record's
+    contribution carries in the store; without it the controller holds every
+    Work of the canonical canary contribution."""
+    op = json.loads((Path(__file__).parent / "fixtures/canary-recovery-operation.json").read_text())
+    return {op["operation_id"]: op}
 
 
 def comment(body, cid=900):
@@ -70,7 +85,7 @@ class TestLiveFixtureIsTheCommittedRecord(unittest.TestCase):
         self.assertEqual((record["phase"], record["activity"], record["revision"]),
                          ("handoff", "waiting_human", 6))
         self.assertEqual(record["pending_human_action"]["kind"], "approve_handoff")
-        self.assertEqual(record["fork"], FORK)
+        self.assertEqual(record["fork"], LEGACY_FORK)
         self.assertEqual(record["last_ci_evidence_id"], CI_EVIDENCE)
         self.assertEqual([load(f"event-{n}.json")["kind"] for n in (21, 22)],
                          ["worker_no_change", "handoff_ready"])
@@ -93,7 +108,7 @@ class TestRecordMigration(unittest.TestCase):
                          {"kind": "submit_upstream", "requested_at": NOW, "reminded_at": None,
                           "escalated_at": None, "counter": None})
         self.assertEqual((after["revision"], after["generation"]), (6, 0))
-        self.assertEqual(after["fork"], FORK)
+        self.assertEqual(after["fork"], LEGACY_FORK)
         self.assertEqual(after["handoff_request"],
                          {"command_id": f"observation-{CI_EVIDENCE}", "head": HEAD, "revision": 6})
         self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
@@ -133,7 +148,8 @@ class TestRecordMigration(unittest.TestCase):
             facts={"ci_passed_on_head", "no_pending_actionable_feedback"},
             values={"last_ci_evidence_id": CI_EVIDENCE,
                     "handoff_request": dict(before["handoff_request"])})
-        after = migrated()
+        after, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
+                                                    policy=policy(), now=NOW)
         added = {"paused_at", "paused_reason", "paused_by", "admission_override",
                  "automatic_refresh_used", "budget"}
         self.assertEqual({k: v for k, v in out.record.items() if k not in added},
@@ -316,7 +332,8 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
              mock.patch("observe_ci.collect.development_review_feedback", return_value=feedback), \
              mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot or self.passed()):
             return reconcile.tick(
-                object(), reconcile.Snapshot(contributions, {}, {}, {}, {CI_EVIDENCE: load("evidence-ci.json")}),
+                object(), reconcile.Snapshot(contributions, canary_operations(), {}, {},
+                                             {CI_EVIDENCE: load("evidence-ci.json")}),
                 policy=policy(), now=T, publications=list(publications), comments=list(comments),
                 pressure=capacity.Pressure(ok=pressure), dispatcher_runs=[], queue_works={})
 
@@ -370,17 +387,20 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual((receipt["verb"], receipt["result"], receipt["revision"]),
                          ("submit-upstream", "accepted", 6))
         after = self.final(output, record)
-        self.assertEqual(engine.state_key(after), "handoff.cleaning_debug")
-        self.assertEqual(self.events(output), ["submit_upstream"])
+        # The review Work is allocated in the same tick; nothing is written to
+        # the fork and no handoff operation is launched yet.
+        self.assertEqual(engine.state_key(after), "handoff.agent_running")
+        self.assertEqual(self.events(output), ["submit_upstream", "request_submission_review"])
         self.assertEqual((after["revision"], after["fork"], after["last_ci_evidence_id"]),
                          (6, FORK, CI_EVIDENCE))
         self.assertEqual(after["handoff_approval"]["head"], HEAD)
         self.assertIsNone(after["pending_human_action"])
-        op = next(r for kind, r in output.staged if kind == "operations")
-        self.assertEqual((op["kind"], op["operation_id"]), ("debug_cleanup", after["active_operation_id"]))
-        self.assertEqual(output.report["requested_effects"], [])
-        self.assertEqual([r["operation_id"] for r in output.report["handoff_requests"]],
-                         [op["operation_id"]])
+        self.assertIsNone(after["active_operation_id"])
+        self.assertFalse(any(kind == "operations" for kind, _r in output.staged))
+        [work] = output.report["requested_effects"]
+        self.assertEqual((work["task"], work["expected_head"], work["effect_contract"]),
+                         ("submission_review", HEAD, {"kind": "none"}))
+        self.assertEqual(output.report["handoff_requests"], [])
         wrong = (
             (f"/upstreaming submit-upstream revision=5 head={HEAD}", "stale revision 5, current is 6"),
             (f"/upstreaming submit-upstream revision=6 head={'c' * 40}",

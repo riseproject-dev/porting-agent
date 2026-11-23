@@ -341,6 +341,28 @@ class TestOneContributionErrors(unittest.TestCase):
                                  [{"comment": 900, "result": "deferred",
                                    "reason": "the contribution is not processed in this tick"}])
 
+    def test_a_record_on_another_development_branch_is_a_processing_error(self):
+        """Development happens on `riscv64-dev`: a record that names another
+        development branch is paused on its committed record, never acted
+        on, and the other contribution is processed as without it."""
+        a, b = awaiting_submission(), other_waiting()
+        a["fork"]["head_ref"] = "riscv64"
+        baseline = tick([dict(a, fork=dict(a["fork"], head_ref="riscv64-dev")), b],
+                        verdict="passed")
+        output = tick([a, b], verdict="passed")
+        staged = staged_for(output, A)
+        self.assertEqual([kind for kind, _r in staged], ["contributions", "events"], staged)
+        paused = staged[0][1]
+        self.assertTrue(paused["paused"])
+        self.assertIn("'riscv64', not 'riscv64-dev'", paused["paused_reason"])
+        self.assertIn("step record_shape", paused["paused_reason"])
+        self.assertEqual((engine.state_key(paused), paused["revision"], paused["fork"]),
+                         (engine.state_key(a), a["revision"], a["fork"]))
+        self.assertEqual(staged_for(output, B), staged_for(baseline, B))
+        # Paused, it is not paused again, and nothing is done for it.
+        again = tick([paused, b], verdict="passed")
+        self.assertEqual(staged_for(again, A), [])
+
     def test_error_in_a_handoff_state_is_taken_through_the_engine(self):
         a, b = awaiting_submission(), other_waiting()
         baseline = tick([a, b], verdict="passed")
@@ -556,6 +578,7 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
         record, _event = compat.migrate_handoff_wait(live, evidence=evidence, policy=POLICY,
                                                      now=ISO)
         self.assertEqual(engine.state_key(record), "handoff.awaiting_submission")
+        record["fork"]["head_ref"] = "riscv64-dev"
         self.cid = record["contribution_id"]
         for kind, value in (("contributions", record), ("evidence", evidence)):
             path = self.root / state.record_path(kind, value)

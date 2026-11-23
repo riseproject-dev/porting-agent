@@ -464,9 +464,10 @@ def _pending_record_migrations(root: Path, policy: dict, *,
     rewrites, each with its migrated record and event: a record in the
     handoff phase but not in a state of the lifecycle table, a record in a
     terminal phase that ``closed`` replaced, a record whose stop flag
-    predates the merge of ``blocked`` into ``paused``, and a record in a
-    provisioning shape the table replaced (``compat.migrate_provisioning``).
-    A record that needs two of them gets one per run, in this order.
+    predates the merge of ``blocked`` into ``paused``, a record in a
+    and a record in a provisioning shape the table replaced
+    (``compat.migrate_provisioning``). A record that needs two of them gets
+    one per run, in this order.
 
     Reads the checkout without changing it. Every record must be
     schema-valid (a text ``blocked_reason`` aside, which the flag migration
@@ -541,8 +542,8 @@ def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> li
     state, and append one migration event per record.
 
     Each migration is bound to the exact shapes ``compat.migrate_handoff_wait``,
-    ``compat.migrate_terminal``, ``compat.migrate_flags``, and
-    ``compat.migrate_provisioning`` accept; a record
+    ``compat.migrate_terminal``, ``compat.migrate_flags``,
+    and ``compat.migrate_provisioning`` accept; a record
     in any other such shape
     fails closed. It is idempotent: a migrated record is not selected
     again. Callers publish only the returned paths, before any ordinary

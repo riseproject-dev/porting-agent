@@ -25,6 +25,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import sys
 import traceback
 from dataclasses import dataclass, field
@@ -46,8 +47,9 @@ import observe_ci
 import recovery
 import schemas
 import state
+import submission
 import work
-from common import INTAKE_LABEL, load_policy, repository_root, safe_id
+from common import DEV_REF, INTAKE_LABEL, load_policy, repository_root, safe_id
 
 
 @dataclass
@@ -147,7 +149,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             continue
         with isolation.contribution(c["contribution_id"], "dispatch_recovery"):
             aw = c["active_work"]
-            if c["phase"] == "handoff":
+            if c["phase"] == "handoff" and engine.state_key(c) != SUBMISSION_REVIEW_STATE:
                 new = dict(c, active_work=None, updated_at=iso)
                 contributions[key] = new
                 schemas.validate("contribution", new)
@@ -199,11 +201,22 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
                 report.append(entry | {"decision": f"relaunch: dispatch attempt {len(after) + 1} of {limit}"})
                 continue
-            new = compat.legacy_update(
-                c, "reconcile.dispatch_exhausted", active_work=None, activity="waiting_human",
-                updated_at=iso,
-                pending_human_action={"kind": "dispatch_failed", "requested_at": iso,
-                                      "reminded_at": None, "escalated_at": None})
+            if engine.state_key(c) == SUBMISSION_REVIEW_STATE:
+                # The handoff phase is written by the table's rows only.
+                out = engine.apply_transition(
+                    c, "exhaust_dispatch_recovery", policy=policy, now=iso,
+                    cause_id=f"dispatch-{len(after)}", counts={"dispatch_recovery": len(after)},
+                    details={"dispatcher_runs": [r["id"] for r in after][:10]})
+                if not out.accepted:
+                    raise lifecycle.TransitionError(f"exhaust_dispatch_recovery refused: {out.reason}")
+                new = out.record
+                staged.append(("events", out.event))
+            else:
+                new = compat.legacy_update(
+                    c, "reconcile.dispatch_exhausted", active_work=None, activity="waiting_human",
+                    updated_at=iso,
+                    pending_human_action={"kind": "dispatch_failed", "requested_at": iso,
+                                          "reminded_at": None, "escalated_at": None})
             contributions[key] = new
             staged.append(("contributions", new))
             report.append(entry | {"decision": "dispatch failed; waiting for a human"})
@@ -244,13 +257,18 @@ def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
 
 def _may_hold_work(rec: dict) -> bool:
     """Whether the record is in a state that can request Work at all: a
-    working phase, and not paused."""
-    return rec["phase"] in compat.WORK_PHASES and not rec.get("paused")
+    working phase, or the submission review of the handoff phase, and not
+    paused."""
+    return (rec["phase"] in compat.WORK_PHASES or engine.state_key(rec) == SUBMISSION_REVIEW_STATE) \
+        and not rec.get("paused")
 
 
 # The phase in which the table requests Work of each task.
 WORK_PHASE = {"investigation": "investigation", "development_patch": "development",
-              "development_repair": "development", "upstream_revision": "upstream_review"}
+              "development_repair": "development", "upstream_revision": "upstream_review",
+              work.SUBMISSION_REVIEW: "handoff"}
+# The one state of the handoff phase that holds requested Work.
+SUBMISSION_REVIEW_STATE = "handoff.agent_running"
 
 
 def result_mismatch(rec: dict, pub: dict) -> str | None:
@@ -268,7 +286,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     before the Work identity carried them: it is generation 0 and its Work is
     recognized by the revision (``work.task_identity``).
     """
-    if rec["phase"] == "handoff":
+    if rec["phase"] == "handoff" and engine.state_key(rec) != SUBMISSION_REVIEW_STATE:
         return "late Result during handoff"
     if not _may_hold_work(rec):
         return "late Result for a stopped contribution"
@@ -290,6 +308,8 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         # A dossier answers investigation Work only, and investigation Work
         # is answered by a dossier only.
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
+    if pub.get("status") == submission.STATUS and rec["phase"] != "handoff":
+        return f"late Result: a submission review has no row in the {rec['phase']} phase"
     requested = rec.get("active_work")
     if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
         # Each phase requests its own Work only: a Result of Work of another
@@ -525,6 +545,115 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
     return new, staged
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _review_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str | None:
+    """Why the trusted outcome of a submission review is unusable, or ``None``."""
+    approval = rec.get("handoff_approval") or {}
+    if outcome.get("verdict") not in (submission.PASS, submission.FAIL):
+        return "the outcome has no verdict"
+    if outcome.get("approved_head") != approval.get("head") \
+            or outcome.get("base_sha") != rec["upstream"].get("base_sha"):
+        return "the outcome is not a review of the approved head on the frozen base"
+    reasons = outcome.get("reasons")
+    if not isinstance(reasons, list) or not all(isinstance(r, str) for r in reasons) \
+            or len(reasons) > submission.MAX_REASONS:
+        return "the outcome's reasons are malformed"
+    if outcome["verdict"] == submission.FAIL:
+        return None if reasons else "a failed review names no reason"
+    commits = outcome.get("commits")
+    if reasons or not isinstance(commits, list) or not commits \
+            or len(commits) > handoff.MAX_COMMITS \
+            or not all(isinstance(c, dict) and isinstance(c.get("message"), str)
+                       and len(c["message"]) <= 20000 and _SHA_RE.match(str(c.get("tree")))
+                       for c in commits) \
+            or not all(_SHA_RE.match(str(outcome.get(k) or "")) for k in
+                       ("head", "clean_tree", "candidate_tree")) \
+            or commits[-1]["tree"] != outcome["clean_tree"] \
+            or not re.fullmatch(r"[0-9a-f]{64}", str(outcome.get("series_digest") or "")) \
+            or not isinstance(outcome.get("title"), str) or not outcome["title"].strip() \
+            or len(outcome["title"]) > submission.MAX_TITLE \
+            or not isinstance(outcome.get("body"), str) or len(outcome["body"]) > submission.MAX_BODY:
+        return "a passing outcome is malformed"
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", str(worker_run_id or "")):
+        return "the outcome names no worker run"
+    artifact = outcome.get("publication_artifact_id")
+    if not isinstance(artifact, int) or isinstance(artifact, bool) or artifact <= 0:
+        return "the outcome names no publication artifact"
+    return None
+
+
+def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
+                           worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+    """Fold the Result of the submission review Work through the table's
+    rows of ``handoff.agent_running``.
+
+    The worker's publish job ran the trusted check (``submission.check``)
+    without a token: its outcome is the verdict. A pass takes
+    ``accept_submission_review`` with the reviewed series, title, and
+    description recorded as review evidence, which the build of `riscv64`
+    and the package read. A fail takes ``reject_submission_review``: the
+    reasons are recorded as review evidence and become the pending feedback
+    of the next development Work; nothing is posted. An outcome that is not
+    a usable review (the Result could not be verified, the check could not
+    run, or it is malformed) is Work without a usable Result: a fresh review
+    Work graph within ``work_recovery`` and ``work_total``."""
+    staged: list[tuple[str, dict]] = []
+    run = str(worker_run_id or "0")
+    why = (_review_problem(rec, outcome, worker_run_id)
+           if outcome.get("status") == submission.STATUS
+           else f"the review Result is not usable: {outcome.get('status')}")
+    if why:
+        aw = rec.get("active_work") or {}
+        new, event, decision = _terminal_work(rec, aw, "result_unusable",
+                                              now=datetime.fromisoformat(now), policy=policy)
+        if new is None:
+            raise lifecycle.TransitionError(f"an unusable submission review: {decision}")
+        event = dict(event, details=dict(event.get("details") or {},
+                                         why=isolation.clean_text(why, 300)))
+        return new, [("contributions", new), ("events", event)]
+    passed = outcome["verdict"] == submission.PASS
+    eid = safe_id(f"submission-review-{rec['contribution_id'].replace('/', '--')}"
+                  f"-r{rec['revision']}-{run}")
+    data = {"verdict": outcome["verdict"], "reasons": list(outcome["reasons"]),
+            "approved_head": outcome["approved_head"], "base_sha": outcome["base_sha"],
+            "artifact": {"run_id": run,
+                         "artifact_id": outcome.get("publication_artifact_id")}}
+    if passed:
+        data.update({k: outcome[k] for k in ("title", "body", "head", "clean_tree",
+                                             "candidate_tree", "series_digest")},
+                    commits=[{"message": c["message"], "tree": c["tree"]}
+                             for c in outcome["commits"]],
+                    rules_from=[str(n)[:200] for n in outcome.get("rules_from") or []][:4])
+    summary = ("The submission review passed the trusted check." if passed else
+               "The submission review did not pass:\n" + "\n".join(f"- {r}" for r in data["reasons"]))
+    evidence = {"schema_version": 1, "evidence_id": eid, "contribution_id": rec["contribution_id"],
+                "kind": "submission_review", "policy_version": policy.get("policy_version", "unknown"),
+                "collected_at": now, "summary": summary[:8000], "limitations": [], "data": data,
+                "digests": {"series": str(outcome.get("series_digest") or "")}}
+    schemas.validate("evidence", evidence)
+    staged.append(("evidence", evidence))
+    cause = _result_cause(outcome, worker_run_id)
+    details = {"evidence_id": eid, "verdict": outcome["verdict"],
+               "reasons": [isolation.clean_text(r, 300) for r in data["reasons"][:8]]}
+    if passed:
+        out = engine.apply_transition(
+            rec, "accept_submission_review", policy=policy, now=now, cause_id=cause,
+            facts={"submission_review_passed"}, values={"submission_review_id": eid},
+            details=dict(details, head=outcome["head"]))
+    else:
+        pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
+        out = engine.apply_transition(
+            rec, "reject_submission_review", policy=policy, now=now, cause_id=cause,
+            facts={"submission_review_failed"},
+            values={"pending_feedback_evidence_ids": pending[-64:]}, details=details)
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"{out.verb} refused: {out.reason}")
+    staged.extend([("events", out.event), ("contributions", out.record)])
+    return out.record, staged
+
+
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one publication outcome (from fork_publish / queue_result) into the record.
@@ -550,6 +679,9 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if outcome.get("status") == "investigation":
         return fold_dossier(rec, outcome, now=now, policy=policy or {},
                             worker_run_id=worker_run_id)
+    if engine.state_key(rec) == SUBMISSION_REVIEW_STATE:
+        return fold_submission_review(rec, outcome, now=now, policy=policy or {},
+                                      worker_run_id=worker_run_id)
     staged: list[tuple[str, dict]] = []
     new = copy.deepcopy(rec)
     new["active_work"] = None          # any outcome ends the requested task
@@ -836,14 +968,16 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
     """Fold the verified receipts of the handoff operations.
 
     A receipt is folded only for the open operation the record runs in the
-    state of its kind. A confirmed receipt is read back independently (the
-    branch and the clean series, the closed development PR, or the App-authored
+    state of its kind. A confirmed receipt is read back independently
+    (`riscv64` at the reviewed head, tree, and series, or the App-authored
     package comment); the operation then takes `begin_effect`,
     `record_response`, and `confirm_by_discovery` and fires the confirm row.
     A failed receipt takes `record_failure` and fires the retry row within the
-    budget of the state, the exhaustion row beyond it, or, for a cleanup that
-    cannot produce an admissible clean head, `return_for_repair`. A receipt of
-    an attempt the workflow refused before any effect is not folded."""
+    budget of the state, the exhaustion row beyond it, or, for a build of
+    `riscv64` whose reviewed series does not rebuild or whose lease
+    conflicts, `return_for_repair`, and for one that found an upstream PR open
+    from `riscv64`, `require_branch_intervention`. A receipt of an attempt
+    the workflow refused before any effect is not folded."""
     report = []
     for receipt in receipts:
         cid = receipt.get("contribution_id")
@@ -859,19 +993,19 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
             run = {"handoff_run_id": str(receipt.get("run_id") or "")}
             entry = {"contribution": cid, "operation": op["operation_id"], "kind": kind}
             if result == "applied":
-                checked = handoff.readback(api, c, op, receipt)
+                checked = handoff.readback(api, c, op, receipt, snap.evidence)
                 if isinstance(checked, str):
                     report.append(dict(entry, outcome="readback mismatch", detail=checked))
                     continue
                 external_ids, values, detail = checked
                 new_op = recovery.fold_receipt(op, external_ids=external_ids, detail=detail, now=now)
                 details = {"attempt": int(handoff.reason_value(op, "attempt") or 0)}
-                if kind == "debug_cleanup":
+                if kind == "upstream_branch":
+                    replaced = receipt.get("replaced")
                     details.update(head=values["clean_head_sha"],
-                                   rewritten=bool(receipt.get("rewritten")),
-                                   removed_commits=list(receipt.get("removed_commits") or [])[:50])
-                elif kind == "internal_pr_closure":
-                    details.update(pr_number=receipt.get("pr_number"))
+                                   written=bool(receipt.get("written")),
+                                   replaced=replaced if isinstance(replaced, str)
+                                   and len(replaced) == 40 else None)
                 else:
                     values = {"handoff_request": {"command_id": op["operation_id"],
                                                   "head": c["clean_head_sha"],
@@ -901,6 +1035,22 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
     return report
 
 
+# The phases in which a record holds the fork it develops on.
+_FORK_PHASES = ("development", "handoff", "upstream_review", "release_wait")
+
+
+def development_branch_problem(record: dict) -> str | None:
+    """Why a record names a development branch other than `riscv64-dev`, or
+    ``None``."""
+    fork = record.get("fork")
+    if record.get("phase") not in _FORK_PHASES or not isinstance(fork, dict):
+        return None
+    if fork.get("head_ref") != DEV_REF:
+        return (f"the record names the development branch {str(fork.get('head_ref'))[:60]!r}, "
+                f"not {DEV_REF!r}; no row of the table handles it")
+    return None
+
+
 def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          publications: list[dict], pressure: capacity.Pressure,
          issues: list[dict] | None = None, comments: list[dict] | None = None,
@@ -918,6 +1068,17 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     iso = now.isoformat()
     contributions = dict(snap.contributions)
     by_cid = {c["contribution_id"]: k for k, c in contributions.items()}
+
+    # Development happens on `riscv64-dev`. A record that names another
+    # development branch is a shape no row of the table handles: it is an
+    # unexpected processing error of that contribution, never acted on.
+    for c in contributions.values():
+        if c["contribution_id"] in skip:
+            continue
+        with isolation.contribution(c["contribution_id"], "record_shape"):
+            problem = development_branch_problem(c)
+            if problem:
+                raise lifecycle.TransitionError(problem)
 
     # Trusted same-fork development PR receipts are independently read back.
     dev_pr_report = []
@@ -951,7 +1112,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             if pr.get("id") != receipt.get("pr_id") or pr.get("state") != "open" \
                     or not body_ok \
                     or (pr.get("head") or {}).get("sha") != op["target"]["expected_head"] \
-                    or (pr.get("head") or {}).get("ref") != "riscv64" \
+                    or (pr.get("head") or {}).get("ref") != DEV_REF \
                     or (pr.get("head") or {}).get("repo", {}).get("id") != op["target"]["repository_id"] \
                     or (pr.get("base") or {}).get("ref") != c["upstream"]["base_ref"]:
                 dev_pr_report.append({"contribution": cid, "status": "PR readback mismatch"})
@@ -1038,7 +1199,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 provision_report.append({"contribution": cid, "status": "receipt mismatch"})
                 continue
             repo = collect.repository(api, receipt["fork"])
-            head = collect.branch_head(api, receipt["fork"], "riscv64")
+            head = collect.branch_head(api, receipt["fork"], DEV_REF)
             expected = op["target"].get("expected_head") or op["target"]["base_sha"]
             if not head or head["head"] != receipt.get("head_sha") or head["head"] != expected \
                     or repo["id"] != receipt.get("fork_id") or repo.get("parent_id") != c["upstream"]["repository_id"]:
@@ -1047,7 +1208,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             new_op = recovery.fold_receipt(
                 op, external_ids=external_ids,
                 detail="fork/source identity, branch and trusted setup receipt verified", now=iso)
-            fork = {"repository_id": repo["id"], "name": repo["full_name"], "head_ref": "riscv64",
+            fork = {"repository_id": repo["id"], "name": repo["full_name"], "head_ref": DEV_REF,
                     "head_sha": head["head"], "pr_number": None}
             if recovery.fired_verbs(c, new_op):
                 # The receipt matches the operation and the fork and ref were

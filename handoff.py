@@ -1,23 +1,24 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The handoff operations: debug cleanup, closing the development PR, and the
-submission package.
+"""The handoff operations: building the upstream branch and the submission
+package.
 
-`/upstreaming submit-upstream` (``submit_upstream``) authorizes a
-deterministic preparation of the exact candidate head. Three states of the
-lifecycle table run one remote operation each, through the trusted workflow
+`/upstreaming submit-upstream` (``submit_upstream``) authorizes the review of
+the exact candidate head and a deterministic preparation. Development
+happens on ``riscv64-dev``; nothing here changes it, and the development PR
+is never closed. After the submission review Work and its trusted check
+(``submission``, ``accept_submission_review``), two states of the lifecycle
+table run one remote operation each, through the trusted workflow
 ``handoff.yml``:
 
-* ``handoff.cleaning_debug``, operation kind ``debug_cleanup``: every
-  ``{debug}`` commit is removed from the admitted series, the clean head is
-  published under an exact-head lease and read back. With no debug commit the
-  lease write is a verified no-op: the branch is read back at the same head.
-* ``handoff.closing_internal_pr``, kind ``internal_pr_closure``: the exact
-  recorded, marked development PR is closed and read back.
+* ``handoff.building_upstream_branch``, operation kind ``upstream_branch``:
+  the reviewed series is rebuilt on the frozen base and checked again, and
+  ``riscv64`` is created at its head, or replaced under an exact-head lease,
+  never while an upstream PR is open from it, and read back.
 * ``handoff.preparing_submission``, kind ``submission_comment``: one
   App-authored tracking-issue comment carries the submission package (the
-  title, the complete description, and a prefilled compare link) and is
-  read back.
+  reviewed title and description, and a prefilled compare link from
+  ``riscv64``) and is read back.
 
 Each attempt is its own operation of the same intent (the approval), with
 its attempt index and its count in the budget of the state in ``reason_ids``
@@ -52,38 +53,45 @@ import isolation
 import lifecycle
 import recovery
 import schemas
-from common import CONTROL_REPO, DEBUG_PREFIX, DEV_REF, FORK_ORG, contribution_file_id, safe_id
+from common import (
+    CONTROL_REPO,
+    DEBUG_PREFIX,
+    FORK_ORG,
+    UPSTREAM_REF,
+    contribution_file_id,
+    safe_id,
+)
 
 # The operation kind each handoff work state runs, and the state of a kind.
 KINDS = {
-    "handoff.cleaning_debug": "debug_cleanup",
-    "handoff.closing_internal_pr": "internal_pr_closure",
+    "handoff.building_upstream_branch": "upstream_branch",
     "handoff.preparing_submission": "submission_comment",
 }
 STATE_OF = {kind: state for state, kind in KINDS.items()}
 # The kinds that write the destination fork.
-FORK_KINDS = frozenset({"debug_cleanup", "internal_pr_closure"})
+FORK_KINDS = frozenset({"upstream_branch"})
 # The fact a definite failure of each kind establishes for its retry row.
 FAILURE_FACTS = {
-    "debug_cleanup": "cleanup_infrastructure_error",
-    "internal_pr_closure": "internal_pr_closure_failed",
+    "upstream_branch": "cleanup_infrastructure_error",
     "submission_comment": "submission_comment_failed",
 }
 # The fact the verified receipt and its readback establish.
 CONFIRM_FACTS = {
-    "debug_cleanup": "clean_head_read_back",
-    "internal_pr_closure": "internal_pr_closed",
+    "upstream_branch": "clean_head_read_back",
     "submission_comment": "submission_package_read_back",
 }
-# A cleanup that cannot produce an admissible clean head, or whose lease
-# conflicts, returns to development (`return_for_repair`).
-INVALID_FACT = "cleanup_invalid"
+# A reviewed series that does not rebuild to the reviewed head, or a lease on
+# `riscv64` that conflicts, returns to development (`return_for_repair`); an
+# upstream PR open from `riscv64` waits for a human
+# (`require_branch_intervention`).
+INVALID_FACT = "upstream_branch_invalid"
+BLOCKED_FACT = "upstream_branch_blocked"
 # Failure classes a receipt may report.
 INFRASTRUCTURE = "infrastructure"
 INVALID = "invalid"
+BLOCKED = "blocked"
 
 APP_LOGIN = "riseproject-dev[bot]"
-DEVELOPMENT_MARKER = "<!-- upstreaming-development:"
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _OP_ID = re.compile(r"^op-[0-9a-f]{24}$")
 
@@ -91,7 +99,6 @@ _OP_ID = re.compile(r"^op-[0-9a-f]{24}$")
 # in full in the comment, so a link that would be longer than ``MAX_URL``
 # carries the title only and the comment says to paste the description.
 MAX_TITLE = 120
-MAX_COMMIT_BODY = 4000
 MAX_BODY = 12000
 MAX_URL = 8000
 MAX_COMMENT = 60000
@@ -103,8 +110,13 @@ class HandoffError(RuntimeError):
 
 
 class HandoffInvalid(HandoffError):
-    """The cleanup cannot produce an admissible clean head, or the exact-head
-    lease conflicts: the contribution returns to development."""
+    """The reviewed series does not rebuild to the reviewed head, or the lease
+    on `riscv64` conflicts: the contribution returns to development."""
+
+
+class HandoffBlocked(HandoffError):
+    """An upstream PR is open from `riscv64`: it is not written, and a human
+    decides."""
 
 
 class HandoffRefused(RuntimeError):
@@ -169,10 +181,34 @@ def submission_marker(record: dict) -> str:
             f"{record['clean_head_sha']} -->")
 
 
+def review_evidence(record: dict, evidence: dict) -> dict:
+    """The accepted submission review the record names, checked: the review
+    of the approved head on the frozen base that passed the trusted check."""
+    eid = record.get("submission_review_id")
+    review = evidence.get(eid or "")
+    data = (review or {}).get("data") or {}
+    approval = record.get("handoff_approval") or {}
+    if not review or review.get("kind") != "submission_review" \
+            or review.get("contribution_id") != record["contribution_id"] \
+            or data.get("verdict") != "pass" or data.get("approved_head") != approval.get("head") \
+            or data.get("base_sha") != record["upstream"].get("base_sha") \
+            or not _SHA.match(str(data.get("head") or "")) \
+            or not _SHA.match(str(data.get("clean_tree") or "")) \
+            or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("series_digest") or "")) \
+            or not isinstance(data.get("commits"), list) or not data["commits"] \
+            or len(data["commits"]) > MAX_COMMITS \
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", str((data.get("artifact") or {}).get("run_id"))) \
+            or not isinstance((data.get("artifact") or {}).get("artifact_id"), int) \
+            or data["artifact"]["artifact_id"] <= 0:
+        raise lifecycle.TransitionError(f"no accepted submission review {eid} of the approved head")
+    return review
+
+
 def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,
-                 kind: str | None = None) -> dict:
+                 kind: str | None = None, evidence: dict | None = None) -> dict:
     """``record_intent`` of the next attempt of the operation the record's
-    handoff state runs (or of ``kind``, for the approval being recorded)."""
+    handoff state runs (or of ``kind``). ``evidence`` holds the accepted
+    submission review that the build of `riscv64` writes."""
     state = f"{record['phase']}.{record['activity']}"
     kind = kind or KINDS[state]
     approval = record.get("handoff_approval")
@@ -186,15 +222,20 @@ def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,
     reason_ids = [approval_reason(record), f"attempt:{attempt}", f"count:{count}"]
     base_sha = record["upstream"]["base_sha"]
     external_ids: dict[str, Any] = {}
-    if kind == "debug_cleanup":
+    if kind == "upstream_branch":
+        review = review_evidence(record, evidence or {})
+        data = review["data"]
+        # The candidate head the review read is the approved head of
+        # `riscv64-dev`; the operation writes `riscv64` only.
         target = {"repository": fork["name"], "repository_id": fork["repository_id"],
-                  "ref": DEV_REF, "expected_head": approval["head"], "base_sha": base_sha}
-        proposed = {"marker": f"debug-cleanup:{record['contribution_id']}:r{approval['revision']}"}
-    elif kind == "internal_pr_closure":
-        target = {"repository": fork["name"], "repository_id": fork["repository_id"],
-                  "ref": DEV_REF, "expected_head": record["clean_head_sha"], "base_sha": base_sha}
-        proposed = {"marker": DEVELOPMENT_MARKER}
-        external_ids = {"pr_number": int(fork["pr_number"])}
+                  "ref": UPSTREAM_REF, "expected_head": approval["head"], "base_sha": base_sha}
+        proposed = {"commit": data["head"], "tree": data["clean_tree"],
+                    "content_digest": data["series_digest"],
+                    "marker": f"upstream-branch:{record['contribution_id']}:r{approval['revision']}"}
+        reason_ids.append(f"review:{review['evidence_id']}")
+        external_ids = {"publication_run_id": str((data.get("artifact") or {}).get("run_id") or ""),
+                        "publication_artifact_id": int((data.get("artifact") or {})
+                                                       .get("artifact_id") or 0)}
     else:
         number = record["tracking_issue"]["number"]
         target = {"repository": CONTROL_REPO, "repository_id": None, "ref": f"issues/{number}",
@@ -318,24 +359,11 @@ def _ci_jobs(ci: dict) -> tuple[list[str], list[str]]:
     return names, riscv
 
 
-def _related_issues(record: dict, dossier: dict) -> list[str]:
-    """Open issues of the upstream repository that the verified dossier
-    records in its history."""
-    upstream = record["upstream"]["full_name"]
-    pattern = re.compile(rf"^https://github\.com/{re.escape(upstream)}/issues/([0-9]+)$")
-    found = []
-    for item in ((dossier.get("data") or {}).get("history") or []):
-        match = pattern.match(str(item.get("url") or ""))
-        if match and item.get("outcome") == "open" and f"#{match.group(1)}" not in found:
-            found.append(f"#{match.group(1)}")
-    return found
-
-
 def compare_url(record: dict, *, title: str | None = None, body: str | None = None) -> str:
     fork_owner = record["fork"]["name"].split("/", 1)[0]
     base = urllib.parse.quote(record["upstream"]["base_ref"], safe="/")
     url = (f"https://github.com/{record['upstream']['full_name']}/compare/{base}..."
-           f"{fork_owner}:{urllib.parse.quote(DEV_REF, safe='/')}")
+           f"{fork_owner}:{urllib.parse.quote(UPSTREAM_REF, safe='/')}")
     if title is None:
         return url
     query = "quick_pull=1&title=" + urllib.parse.quote(title, safe="")
@@ -373,62 +401,54 @@ def _fit_files(template: str, files: list[str]) -> str:
     return comment
 
 
-def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
+def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commits: list[dict],
                   files: list[str], operation_id: str, retract_revision: int | None = None) -> dict:
-    """The submission package for the record's clean head.
+    """The submission package for the record's clean head of `riscv64`.
 
-    ``commits`` are the commits of ``base..clean head`` (``sha``,
-    ``message``), oldest first; ``files`` the changed paths; ``operation_id``
-    the submission package operation. Everything is derived from them, the
+    ``review`` is the accepted submission review: its title and description
+    were written after the project's pull request template and contributing
+    instructions and passed the trusted check. ``commits`` are the commits
+    of ``base..clean head`` (``sha``, ``message``), oldest first, which must be
+    the reviewed series; ``files`` the changed paths; ``operation_id`` the
+    submission package operation. Everything is derived from them, the
     verified dossier, the CI evidence of the clean head, and the record, so
     the same inputs give the same bytes.
 
     Every untrusted value (the dossier's rules and paths, file names, commit
-    messages, CI job names) is in a code span or a fenced block of the
-    comment, so none of it renders as a mention, a link, an image, or HTML;
-    the only mention is the human who requested the submission. In the
-    proposed title and description no at sign can start a mention
-    (``neutralize_mentions``), so the upstream pull request notifies nobody.
-    A changed-file list too long for the comment is cut with the count of
-    the files it leaves out."""
+    messages, CI job names, the reviewed title and description) is in a code
+    span or a fenced block of the comment, so none of it renders as a
+    mention, a link, an image, or HTML; the only mention is the human who
+    requested the submission. In the proposed title and description no at
+    sign can start a mention (``neutralize_mentions``), so the upstream pull
+    request notifies nobody. A changed-file list too long for the comment is
+    cut with the count of the files it leaves out."""
     head = record["clean_head_sha"]
     if not commits or len(commits) > MAX_COMMITS:
         raise HandoffError(f"the clean series has {len(commits)} commits")
     if not _OP_ID.fullmatch(str(operation_id)):
         raise HandoffError("the package names no operation")
-    subjects, bodies = [], []
+    data = (review or {}).get("data") or {}
+    reviewed = [str(c.get("message") or "").rstrip("\n") for c in data.get("commits") or []]
     for commit in commits:
-        subject, _, rest = str(commit.get("message") or "").partition("\n")
-        if subject.startswith(DEBUG_PREFIX):
+        if str(commit.get("message") or "").startswith(DEBUG_PREFIX):
             raise HandoffError(f"the clean series has a debug commit {commit.get('sha')}")
-        subjects.append(_line(subject, MAX_TITLE))
-        bodies.append(_clean_block(rest, MAX_COMMIT_BODY))
-    title = subjects[0] if len(commits) == 1 else "Build riscv64 wheels"
-    title = title or "Build riscv64 wheels"
+    if [str(c.get("message") or "").rstrip("\n") for c in commits] != reviewed:
+        raise HandoffError("the clean series is not the reviewed series")
+    title = _line(data.get("title"), MAX_TITLE) or "Build riscv64 wheels"
     title, title_changes = neutralize_mentions(title)
-    if len(commits) == 1:
-        description = bodies[0]
-    else:
-        description = "\n\n".join(
-            f"### {subject}\n\n{body}".rstrip() for subject, body in zip(subjects, bodies))
-    names, riscv = _ci_jobs(ci)
-    fork = record["fork"]["name"]
-    testing = (f"CI in the fork passed on the exact head `{head}`: {len(names)} "
-               f"job{'s' if len(names) != 1 else ''} executed and passed")
-    testing += (", including " + ", ".join(f"`{n}`" for n in riscv) + "." if riscv else ".")
-    testing += f" Checks: https://github.com/{fork}/commit/{head}"
-    sections = [description, "## Testing\n\n" + testing]
-    related = _related_issues(record, dossier)
-    if related:
-        sections.append("Related: " + ", ".join(related))
-    body = "\n\n".join(s for s in sections if s).strip()
-    if len(body) > MAX_BODY:
-        body = body[: MAX_BODY - 3].rstrip() + "..."
+    body = _clean_block(data.get("body"), MAX_BODY)
     body, body_changes = neutralize_mentions(body)
     link = compare_url(record, title=title, body=body)
     body_in_link = len(link) <= MAX_URL
     if not body_in_link:
         link = compare_url(record, title=title)
+    names, riscv = _ci_jobs(ci)
+    fork = record["fork"]["name"]
+    ci_head = (ci.get("ci") or {}).get("head_sha") or head
+    testing = (f"{len(names)} required job{'s' if len(names) != 1 else ''} executed and passed"
+               + (", including " + ", ".join(f"`{n}`" for n in riscv) if riscv else "")
+               + (f" on `{ci_head}`" + (", the candidate head with the same tree"
+                                         if ci_head != head else "")))
     approval = record["handoff_approval"]
     revision = retract_revision if retract_revision is not None else record["revision"]
     retract = f"/upstreaming retract-pr revision={revision} head={head}"
@@ -439,6 +459,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
                  if not any(ch in str(p) for ch in "*?[") and p not in files][:10]
     login = str(approval["actor"]["login"])
     requester = f"@{login}" if _LOGIN.fullmatch(login) else _code(login, 40)
+    dev = record["fork"].get("pr_number")
     lines = [
         f"**Submission package** for revision {approval['revision']} and the exact clean head "
         f"`{head}`, requested by {requester}.",
@@ -450,17 +471,21 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         f"- Upstream repository: {_code(upstream)} (id {_code(record['upstream'].get('repository_id'), 20)}), "
         f"base {_code(base)}",
         f"- Source: {_code(fork)} (id {_code(record['fork'].get('repository_id'), 20)}), "
-        f"branch `{DEV_REF}`",
+        f"branch `{UPSTREAM_REF}`, built from the reviewed series of the approved head "
+        f"`{approval['head']}` of `riscv64-dev`"
+        + (f" (development PR #{int(dev)}, which stays open)" if isinstance(dev, int) else ""),
         f"- Exact head: `{head}`",
         _FILES_LINE,
+        f"- CI: {testing}. Checks: https://github.com/{fork}/commit/{ci_head}",
         f"- Package operation: {_code(operation_id, 40)}; approval: "
         f"{_code(approval['command_id'], 120)}; dossier evidence: "
-        f"{_code(record.get('dossier_evidence_id'), 120)}",
+        f"{_code(record.get('dossier_evidence_id'), 120)}; review evidence: "
+        f"{_code(record.get('submission_review_id'), 120)}",
         "",
         "> [!WARNING]",
-        f"> The compare form resolves the branch `{DEV_REF}` when it opens. Before you submit, "
-        f"check that it shows exactly the head `{head}`. If it shows another head, do not submit; "
-        "withdraw this package instead:",
+        f"> The compare form resolves the branch `{UPSTREAM_REF}` when it opens. Before you "
+        f"submit, check that it shows exactly the head `{head}`. If it shows another head, do not "
+        "submit; withdraw this package instead:",
         ">",
         f"> `{retract}`",
         ">",
@@ -500,25 +525,26 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         *(_fenced(rules) if rules else ["None recorded."]),
         "",
     ]
-    lines.append(f"Open the pull request at exactly this head. Do not add commits to `{DEV_REF}` "
-                 "or edit files in the form. If the contribution policy needs a change to the "
-                 "series (for example a CHANGELOG entry or a commit sign-off it asks for), do "
-                 "not submit: withdraw this package with the `retract-pr` command above, which "
+    lines.append(f"Open the pull request at exactly this head. Do not add commits to "
+                 f"`{UPSTREAM_REF}` or edit files in the form. The title and description were "
+                 "written after the project's pull request template and contributing "
+                 "instructions and checked for the template's required sections; review them "
+                 "before you submit. If the contribution needs a change to the series (for "
+                 "example a CHANGELOG entry or a commit sign-off the project asks for), do not "
+                 "submit: withdraw this package with the `retract-pr` command above, which "
                  "returns the contribution to development for a repair. Only steps outside the "
                  "series (such as signing a CLA) are yours to do before you submit.")
     if unchanged:
         lines += ["", f"The dossier admitted {', '.join(_code(p) for p in unchanged)}, which the "
                       "series does not change: if the project expects a change there (for example "
                       "a changelog entry), withdraw this package rather than submit it."]
-    lines.append("")
     lines += [
-        "If the project has a pull request template, copy its required parts into the "
-        "description: a prefilled description replaces the template.",
+        "",
         f"If GitHub does not let your account open this pull request (for example the project "
         f"limits who may open one), another human whose account may post `/upstreaming` commands "
         f"here can open it from this package. Do not open it from another fork or branch: only "
-        f"{_code(fork)} `{DEV_REF}` at the exact head is verified. If nobody can, withdraw the "
-        "package with the command above.",
+        f"{_code(fork)} `{UPSTREAM_REF}` at the exact head is verified. If nobody can, withdraw "
+        "the package with the command above.",
         "",
         submission_marker(record),
     ]
@@ -559,8 +585,8 @@ def pull_mismatch(record: dict, pr: dict, authority) -> str | None:
         return f"#{pr.get('number')} targets the base {pr.get('base_ref')!r}, not {upstream.get('base_ref')!r}"
     if pr.get("head_repository_id") != fork.get("repository_id"):
         return f"#{pr.get('number')} is not from the contribution fork"
-    if pr.get("head_ref") != DEV_REF:
-        return f"#{pr.get('number')} is from the branch {pr.get('head_ref')!r}, not {DEV_REF!r}"
+    if pr.get("head_ref") != UPSTREAM_REF:
+        return f"#{pr.get('number')} is from the branch {pr.get('head_ref')!r}, not {UPSTREAM_REF!r}"
     if pr.get("head_sha") != record.get("clean_head_sha"):
         return f"#{pr.get('number')} is at the head {pr.get('head_sha')}, not the clean head"
     user = pr.get("user") or {}
@@ -606,8 +632,8 @@ def mismatch_text(observed_head: str | None, record: dict, rejected: list[str],
     """What the reminder states when the observation does not match."""
     notes = []
     if observed_head != record.get("clean_head_sha"):
-        notes.append(f"the branch `{DEV_REF}` resolves to `{observed_head}`, not the requested "
-                     "head")
+        notes.append(f"the branch `{UPSTREAM_REF}` resolves to `{observed_head}`, not the "
+                     "requested head")
     notes += rejected[:5]
     if ambiguous > 1:
         notes.append(f"{ambiguous} pull requests match; none is verified")
@@ -644,16 +670,18 @@ def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str
                  external_ids: dict | None = None):
     """Close a failed attempt (``begin_effect`` when it is still ``planned``,
     then ``record_failure``) and fire the one row of its state: the retry
-    row within the budget, the exhaustion row at its limit, or, for an
-    ``invalid`` cleanup, ``return_for_repair``. Returns the closed operation
+    row within the budget, the exhaustion row at its limit, or, for a build of
+    `riscv64` that is ``invalid``, ``return_for_repair``, and for one that is
+    ``blocked``, ``require_branch_intervention``. Returns the closed operation
     and the outcome of the row. Raises ``lifecycle.TransitionError`` when no
     single row applies."""
     import engine
 
     kind = op["kind"]
-    invalid = kind == "debug_cleanup" and failure == INVALID
-    facts = {INVALID_FACT} if invalid else {FAILURE_FACTS[kind]}
-    counts = {} if invalid else {kind: attempt_count(op)}
+    special = {INVALID: INVALID_FACT, BLOCKED: BLOCKED_FACT}.get(failure) \
+        if kind == "upstream_branch" else None
+    facts = {special} if special else {FAILURE_FACTS[kind]}
+    counts = {} if special else {kind: attempt_count(op)}
     verbs = [verb for verb in recovery.fired_verbs(record, op, "failed")
              if engine.refusal(record, verb, policy=policy, now=now, facts=facts,
                                counts=counts) is None]
@@ -675,64 +703,34 @@ def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str
     return new_op, fired
 
 
-def readback(api: collect.Api, record: dict, op: dict, receipt: dict) -> tuple[dict, dict, str] | str:
+def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
+             evidence: dict | None = None) -> tuple[dict, dict, str] | str:
     """Read back what a confirmed receipt reports. Returns the external ids,
     the values of the fields the confirm row sets, and a detail, or the
-    reason the readback does not match."""
+    reason the readback does not match. ``evidence`` holds the accepted
+    submission review whose series `riscv64` must be."""
+    evidence = evidence or {}
     kind, target = op["kind"], op["target"]
     run = {"handoff_run_id": str(receipt.get("run_id") or "")}
-    if kind == "debug_cleanup":
+    if kind == "upstream_branch":
         clean = receipt.get("clean_head")
-        if not isinstance(clean, str) or not _SHA.match(clean):
-            return "the receipt names no clean head"
-        removed = receipt.get("removed_commits") or []
-        if not isinstance(removed, list) or len(removed) > MAX_COMMITS \
-                or any(not isinstance(s, str) or not _SHA.match(s) for s in removed) \
-                or len(set(removed)) != len(removed):
-            return "the receipt names invalid removed commits"
-        if bool(receipt.get("rewritten")) != bool(removed):
-            return "a rewrite removes debug commits, and only a rewrite does"
-        if not removed and clean != target["expected_head"]:
-            return "a cleanup without a rewrite must keep the head"
-        if removed and clean == target["expected_head"]:
-            return "a rewrite must change the head"
-        head = collect.branch_head(api, target["repository"], DEV_REF)
-        if not head or head["head"] != clean:
-            return "the branch does not resolve to the clean head"
+        proposed = op.get("proposed") or {}
+        if not isinstance(clean, str) or not _SHA.match(clean) or clean != proposed.get("commit"):
+            return "the receipt names another head than the reviewed one"
+        head = collect.branch_head(api, target["repository"], UPSTREAM_REF)
+        if not head or head["head"] != clean or head.get("tree") != proposed.get("tree"):
+            return f"{UPSTREAM_REF} does not resolve to the reviewed head and tree"
+        review = evidence.get(next((r.split(":", 1)[1] for r in op.get("reason_ids") or []
+                                    if r.startswith("review:")), ""))
+        messages = [str(c.get("message") or "").rstrip("\n")
+                    for c in ((review or {}).get("data") or {}).get("commits") or []]
         cmp = collect.compare_commits(api, target["repository"], target["base_sha"], clean)
         series = cmp.get("commits") or []
         if cmp.get("behind_by") != 0 or not series or len(series) > MAX_COMMITS \
-                or any(_message(c).startswith(DEBUG_PREFIX) for c in series):
-            return "the clean series is not the admitted series without debug commits"
-        if removed:
-            # The removed commits are debug commits of the approved series,
-            # and the clean series is the approved series without them, in
-            # order and with the same messages.
-            approved = collect.compare_commits(api, target["repository"], target["base_sha"],
-                                               target["expected_head"])
-            full = approved.get("commits") or []
-            messages = {c.get("sha"): _message(c) for c in full}
-            if approved.get("behind_by") != 0 or not full or len(full) > MAX_COMMITS:
-                return "the approved series cannot be read in full"
-            if any(not messages.get(sha, "").startswith(DEBUG_PREFIX) for sha in removed):
-                return "a removed commit is not a debug commit of the approved series"
-            kept = [_message(c).strip() for c in full if c.get("sha") not in removed]
-            if len(series) != len(full) - len(removed) \
-                    or [_message(c).strip() for c in series] != kept:
-                return "the clean series is not the approved series without the removed commits"
-        return (dict(run, clean_head=clean), {"clean_head_sha": clean, "fork.head_sha": clean},
-                f"{DEV_REF} at {clean}")
-    if kind == "internal_pr_closure":
-        number = int((op.get("external_ids") or {}).get("pr_number") or 0)
-        pr = api.get(f"/repos/{target['repository']}/pulls/{number}")
-        head = pr.get("head") or {}
-        if receipt.get("pr_number") != number or pr.get("state") != "closed" or pr.get("merged") \
-                or head.get("sha") != target["expected_head"] or head.get("ref") != DEV_REF \
-                or (head.get("repo") or {}).get("id") != target["repository_id"] \
-                or (pr.get("base") or {}).get("ref") != record["upstream"]["base_ref"] \
-                or DEVELOPMENT_MARKER not in (pr.get("body") or ""):
-            return "the development PR is not read back closed at the clean head"
-        return dict(run, pr_id=int(pr["id"])), {}, f"development PR {number} closed"
+                or [_message(c).rstrip("\n") for c in series] != messages:
+            return f"{UPSTREAM_REF} is not the reviewed series on the frozen base"
+        return (dict(run, clean_head=clean), {"clean_head_sha": clean},
+                f"{UPSTREAM_REF} at {clean}")
     comment_id = receipt.get("comment_id")
     if not isinstance(comment_id, int):
         return "the receipt names no comment"
@@ -755,7 +753,9 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict) -> tuple[d
 
 def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dict]:
     """The operation and the record, checked against each other and against
-    the committed state before any effect. Raises ``HandoffRefused``."""
+    the committed state before any effect. For the build of `riscv64` the
+    accepted submission review the operation names is checked too. Raises
+    ``HandoffRefused``."""
     if not _OP_ID.fullmatch(operation_id):
         raise HandoffRefused("invalid operation ID")
     try:
@@ -781,25 +781,36 @@ def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dic
         raise HandoffRefused("no verified fork is recorded")
     if target.get("base_sha") != record["upstream"].get("base_sha"):
         raise HandoffRefused("the base does not match the record")
-    if kind == "debug_cleanup":
-        expected = approval.get("head")
-        if target.get("expected_head") != expected or fork.get("head_sha") != expected:
-            raise HandoffRefused("the cleanup does not start from the approved head")
+    if kind == "upstream_branch":
+        if target.get("expected_head") != approval.get("head"):
+            raise HandoffRefused("the build does not start from the approved head")
+        try:
+            review = json.loads((root / ".state/evidence"
+                                 / f"{safe_id(record.get('submission_review_id') or '')}.json")
+                                .read_text())
+            schemas.validate("evidence", review)
+            review_evidence(record, {review["evidence_id"]: review})
+        except (OSError, ValueError, schemas.SchemaError, lifecycle.TransitionError) as error:
+            raise HandoffRefused(f"no accepted submission review: {error}") from None
+        data = review["data"]
+        if f"review:{review['evidence_id']}" not in (op.get("reason_ids") or []) \
+                or op["proposed"].get("commit") != data["head"] \
+                or op["proposed"].get("tree") != data["clean_tree"] \
+                or op["proposed"].get("content_digest") != data["series_digest"]:
+            raise HandoffRefused("the operation is not bound to the accepted submission review")
     else:
         expected = record.get("clean_head_sha")
-        if not expected or target.get("expected_head") != expected or fork.get("head_sha") != expected:
+        if not expected or target.get("expected_head") != expected:
             raise HandoffRefused("the operation is not bound to the recorded clean head")
     if kind in FORK_KINDS:
         if target.get("repository") != fork["name"] or target.get("repository_id") != fork["repository_id"] \
-                or target.get("ref") != DEV_REF:
-            raise HandoffRefused("the operation does not target the recorded fork branch")
+                or target.get("ref") != UPSTREAM_REF:
+            raise HandoffRefused("the operation does not target the upstream branch of the fork")
     else:
         if target.get("repository") != CONTROL_REPO \
                 or target.get("ref") != f"issues/{record['tracking_issue']['number']}" \
                 or op["proposed"].get("marker") != submission_marker(record):
             raise HandoffRefused("the operation does not target the tracking issue")
-    if kind == "internal_pr_closure" and (op.get("external_ids") or {}).get("pr_number") != fork.get("pr_number"):
-        raise HandoffRefused("the operation does not name the recorded development PR")
     return record, op
 
 
@@ -852,98 +863,97 @@ def rebuild_without_debug(work: Path, *, base: str, head: str) -> tuple[str, lis
     return parent, removed
 
 
-def cleanup(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
-            token: str | None, workdir: Path | None = None,
-            push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess] | None = None) -> dict:
-    """``debug_cleanup``: rebuild without debug commits, publish under the
-    exact-head lease, read back. With no debug commit nothing is pushed and
-    the branch is read back at the same head."""
+def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
+                          token: str | None, series: bytes, workdir: Path | None = None,
+                          push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess]
+                          | None = None) -> dict:
+    """``upstream_branch``: rebuild the reviewed series, check it again, and
+    create `riscv64` at its head or replace it under an exact-head lease,
+    never while an upstream PR is open from it; read it back.
+
+    ``series`` is the reviewed ``patches.mbox`` from the worker run's
+    publication artifact; it must be the series the accepted review names.
+    `riscv64-dev` is only read. A branch that already resolves to the
+    reviewed head is read back without a write."""
     import fork_publish
-    import publisher
+    import submission
 
     record, op = load_request(root, operation_id, policy)
-    target = op["target"]
-    fork, expected, base = target["repository"], target["expected_head"], target["base_sha"]
+    review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_review_id'])}"
+                                                    ".json").read_text())["data"]
+    target, proposed = op["target"], op["proposed"]
+    fork, approved, base = target["repository"], target["expected_head"], target["base_sha"]
+    if hashlib.sha256(series).hexdigest() != proposed["content_digest"]:
+        raise HandoffInvalid("the reviewed series does not match the accepted review")
     tmp = tempfile.TemporaryDirectory(prefix="upstreaming-handoff-") if workdir is None else None
     work = Path(tmp.name) / "repo" if tmp else workdir
     try:
-        publisher.fresh_workspace(work)
-        fetched = _git(work, "fetch", "--quiet", "--no-tags", fork_publish._url(fork), expected,
-                       check=False, env=fork_publish._auth_env(token))
-        if fetched.returncode:
-            raise HandoffError(f"could not fetch {expected[:12]}: {fetched.stderr.decode()[-300:]}")
-        clean, removed = rebuild_without_debug(work, base=base, head=expected)
-        if removed:
-            scope = publisher.Scope(allowed_globs=list(record.get("scope_paths") or []),
-                                    upstream_facing=True, history="rewrite")
-            report = publisher.validate_update(work, base=base, expected_head=expected,
-                                               candidate=clean, scope=scope)
-            if not report.ok:
-                raise HandoffInvalid("; ".join(report.problems[:5]))
-        # The final check before the effect: the branch is still the
-        # approved head (or already the clean head a previous attempt wrote).
-        observed = collect.branch_head(read_api, fork, DEV_REF)
+        try:
+            built = submission.reconstruct(
+                work, fork=fork, upstream=record["upstream"]["full_name"], base=base,
+                approved=approved, mbox=series, scope_paths=list(record.get("scope_paths") or []),
+                read_token=token)
+        except submission.CheckError as error:
+            raise HandoffError(f"could not fetch the series: {error}") from None
+        except fork_publish.PublishRejected as error:
+            raise HandoffInvalid(f"the reviewed series does not rebuild: {error}") from None
+        messages = [c["message"] for c in built["commits"]]
+        if built["head"] != proposed["commit"] or built["tree"] != proposed["tree"] \
+                or built["clean_tree"] != proposed["tree"] or built["problems"] \
+                or messages != [str(c.get("message") or "").rstrip("\n")
+                                for c in review.get("commits") or []]:
+            raise HandoffInvalid("the reviewed series does not rebuild to the reviewed head: "
+                                 + "; ".join(built["problems"][:3]))
+        # The final check before the effect: the head `riscv64` resolves to
+        # now is the lease; nothing is written while an upstream PR is open
+        # from it.
+        observed = collect.branch_head(read_api, fork, UPSTREAM_REF)
         observed = observed and observed["head"]
-        if observed not in (expected, clean):
-            raise HandoffInvalid(f"the branch moved to {observed}; the exact-head lease conflicts")
-        if removed and observed == expected:
+        if observed != built["head"]:
+            open_prs = collect.upstream_pull_requests(read_api, record, UPSTREAM_REF)
+            if open_prs:
+                raise HandoffBlocked(f"an upstream PR is open from {UPSTREAM_REF}: "
+                                     + ", ".join(f"#{p.get('number')}" for p in open_prs[:5]))
             if not token:
-                raise HandoffError("a rewrite needs the fork token")
-            args = publisher.lease_refspec(clean, expected)
-            runner = push or (lambda w, a, auth: _git(w, "push", "--porcelain", fork_publish._url(fork),
-                                                      *a, check=False, env=auth))
+                raise HandoffError("writing the upstream branch needs the fork token")
+            import publisher
+            args = publisher.lease_refspec(built["head"], observed, UPSTREAM_REF)
+            runner = push or (lambda w, a, auth: _git(w, "push", "--porcelain",
+                                                      fork_publish._url(fork), *a, check=False,
+                                                      env=auth))
             pushed = runner(work, args, fork_publish._auth_env(token))
             if pushed.returncode:
-                err = pushed.stderr.decode()[-300:] + (pushed.stdout.decode() if isinstance(pushed.stdout, bytes) else "")
-                if "stale info" in err or "fetch first" in err or "non-fast-forward" in err:
-                    raise HandoffInvalid(f"the exact-head lease conflicts: {err[-200:]}")
+                err = pushed.stderr.decode()[-300:] + (pushed.stdout.decode()
+                                                       if isinstance(pushed.stdout, bytes) else "")
+                if "stale info" in err or "fetch first" in err or "non-fast-forward" in err \
+                        or "already exists" in err:
+                    raise HandoffInvalid(f"the lease on {UPSTREAM_REF} conflicts: {err[-200:]}")
                 raise HandoffError(f"the lease write failed: {err[-200:]}")
-        after = collect.branch_head(read_api, fork, DEV_REF)
-        if not after or after["head"] != clean:
-            raise HandoffError("the ref readback does not show the clean head")
-        return {"result": "applied", "clean_head": clean, "rewritten": bool(removed),
-                "removed_commits": removed}
+        after = collect.branch_head(read_api, fork, UPSTREAM_REF)
+        if not after or after["head"] != built["head"]:
+            raise HandoffError("the ref readback does not show the reviewed head")
+        return {"result": "applied", "clean_head": built["head"], "replaced": observed,
+                "written": observed != built["head"]}
     finally:
         if tmp:
             tmp.cleanup()
 
 
-def close_development_pr(root: Path, operation_id: str, *, policy: dict, api) -> dict:
-    """``internal_pr_closure``: close the exact recorded, marked development
-    PR and read it back. ``api`` is a ``dev_pr.Api`` with the one-fork token."""
-    record, op = load_request(root, operation_id, policy)
-    target, number = op["target"], int(op["external_ids"]["pr_number"])
-    path = f"/repos/{target['repository']}/pulls/{number}"
-
-    def problem(pr: dict) -> str | None:
-        head = pr.get("head") or {}
-        if pr.get("number") != number or head.get("ref") != DEV_REF \
-                or (head.get("repo") or {}).get("id") != target["repository_id"] \
-                or (pr.get("base") or {}).get("ref") != record["upstream"]["base_ref"] \
-                or DEVELOPMENT_MARKER not in (pr.get("body") or ""):
-            return "the PR is not the recorded, marked development PR"
-        if head.get("sha") != target["expected_head"]:
-            return "the PR head is not the clean head"
-        if pr.get("merged"):
-            return "the PR is merged"
-        return None
-
-    pr = api.get(path)
-    why = problem(pr)
-    if why:
-        raise HandoffError(why)
-    if pr.get("state") == "open":
-        api.mutate("PATCH", path, {"state": "closed"})
-    observed = api.get(path)
-    if problem(observed) or observed.get("state") != "closed":
-        raise HandoffError("the readback does not show the development PR closed")
-    return {"result": "applied", "pr_number": number, "pr_id": int(observed["id"]),
-            "head_sha": target["expected_head"]}
+def ci_head(record: dict, review: dict) -> str:
+    """The head whose CI is CI on the clean head: the clean head, or the
+    approved candidate head when the reviewed series has its tree (the
+    approved series had no debug commit), since CI is a function of the
+    tree."""
+    data = (review or {}).get("data") or {}
+    if data.get("clean_tree") and data.get("clean_tree") == data.get("candidate_tree"):
+        return data["approved_head"]
+    return record["clean_head_sha"]
 
 
 def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
-    """The verified dossier, the CI evidence of the clean head, and the
-    exact clean series, read from committed state and the fork."""
+    """The verified dossier, the accepted submission review, the CI evidence
+    of the clean head, and the exact clean series of `riscv64`, read from
+    committed state and the fork."""
     def evidence(eid: str | None) -> dict:
         if not eid:
             raise HandoffError("the record names no evidence")
@@ -952,8 +962,15 @@ def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
         return value
 
     dossier, ci = evidence(record.get("dossier_evidence_id")), evidence(record.get("last_ci_evidence_id"))
+    review = evidence(record.get("submission_review_id"))
+    try:
+        review_evidence(record, {review["evidence_id"]: review})
+    except lifecycle.TransitionError as error:
+        raise HandoffError(str(error)) from None
     head = record["clean_head_sha"]
-    if (ci.get("ci") or {}).get("head_sha") != head:
+    if head != review["data"]["head"]:
+        raise HandoffError("the clean head is not the reviewed head")
+    if (ci.get("ci") or {}).get("head_sha") != ci_head(record, review):
         raise HandoffError("the CI evidence is not for the clean head")
     cmp = collect.compare_commits(read_api, record["fork"]["name"], record["upstream"]["base_sha"], head)
     if cmp.get("behind_by") != 0 or int(cmp.get("total_commits") or 0) > MAX_COMMITS:
@@ -961,7 +978,7 @@ def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
     commits = [{"sha": c["sha"], "message": (c.get("commit") or {}).get("message") or ""}
                for c in cmp.get("commits") or []]
     files = [f["filename"] for f in cmp.get("files") or []]
-    return {"dossier": dossier, "ci": ci, "commits": commits, "files": files}
+    return {"dossier": dossier, "ci": ci, "review": review, "commits": commits, "files": files}
 
 
 def is_package_of(body: str, record: dict, package: dict) -> bool:
@@ -975,7 +992,7 @@ def is_package_of(body: str, record: dict, package: dict) -> bool:
     lines = body.split("\n")
     approval = _code(record["handoff_approval"]["command_id"], 120)
     named = re.compile(rf"- Package operation: `op-[0-9a-f]{{24}}`; approval: {re.escape(approval)}; "
-                       r"dossier evidence: `[^`\n]*`")
+                       r"dossier evidence: `[^`\n]*`; review evidence: `[^`\n]*`")
     return lines[-1] == package["marker"] and any(named.fullmatch(line) for line in lines)
 
 
@@ -1004,11 +1021,11 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
         # the branch still resolves to the clean head it names. A moved branch
         # is a failed attempt (`retry_submission_comment`, then
         # `exhaust_comment_retries`): the state has no other failure row.
-        observed = collect.branch_head(read_api, record["fork"]["name"], DEV_REF)
+        observed = collect.branch_head(read_api, record["fork"]["name"], UPSTREAM_REF)
         observed = observed and observed["head"]
         if observed != record["clean_head_sha"]:
-            raise HandoffError(f"the branch {DEV_REF} resolves to {observed}, not the clean head; "
-                               "the package is not posted")
+            raise HandoffError(f"the branch {UPSTREAM_REF} resolves to {observed}, not the clean "
+                               "head; the package is not posted")
         comment = issue_api.request("POST", f"/repos/{CONTROL_REPO}/issues/{number}/comments",
                                     {"body": package["comment"]})
     observed = issue_api.request("GET", f"/repos/{CONTROL_REPO}/issues/comments/{comment['id']}")
@@ -1022,6 +1039,25 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
             "existing": bool(existing)}
 
 
+def reviewed_series(root: Path, operation_id: str, series: Path | None,
+                    meta: Path | None) -> bytes:
+    """The reviewed series the workflow downloaded, checked against the
+    operation: it comes from the ``porting-publication`` artifact of the
+    worker run the accepted review names, as the artifact's API record
+    shows, and it is a bounded regular file."""
+    op = json.loads((root / ".state/operations" / f"{operation_id}.json").read_text())
+    ids = op.get("external_ids") or {}
+    if series is None or meta is None or series.is_symlink() or not series.is_file() \
+            or series.stat().st_size > 4 * 1024 * 1024:
+        raise HandoffInvalid("the reviewed series is missing")
+    record = json.loads(meta.read_text())
+    if record.get("id") != ids.get("publication_artifact_id") \
+            or record.get("name") != "porting-publication" or record.get("expired") \
+            or str((record.get("workflow_run") or {}).get("id")) != str(ids.get("publication_run_id")):
+        raise HandoffInvalid("the reviewed series is not from the accepted review's run")
+    return series.read_bytes()
+
+
 def receipt(op_meta: dict, result: dict | None = None, *, error: BaseException | None = None) -> dict:
     """The receipt the workflow uploads for one attempt."""
     out = dict(op_meta, schema_version=1)
@@ -1032,7 +1068,8 @@ def receipt(op_meta: dict, result: dict | None = None, *, error: BaseException |
         out.update(result="refused", failure=None)
     else:
         out.update(result="failed",
-                   failure=INVALID if isinstance(error, HandoffInvalid) else INFRASTRUCTURE)
+                   failure=INVALID if isinstance(error, HandoffInvalid)
+                   else BLOCKED if isinstance(error, HandoffBlocked) else INFRASTRUCTURE)
     out["reason"] = isolation.clean_text(error, 300)
     return out
 
@@ -1072,10 +1109,13 @@ def main(argv: list[str] | None = None) -> int:
     from common import load_policy
 
     parser = argparse.ArgumentParser(prog="python -m handoff", description=__doc__)
-    parser.add_argument("action", choices=("target", "check", "cleanup", "close", "comment", "failed"))
+    parser.add_argument("action", choices=("target", "check", "branch", "comment", "failed"))
     parser.add_argument("--operation-id", required=True)
     parser.add_argument("--kind")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--series", type=Path, help="the reviewed patches.mbox (branch)")
+    parser.add_argument("--artifact-meta", type=Path,
+                        help="the API record of the publication artifact it came from (branch)")
     args = parser.parse_args(argv)
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != CONTROL_REPO \
             or os.environ.get("GITHUB_REF") != "refs/heads/main":
@@ -1090,8 +1130,10 @@ def main(argv: list[str] | None = None) -> int:
         name = fork.split("/", 1)[1] if fork else ""
         if fork and not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
             raise HandoffRefused("invalid fork name")
+        artifact = int((op.get("external_ids") or {}).get("publication_artifact_id") or 0) \
+            if op["kind"] == "upstream_branch" else 0
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-            out.write(f"kind={op['kind']}\nfork_name={name}\n")
+            out.write(f"kind={op['kind']}\nfork_name={name}\nartifact_id={artifact or ''}\n")
         return 0
     meta = _operation_meta(root, args.operation_id)
     if args.action == "check":
@@ -1118,13 +1160,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         read_api = collect.Api(token=os.environ.get("GH_TOKEN") or None)
         try:
-            if args.action == "cleanup":
-                result = cleanup(root, args.operation_id, policy=policy, read_api=read_api,
-                                 token=os.environ.get("UPSTREAMING_FORK_TOKEN") or None)
-            elif args.action == "close":
-                import dev_pr
-                result = close_development_pr(root, args.operation_id, policy=policy,
-                                              api=dev_pr.Api(token=os.environ["UPSTREAMING_FORK_TOKEN"]))
+            if args.action == "branch":
+                result = build_upstream_branch(
+                    root, args.operation_id, policy=policy, read_api=read_api,
+                    token=os.environ.get("UPSTREAMING_FORK_TOKEN") or None,
+                    series=reviewed_series(root, args.operation_id, args.series,
+                                           args.artifact_meta))
             else:
                 import status_ledger
                 result = post_package(root, args.operation_id, policy=policy, read_api=read_api,

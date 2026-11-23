@@ -161,7 +161,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertTrue(github["required"])
         text = (WORKFLOWS / "worker.md").read_text()
         for required in (
-            "do not add `push: riscv64`",
+            "do not add `push: riscv64-dev`",
             "do not broaden conditions",
             "`inputs.upload`",
             "rejected/superseded approaches",
@@ -201,20 +201,27 @@ class TestWorkflowContracts(unittest.TestCase):
         jobs = handoff["jobs"]
         self.assertEqual(jobs["target"]["if"], "github.ref == 'refs/heads/main'")
         expected = {
-            "debug-cleanup": ("riseproject-upstreaming", "${{ needs.target.outputs.fork_name }}",
-                              {"permission-contents": "write", "permission-workflows": "write"}),
-            "internal-pr-closure": ("riseproject-upstreaming",
-                                    "${{ needs.target.outputs.fork_name }}",
-                                    {"permission-pull-requests": "write"}),
+            "upstream-branch": ("riseproject-upstreaming", "${{ needs.target.outputs.fork_name }}",
+                                {"permission-contents": "write", "permission-workflows": "write"}),
             "submission-comment": ("riseproject-dev", "porting-agent",
                                    {"permission-issues": "write"}),
         }
+        # No job can write a pull request: the development PR is never closed.
+        self.assertEqual(set(jobs), {"target", "upstream-branch", "submission-comment",
+                                     "continuation"})
+        self.assertNotIn("pull-requests", (WORKFLOWS / "handoff.yml").read_text())
+        self.assertNotIn("internal", (WORKFLOWS / "handoff.yml").read_text())
+        # The job's own token may only read the control repository's artifacts,
+        # from which the branch job downloads the reviewed series.
+        self.assertEqual(jobs["upstream-branch"]["permissions"],
+                         {"contents": "read", "actions": "read"})
         for name, (owner, repositories, permissions) in expected.items():
             with self.subTest(job=name):
                 job = jobs[name]
                 self.assertEqual(job["needs"], ["target"])
                 self.assertIn("needs.target.outputs.kind ==", job["if"])
-                self.assertNotIn("permissions", job)
+                if name != "upstream-branch":
+                    self.assertNotIn("permissions", job)
                 tokens = [step for step in job["steps"]
                           if "create-github-app-token" in str(step.get("uses"))]
                 self.assertEqual(len(tokens), 1)
@@ -225,7 +232,8 @@ class TestWorkflowContracts(unittest.TestCase):
                 for step in job["steps"]:
                     if step.get("uses"):
                         self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
-                runs = [step["run"] for step in job["steps"] if "run" in step]
+                runs = [step["run"] for step in job["steps"] if "run" in step
+                        and step.get("name") != "Download the reviewed series of the accepted review"]
                 self.assertTrue(all("python -m handoff" in run for run in runs))
                 # The job checks out the head of main and checks it, and the
                 # operation, before it mints its token.
@@ -243,11 +251,39 @@ class TestWorkflowContracts(unittest.TestCase):
         # control repository: nothing can write upstream.
         text = (WORKFLOWS / "handoff.yml").read_text()
         self.assertNotIn("closeio", text)
-        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 2)
+        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 1)
         self.assertNotIn("permission-administration", text)
         continuation = jobs["continuation"]
         self.assertEqual(continuation["if"], "always()")
         self.assertIn("gh workflow run controller.yml", str(continuation))
+
+    def test_the_branch_job_downloads_the_series_before_any_token(self):
+        steps = workflow("handoff.yml")["jobs"]["upstream-branch"]["steps"]
+        names = [s.get("name") or s.get("uses") for s in steps]
+        download = names.index("Download the reviewed series of the accepted review")
+        mint = next(i for i, s in enumerate(steps) if "create-github-app-token" in str(s.get("uses")))
+        self.assertLess(download, mint)
+        run = steps[download]["run"]
+        # The artifact id is validated, the download uses the job's own token,
+        # and the series is checked by the trusted effect against the review.
+        self.assertIn('[[ "$ARTIFACT" =~ ^[1-9][0-9]{0,19}$ ]]', run)
+        self.assertEqual(steps[download]["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertNotIn("UPSTREAMING_FORK_TOKEN", str(steps[download]))
+        branch = next(s for s in steps if "python -m handoff branch" in str(s.get("run")))
+        self.assertIn("--artifact-meta review/artifact.json", branch["run"])
+        self.assertIn("--series review/files/patches.mbox", branch["run"])
+
+    def test_the_review_task_is_checked_without_a_token(self):
+        worker = workflow("worker.lock.yml")
+        publish = worker["jobs"]["publish"]
+        step = next(s for s in publish["steps"] if s.get("id") == "result")
+        run = step["run"]
+        review = run.index("submission_review")
+        self.assertIn("python -m submission check", run[review:])
+        self.assertIn('echo "publish=false"', run[review:run.index("python -m submission check")])
+        # The token step runs only for a publication, which the review never is.
+        token = next(s for s in publish["steps"] if s.get("id") == "fork-token")
+        self.assertEqual(token["if"], "steps.result.outputs.publish == 'true'")
 
     def test_controller_collects_handoff_receipts_from_main_only(self):
         text = (WORKFLOWS / "controller.yml").read_text()

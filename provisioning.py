@@ -21,7 +21,7 @@ import yaml
 
 import collect
 import schemas
-from common import CONTROL_REPO, FORK_ORG, contribution_file_id
+from common import CONTROL_REPO, DEV_REF, FORK_ORG, contribution_file_id
 
 
 class ProvisionError(ValueError):
@@ -74,7 +74,7 @@ def validate_request(record: dict, operation: dict, policy: dict) -> None:
             or record.get("active_operation_id") != operation["operation_id"]:
         raise ProvisionError("operation is not the current authorized provisioning intent")
     expected = f"{FORK_ORG}/{record['upstream']['full_name'].split('/', 1)[1]}"
-    if operation["target"]["repository"] != expected or operation["target"].get("ref") != "riscv64" \
+    if operation["target"]["repository"] != expected or operation["target"].get("ref") != DEV_REF \
             or operation["target"].get("base_sha") != record["upstream"]["base_sha"]:
         raise ProvisionError("operation target does not match approved source/base")
 
@@ -222,9 +222,9 @@ def configure_inherited_workflows(api, fork: str, content_ref: str) -> dict[str,
 def initialize(api, plan: dict) -> dict:
     fork = api.get(f"/repos/{plan['fork']}")
     check_fork(fork, plan)
-    head = collect.branch_head(api, plan["fork"], "riscv64")
+    head = collect.branch_head(api, plan["fork"], DEV_REF)
     if head and head["head"] not in (plan["base_sha"], plan.get("expected_head")):
-        raise ProvisionError("unexpected existing riscv64 work; never reset it")
+        raise ProvisionError(f"unexpected existing {DEV_REF} work; never reset it")
     if not head and plan.get("expected_head"):
         raise ProvisionError("recorded branch disappeared; recreation is not authorized")
     # Avoid requiring repository-administration permission when the organization
@@ -246,8 +246,8 @@ def initialize(api, plan: dict) -> dict:
         raise ProvisionError("fork Actions settings readback failed")
     configured = configure_inherited_workflows(api, plan["fork"], fork["default_branch"])
     if head is None:
-        api.write("POST", f"/repos/{plan['fork']}/git/refs", {"ref": "refs/heads/riscv64", "sha": plan["base_sha"]})
-    observed = collect.branch_head(api, plan["fork"], "riscv64")
+        api.write("POST", f"/repos/{plan['fork']}/git/refs", {"ref": f"refs/heads/{DEV_REF}", "sha": plan["base_sha"]})
+    observed = collect.branch_head(api, plan["fork"], DEV_REF)
     if not observed or observed["head"] != (head["head"] if head else plan["base_sha"]):
         raise ProvisionError("fork provisioning branch readback failed")
     return dict(plan, status="provisioned", head_sha=observed["head"], actions_read_only=True,

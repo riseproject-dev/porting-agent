@@ -38,6 +38,7 @@
         "dossier",
         "target_contract",
         "rehearsal",
+        "submission_review",
         "benchmark",
         "merge",
         "human_relay",

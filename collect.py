@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import ci_evidence
-from common import CONTROL_REPO, INTAKE_LABEL
+from common import CONTROL_REPO, DEV_REF, INTAKE_LABEL, UPSTREAM_REF
 
 API = "https://api.github.com"
 _PATH_RE = re.compile(r"^/[A-Za-z0-9_./%?&=,:+-]*$")
@@ -406,7 +406,7 @@ def compare_commits(api: Api, full_name: str, base: str, head: str) -> dict:
     return data
 
 
-def upstream_pull_requests(api: Api, record: dict, ref: str = "riscv64") -> list[dict]:
+def upstream_pull_requests(api: Api, record: dict, ref: str = UPSTREAM_REF) -> list[dict]:
     """The open pull requests of the upstream repository whose head is a
     branch ``ref`` of the fork's owner: the candidates the submission
     package can lead to. They are filtered by ``handoff.matching_upstream_prs``."""
@@ -420,7 +420,7 @@ def upstream_pull_requests(api: Api, record: dict, ref: str = "riscv64") -> list
     return [handoff.normalize_pull(pr) for pr in pulls]
 
 
-def dev_pull_request(api: Api, fork: str, ref: str = "riscv64") -> dict | None:
+def dev_pull_request(api: Api, fork: str, ref: str = DEV_REF) -> dict | None:
     owner = fork.split("/")[0]
     prs = api.get(f"/repos/{fork}/pulls?state=open&head={owner}:{ref}&per_page=10")
     return prs[0] if prs else None

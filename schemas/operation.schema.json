@@ -45,8 +45,7 @@
         "issue_close",
         "issue_body_repair",
         "fork_provision",
-        "debug_cleanup",
-        "internal_pr_closure",
+        "upstream_branch",
         "submission_comment"
       ]
     },

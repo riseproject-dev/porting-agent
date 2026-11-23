@@ -444,16 +444,15 @@ FIRES: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
     # The handoff operations. A failed attempt takes its retry row within the
     # budget of its state and the exhaustion row beyond it; the caller
     # supplies that budget's count (the attempt's count, ``handoff.counts``).
-    # A failed cleanup that cannot produce an admissible clean head, or whose
-    # lease conflicts, returns to development instead: its caller establishes
-    # ``cleanup_invalid`` and supplies no count, so neither budget row applies.
-    ("handoff.cleaning_debug", "debug_cleanup"): {
+    # A failed build of `riscv64` whose reviewed series does not rebuild, or
+    # whose lease conflicts, returns to development instead: its caller
+    # establishes ``upstream_branch_invalid`` and supplies no count, so neither
+    # budget row applies. One that finds an upstream PR open from `riscv64`
+    # waits for a human: its caller establishes ``upstream_branch_blocked``.
+    ("handoff.building_upstream_branch", "upstream_branch"): {
         "confirmed": ("confirm_clean_head",),
-        "failed": ("retry_debug_cleanup", "exhaust_debug_cleanup_retries", "return_for_repair"),
-    },
-    ("handoff.closing_internal_pr", "internal_pr_closure"): {
-        "confirmed": ("confirm_internal_pr_closed",),
-        "failed": ("retry_internal_pr_closure", "exhaust_internal_pr_retries"),
+        "failed": ("retry_upstream_branch", "exhaust_upstream_branch_retries",
+                   "return_for_repair", "require_branch_intervention"),
     },
     ("handoff.preparing_submission", "submission_comment"): {
         "confirmed": ("confirm_submission_package",),

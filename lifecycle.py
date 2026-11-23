@@ -23,7 +23,7 @@ from enum import StrEnum
 from typing import Any, NamedTuple
 
 import schemas
-from common import DEV_REF
+from common import DEV_REF, UPSTREAM_REF
 
 PHASES = (
     "queued", "investigation", "provisioning", "development", "handoff",
@@ -31,8 +31,8 @@ PHASES = (
 )
 TERMINAL = frozenset({"released", "closed"})
 ACTIVITIES = ("idle", "agent_running", "waiting_ci", "fix_needed",
-              "waiting_capacity", "waiting_human", "awaiting_submission", "cleaning_debug",
-              "closing_internal_pr", "preparing_submission", "waiting_upstream_pr")
+              "waiting_capacity", "waiting_human", "awaiting_submission", "review_due",
+              "building_upstream_branch", "preparing_submission", "waiting_upstream_pr")
 
 # Phases in which automated contribution writes to the fork may happen.
 WRITE_PHASES = frozenset({"provisioning", "development", "handoff", "upstream_review"})
@@ -71,6 +71,14 @@ def _event(before: dict, after: dict, kind: str, cause_type: str, cause_id: str 
 # Publication guard
 
 
+def work_ref(record: dict) -> str:
+    """The fork branch an automated writer of the record's phase writes: the
+    development branch ``riscv64-dev`` before the submission, and
+    ``riscv64``, the branch of the upstream pull request, from it on. In the
+    handoff phase only ``handoff.building_upstream_branch`` writes it."""
+    return UPSTREAM_REF if record.get("phase") in ("handoff", "upstream_review") else DEV_REF
+
+
 def publication_check(record: dict, *, expected_revision: int, expected_head: str | None,
                       observed_head: str | None, ref: str, repository: str,
                       expected_generation: int = 0, work_key: str | None = None) -> str | None:
@@ -92,9 +100,12 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
         return f"state {record['phase']}.{record['activity']} does not permit fork writes"
     if record.get("paused"):
         return "paused"
-    if ref != DEV_REF:
-        return f"ref {ref!r} is not {DEV_REF!r}"
+    expected_ref = work_ref(record)
+    if ref != expected_ref:
+        return f"ref {ref!r} is not {expected_ref!r}"
     fork = record.get("fork") or {}
+    if expected_ref == DEV_REF and fork.get("head_ref") != DEV_REF:
+        return f"the recorded development branch is not {DEV_REF!r}"
     if repository != fork.get("name"):
         return "repository is not the recorded contribution fork"
     if int(record.get("generation", 0)) != expected_generation:
@@ -161,6 +172,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "dossier_evidence_id": None,
         "debug_commits": [],
         "clean_head_sha": None,
+        "submission_review_id": None,
         "handoff_request": None,
         "handoff_approval": None,
         "last_ci_evidence_id": None,
@@ -559,6 +571,15 @@ REVISION_BUDGET_EXHAUSTED = ("no_progress or work_total is exhausted, or repair_
 # ``record_actionable_review`` only when no such failure is observed.
 CANDIDATE_FAILED = "an executed blocking failure on the candidate head"
 CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
+# The two outcomes of the submission review Work: the model review and the
+# trusted check of its Result.
+REVIEW_PASSED = ("the review passes, the reviewed series has the tree of the approved series "
+                 "without its debug commits, and the series and description satisfy the "
+                 "dossier's measurable rules")
+REVIEW_FAILED = ("the review fails, the reviewed series changes the tree, or a measurable rule "
+                 "is broken")
+CLEAN_HEAD_CI_PASSED = ("every required CI job executed and passed on the clean head, or on the "
+                        "candidate head when the clean head has its tree")
 # Work that carries feedback is never answered by a CI rerun.
 WORK_WITHOUT_FEEDBACK = "the Work carries no feedback"
 EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
@@ -618,7 +639,7 @@ _EXHAUST_INTERRUPTED_RERUNS = Transition(
 _RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
 _RESUME_CI_NOTE = ("Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` "
                    "(`budget.reruns.interrupted`) again for the head.")
-_LEAVE_HANDOFF = ("clean_head_sha", "handoff_request", "pending_human_action")
+_LEAVE_HANDOFF = ("clean_head_sha", "submission_review_id", "handoff_request", "pending_human_action")
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
 _PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
                   "processed_pr_conversation_comment_ids")
@@ -897,12 +918,14 @@ LIFECYCLE: dict[str, State] = {
         "gate", False, False,
         "Required CI passed on the exact head; a human may request upstream submission.",
         transitions={
-            ("submit_upstream", "handoff.cleaning_debug"): Transition(
+            ("submit_upstream", "handoff.review_due"): Transition(
                 _C, "/upstreaming submit-upstream",
                 (EXACT_REVISION, "exact candidate head", NOT_PAUSED),
-                _E(sets=("handoff_approval", "active_operation_id"), clears=("pending_human_action",)),
-                description="The only submission command; it authorizes the whole deterministic "
-                            "handoff preparation."),
+                _E(sets=("handoff_approval",), clears=("pending_human_action",)),
+                description="The only submission command; it authorizes the submission review "
+                            "and the whole deterministic handoff preparation. The development "
+                            "branch `riscv64-dev` and the development PR are never changed for "
+                            "the submission."),
             ("return_for_repair", "development.fix_needed"): Transition(
                 _O, None,
                 (CANDIDATE_FAILED,),
@@ -931,61 +954,105 @@ LIFECYCLE: dict[str, State] = {
                   clears=("last_ci_evidence_id", "handoff_request", "pending_human_action"))),
             ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
-    "handoff.cleaning_debug": State(
-        "work", False, True,
-        "Debug commits are removed from the admitted series and the clean head is published under lease.",
+    "handoff.review_due": State(
+        "auto_wait", True, False,
+        "The submission review is due; the controller allocates review Work when a worker slot "
+        "is free.",
         transitions={
-            ("retry_debug_cleanup", SELF): Transition(
+            ("request_submission_review", "handoff.agent_running"): Transition(
+                _K, None,
+                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation"),
+                _E(work="allocate"), ("work_total",),
+                "The uncredentialed review Work reads the dossier's contribution guidelines and "
+                "the non-debug commits of the approved `riscv64-dev` series. It reshapes the "
+                "commit messages (squashing or splitting only where the project's contributing "
+                "instructions or reviewers require it, with the same final tree), writes the "
+                "upstream PR title and description after the project's pull request template "
+                "and contributing instructions, and reviews the whole against the reviewers' "
+                "expectations."),
+            ("exhaust_work_total", "handoff.waiting_human"): Transition(
+                _K, None, (WORK_TOTAL_EXHAUSTED,),
+                _E(sets=("pending_human_action=work_budget_exhausted",
+                        f"{PENDING_COUNTER}=work_total"))),
+        }),
+    "handoff.agent_running": State(
+        "work", False, False,
+        "Submission review Work is requested or running; its Result is the reviewed series, "
+        "title, and description, or the reasons the submission is not ready.",
+        transitions={
+            ("retry_dispatch", SELF): _RETRY_DISPATCH,
+            ("exhaust_dispatch_recovery", "handoff.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("exhaust_work_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
+            ("accept_submission_review", "handoff.building_upstream_branch"): Transition(
+                _R, None,
+                (REVIEW_PASSED,),
+                _E(work="clear", sets=("submission_review_id",)),
+                description="The trusted check before the Result is folded rebuilds the "
+                            "reviewed series on the frozen base and requires the tree of the "
+                            "approved series without its debug commits, the dossier's measurable "
+                            "commit rules, and every required section of the pull request "
+                            "template in the description. Nothing is posted."),
+            ("reject_submission_review", "development.fix_needed"): Transition(
+                _R, None,
+                (REVIEW_FAILED,),
+                _E(revision="bump", work="clear", sets=("pending_feedback_evidence_ids",),
+                  clears=_LEAVE_HANDOFF),
+                description="The reasons are recorded as review evidence and are the pending "
+                            "feedback of the next development Work. Nothing is posted and "
+                            "`riscv64` is not written."),
+        }),
+    "handoff.building_upstream_branch": State(
+        "work", False, True,
+        "The upstream branch `riscv64` is created, or replaced under an exact-head lease, from "
+        "the reviewed series, and read back. It is never written while an upstream PR is open "
+        "from it, and `riscv64-dev` is not changed.",
+        transitions={
+            ("retry_upstream_branch", SELF): Transition(
                 _P, None,
                 ("the lease write or its readback failed with an infrastructure error",
-                 "debug_cleanup remains"),
-                charges=("debug_cleanup",)),
+                 "upstream_branch remains"),
+                charges=("upstream_branch",)),
             ("confirm_clean_head", "handoff.waiting_ci"): Transition(
                 _P, None,
-                ("the lease write and ref readback match",),
-                _E(sets=("clean_head_sha", "fork.head_sha", RERUNS))),
+                ("the lease write and ref readback match the reviewed series",),
+                _E(sets=("clean_head_sha", RERUNS))),
             ("return_for_repair", "development.fix_needed"): Transition(
                 _P, None,
-                ("the cleanup is invalid, or the exact-head lease conflicts",),
+                ("the reviewed series does not rebuild to the reviewed head, or the lease on "
+                 "`riscv64` conflicts",),
                 _RETURN_FOR_REPAIR),
-            ("exhaust_debug_cleanup_retries", "handoff.waiting_human"): Transition(
+            ("require_branch_intervention", "handoff.waiting_human"): Transition(
                 _P, None,
-                ("debug_cleanup exhausted",),
-                _E(sets=("pending_human_action=debug_cleanup_failed",
-                        f"{PENDING_COUNTER}=debug_cleanup"))),
+                ("an upstream PR is open from `riscv64`",),
+                _E(sets=("pending_human_action=upstream_branch_blocked",)),
+                description="`riscv64` is left as it is: a human closes the upstream PR or "
+                            "decides otherwise, then resumes."),
+            ("exhaust_upstream_branch_retries", "handoff.waiting_human"): Transition(
+                _P, None,
+                ("upstream_branch exhausted",),
+                _E(sets=("pending_human_action=upstream_branch_failed",
+                        f"{PENDING_COUNTER}=upstream_branch"))),
         }),
     "handoff.waiting_ci": State(
         "auto_wait", False, False,
-        "Required CI runs on the clean head.",
+        "Required CI runs on the clean head of `riscv64`.",
         transitions={
-            ("accept_clean_head_ci", "handoff.closing_internal_pr"): Transition(
+            ("accept_clean_head_ci", "handoff.preparing_submission"): Transition(
                 _O, None,
-                ("every required CI job executed and passed on the clean head",),
-                _E(sets=("last_ci_evidence_id",))),
+                (CLEAN_HEAD_CI_PASSED,),
+                _E(sets=("last_ci_evidence_id",)),
+                description="CI is a function of the tree: when the reviewed series has the "
+                            "tree of the candidate head (the approved series had no debug "
+                            "commit), the CI evidence of the candidate head is CI on the clean "
+                            "head."),
             ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
             ("exhaust_interrupted_reruns", "handoff.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
             ("return_for_repair", "development.fix_needed"): Transition(
                 _O, None,
-                ("a blocking CI failure on the clean head, or the observed fork head differs "
-                 "from the clean head",),
+                ("a blocking CI failure on the clean head, or the observed `riscv64` head "
+                 "differs from the clean head",),
                 _RETURN_FOR_REPAIR),
-        }),
-    "handoff.closing_internal_pr": State(
-        "work", False, True,
-        "The development PR is closed and the closure is read back.",
-        transitions={
-            ("retry_internal_pr_closure", SELF): Transition(
-                _P, None,
-                ("the close or its readback failed", "internal_pr_closure remains"),
-                charges=("internal_pr_closure",)),
-            ("confirm_internal_pr_closed", "handoff.preparing_submission"): Transition(
-                _P, None,
-                ("the readback shows the exact development PR closed",)),
-            ("exhaust_internal_pr_retries", "handoff.waiting_human"): Transition(
-                _P, None,
-                ("internal_pr_closure exhausted",),
-                _E(sets=("pending_human_action=internal_pr_closure_failed",
-                        f"{PENDING_COUNTER}=internal_pr_closure"))),
         }),
     "handoff.preparing_submission": State(
         "work", False, False,
@@ -1007,20 +1074,25 @@ LIFECYCLE: dict[str, State] = {
         }),
     "handoff.waiting_human": State(
         "human_wait", False, False,
-        "A handoff step failed repeatedly: publishing the clean head, CI on the clean head, "
-        "closing the development PR, or posting the submission package. A human corrects it and "
-        "resumes; the resume returns to the step named by `pending_human_action` and starts "
-        "again the counter named in `pending_human_action.counter`.",
+        "A handoff step failed repeatedly or needs a human: the submission review Work, "
+        "writing `riscv64` (also while an upstream PR is open from it), CI on the clean head, "
+        "or posting the submission package. A human corrects it and resumes; the resume returns "
+        "to the step named by `pending_human_action` and starts again the counter named in "
+        "`pending_human_action.counter`.",
         transitions={
-            ("resume_debug_cleanup", "handoff.cleaning_debug"): Transition(
-                _C, RESUME, (EXACT_REVISION, pending_is("debug_cleanup_failed")),
-                _resume_restarting("debug_cleanup")),
+            ("resume_submission_review", "handoff.review_due"): Transition(
+                _C, RESUME,
+                (EXACT_REVISION,
+                 pending_is("work_budget_exhausted", "dispatch_failed", "work_failed")),
+                _resume_restarting("work_total", "dispatch_recovery", "work_recovery"),
+                description="Fresh review Work is requested. " + _RESTART_NOTE),
+            ("resume_upstream_branch", "handoff.building_upstream_branch"): Transition(
+                _C, RESUME,
+                (EXACT_REVISION, pending_is("upstream_branch_failed", "upstream_branch_blocked")),
+                _resume_restarting("upstream_branch")),
             ("resume_ci", "handoff.waiting_ci"): Transition(
                 _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted")), _RESUME_CI,
                 description=_RESUME_CI_NOTE),
-            ("resume_internal_pr_closure", "handoff.closing_internal_pr"): Transition(
-                _C, RESUME, (EXACT_REVISION, pending_is("internal_pr_closure_failed")),
-                _resume_restarting("internal_pr_closure")),
             ("resume_submission_preparation", "handoff.preparing_submission"): Transition(
                 _C, RESUME, (EXACT_REVISION, pending_is("submission_comment_failed")),
                 _resume_restarting("submission_comment")),
@@ -1037,14 +1109,15 @@ LIFECYCLE: dict[str, State] = {
             ("verify_upstream_pr", "upstream_review.waiting_ci"): Transition(
                 _O, None,
                 ("an open PR against the upstream repository and the frozen base",
-                 "its head is the controlled fork ref at the exact clean head",
+                 "its head is `riscv64` of the contribution fork at the exact clean head",
                  "a compatible human author"),
                 _E(sets=("upstream_pr",), clears=("pending_human_action",))),
             ("retract_submission", "development.fix_needed"): Transition(
                 _C, "/upstreaming retract-pr",
                 (EXACT_REVISION, "exact clean head", QUIESCENT),
                 _E(revision="bump", clears=("pending_human_action", "handoff_request", "handoff_approval")),
-                description="Stops reminders and unlocks branch work."),
+                description="Stops reminders and unlocks branch work. `riscv64` is left as it "
+                            "is; the next `submit_upstream` replaces it."),
             ("refresh_investigation", "queued.idle"): Transition(
                 _C, REFRESH,
                 (EXACT_REVISION, "exact clean head", QUIESCENT),
@@ -1316,8 +1389,8 @@ FLAGS: dict[str, Flag] = {
         "is launched while paused. Phase, "
         "activity, evidence, and pending feedback are kept. "
         "The one exception: setting it in an `agent_running` state leads to the state in which the "
-        "Work is due again, `investigation.idle`, `development.fix_needed`, or "
-        "`upstream_review.fix_needed`. "
+        "Work is due again, `investigation.idle`, `development.fix_needed`, "
+        "`handoff.review_due`, or `upstream_review.fix_needed`. "
         "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
         "keeps the dossier, candidate head, clean head, `handoff_request`, and the posted "
         "package. `verify_upstream_pr` binds to the exact head only, so the revision bump "
@@ -1364,6 +1437,7 @@ FLAGS: dict[str, Flag] = {
         {
             "investigation.agent_running": "investigation.idle",
             "development.agent_running": "development.fix_needed",
+            "handoff.agent_running": "handoff.review_due",
             "upstream_review.agent_running": "upstream_review.fix_needed",
         },
         {
@@ -1431,14 +1505,10 @@ BUDGETS: dict[str, Budget] = {
         INFRASTRUCTURE_KEY, 1,
         "one launch of a planned fork provisioning operation", "the operation's launch attempts",
         ("require_provisioning_intervention",), infrastructure=True),
-    "debug_cleanup": Budget(
+    "upstream_branch": Budget(
         INFRASTRUCTURE_KEY, 1,
-        "one lease write and readback of the clean head", "the handoff operation's attempts",
-        ("exhaust_debug_cleanup_retries",), infrastructure=True),
-    "internal_pr_closure": Budget(
-        INFRASTRUCTURE_KEY, 1,
-        "one close-and-readback attempt of the development PR", "the handoff operation's attempts",
-        ("exhaust_internal_pr_retries",), infrastructure=True),
+        "one lease write and readback of `riscv64`", "the handoff operation's attempts",
+        ("exhaust_upstream_branch_retries",), infrastructure=True),
     "submission_comment": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one attempt to post the submission package", "the handoff operation's attempts",
@@ -1631,8 +1701,9 @@ _SIMPLIFIED_NODES = (
     "provisioning.idle", "provisioning.waiting_human",
     "development.fix_needed", "development.agent_running", "development.waiting_ci",
     "development.waiting_human",
-    "handoff.awaiting_submission", "handoff.cleaning_debug", "handoff.waiting_ci",
-    "handoff.closing_internal_pr", "handoff.preparing_submission", "handoff.waiting_upstream_pr",
+    "handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
+    "handoff.building_upstream_branch", "handoff.waiting_ci", "handoff.preparing_submission",
+    "handoff.waiting_upstream_pr",
     "upstream_review.waiting_ci", "upstream_review.fix_needed", "upstream_review.agent_running",
     "upstream_review.waiting_human",
     "release_wait.idle", "release_wait.waiting_human",
@@ -1670,14 +1741,16 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("development.waiting_human", "resume_development"),
                 ("development.waiting_ci", "nominate_for_handoff"),
                 ("handoff.awaiting_submission", "submit_upstream"),
-                ("handoff.cleaning_debug", "confirm_clean_head"),
+                ("handoff.review_due", "request_submission_review"),
+                ("handoff.agent_running", "accept_submission_review"),
+                ("handoff.building_upstream_branch", "confirm_clean_head"),
                 ("handoff.waiting_ci", "accept_clean_head_ci"),
-                ("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
                 ("handoff.preparing_submission", "confirm_submission_package"),
                 ("handoff.waiting_upstream_pr", "verify_upstream_pr"),
                 ("handoff.awaiting_submission", "record_actionable_review"),
                 ("handoff.awaiting_submission", "record_explanation"),
-                ("handoff.cleaning_debug", "return_for_repair"),
+                ("handoff.agent_running", "reject_submission_review"),
+                ("handoff.building_upstream_branch", "return_for_repair"),
                 ("handoff.waiting_ci", "return_for_repair"),
                 ("handoff.waiting_upstream_pr", "retract_submission"),
                 ("upstream_review.waiting_ci", "record_upstream_ci_failure"),
@@ -1981,82 +2054,108 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
     ),
     DiagramSection(
         "Handoff, upstream review, and release cases",
-        "The submission request is bound to one exact revision and candidate head. Trusted "
-        "preparation derives and verifies the clean head; the Apps prepare the submission package "
-        "but do not open the upstream PR.",
+        "The submission request is bound to one exact revision and candidate head. Development "
+        "happens on `riscv64-dev`, which the handoff never changes, and the development PR stays "
+        "open. An uncredentialed review shapes the series and the pull request text after the "
+        "project's guidelines; trusted code checks it, builds `riscv64` from it, and prepares "
+        "the submission package. The Apps do not open the upstream PR.",
         (
             Diagram(
-                "Success case 1: one command publishes a prefilled PR package and a human submits it",
-                ("development.waiting_ci", "handoff.awaiting_submission", "handoff.cleaning_debug",
-                 "handoff.waiting_ci", "handoff.closing_internal_pr", "handoff.preparing_submission",
+                "Success case 1: one command reviews the series, builds `riscv64`, and publishes "
+                "a prefilled PR package that a human submits",
+                ("development.waiting_ci", "handoff.awaiting_submission", "handoff.review_due",
+                 "handoff.agent_running", "handoff.building_upstream_branch",
+                 "handoff.waiting_ci", "handoff.preparing_submission",
                  "handoff.waiting_upstream_pr", "upstream_review.waiting_ci"),
                 (("development.waiting_ci", "nominate_for_handoff"),
                  ("handoff.awaiting_submission", "record_reminder"),
                  ("handoff.awaiting_submission", "submit_upstream"),
-                 ("handoff.cleaning_debug", "confirm_clean_head"),
+                 ("handoff.review_due", "request_submission_review"),
+                 ("handoff.agent_running", "accept_submission_review"),
+                 ("handoff.building_upstream_branch", "confirm_clean_head"),
                  ("handoff.waiting_ci", "accept_clean_head_ci"),
-                 ("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
                  ("handoff.preparing_submission", "confirm_submission_package"),
                  ("handoff.waiting_upstream_pr", "record_reminder"),
                  ("handoff.waiting_upstream_pr", "verify_upstream_pr")),
-                text="`submit-upstream` is the only submission command. The human follows the "
-                     "prefilled link and opens the PR under their own identity; observation "
-                     "verifies it before `upstream_review`. Both human steps are reminded."),
+                text="`submit-upstream` is the only submission command. The review Work reads "
+                     "the dossier's contribution guidelines and the non-debug commits of the "
+                     "approved `riscv64-dev` series; the project's contributing instructions "
+                     "take precedence over the pipeline's. It returns the reshaped series and "
+                     "the upstream PR title and description written after the pull request "
+                     "template. Trusted code checks that the series has the tree of the approved "
+                     "series without its debug commits, the dossier's measurable commit rules, "
+                     "and the template's required sections, then creates `riscv64` from it, or "
+                     "replaces it under a lease, never while an upstream PR is open from it. The "
+                     "human follows the prefilled link and opens the PR under their own "
+                     "identity; observation verifies it before `upstream_review`. Both human "
+                     "steps are reminded."),
             Diagram(
                 "Failure case 1: pre-submission changes versus the locked upstream-PR wait",
-                ("handoff.awaiting_submission", "handoff.cleaning_debug", "handoff.waiting_ci",
+                ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
+                 "handoff.building_upstream_branch", "handoff.waiting_ci",
                  "handoff.waiting_upstream_pr", "development.fix_needed", "development.waiting_ci",
                  "queued.idle"),
                 (("handoff.awaiting_submission", "submit_upstream"),
-                 ("handoff.cleaning_debug", "confirm_clean_head"),
+                 ("handoff.review_due", "request_submission_review"),
+                 ("handoff.agent_running", "accept_submission_review"),
+                 ("handoff.building_upstream_branch", "confirm_clean_head"),
                  ("handoff.waiting_ci", "rerun_interrupted_ci"),
                  ("handoff.awaiting_submission", "return_for_repair"),
                  ("handoff.awaiting_submission", "record_actionable_review"),
                  ("handoff.awaiting_submission", "record_explanation"),
                  ("handoff.awaiting_submission", "record_head_change"),
-                 ("handoff.cleaning_debug", "return_for_repair"),
+                 ("handoff.agent_running", "reject_submission_review"),
+                 ("handoff.building_upstream_branch", "return_for_repair"),
                  ("handoff.waiting_ci", "return_for_repair"),
                  ("handoff.awaiting_submission", "refresh_investigation"),
                  ("handoff.waiting_upstream_pr", "record_audit_observation"),
                  ("handoff.waiting_upstream_pr", "retract_submission"),
                  ("handoff.waiting_upstream_pr", "refresh_investigation")),
                 start="handoff.awaiting_submission",
-                text="Before the package is posted, a changed head, cleanup validation, an "
-                     "exact-head lease conflict, or blocking CI on the clean head returns to "
-                     "development. At the gate, a CI failure on the candidate head takes "
-                     "`return_for_repair` and records the failing evidence; an actionable review "
-                     "takes `record_actionable_review` and records the feedback; the guards are "
-                     "exclusive, and the failure applies first. An explanation-only comment takes "
-                     "`record_explanation` and keeps the gate. "
-                     "`handoff.waiting_upstream_pr` is locked: only "
+                text="Before the package is posted, a changed candidate head, a failed review "
+                     "or a broken measurable rule, a reviewed series that does not rebuild, a "
+                     "lease conflict on `riscv64`, or blocking CI on the clean head returns to "
+                     "development; a failed review records its reasons as the pending feedback "
+                     "of the next development Work, and nothing is posted. At the gate, a CI "
+                     "failure on the candidate head takes `return_for_repair` and records the "
+                     "failing evidence; an actionable review takes `record_actionable_review` "
+                     "and records the feedback; the guards are exclusive, and the failure applies "
+                     "first. An explanation-only comment takes `record_explanation` and keeps the "
+                     "gate. `handoff.waiting_upstream_pr` is locked: only "
                      "`verify_upstream_pr`, `retract_submission`, and `refresh_investigation` "
-                     "leave it."),
+                     "leave it, and none of them changes `riscv64`."),
             Diagram(
-                "Failure case 2: a handoff operation fails repeatedly",
-                ("handoff.cleaning_debug", "handoff.waiting_ci", "handoff.closing_internal_pr",
-                 "handoff.preparing_submission", "handoff.waiting_human",
+                "Failure case 2: a handoff step fails repeatedly or needs a human",
+                ("handoff.review_due", "handoff.agent_running", "handoff.building_upstream_branch",
+                 "handoff.waiting_ci", "handoff.preparing_submission", "handoff.waiting_human",
                  "handoff.waiting_upstream_pr"),
-                (("handoff.cleaning_debug", "retry_debug_cleanup"),
-                 ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
-                 ("handoff.waiting_human", "resume_debug_cleanup"),
-                 ("handoff.cleaning_debug", "confirm_clean_head"),
+                (("handoff.review_due", "exhaust_work_total"),
+                 ("handoff.agent_running", "retry_dispatch"),
+                 ("handoff.agent_running", "exhaust_dispatch_recovery"),
+                 ("handoff.agent_running", "allocate_work_retry"),
+                 ("handoff.agent_running", "exhaust_work_recovery"),
+                 ("handoff.waiting_human", "resume_submission_review"),
+                 ("handoff.review_due", "request_submission_review"),
+                 ("handoff.agent_running", "accept_submission_review"),
+                 ("handoff.building_upstream_branch", "retry_upstream_branch"),
+                 ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
+                 ("handoff.building_upstream_branch", "require_branch_intervention"),
+                 ("handoff.waiting_human", "resume_upstream_branch"),
+                 ("handoff.building_upstream_branch", "confirm_clean_head"),
                  ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
                  ("handoff.waiting_human", "resume_ci"),
                  ("handoff.waiting_ci", "accept_clean_head_ci"),
-                 ("handoff.closing_internal_pr", "retry_internal_pr_closure"),
-                 ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
-                 ("handoff.waiting_human", "resume_internal_pr_closure"),
-                 ("handoff.closing_internal_pr", "confirm_internal_pr_closed"),
                  ("handoff.preparing_submission", "retry_submission_comment"),
                  ("handoff.preparing_submission", "exhaust_comment_retries"),
                  ("handoff.waiting_human", "resume_submission_preparation"),
                  ("handoff.preparing_submission", "confirm_submission_package")),
-                start="handoff.cleaning_debug",
-                text="The lease write, the reruns of interrupted CI, the closure, and the package "
-                     "each retry within their budget and then wait for a human in the one "
-                     "`handoff.waiting_human`. `pending_human_action` names the step that "
-                     "failed, and exactly one of the four resume verbs applies: it returns to "
-                     "that step. Recovery does not need another `submit-upstream`."),
+                start="handoff.review_due",
+                text="The review Work, the lease write of `riscv64`, the reruns of interrupted "
+                     "CI, and the package each retry within their budget and then wait for a "
+                     "human in the one `handoff.waiting_human`; an upstream PR that is open from "
+                     "`riscv64` waits there at once. `pending_human_action` names the step, and "
+                     "exactly one of the four resume verbs applies: it returns to that step. "
+                     "Recovery does not need another `submit-upstream`."),
             Diagram(
                 "Success case 2: upstream review, merge, and release",
                 ("upstream_review.waiting_ci", "release_wait.idle", "released.idle"),
@@ -2189,6 +2288,18 @@ LOCKED_EXITS = {"handoff.waiting_upstream_pr": ("verify_upstream_pr", "retract_s
                                                 "refresh_investigation")}
 # Phases from which only a command may end the generation.
 NO_AUTOMATIC_PARK = ("upstream_review",)
+# The steps every submission passes, in order, from the gate to the locked
+# upstream-PR wait: the review Work is due and runs, `riscv64` is built from
+# its reviewed series, CI runs on its head, and the package is posted. The
+# one state that writes the fork in the handoff phase writes `riscv64`; the
+# review's Result leaves for that state, or returns to development with the
+# reasons as pending feedback.
+SUBMISSION_GATE = "handoff.awaiting_submission"
+SUBMISSION_STEPS = ("handoff.review_due", "handoff.agent_running",
+                    "handoff.building_upstream_branch", "handoff.waiting_ci",
+                    "handoff.preparing_submission", "handoff.waiting_upstream_pr")
+SUBMISSION_REVIEW = "handoff.agent_running"
+UPSTREAM_BRANCH_WRITER = "handoff.building_upstream_branch"
 # The one resume that clears pending feedback: a human answered it.
 FEEDBACK_ANSWERED_BY = ("resume_upstream_review",)
 
@@ -2535,6 +2646,61 @@ def _check_patch_work(problems: list[str]) -> None:
                         e.transition.effects.sets for e in first):
         problems.append("development is entered from provisioning only by a confirmed fork "
                         "operation that records the fork")
+
+
+def _check_submission(problems: list[str]) -> None:
+    """Every submission passes the review, the build of `riscv64`, CI on its
+    head, and the package, in that order; a failed review returns to
+    development with its reasons and posts nothing; and the one handoff state
+    that writes the fork is the build of `riscv64`."""
+    missing = [k for k in (SUBMISSION_GATE, *SUBMISSION_STEPS) if k not in LIFECYCLE]
+    if missing:
+        problems.append(f"submission: {missing} are not table states")
+        return
+    successors: dict[str, set[str]] = {k: set() for k in LIFECYCLE}
+    for e in table_edges():
+        successors[e.source].add(e.target)
+
+    # Paths through a human wait leave it only by a resume that admits the
+    # pending action it was entered with.
+    def step_from(node: tuple[str, str | None], skip: str) -> set[tuple[str, str | None]]:
+        key, pending = node
+        out = set()
+        for e in state_edges(key):
+            if e.target == skip or e.target == key:
+                continue
+            if pending is not None and e.transition.command == RESUME \
+                    and not _admits(e.transition, pending):
+                continue
+            kinds = [f.partition("=")[2] for f in e.transition.effects.sets
+                     if f.startswith("pending_human_action=")]
+            entering = LIFECYCLE[e.target].kind == "human_wait"
+            out.add((e.target, (kinds[0] if kinds else "") if entering else None))
+        return out
+
+    final = SUBMISSION_STEPS[-1]
+    for step in SUBMISSION_STEPS[:-1]:
+        reached = _reachable((SUBMISSION_GATE, None), lambda n, step=step: step_from(n, step))
+        if any(key == final for key, _pending in reached):
+            problems.append(f"submission: {final} is reachable from {SUBMISSION_GATE} without "
+                            f"{step}")
+    for earlier, later in zip(SUBMISSION_STEPS, SUBMISSION_STEPS[1:]):
+        if later not in successors[earlier]:
+            problems.append(f"submission: no row leads from {earlier} to {later}")
+    writers = [k for k, st in LIFECYCLE.items() if state_phase(k) == "handoff" and st.writes]
+    if writers != [UPSTREAM_BRANCH_WRITER]:
+        problems.append(f"submission: the handoff states that write the fork are {writers}, not "
+                        f"only {UPSTREAM_BRANCH_WRITER}")
+    for e in state_edges(SUBMISSION_REVIEW):
+        if e.transition.trigger != Trigger.RESULT or e.target in (SUBMISSION_REVIEW,):
+            continue
+        sets = {_field_name(f) for f in e.transition.effects.sets}
+        if e.target == UPSTREAM_BRANCH_WRITER:
+            continue
+        if e.target != "development.fix_needed" or "pending_feedback_evidence_ids" not in sets:
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: a review Result that does not "
+                            "build `riscv64` returns to development.fix_needed with its reasons "
+                            "as pending feedback")
 
 
 def _check_exclusive_observations(problems: list[str]) -> None:
@@ -3062,6 +3228,7 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_reruns(problems)
     _check_patch_work(problems)
     _check_exclusive_observations(problems)
+    _check_submission(problems)
     _check_stale_resume(policy, problems)
     _check_flags(problems)
     _check_budgets(policy, problems)

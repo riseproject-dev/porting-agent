@@ -23,7 +23,7 @@ def request():
                        scope_paths=[".github/workflows/*"], fork=None)
     op = recovery.plan(contribution_id=rec["contribution_id"], revision=rec["revision"], kind="fork_provision",
                        policy_version="test", reason_ids=["dossier-1"],
-                       target={"repository": FORK, "repository_id": None, "ref": "riscv64", "base_sha": SHA_C, "expected_head": None},
+                       target={"repository": FORK, "repository_id": None, "ref": "riscv64-dev", "base_sha": SHA_C, "expected_head": None},
                        proposed={"commit": SHA_C, "marker": "provision"}, now=NOW)
     rec["active_operation_id"] = op["operation_id"]
     return rec, op
@@ -52,7 +52,7 @@ class Api:
             if not self.exists:
                 raise collect.CollectError("HTTP 404")
             return self.fork()
-        if path == f"/repos/{FORK}/branches/riscv64":
+        if path == f"/repos/{FORK}/branches/riscv64-dev":
             if self.head is None:
                 raise collect.CollectError("HTTP 404")
             return {"commit": {"sha": self.head, "commit": {"tree": {"sha": "d" * 40}}, "parents": []}}
@@ -114,7 +114,7 @@ class TestProvisioning(unittest.TestCase):
         outcome = provisioning.initialize(api, plan)
         self.assertEqual((outcome["status"], outcome["head_sha"], outcome["actions_read_only"]), ("provisioned", SHA_C, True))
         self.assertIn(("POST", f"/repos/{UP}/forks", {"organization": "riseproject-upstreaming", "name": "proj", "default_branch_only": True}), api.writes)
-        self.assertIn(("POST", f"/repos/{FORK}/git/refs", {"ref": "refs/heads/riscv64", "sha": SHA_C}), api.writes)
+        self.assertIn(("POST", f"/repos/{FORK}/git/refs", {"ref": "refs/heads/riscv64-dev", "sha": SHA_C}), api.writes)
         self.assertIn(".github/workflows/publish.yml", outcome["disabled_workflows"])
         self.assertIn(".github/workflows/wheels.yml", outcome["enabled_workflows"])
         self.assertFalse(any(path == f"/repos/{FORK}/actions/permissions/workflow"

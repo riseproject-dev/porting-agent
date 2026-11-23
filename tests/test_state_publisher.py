@@ -531,11 +531,17 @@ class TestPublisherValidation(unittest.TestCase):
 
     def test_lease(self):
         args = publisher.lease_refspec("1" * 40, "2" * 40)
-        self.assertEqual(args[0], "--force-with-lease=refs/heads/riscv64:" + "2" * 40)
+        self.assertEqual(args[0], "--force-with-lease=refs/heads/riscv64-dev:" + "2" * 40)
         with self.assertRaises(ValueError):
             publisher.lease_refspec("1" * 40, "2" * 40, ref="main")
         with self.assertRaises(ValueError):
             publisher.lease_refspec("1" * 40, "")
+        # Only the upstream branch is created, with a lease that it does not
+        # exist; the development branch is never created by a publication.
+        self.assertEqual(publisher.lease_refspec("1" * 40, None, "riscv64"),
+                         ["--force-with-lease=refs/heads/riscv64:", "1" * 40 + ":refs/heads/riscv64"])
+        with self.assertRaises(ValueError):
+            publisher.lease_refspec("1" * 40, None)
 
     def test_safe_env_ignores_user_config(self):
         env = publisher.safe_env()

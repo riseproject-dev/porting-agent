@@ -147,7 +147,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
             fork={
                 "repository_id": 55,
                 "name": "riseproject-upstreaming/ciso8601",
-                "head_ref": "riscv64",
+                "head_ref": "riscv64-dev",
                 "head_sha": record["upstream"]["base_sha"],
                 "pr_number": None,
             },

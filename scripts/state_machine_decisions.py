@@ -126,7 +126,7 @@ DECISIONS: tuple[Item, ...] = (
         "drives the handoff, and `verify_upstream_pr` is an observation. The three commands are "
         "retired. The reminder in `handoff.waiting_upstream_pr` states when an observed PR does "
         "not match.",
-        ("development.waiting_ci", "handoff.awaiting_submission", "handoff.cleaning_debug",
+        ("development.waiting_ci", "handoff.awaiting_submission", "handoff.review_due",
          "handoff.waiting_upstream_pr", "upstream_review.waiting_ci"),
         edges=(("development.waiting_ci", "nominate_for_handoff"),
                ("handoff.awaiting_submission", "submit_upstream"),
@@ -409,15 +409,15 @@ DECISIONS: tuple[Item, ...] = (
         "One rule: revision +1 on every transition that invalidates requested or approved work, "
         "and on every resume, flags included. No other row bumps; `confirm_provisioning` lost "
         "its bump. `python -m lifecycle check` enforces the rule on every row.",
-        ("provisioning.idle", "development.fix_needed", "handoff.closing_internal_pr",
+        ("provisioning.idle", "development.fix_needed", "handoff.building_upstream_branch",
          "handoff.waiting_human", "release_wait.idle", "release_wait.waiting_human"),
         edges=(("provisioning.idle", "confirm_provisioning"),
-               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
-               ("handoff.waiting_human", "resume_internal_pr_closure"),
+               ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
+               ("handoff.waiting_human", "resume_upstream_branch"),
                ("release_wait.idle", "require_release_intervention"),
                ("release_wait.waiting_human", "resume_release_observation")),
         highlighted=(("provisioning.idle", "confirm_provisioning"),
-                     ("handoff.waiting_human", "resume_internal_pr_closure"),
+                     ("handoff.waiting_human", "resume_upstream_branch"),
                      ("release_wait.waiting_human", "resume_release_observation")),
     ),
     Item(
@@ -522,7 +522,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`handoff.awaiting_submission` had no reminder although it is the only mandatory human "
         "step.",
         "`record_reminder` is a rule of the `gate`, `human_wait`, and `locked` kinds.",
-        ("handoff.awaiting_submission", "handoff.cleaning_debug"),
+        ("handoff.awaiting_submission", "handoff.review_due"),
         edges=(("handoff.awaiting_submission", "record_reminder"),
                ("handoff.awaiting_submission", "submit_upstream")),
         highlighted=(("handoff.awaiting_submission", "record_reminder"),),
@@ -546,24 +546,27 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("upstream_review.waiting_ci", "record_explanation"),),
     ),
     Item(
-        "Infrastructure failure of the debug cleanup",
-        "`handoff.cleaning_debug` had no row for an infrastructure failure of the lease write.",
-        "`retry_debug_cleanup` retries within `debug_cleanup`, and "
-        "`exhaust_debug_cleanup_retries` leads to the human wait `handoff.waiting_human`, like "
-        "the other two handoff operations.",
-        ("handoff.cleaning_debug", "handoff.waiting_human", "handoff.waiting_ci"),
-        edges=(("handoff.cleaning_debug", "retry_debug_cleanup"),
-               ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
-               ("handoff.waiting_human", "resume_debug_cleanup"),
-               ("handoff.cleaning_debug", "confirm_clean_head")),
-        highlighted=(("handoff.cleaning_debug", "retry_debug_cleanup"),
-                     ("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
-                     ("handoff.waiting_human", "resume_debug_cleanup")),
+        "Infrastructure failure of the branch write",
+        "The handoff state that writes the clean head had no row for an infrastructure failure "
+        "of the lease write.",
+        "The lease write retries within its budget and then leads to the human wait "
+        "`handoff.waiting_human`, like the other handoff operation. The write is now the one of "
+        "`riscv64` in `handoff.building_upstream_branch`: `retry_upstream_branch` within "
+        "`upstream_branch`, then `exhaust_upstream_branch_retries`.",
+        ("handoff.building_upstream_branch", "handoff.waiting_human", "handoff.waiting_ci"),
+        edges=(("handoff.building_upstream_branch", "retry_upstream_branch"),
+               ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
+               ("handoff.waiting_human", "resume_upstream_branch"),
+               ("handoff.building_upstream_branch", "confirm_clean_head")),
+        highlighted=(("handoff.building_upstream_branch", "retry_upstream_branch"),
+                     ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
+                     ("handoff.waiting_human", "resume_upstream_branch")),
     ),
     Item(
         "Resumes of handoff and release waits bump the revision",
-        "`resume_internal_pr_closure`, `resume_submission_preparation`, and "
-        "`resume_release_observation` did not bump the revision.",
+        "The resume of the development PR closure (retired since: the development PR is never "
+        "closed), `resume_submission_preparation`, and `resume_release_observation` did not bump "
+        "the revision.",
         "They bump it, like every resume.",
         ("handoff.preparing_submission", "handoff.waiting_human"),
         edges=(("handoff.preparing_submission", "exhaust_comment_retries"),
@@ -613,6 +616,44 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                ("development.fix_needed+paused", "resume_pause")),
         highlighted=(("development.waiting_ci", "pause_on_processing_error"),
                      ("development.agent_running", "pause_on_processing_error")),
+    ),
+    Item(
+        "Development on `riscv64-dev`, upstreaming from a reviewed `riscv64`",
+        "Which branches development and the upstream PR use, whether the development PR is "
+        "closed at submission, and how the upstream PR follows the project's pull request "
+        "template, contributing instructions, commit conventions, and reviewers.",
+        "Development happens on `riscv64-dev`: fork provisioning creates it from the base, and "
+        "worker Work, publication, the development PR, its CI, and head observation use it. It "
+        "is never changed for upstreaming, and the development PR is never closed: the "
+        "development PR closure, its operation, budget, state, and resume are removed. "
+        "`submit_upstream` leads to `handoff.review_due`, where `request_submission_review` "
+        "allocates uncredentialed review Work (`handoff.agent_running`). The review reshapes the "
+        "non-debug commits of the approved series after the dossier's measured commit "
+        "conventions (squashing or splitting only where the contributing instructions or "
+        "reviewers require it), writes the upstream PR title and description after the pull "
+        "request template and contributing instructions, which take precedence over the "
+        "pipeline's instructions, and reviews the whole against the reviewers' expectations. "
+        "Trusted code checks the same final tree, the measurable rules, and the template's "
+        "required sections: `accept_submission_review` leads to "
+        "`handoff.building_upstream_branch`, which creates `riscv64` from the reviewed series "
+        "or replaces it under a lease, never while an upstream PR is open from it "
+        "(`require_branch_intervention`); `reject_submission_review` returns to development "
+        "with the reasons as pending feedback and posts nothing. CI runs on the clean head of "
+        "`riscv64` as before, the package names `riscv64` and the reviewed title and "
+        "description, and verification, reminders, and the retraction refer to `riscv64`. A "
+        "retraction leaves `riscv64` as it is.",
+        ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
+         "handoff.building_upstream_branch", "handoff.waiting_human", "development.fix_needed"),
+        edges=(("handoff.awaiting_submission", "submit_upstream"),
+               ("handoff.review_due", "request_submission_review"),
+               ("handoff.agent_running", "accept_submission_review"),
+               ("handoff.agent_running", "reject_submission_review"),
+               ("handoff.building_upstream_branch", "require_branch_intervention"),
+               ("handoff.waiting_human", "resume_upstream_branch")),
+        highlighted=(("handoff.review_due", "request_submission_review"),
+                     ("handoff.agent_running", "accept_submission_review"),
+                     ("handoff.agent_running", "reject_submission_review"),
+                     ("handoff.building_upstream_branch", "require_branch_intervention")),
     ),
 )
 
@@ -731,22 +772,24 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "Limits and names chosen without a decision",
         "Values and names the decisions left open.",
         "`retries.max_attempts_per_contribution` stays 24, `retries.work_recovery` stays 2, and "
-        "the verb names stay. The three human waits of handoff are one "
+        "the verb names stay. The human waits of handoff are one "
         "`handoff.waiting_human`: four resume verbs leave it, each guarded by its "
-        "`pending_human_action`, so exactly one applies.",
-        ("handoff.cleaning_debug", "handoff.waiting_ci", "handoff.closing_internal_pr",
-         "handoff.preparing_submission", "handoff.waiting_human"),
-        edges=(("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+        "`pending_human_action`, so exactly one applies (the submission review, the branch "
+        "write, CI on the clean head, and the package).",
+        ("handoff.review_due", "handoff.agent_running", "handoff.building_upstream_branch",
+         "handoff.waiting_ci", "handoff.preparing_submission", "handoff.waiting_human"),
+        edges=(("handoff.review_due", "exhaust_work_total"),
+               ("handoff.agent_running", "exhaust_work_recovery"),
+               ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
                ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
-               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
                ("handoff.preparing_submission", "exhaust_comment_retries"),
-               ("handoff.waiting_human", "resume_debug_cleanup"),
+               ("handoff.waiting_human", "resume_submission_review"),
+               ("handoff.waiting_human", "resume_upstream_branch"),
                ("handoff.waiting_human", "resume_ci"),
-               ("handoff.waiting_human", "resume_internal_pr_closure"),
                ("handoff.waiting_human", "resume_submission_preparation")),
-        highlighted=(("handoff.waiting_human", "resume_debug_cleanup"),
+        highlighted=(("handoff.waiting_human", "resume_submission_review"),
+                     ("handoff.waiting_human", "resume_upstream_branch"),
                      ("handoff.waiting_human", "resume_ci"),
-                     ("handoff.waiting_human", "resume_internal_pr_closure"),
                      ("handoff.waiting_human", "resume_submission_preparation")),
     ),
     Item(
@@ -826,19 +869,19 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`pending_human_action.counter`, and every resume from that wait starts exactly that "
         "counter again. This holds for the budgets spent on infrastructure failures too: "
         "`dispatch_recovery`, `work_recovery`, `publish_recovery`, `operation_launch`, "
-        "`debug_cleanup`, `internal_pr_closure`, `submission_comment`, and "
+        "`upstream_branch`, `submission_comment`, and "
         "`interrupted_reruns`. `require_provisioning_intervention` names `operation_launch` "
         "when that budget is the cause and no counter for its other causes. `resume_stale` "
         "starts the named counter again like every other resume. The check verifies the rule "
         "for every exhaustion and every resume.",
         ("development.waiting_ci", "development.waiting_human", "handoff.waiting_ci",
-         "handoff.closing_internal_pr", "handoff.waiting_human"),
+         "handoff.building_upstream_branch", "handoff.waiting_human"),
         edges=(("development.waiting_ci", "exhaust_interrupted_reruns"),
                ("development.waiting_human", "resume_ci"),
                ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
                ("handoff.waiting_human", "resume_ci"),
-               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
-               ("handoff.waiting_human", "resume_internal_pr_closure")),
+               ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
+               ("handoff.waiting_human", "resume_upstream_branch")),
         highlighted=(("development.waiting_human", "resume_ci"),
                      ("handoff.waiting_human", "resume_ci")),
     ),
@@ -886,15 +929,15 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`retries.infrastructure_per_head_failure` (2), without a free first one. Its "
         "exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in "
         "both `development.waiting_human` and `handoff.waiting_human`. The pending actions of "
-        "the handoff wait are `debug_cleanup_failed`, `internal_pr_closure_failed`, "
-        "`submission_comment_failed`, and `ci_interrupted`. An exhaustion names its counter in "
-        "`pending_human_action.counter`.",
-        ("handoff.cleaning_debug", "handoff.waiting_ci", "handoff.closing_internal_pr",
+        "the handoff wait are `upstream_branch_failed`, `upstream_branch_blocked`, "
+        "`submission_comment_failed`, `ci_interrupted`, and those of the review Work "
+        "(`work_budget_exhausted`, `dispatch_failed`, `work_failed`). An exhaustion names its "
+        "counter in `pending_human_action.counter`.",
+        ("handoff.building_upstream_branch", "handoff.waiting_ci",
          "handoff.preparing_submission", "handoff.waiting_human"),
-        edges=(("handoff.cleaning_debug", "exhaust_debug_cleanup_retries"),
+        edges=(("handoff.building_upstream_branch", "exhaust_upstream_branch_retries"),
                ("handoff.waiting_ci", "rerun_interrupted_ci"),
                ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
-               ("handoff.closing_internal_pr", "exhaust_internal_pr_retries"),
                ("handoff.preparing_submission", "exhaust_comment_retries"),
                ("handoff.waiting_human", "resume_ci")),
         highlighted=(("handoff.waiting_ci", "rerun_interrupted_ci"),
@@ -977,7 +1020,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "the comment is recorded and surfaced on the tracking issue. No Work is requested and "
         "nothing is answered automatically; the revision, the candidate head, and the CI "
         "evidence are kept, so the pending `submit-upstream` request stays valid.",
-        ("handoff.awaiting_submission", "handoff.cleaning_debug"),
+        ("handoff.awaiting_submission", "handoff.review_due"),
         edges=(("handoff.awaiting_submission", "record_explanation"),
                ("handoff.awaiting_submission", "submit_upstream")),
         highlighted=(("handoff.awaiting_submission", "record_explanation"),),
@@ -991,18 +1034,18 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`rerun_interrupted_ci` counts `interrupted`, and `resume_ci` starts `interrupted` "
         "again. Counts recorded for another head are counts of zero for the current one.",
         ("development.agent_running", "development.waiting_ci", "development.waiting_human",
-         "handoff.cleaning_debug", "handoff.waiting_ci"),
+         "handoff.building_upstream_branch", "handoff.waiting_ci"),
         edges=(("development.agent_running", "record_publish_success"),
                ("development.agent_running", "request_ci_rerun"),
                ("development.waiting_ci", "record_head_change"),
                ("development.waiting_ci", "rerun_interrupted_ci"),
                ("development.waiting_ci", "exhaust_interrupted_reruns"),
                ("development.waiting_human", "resume_ci"),
-               ("handoff.cleaning_debug", "confirm_clean_head"),
+               ("handoff.building_upstream_branch", "confirm_clean_head"),
                ("handoff.waiting_ci", "rerun_interrupted_ci")),
         highlighted=(("development.agent_running", "record_publish_success"),
                      ("development.waiting_ci", "record_head_change"),
-                     ("handoff.cleaning_debug", "confirm_clean_head")),
+                     ("handoff.building_upstream_branch", "confirm_clean_head")),
     ),
     Item(
         "The budget of a repair driven only by review feedback",

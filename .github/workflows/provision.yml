@@ -71,7 +71,7 @@ jobs:
           permission-workflows: write
           permission-actions: write
           permission-administration: write
-      - name: Initialize read-only CI and the exact riscv64 base, then verify
+      - name: Initialize read-only CI and the exact riscv64-dev base, then verify
         env:
           GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation-id }}

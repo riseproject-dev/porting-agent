@@ -81,7 +81,7 @@ class TestPipeline(unittest.TestCase):
             bare = root / f"{name}.git"
             bare.parent.mkdir(parents=True, exist_ok=True)
             git(root, "init", "-q", "--bare", "-b", "main", str(bare))
-            git(up, "push", "-q", str(bare), "HEAD:refs/heads/main", "HEAD:refs/heads/riscv64")
+            git(up, "push", "-q", str(bare), "HEAD:refs/heads/main", "HEAD:refs/heads/riscv64-dev")
         self.fork_bare = root / "riseproject-upstreaming/proj.git"
         self._saved = (fork_publish.URL_TEMPLATE, list(fork_publish.TEST_EXTRA_CONFIG))
         fork_publish.URL_TEMPLATE = f"file://{root}/{{}}.git"
@@ -97,7 +97,7 @@ class TestPipeline(unittest.TestCase):
         self.tmp.cleanup()
 
     def fork_head(self):
-        return git(self.fork_bare, "rev-parse", "refs/heads/riscv64")
+        return git(self.fork_bare, "rev-parse", "refs/heads/riscv64-dev")
 
     def test_full_loop(self):
         pol = policy(read_only=False)
@@ -121,7 +121,7 @@ class TestPipeline(unittest.TestCase):
 
         # 2. The agent (simulated): patch in a clone, write the artifact files.
         agent = self.root / "agent"
-        git(self.root, "clone", "-q", "-b", "riscv64", str(self.fork_bare), str(agent))
+        git(self.root, "clone", "-q", "-b", "riscv64-dev", str(self.fork_bare), str(agent))
         commit_files(agent, {".github/workflows/wheels.yml": "on: [push]\njobs: {riscv64: {runs-on: ubuntu-24.04-riscv}}\n"},
                      msg="BLD: build riscv64 wheels")
         mbox = git(agent, "format-patch", "--stdout", self.base).encode() + b"\n"

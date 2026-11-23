@@ -43,17 +43,17 @@ class TestRevision(unittest.TestCase):
         polled["activity"] = "idle"
         self.assertIsNone(lifecycle.publication_check(polled, expected_revision=rec["revision"],
                                                       expected_head=SHA_A, observed_head=SHA_A,
-                                                      ref="riscv64", repository="riseproject-upstreaming/proj"))
+                                                      ref="riscv64-dev", repository="riseproject-upstreaming/proj"))
         moved = compat.observe_head(rec, SHA_B, now=NOW).record
         self.assertEqual(lifecycle.publication_check(moved, expected_revision=rec["revision"],
                                                      expected_head=SHA_A, observed_head=SHA_B,
-                                                     ref="riscv64", repository="riseproject-upstreaming/proj"),
+                                                     ref="riscv64-dev", repository="riseproject-upstreaming/proj"),
                          "work revision changed")
 
 
 class TestPublicationCheck(unittest.TestCase):
     def args(self, **kw):
-        a = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A, ref="riscv64",
+        a = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A, ref="riscv64-dev",
                  repository="riseproject-upstreaming/proj")
         a.update(kw)
         return a

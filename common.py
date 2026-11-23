@@ -16,7 +16,12 @@ POLICY_PATH = REPOSITORY_ROOT / "policy.json"
 
 CONTROL_REPO = "riseproject-dev/porting-agent"
 FORK_ORG = "riseproject-upstreaming"
-DEV_REF = "riscv64"
+# Development happens on DEV_REF: the worker's patches, the development PR,
+# and its CI. The upstream pull request comes from UPSTREAM_REF, which only
+# the trusted handoff creates or replaces, from the reviewed non-debug series
+# of DEV_REF.
+DEV_REF = "riscv64-dev"
+UPSTREAM_REF = "riscv64"
 NATIVE_RUNNER_LABEL = "ubuntu-24.04-riscv"
 STATE_ROOT = ".state"
 INTAKE_LABEL = "upstreaming-request"

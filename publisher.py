@@ -22,7 +22,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from common import DEBUG_PREFIX, DEV_REF
+from common import DEBUG_PREFIX, DEV_REF, UPSTREAM_REF
 
 MAX_FILES = 300
 MAX_BLOB_BYTES = 2 * 1024 * 1024
@@ -121,7 +121,7 @@ def _bad_path(p: str) -> str | None:
 
 def validate_update(repo: Path, *, base: str, expected_head: str, candidate: str,
                     scope: Scope) -> Report:
-    """Validate ``candidate`` as the new ``riscv64`` head.
+    """Validate ``candidate`` as the new head of the published branch.
 
     * ``append``: ``expected_head`` must be an ancestor (fast-forward).
     * ``rewrite``: allowed history rewrite; ``base`` must be an ancestor and
@@ -217,11 +217,17 @@ def debug_commits(repo: Path, base: str, head: str) -> list[dict]:
     return out
 
 
-def lease_refspec(candidate: str, expected_head: str, ref: str = DEV_REF) -> list[str]:
-    """Arguments for the exact-head leased push. Only ``riscv64``."""
-    if ref != DEV_REF:
-        raise ValueError(f"only {DEV_REF} may be published")
-    if not re.fullmatch(r"[0-9a-f]{40}", candidate) or not re.fullmatch(r"[0-9a-f]{40}", expected_head):
+def lease_refspec(candidate: str, expected_head: str | None, ref: str = DEV_REF) -> list[str]:
+    """Arguments for the exact-head leased push of ``riscv64-dev`` (the
+    development branch, and in upstream review the revisions of ``riscv64``)
+    or of ``riscv64`` by the handoff. Only ``riscv64`` may be created: an
+    ``expected_head`` of ``None`` leases that the branch does not exist."""
+    if ref not in (DEV_REF, UPSTREAM_REF):
+        raise ValueError(f"only {DEV_REF} and {UPSTREAM_REF} may be published")
+    if expected_head is None and ref != UPSTREAM_REF:
+        raise ValueError(f"{ref} is never created by a publication")
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate) or (
+            expected_head is not None and not re.fullmatch(r"[0-9a-f]{40}", expected_head)):
         raise ValueError("lease needs full SHAs")
-    return [f"--force-with-lease=refs/heads/{ref}:{expected_head}",
+    return [f"--force-with-lease=refs/heads/{ref}:{expected_head or ''}",
             f"{candidate}:refs/heads/{ref}"]

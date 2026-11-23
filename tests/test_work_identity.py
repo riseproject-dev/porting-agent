@@ -160,7 +160,7 @@ class TestLateResultMatrix(unittest.TestCase):
         record = self.record()
         key = record["active_work"]["dedupe_key"]
         check = dict(expected_revision=5, expected_head=SHA_A, observed_head=SHA_A,
-                     ref="riscv64", repository="riseproject-upstreaming/proj")
+                     ref="riscv64-dev", repository="riseproject-upstreaming/proj")
         self.assertIsNone(lc.publication_check(record, expected_generation=1, work_key=key, **check))
         self.assertEqual(lc.publication_check(record, expected_generation=0, work_key=key, **check),
                          "work generation changed")

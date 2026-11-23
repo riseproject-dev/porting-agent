@@ -32,7 +32,7 @@ LONG_AGO = (datetime.fromisoformat(NOW) - timedelta(days=40)).isoformat()
 
 # A value for every field a row sets without stating its value.
 SAMPLE = {
-    "fork": {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64",
+    "fork": {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64-dev",
              "head_sha": SHA_A, "pr_number": None},
     "fork.head_sha": SHA_B,
     "upstream.repository_id": 1, "upstream.base_ref": "main", "upstream.base_sha": SHA_C,
@@ -43,7 +43,7 @@ SAMPLE = {
     "dossier_evidence_id": "dossier-1", "admission_class": "configuration_integration",
     "scope_paths": ["pyproject.toml"], "parked_reason": "no bounded patch",
     "terminal_reason": "not applicable", "last_ci_evidence_id": "ci-2-8-1",
-    "clean_head_sha": SHA_B,
+    "clean_head_sha": SHA_B, "submission_review_id": "submission-review-1",
     "handoff_request": {"command_id": "observation-ci-2-8-1", "head": SHA_A, "revision": 0},
     "handoff_approval": {"command_id": "comment-1", "actor": OWNER, "head": SHA_A, "revision": 0,
                          "evidence_ids": ["ci-2-7-1"]},
@@ -900,8 +900,7 @@ class TestSubmitUpstream(unittest.TestCase):
     exact candidate head, from `handoff.awaiting_submission` only."""
 
     VALUES = {"handoff_approval": {"command_id": "comment-1", "actor": OWNER, "head": SHA_A,
-                                   "revision": 0, "evidence_ids": ["ci-2-7-1"]},
-              "active_operation_id": "op-handoff-1"}
+                                   "revision": 0, "evidence_ids": ["ci-2-7-1"]}}
 
     def submit(self, rec, text, **kw):
         return engine.apply_command(rec, commands.parse(text), policy=POLICY, now=NOW,
@@ -917,15 +916,15 @@ class TestSubmitUpstream(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(commands.CommandError):
                 commands.parse(text)
 
-    def test_exact_revision_and_candidate_head_enter_debug_cleanup(self):
+    def test_exact_revision_and_candidate_head_enter_the_submission_review(self):
         rec = awaiting_submission()
         out = self.submit(rec, f"/upstreaming submit-upstream revision=0 head={SHA_A}")
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(out.verb, "submit_upstream")
         new = out.record
-        self.assertEqual(engine.state_key(new), "handoff.cleaning_debug")
+        self.assertEqual(engine.state_key(new), "handoff.review_due")
         self.assertEqual(new["handoff_approval"], self.VALUES["handoff_approval"])
-        self.assertEqual(new["active_operation_id"], "op-handoff-1")
+        self.assertIsNone(new["active_operation_id"])
         self.assertIsNone(new["pending_human_action"])
         self.assertEqual(new["revision"], rec["revision"])
         self.assertEqual((new["fork"], new["handoff_request"], new["last_ci_evidence_id"]),
@@ -1075,12 +1074,30 @@ class TestSingleWritePath(unittest.TestCase):
 
     def test_no_fork_write_is_admitted_at_the_submission_gate(self):
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
-                    ref="riscv64", repository="riseproject-upstreaming/proj")
+                    ref="riscv64-dev", repository="riseproject-upstreaming/proj")
         self.assertIsNone(lc.publication_check(contribution(activity="agent_running"), **args))
         self.assertEqual(lc.publication_check(awaiting_submission(), **args),
                          "state handoff.awaiting_submission does not permit fork writes")
-        cleaning = awaiting_submission(activity="cleaning_debug", pending_human_action=None)
-        self.assertIsNone(lc.publication_check(cleaning, **args))
+        for activity in ("review_due", "agent_running", "waiting_ci", "preparing_submission"):
+            other = awaiting_submission(activity=activity, pending_human_action=None)
+            self.assertEqual(lc.publication_check(other, **args),
+                             f"state handoff.{activity} does not permit fork writes")
+        # The build of `riscv64` is the one handoff state that writes, and only
+        # `riscv64`: never the development branch.
+        building = awaiting_submission(activity="building_upstream_branch",
+                                       pending_human_action=None)
+        self.assertEqual(lc.publication_check(building, **args),
+                         "ref 'riscv64-dev' is not 'riscv64'")
+        self.assertIsNone(lc.publication_check(building, **dict(args, ref="riscv64")))
+
+    def test_development_writes_only_the_development_branch(self):
+        args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
+                    ref="riscv64", repository="riseproject-upstreaming/proj")
+        rec = contribution(activity="agent_running")
+        self.assertEqual(lc.publication_check(rec, **args), "ref 'riscv64' is not 'riscv64-dev'")
+        legacy = dict(rec, fork=dict(rec["fork"], head_ref="riscv64"))
+        self.assertEqual(lc.publication_check(legacy, **dict(args, ref="riscv64-dev")),
+                         "the recorded development branch is not 'riscv64-dev'")
 
     def test_handoff_waits_carry_the_pending_action_the_table_names(self):
         self.assertIsNone(engine.state_problem(awaiting_submission()))

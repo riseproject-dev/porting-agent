@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-# Trusted handoff operations after an accepted `/upstreaming submit-upstream`:
-# remove debug commits from the one verified fork under an exact-head lease,
-# close the recorded development PR, and post the submission package on the
-# tracking issue. Each job checks out the state at the head of main, checks
+# Trusted handoff operations after an accepted `/upstreaming submit-upstream`
+# and its checked submission review: build the upstream branch riscv64 of the
+# one verified fork from the reviewed series under an exact-head lease (never
+# while an upstream PR is open from it; riscv64-dev and the development PR are
+# not touched), and post the submission package on the tracking issue. Each job checks out the state at the head of main, checks
 # that it is still the head and still runs the controller-recorded operation
 # before it mints a token, validates the operation again before any effect, and
 # uploads a receipt the controller reads back. No model runs here and no
@@ -30,6 +31,7 @@ jobs:
     outputs:
       kind: ${{ steps.target.outputs.kind }}
       fork_name: ${{ steps.target.outputs.fork_name }}
+      artifact_id: ${{ steps.target.outputs.artifact_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -48,11 +50,16 @@ jobs:
           OPERATION: ${{ inputs.operation-id }}
         run: uv run --locked python -m handoff target --operation-id "$OPERATION"
 
-  debug-cleanup:
+  upstream-branch:
     needs: [target]
-    if: needs.target.outputs.kind == 'debug_cleanup'
+    if: needs.target.outputs.kind == 'upstream_branch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # The job's own token downloads the reviewed series from the
+      # publication artifact of the worker run in this repository.
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -68,7 +75,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation-id }}
-        run: uv run --locked python -m handoff check --operation-id "$OPERATION" --kind debug_cleanup --out handoff/outcome.json
+        run: uv run --locked python -m handoff check --operation-id "$OPERATION" --kind upstream_branch --out handoff/outcome.json
+      - name: Download the reviewed series of the accepted review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ needs.target.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "invalid publication artifact id"; exit 1; }
+          mkdir -p review
+          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT" > review/artifact.json
+          gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT/zip" > review/artifact.zip
+          unzip -q -o -j review/artifact.zip -d review/files
+          [ -f review/files/patches.mbox ] && [ ! -L review/files/patches.mbox ] || { echo "no reviewed series"; exit 1; }
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         id: fork-token
         with:
@@ -78,59 +97,12 @@ jobs:
           repositories: ${{ needs.target.outputs.fork_name }}
           permission-contents: write
           permission-workflows: write
-      - name: Remove debug commits under the exact-head lease and read back
+      - name: Build riscv64 from the reviewed series under the exact-head lease and read back
         env:
           GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation-id }}
           UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
-        run: uv run --locked python -m handoff cleanup --operation-id "$OPERATION" --out handoff/outcome.json
-      - name: Record a failed attempt
-        if: failure()
-        env:
-          OPERATION: ${{ inputs.operation-id }}
-        run: uv run --locked python -m handoff failed --operation-id "$OPERATION" --out handoff/outcome.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        if: always()
-        with:
-          name: porting-handoff
-          path: handoff/outcome.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-  internal-pr-closure:
-    needs: [target]
-    if: needs.target.outputs.kind == 'internal_pr_closure'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          # The state at the head of main when the job starts, not the
-          # commit the run was dispatched at: a queued or re-run job reads
-          # the current state.
-          ref: main
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
-        with:
-          enable-cache: false
-      - name: Check the operation against the head of main before any token is minted
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OPERATION: ${{ inputs.operation-id }}
-        run: uv run --locked python -m handoff check --operation-id "$OPERATION" --kind internal_pr_closure --out handoff/outcome.json
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
-        id: fork-token
-        with:
-          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
-          owner: riseproject-upstreaming
-          repositories: ${{ needs.target.outputs.fork_name }}
-          permission-pull-requests: write
-      - name: Close the recorded development PR and read it back
-        env:
-          OPERATION: ${{ inputs.operation-id }}
-          UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
-        run: uv run --locked python -m handoff close --operation-id "$OPERATION" --out handoff/outcome.json
+        run: uv run --locked python -m handoff branch --operation-id "$OPERATION" --series review/files/patches.mbox --artifact-meta review/artifact.json --out handoff/outcome.json
       - name: Record a failed attempt
         if: failure()
         env:
@@ -193,7 +165,7 @@ jobs:
           retention-days: 30
 
   continuation:
-    needs: [target, debug-cleanup, internal-pr-closure, submission-comment]
+    needs: [target, upstream-branch, submission-comment]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

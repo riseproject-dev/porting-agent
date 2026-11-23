@@ -29,7 +29,7 @@ POLICY = policy(read_only=False)
 OVERRIDE = {"class": "optimized_backend", "paths": ["src/*", "setup.py"], "reason": "reviewed"}
 # Refreshes: none, one that began with the fork and development PR the record
 # still holds, and one whose development PR no longer matches.
-FORK = {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64",
+FORK = {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64-dev",
         "head_sha": SHA_A, "pr_number": 1}
 REFRESHES = {
     "none": (None, None),

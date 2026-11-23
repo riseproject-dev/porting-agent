@@ -84,22 +84,22 @@ These table mutations break a settled decision but still pass the check:
 
 ## A moved branch before the package is posted waits for a human
 
-- **Where:** `handoff.preparing_submission` (and `handoff.closing_internal_pr`); `handoff.post_package` and `handoff.close_development_pr`.
-- **Today:** the workflow posts the package only while `riscv64` still resolves to the clean head, and closes the development PR only at the clean head. When the branch moved, the attempt fails as an infrastructure failure: `retry_submission_comment` (or `retry_internal_pr_closure`) within the budget, then the exhaustion row to `handoff.waiting_human`, whose only exit is the resume to the same step. Nothing returns the contribution to development, so a human restores the branch or abandons.
-- **Table:** these states have no row for a changed fork head; the decision that a changed head before the package is posted returns to development is taken by `return_for_repair` in `handoff.cleaning_debug` and `handoff.waiting_ci` only.
-- **Required:** a table decision for a changed head in `handoff.closing_internal_pr` and `handoff.preparing_submission` (for example `return_for_repair`), then take it from the attempt's failure.
+- **Where:** `handoff.preparing_submission`; `handoff.post_package`.
+- **Today:** the workflow posts the package only while `riscv64` still resolves to the clean head. When the branch moved, the attempt fails as an infrastructure failure: `retry_submission_comment` within the budget, then `exhaust_comment_retries` to `handoff.waiting_human`, whose only exit is the resume to the same step. Nothing returns the contribution to development, so a human restores the branch or abandons.
+- **Table:** this state has no row for a changed `riscv64` head; the decision that a changed head before the package is posted returns to development is taken by `return_for_repair` in `handoff.building_upstream_branch` and `handoff.waiting_ci` only.
+- **Required:** a table decision for a changed head in `handoff.preparing_submission` (for example `return_for_repair`), then take it from the attempt's failure.
 
-## Dossier contribution-policy items are not enforced before handoff
+## Dossier contribution-policy items are not enforced before nomination
 
-- **Where:** `nominate_for_handoff` from development CI in `observe_ci.py`; the submission package in `handoff.build_package`.
-- **Today:** the dossier's contribution rules (for example "add a CHANGELOG entry") and its admitted paths are not checked against the series before the contribution is nominated for handoff. The submission package only flags them: it shows the rules and names the admitted paths the series does not change, and tells the human not to submit when the series needs a change but to withdraw the package with `retract-pr`, which returns the contribution to development. The live contribution `closeio--ciso8601/1` is in this case: its dossier asks for a CHANGELOG entry and its series does not change `CHANGELOG.md`.
+- **Where:** `nominate_for_handoff` from development CI in `observe_ci.py`.
+- **Today:** the contributing instructions and reviewer expectations that need a change to the series (for example "add a CHANGELOG entry") are checked at `submit-upstream`, by the submission review, which fails with them as reasons and returns the contribution to development; the worker is told to follow them, and its gate checks only the measurable commit rules. Nothing checks them before the contribution is nominated for handoff, so the gate can ask for `submit-upstream` for a series the review then sends back. The live contribution `closeio--ciso8601/1` is in this case: its dossier asks for a CHANGELOG entry and its series does not change `CHANGELOG.md`.
 - **Table:** `nominate_for_handoff` requires every required CI job to pass on the exact head; it states no contribution-policy check.
 - **Required:** a table decision on whether unmet contribution-policy items block nomination or are requested as development Work, then the check from the dossier.
 
 ## A pause or retraction after the final check is not seen by the effect
 
-- **Where:** `handoff.yml`; `python -m handoff check` and the effects in `handoff.cleanup`, `handoff.close_development_pr`, and `handoff.post_package`.
-- **Today:** each job checks that its checkout is the head of `main` and that the state still runs the operation before it mints its token; the effect then runs `load_request` again, but on the same checkout. A pause, a retraction, or any other change committed to `main` after that check is not seen, so the effect can still run once. The effects check the GitHub side right before they write (the exact-head lease, the exact development PR at the clean head, the branch at the clean head before the package is posted), which keeps the window narrow.
+- **Where:** `handoff.yml`; `python -m handoff check` and the effects in `handoff.build_upstream_branch` and `handoff.post_package`.
+- **Today:** each job checks that its checkout is the head of `main` and that the state still runs the operation before it mints its token; the effect then runs `load_request` again, but on the same checkout. A pause, a retraction, or any other change committed to `main` after that check is not seen, so the effect can still run once. The effects check the GitHub side right before they write (the exact-head lease on `riscv64` and the open upstream PRs from it, the branch at the clean head before the package is posted), which keeps the window narrow.
 - **Table:** `pause` stops new Work and writer admission; `retract_submission` requires quiescence (no open operation).
 - **Required:** a check of the head of `main` immediately before each effect, or a decision that the remaining window is acceptable.
 
@@ -110,20 +110,26 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** `operation_launch` counts launches; it states no interval tied to the run timeout or the queueing of the workflow.
 - **Required:** an interval at least as long as the workflow's timeout plus its queueing, or a check of the run's status before an attempt is closed as spent.
 
-## The cleanup readback compares commit messages, not trees
+## CI on a rebuilt `riscv64` head may never run
 
-- **Where:** `debug_cleanup` readback in `handoff.readback`.
-- **Today:** the readback of a rewritten clean head checks that the removed commits are `{debug}` commits of the series and that the clean series is that series without them, in order and with the same messages. It does not compare the trees or patches of the kept commits with those of the approved series, so a rewrite that kept the messages and changed the content would be read back as clean. The rewrite runs only in the trusted workflow, under an exact-head lease, and CI on the clean head runs before the package.
-- **Table:** `confirm_clean_head` requires that the lease write and the ref readback match.
-- **Required:** the readback compares the patch of each kept commit (or the final tree against the approved head without the debug commits' changes).
+- **Where:** `handoff.waiting_ci`, `accept_clean_head_ci`; the CI observation in `observe_ci.py`.
+- **Today:** when the reviewed series has the tree of the candidate head (the approved series had no debug commit), the CI evidence of the candidate head on `riscv64-dev` is read for the clean head. Otherwise CI must run on the head of `riscv64`, which has no pull request in the fork: it runs only if the project's workflows run on a push to any branch. When they do not, no run appears, and the contribution waits in `handoff.waiting_ci` with nothing to rerun and no deadline; `park` and `pause` still apply.
+- **Table:** `accept_clean_head_ci` requires every required job to execute and pass on the clean head.
+- **Required:** a trusted way to run CI on the head of `riscv64` (for example a workflow dispatch or a second, marked fork PR), or a table decision on a deadline for the wait.
 
-## The development PR stays closed after a retraction
+## The reviewed series can expire before `riscv64` is built
 
-- **Where:** `retract_submission` and `refresh_investigation` from `handoff.waiting_upstream_pr`; the development PR plans in `controller.py`.
-- **Today:** the development PR was closed during the handoff. After a retraction or a refresh nothing reopens it: the development PR plans start only for a fork without a recorded PR, so later development heads have no open development PR for CI and review.
-- **Table:** `retract_submission` unlocks branch work; no row reopens or creates the development PR.
-- **Required:** decide where the development PR operation sits in the table (see "Development PR operations have no row").
+- **Where:** `handoff.building_upstream_branch`; the `porting-publication` artifact of the review's worker run (kept 30 days).
+- **Today:** the build downloads the reviewed series from that artifact. When it has expired (for example after a long human wait in `handoff.waiting_human`), each attempt fails as an infrastructure failure until `upstream_branch` is spent, and the resume tries the same review again.
+- **Table:** `resume_upstream_branch` returns to the build; no row requests a fresh review from the build.
+- **Required:** a table decision that an expired review returns to `handoff.review_due`, or a durable copy of the series.
 
+## Upstream review observes `riscv64` against the development head
+
+- **Where:** head observation in `upstream_review` (`observe_ci.observe`, `compat.observe_head`); upstream revision Work.
+- **Today:** in upstream review the observation reads `riscv64`, the branch of the upstream PR, but `fork.head_sha` still names the approved head of `riscv64-dev`. The first observation after `verify_upstream_pr` therefore records the head of `riscv64` as a head change through the legacy head observation, with a revision bump; revision Work then builds on that head and publishes to `riscv64` (`lifecycle.work_ref`). The commit rules of the dossier are checked by the worker gate there, but no submission review runs on a revision.
+- **Table:** `verify_upstream_pr` records `upstream_pr` only; `record_head_change` in `upstream_review.waiting_ci` is for a head the pipeline did not publish.
+- **Required:** a table decision on the head upstream review records at `verify_upstream_pr`, together with the migration of upstream review to the table's rows.
 
 ## A legacy pending action in upstream review has no resume
 
@@ -242,16 +248,23 @@ These follow the literal reading of a decision and are kept until a decision say
 - A worker outcome `proposal`, which no publisher produces any more, is folded as an outcome rejected in trusted validation.
 - A Result of Work that the record holds but that its phase does not request (investigation Work outside `investigation`, patch Work outside `development`, revision Work outside `upstream_review`) is late, and so are a dossier outside `investigation`, any other Result in `investigation`, and the Result of a held publication outside `development` and `upstream_review`.
 - The provisioning migration treats the retired `provision_fork` wait like the provisioning wait without a pending action: the fork is provisioned automatically from `provisioning.idle`. Development without a fork returns to `provisioning.idle`, and a proposal held on the provisioned fork is discarded for fresh patch Work in `development.idle`; both at a new revision.
-- `submit_upstream` records `handoff_approval` with the CI evidence and the dossier the approval saw (`evidence_ids`), and the first debug cleanup attempt as `active_operation_id`.
+- `submit_upstream` records `handoff_approval` with the CI evidence and the dossier the approval saw (`evidence_ids`); it records no operation. The review Work is allocated in `handoff.review_due` by `request_submission_review`, in the same tick when a worker slot is free.
+- The submission review reshapes the commits of the approved series "only if CONTRIBUTING or reviewers require it" for a squash or a split; that requirement is the model's judgment, and trusted code checks only that the final tree is unchanged and that the measurable rules, including `max_commits`, hold.
+- A dossier of schema version 1 records no measurable rules and no template sections: the submission check then applies the rules and sections the review reports having found in the project. They are untrusted but can only refuse a submission, never admit one.
+- A required template section is present when the description has a Markdown heading with the same words (case and emphasis ignored). Whether every checklist item is answered honestly is the review's judgment; the check does not parse checklists.
+- CI is a function of the tree: when the reviewed series has the tree of the candidate head, the CI evidence of the candidate head on `riscv64-dev` is CI on the clean head, and `accept_clean_head_ci` records it.
+- "An upstream PR is open from `riscv64`" is any open pull request of the upstream repository whose head is `riscv64` of the fork owner, whoever opened it. It is checked only when `riscv64` must be written; a `riscv64` that already resolves to the reviewed head is read back without a write and without that check.
+- A failed review, a failed check, or an unusable review Result never posts anything and never writes `riscv64`. `reject_submission_review` keeps `handoff_approval`, like `return_for_repair`; the next `submit_upstream` replaces it.
+- The worker gate reads the commit messages of a proposed series from its mbox as `git am` would (the subject without its `[PATCH]` prefix, the body up to the first `---` line); the submission check reads them from the rebuilt commits.
 - The handoff operations are launched without a row, like the development PR operations: within `operation_launch`, again after 300 seconds without a receipt, and not while the contribution is paused. Launches spent without a receipt are a definite infrastructure failure of the attempt: once the last allowed launch is 300 seconds old with no receipt, and the contribution is not paused, the controller closes the attempt as failed (`begin_effect` and `record_failure`, with the facts of a receipt, although no workflow reported its final check) and fires the retry row of the state or its exhaustion row. A receipt of that attempt that arrives later is not folded; the next attempt finds the effect already in place and reads it back. The receipt of an attempt the workflow refused is not folded either, so refusals count as launches without a receipt. The trusted workflow accepts an attempt of an earlier revision when the record names it as its active operation (a pause and its resume bump the revision).
-- The counter of `debug_cleanup`, `internal_pr_closure`, and `submission_comment` ("the handoff operation's attempts") is the number of attempts in the current round, recorded on each attempt as `count:<k>`: a failed attempt with a count below `retries.infrastructure_per_head_failure` plus one takes the retry row, which the next attempt (count plus one) charges; at that count it takes the exhaustion row. After the resume of that exhaustion the next attempt counts from one. A pause does not start the count again.
-- A cleanup that cannot produce an admissible clean head (a conflict once the debug commits are removed, a merge commit, nothing left, a validation problem) or whose exact-head lease conflicts (the branch is neither the approved head nor the clean head) is not charged to `debug_cleanup`: it takes `return_for_repair`, whatever the count.
-- A cleanup without a debug commit writes nothing, and the CI evidence already recorded for that exact head is CI on the clean head: `accept_clean_head_ci` can be taken in the tick that confirms the clean head.
-- `return_for_repair` from `handoff.cleaning_debug` and `handoff.waiting_ci` keeps `handoff_approval`, as its row clears only the clean head, `handoff_request`, and the pending action; the next `submit_upstream` replaces it.
+- The counter of `upstream_branch` and `submission_comment` ("the handoff operation's attempts") is the number of attempts in the current round, recorded on each attempt as `count:<k>`: a failed attempt with a count below `retries.infrastructure_per_head_failure` plus one takes the retry row, which the next attempt (count plus one) charges; at that count it takes the exhaustion row. After the resume of that exhaustion the next attempt counts from one. A pause does not start the count again.
+- A build of `riscv64` whose reviewed series does not rebuild to the reviewed head, or whose lease on `riscv64` conflicts (the branch moved between the read and the push), is not charged to `upstream_branch`: it takes `return_for_repair`, whatever the count; one that finds an upstream PR open from `riscv64` takes `require_branch_intervention`.
+- When the reviewed series has the tree of the candidate head, `accept_clean_head_ci` can be taken in the tick that confirms the clean head, from the CI evidence already recorded for the candidate head.
+- `return_for_repair` from `handoff.building_upstream_branch` and `handoff.waiting_ci` keeps `handoff_approval`, as its row clears only the clean head, the review, `handoff_request`, and the pending action; the next `submit_upstream` replaces it.
 - In the locked wait `handoff_request.command_id` names the submission package operation; the reminder links the comment that operation read back.
 - "A compatible human author" of the upstream PR is a `User` account whose id is in `command_authority.actor_ids`; it need not be the human who requested the submission. A draft pull request is open.
 - An observation of the locked wait that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.
-- The submission package's title is the subject of the one commit of the clean series, or `Build riscv64 wheels` for several commits; its description is the commit body (each commit with its body for a series), a `Testing` section from the CI evidence of the clean head, and the open issues of the upstream repository that the dossier's history records.
+- The submission package's title and description are the reviewed ones; a reviewed title that is empty once cleaned is `Build riscv64 wheels`. The package states in the comment, not in the description, how many required CI jobs passed and on which head.
 - Handoff receipts are read only from completed `handoff.yml` runs on `main` dispatched by `workflow_dispatch`, and only for the open operation the record runs.
 - The workflow posts the submission package only while `riscv64` resolves to the clean head. A moved branch fails the attempt as an infrastructure failure ("posting the package failed"), the only failure row of `handoff.preparing_submission`; a package already posted is found by its marker and read back without that check.
 - `/upstreaming retract-pr` takes the revision and the head only. The spec's form also carries `reason="..."`, but `retract_submission` reads no reason, so the grammar refuses it.
@@ -259,7 +272,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - The submission package asks for no change to the series: a change the contribution policy needs (a CHANGELOG entry, a commit sign-off) withdraws the package with `retract-pr`, and only steps outside the series (such as signing a CLA) are the human's before submitting.
 - In the proposed title and description every at sign that could start a mention gets a word joiner (U+2060) after it, whatever the Markdown around it, so the upstream pull request notifies nobody; the package says so.
 - A dossier stored before the contribution guidelines were part of the contract (schema version 1, such as the dossier of `closeio--ciso8601/1`) stays the verified dossier of its record: it records no measurable rules, so the worker gate checks no commit rule for it. A new investigation, a refresh included, must record them, and the gate refuses a dossier of version 1 from any investigation run after the change, also one recovered from an earlier run.
-- A handoff operation that a human resolves with `resolve-operation` fires no row: the confirm rows need the receipt and its readback, and the retry and exhaustion rows a reported failure. The record releases the operation and the controller plans the next attempt, which finds the cleanup, the closure, or the package already in place and reads it back.
+- A handoff operation that a human resolves with `resolve-operation` fires no row: the confirm rows need the receipt and its readback, and the retry and exhaustion rows a reported failure. The record releases the operation and the controller plans the next attempt, which finds `riscv64` or the package already in place and reads it back.
 
 ## Code still outside the engine
 

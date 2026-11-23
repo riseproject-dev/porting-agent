@@ -40,7 +40,7 @@ def contribution(phase="development", **over):
         "admission_class": "configuration_integration",
         "upstream": {"repository_id": 1, "full_name": "example/proj", "base_ref": "main",
                      "base_sha": SHA_C},
-        "fork": {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64",
+        "fork": {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64-dev",
                  "head_sha": SHA_A, "pr_number": 1},
     })
     rec.update(over)

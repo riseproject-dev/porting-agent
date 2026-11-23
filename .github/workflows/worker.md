@@ -203,12 +203,12 @@ pre-agent-steps:
       if [ -n "$base" ]; then git fetch -q --no-tags --depth=200 upstream "$base"; fi
       if [ -n "$head" ]; then
         git fetch -q --no-tags --depth=200 origin "$head"
-        git checkout -q -B riscv64 "$head"
+        git checkout -q -B riscv64-dev "$head"
       elif [ -n "$base" ]; then
-        git checkout -q -B riscv64 "$base"
+        git checkout -q -B riscv64-dev "$base"
       else
         git fetch -q --no-tags --depth=200 upstream HEAD
-        git checkout -q -B riscv64 FETCH_HEAD
+        git checkout -q -B riscv64-dev FETCH_HEAD
       fi
       git config user.name "riseproject-upstreaming[bot]"
       git config user.email "359135081+riseproject-upstreaming[bot]@users.noreply.github.com"
@@ -282,6 +282,23 @@ jobs:
           fi
           if [ "$rc" != 0 ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$rc" = 0 ] && [ "$(jq -r .task ../in/task.json)" = submission_review ]; then
+            # The submission review writes nothing: its reshaped series and
+            # pull request text are checked here without any token, and only
+            # the trusted handoff workflow builds riscv64 from them.
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            check_rc=0
+            uv run --locked python -m artifact extract ../in/proposal.zip ../in || check_rc=$?
+            if [ "$check_rc" = 0 ]; then
+              uv run --locked python -m submission check --task ../in/task.json \
+                --review ../in/proposal.json --mbox ../in/patches.mbox --out ../in/outcome.json
+            else
+              jq -n '{status:"submission_review", verdict:"fail", stage:"submission_check", reasons:["check: the review artifact is malformed"]}' \
+                > ../in/outcome.json
+            fi
+            jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [ "$rc" = 0 ]; then
@@ -392,8 +409,8 @@ sandbox:
 
 You handle exactly one task for the RISE riscv64 Python project porting
 pipeline. The trusted pre-agent step wrote the immutable task to
-`/tmp/gh-aw/agent/task.json` and checked out the contribution's `riscv64`
-branch in `./fork`. The task's
+`/tmp/gh-aw/agent/task.json` and checked out the contribution's development
+branch (`riscv64-dev`, or `riscv64` for an upstream revision) in `./fork`. The task's
 `plan` field says what to do; `reason_ids` and `context` say why. For repair and
 revision tasks, read every entry in `context.reason_evidence` before researching
 or editing. A `dossier` evidence entry identifies the latest verified dossier.
@@ -415,9 +432,58 @@ Only process the compiler-supplied `work_queue_assignment`. It has exactly
 one Claim; use its `handle` as `claim_handle` on every safe output and on
 `work_queue_claim_finish`.
 
+## The submission review task
+
+When `task.task` is `submission_review`, you prepare the upstream submission
+of the approved series and review it; you change no code and you run no
+reproduction. `expected_head` is the approved head of `riscv64-dev` and
+`base_sha` the frozen base. Read the complete dossier, in particular its
+`contribution_guidelines`, then read the project's pull request template(s),
+`CONTRIBUTING` documents and recent reviews of the changed paths yourself. The
+project's contributing instructions take precedence over these instructions
+wherever they differ.
+
+1. Take the non-debug commits of `base_sha..expected_head` (every commit whose
+   subject starts with `{debug}` is left out) and rebuild them on `base_sha`
+   in `./fork` with `git cherry-pick`. Reword every commit message after the
+   dossier's `commit_conventions` (rules, observations, examples) and the
+   contributing instructions. Squash or split commits only when the
+   contributing instructions or the reviewers' recorded expectations require
+   it. The final tree MUST be exactly the tree of the approved series without
+   its debug commits: compare `git rev-parse HEAD^{tree}` with the tree of a
+   plain cherry-pick of the non-debug commits. Any code change makes trusted
+   code reject the submission.
+2. Write the upstream pull request title and description. Follow the pull
+   request template exactly: keep every section heading of the template as a
+   Markdown heading, fill every section, and answer every checklist item
+   honestly (check only what is true of this series; explain an item that does
+   not apply). Follow the contributing instructions for the description. Do
+   not mention people; trusted code makes every at sign inert before a human
+   opens the pull request.
+3. Review the series and the text against every reviewer expectation and
+   contributing instruction the dossier records, and against what the
+   project's recent reviews of these paths show. Report each expectation with
+   whether it is met. When an expectation cannot be met without a change to
+   the code (for example a changelog entry the series lacks, or tests the
+   reviewers expect), the verdict is `fail` with one reason per problem: the
+   contribution returns to development with your reasons as its feedback.
+
+Write `porting-out/proposal.json` matching `schemas/submission_review.schema.json`
+(`contribution_id`, `expected_revision` and `expected_head` copied from the
+task; `verdict`, `reasons`, `title`, `body`, `series_digest`, `expectations`,
+and the optional `checklist`). When the dossier is of schema version 1 (it has
+no `contribution_guidelines`), also report the measurable `commit_rules` and
+the `template_sections` you found in the project, in the dossier's format:
+trusted code applies them. For a passing review write the reshaped series as
+`porting-out/patches.mbox` with `git -C fork format-patch --stdout base_sha`
+and set `series_digest` to its SHA-256. Upload, then finish `completed`. Trusted
+code rebuilds the series, requires the same final tree, checks the measurable
+commit rules and the template's required sections, and only then builds the
+upstream branch `riscv64` from your series.
+
 ## Mandatory riscv64 reproduction
 
-Before editing, read the anonymously resolved exact image reference from
+For every task except `submission_review`, before editing, read the anonymously resolved exact image reference from
 `/tmp/gh-aw/agent/reproduction-image`. It MUST name
 `ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:<64 hex>`.
 Run the applicable build and test commands in that image with
@@ -443,15 +509,15 @@ riscv64; use a blocked/non-patch outcome with exact evidence otherwise.
 
 ## What to produce
 
-Write these files into `porting-out/` at the top of the workspace (next
+For a patch, repair or revision task, write these files into `porting-out/` at the top of the workspace (next
 to `fork/`, not inside it) and upload them with a single `upload_artifact`
 call: `{"path": "porting-out"}` (the native handler names the artifact
 `claim-<hash>-porting-out`):
 
 - `proposal.json`: a JSON object matching
   `schemas/proposal.schema.json` in the control repository.
-  `contribution_id`, `expected_revision` and `expected_head` must copy the
-  task's `contribution_id`, `revision` and `expected_head`. `operation` is
+  `contribution_id`, `expected_revision`, `expected_head` and `ref` must copy the
+  task's `contribution_id`, `revision`, `expected_head` and `ref`. `operation` is
   `append` (new commits on top of `expected_head`), `rewrite` (a series on
   top of `base_sha`, only if `allowed_operations` contains it) or `none`.
   `changed_files` lists every path your series changes relative to
@@ -479,7 +545,7 @@ finish with `outcome: "cancelled"`.
 
 You cannot push, open PRs, comment or change any repository. A trusted job
 re-applies your series in a fresh repository, validates it against the
-approved scope and pushes it to `riscv64` itself. Anything outside
+approved scope and pushes it to the task's `ref` itself. Anything outside
 `allowed_paths`, any `{debug}` commit when `upstream_facing` is true, any
 `pull_request_target`, new secret, or interpolation of untrusted event text into
 scripts is rejected. For a repair backed by authorized review feedback,
@@ -586,9 +652,9 @@ project as above before you shape the commits.
    whose subject starts with `{debug}`. Never when `upstream_facing` is true.
    Debug commits enable validation only, never publication or secrets.
    Development CI runs on the automatically opened same-fork PR from
-   `riscv64` to the frozen base. If the existing workflow already has a
-   `pull_request` trigger covering that base, do not add `push: riscv64` or any
-   other fork-only trigger. Never change unrelated event-dependent behavior,
+   `riscv64-dev` to the frozen base. If the existing workflow already has a
+   `pull_request` trigger covering that base, do not add `push: riscv64-dev` or
+   any other fork-only trigger. Never change unrelated event-dependent behavior,
    upload conditions, artifact retention or release behavior solely to make fork
    validation produce extra evidence. In particular, do not broaden conditions
    such as `inputs.upload`, add `github.event_name == 'push'`, or otherwise alter
