@@ -14,7 +14,7 @@ from common import CONTROL_REPO
 from status_ledger import Api, LedgerError, issue_comments
 
 TEMPLATES = {
-    "resume-override": commands.OVERRIDE_FORM,
+    "refresh-override": commands.OVERRIDE_FORM,
     "submit-upstream": "/upstreaming submit-upstream revision=N head=FULL_SHA",
     "retract-pr": "/upstreaming retract-pr revision=N head=FULL_SHA",
     "pause": '/upstreaming pause revision=N reason="..."',
@@ -29,12 +29,18 @@ REPLACEMENTS = {
     "approve-handoff": "submit-upstream",
     "register-upstream-pr": "submit-upstream",
     "block": "pause",
-    "approve-scope": "resume",
+    "approve-scope": "refresh",
     "provision": "resume",
-    "restart": "resume",
+    "restart": "refresh",
     "clarify": "resume",
     "revise-scope": "refresh",
-    "force-develop": "resume-override",
+    "force-develop": "refresh-override",
+}
+# A rejection that moves the command to another form, by reason: a resume in
+# `parked.idle` is answered with the refresh that starts a new generation.
+MOVED = {
+    commands.PARKED_RESUME: "refresh",
+    **{reason: "refresh-override" for reason in commands.MOVED_FIELDS.values()},
 }
 
 
@@ -68,7 +74,7 @@ def render(receipt: dict, original: dict) -> str:
         text += ("\n\n**Nothing was changed.** The command was well-formed; no other form of it "
                  "is accepted.")
         return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
-    template = TEMPLATES.get(REPLACEMENTS.get(verb, verb))
+    template = TEMPLATES.get(MOVED.get(reason) or REPLACEMENTS.get(verb, verb))
     if template:
         head = re.search(r"(?:^|\s)head=([0-9a-f]{40})(?:\s|$)", body)
         if head:

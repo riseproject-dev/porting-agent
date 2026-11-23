@@ -40,8 +40,9 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * in ``release_wait.idle``, read the official release evidence and take
   ``verify_release``, ``require_release_intervention``, or
   ``record_release_incomplete`` (``release.decide``);
-* read, without changing anything, the upstream PR of a record whose resume
-  depends on whether it is open (``reads_upstream_pr_state``).
+* read, without changing anything, the upstream PR of a record whose resume,
+  or whose refresh from ``parked.idle``, depends on whether it is open
+  (``reads_upstream_pr_state``).
 
 A contribution that waits for a human in a state of the table without an
 observation row (``engine.waits_for_human``) is not observed: only the rows
@@ -782,12 +783,13 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
 
 
 def _observe_upstream_pr_state(api: collect.Api, entry: dict, rec: dict) -> None:
-    """Read the upstream PR of a record whose resume depends on it, without
-    changing anything: ``resume_upstream_review`` after
+    """Read the upstream PR of a record whose resume or restart depends on
+    it, without changing anything: ``resume_upstream_review`` after
     ``pr_closed_unmerged`` requires the PR open again, and
-    ``restart_generation`` requires no open upstream PR. The controller
-    establishes those facts from ``entry["upstream_pr"]``. A failed read
-    establishes nothing, so the resume is refused, and keeps every other
+    ``restart_generation`` (a refresh from ``parked.idle``) requires no open
+    upstream PR. The controller establishes those facts from
+    ``entry["upstream_pr"]``. A failed read establishes nothing, so the
+    command is refused, and keeps every other
     command of the tick (``park``, ``abandon``) from being held back."""
     try:
         pr = collect.upstream_pull(api, rec)
@@ -799,8 +801,8 @@ def _observe_upstream_pr_state(api: collect.Api, entry: dict, rec: dict) -> None
 
 
 def reads_upstream_pr_state(record: dict) -> bool:
-    """Whether a record's upstream PR is read for a resume only
-    (``_observe_upstream_pr_state``)."""
+    """Whether a record's upstream PR is read for a resume, or a refresh
+    from ``parked.idle``, only (``_observe_upstream_pr_state``)."""
     if not record.get("upstream_pr"):
         return False
     state = engine.state_key(record)

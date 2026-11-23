@@ -321,7 +321,7 @@ DECISIONS: tuple[Item, ...] = (
         "Retired: `request-handoff`, `approve-handoff`, `register-upstream-pr`, `approve-scope`, "
         "`provision`, `restart`, `clarify`, `revise-scope`, and `force-develop`. `abandon` leads "
         "from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. "
-        "`/upstreaming resume` from `parked.idle` accepts an optional class, paths, and reason, "
+        "`/upstreaming refresh` from `parked.idle` accepts an optional class, paths, and reason, "
         "stored as `admission_override`; `restart_generation` still runs the complete "
         "planning, and `admit_development` accepts a verified plan decision develop, or "
         "a decision park with a recorded override. `authorize-followup` is an intake command outside the table.",
@@ -449,8 +449,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
         "Plan refresh after a stop",
         "When a stop of unknown length makes the plan stale.",
-        "The plan is refreshed after a park (`restart_generation` always runs the complete "
-        "planning) and after a pause or human wait longer than `refresh.stale_after_days` "
+        "The plan is refreshed after a park (`restart_generation`, `/upstreaming refresh`, "
+        "always runs the complete planning) and after a pause or human wait longer than `refresh.stale_after_days` "
         "(7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads "
         "to `queued.idle` with the effects of `refresh_planning`; the clock is the older of "
         "`paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry "
@@ -711,6 +711,20 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         ("development.fix_needed", "development.waiting_ci"),
         edges=(("development.fix_needed", "record_head_change"),),
         highlighted=(("development.fix_needed", "record_head_change"),),
+    ),
+    Item(
+        "A parked contribution restarts with refresh",
+        "Which command starts a new generation from `parked.idle`.",
+        "In `parked.idle` the clean restart (`restart_generation`) and its admission override "
+        "are requested with `/upstreaming refresh`, also while paused, and the new generation "
+        "then stays paused until a resume. `/upstreaming resume` there only ends a pause; on a "
+        "contribution that is not paused it is rejected with a reply that names the refresh "
+        "form, and `class` and `paths` on a resume are rejected with the refresh form of the "
+        "override. A state of kind `generation_end` has a refresh exit and no resume row.",
+        ("parked.idle", "queued.idle", "closed.idle"),
+        edges=(("parked.idle", "restart_generation"),
+               ("parked.idle", "abandon")),
+        highlighted=(("parked.idle", "restart_generation"),),
     ),
 )
 

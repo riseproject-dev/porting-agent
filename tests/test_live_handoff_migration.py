@@ -385,7 +385,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
             (f'/upstreaming refresh revision=6 head={HEAD} reason="x"',
              "`head` does not apply to `/upstreaming refresh` in `handoff.awaiting_submission`"),
             ("/upstreaming resume revision=6 class=optimized_backend reason=x",
-             "not paused"),
+             "`class` and `paths` are given on `/upstreaming refresh` in `parked.idle`"),
             ('/upstreaming force-develop revision=6 class=configuration_integration paths=a '
              'reason="x"', "`force-develop` is retired."),
         )
@@ -396,9 +396,9 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 self.assertEqual(receipt["result"], "rejected")
                 self.assertIn(reason, receipt["reason"])
                 if "`restart`" in reason:
-                    self.assertIn('/upstreaming resume revision=N reason="..."', receipt["reason"])
+                    self.assertIn('/upstreaming refresh revision=N reason="..."', receipt["reason"])
                 elif "`force-develop`" in reason:
-                    self.assertIn("/upstreaming resume revision=N class=", receipt["reason"])
+                    self.assertIn("/upstreaming refresh revision=N class=", receipt["reason"])
                 elif "retired" in reason and "block" not in reason:
                     self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
                                   receipt["reason"])

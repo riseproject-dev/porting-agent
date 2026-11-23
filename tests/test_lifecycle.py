@@ -94,20 +94,22 @@ class TestPauseParkResume(unittest.TestCase):
         rec = self.head_changed(contribution(activity="waiting_ci"))
         self.assertTrue(apply(rec, f"/upstreaming pause contribution={CID} revision=0 reason=r").accepted)
 
-    def test_park_only_explicit_resume(self):
+    def test_park_only_explicit_refresh(self):
         rec = apply(contribution(), f"/upstreaming park contribution={CID} revision=0 reason=evidence").record
         self.assertEqual(rec["phase"], "parked")
-        out = apply(rec, f"/upstreaming resume contribution={CID} revision=0 reason=\"new evidence\"")
+        self.assertFalse(apply(rec, f"/upstreaming resume contribution={CID} revision=0 "
+                                    "reason=r").accepted)
+        out = apply(rec, f"/upstreaming refresh contribution={CID} revision=0 reason=\"new evidence\"")
         # Plan 3.3.4 failure case 2 and 3.5: a clean generation at queued:idle.
         self.assertEqual((out.record["phase"], out.record["activity"]), ("queued", "idle"))
         self.assertEqual(out.record["generation"], rec["generation"] + 1)
         self.assertEqual(out.record["revision"], 1)
         self.assertIsNone(out.record["parked_reason"])
 
-    def test_resume_from_parked_requires_quiescence(self):
+    def test_refresh_from_parked_requires_quiescence(self):
         rec = apply(contribution(), f"/upstreaming park contribution={CID} revision=0 reason=evidence").record
         busy = dict(rec, active_operation_id="op-1")
-        out = apply(busy, f"/upstreaming resume contribution={CID} revision=0 reason=r")
+        out = apply(busy, f"/upstreaming refresh contribution={CID} revision=0 reason=r")
         self.assertFalse(out.accepted)
 
     def test_terminal_rejects(self):
@@ -178,9 +180,9 @@ class TestRestartGeneration(unittest.TestCase):
         rec.update(over)
         return rec
 
-    def test_parked_contribution_resumes_on_same_identity(self):
+    def test_parked_contribution_refreshes_on_same_identity(self):
         rec = self.parked()
-        out = apply(rec, f'/upstreaming resume contribution={CID} revision=8 reason="clean start"')
+        out = apply(rec, f'/upstreaming refresh contribution={CID} revision=8 reason="clean start"')
         self.assertTrue(out.accepted, out.reason)
         restarted = out.record
         self.assertEqual(restarted["contribution_id"], CID)
@@ -201,8 +203,8 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertNotIn("admission_override", out.event["details"])
         schemas.validate("contribution", restarted)
 
-    def test_resume_from_parked_records_the_admission_override(self):
-        out = apply(self.parked(), f'/upstreaming resume contribution={CID} revision=8 '
+    def test_refresh_from_parked_records_the_admission_override(self):
+        out = apply(self.parked(), f'/upstreaming refresh contribution={CID} revision=8 '
                                    'class=architecture_correctness paths=".github/workflows/*,setup.py" '
                                    'reason="the patch is bounded"')
         self.assertTrue(out.accepted, out.reason)
@@ -215,13 +217,13 @@ class TestRestartGeneration(unittest.TestCase):
 
     def test_a_partial_admission_override_is_refused(self):
         """An override admits development only with both a class and paths:
-        a resume that names one of them alone is refused when it is posted,
+        a refresh that names one of them alone is refused when it is posted,
         with nothing changed, instead of starting planning runs that the
         plan fold could never admit."""
         for args in ("class=optimized_backend", 'paths=".github/workflows/*"'):
             with self.subTest(args=args):
                 parked = self.parked()
-                out = apply(parked, f"/upstreaming resume contribution={CID} revision=8 "
+                out = apply(parked, f"/upstreaming refresh contribution={CID} revision=8 "
                                     f"{args} reason=r")
                 self.assertFalse(out.accepted)
                 self.assertIn("names both `class` and `paths`, or neither", out.reason)
@@ -229,35 +231,76 @@ class TestRestartGeneration(unittest.TestCase):
                 self.assertIsNone(out.event)
 
     def test_the_admission_override_needs_parked_and_a_safe_scope(self):
-        unsafe = apply(self.parked(), f'/upstreaming resume contribution={CID} revision=8 '
+        unsafe = apply(self.parked(), f'/upstreaming refresh contribution={CID} revision=8 '
                                       'class=optimized_backend paths="../etc" reason=r')
         self.assertFalse(unsafe.accepted)
         self.assertIn("unsafe scope path", unsafe.reason)
-        waiting = contribution(phase="planning", activity="waiting_human", revision=3,
-                               pending_human_action={"kind": "work_failed", "requested_at": NOW,
-                                                     "reminded_at": None, "escalated_at": None,
-                                                     "counter": None})
+        fix_needed = contribution(activity="fix_needed", revision=3)
         paused = contribution(activity="waiting_ci", paused=True, paused_at=NOW, paused_by="human")
-        for rec in (waiting, paused):
+        for rec in (fix_needed, paused):
             with self.subTest(state=f"{rec['phase']}.{rec['activity']}"):
-                out = apply(rec, f"/upstreaming resume contribution={CID} revision={rec['revision']} "
-                                 "class=optimized_backend reason=r")
+                out = apply(rec, f"/upstreaming refresh contribution={CID} revision={rec['revision']} "
+                                 'class=optimized_backend paths="a/*" reason=r')
                 self.assertFalse(out.accepted)
                 self.assertEqual(out.reason,
-                                 "`class` and `paths` apply only to a resume from `parked.idle` "
+                                 "`class` and `paths` apply only to a refresh from `parked.idle` "
                                  "that starts a new generation")
                 self.assertEqual(out.record, rec)
 
-    def test_resume_from_parked_is_stale_proof(self):
-        out = apply(self.parked(), f"/upstreaming resume contribution={CID} revision=7 reason=r")
+    def test_refresh_from_parked_is_stale_proof(self):
+        out = apply(self.parked(), f"/upstreaming refresh contribution={CID} revision=7 reason=r")
         self.assertFalse(out.accepted)
         self.assertIn("stale revision 7", out.reason)
 
-    def test_resume_from_parked_waits_for_writer_quiescence(self):
+    def test_refresh_from_parked_waits_for_writer_quiescence(self):
         for over in ({"active_operation_id": "op-1"}, {"pending_publication": {"x": 1}}):
             with self.subTest(over=over):
                 self.assertFalse(apply(self.parked(**over),
-                    f"/upstreaming resume contribution={CID} revision=8 reason=r").accepted)
+                    f"/upstreaming refresh contribution={CID} revision=8 reason=r").accepted)
+
+    def test_a_resume_in_parked_is_refused_with_the_refresh_form(self):
+        parked = self.parked()
+        out = apply(parked, f"/upstreaming resume contribution={CID} revision=8 reason=r")
+        self.assertFalse(out.accepted)
+        self.assertEqual(out.reason, commands.PARKED_RESUME)
+        self.assertIn(commands.REFRESH_FORM, out.reason)
+        self.assertEqual(out.record, parked)
+        self.assertIsNone(out.event)
+
+    def test_a_resume_in_paused_parked_only_ends_the_pause(self):
+        parked = self.parked(paused=True, paused_at=NOW, paused_by="human", proposal_artifact=None)
+        out = apply(parked, f"/upstreaming resume contribution={CID} revision=8 reason=r")
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(out.event["kind"], "resume_pause")
+        self.assertEqual(engine.state_key(out.record), "parked.idle")
+        self.assertFalse(out.record["paused"])
+        again = apply(out.record, f"/upstreaming resume contribution={CID} revision=9 reason=r")
+        self.assertFalse(again.accepted)
+        self.assertEqual(again.reason, commands.PARKED_RESUME)
+
+    def test_a_refresh_in_paused_parked_restarts_and_stays_paused(self):
+        parked = self.parked(paused=True, paused_at=NOW, paused_by="human", proposal_artifact=None)
+        out = apply(parked, f"/upstreaming refresh contribution={CID} revision=8 reason=r")
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(out.event["kind"], "restart_generation")
+        self.assertEqual(engine.state_key(out.record), "queued.idle")
+        self.assertTrue(out.record["paused"])
+        self.assertEqual((out.record["paused_at"], out.record["paused_by"]), (NOW, "human"))
+        schemas.validate("contribution", out.record)
+        resumed = apply(out.record, f"/upstreaming resume contribution={CID} revision=9 reason=r")
+        self.assertTrue(resumed.accepted, resumed.reason)
+        self.assertEqual(resumed.event["kind"], "resume_pause")
+        self.assertEqual(engine.state_key(resumed.record), "queued.idle")
+        self.assertFalse(resumed.record["paused"])
+
+    def test_a_refresh_in_parked_refuses_head(self):
+        parked = self.parked()
+        out = apply(parked, f"/upstreaming refresh contribution={CID} revision=8 "
+                            f"head={SHA_A} reason=r")
+        self.assertFalse(out.accepted)
+        self.assertEqual(out.reason, "`head` does not apply to `/upstreaming refresh` in "
+                                     "`parked.idle`")
+        self.assertEqual(out.record, parked)
 
     def test_abandon_closes_only_a_parked_contribution(self):
         rec = self.parked(paused=True, paused_at=NOW, paused_by="human", proposal_artifact=None)
@@ -401,13 +444,13 @@ class TestScopeAndProvision(unittest.TestCase):
                     f"`/upstreaming submit-upstream` does not apply in `{phase}.{activity}`; it "
                     "applies in `handoff.awaiting_submission`")
 
-    def test_human_overrides_a_plan_park_with_a_resume_from_parked(self):
+    def test_human_overrides_a_plan_park_with_a_refresh_from_parked(self):
         parked = dict(self.rec, phase="parked", activity="idle", parked_reason="No current patch")
         with self.assertRaises(commands.CommandError) as raised:
             commands.parse('/upstreaming force-develop revision=1 class=configuration_integration '
                            'paths=".github/workflows/*" reason="Proceed."')
-        self.assertIn("/upstreaming resume revision=N class=", str(raised.exception))
-        out = self.apply(parked, '/upstreaming resume revision=1 class=configuration_integration '
+        self.assertIn("/upstreaming refresh revision=N class=", str(raised.exception))
+        out = self.apply(parked, '/upstreaming refresh revision=1 class=configuration_integration '
                                  'paths=".github/workflows/*,pyproject.toml" '
                                  'reason="Proceed with a concrete reviewed scope."')
         self.assertTrue(out.accepted, out.reason)
@@ -417,14 +460,14 @@ class TestScopeAndProvision(unittest.TestCase):
                          {"class": "configuration_integration",
                           "paths": [".github/workflows/*", "pyproject.toml"],
                           "reason": "Proceed with a concrete reviewed scope."})
-        self.assertFalse(self.apply(parked, '/upstreaming resume revision=1 '
+        self.assertFalse(self.apply(parked, '/upstreaming refresh revision=1 '
                                             'class=configuration_integration paths="*" '
                                             'reason="Scope is too broad."').accepted)
 
     def test_retired_scope_and_provisioning_commands_name_their_replacement(self):
         for text, replacement in (
                 ("/upstreaming approve-scope revision=1 class=configuration_integration backup=x",
-                 "/upstreaming resume revision=N"),
+                 "/upstreaming refresh revision=N"),
                 ("/upstreaming provision revision=2", "/upstreaming resume revision=N"),
                 ("/upstreaming revise-scope revision=1 proposal=p", "/upstreaming refresh revision=N")):
             with self.subTest(text=text), self.assertRaises(commands.CommandError) as raised:

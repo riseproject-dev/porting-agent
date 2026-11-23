@@ -383,10 +383,10 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         result = final(output, parked)
         self.assertEqual((result["phase"], result["activity"]), ("parked", "idle"))
         self.assertEqual(output.report["requested_effects"], [])
-        # Plan 3.3.4 failure case 2 and 3.5: exact-revision resume starts a
-        # clean generation at queued:idle with a fresh retry budget.
+        # Plan 3.3.4 failure case 2 and 3.5: an exact-revision refresh starts
+        # a clean generation at queued:idle with a fresh retry budget.
         resumed = apply_command(
-            parked, commands.parse(f"/upstreaming resume revision={parked['revision']} reason=r"),
+            parked, commands.parse(f"/upstreaming refresh revision={parked['revision']} reason=r"),
             command_id="comment-1", actor={"login": "owner", "id": 1}, now="2026-11-22T11:40:00+00:00")
         self.assertTrue(resumed.accepted)
         out = resumed.record

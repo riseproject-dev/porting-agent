@@ -310,7 +310,8 @@ KIND_DESCRIPTIONS = {
     "locked": "Write-fenced wait: only the listed exits leave it, and no Work, patch, "
               "or branch write happens while here.",
     "generation_end": "The current generation has ended; the record is kept for audit and "
-                      "late-effect reconciliation until a clean restart.",
+                      "late-effect reconciliation until a clean restart with "
+                      "`/upstreaming refresh`.",
     "terminal": "No transition leaves this state.",
 }
 
@@ -1455,12 +1456,13 @@ LIFECYCLE: dict[str, State] = {
         "The generation ended without success; a clean restart is possible.",
         transitions={
             ("restart_generation", "queued.idle"): Transition(
-                _C, RESUME,
+                _C, REFRESH,
                 (EXACT_REVISION, QUIESCENT, "no open upstream PR"),
                 _E(revision="bump", generation="bump", work="clear", sets=("admission_override",)),
                 description="Starts a clean generation that runs complete planning; "
                             "identity, events, evidence, and replay fences are kept. An optional "
-                            "class, paths, and reason are stored as `admission_override`."),
+                            "class, paths, and reason are stored as `admission_override`. "
+                            "Accepted while paused."),
             ("abandon", "closed.idle"): Transition(
                 _C, "/upstreaming abandon",
                 ("a reason is given", ANY_REVISION),
@@ -2173,7 +2175,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
         "Pause, waiting-human, and park cases",
         "Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically "
         "when a specific failure or external prerequisite needs operator action. Park means the "
-        "approach is not working or a human said stop; it ends the current generation, and resume "
+        "approach is not working or a human said stop; it ends the current generation, and refresh "
         "from parked performs a clean reset. A Result is reused only while the pipeline ran "
         "continuously: after a pause, a human wait, or a park, the next step is fresh Work. A "
         "stop therefore clears the requested Work and the pending publication, so nothing is "
@@ -2656,9 +2658,16 @@ def _check_states(problems: list[str]) -> None:
             problems.append(f"{key}: end state launches or writes")
         if state.kind in ("locked", "human_wait", "generation_end") and (state.launches or state.writes):
             problems.append(f"{key}: {state.kind} state launches or writes")
-        if state.kind in ("human_wait", "generation_end") and not any(
+        if state.kind == "human_wait" and not any(
                 t.command == RESUME for t in state.transitions.values()):
             problems.append(f"{key}: {state.kind} state has no `{RESUME}` exit")
+        if state.kind == "generation_end" and not any(
+                t.command == REFRESH for t in state.transitions.values()):
+            problems.append(f"{key}: {state.kind} state has no `{REFRESH}` exit")
+        if state.kind == "generation_end" and any(
+                t.command == RESUME for t in state.transitions.values()):
+            problems.append(f"{key}: {state.kind} state has a `{RESUME}` row; a clean "
+                            f"restart is requested with `{REFRESH}`")
         if state.kind == "gate" and not any(
                 t.trigger == Trigger.COMMAND for t in state.transitions.values()):
             problems.append(f"{key}: gate state has no command exit")

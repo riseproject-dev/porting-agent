@@ -146,7 +146,7 @@ flowchart TB
     release_wait_idle -->|require_release_intervention| release_wait_waiting_human
     release_wait_waiting_human -->|resume_release_observation<br/>/upstreaming resume| release_wait_idle
     release_wait_idle -->|verify_release| released_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle -->|restart_generation<br/>/upstreaming refresh| queued_idle
     parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
     released_idle --> end_2(( ))
     closed_idle --> end_3(( ))
@@ -184,7 +184,7 @@ flowchart TB
     planning_agent_running -->|admit_development| provisioning_idle
     planning_agent_running -->|park_planning| parked_idle
     planning_agent_running -->|close_planning| closed_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle -->|restart_generation<br/>/upstreaming refresh| queued_idle
     parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
     closed_idle --> end_2(( ))
 ```
@@ -446,7 +446,7 @@ flowchart TB
 
 ## Pause, waiting-human, and park cases
 
-Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and resume from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work. A stop therefore clears the requested Work and the pending publication, so nothing is published after it.
+Pause keeps the lifecycle phase and activity. `waiting_human` is entered automatically when a specific failure or external prerequisite needs operator action. Park means the approach is not working or a human said stop; it ends the current generation, and refresh from parked performs a clean reset. A Result is reused only while the pipeline ran continuously: after a pause, a human wait, or a park, the next step is fresh Work. A stop therefore clears the requested Work and the pending publication, so nothing is published after it.
 
 ### Success case 1: temporary pause and resume
 
@@ -548,7 +548,7 @@ flowchart TB
     start_1(( )) --> development_fix_needed
     development_fix_needed -->|park_contribution<br/>/upstreaming park| parked_idle
     parked_idle -->|record_late_effect| parked_idle
-    parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle -->|restart_generation<br/>/upstreaming refresh| queued_idle
     parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
     closed_idle --> end_2(( ))
 ```
@@ -906,10 +906,10 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming park` | `park_contribution` | every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human` | `parked.idle` |
 | `/upstreaming pause` | `pause` | every non-terminal state | same state |
 | `/upstreaming refresh` | `refresh_planning` | `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.waiting_upstream_pr` | `queued.idle` |
+| `/upstreaming refresh` | `restart_generation` | `parked.idle` | `queued.idle` |
 | `/upstreaming resolve-operation` | `resolve_confirmed` | operation `planned`, operation `applying`, operation `uncertain` | operation `confirmed` |
 | `/upstreaming resolve-operation` | `resolve_failed` | operation `planned`, operation `applying`, operation `uncertain` | operation `failed` |
 | `/upstreaming resolve-operation` | `resolve_not_launched` | operation `planned`, operation `applying`, operation `uncertain` | operation `not_launched` |
-| `/upstreaming resume` | `restart_generation` | `parked.idle` | `queued.idle` |
 | `/upstreaming resume` | `resume_ci` | `development.waiting_human` | `development.waiting_ci` |
 | `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_clean_head_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |

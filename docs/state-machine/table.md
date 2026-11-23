@@ -40,7 +40,7 @@ Requested Work is identified by its generation, revision, and Work id. A Result 
 | `human_wait` | A recorded `pending_human_action` names what a human must do; `/upstreaming resume` continues. |
 | `gate` | Waits for a human command that starts the next step. |
 | `locked` | Write-fenced wait: only the listed exits leave it, and no Work, patch, or branch write happens while here. |
-| `generation_end` | The current generation has ended; the record is kept for audit and late-effect reconciliation until a clean restart. |
+| `generation_end` | The current generation has ended; the record is kept for audit and late-effect reconciliation until a clean restart with `/upstreaming refresh`. |
 | `terminal` | No transition leaves this state. |
 
 ## States
@@ -491,7 +491,7 @@ Terminal: no transition leaves this state.
 
 | Verb | Trigger | To | Guard | Effects | Charges |
 |:-----|:--------|:---|:------|:--------|:--------|
-| `restart_generation` | command (`/upstreaming resume`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no open upstream PR. Starts a clean generation that runs complete planning; identity, events, evidence, and replay fences are kept. An optional class, paths, and reason are stored as `admission_override`. | revision +1; generation +1; Work: clear; sets `admission_override` | - |
+| `restart_generation` | command (`/upstreaming refresh`) | `queued.idle` | exact revision; quiescent: no open operation and no pending publication; no open upstream PR. Starts a clean generation that runs complete planning; identity, events, evidence, and replay fences are kept. An optional class, paths, and reason are stored as `admission_override`. Accepted while paused. | revision +1; generation +1; Work: clear; sets `admission_override` | - |
 | `abandon` | command (`/upstreaming abandon`) | `closed.idle` | a reason is given; any revision, current or stale | sets `terminal_reason=abandoned`; clears `pending_publication` | - |
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |
 

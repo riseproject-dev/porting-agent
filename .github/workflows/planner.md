@@ -528,8 +528,8 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
 
   A `develop` decision automatically provisions the fork and starts development;
   it does not wait for scope approval. A `park` decision stops work; an
-  authorized human can later resume the parked contribution with an admission
-  class and paths (`resume class=... paths=...`), which a new planning run's
+  authorized human can later restart the parked contribution with an admission
+  class and paths (`refresh class=... paths=...`), which a new planning run's
   `park` decision then admits. A `close` decision ends the contribution for
   good; no command resumes it. The controller reads PyPI itself and rejects a
   `close` that PyPI does not confirm, so never choose `close` for a blocker, a

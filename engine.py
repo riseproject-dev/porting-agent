@@ -1038,11 +1038,12 @@ def _put(record: dict, name: str, value: Any) -> None:
 
 def reset_generation(record: dict) -> dict:
     """A record with every mutable lifecycle field reset; identity, events,
-    evidence, and replay fences are kept."""
+    evidence, and replay fences are kept. The `paused` flag and its fields
+    are kept too: only the rows of the flag clear it, so a restart accepted
+    while paused leaves the new generation paused until a resume."""
     rec = copy.deepcopy(record)
     rec.update({
         "generation": int(record.get("generation", 0)) + 1, "refresh": None,
-        "paused": False, "paused_at": None, "paused_reason": None, "paused_by": None,
         "parked_reason": None, "terminal_reason": None,
         "previous_phase": None,
         "owners": {"primary": None, "backup": None, "submitter": None,

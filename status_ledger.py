@@ -301,11 +301,11 @@ _HEAD_TEMPLATES = {
 # The head a command names in a state of the table.
 _HEADS = {"handoff.awaiting_submission": lambda r: (r.get("handoff_request") or {}).get("head"),
           "handoff.waiting_upstream_pr": lambda r: r.get("clean_head_sha")}
-# The resume from `parked.idle` that records an admission override, offered
-# beside the plain resume: a plan that decides park then admits
+# The refresh from `parked.idle` that records an admission override, offered
+# beside the plain refresh: a plan that decides park then admits
 # development with the override's class and paths.
-RESUME_OVERRIDE = ('/upstreaming resume revision={revision} class={admission} '
-                   'paths="{paths}" reason="..."')
+REFRESH_OVERRIDE = ('/upstreaming refresh revision={revision} class={admission} '
+                    'paths="{paths}" reason="..."')
 
 
 def _table_command_lines(record: dict) -> list[str]:
@@ -329,8 +329,8 @@ def _table_command_lines(record: dict) -> list[str]:
     lines = [_HEAD_TEMPLATES.get((state, c), _TEMPLATES[c]).format(
                  revision=record["revision"], head=head)
              for c in offered if c in _TEMPLATES and c.split()[-1] in commands.GRAMMAR]
-    if state == "parked.idle" and not paused:
-        lines.append(RESUME_OVERRIDE.format(
+    if state == "parked.idle":
+        lines.append(REFRESH_OVERRIDE.format(
             revision=record["revision"],
             admission=record.get("admission_class") or "configuration_integration",
             paths=",".join(record.get("scope_paths") or [".github/workflows/*"])))

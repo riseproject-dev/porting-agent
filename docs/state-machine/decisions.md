@@ -77,7 +77,7 @@ flowchart TB
 
     development_agent_running -->|park_contribution<br/>/upstreaming park| parked_idle
     parked_idle ==>|record_late_effect| parked_idle
-    parked_idle ==>|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
 ```
 
 ### 3. Resume targets of recorded human waits in upstream review
@@ -407,7 +407,7 @@ flowchart TB
 
 Which commands become table rows and which are retired.
 
-**Decision.** Retired: `request-handoff`, `approve-handoff`, `register-upstream-pr`, `approve-scope`, `provision`, `restart`, `clarify`, `revise-scope`, and `force-develop`. `abandon` leads from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. `/upstreaming resume` from `parked.idle` accepts an optional class, paths, and reason, stored as `admission_override`; `restart_generation` still runs the complete planning, and `admit_development` accepts a verified plan decision develop, or a decision park with a recorded override. `authorize-followup` is an intake command outside the table.
+**Decision.** Retired: `request-handoff`, `approve-handoff`, `register-upstream-pr`, `approve-scope`, `provision`, `restart`, `clarify`, `revise-scope`, and `force-develop`. `abandon` leads from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. `/upstreaming refresh` from `parked.idle` accepts an optional class, paths, and reason, stored as `admission_override`; `restart_generation` still runs the complete planning, and `admit_development` accepts a verified plan decision develop, or a decision park with a recorded override. `authorize-followup` is an intake command outside the table.
 
 ```mermaid
 flowchart TB
@@ -428,7 +428,7 @@ flowchart TB
     end
 
     parked_idle ==>|abandon<br/>/upstreaming abandon| closed_idle
-    parked_idle ==>|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
     planning_agent_running -->|admit_development| provisioning_idle
 ```
 
@@ -1197,7 +1197,7 @@ flowchart TB
 
 When a stop of unknown length makes the plan stale.
 
-**Change.** The plan is refreshed after a park (`restart_generation` always runs the complete planning) and after a pause or human wait longer than `refresh.stale_after_days` (7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads to `queued.idle` with the effects of `refresh_planning`; the clock is the older of `paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry the complementary guard, so exactly one applies. `resume_stale` also requires that no Work is requested, no operation is open, and no publication is pending. A pause in planning needs no rule because the Work was cleared. Handoff, upstream review, and release waits are never refreshed automatically; in `handoff.awaiting_submission` and `handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.
+**Change.** The plan is refreshed after a park (`restart_generation`, `/upstreaming refresh`, always runs the complete planning) and after a pause or human wait longer than `refresh.stale_after_days` (7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads to `queued.idle` with the effects of `refresh_planning`; the clock is the older of `paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry the complementary guard, so exactly one applies. `resume_stale` also requires that no Work is requested, no operation is open, and no publication is pending. A pause in planning needs no rule because the Work was cleared. Handoff, upstream review, and release waits are never refreshed automatically; in `handoff.awaiting_submission` and `handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.
 
 ```mermaid
 flowchart TB
@@ -1262,7 +1262,7 @@ flowchart TB
     upstream_agent_running ==>|exhaust_work_recovery| upstream_waiting_human
     upstream_fix_needed ==>|exhaust_repair_attempts| upstream_waiting_human
     upstream_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
-    parked_idle ==>|restart_generation<br/>/upstreaming resume| queued_idle
+    parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
 ```
 
 ### Every Work allocation is charged
@@ -1497,4 +1497,26 @@ flowchart TB
     end
 
     development_fix_needed ==>|record_head_change| development_waiting_ci
+```
+
+### A parked contribution restarts with refresh
+
+Which command starts a new generation from `parked.idle`.
+
+**Change.** In `parked.idle` the clean restart (`restart_generation`) and its admission override are requested with `/upstreaming refresh`, also while paused, and the new generation then stays paused until a resume. `/upstreaming resume` there only ends a pause; on a contribution that is not paused it is rejected with a reply that names the refresh form, and `class` and `paths` on a resume are rejected with the refresh form of the override. A state of kind `generation_end` has a refresh exit and no resume row.
+
+```mermaid
+flowchart TB
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
+
+    parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
+    parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
 ```

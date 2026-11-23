@@ -806,10 +806,10 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                             pending_publication=dict(pending))
         park = commands.parse('/upstreaming park reason="stop"')
         pause = commands.parse("/upstreaming pause")
-        resume = commands.parse("/upstreaming resume revision=0 reason=r")
+        refresh = commands.parse("/upstreaming refresh revision=0 reason=r")
         self.assertEqual(
             engine.refusal(dict(held, phase="parked", activity="idle"), "restart_generation",
-                           policy=POLICY, now=NOW, command=resume, open_operations=()),
+                           policy=POLICY, now=NOW, command=refresh, open_operations=()),
             "a publication is pending")
 
         parked = engine.apply_command(held, park, policy=POLICY, now=NOW, command_id="c",
@@ -818,7 +818,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                          ("park_contribution", "parked.idle"))
         self.assertIsNone(parked.record["pending_publication"])
         self.assertEqual(parked.record["revision"], held["revision"])
-        restarted = engine.apply_command(parked.record, resume, policy=POLICY, now=NOW,
+        restarted = engine.apply_command(parked.record, refresh, policy=POLICY, now=NOW,
                                          command_id="c", open_operations=())
         self.assertEqual((restarted.verb, engine.state_key(restarted.record)),
                          ("restart_generation", "queued.idle"))
@@ -909,8 +909,8 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         rec = contribution(phase="parked", activity="idle", parked_reason="x", revision=7,
                            plan_evidence_id="plan-1", last_ci_evidence_id="ci-1",
                            processed_publications=[5])
-        resume = commands.parse("/upstreaming resume revision=7 reason=r")
-        out = engine.apply_command(rec, resume, policy=POLICY, now=NOW, command_id="c")
+        refresh = commands.parse("/upstreaming refresh revision=7 reason=r")
+        out = engine.apply_command(rec, refresh, policy=POLICY, now=NOW, command_id="c")
         new = out.record
         self.assertEqual(out.verb, "restart_generation")
         self.assertEqual((engine.state_key(new), new["generation"], new["revision"]),
@@ -920,8 +920,12 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(new["processed_publications"], [5])
         self.assertEqual(new["contribution_id"], rec["contribution_id"])
         with_pr = dict(rec, upstream_pr=SAMPLE["upstream_pr"])
-        refused = engine.apply_command(with_pr, resume, policy=POLICY, now=NOW, command_id="c")
+        refused = engine.apply_command(with_pr, refresh, policy=POLICY, now=NOW, command_id="c")
         self.assertFalse(refused.accepted)
+        resume = commands.parse("/upstreaming resume revision=7 reason=r")
+        self.assertEqual(engine.command_verbs(rec, resume), ["resume_pause"])
+        self.assertFalse(engine.apply_command(rec, resume, policy=POLICY, now=NOW,
+                                              command_id="c").accepted)
 
 
 class TestSubmitUpstream(unittest.TestCase):

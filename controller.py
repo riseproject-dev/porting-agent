@@ -26,6 +26,7 @@ from typing import Any
 
 import capacity
 import collect
+import commands
 import engine
 import handoff
 import intake
@@ -59,7 +60,7 @@ class Inputs:
     handoff_observations: dict[str, dict] = field(default_factory=dict)
     # The upstream PR as the observation of this tick read it, by contribution
     # (``observe_ci.reads_upstream_pr_state``): whether it is open decides the
-    # resumes that depend on it.
+    # resume and the restart that depend on it.
     upstream_pr_observations: dict[str, dict] = field(default_factory=dict)
     resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
@@ -1100,9 +1101,11 @@ def _refusal(record: dict, cmd: Command, why: str) -> str:
     if cmd.verb == "pause" and record.get("paused") and why == "contribution is paused":
         return "already paused"
     state = lifecycle.LIFECYCLE.get(engine.state_key(record))
-    if cmd.verb == "resume" and not record.get("paused") and state is not None \
-            and state.kind not in ("human_wait", "generation_end"):
-        return "not paused"
+    if cmd.verb == "resume" and not record.get("paused") and state is not None:
+        if state.kind == "generation_end":
+            return commands.PARKED_RESUME
+        if state.kind != "human_wait":
+            return "not paused"
     return why
 
 
@@ -1112,7 +1115,7 @@ PARTIAL_OVERRIDE = ("an admission override names both `class` and `paths`, or ne
 
 
 def admission_override(cmd: Command) -> dict | None:
-    """The admission override a resume from ``parked.idle`` records: its
+    """The admission override a refresh from ``parked.idle`` records: its
     ``class`` and ``paths`` with the command's reason, or ``None`` when it
     names neither. Raises ``ValueError`` when it names only one of them (the
     plan fold refuses such an override against every decision park, so
@@ -1154,8 +1157,8 @@ _HEAD_GUARDS = frozenset({"exact candidate head", "exact clean head"})
 def _unread_field(cmd: Command, verb: str, state: str) -> str | None:
     """Why the command gives a field the transition ``verb`` does not read."""
     if ("class" in cmd.args or "paths" in cmd.args) and verb != "restart_generation":
-        return ("`class` and `paths` apply only to a resume from `parked.idle` that starts a new "
-                "generation")
+        return ("`class` and `paths` apply only to a refresh from `parked.idle` that starts a "
+                "new generation")
     transition, _target = engine.resolve(state, verb)
     if "head" in cmd.args and not _HEAD_GUARDS & set(transition.guard):
         return f"`head` does not apply to `/upstreaming {cmd.verb}` in `{state}`"
@@ -1174,18 +1177,18 @@ def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> 
     observation of this tick read. A human `/upstreaming resume` of a
     provisioning wait the controller entered is the human's assertion that
     the prerequisite is corrected. A resume after `pr_closed_unmerged` needs
-    the upstream PR observed open again, and a resume from `parked.idle` of
+    the upstream PR observed open again, and a refresh from `parked.idle` of
     a record that names an upstream PR needs it observed closed or merged."""
     pending = rec.get("pending_human_action") or {}
     state = engine.state_key(rec)
     if cmd.verb == "resume" and state == "provisioning.waiting_human" \
             and (pending.get("kind"), pending.get("counter")) in PROVISIONING_WAITS:
         return frozenset({"prerequisite_corrected"})
-    if cmd.verb == "resume" and upstream_pr is not None:
+    if upstream_pr is not None:
         is_open = upstream_pr.get("state") == "open" and not upstream_pr.get("merged")
-        if state == "upstream_review.waiting_human" and is_open:
+        if cmd.verb == "resume" and state == "upstream_review.waiting_human" and is_open:
             return frozenset({"upstream_pr_reopened"})
-        if state == "parked.idle" and not is_open:
+        if cmd.verb == "refresh" and state == "parked.idle" and not is_open:
             return frozenset({"upstream_pr_not_open"})
     return frozenset()
 

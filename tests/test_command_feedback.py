@@ -51,6 +51,26 @@ class TestCommandFeedback(unittest.TestCase):
                 self.assertNotIn(f"**Expected form:**\n```text\n/upstreaming {verb} ", body)
         self.assertEqual(set(command_feedback.REPLACEMENTS), set(commands.RETIRED))
 
+    def test_a_resume_in_parked_is_answered_with_the_refresh_form(self):
+        import commands
+        receipt = {"comment_id": 42, "actor": {"login": "luhenry"}, "verb": "resume",
+                   "reason": commands.PARKED_RESUME, "revision": 3}
+        body = command_feedback.render(receipt, {"body": '/upstreaming resume revision=3 reason=r',
+                                                 "user": {"login": "luhenry"}})
+        self.assertIn('**Expected form:**\n```text\n/upstreaming refresh revision=3 reason="..."',
+                      body)
+        self.assertNotIn("No action is needed", body)
+        text = '/upstreaming resume revision=3 class=optimized_backend paths="a/*" reason=r'
+        try:
+            commands.parse(text)
+        except commands.CommandError as error:
+            reason = str(error)
+        receipt = {"comment_id": 42, "actor": {"login": "luhenry"}, "verb": "", "revision": None,
+                   "reason": reason}
+        body = command_feedback.render(receipt, {"body": text, "user": {"login": "luhenry"}})
+        self.assertIn("**Expected form:**\n```text\n/upstreaming refresh revision=3 "
+                      "class=configuration_integration", body)
+
     def test_repeated_pause_explains_that_pause_remains_effective(self):
         receipt = {"comment_id": 42, "actor": {"login": "luhenry"}, "verb": "pause",
                    "reason": "already paused", "revision": 8}
@@ -78,7 +98,7 @@ class TestCommandFeedback(unittest.TestCase):
         self.assertIn("> /upstreaming force-develop revision=1", api.created["body"])
         self.assertIn("missing fields: class, paths, reason", api.created["body"])
         self.assertIn("\n\n---\n\n**Reason:**", api.created["body"])
-        self.assertIn("/upstreaming resume revision=1 class=configuration_integration",
+        self.assertIn("/upstreaming refresh revision=1 class=configuration_integration",
                       api.created["body"])
         self.assertNotIn("Deprecated", api.created["body"])
         self.assertIn("<!-- upstreaming-command-feedback:42 -->", api.created["body"])

@@ -152,6 +152,17 @@ class TestLifecycleTable(unittest.TestCase):
             self.assertTrue(any(p.startswith("flag paused pause: a stop")
                                 for p in lc.check_table(POLICY)))
 
+    def test_a_generation_end_restarts_by_refresh_and_never_by_resume(self):
+        key = ("restart_generation", "queued.idle")
+        restart = lc.LIFECYCLE["parked.idle"].transitions[key]
+        with mock.patch.dict(lc.LIFECYCLE["parked.idle"].transitions,
+                             {key: dataclasses.replace(restart, command=lc.RESUME)}):
+            problems = lc.check_table(POLICY)
+        self.assertIn("parked.idle: generation_end state has no `/upstreaming refresh` exit",
+                      problems)
+        self.assertTrue(any(p.startswith("parked.idle: generation_end state has a "
+                                         "`/upstreaming resume` row") for p in problems), problems)
+
     def mutated(self, state, verb, **changes):
         """The problems the check reports when one row is changed."""
         edge = lc.find_edge(state, verb)

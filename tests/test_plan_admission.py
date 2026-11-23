@@ -347,7 +347,7 @@ class TestCloseConfirmedFromPyPI(unittest.TestCase):
 
 
 class TestOverrideEndToEnd(unittest.TestCase):
-    """A plan park, `resume class= paths=` from `parked.idle`, a new
+    """A plan park, `refresh class= paths=` from `parked.idle`, a new
     planning that decides park again, and the admission that the
     recorded override makes: the fork is provisioned with the override's
     class and paths."""
@@ -367,10 +367,11 @@ class TestOverrideEndToEnd(unittest.TestCase):
         parked, staged = fold(record, copy.deepcopy(DECISIONS["park"]))
         self.assertEqual(engine.state_key(parked), "parked.idle")
         lines = status_ledger._command_lines(parked)
-        self.assertTrue(any(line.startswith("/upstreaming resume revision=4 class=")
+        self.assertTrue(any(line.startswith("/upstreaming refresh revision=4 class=")
                             for line in lines), lines)
+        self.assertFalse(any(line.startswith("/upstreaming resume") for line in lines), lines)
         resumed = apply_command(parked, commands.parse(
-            '/upstreaming resume revision=4 class=optimized_backend paths="src/*,setup.py" '
+            '/upstreaming refresh revision=4 class=optimized_backend paths="src/*,setup.py" '
             'reason="reviewed"'))
         self.assertEqual((resumed.verb, engine.state_key(resumed.record)),
                          ("restart_generation", "queued.idle"))

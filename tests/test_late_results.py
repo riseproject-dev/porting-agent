@@ -324,7 +324,9 @@ PENDING = {"worker_run_id": "555", "attempts": 1, "last_reason": "x", "next_atte
 # What the trusted publisher can return for a launched publication.
 PUBLISHER_RESULTS = ("published", "uncertain", "proposal", "no_change", "rejected_validation",
                      "rejected_stale", "infra_error", "worker_blocked")
-RESUME = {"park": "resume", "pause": "resume"}
+# The command that continues after each stop: a refresh restarts a parked
+# contribution, a resume ends a pause.
+RESUME = {"park": "refresh", "pause": "resume"}
 
 
 def command(record, body):

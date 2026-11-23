@@ -40,14 +40,14 @@ _PATHS = r"[A-Za-z0-9_.*/?\[\]{},-]{1,500}"
 GRAMMAR: dict[str, dict[str, str]] = {
     # The commands of the lifecycle table.
     "pause": {"contribution": _ID, "revision": _INT, "reason": _REASON},
-    # In `parked.idle` a resume starts a new generation; ``class`` and
-    # ``paths`` are then recorded as the admission override.
-    "resume": {"contribution": _ID, "revision": _INT, "reason": _REASON,
-               "class": _CLASS, "paths": _PATHS},
+    "resume": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     "park": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     # Re-run planning on an existing development PR. In
-    # `handoff.waiting_upstream_pr` it names the exact clean head.
-    "refresh": {"contribution": _ID, "revision": _INT, "reason": _REASON, "head": _SHA},
+    # `handoff.waiting_upstream_pr` it names the exact clean head. In
+    # `parked.idle` a refresh starts a new generation; ``class`` and ``paths``
+    # are then recorded as the admission override.
+    "refresh": {"contribution": _ID, "revision": _INT, "reason": _REASON, "head": _SHA,
+                "class": _CLASS, "paths": _PATHS},
     # Only from `parked.idle`; the contribution is then closed.
     "abandon": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     # The one submission command: it names the exact revision and the exact
@@ -70,9 +70,22 @@ INTAKE_COMMANDS = frozenset({"authorize-followup", "resolve-operation"})
 
 SUBMIT_FORM = "/upstreaming submit-upstream revision=N head=FULL_SHA"
 RESUME_FORM = '/upstreaming resume revision=N reason="..."'
-OVERRIDE_FORM = ('/upstreaming resume revision=N class=configuration_integration '
+OVERRIDE_FORM = ('/upstreaming refresh revision=N class=configuration_integration '
                  'paths=".github/workflows/*" reason="..."')
 REFRESH_FORM = '/upstreaming refresh revision=N reason="..."'
+
+# The reply to a resume in `parked.idle` that has no pause to end: a new
+# generation starts with a refresh there.
+PARKED_RESUME = ("`/upstreaming resume` does not apply in `parked.idle`: a new generation "
+                 f"starts with `{REFRESH_FORM}`, and `class=` and `paths=` on it record an "
+                 "admission override")
+# Fields that moved from one command to another, with the reply that names
+# where they are given now.
+MOVED_FIELDS: dict[tuple[str, str], str] = {
+    ("resume", name): (f"`class` and `paths` are given on `/upstreaming refresh` in "
+                       f"`parked.idle`: `{OVERRIDE_FORM}`")
+    for name in ("class", "paths")
+}
 
 # Commands the lifecycle no longer has, with what replaced them. They are
 # rejected with this message instead of being reported as unknown.
@@ -88,8 +101,8 @@ RETIRED["block"] = (
     "`/upstreaming resume revision=N reason=\"...\"` ends it")
 RETIRED["approve-scope"] = (
     "`approve-scope` is retired. The verified planning plan decides admission and "
-    "provisioning starts automatically. A contribution parked by its plan is resumed from "
-    f"`parked.idle` with `{RESUME_FORM}`; `class=` and `paths=` record an admission override")
+    "provisioning starts automatically. A contribution parked by its plan restarts from "
+    f"`parked.idle` with `{REFRESH_FORM}`; `class=` and `paths=` record an admission override")
 RETIRED["provision"] = (
     "`provision` is retired. The fork is provisioned automatically. When provisioning waits "
     f"for a human in `provisioning.waiting_human`, correct the prerequisite, then post "
@@ -97,17 +110,17 @@ RETIRED["provision"] = (
     "starts again")
 RETIRED["restart"] = (
     "`restart` is retired. A new generation starts from `parked.idle` with "
-    f"`{RESUME_FORM}`; `closed.idle` is final")
+    f"`{REFRESH_FORM}`; `closed.idle` is final")
 RETIRED["clarify"] = (
     "`clarify` is retired. A contribution that waits for a human continues with "
     f"`{RESUME_FORM}` once the cause is corrected")
 RETIRED["revise-scope"] = (
     "`revise-scope` is retired. A new scope comes from a new planning run: "
     f"`{REFRESH_FORM}` keeps the fork and development PR, and a contribution in "
-    f"`parked.idle` resumes with `{OVERRIDE_FORM}` to record an admission override")
+    f"`parked.idle` restarts with `{OVERRIDE_FORM}` to record an admission override")
 
 RETIRED["force-develop"] = (
-    "`force-develop` is retired. A contribution in `parked.idle` resumes with an admission "
+    "`force-develop` is retired. A contribution in `parked.idle` restarts with an admission "
     f"override, `{OVERRIDE_FORM}`: new planning runs, and a plan that decides park "
     "admits development with the override's class and paths")
 
@@ -120,8 +133,7 @@ OPTIONAL: dict[str, frozenset[str]] = {
     for verb in GRAMMAR if verb != "resolve-operation"
 }
 OPTIONAL["resolve-operation"] = frozenset()
-OPTIONAL["resume"] = OPTIONAL["resume"] | {"class", "paths"}
-OPTIONAL["refresh"] = OPTIONAL["refresh"] | {"head"}
+OPTIONAL["refresh"] = OPTIONAL["refresh"] | {"head", "class", "paths"}
 
 _TOKEN_RE = re.compile(r'\s*([a-z][a-z-]*)=("((?:[^"\\]|\\.)*)"|[^\s"]+)')
 
@@ -204,6 +216,8 @@ def parse(body: str) -> Command:
         if key == "version":
             if value != str(COMMAND_VERSION):
                 raise CommandError(f"unsupported command version {value!r}")
+        elif (verb, key) in MOVED_FIELDS:
+            raise CommandError(MOVED_FIELDS[(verb, key)])
         elif key not in spec:
             raise CommandError(f"unknown field {key!r} for {verb}")
         else:

@@ -276,7 +276,7 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(out.failures, [])
         self.assertEqual(kinds(out), ["abandon"])
 
-    def test_the_resume_facts_follow_the_observed_pr(self):
+    def test_the_resume_and_refresh_facts_follow_the_observed_pr(self):
         closed = record("waiting_human", pending_human_action={
             "kind": "pr_closed_unmerged", "requested_at": NOW, "reminded_at": None,
             "escalated_at": None, "counter": None})
@@ -287,7 +287,7 @@ class TestObservation(unittest.TestCase):
         parked = contribution(phase="parked", activity="idle", parked_reason="x",
                               previous_phase="upstream_review",
                               upstream_pr=copy.deepcopy(UPSTREAM_PR))
-        body = commands.parse(f'/upstreaming resume revision={parked["revision"]} reason="r"')
+        body = commands.parse(f'/upstreaming refresh revision={parked["revision"]} reason="r"')
         self.assertFalse(apply_command(parked, body).accepted)
         self.assertFalse(apply_command(parked, body, upstream_pr={"state": "open"}).accepted)
         out = apply_command(parked, body, upstream_pr={"state": "closed", "merged": False})

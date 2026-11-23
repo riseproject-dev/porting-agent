@@ -48,9 +48,26 @@ class TestStatusLedger(unittest.TestCase):
         self.assertTrue(body.startswith("**Upstreaming r4 · parked/idle**"))
         self.assertIn("<details>", body)
         self.assertIn("<summary>Possible next commands</summary>", body)
-        self.assertIn("/upstreaming resume revision=4 class=configuration_integration", body)
+        self.assertIn("/upstreaming refresh revision=4 class=configuration_integration", body)
+        self.assertIn('/upstreaming refresh revision=4 reason="..."', body)
+        self.assertNotIn("/upstreaming resume", body)
         self.assertNotIn("force-develop", body)
         self.assertIn("<!-- upstreaming-ledger:", body)
+
+    def test_parked_offers_the_refresh_and_its_override(self):
+        for paused in (False, True):
+            record = contribution(phase="parked", activity="idle", revision=4, parked_reason="x",
+                                  previous_phase="development", paused=paused,
+                                  paused_at=NOW if paused else None,
+                                  paused_by="human" if paused else None)
+            with self.subTest(paused=paused):
+                lines = status_ledger._command_lines(record)
+                self.assertIn('/upstreaming refresh revision=4 reason="..."', lines)
+                self.assertTrue(any(line.startswith("/upstreaming refresh revision=4 class=")
+                                    for line in lines), lines)
+                # A resume only ends a pause in `parked.idle`.
+                self.assertEqual(any(line.startswith("/upstreaming resume") for line in lines),
+                                 paused)
 
     def test_gate_review_rows_render_what_they_did(self):
         import engine
@@ -145,7 +162,7 @@ class TestStatusLedger(unittest.TestCase):
                             "to_state": "queued.idle",
                             "admission_override": record["admission_override"]}
         body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn("`restart_generation` by the command `/upstreaming resume`", body)
+        self.assertIn("`restart_generation` by the command `/upstreaming refresh`", body)
         self.assertIn("Admission override: class `optimized_backend`, paths `setup.py`.", body)
         closed = contribution(phase="closed", activity="idle", terminal_reason="no_work")
         before = dict(closed, phase="planning", activity="agent_running")

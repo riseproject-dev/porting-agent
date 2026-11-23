@@ -67,10 +67,10 @@ class TestGrammarIsTheTable(unittest.TestCase):
         replacements = {
             "request-handoff": "/upstreaming submit-upstream", "approve-handoff":
             "/upstreaming submit-upstream", "register-upstream-pr": "/upstreaming submit-upstream",
-            "block": "/upstreaming pause", "approve-scope": "/upstreaming resume",
-            "provision": "/upstreaming resume", "restart": "/upstreaming resume",
+            "block": "/upstreaming pause", "approve-scope": "/upstreaming refresh",
+            "provision": "/upstreaming resume", "restart": "/upstreaming refresh",
             "clarify": "/upstreaming resume", "revise-scope": "/upstreaming refresh",
-            "force-develop": "/upstreaming resume revision=N class="}
+            "force-develop": "/upstreaming refresh revision=N class="}
         self.assertEqual(set(replacements), set(commands.RETIRED))
         for verb, replacement in replacements.items():
             with self.subTest(verb=verb), self.assertRaises(commands.CommandError) as raised:
@@ -78,18 +78,35 @@ class TestGrammarIsTheTable(unittest.TestCase):
             self.assertTrue(str(raised.exception).startswith(f"`{verb}` is retired."))
             self.assertIn(replacement, str(raised.exception))
 
-    def test_force_develop_names_the_resume_with_an_override_from_parked(self):
-        self.assertIn("/upstreaming resume revision=N class=", commands.RETIRED["force-develop"])
+    def test_force_develop_names_the_refresh_with_an_override_from_parked(self):
+        self.assertIn("/upstreaming refresh revision=N class=", commands.RETIRED["force-develop"])
         self.assertIn("`parked.idle`", commands.RETIRED["force-develop"])
 
+    def test_every_retired_message_that_names_parked_names_refresh(self):
+        for verb, text in commands.RETIRED.items():
+            if "`parked.idle`" in text:
+                with self.subTest(verb=verb):
+                    self.assertIn("/upstreaming refresh revision=N", text)
+                    self.assertNotIn("/upstreaming resume", text)
+
+    def test_class_and_paths_moved_from_resume_to_refresh(self):
+        for text in ('/upstreaming resume revision=1 class=optimized_backend '
+                     'paths="a/*" reason=x',
+                     '/upstreaming resume revision=1 paths="a/*" reason=x'):
+            with self.subTest(text=text), self.assertRaises(commands.CommandError) as raised:
+                commands.parse(text)
+            self.assertIn(commands.OVERRIDE_FORM, str(raised.exception))
+            self.assertIn(str(raised.exception), commands.MOVED_FIELDS.values())
+
     def test_optional_fields(self):
-        resume = commands.parse('/upstreaming resume revision=2 class=optimized_backend '
-                                'paths="a/*,b" reason=r')
-        self.assertEqual(resume.args, {"revision": "2", "class": "optimized_backend",
-                                       "paths": "a/*,b", "reason": "r"})
+        refresh = commands.parse('/upstreaming refresh revision=2 class=optimized_backend '
+                                 'paths="a/*,b" reason=r')
+        self.assertEqual(refresh.args, {"revision": "2", "class": "optimized_backend",
+                                        "paths": "a/*,b", "reason": "r"})
         self.assertEqual(commands.parse(f"/upstreaming refresh revision=2 head={SHA_A} reason=r")
                          .args["head"], SHA_A)
-        for text in ("/upstreaming resume revision=2 class=other reason=r",
+        for text in ("/upstreaming refresh revision=2 class=other reason=r",
+                     "/upstreaming resume revision=2 class=optimized_backend reason=r",
                      "/upstreaming retract-pr revision=2",
                      f"/upstreaming retract-pr head={SHA_A}",
                      f"/upstreaming retract-pr revision=2 head={SHA_A} reason=r",
@@ -122,7 +139,7 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
         rows = set(engine.command_states("refresh"))
         self.assertEqual(rows, {"development.fix_needed", "development.waiting_ci",
                                 "development.waiting_human", "handoff.awaiting_submission",
-                                "handoff.waiting_upstream_pr"})
+                                "handoff.waiting_upstream_pr", "parked.idle"})
         for state, rec in admitted_states():
             head = f" head={SHA_A}" if state == "handoff.waiting_upstream_pr" else ""
             with self.subTest(state=state):
@@ -130,7 +147,8 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
                 self.assertEqual(out.accepted, state in rows, out.reason)
                 if out.accepted:
                     self.assertEqual(engine.state_key(out.record), "queued.idle")
-                    self.assertEqual(out.event["kind"], "refresh_planning")
+                    self.assertEqual(out.event["kind"], "restart_generation"
+                                     if state == "parked.idle" else "refresh_planning")
 
     def test_refresh_names_the_exact_clean_head_where_the_table_requires_it(self):
         rec = record_in("handoff.waiting_upstream_pr")
@@ -176,12 +194,21 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
                 self.assertFalse(out.accepted)
                 self.assertIn("it applies in `handoff.waiting_upstream_pr`", out.reason)
 
-    def test_resume_takes_restart_generation_only_from_parked(self):
+    def test_refresh_takes_restart_generation_only_from_parked(self):
+        for state, rec in admitted_states():
+            with self.subTest(state=state):
+                head = f" head={SHA_A}" if state == "handoff.waiting_upstream_pr" else ""
+                out = self.take(rec, f"/upstreaming refresh revision=3{head} reason=r")
+                self.assertEqual(out.accepted and out.event["kind"] == "restart_generation",
+                                 state == "parked.idle")
+
+    def test_resume_never_takes_restart_generation(self):
         for state, rec in admitted_states():
             with self.subTest(state=state):
                 out = self.take(rec, "/upstreaming resume revision=3 reason=r")
-                self.assertEqual(out.accepted and out.event["kind"] == "restart_generation",
-                                 state == "parked.idle")
+                self.assertFalse(out.accepted and out.event["kind"] == "restart_generation")
+                if state == "parked.idle":
+                    self.assertFalse(out.accepted)
 
     def test_force_develop_is_retired(self):
         with self.assertRaises(commands.CommandError) as raised:
