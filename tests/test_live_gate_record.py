@@ -6,7 +6,8 @@ the development PR #2 that a human opened from it (no pipeline marker), and
 PR #1 from the removed `riscv64` closed. The edit changes `fork.head_ref`,
 `fork.pr_number`, and `updated_at` only, with no event. The pipeline has no
 migration for it and processes it like any record at the submission
-gate."""
+gate, once the record migration of the strict schema added its missing
+fields."""
 
 import copy
 import json
@@ -31,12 +32,19 @@ FORK = "riseproject-upstreaming/ciso8601"
 RECORD_PATH = ".state/contributions/closeio--ciso8601--1.json"
 
 
-def record() -> dict:
+def committed() -> dict:
     return json.loads((FIXTURES / "contribution.json").read_text())
 
 
+def record() -> dict:
+    """The record after the record migration that adds the fields of the
+    strict schema; it changes nothing this file checks."""
+    return state.migrate_record_fields(committed(), now="2026-11-23T13:00:00+00:00")[0]
+
+
 class TestTheHandEditedRecord(unittest.TestCase):
-    def test_it_is_valid_and_no_migration_touches_it(self):
+    def test_it_is_valid_once_the_record_migration_adds_the_strict_fields(self):
+        self.assertTrue(state.needs_field_migration(committed()))
         value = record()
         schemas.validate("contribution", value)
         self.assertEqual((engine.state_key(value), value["revision"], value["fork"]["head_ref"],
@@ -51,19 +59,6 @@ class TestTheHandEditedRecord(unittest.TestCase):
             self.assertEqual(state.pending_record_migrations(root, policy()), [])
             self.assertEqual(state.apply_pending_record_migrations(
                 root, policy(), now="2026-11-23T14:00:00+00:00"), [])
-
-    def test_the_state_checks_accept_the_edit_without_an_event(self):
-        from tests.helpers import commit_files, git, init_repo
-        before = dict(record(), fork=dict(record()["fork"], head_ref="riscv64", pr_number=1),
-                      updated_at="2026-11-22T22:54:12.110885+00:00")
-        with tempfile.TemporaryDirectory() as directory:
-            repo = init_repo(Path(directory) / "repo")
-            base = commit_files(repo, {RECORD_PATH: canonical_json(before)}, msg="before")
-            edited = commit_files(repo, {RECORD_PATH: canonical_json(record())}, msg="edit")
-            report = state.validate_state_diff(repo, base, edited, policy())
-            self.assertTrue(report.ok, report.problems)
-            self.assertEqual(report.changed, [RECORD_PATH])
-            self.assertEqual(git(repo, "diff", "--name-only", base, edited), RECORD_PATH)
 
     def test_the_gate_reads_riscv64_dev_and_changes_nothing(self):
         world = World(record=record())

@@ -33,14 +33,11 @@ import lifecycle
 import observe_ci
 import reconcile
 import schemas
-import state
-from common import canonical_json
 from tests.helpers import (
     NOW,
     OWNER,
     SHA_A,
     SHA_B,
-    SHA_C,
     apply_command,
     ci_record,
     contribution,
@@ -739,123 +736,6 @@ class TestRefreshKeepsFeedback(unittest.TestCase):
         self.assertEqual(final(out, due)["active_work"]["feedback_evidence_ids"], ["review-1"])
 
 
-def migrate(rec):
-    return compat.migrate_development(rec, now="2026-11-23T10:00:00+00:00")
-
-
-class TestDevelopmentMigration(unittest.TestCase):
-    def legacy(self, activity, **fields):
-        rec = record(activity)
-        rec.update(fields)
-        schemas.validate("contribution", rec)
-        return rec
-
-    def test_each_legacy_shape_becomes_the_state_of_the_table(self):
-        base_head = {"fork": dict(contribution()["fork"], head_sha=SHA_C)}
-        cases = {
-            "idle on the provisioned base": (self.legacy("idle", **base_head),
-                                             "development.fix_needed"),
-            "idle with CI evidence": (self.legacy("idle", last_ci_evidence_id="ci-1"),
-                                      "development.waiting_ci"),
-            "idle on a published head": (self.legacy("idle"), "development.waiting_ci"),
-            "paused idle": (self.legacy("idle", paused=True, paused_at=NOW, paused_by="human",
-                                        **base_head), "development.fix_needed"),
-            "planned development PR": (self.legacy("waiting_capacity",
-                                                   active_operation_id="op-pr"),
-                                       "development.waiting_ci"),
-            "held publication": (self.legacy("waiting_capacity",
-                                             pending_publication=dict(HELD)),
-                                 "development.agent_running"),
-            "CI access wait": (self.legacy("waiting_human"), "development.waiting_ci"),
-        }
-        for name, (rec, target) in cases.items():
-            with self.subTest(name):
-                self.assertTrue(compat.needs_development_migration(rec))
-                self.assertTrue(compat.awaits_development_migration(rec))
-                new, event = migrate(rec)
-                self.assertEqual(engine.state_key(new), target)
-                self.assertIsNone(engine.state_problem(new))
-                self.assertEqual(new["revision"], rec["revision"])
-                changed = {k for k in rec if rec[k] != new[k]}
-                self.assertEqual(changed - {"activity", "updated_at"}, set())
-                self.assertEqual((event["kind"], event["cause"]),
-                                 (compat.DEVELOPMENT_MIGRATED,
-                                  {"type": "migration", "id": compat.DEVELOPMENT_MIGRATION}))
-                self.assertFalse(event["revision_bumped"])
-                self.assertFalse(compat.needs_development_migration(new))
-
-    def test_the_work_deadline_wait_becomes_work_failed(self):
-        for phase in ("investigation", "development", "upstream_review"):
-            with self.subTest(phase=phase):
-                rec = contribution(phase=phase, activity="waiting_human", pending_human_action={
-                    "kind": "task_without_outcome", "requested_at": NOW, "reminded_at": None,
-                    "escalated_at": None})
-                new, event = migrate(rec)
-                self.assertEqual((engine.state_key(new), new["pending_human_action"]["kind"],
-                                  new["pending_human_action"]["counter"],
-                                  new["pending_human_action"]["requested_at"]),
-                                 (f"{phase}.waiting_human", "work_failed", None, NOW))
-                self.assertEqual(event["details"]["pending_human_action"],
-                                 {"from": "task_without_outcome", "to": "work_failed"})
-        resumed = apply_command(new, commands.parse(
-            f"/upstreaming resume revision={new['revision']} reason=r"))
-        self.assertEqual(resumed.event["kind"], "resume_upstream_revision")
-
-    def test_other_shapes_fail_closed(self):
-        refused = {
-            "requested Work": self.legacy("idle", active_work=dict(WORK)),
-            "exhausted publication": self.legacy(
-                "waiting_capacity", pending_publication=dict(HELD, exhausted=True)),
-            "paused with a publication": self.legacy(
-                "waiting_capacity", pending_publication=dict(HELD), paused=True,
-                paused_at=NOW, paused_by="human"),
-            "pending action in idle": self.legacy("idle", pending_human_action={
-                "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
-                "escalated_at": None}),
-            "publication in idle": self.legacy("idle", pending_publication=dict(HELD)),
-        }
-        for name, rec in refused.items():
-            with self.subTest(name):
-                self.assertTrue(compat.needs_development_migration(rec))
-                self.assertFalse(compat.awaits_development_migration(rec))
-                with self.assertRaises(lifecycle.TransitionError):
-                    migrate(rec)
-        # Records of the table need none.
-        for rec in (record(), running(), record("fix_needed"),
-                    record("waiting_human", pending_human_action={
-                        "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
-                        "escalated_at": None})):
-            self.assertFalse(compat.needs_development_migration(rec))
-
-    def test_the_controller_migrates_in_its_own_commit_and_once(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = root / PATH
-            path.parent.mkdir(parents=True)
-            legacy = self.legacy("idle")
-            path.write_text(canonical_json(legacy))
-            # The store admits the record only as the migration reads it,
-            # and never writes the old shape.
-            self.assertEqual(state.check_blob(PATH, path.read_bytes(), POLICY), [])
-            self.assertEqual(state.pending_record_migrations(root, POLICY), [PATH])
-            written = state.apply_pending_record_migrations(root, POLICY, now=NOW)
-            self.assertEqual(sorted(written),
-                             [PATH, ".state/events/example--proj--12/00000000.json"])
-            migrated = json.loads(path.read_text())
-            self.assertEqual(engine.state_key(migrated), "development.waiting_ci")
-            self.assertEqual(state.pending_record_migrations(root, POLICY), [])
-            self.assertEqual(state.apply_pending_record_migrations(root, POLICY, now=NOW), [])
-            path.write_text(canonical_json(self.legacy("idle", active_work=dict(WORK))))
-            self.assertTrue(state.check_blob(PATH, path.read_bytes(), POLICY))
-            with self.assertRaises(state.StateError):
-                state.pending_record_migrations(root, POLICY)
-
-    def test_the_live_record_needs_no_migration(self):
-        live = Path(".state/contributions/closeio--ciso8601--1.json")
-        if live.exists():
-            self.assertFalse(compat.needs_development_migration(json.loads(live.read_text())))
-
-
 class TestNoLegacyDevelopmentWrites(unittest.TestCase):
     def test_development_has_no_legacy_state_or_write_site(self):
         self.assertFalse(any(s.startswith("development.") for s in compat.LEGACY_STATES))
@@ -891,7 +771,7 @@ class TestLedger(unittest.TestCase):
         for verb in ("record_publish_success", "reject_patch_proposal", "replan_development",
                      "schedule_publish_retry", "exhaust_publish_recovery", "retry_dispatch",
                      "exhaust_dispatch_recovery", "record_ci_failure", "record_pr_mismatch",
-                     compat.DEVELOPMENT_MIGRATED):
+                     "development_state_migrated"):
             self.assertIn(verb, status_ledger.MESSAGES)
         rec = record()
         out = tick(rec, pull="development PR 1 does not exist")

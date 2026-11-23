@@ -8,15 +8,61 @@
     "contribution_id",
     "project_id",
     "revision",
+    "generation",
+    "refresh",
     "phase",
     "activity",
     "paused",
+    "paused_at",
+    "paused_reason",
+    "paused_by",
+    "parked_reason",
+    "terminal_reason",
+    "previous_phase",
     "tracking_issue",
     "owners",
+    "admission_class",
+    "admission_override",
+    "automatic_refresh_used",
+    "distributions",
     "upstream",
+    "fork",
+    "upstream_pr",
+    "target_contract_id",
+    "prerequisite_ids",
+    "active_operation_id",
+    "queue_work_id",
+    "queue_claim_handle",
+    "queue_result_id",
+    "debug_commits",
+    "clean_head_sha",
+    "clean_head_ci_since",
+    "submission_rewrite_id",
+    "submission_review_id",
+    "handoff_request",
+    "handoff_approval",
+    "last_ci_evidence_id",
+    "merge",
+    "retirement",
+    "release_acceptance",
     "budget",
+    "pending_human_action",
+    "follows",
+    "next_poll_at",
     "created_at",
-    "updated_at"
+    "updated_at",
+    "proposal_artifact",
+    "publication_operation_id",
+    "pending_publication",
+    "processed_publications",
+    "processed_review_ids",
+    "processed_review_comment_ids",
+    "processed_pr_conversation_comment_ids",
+    "pending_feedback_evidence_ids",
+    "active_work",
+    "dossier_evidence_id",
+    "scope_coverage_complete",
+    "scope_paths"
   ],
   "properties": {
     "schema_version": {
@@ -40,17 +86,49 @@
     },
     "refresh": {
       "anyOf": [
-        {"type": "null"},
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["command_id", "reason", "from_phase", "head_sha", "pr_number"],
+          "required": [
+            "command_id",
+            "reason",
+            "from_phase",
+            "head_sha",
+            "pr_number"
+          ],
           "properties": {
-            "command_id": {"type": "string", "maxLength": 200},
-            "reason": {"type": "string", "maxLength": 2000},
-            "from_phase": {"enum": ["provisioning", "development", "handoff"]},
-            "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
-            "pr_number": {"type": ["integer", "null"], "minimum": 1}
+            "command_id": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "from_phase": {
+              "enum": [
+                "provisioning",
+                "development",
+                "handoff"
+              ]
+            },
+            "head_sha": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "pr_number": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
           }
         }
       ]
@@ -73,10 +151,9 @@
       "enum": [
         "idle",
         "agent_running",
+        "waiting_human",
         "waiting_ci",
         "fix_needed",
-        "waiting_capacity",
-        "waiting_human",
         "awaiting_submission",
         "review_due",
         "review_pending",
@@ -109,10 +186,6 @@
         "controller",
         null
       ]
-    },
-    "blocked_reason": {
-      "description": "Merged into paused: always null. Kept until the strict schema removes it.",
-      "type": "null"
     },
     "parked_reason": {
       "type": [
@@ -808,7 +881,12 @@
       "additionalProperties": false,
       "required": [
         "policy_id",
-        "attempts_used"
+        "attempts_used",
+        "no_progress_streak",
+        "clusters",
+        "investigation_attempts",
+        "spent_estimate_usd_cents",
+        "reruns"
       ],
       "properties": {
         "policy_id": {
@@ -840,12 +918,34 @@
         "reruns": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["head_sha", "flaky", "interrupted"],
+          "required": [
+            "head_sha",
+            "flaky",
+            "interrupted"
+          ],
           "properties": {
-            "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
-            "flaky": {"type": "integer", "minimum": 0},
-            "interrupted": {"type": "integer", "minimum": 0},
-            "answered_ci_evidence_id": {"type": ["string", "null"], "maxLength": 200}
+            "head_sha": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "flaky": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "interrupted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "answered_ci_evidence_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            }
           }
         }
       }
@@ -862,7 +962,8 @@
             "kind",
             "requested_at",
             "reminded_at",
-            "escalated_at"
+            "escalated_at",
+            "counter"
           ],
           "properties": {
             "kind": {
@@ -1037,7 +1138,10 @@
             "feedback_evidence_ids": {
               "type": "array",
               "maxItems": 64,
-              "items": {"type": "string", "maxLength": 200}
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              }
             }
           }
         }
@@ -1052,20 +1156,36 @@
       }
     },
     "processed_review_ids": {
-      "type": "array", "maxItems": 256,
-      "items": {"type": "integer", "minimum": 1}
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
     },
     "processed_review_comment_ids": {
-      "type": "array", "maxItems": 512,
-      "items": {"type": "integer", "minimum": 1}
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
     },
     "processed_pr_conversation_comment_ids": {
-      "type": "array", "maxItems": 512,
-      "items": {"type": "integer", "minimum": 1}
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      }
     },
     "pending_feedback_evidence_ids": {
-      "type": "array", "maxItems": 64,
-      "items": {"type": "string", "maxLength": 200}
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "maxLength": 200
+      }
     },
     "active_work": {
       "anyOf": [
@@ -1080,7 +1200,12 @@
             "task",
             "revision",
             "requested_at",
-            "deadline_at"
+            "deadline_at",
+            "generation",
+            "attempt",
+            "dispatched_run_id",
+            "reason_ids",
+            "feedback_evidence_ids"
           ],
           "properties": {
             "dedupe_key": {
@@ -1121,23 +1246,50 @@
             "reason_ids": {
               "type": "array",
               "maxItems": 16,
-              "items": {"type": "string", "maxLength": 200}
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              }
             },
             "feedback_evidence_ids": {
               "type": "array",
               "maxItems": 64,
-              "items": {"type": "string", "maxLength": 200}
+              "items": {
+                "type": "string",
+                "maxLength": 200
+              }
             },
             "tracking_issue": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["id", "number", "url", "description", "description_digest"],
+              "required": [
+                "id",
+                "number",
+                "url",
+                "description",
+                "description_digest"
+              ],
               "properties": {
-                "id": {"type": "integer", "minimum": 1},
-                "number": {"type": "integer", "minimum": 1},
-                "url": {"type": "string", "format": "uri"},
-                "description": {"type": "string", "maxLength": 16384},
-                "description_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                "id": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "number": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                "description_digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
               }
             }
           }

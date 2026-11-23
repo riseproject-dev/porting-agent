@@ -235,7 +235,7 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
             "task": "development_repair", "generation": 0, "revision": record["revision"],
             "attempt": 1, "requested_at": record["updated_at"],
             "deadline_at": "2026-11-30T00:00:00+00:00", "dispatched_run_id": None,
-            "reason_ids": []}
+            "reason_ids": [], "feedback_evidence_ids": []}
         aw = record["active_work"]
         pub = {"status": "published", "worker_run_id": "5",
                "task": {"contribution_id": record["contribution_id"], "revision": aw["revision"],

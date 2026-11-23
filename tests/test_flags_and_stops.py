@@ -16,23 +16,17 @@ from __future__ import annotations
 
 import copy
 import itertools
-import json
-import tempfile
 import unittest
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import command_feedback
 import commands
-import compat
 import controller
 import engine
 import lifecycle as lc
 import reconcile
 import schemas
-import state as store
 import status_ledger
-from common import canonical_json
 from tests import test_live_handoff_migration as live_handoff
 from tests.helpers import (
     NOW,
@@ -45,7 +39,7 @@ from tests.helpers import (
     policy,
 )
 from tests.test_late_results import RESULTS, WORK, events, final, publication, running, tick
-from tests.test_live_handoff_migration import HEAD, live, load
+from tests.test_live_handoff_migration import HEAD, migrated
 
 POLICY = policy()
 TABLE_COMMANDS = {"pause": '/upstreaming pause reason="stop"',
@@ -304,7 +298,7 @@ class TestReminders(unittest.TestCase):
             record = table_record(state)
             if not record.get("pending_human_action"):
                 record["pending_human_action"] = {"kind": "x", "requested_at": NOW,
-                                                  "reminded_at": None, "escalated_at": None}
+                                                  "reminded_at": None, "escalated_at": None, "counter": None}
             with self.subTest(state=state):
                 _after, evs = self.ticks(record, "2026-12-30T10:00:00+00:00")
                 self.assertEqual("record_reminder" in [e["kind"] for e in evs], state in states)
@@ -321,10 +315,8 @@ class TestReminders(unittest.TestCase):
                          (True, record["pending_human_action"]))
 
     def live_gate(self):
-        record, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
-                                                     policy=POLICY, now=LIVE_REQUESTED)
+        record = migrated()
         self.assertEqual(record["pending_human_action"]["requested_at"], LIVE_REQUESTED)
-        record["fork"]["head_ref"] = "riscv64-dev"
         return record
 
     def test_the_live_record_is_first_reminded_three_business_days_after_the_request(self):
@@ -386,8 +378,8 @@ class TestControllerStops(unittest.TestCase):
         paused = recs[-1]
         self.assertEqual(engine.state_key(paused), "development.fix_needed")
         self.assertEqual((paused["paused"], paused["paused_by"], paused["paused_reason"],
-                          paused["active_work"], paused["blocked_reason"]),
-                         (True, "controller", "upstream_identity_changed", None, None))
+                          paused["active_work"], "blocked_reason" in paused),
+                         (True, "controller", "upstream_identity_changed", None, False))
         self.assertEqual(result.requested_effects, [])
         # Already paused: nothing again.
         self.assertEqual(self.identity_tick(paused).staged, [])
@@ -407,106 +399,6 @@ class TestControllerStops(unittest.TestCase):
         self.assertEqual([e["kind"] for e in evs], ["pause_on_identity_change"])
         self.assertEqual((engine.state_key(recs[-1]), recs[-1]["pending_publication"],
                           recs[-1]["paused_by"]), ("upstream_review.fix_needed", None, "controller"))
-
-
-class TestFlagMigration(unittest.TestCase):
-    def migrate(self, record):
-        return compat.migrate_flags(record, now="2026-11-23T00:00:00+00:00")
-
-    def test_blocked_by_a_human_becomes_a_human_pause(self):
-        record = contribution(phase="development", activity="waiting_human", blocked_reason="hold",
-                              updated_at="2026-11-19T00:00:00+00:00")
-        self.assertTrue(compat.needs_flag_migration(record))
-        new, event = self.migrate(record)
-        # The block's wait ends in the development state of the table: the
-        # head differs from the provisioned base, so CI is observed.
-        self.assertEqual((new["paused"], new["paused_by"], new["paused_reason"], new["paused_at"],
-                          new["blocked_reason"], new["activity"]),
-                         (True, "human", "hold", "2026-11-19T00:00:00+00:00", None, "waiting_ci"))
-        self.assertEqual(event["kind"], compat.FLAG_MIGRATED)
-        self.assertEqual(event["cause"], {"type": "migration", "id": compat.FLAG_MIGRATION})
-        self.assertEqual(event["details"]["changed"], ["blocked_reason", "paused_at"])
-        self.assertFalse(compat.needs_flag_migration(new))
-        with self.assertRaises(lc.TransitionError):
-            self.migrate(new)
-
-    def test_identity_block_becomes_the_controller_pause(self):
-        record = contribution(phase="queued", activity="waiting_human", fork=None,
-                              blocked_reason=compat.IDENTITY_BLOCK)
-        new, _event = self.migrate(record)
-        self.assertEqual((new["paused_by"], new["paused_reason"], engine.state_key(new)),
-                         ("controller", "upstream_identity_changed", "queued.idle"))
-
-    def test_a_block_over_a_human_wait_keeps_the_wait(self):
-        pending = {"kind": "work_failed", "requested_at": NOW, "reminded_at": None,
-                   "escalated_at": None}
-        record = contribution(activity="waiting_human", blocked_reason="x",
-                              pending_human_action=pending)
-        new, _event = self.migrate(record)
-        self.assertEqual((engine.state_key(new), new["pending_human_action"]["kind"]),
-                         ("development.waiting_human", "work_failed"))
-        # A wait the table does not have, with a pending action: no reviewed migration.
-        with self.assertRaises(lc.TransitionError):
-            self.migrate(contribution(phase="parked", activity="waiting_human", blocked_reason="x",
-                                      pending_human_action=pending))
-
-    def test_old_pauses_get_paused_at_and_lose_what_stops_clear(self):
-        held = {"worker_run_id": "5", "attempts": 1, "last_reason": "x", "next_attempt_at": NOW,
-                "exhausted": False}
-        proposal = {"outcome": "proposal", "run_id": "5"}
-        record = contribution(activity="waiting_ci", paused=True, paused_by="human",
-                              pending_publication=held, proposal_artifact=proposal)
-        new, event = self.migrate(record)
-        self.assertEqual((new["paused_at"], new["pending_publication"], new["proposal_artifact"]),
-                         (record["updated_at"], None, None))
-        self.assertEqual(event["details"]["changed"],
-                         ["paused_at", "pending_publication", "proposal_artifact"])
-        parked = contribution(phase="parked", activity="idle", parked_reason="x",
-                              pending_publication=held)
-        new, _event = self.migrate(parked)
-        self.assertIsNone(new["pending_publication"])
-        # A parked record without anything held needs nothing.
-        self.assertFalse(compat.needs_flag_migration(dict(parked, pending_publication=None)))
-
-    def test_fail_closed(self):
-        with self.assertRaises(lc.TransitionError):
-            self.migrate(awaiting_submission(blocked_reason="x"))
-        self.assertTrue(compat.needs_flag_migration(awaiting_submission(blocked_reason="x")))
-        self.assertFalse(compat.awaits_flag_migration(awaiting_submission(blocked_reason="x")))
-
-    def test_the_live_record_is_untouched(self):
-        record = json.loads(Path(".state/contributions/closeio--ciso8601--1.json").read_text()) \
-            if Path(".state/contributions/closeio--ciso8601--1.json").exists() else None
-        for candidate in filter(None, (record, TestReminders().live_gate())):
-            self.assertFalse(compat.needs_flag_migration(candidate))
-
-    def test_the_controller_migrates_in_its_own_commit_and_refuses_unknown_shapes(self):
-        p = policy()
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            directory = root / ".state" / "contributions"
-            directory.mkdir(parents=True)
-            blocked = contribution(phase="development", activity="waiting_human",
-                                   blocked_reason="hold")
-            path = directory / "example--proj--12.json"
-            path.write_text(canonical_json(blocked))
-            # The store admits the record only as the migration reads it.
-            self.assertEqual(store.check_blob(".state/contributions/example--proj--12.json",
-                                              path.read_bytes(), p), [])
-            self.assertEqual(store.pending_record_migrations(root, p),
-                             [".state/contributions/example--proj--12.json"])
-            written = store.apply_pending_record_migrations(root, p, now=NOW)
-            self.assertEqual(sorted(written), [".state/contributions/example--proj--12.json",
-                                               ".state/events/example--proj--12/00000000.json"])
-            migrated = json.loads(path.read_text())
-            self.assertEqual((migrated["paused"], migrated["blocked_reason"]), (True, None))
-            self.assertEqual(store.pending_record_migrations(root, p), [])
-            # A shape without a reviewed migration stops the controller.
-            path.write_text(canonical_json(awaiting_submission(blocked_reason="x")))
-            self.assertTrue(store.check_blob(".state/contributions/example--proj--12.json",
-                                             path.read_bytes(), p))
-            with self.assertRaises(store.StateError):
-                store.pending_record_migrations(root, p)
 
 
 if __name__ == "__main__":

@@ -232,7 +232,7 @@ class TestPublicationRetry(unittest.TestCase):
             "dedupe_key": "example--proj/12@g0.r0:development_patch", "task": "development_patch",
             "generation": 0, "revision": 0, "attempt": 1, "requested_at": NOW,
             "deadline_at": "2026-11-19T12:00:00+00:00", "dispatched_run_id": None,
-            "reason_ids": []})
+            "reason_ids": [], "feedback_evidence_ids": []})
         self.now = datetime(2026, 11, 18, 12, tzinfo=timezone.utc)
         self.task = {"contribution_id": self.rec["contribution_id"], "revision": self.rec["revision"],
                      "generation": 0, "dedupe_key": self.rec["active_work"]["dedupe_key"]}
@@ -403,7 +403,7 @@ class TestDispatchRecovery(unittest.TestCase):
         self.rec = contribution(phase="investigation", activity="agent_running", revision=1)
         self.rec["active_work"] = {"dedupe_key": "example--proj/12@1:investigation", "task": "investigation",
                                    "revision": 1, "requested_at": "2026-11-18T19:22:14+00:00",
-                                   "deadline_at": "2026-11-19T01:22:14+00:00", "dispatched_run_id": None}
+                                   "deadline_at": "2026-11-19T01:22:14+00:00", "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
         self.gid = work.graph_id(self.rec["active_work"]["dedupe_key"])
 
     def tick(self, runs, queue, rec=None, now=None):

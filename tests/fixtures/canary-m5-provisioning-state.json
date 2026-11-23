@@ -1,15 +1,20 @@
 {
   "active_operation_id": "op-eedfbd35ac6db9c814795d66",
   "active_work": null,
-  "activity": "waiting_capacity",
+  "activity": "idle",
   "admission_class": "configuration_integration",
-  "blocked_reason": null,
   "budget": {
     "attempts_used": 0,
     "clusters": {},
     "no_progress_streak": 0,
     "policy_id": "2026-11-18.1-proposed",
-    "spent_estimate_usd_cents": 0
+    "spent_estimate_usd_cents": 0,
+    "investigation_attempts": 0,
+    "reruns": {
+      "head_sha": null,
+      "flaky": 0,
+      "interrupted": 0
+    }
   },
   "clean_head_sha": null,
   "contribution_id": "closeio--ciso8601/1",
@@ -82,5 +87,14 @@
     "full_name": "closeio/ciso8601",
     "repository_id": 20633992
   },
-  "upstream_pr": null
+  "upstream_pr": null,
+  "paused_at": null,
+  "paused_reason": null,
+  "paused_by": null,
+  "admission_override": null,
+  "automatic_refresh_used": false,
+  "pending_feedback_evidence_ids": [],
+  "clean_head_ci_since": null,
+  "submission_rewrite_id": null,
+  "submission_review_id": null
 }

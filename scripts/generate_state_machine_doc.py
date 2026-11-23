@@ -6,7 +6,9 @@ Run from the repository root:
 
     uv run --locked python -m scripts.generate_state_machine_doc
 
-``--check`` exits non-zero when a committed page differs from the table.
+It also writes the parts of ``schemas/contribution.schema.json`` that the
+table defines (``contribution_schema``). ``--check`` exits non-zero when a
+committed page or the schema differs from the table.
 """
 
 from __future__ import annotations
@@ -466,11 +468,32 @@ def render_decisions() -> str:
     return "\n".join(lines)
 
 
+CONTRIBUTION_SCHEMA = Path("schemas/contribution.schema.json")
+
+
+def contribution_schema(committed: dict) -> str:
+    """The contribution record schema with the parts the table defines: the
+    `phase` and `activity` enums are the phases and activities of the
+    table's states, the counter a pending human action names is a budget of
+    the table, and every property of the record is required."""
+    schema = json.loads(json.dumps(committed))
+    props = schema["properties"]
+    for name, values in (("phase", lc.PHASES), ("activity", lc.ACTIVITIES)):
+        props[name] = {"enum": list(values)}
+    pending = next(branch for branch in props["pending_human_action"]["anyOf"]
+                   if branch.get("type") == "object")
+    pending["properties"]["counter"] = {"enum": [*lc.BUDGETS, None]}
+    schema["required"] = list(props)
+    return json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
+
+
 def render(policy: dict) -> dict[Path, str]:
     return {
         OUT / "index.md": render_index(),
         OUT / "table.md": render_table(policy),
         OUT / "decisions.md": render_decisions(),
+        CONTRIBUTION_SCHEMA: contribution_schema(
+            json.loads((ROOT / CONTRIBUTION_SCHEMA).read_text())),
     }
 
 

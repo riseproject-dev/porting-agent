@@ -1015,7 +1015,7 @@ def reset_generation(record: dict) -> dict:
     rec.update({
         "generation": int(record.get("generation", 0)) + 1, "refresh": None,
         "paused": False, "paused_at": None, "paused_reason": None, "paused_by": None,
-        "blocked_reason": None, "parked_reason": None, "terminal_reason": None,
+        "parked_reason": None, "terminal_reason": None,
         "previous_phase": None,
         "owners": {"primary": None, "backup": None, "submitter": None,
                    "handoff_reviewer": None},
@@ -1139,10 +1139,10 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         if not isinstance(values.get("active_work"), dict):
             raise TransitionError(f"{verb} allocates Work; active_work is required")
         rec["active_work"] = copy.deepcopy(values["active_work"])
-        rec["active_work"].pop("feedback_evidence_ids", None)
-        if e.work == "reallocate" and carried:
-            # A fresh graph for the same task carries the same feedback.
-            rec["active_work"]["feedback_evidence_ids"] = carried
+        # Work carries the feedback the row records for it (``WORK_FEEDBACK``)
+        # and none otherwise; a fresh graph for the same task carries the
+        # same feedback.
+        rec["active_work"]["feedback_evidence_ids"] = carried if e.work == "reallocate" else []
 
     pending_kind = None
     counter: Any = None

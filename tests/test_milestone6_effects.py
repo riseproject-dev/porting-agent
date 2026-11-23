@@ -11,7 +11,6 @@ from pathlib import Path
 import yaml
 
 import capacity
-import compat
 import controller
 import engine
 import fork_publish
@@ -72,13 +71,9 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
 
     def test_existing_planned_operation_is_launched_without_replanning(self):
         record, operation, recovery, project = fixtures()
-        # The record waits in the provisioning shape of an earlier
-        # controller; the record migration rewrites it as `provisioning.idle`
-        # with the planned operation, which the table's row then launches.
-        self.assertEqual(engine.state_key(record), "provisioning.waiting_capacity")
-        record, event = compat.migrate_provisioning(record, operation=operation, now=NOW)
+        # The record waits in `provisioning.idle` with the planned operation,
+        # which the table's row then launches.
         self.assertEqual(engine.state_key(record), "provisioning.idle")
-        self.assertEqual(event["revision_bumped"], False)
         result = self.tick(record, operation, recovery, project)
         self.assertEqual(
             result.report["provision_requests"],
@@ -97,84 +92,6 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
         self.assertEqual(result.report["selected"], [])
         self.assertIn("start_operation", [value["kind"] for kind, value in result.staged
                                           if kind == "events"])
-
-    def test_a_deferred_fork_intent_is_planned_again_at_a_new_revision(self):
-        """Development without a fork (a fork intent an earlier controller
-        retired while destination writes were disabled, and a proposal made
-        before the fork) returns to provisioning; the new intent never reuses
-        the retired operation."""
-        record, operation, recovery, project = fixtures()
-        record = copy.deepcopy(record)
-        operation = dict(operation, status="not_launched")
-        record.update(
-            phase="development",
-            activity="waiting_capacity",
-            active_operation_id=None,
-            active_work=None,
-            proposal_artifact={
-                "outcome": "proposal",
-                "run_id": "44990000000",
-                "artifact_id": 7,
-                "work_id": "w",
-                "claim_id": "c",
-                "name": "claim-x-porting-out",
-                "digest": "sha256:" + "a" * 64,
-                "result_commit": "q_" + "b" * 64,
-            },
-        )
-        migrated, event = compat.migrate_provisioning(record, operation=None, now=NOW)
-        self.assertEqual((engine.state_key(migrated), migrated["revision"],
-                          migrated["proposal_artifact"]),
-                         ("provisioning.idle", record["revision"] + 1, None))
-        self.assertTrue(event["revision_bumped"])
-        result = self.tick(migrated, operation, recovery, project)
-        final = [value for kind, value in result.staged if kind == "contributions"][-1]
-        self.assertEqual(engine.state_key(final), "provisioning.idle")
-        self.assertNotEqual(final["active_operation_id"], operation["operation_id"])
-        self.assertEqual(result.report["provision_requests"][0]["attempt"], 1)
-        self.assertEqual(result.report["provision_requests"][0]["operation_id"],
-                         final["active_operation_id"])
-        self.assertEqual(result.report["selected"], [])
-
-    def test_a_proposal_held_on_the_provisioned_fork_is_discarded(self):
-        record, operation, recovery, project = fixtures()
-        record = copy.deepcopy(record)
-        operation = dict(operation, status="confirmed")
-        record.update(
-            phase="development",
-            activity="waiting_capacity",
-            active_operation_id=None,
-            active_work=None,
-            fork={
-                "repository_id": 55,
-                "name": "riseproject-upstreaming/ciso8601",
-                "head_ref": "riscv64-dev",
-                "head_sha": record["upstream"]["base_sha"],
-                "pr_number": None,
-            },
-            proposal_artifact={
-                "outcome": "proposal",
-                "run_id": "44990000000",
-                "artifact_id": 7,
-                "work_id": "w",
-                "claim_id": "c",
-                "name": "claim-x-porting-out",
-                "digest": "sha256:" + "a" * 64,
-                "result_commit": "q_" + "b" * 64,
-            },
-            pending_publication={"worker_run_id": "44990000000", "attempts": 1,
-                                 "last_reason": "x", "next_attempt_at": NOW,
-                                 "exhausted": False},
-        )
-        migrated, _event = compat.migrate_provisioning(record, operation=None, now=NOW)
-        self.assertEqual((engine.state_key(migrated), migrated["revision"],
-                          migrated["proposal_artifact"], migrated["pending_publication"]),
-                         ("development.fix_needed", record["revision"] + 1, None, None))
-        result = self.tick(migrated, operation, recovery, project)
-        # A fresh patch is requested on the fork; nothing held is published.
-        self.assertEqual(result.report["selected"][0]["task"], "development_patch")
-        self.assertEqual(result.requested_effects[0]["effect_contract"]["kind"], "fork_branch")
-        self.assertNotIn("proposal_publications", result.report)
 
 
 class TestDestinationTokenBoundaries(unittest.TestCase):

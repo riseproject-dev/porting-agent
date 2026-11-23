@@ -569,14 +569,15 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        live = json.loads((self.FIXTURES / "contribution.json").read_text())
+        from tests.test_live_handoff_migration import migrated
         evidence = json.loads((self.FIXTURES / "evidence-ci.json").read_text())
-        record, _event = compat.migrate_handoff_wait(live, evidence=evidence, policy=POLICY,
-                                                     now=ISO)
+        record = migrated()
         self.assertEqual(engine.state_key(record), "handoff.awaiting_submission")
-        record["fork"]["head_ref"] = "riscv64-dev"
         self.cid = record["contribution_id"]
-        for kind, value in (("contributions", record), ("evidence", evidence)):
+        canary = json.loads((Path(__file__).parent / "fixtures/canary-recovery-operation.json")
+                            .read_text())
+        for kind, value in (("contributions", record), ("evidence", evidence),
+                            ("operations", canary)):
             path = self.root / state.record_path(kind, value)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(canonical_json(value))
@@ -634,7 +635,7 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
                 failing="/branches/riscv64",
                 error=http.client.IncompleteRead(b'{"commit": {"sha": "b29a', 900)),
             "truncated JSON body of the reviews": dict(
-                failing="/pulls/1/reviews", body=b'[{"id": 1, "user": {"id"'),
+                failing="/pulls/2/reviews", body=b'[{"id": 1, "user": {"id"'),
             "SSLEOFError on the CI runs": dict(
                 failing="/actions/runs?",
                 error=ssl.SSLEOFError(8, "EOF occurred in violation of protocol")),
@@ -882,11 +883,12 @@ class TestReconcileCommand(unittest.TestCase):
         self.assertEqual((report, self.files()), (None, before))
 
     def test_record_migration_error_stops_the_tick(self):
-        """A record awaiting the handoff migration is not ordinary state yet:
+        """A record awaiting the record migration is not ordinary state yet:
         an error while migrating it is a pipeline failure, and no table row
         could pause it."""
         fixtures = Path(__file__).parent / "fixtures" / "live-handoff-r6"
-        record = json.loads((fixtures / "contribution.json").read_text())
+        from tests.test_live_handoff_migration import live
+        record = live()
         (self.root / state.record_path("contributions", record)).write_text(
             canonical_json(record))
         evidence = json.loads((fixtures / "evidence-ci.json").read_text())
@@ -894,11 +896,11 @@ class TestReconcileCommand(unittest.TestCase):
         path.parent.mkdir(parents=True)
         path.write_text(canonical_json(evidence))
         before = self.files()
-        for error, expected in ((lifecycle.TransitionError("no reviewed migration"), 1),
+        for error, expected in ((state.StateError("no reviewed migration"), 1),
                                 (Boom("injected failure"), Boom)):
             with self.subTest(error=type(error).__name__):
                 result, report, stderr = self.run_reconcile([
-                    ("compat.migrate_handoff_wait",
+                    ("state.migrate_record_fields",
                      lambda *_a, _e=error, **_k: (_ for _ in ()).throw(_e))])
                 if expected == 1:
                     self.assertEqual(result, 1)

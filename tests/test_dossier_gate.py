@@ -307,7 +307,7 @@ class TestImmutableTrackingIssue(unittest.TestCase):
         rec = contribution(activity="agent_running")
         rec["active_work"] = {"task": "development_repair", "reason_ids": ["review-1"],
                               "requested_at": NOW, "revision": rec["revision"],
-                              "dedupe_key": "repair", "deadline_at": NOW}
+                              "dedupe_key": "repair", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
         request = work.request_from_active(rec)
         node = work.node(request, rec, control_repo_id="7", allowed_paths=["build.yml", "test.yml"],
                          context={"reason_evidence": [{"evidence_id": "review-1",
@@ -330,7 +330,7 @@ class TestImmutableTrackingIssue(unittest.TestCase):
                           "from_phase": "development", "head_sha": SHA_A, "pr_number": 1}
         rec["active_work"] = {"task": "investigation", "reason_ids": [],
                               "requested_at": NOW, "revision": rec["revision"],
-                              "dedupe_key": "refresh", "deadline_at": NOW}
+                              "dedupe_key": "refresh", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
         node = work.node(work.request_from_active(rec), rec, control_repo_id="7", allowed_paths=[])
         self.assertEqual(node["payload"]["context"]["refresh"]["reason"], "audit dependencies")
         self.assertEqual(node["payload"]["context"]["existing_fork"]["pr_number"], 1)

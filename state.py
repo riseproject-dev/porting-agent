@@ -31,7 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import compat
+import engine
+import lifecycle
 import recovery
 import schemas
 from common import (
@@ -171,31 +172,23 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         problems.append(f"{path}: content matches a credential pattern")
     if _forbidden_state_text(record):
         problems.append(f"{path}: content contains forbidden repository text U+2014")
-    # A record that awaits the flag or the terminal migration is read as the
-    # migration reads it; one that awaits the provisioning migration is in a
-    # state the table does not have.
-    awaits_earlier = kind == "contributions" and isinstance(record, dict) \
-        and (compat.awaits_flag_migration(record) or compat.awaits_terminal_migration(record)
-             or compat.awaits_provisioning_migration(record))
-    awaits_migration = awaits_earlier or (
-        kind == "contributions" and isinstance(record, dict)
-        and compat.awaits_development_migration(record))
-    view = compat.schema_view(record) if awaits_migration else record
+    # A contribution written before the strict record schema is read as the
+    # record migration rewrites it (``migrate_record_fields``); one it would
+    # refuse is invalid.
+    view = record
+    if kind == "contributions" and needs_field_migration(record):
+        try:
+            view = migrate_record_fields(record, now=record["updated_at"])[0]
+        except (StateError, KeyError, TypeError) as error:
+            problems.append(f"{path}: {error}")
+            return problems
     for e in schemas.errors(STATE_KINDS[kind], view):
         problems.append(f"{path}: {e}")
     if kind == "contributions" and not problems:
-        # A record is in a state of the lifecycle table, in a state the
-        # compatibility paths still write, or is one of the old shapes that
-        # the reviewed record migrations rewrite before anything else runs.
-        state_problem = compat.state_problem(record)
-        if state_problem and not compat.is_handoff_wait(record) and not awaits_migration:
+        # Every record is in a state of the lifecycle table.
+        state_problem = engine.state_problem(view)
+        if state_problem:
             problems.append(f"{path}: {state_problem}")
-        elif compat.needs_provisioning_migration(record) \
-                and not compat.awaits_provisioning_migration(record):
-            problems.append(f"{path}: a provisioning shape that no reviewed migration rewrites")
-        elif compat.needs_development_migration(record) and not awaits_earlier \
-                and not compat.awaits_development_migration(record):
-            problems.append(f"{path}: a development shape that no reviewed migration rewrites")
     if not problems:
         try:
             if record_path(kind, record) != path:
@@ -265,8 +258,8 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
         blob_problems = check_blob(path, data, policy)
         rep.problems.extend(blob_problems)
         if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
-                and compat.needs_migration(json.loads(data)):
-            rep.problems.append(f"{path}: written in a handoff shape that awaits record migration")
+                and needs_field_migration(json.loads(data)):
+            rep.problems.append(f"{path}: written in a shape that awaits the record migration")
         if not blob_problems and path.startswith(f"{STATE_ROOT}/operations/"):
             # An operation's status changes only by rows of the operation
             # table: a closed operation never changes status.
@@ -274,15 +267,6 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
             why = recovery.transition_problem(before, json.loads(data))
             if why:
                 rep.problems.append(f"{path}: {why}")
-        if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
-                and compat.needs_terminal_migration(json.loads(data)):
-            rep.problems.append(f"{path}: written in a terminal phase the lifecycle replaced")
-        if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
-                and compat.needs_provisioning_migration(json.loads(data)):
-            rep.problems.append(f"{path}: written in a provisioning shape the lifecycle replaced")
-        if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
-                and compat.needs_development_migration(json.loads(data)):
-            rep.problems.append(f"{path}: written in a development shape the lifecycle replaced")
     if rep.total_bytes > policy["storage"]["max_commit_bytes"]:
         rep.problems.append(f"state commit is {rep.total_bytes} bytes, over the limit")
     # Case-insensitive collisions anywhere in the resulting state tree.
@@ -483,23 +467,138 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
     return written
 
 
+# --------------------------------------------------------------------------
+# Record migration
+#
+# The strict record schema requires every field of the record, the counts of
+# `budget`, `pending_human_action.counter`, and the fields of the Work
+# identity in `active_work`; the stop flag is `paused` alone. A record
+# written before it lacks fields the table added later and may still carry
+# `blocked_reason`, always null. ``migrate_record_fields`` adds each missing
+# field with the value the pipeline reads for an absent one, and removes the
+# null `blocked_reason`; it changes nothing else. Any other difference from
+# the strict schema, and a state that is not a state of the table, fail
+# closed.
+
+FIELD_MIGRATION = "strict-record-schema"
+FIELD_MIGRATED = "record_fields_migrated"
+
+# The value of each record field that a record may lack, as the pipeline
+# reads an absent one (``record.get(name)``, an empty list, or false).
+RECORD_DEFAULTS: dict[str, Any] = {
+    "generation": 0, "refresh": None, "paused_at": None, "paused_reason": None,
+    "paused_by": None, "parked_reason": None, "terminal_reason": None, "previous_phase": None,
+    "admission_class": None, "admission_override": None, "automatic_refresh_used": False,
+    "distributions": [], "fork": None, "upstream_pr": None, "target_contract_id": None,
+    "prerequisite_ids": [], "active_operation_id": None, "queue_work_id": None,
+    "queue_claim_handle": None, "queue_result_id": None, "proposal_artifact": None,
+    "publication_operation_id": None, "pending_publication": None,
+    "processed_publications": [], "processed_review_ids": [],
+    "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
+    "pending_feedback_evidence_ids": [], "active_work": None, "dossier_evidence_id": None,
+    "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
+    "clean_head_sha": None, "clean_head_ci_since": None, "submission_rewrite_id": None,
+    "submission_review_id": None, "handoff_request": None, "handoff_approval": None,
+    "last_ci_evidence_id": None, "merge": None, "retirement": None,
+    "release_acceptance": None, "pending_human_action": None, "follows": None,
+    "next_poll_at": None,
+}
+# The counts of `budget` a record may lack; `reruns` starts for the recorded
+# head (``engine.fresh_reruns``), as the engine reads absent rerun counts.
+BUDGET_DEFAULTS: dict[str, Any] = {
+    "no_progress_streak": 0, "clusters": {}, "investigation_attempts": 0,
+    "spent_estimate_usd_cents": 0,
+}
+# The fields of requested Work a record may lack: Work requested before the
+# Work identity carried the generation is generation 0 (``work.work_generation``),
+# its first attempt, undispatched, and carries no reason or feedback.
+WORK_DEFAULTS: dict[str, Any] = {
+    "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [],
+    "feedback_evidence_ids": [],
+}
+RETIRED_FIELDS = ("blocked_reason",)
+
+
+def _added_fields(record: dict) -> tuple[dict, list[str], list[str]]:
+    new = copy.deepcopy(record)
+    added: list[str] = []
+    removed: list[str] = []
+    for name in RETIRED_FIELDS:
+        if name in new:
+            if new[name] is not None:
+                raise StateError(f"{name} is {new[name]!r}: only a null {name} is removed")
+            del new[name]
+            removed.append(name)
+    for name, value in RECORD_DEFAULTS.items():
+        if name not in new:
+            new[name] = copy.deepcopy(value)
+            added.append(name)
+    budget = new.get("budget")
+    if isinstance(budget, dict):
+        budget = new["budget"] = dict(budget)
+        for name, value in BUDGET_DEFAULTS.items():
+            if name not in budget:
+                budget[name] = copy.deepcopy(value)
+                added.append(f"budget.{name}")
+        if "reruns" not in budget:
+            budget["reruns"] = engine.fresh_reruns(new)
+            added.append("budget.reruns")
+    pending = new.get("pending_human_action")
+    if isinstance(pending, dict) and "counter" not in pending:
+        new["pending_human_action"] = dict(pending, counter=None)
+        added.append("pending_human_action.counter")
+    work = new.get("active_work")
+    if isinstance(work, dict):
+        work = new["active_work"] = dict(work)
+        for name, value in WORK_DEFAULTS.items():
+            if name not in work:
+                work[name] = copy.deepcopy(value)
+                added.append(f"active_work.{name}")
+    return new, added, removed
+
+
+def needs_field_migration(record: Any) -> bool:
+    """Whether a contribution record lacks a field of the strict schema or
+    still carries a retired one."""
+    if not isinstance(record, dict):
+        return False
+    try:
+        _new, added, removed = _added_fields(record)
+    except StateError:
+        return True
+    return bool(added or removed)
+
+
+def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
+    """The record with its missing fields added at their defaults and the
+    null ``blocked_reason`` removed, and its event. Raises ``StateError``
+    for any other shape."""
+    new, added, removed = _added_fields(record)
+    if not (added or removed):
+        raise StateError("the record needs no field migration")
+    new["updated_at"] = now
+    errors = schemas.errors("contribution", new)
+    if errors:
+        raise StateError("no reviewed record migration for this record: "
+                         + "; ".join(errors[:5]))
+    problem = engine.state_problem(new)
+    if problem:
+        raise StateError(f"no reviewed record migration for this record: {problem}")
+    state = engine.state_key(new)
+    event = lifecycle._event(record, new, FIELD_MIGRATED, "migration", FIELD_MIGRATION, now, False)
+    event["details"] = {"from_state": state, "to_state": state, "added": added,
+                        "removed": removed}
+    schemas.validate("event", event)
+    return new, event
+
+
 def _pending_record_migrations(root: Path, policy: dict, *,
                                now: str | None = None) -> list[tuple[str, dict, dict]]:
-    """Contribution records in a shape that a reviewed record migration
-    rewrites, each with its migrated record and event: a record in the
-    handoff phase but not in a state of the lifecycle table, a record in a
-    terminal phase that ``closed`` replaced, a record whose stop flag
-    predates the merge of ``blocked`` into ``paused``, a record in a
-    provisioning shape the table replaced (``compat.migrate_provisioning``),
-    and a record in a development shape or a Work deadline wait the table
-    replaced (``compat.migrate_development``).
-    A record that needs two of them gets one per run, in this order.
-
-    Reads the checkout without changing it. Every record must be
-    schema-valid (a text ``blocked_reason`` aside, which the flag migration
-    removes), and every such record must be exactly the shape the reviewed
-    migration rewrites: anything else fails closed here, before any caller
-    acts on the state."""
+    """Contribution records that the record migration rewrites, each with its
+    migrated record and event. Reads the checkout without changing it. Every
+    other record must be valid under the strict schema, and a record the
+    migration refuses fails closed here, before any caller acts on the
+    state."""
     root = Path(root)
     directory = root / STATE_ROOT / "contributions"
     pending: list[tuple[str, dict, dict]] = []
@@ -513,50 +612,15 @@ def _pending_record_migrations(root: Path, policy: dict, *,
             record = json.loads(path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise StateError(f"{rel}: not UTF-8 JSON ({error})") from error
-        errors = schemas.errors("contribution", compat.schema_view(record))
-        if errors:
-            raise StateError(f"{rel}: {'; '.join(errors[:5])}")
-        if compat.needs_migration(record):
-            evidence = None
-            evidence_id = record.get("last_ci_evidence_id")
-            if evidence_id:
-                evidence_path = root / record_path("evidence", {"evidence_id": evidence_id})
-                if evidence_path.is_file() and not evidence_path.is_symlink():
-                    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            try:
-                migrated, event = compat.migrate_handoff_wait(
-                    record, evidence=evidence, policy=policy, now=now or record["updated_at"])
-            except compat.TransitionError as error:
-                raise StateError(f"{rel}: {error}") from error
-        elif compat.needs_terminal_migration(record):
-            try:
-                migrated, event = compat.migrate_terminal(record, now=now or record["updated_at"])
-            except (compat.TransitionError, schemas.SchemaError) as error:
-                raise StateError(f"{rel}: {error}") from error
-        elif compat.needs_flag_migration(record):
-            try:
-                migrated, event = compat.migrate_flags(record, now=now or record["updated_at"])
-            except (compat.TransitionError, schemas.SchemaError) as error:
-                raise StateError(f"{rel}: {error}") from error
-        elif compat.needs_provisioning_migration(record):
-            operation = None
-            operation_id = record.get("active_operation_id")
-            if operation_id:
-                operation_path = root / record_path("operations", {"operation_id": operation_id})
-                if operation_path.is_file() and not operation_path.is_symlink():
-                    operation = json.loads(operation_path.read_text(encoding="utf-8"))
-            try:
-                migrated, event = compat.migrate_provisioning(
-                    record, operation=operation, now=now or record["updated_at"])
-            except (compat.TransitionError, schemas.SchemaError) as error:
-                raise StateError(f"{rel}: {error}") from error
-        elif compat.needs_development_migration(record):
-            try:
-                migrated, event = compat.migrate_development(record, now=now or record["updated_at"])
-            except (compat.TransitionError, schemas.SchemaError) as error:
-                raise StateError(f"{rel}: {error}") from error
-        else:
+        if not needs_field_migration(record):
+            errors = schemas.errors("contribution", record)
+            if errors:
+                raise StateError(f"{rel}: {'; '.join(errors[:5])}")
             continue
+        try:
+            migrated, event = migrate_record_fields(record, now=now or record["updated_at"])
+        except (StateError, KeyError, TypeError) as error:
+            raise StateError(f"{rel}: {error}") from error
         pending.append((rel, migrated, event))
     return pending
 
@@ -567,19 +631,12 @@ def pending_record_migrations(root: Path, policy: dict) -> list[str]:
 
 
 def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> list[str]:
-    """Rewrite every old handoff approval wait as ``handoff.awaiting_submission``,
-    every old terminal phase as ``closed.idle``, every old stop flag as the
-    table's ``paused``, and every old provisioning and development shape as
-    the table's state, and append one migration event per record.
+    """Rewrite every record written before the strict record schema
+    (``migrate_record_fields``) and append one migration event per record.
 
-    Each migration is bound to the exact shapes ``compat.migrate_handoff_wait``,
-    ``compat.migrate_terminal``, ``compat.migrate_flags``,
-    ``compat.migrate_provisioning``, and ``compat.migrate_development``
-    accept; a record
-    in any other such shape
-    fails closed. It is idempotent: a migrated record is not selected
-    again. Callers publish only the returned paths, before any ordinary
-    reconciliation, so no other lifecycle mutation rides in the commit.
+    It is idempotent: a migrated record is not selected again. Callers
+    publish only the returned paths, before any ordinary reconciliation, so
+    no other lifecycle mutation rides in the commit.
     """
     pending = _pending_record_migrations(root, policy, now=now)
     if not pending:

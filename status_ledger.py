@@ -12,7 +12,6 @@ import urllib.request
 from pathlib import Path
 
 import commands
-import compat
 import engine
 import isolation
 import lifecycle
@@ -30,7 +29,7 @@ MESSAGES = {
     "withdraw_request": ("Withdrew the request: the request label was removed before any Work, "
                          "dossier, or fork. The contribution is closed."),
     "abandon": "Abandoned the parked contribution. It is closed; its evidence is kept for audit.",
-    compat.TERMINAL_MIGRATED: ("Recorded this closed contribution in the lifecycle's one terminal "
+    "terminal_phase_migrated": ("Recorded this closed contribution in the lifecycle's one terminal "
                                "phase for work that is not needed, `closed`, with its reason in "
                                "`terminal_reason`. Nothing else changed."),
     "command:force-develop": ("Overrode the dossier park: automatic development starts with the "
@@ -130,7 +129,7 @@ MESSAGES = {
     "resume_upstream_revision": "Resumed: upstream revision Work is due again.",
     "resume_release_observation": "Resumed: the release is observed again.",
     "record_reminder": "Reminder: this contribution still waits for a human.",
-    compat.FLAG_MIGRATED: ("Recorded the stop of this contribution in the lifecycle's one stop "
+    "paused_flag_migrated": ("Recorded the stop of this contribution in the lifecycle's one stop "
                            "flag, `paused`, with its reason and who set it. The retired "
                            "`block` is a pause now; `resume` at the current revision ends it."),
     "park_contribution": "Parked the contribution; its evidence is kept for audit.",
@@ -167,7 +166,7 @@ MESSAGES = {
                            "dossier decided that no bounded patch is actionable."),
     "close_investigation": ("Verified the investigation dossier and closed the contribution: "
                             "the dossier decided that the work is not needed."),
-    compat.PROVISIONING_MIGRATED: (
+    "provisioning_state_migrated": (
         "Recorded this contribution in the state of the lifecycle table its provisioning shape "
         "stands for. Provisioning is planned and launched from `provisioning.idle`, and patch "
         "Work is requested only on the provisioned fork."),
@@ -205,9 +204,13 @@ MESSAGES = {
         "The development PR no longer matches the recorded fork, branch, or PR. The "
         "contribution waits for a human: correct the development PR, then `/upstreaming "
         "resume` at the current revision continues development."),
-    compat.DEVELOPMENT_MIGRATED: ("Moved this contribution to the lifecycle state of the table "
+    "development_state_migrated": ("Moved this contribution to the lifecycle state of the table "
                                   "its development state stands for. Its fork, head, revision, "
                                   "and evidence are unchanged."),
+    "record_fields_migrated": ("Recorded this contribution in the strict record schema: missing "
+                               "fields are added with the values the pipeline read for them, and "
+                               "the retired `blocked_reason` is removed. Its state, revision, and "
+                               "evidence are unchanged."),
     "start_operation": "Launched the trusted fork provisioning workflow.",
     "require_provisioning_intervention": (
         "Provisioning cannot continue safely: the fork provisioning operation failed, or its "
@@ -285,7 +288,7 @@ def _submission_request(event: dict, record: dict) -> tuple[str, str] | None:
             and details.get("from_state") == "handoff.awaiting_submission":
         lead = (f"Reminder: required CI passed on the exact head `{head}` of the development PR, "
                 "and upstream submission still waits for an authorized human.")
-    elif event["kind"] == compat.HANDOFF_WAIT_MIGRATED:
+    elif event["kind"] == "handoff_wait_migrated":
         lead = ("Moved this contribution to the lifecycle state `handoff.awaiting_submission`. "
                 f"Its fork, development PR, head `{head}`, revision, and CI evidence are "
                 "unchanged. The earlier request to run `approve-handoff` no longer applies: "

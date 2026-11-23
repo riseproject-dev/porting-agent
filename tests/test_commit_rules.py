@@ -224,7 +224,7 @@ class TestPayload(unittest.TestCase):
         record["active_work"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
                                  "revision": 3, "attempt": 1, "requested_at": "2026-11-23T00:00:00+00:00",
                                  "deadline_at": "2026-11-23T06:00:00+00:00", "dispatched_run_id": None,
-                                 "reason_ids": [], "tracking_issue": {"url": "https://x"}}
+                                 "reason_ids": [], "tracking_issue": {"url": "https://x"}, "feedback_evidence_ids": []}
         for data, expected in ((dossier(), commit_rules.from_dossier(dossier())),
                                (dict(dossier(), schema_version=1), None)):
             evidence = {"evidence_id": "dossier-x", "kind": "dossier", "data": copy.deepcopy(data)}

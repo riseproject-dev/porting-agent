@@ -306,7 +306,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertIsNone(result["active_work"])
         self.assertEqual(result["fork"]["head_sha"], HEAD)
         self.assertEqual({k: v for k, v in result["budget"].items() if k != "reruns"},
-                         record["budget"])
+                         {k: v for k, v in record["budget"].items() if k != "reruns"})
         self.assertEqual(result["budget"]["reruns"], {"head_sha": HEAD, "flaky": 1, "interrupted": 0,
                                                       "answered_ci_evidence_id": None})
         self.assertEqual(output.report["requested_effects"], [])

@@ -54,7 +54,7 @@ def investigating(*, override=None, refresh="none", attempts=0):
                              "task": "investigation", "generation": 0, "revision": 4,
                              "attempt": 1, "requested_at": NOW,
                              "deadline_at": "2026-11-24T09:00:00+00:00",
-                             "dispatched_run_id": None, "reason_ids": []}
+                             "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
     record["budget"]["investigation_attempts"] = attempts
     schemas.validate("contribution", record)
     return record

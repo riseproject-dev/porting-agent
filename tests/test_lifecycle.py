@@ -172,7 +172,9 @@ class TestRestartGeneration(unittest.TestCase):
             pending_feedback_evidence_ids=["review-old"],
             proposal_artifact={"artifact_id": 1}, last_ci_evidence_id="ci-old",
             budget={"policy_id": "test", "attempts_used": 3, "no_progress_streak": 2,
-                    "clusters": {"x": 2}, "spent_estimate_usd_cents": 99})
+                    "clusters": {"x": 2}, "spent_estimate_usd_cents": 99,
+                    "investigation_attempts": 0,
+                    "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0}})
         rec.update(over)
         return rec
 
@@ -352,7 +354,7 @@ class TestStopEndsRequestedWork(unittest.TestCase):
         from tests.helpers import NOW, contribution
         rec = contribution(phase="investigation", activity="agent_running", revision=1)
         rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 1,
-                              "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None}
+                              "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
         for body in ("/upstreaming pause", "/upstreaming park reason=x"):
             out = apply_command(rec, C.parse(body))
             self.assertTrue(out.accepted, body)

@@ -25,15 +25,7 @@ from typing import Any, NamedTuple
 import schemas
 from common import DEV_REF, UPSTREAM_REF
 
-PHASES = (
-    "queued", "investigation", "provisioning", "development", "handoff",
-    "upstream_review", "release_wait", "released", "parked", "closed",
-)
 TERMINAL = frozenset({"released", "closed"})
-ACTIVITIES = ("idle", "agent_running", "waiting_ci", "fix_needed",
-              "waiting_capacity", "waiting_human", "awaiting_submission", "review_due",
-              "review_pending", "reviewing",
-              "building_upstream_branch", "preparing_submission", "waiting_upstream_pr")
 
 # Phases in which automated contribution writes to the fork may happen.
 WRITE_PHASES = frozenset({"provisioning", "development", "handoff", "upstream_review"})
@@ -53,8 +45,7 @@ class Outcome:
 
 def _event(before: dict, after: dict, kind: str, cause_type: str, cause_id: str | None,
            now: str, bumped: bool) -> dict:
-    keys = ("phase", "activity", "paused", "revision", "generation",
-            "blocked_reason", "parked_reason")
+    keys = ("phase", "activity", "paused", "revision", "generation", "parked_reason")
     return {
         "schema_version": 1,
         "contribution_id": after["contribution_id"],
@@ -154,7 +145,6 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "paused_at": None,
         "paused_reason": None,
         "paused_by": None,
-        "blocked_reason": None,
         "parked_reason": None,
         "terminal_reason": None,
         "previous_phase": None,
@@ -183,6 +173,9 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "processed_pr_conversation_comment_ids": [],
         "active_work": None,
         "dossier_evidence_id": None,
+        "pending_feedback_evidence_ids": [],
+        "scope_coverage_complete": False,
+        "scope_paths": None,
         "debug_commits": [],
         "clean_head_sha": None,
         "clean_head_ci_since": None,
@@ -1706,6 +1699,10 @@ OPERATIONS: dict[str, OperationState] = {
 }
 
 TERMINAL_STATES = frozenset(k for k, s in LIFECYCLE.items() if s.kind == "terminal")
+# The phases and activities of the table's states, in table order: the record
+# schema's `phase` and `activity` enums are generated from them.
+PHASES = tuple(dict.fromkeys(k.split(".", 1)[0] for k in LIFECYCLE))
+ACTIVITIES = tuple(dict.fromkeys(k.split(".", 1)[1] for k in LIFECYCLE))
 
 
 class Edge(NamedTuple):

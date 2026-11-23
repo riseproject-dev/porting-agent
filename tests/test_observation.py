@@ -210,7 +210,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
             "dispatched_run_id": None,
             "reason_ids": ["rehearsal-closeio--ciso8601--1-r3-44982902579",
-                           "dossier-closeio--ciso8601--1-r2"],
+                           "dossier-closeio--ciso8601--1-r2"], "generation": 0, "feedback_evidence_ids": []
         }
         return rec
 
@@ -667,7 +667,7 @@ class TestTick(unittest.TestCase):
 
         active = contribution(phase="investigation", activity="agent_running")
         active["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 0,
-                                 "requested_at": NOW, "deadline_at": NOW}
+                                 "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         tick = controller.tick(contributions={"c": active}, operations={}, consumed={}, projects={},
                                policy=policy(), inputs=controller.Inputs(now=T,
                                tracking_issues={raw["number"]: raw}, pressure=capacity.Pressure(ok=True)))
@@ -777,7 +777,7 @@ class TestTick(unittest.TestCase):
         from tests.test_dossier_gate import dossier
         rec = contribution(phase="investigation", activity="agent_running")
         rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 0,
-                              "requested_at": NOW, "deadline_at": NOW}
+                              "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         pub = {"status": "investigation", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
                "worker_run_id": "7", "publication_artifact_id": 3,
                "dossier": dossier(), "proposal": {"diagnosis": "Bounded wheel integration work is actionable."},
@@ -831,7 +831,7 @@ class TestTick(unittest.TestCase):
         refreshed["phase"] = "investigation"
         refreshed["activity"] = "agent_running"
         refreshed["active_work"] = {"dedupe_key": "refresh", "task": "investigation",
-                                    "revision": 8, "requested_at": NOW, "deadline_at": NOW}
+                                    "revision": 8, "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         pub = {"status": "investigation",
                "task": {"contribution_id": rec["contribution_id"], "revision": 8},
                "worker_run_id": "9", "publication_artifact_id": 5,
@@ -860,7 +860,7 @@ class TestTick(unittest.TestCase):
         from tests.test_dossier_gate import dossier
         rec = contribution(phase="investigation", activity="agent_running")
         rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 0,
-                              "requested_at": NOW, "deadline_at": NOW}
+                              "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         research = dossier()
         research["proposal"].update(decision="park", admission_class=None, allowed_paths=[],
                                     rationale="No concrete upstream patch is currently actionable; retain verified evidence and wait for a new prerequisite.")

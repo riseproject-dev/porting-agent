@@ -64,7 +64,7 @@ SAMPLE = {
     "paused_reason": "processing_error: KeyError: 'x' (step observation, run 1)",
     "admission_override": {"class": "configuration_integration", "paths": ["a"], "reason": "r"},
     "active_work": {"dedupe_key": "example--proj/12@0:investigation", "task": "investigation",
-                    "revision": 0, "attempt": 1, "requested_at": NOW, "deadline_at": NOW},
+                    "revision": 0, "attempt": 1, "requested_at": NOW, "deadline_at": NOW, "generation": 0, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []},
 }
 
 
@@ -1076,8 +1076,6 @@ class TestSingleWritePath(unittest.TestCase):
         for key in ("upstream_review.idle", "upstream_review.waiting_capacity"):
             self.assertIsNotNone(compat.state_problem(contribution(
                 phase="upstream_review", activity=key.split(".")[1])))
-        for phase in compat.LEGACY_TERMINAL_PHASES:
-            self.assertFalse(any(key.startswith(f"{phase}.") for key in compat.LEGACY_STATES))
         for key in ("handoff.idle", "handoff.waiting_capacity", "closed.waiting_human"):
             self.assertIsNotNone(compat.state_problem(contribution(
                 phase=key.split(".")[0], activity=key.split(".")[1])))

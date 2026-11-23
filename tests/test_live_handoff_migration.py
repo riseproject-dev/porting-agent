@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The live closeio--ciso8601/1 record reaches `handoff.awaiting_submission`.
+"""The live closeio--ciso8601/1 record at the submission gate.
 
-The fixtures under ``tests/fixtures/live-handoff-r6`` are copies of the
-record, its last two events and its CI evidence as the controller committed
-them: phase ``handoff``, activity ``waiting_human``, revision 6, pending
-action ``approve_handoff``. The ordinary controller must bring that record,
-by itself, to the table state, ask for ``submit-upstream`` on the tracking
-issue, and never lose the fork, the development PR, the head or the evidence.
+The fixture ``tests/fixtures/live-gate-dev/contribution.json`` is the record
+as the controller committed it: `handoff.awaiting_submission`, revision 6,
+development on `riscv64-dev` at b29a8f4 with development PR #2, pending
+action ``submit_upstream``, written before the strict record schema (it
+lacks `budget.reruns` and three handoff fields, and carries the null
+`blocked_reason`). The ordinary controller adds the missing fields by
+itself, in one evented record migration, and changes nothing else; after
+it, only table verbs move the record, and it never loses the fork, the
+development PR, the head, or the evidence.
 """
 
+import copy
 import io
 import json
 import tempfile
@@ -22,10 +26,8 @@ from unittest import mock
 
 import capacity
 import collect
-import compat
 import controller
 import engine
-import lifecycle
 import observe_ci
 import reconcile
 import state
@@ -33,20 +35,22 @@ from common import canonical_json
 from tests.helpers import OWNER, commit_files, git, init_repo, policy
 
 FIXTURES = Path(__file__).parent / "fixtures" / "live-handoff-r6"
+LIVE = Path(__file__).parent / "fixtures" / "live-gate-dev" / "contribution.json"
 CID = "closeio--ciso8601/1"
 HEAD = "b29a8f49374004d650cf312e9c31848953e5ae60"
-# The fork as the committed fixture names it, developing on `riscv64`, and as
-# a record developing on `riscv64-dev` names it.
-LEGACY_FORK = {"head_ref": "riscv64", "head_sha": HEAD, "name": "riseproject-upstreaming/ciso8601",
-               "pr_number": 1, "repository_id": 1467208233}
-FORK = dict(LEGACY_FORK, head_ref="riscv64-dev")
+FORK = {"head_ref": "riscv64-dev", "head_sha": HEAD, "name": "riseproject-upstreaming/ciso8601",
+        "pr_number": 2, "repository_id": 1467208233}
 CI_EVIDENCE = "ci-1467208233-45008094068-1"
 RECORD_PATH = ".state/contributions/closeio--ciso8601--1.json"
 EVIDENCE_PATH = f".state/evidence/{CI_EVIDENCE}.json"
-EVENT_PATH = ".state/events/closeio--ciso8601--1/00000023.json"
+EVENT_PATH = ".state/events/closeio--ciso8601--1/00000027.json"
 NOW = "2026-11-23T09:00:00+00:00"
 T = datetime.fromisoformat(NOW)
 SUBMIT = f"/upstreaming submit-upstream revision=6 head={HEAD}"
+# The fields the record migration adds to the live record, and the one it
+# removes.
+ADDED = ["clean_head_ci_since", "submission_rewrite_id", "submission_review_id", "budget.reruns"]
+REMOVED = ["blocked_reason"]
 
 
 def load(name):
@@ -54,16 +58,13 @@ def load(name):
 
 
 def live():
-    return load("contribution.json")
+    """The live record as committed, before the strict record schema."""
+    return json.loads(LIVE.read_text())
 
 
 def migrated():
-    """The live record after the handoff wait migration, developing on
-    `riscv64-dev` like every record (its branch was moved outside the
-    pipeline)."""
-    record, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
-                                                 policy=policy(), now=NOW)
-    record["fork"]["head_ref"] = "riscv64-dev"
+    """The live record after the record migration."""
+    record, _event = state.migrate_record_fields(live(), now=NOW)
     return record
 
 
@@ -82,122 +83,88 @@ def comment(body, cid=900):
 class TestLiveFixtureIsTheCommittedRecord(unittest.TestCase):
     def test_fixture_shape(self):
         record = live()
-        self.assertEqual((record["phase"], record["activity"], record["revision"]),
-                         ("handoff", "waiting_human", 6))
-        self.assertEqual(record["pending_human_action"]["kind"], "approve_handoff")
-        self.assertEqual(record["fork"], LEGACY_FORK)
-        self.assertEqual(record["last_ci_evidence_id"], CI_EVIDENCE)
-        self.assertEqual([load(f"event-{n}.json")["kind"] for n in (21, 22)],
-                         ["worker_no_change", "handoff_ready"])
+        self.assertEqual((engine.state_key(record), record["revision"], record["fork"],
+                          record["last_ci_evidence_id"], record["pending_human_action"]["kind"]),
+                         ("handoff.awaiting_submission", 6, FORK, CI_EVIDENCE, "submit_upstream"))
+        self.assertIsNone(record["blocked_reason"])
+        self.assertNotIn("reruns", record["budget"])
+        self.assertTrue(state.needs_field_migration(record))
         evidence = load("evidence-ci.json")
         self.assertEqual((evidence["evidence_id"], evidence["ci"]["head_sha"]), (CI_EVIDENCE, HEAD))
-        # The old wait is not a table state; only its migration admits it.
-        self.assertIsNotNone(engine.state_problem(record))
-        self.assertTrue(compat.needs_migration(record))
-        self.assertTrue(compat.is_handoff_wait(record))
 
 
 class TestRecordMigration(unittest.TestCase):
-    def test_migrated_record_is_the_table_state_and_keeps_everything_else(self):
+    def test_only_the_missing_fields_are_added_and_the_null_flag_removed(self):
         before = live()
-        after, event = compat.migrate_handoff_wait(before, evidence=load("evidence-ci.json"),
-                                                   policy=policy(), now=NOW)
-        self.assertEqual(engine.state_key(after), "handoff.awaiting_submission")
-        self.assertIsNone(engine.state_problem(after))
-        self.assertEqual(after["pending_human_action"],
-                         {"kind": "submit_upstream", "requested_at": NOW, "reminded_at": None,
-                          "escalated_at": None, "counter": None})
-        self.assertEqual((after["revision"], after["generation"]), (6, 0))
-        self.assertEqual(after["fork"], LEGACY_FORK)
-        self.assertEqual(after["handoff_request"],
-                         {"command_id": f"observation-{CI_EVIDENCE}", "head": HEAD, "revision": 6})
-        self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
-        self.assertEqual(after["dossier_evidence_id"], "dossier-closeio--ciso8601--1-r2")
-        self.assertIsNone(after["active_work"])
-        self.assertIsNone(after["handoff_approval"])
-        # Exactly these fields differ; every other field is byte-for-byte kept.
-        changed = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
-        self.assertEqual(changed, {"activity", "pending_human_action", "clean_head_sha",
-                                   "updated_at", "budget", "automatic_refresh_used"})
-        self.assertEqual(after["budget"], dict(before["budget"], investigation_attempts=0))
-        # The clean head is produced by the debug cleanup after submission is
-        # requested; the candidate head stays in the fork and the request.
-        self.assertIsNone(after["clean_head_sha"])
-        for name in ("paused_at", "paused_reason", "paused_by", "admission_override"):
-            self.assertIn(name, after)
+        after, event = state.migrate_record_fields(before, now=NOW)
+        changed = {k for k in set(before) | set(after) if before.get(k, "-") != after.get(k, "-")}
+        self.assertEqual(changed, {"clean_head_ci_since", "submission_rewrite_id",
+                                   "submission_review_id", "blocked_reason", "budget",
+                                   "updated_at"})
+        for name in ("clean_head_ci_since", "submission_rewrite_id", "submission_review_id"):
             self.assertIsNone(after[name])
-        self.assertEqual(event["kind"], compat.HANDOFF_WAIT_MIGRATED)
-        self.assertEqual(event["cause"], {"type": "migration", "id": compat.HANDOFF_WAIT_MIGRATION})
-        self.assertEqual((event["from"], event["to"]),
-                         ({"activity": "waiting_human"}, {"activity": "awaiting_submission"}))
-        self.assertFalse(event["revision_bumped"])
-        self.assertEqual((event["details"]["head"], event["details"]["revision"]), (HEAD, 6))
-        self.assertEqual((event["details"]["from_state"], event["details"]["to_state"]),
-                         ("handoff.waiting_human", "handoff.awaiting_submission"))
+        self.assertNotIn("blocked_reason", after)
+        self.assertEqual(after["budget"], dict(before["budget"], reruns={
+            "head_sha": HEAD, "flaky": 0, "interrupted": 0}))
+        # The rerun counts are those the engine read for the absent field.
+        self.assertEqual(engine.head_reruns(before), engine.head_reruns(after))
+        self.assertEqual((engine.state_key(after), after["revision"], after["generation"],
+                          after["fork"], after["last_ci_evidence_id"],
+                          after["handoff_request"], after["pending_human_action"]),
+                         (engine.state_key(before), 6, 0, FORK, CI_EVIDENCE,
+                          before["handoff_request"], before["pending_human_action"]))
+        self.assertEqual((event["kind"], event["cause"], event["from"], event["to"],
+                          event["revision_bumped"]),
+                         (state.FIELD_MIGRATED, {"type": "migration", "id": state.FIELD_MIGRATION},
+                          {}, {}, False))
+        self.assertEqual(event["details"], {
+            "from_state": "handoff.awaiting_submission", "to_state": "handoff.awaiting_submission",
+            "added": ADDED, "removed": REMOVED})
 
-    def test_migration_equals_the_nomination_the_table_defines(self):
-        """The same CI on a record that was never in the old wait gives the
-        same state, so the migrated record is not a special case."""
-        before = live()
-        waiting_ci = dict(before, phase="development", activity="waiting_ci",
-                          handoff_request=None, pending_human_action=None, clean_head_sha=None)
-        out = engine.apply_transition(
-            waiting_ci, "nominate_for_handoff", policy=policy(), now=NOW, cause_id=CI_EVIDENCE,
-            facts={"ci_passed_on_head"},
-            values={"last_ci_evidence_id": CI_EVIDENCE,
-                    "handoff_request": dict(before["handoff_request"])})
-        after, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
-                                                    policy=policy(), now=NOW)
-        added = {"paused_at", "paused_reason", "paused_by", "admission_override",
-                 "automatic_refresh_used", "budget"}
-        self.assertEqual({k: v for k, v in out.record.items() if k not in added},
-                         {k: v for k, v in after.items() if k not in added})
+    def test_the_migrated_record_needs_no_migration(self):
+        self.assertFalse(state.needs_field_migration(migrated()))
+        with self.assertRaises(state.StateError):
+            state.migrate_record_fields(migrated(), now=NOW)
 
-    def test_any_other_handoff_shape_fails_closed(self):
-        evidence = load("evidence-ci.json")
+    def test_any_other_difference_from_the_strict_schema_fails_closed(self):
         record = live()
         variants = {
-            "approved": dict(record, pending_human_action=dict(record["pending_human_action"],
-                                                               kind="open_upstream_pr")),
-            "requested": dict(record, activity="idle", pending_human_action=None),
-            "work": dict(record, active_work={"dedupe_key": "k", "task": "development_repair",
-                                              "revision": 6, "requested_at": NOW,
-                                              "deadline_at": NOW}),
-            "operation": dict(record, active_operation_id="op-1"),
-            "publication": dict(record, pending_publication={
-                "worker_run_id": "1", "attempts": 1, "last_reason": "x", "next_attempt_at": NOW}),
-            "paused": dict(record, paused=True),
-            "blocked": dict(record, blocked_reason="x"),
-            "head": dict(record, fork=dict(record["fork"], head_sha="c" * 40)),
-            "clean head": dict(record, clean_head_sha="c" * 40),
-            "revision": dict(record, revision=7),
-            "no evidence": dict(record, last_ci_evidence_id=None),
-            "pending feedback": dict(record, pending_feedback_evidence_ids=["review-1"]),
-            "no PR": dict(record, fork=dict(record["fork"], pr_number=None)),
-            "debug": dict(record, debug_commits=[{"sha": HEAD, "subject": "{debug} x",
-                                                  "reason": "r"}]),
-            "upstream PR": dict(record, upstream_pr={"id": 1, "number": 1, "url": "u",
-                                                     "head_repository_id": 1, "head_ref": "riscv64",
-                                                     "head_sha": HEAD, "base_ref": "master",
-                                                     "registered_by": OWNER}),
+            "a set blocked_reason": dict(record, blocked_reason="hold"),
+            "a state outside the table": dict(record, activity="waiting_capacity"),
+            "an unknown field": dict(record, approved=True),
+            "an invalid value": dict(record, revision=-1),
+            "a pending action the state is never entered with": dict(
+                record, pending_human_action=dict(record["pending_human_action"],
+                                                  kind="approve_handoff")),
         }
         for name, variant in variants.items():
-            with self.subTest(shape=name), self.assertRaises(lifecycle.TransitionError):
-                compat.migrate_handoff_wait(variant, evidence=evidence, policy=policy(), now=NOW)
-        bad_evidence = {
-            "missing": None,
-            "other id": dict(evidence, evidence_id="ci-1-2-3"),
-            "other head": dict(evidence, ci=dict(evidence["ci"], head_sha="c" * 40)),
-            "failed": dict(evidence, summary="run 1 attempt 1: failed"),
-            "not CI": dict(evidence, kind="rehearsal"),
-        }
-        for name, bad in bad_evidence.items():
-            with self.subTest(evidence=name), self.assertRaises(lifecycle.TransitionError):
-                compat.migrate_handoff_wait(record, evidence=bad, policy=policy(), now=NOW)
-        # A record that is already in a table state is not migrated again.
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.migrate_handoff_wait(migrated(), evidence=evidence, policy=policy(), now=NOW)
-        self.assertFalse(compat.needs_migration(migrated()))
+            with self.subTest(shape=name), self.assertRaises(state.StateError):
+                state.migrate_record_fields(variant, now=NOW)
+
+    def test_requested_work_and_a_pending_action_get_their_defaults(self):
+        record = copy.deepcopy(live())
+        record.update(phase="development", activity="agent_running",
+                      handoff_request=None, pending_human_action=None,
+                      active_work={"dedupe_key": "k", "task": "development_repair", "revision": 6,
+                                   "requested_at": NOW, "deadline_at": NOW})
+        after, event = state.migrate_record_fields(record, now=NOW)
+        self.assertEqual(after["active_work"], dict(record["active_work"], **state.WORK_DEFAULTS))
+        self.assertIn("active_work.feedback_evidence_ids", event["details"]["added"])
+        wait = copy.deepcopy(live())
+        wait["pending_human_action"].pop("counter")
+        after, event = state.migrate_record_fields(wait, now=NOW)
+        self.assertIsNone(after["pending_human_action"]["counter"])
+        self.assertIn("pending_human_action.counter", event["details"]["added"])
+
+    def test_the_defaults_cover_every_optional_field_of_the_old_schema(self):
+        schema = json.loads((Path(state.__file__).parent / "schemas/contribution.schema.json")
+                            .read_text())
+        always = {"schema_version", "contribution_id", "project_id", "revision", "phase",
+                  "activity", "paused", "tracking_issue", "owners", "upstream", "budget",
+                  "created_at", "updated_at"}
+        self.assertEqual(set(state.RECORD_DEFAULTS), set(schema["properties"]) - always)
+        self.assertEqual(set(state.BUDGET_DEFAULTS) | {"reruns", "policy_id", "attempts_used"},
+                         set(schema["properties"]["budget"]["properties"]))
 
 
 class TestControllerMigratesByItself(unittest.TestCase):
@@ -205,10 +172,12 @@ class TestControllerMigratesByItself(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = init_repo(Path(self.tmp.name) / "control")
         self.files = {
-            RECORD_PATH: (FIXTURES / "contribution.json").read_text(),
+            RECORD_PATH: LIVE.read_text(),
             EVIDENCE_PATH: (FIXTURES / "evidence-ci.json").read_text(),
-            ".state/events/closeio--ciso8601--1/00000021.json": (FIXTURES / "event-21.json").read_text(),
-            ".state/events/closeio--ciso8601--1/00000022.json": (FIXTURES / "event-22.json").read_text(),
+            ".state/events/closeio--ciso8601--1/00000026.json": canonical_json({
+                "schema_version": 1, "contribution_id": CID, "sequence": 26,
+                "at": "2026-11-23T08:00:00+00:00", "kind": "record_reminder", "from": {},
+                "to": {}, "cause": {"type": "tick", "id": None}, "revision_bumped": False}),
         }
         self.base = commit_files(self.repo, dict(self.files, **{"README.md": "x\n"}))
         self.p = policy()
@@ -235,19 +204,16 @@ class TestControllerMigratesByItself(unittest.TestCase):
         self.assertEqual(sorted(report["written"]), [RECORD_PATH, EVENT_PATH])
         self.assertEqual(report["record_migration"], {"written": report["written"]})
         # A migration-only tick launches nothing.
-        self.assertEqual(report["controller"], {"canary_recovery_requests": []})
         for key in ("requested_effects", "dispatch_relaunch", "provision_requests",
-                    "publication_retries", "dev_pr_requests"):
+                    "publication_retries", "dev_pr_requests", "handoff_requests"):
             self.assertEqual(report[key], [], key)
         changed = sorted(line.strip() for line in git(
             self.repo, "status", "--porcelain", "--untracked-files=all").split("\n"))
         self.assertEqual(changed, [f"?? {EVENT_PATH}", "?? report.json", f"M {RECORD_PATH}"])
         record = json.loads((self.repo / RECORD_PATH).read_text())
-        self.assertEqual(record, compat.migrate_handoff_wait(
-            live(), evidence=load("evidence-ci.json"), policy=self.p, now=T.isoformat())[0])
+        self.assertEqual(record, state.migrate_record_fields(live(), now=T.isoformat())[0])
         event = json.loads((self.repo / EVENT_PATH).read_text())
-        self.assertEqual((event["sequence"], event["kind"]), (23, compat.HANDOFF_WAIT_MIGRATED))
-        # Earlier events are untouched: the history is append-only.
+        self.assertEqual((event["sequence"], event["kind"]), (27, state.FIELD_MIGRATED))
         for path, text in self.files.items():
             if "/events/" in path or "/evidence/" in path:
                 self.assertEqual((self.repo / path).read_text(), text)
@@ -261,20 +227,19 @@ class TestControllerMigratesByItself(unittest.TestCase):
         report = state.validate_state_diff(self.repo, self.base, candidate, self.p)
         self.assertTrue(report.ok, report.problems)
         self.assertEqual(sorted(report.changed), [RECORD_PATH, EVENT_PATH])
-        # Writing the old wait again is refused by the same final check.
-        old = commit_files(self.repo, {RECORD_PATH: canonical_json(dict(live(), revision=6,
-                                                                       updated_at=NOW))})
+        # Writing the old shape again is refused by the same final check.
+        old = commit_files(self.repo, {RECORD_PATH: canonical_json(dict(live(), updated_at=NOW))})
         problems = state.validate_state_diff(self.repo, candidate, old, self.p).problems
-        self.assertTrue(any("awaits record migration" in p for p in problems), problems)
+        self.assertTrue(any("awaits the record migration" in p for p in problems), problems)
 
     def test_migration_is_idempotent(self):
         self.assertEqual(self.run_reconcile()[0], 0)
         self.assertEqual(state.pending_record_migrations(self.repo, self.p), [])
         self.assertEqual(state.apply_pending_record_migrations(self.repo, self.p, now=NOW), [])
-        self.assertFalse((self.repo / ".state/events/closeio--ciso8601--1/00000024.json").exists())
+        self.assertFalse((self.repo / ".state/events/closeio--ciso8601--1/00000028.json").exists())
         store = state.StateStore(self.repo, self.p)
         self.assertEqual(len(store.load_all("contributions")), 1)
-        self.assertEqual(len(store.load_all("events")), 3)
+        self.assertEqual(len(store.load_all("events")), 2)
 
     def test_observe_reports_the_pending_migration_without_writing(self):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -289,35 +254,24 @@ class TestControllerMigratesByItself(unittest.TestCase):
     def test_state_validate_admits_only_the_exact_pending_shape(self):
         store = state.StateStore(self.repo, self.p)
         self.assertEqual(len(store.load_all("contributions")), 1)
-        approved = dict(live(), pending_human_action=dict(live()["pending_human_action"],
-                                                          kind="open_upstream_pr"))
-        (self.repo / RECORD_PATH).write_text(canonical_json(approved))
+        (self.repo / RECORD_PATH).write_text(canonical_json(dict(live(), blocked_reason="hold")))
         with self.assertRaises(state.StateError):
             store.load_all("contributions")
 
-    def test_an_unknown_handoff_shape_stops_the_controller(self):
-        approved = dict(live(), pending_human_action=dict(live()["pending_human_action"],
-                                                          kind="open_upstream_pr"))
-        text = canonical_json(approved)
+    def test_an_unknown_shape_stops_the_controller(self):
+        text = canonical_json(dict(live(), activity="waiting_capacity"))
         (self.repo / RECORD_PATH).write_text(text)
         result, report, stderr = self.run_reconcile()
         self.assertEqual(result, 1)
         self.assertIsNone(report)
         self.assertIn("record migration refused", stderr)
-        self.assertIn("no reviewed migration for this handoff record", stderr)
+        self.assertIn("no reviewed record migration for this record", stderr)
         self.assertEqual((self.repo / RECORD_PATH).read_text(), text)
         self.assertFalse((self.repo / EVENT_PATH).exists())
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
             self.assertEqual(controller.cmd_observe(
                 SimpleNamespace(root=str(self.repo), offline=True)), 1)
-
-    def test_missing_ci_evidence_stops_the_controller(self):
-        (self.repo / EVIDENCE_PATH).unlink()
-        result, _report, stderr = self.run_reconcile()
-        self.assertEqual(result, 1)
-        self.assertIn("CI evidence", stderr)
-        self.assertEqual((self.repo / RECORD_PATH).read_text(), self.files[RECORD_PATH])
 
 
 class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
@@ -487,7 +441,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertIn("refresh_investigation", self.events(output))
         self.assertEqual(refreshed["refresh"],
                          {"command_id": "comment-900", "reason": "new base", "from_phase": "handoff",
-                          "head_sha": HEAD, "pr_number": 1})
+                          "head_sha": HEAD, "pr_number": 2})
         self.assertEqual((refreshed["revision"], refreshed["fork"]), (7, FORK))
         self.assertIsNone(refreshed["handoff_request"])
 
@@ -537,12 +491,12 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 self.assertEqual(after["fork"], FORK)
                 self.assertEqual(after["processed_review_ids"], [77])
                 self.assertEqual(after["pending_feedback_evidence_ids"],
-                                 ["review-1467208233-1-77"])
+                                 ["review-1467208233-2-77"])
                 self.assertEqual((after["handoff_request"], after["pending_human_action"],
                                   after["clean_head_sha"]), (None, None, None))
                 # The CI evidence of the candidate head is kept.
                 self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
-                self.assertIn("review-1467208233-1-77",
+                self.assertIn("review-1467208233-2-77",
                               [e["evidence_id"] for kind, e in output.staged if kind == "evidence"])
                 event = next(e for kind, e in output.staged if kind == "events")
                 self.assertEqual((event["revision_bumped"], event["details"]["from_state"],
@@ -580,7 +534,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual(output.report["controller"]["selected"], [])
         event = next(e for kind, e in output.staged if kind == "events")
         self.assertEqual((event["revision_bumped"], event["cause"]["type"]), (False, "observation"))
-        self.assertIn("inquiry-1467208233-1-88",
+        self.assertIn("inquiry-1467208233-2-88",
                       [e["evidence_id"] for kind, e in output.staged if kind == "evidence"])
         # The same comment is not recorded twice.
         again = self.tick(after)
@@ -626,19 +580,19 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
 class TestRealStateDryRun(unittest.TestCase):
     """The committed `.state` of this repository, read without writing it."""
 
-    def test_committed_record_is_either_the_pending_shape_or_a_table_state(self):
+    def test_committed_record_is_a_table_state_before_and_after_the_migration(self):
         root = Path(__file__).resolve().parents[1]
-        record = json.loads((root / RECORD_PATH).read_text())
-        if compat.needs_migration(record):
-            self.assertIsNone(compat.handoff_wait_shape_problem(record))
-            evidence = json.loads((root / state.record_path(
-                "evidence", {"evidence_id": record["last_ci_evidence_id"]})).read_text())
-            after, _event = compat.migrate_handoff_wait(record, evidence=evidence, policy=policy(),
-                                                        now=datetime.now(timezone.utc).isoformat())
-            self.assertEqual(engine.state_key(after), "handoff.awaiting_submission")
-            self.assertEqual(after["fork"], record["fork"])
-        else:
-            self.assertIsNone(compat.state_problem(record))
+        path = root / RECORD_PATH
+        if not path.exists():
+            self.skipTest("no committed live record")
+        record = json.loads(path.read_text())
+        after = record
+        if state.needs_field_migration(record):
+            after, _event = state.migrate_record_fields(
+                record, now=datetime.now(timezone.utc).isoformat())
+        self.assertIsNone(engine.state_problem(after))
+        self.assertEqual((engine.state_key(after), after["revision"], after["fork"]),
+                         (engine.state_key(record), record["revision"], record["fork"]))
 
 
 if __name__ == "__main__":

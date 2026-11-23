@@ -19,7 +19,7 @@ FORK = "riseproject-upstreaming/proj"
 
 
 def records(root: Path):
-    rec = contribution(phase="development", activity="waiting_capacity", revision=2,
+    rec = contribution(phase="development", activity="waiting_ci", revision=2,
                        dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/build.yml"])
     rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
     op = recovery.plan(contribution_id=rec["contribution_id"], revision=2, kind="dev_pr_create",

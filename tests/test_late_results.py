@@ -68,7 +68,7 @@ RESULTS = {
 
 WORK = {"dedupe_key": "example--proj/12@0:development_repair", "task": "development_repair",
         "revision": 0, "attempt": 1, "requested_at": NOW,
-        "deadline_at": "2026-11-24T09:00:00+00:00", "dispatched_run_id": None, "reason_ids": []}
+        "deadline_at": "2026-11-24T09:00:00+00:00", "dispatched_run_id": None, "reason_ids": [], "generation": 0, "feedback_evidence_ids": []}
 UPSTREAM_PR = {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
                "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
                "base_ref": "main", "registered_by": OWNER}
@@ -221,7 +221,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
 
     def test_states_that_request_no_work(self):
         human = {"kind": "task_without_outcome", "requested_at": NOW, "reminded_at": None,
-                 "escalated_at": None}
+                 "escalated_at": None, "counter": None}
         records = {
             "queued.idle": contribution(phase="queued", activity="idle", fork=None),
             "queued.waiting_human": contribution(phase="queued", activity="waiting_human",
@@ -490,7 +490,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
             if activity == "waiting_human" and not flag:
                 record["pending_human_action"] = {
                     "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
-                    "escalated_at": None}
+                    "escalated_at": None, "counter": None}
             if phase == "parked":
                 record.update(parked_reason="x", previous_phase="development")
             if schemas.errors("contribution", record) or compat.state_problem(record):

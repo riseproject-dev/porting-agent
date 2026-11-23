@@ -12,7 +12,6 @@ from pathlib import Path
 import yaml
 
 import capacity
-import compat
 import controller
 import reconcile
 import worker_gate
@@ -207,8 +206,6 @@ class TestAutomaticProposalAdmission(unittest.TestCase):
             "body": record["tracking_issue"]["description"],
             "labels": [{"name": "upstreaming-request"}],
         }
-        record, _event = compat.migrate_provisioning(record, operation=operation,
-                                                     now="2026-11-22T03:00:00+00:00")
         result = controller.tick(
             contributions={"c": record},
             operations={

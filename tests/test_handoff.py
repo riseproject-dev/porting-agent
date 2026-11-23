@@ -448,7 +448,7 @@ class TestLivePath(unittest.TestCase):
             files=[".github/workflows/build-wheels.yml", "pyproject.toml"],
             operation_id=package_op["operation_id"])["comment"])
         self.assertIn("riseproject-upstreaming:riscv64?quick_pull=1", posted["body"])
-        self.assertIn("development PR #1, which stays open", posted["body"])
+        self.assertIn("development PR #2, which stays open", posted["body"])
         self.assertEqual((world.record["revision"], world.record["fork"], world.record["generation"]),
                          (7, FORK, 0))
         entry = status_ledger.render(world.events[-1], world.record, "https://run")
@@ -1134,7 +1134,7 @@ class TestPackage(unittest.TestCase):
         for part in (f"`closeio/ciso8601` (id `{UPSTREAM_ID}`), base `master`",
                      f"`riseproject-upstreaming/ciso8601` (id `{FORK['repository_id']}`), branch "
                      f"`riscv64`, built from the reviewed series of the approved head `{HEAD}` of "
-                     "`riscv64-dev` (development PR #1, which stays open)",
+                     "`riscv64-dev` (development PR #2, which stays open)",
                      f"Exact head: `{CLEAN}`", f"Package operation: `{PACKAGE_OP}`",
                      f"dossier evidence: `{DOSSIER}`",
                      f"review evidence: `{record['submission_review_id']}`",
@@ -1830,7 +1830,7 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
                                       "revision": 4, "evidence_ids": []}
         record["active_work"] = {"dedupe_key": "k", "task": "submission_rewrite", "generation": 0,
                                  "revision": 4, "attempt": 1, "requested_at": T0,
-                                 "deadline_at": T0, "dispatched_run_id": None, "reason_ids": []}
+                                 "deadline_at": T0, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         record, staged = reconcile.fold_submission_rewrite(
             record, dict(checked, publication_artifact_id=77), now=T0, policy=policy(),
             worker_run_id="7001")
