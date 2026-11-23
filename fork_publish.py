@@ -97,11 +97,15 @@ def _git(repo: Path, *args: str, check: bool = True, input: bytes | None = None,
                           check=check, capture_output=True, input=input, env=e)
 
 
-def _auth_config(token: str | None) -> list[str]:
+def _auth_env(token: str | None) -> dict[str, str]:
+    """The token for git as configuration in the environment of the git
+    process (``GIT_CONFIG_COUNT``), never on its command line, where any
+    process of the runner could read it."""
     if not token:
-        return []
+        return {}
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    return ["-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}"]
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+            "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}"}
 
 
 # Tests replace these two to use local file:// remotes; production is HTTPS only.
@@ -183,10 +187,10 @@ def rebuild(work: Path, *, fork: str, upstream: str, expected_head: str, base_sh
     if b"\nGIT binary patch\n" in mbox:
         raise PublishRejected("binary patches are not accepted")
     publisher.fresh_workspace(work)
-    auth = _auth_config(read_token)
+    auth = _auth_env(read_token)
     for url, sha in ((_url(fork), expected_head), (_url(upstream), base_sha)):
         p = _git(work, "fetch", "--quiet", "--no-tags", "--filter=blob:none", url, sha, check=False,
-                 extra_config=auth)
+                 env=auth)
         if p.returncode:
             err = p.stderr.decode()[-300:]
             # A SHA the remote does not have is a stale/invalid proposal; anything
@@ -329,10 +333,10 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         op = recovery.mark_applying(op, now, facts=PUSH_FACTS)
         save_operation(op)
         args = publisher.lease_refspec(cand, expected)
-        runner = push or (lambda w, a, cfg: _git(w, "push", "--porcelain", _url(fork), *a, check=False,
-                                                 extra_config=cfg))
+        runner = push or (lambda w, a, auth: _git(w, "push", "--porcelain", _url(fork), *a, check=False,
+                                                  env=auth))
         try:
-            p = runner(work, args, _auth_config(token))
+            p = runner(work, args, _auth_env(token))
             ok = p.returncode == 0
         except Exception:
             ok = None

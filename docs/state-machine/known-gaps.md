@@ -75,12 +75,26 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** the collector reruns the interrupted jobs on the exact head within `interrupted_reruns` and waits for a human with `ci_interrupted` once it is exhausted.
 - **Required:** a trusted rerun of the interrupted jobs on the exact head and attempt, then take the two rows.
 
-## A handoff operation whose launches end without a receipt
+## The failing evidence of the clean head is not recorded
 
-- **Where:** `handoff.cleaning_debug`, `handoff.closing_internal_pr`, `handoff.preparing_submission`; the launches in `controller.py`.
-- **Today:** every attempt that runs writes a receipt, also when a step of its job fails. A run that ends with no receipt at all (a lost runner, a cancelled run, a refused final check) leaves the attempt `planned`; it is launched again within `operation_launch` and then only reported as an alert. The contribution stays in the work state, and `park` is refused while the operation is open.
-- **Table:** the retry and exhaustion rows of the state fire on a failed attempt; the table has no row for an attempt that never reports.
-- **Required:** a table decision for an attempt that never reports (for example, its spent launches as a failed attempt), or a producer of resolution evidence.
+- **Where:** `handoff.waiting_ci`, row `return_for_repair`; the CI observation in `observe_ci.py`.
+- **Today:** a blocking CI failure on a clean head that the cleanup rewrote stores the failing evidence and takes `return_for_repair`, which sets nothing. The record keeps `last_ci_evidence_id` of the candidate head, whose CI passed, so in `development.fix_needed` the repair is requested against passing evidence of a head that is no longer the fork head: it names no failing job, and the clean head's failure is in the event details only.
+- **Table:** `return_for_repair` from `handoff.waiting_ci` bumps the revision and clears the clean head, `handoff_request`, and the pending action; it sets no evidence. `return_for_repair` from `handoff.awaiting_submission` records the failing evidence.
+- **Required:** a table decision that `return_for_repair` from `handoff.waiting_ci` sets `last_ci_evidence_id` to the failing evidence of the clean head, then set it in the observation.
+
+## A moved branch before the package is posted waits for a human
+
+- **Where:** `handoff.preparing_submission` (and `handoff.closing_internal_pr`); `handoff.post_package` and `handoff.close_development_pr`.
+- **Today:** the workflow posts the package only while `riscv64` still resolves to the clean head, and closes the development PR only at the clean head. When the branch moved, the attempt fails as an infrastructure failure: `retry_submission_comment` (or `retry_internal_pr_closure`) within the budget, then the exhaustion row to `handoff.waiting_human`, whose only exit is the resume to the same step. Nothing returns the contribution to development, so a human restores the branch or abandons.
+- **Table:** these states have no row for a changed fork head; the decision that a changed head before the package is posted returns to development is taken by `return_for_repair` in `handoff.cleaning_debug` and `handoff.waiting_ci` only.
+- **Required:** a table decision for a changed head in `handoff.closing_internal_pr` and `handoff.preparing_submission` (for example `return_for_repair`), then take it from the attempt's failure.
+
+## Dossier contribution-policy items are not enforced before handoff
+
+- **Where:** `nominate_for_handoff` from development CI in `observe_ci.py`; the submission package in `handoff.build_package`.
+- **Today:** the dossier's contribution rules (for example "add a CHANGELOG entry") and its admitted paths are not checked against the series before the contribution is nominated for handoff. The submission package only flags them: it shows the rules and names the admitted paths the series does not change, for the human to resolve before submitting. The live contribution `closeio--ciso8601/1` is in this case: its dossier asks for a CHANGELOG entry and its series does not change `CHANGELOG.md`.
+- **Table:** `nominate_for_handoff` requires every required CI job to pass on the exact head; it states no contribution-policy check.
+- **Required:** a table decision on whether unmet contribution-policy items block nomination or are requested as development Work, then the check from the dossier.
 
 ## The development PR stays closed after a retraction
 
@@ -208,7 +222,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - A Result of Work that the record holds but that its phase does not request (investigation Work outside `investigation`, patch Work outside `development`, revision Work outside `upstream_review`) is late, and so are a dossier outside `investigation`, any other Result in `investigation`, and the Result of a held publication outside `development` and `upstream_review`.
 - The provisioning migration treats the retired `provision_fork` wait like the provisioning wait without a pending action: the fork is provisioned automatically from `provisioning.idle`. Development without a fork returns to `provisioning.idle`, and a proposal held on the provisioned fork is discarded for fresh patch Work in `development.idle`; both at a new revision.
 - `submit_upstream` records `handoff_approval` with the CI evidence and the dossier the approval saw (`evidence_ids`), and the first debug cleanup attempt as `active_operation_id`.
-- The handoff operations are launched without a row, like the development PR operations: within `operation_launch`, again after 300 seconds without a receipt, and not while the contribution is paused. The trusted workflow accepts an attempt of an earlier revision when the record names it as its active operation (a pause and its resume bump the revision).
+- The handoff operations are launched without a row, like the development PR operations: within `operation_launch`, again after 300 seconds without a receipt, and not while the contribution is paused. Launches spent without a receipt are a definite infrastructure failure of the attempt: once the last allowed launch is 300 seconds old with no receipt, and the contribution is not paused, the controller closes the attempt as failed (`begin_effect` and `record_failure`, with the facts of a receipt, although no workflow reported its final check) and fires the retry row of the state or its exhaustion row. A receipt of that attempt that arrives later is not folded; the next attempt finds the effect already in place and reads it back. The receipt of an attempt the workflow refused is not folded either, so refusals count as launches without a receipt. The trusted workflow accepts an attempt of an earlier revision when the record names it as its active operation (a pause and its resume bump the revision).
 - The counter of `debug_cleanup`, `internal_pr_closure`, and `submission_comment` ("the handoff operation's attempts") is the number of attempts in the current round, recorded on each attempt as `count:<k>`: a failed attempt with a count below `retries.infrastructure_per_head_failure` plus one takes the retry row, which the next attempt (count plus one) charges; at that count it takes the exhaustion row. After the resume of that exhaustion the next attempt counts from one. A pause does not start the count again.
 - A cleanup that cannot produce an admissible clean head (a conflict once the debug commits are removed, a merge commit, nothing left, a validation problem) or whose exact-head lease conflicts (the branch is neither the approved head nor the clean head) is not charged to `debug_cleanup`: it takes `return_for_repair`, whatever the count.
 - A cleanup without a debug commit writes nothing, and the CI evidence already recorded for that exact head is CI on the clean head: `accept_clean_head_ci` can be taken in the tick that confirms the clean head.
@@ -218,6 +232,11 @@ These follow the literal reading of a decision and are kept until a decision say
 - An observation of the locked wait that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.
 - The submission package's title is the subject of the one commit of the clean series, or `Build riscv64 wheels` for several commits; its description is the commit body (each commit with its body for a series), a `Testing` section from the CI evidence of the clean head, and the open issues of the upstream repository that the dossier's history records.
 - Handoff receipts are read only from completed `handoff.yml` runs on `main` dispatched by `workflow_dispatch`, and only for the open operation the record runs.
+- The workflow posts the submission package only while `riscv64` resolves to the clean head. A moved branch fails the attempt as an infrastructure failure ("posting the package failed"), the only failure row of `handoff.preparing_submission`; a package already posted is found by its marker and read back without that check.
+- `/upstreaming retract-pr` takes the revision and the head only. The spec's form also carries `reason="..."`, but `retract_submission` reads no reason, so the grammar refuses it.
+- The submission package names the revision of the record when it was posted in its `retract-pr` command; after a pause and its resume, the command of the latest tracking-issue entry carries the current revision, as the package states.
+- Contribution rules of the dossier that mention a sign-off, a DCO, a CLA, or a contributor agreement state the signing policy: the package then shows no generic sign-off line.
+- A mention in the proposed title or description (`@user` or `@org/team` outside code) is put in a code span, so the upstream pull request notifies nobody; the package says so.
 - A handoff operation that a human resolves with `resolve-operation` fires no row: the confirm rows need the receipt and its readback, and the retry and exhaustion rows a reported failure. The record releases the operation and the controller plans the next attempt, which finds the cleanup, the closure, or the package already in place and reads it back.
 
 ## Code still outside the engine

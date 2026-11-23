@@ -783,7 +783,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "confirm_provisioning": "recovery",
     # The handoff operations (debug cleanup, closing the development PR, the
     # submission package): the rows each attempt fires through
-    # ``recovery.fire`` when its verified receipt is folded.
+    # ``recovery.fire`` when its verified receipt is folded, or when the
+    # controller closes an attempt whose launches are spent without one.
     "confirm_clean_head": "recovery",
     "retry_debug_cleanup": "recovery",
     "exhaust_debug_cleanup_retries": "recovery",

@@ -1320,8 +1320,10 @@ FLAGS: dict[str, Flag] = {
         "`upstream_review.fix_needed`. "
         "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
         "keeps the dossier, candidate head, clean head, `handoff_request`, and the posted "
-        "package: `submit_upstream`, `verify_upstream_pr`, and the package bind to the exact "
-        "head, so the revision bump does not invalidate the submission.",
+        "package. `verify_upstream_pr` binds to the exact head only, so the revision bump "
+        "does not invalidate the posted package; `submit_upstream` and `retract_submission` "
+        "also name the exact revision, so after the bump they name the new revision with the "
+        "same head, as the tracking-issue entries offer them.",
         {
             "pause": Transition(
                 _C, "/upstreaming pause",

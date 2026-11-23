@@ -227,6 +227,17 @@ class TestWorkflowContracts(unittest.TestCase):
                         self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
                 runs = [step["run"] for step in job["steps"] if "run" in step]
                 self.assertTrue(all("python -m handoff" in run for run in runs))
+                # The job checks out the head of main and checks it, and the
+                # operation, before it mints its token.
+                steps = job["steps"]
+                checkout = next(s for s in steps if "actions/checkout" in str(s.get("uses")))
+                self.assertEqual(checkout["with"]["ref"], "main")
+                check = next(i for i, s in enumerate(steps) if "python -m handoff check" in str(s.get("run")))
+                mint = next(i for i, s in enumerate(steps) if "create-github-app-token" in str(s.get("uses")))
+                self.assertLess(check, mint)
+                self.assertIn(f"--kind {job['if'].split(chr(39))[1]}", steps[check]["run"])
+        self.assertEqual(next(s for s in jobs["target"]["steps"]
+                              if "actions/checkout" in str(s.get("uses")))["with"]["ref"], "main")
         # Only the target job reads the operation before a token exists, and
         # no job holds a token for any repository outside the fork and the
         # control repository: nothing can write upstream.

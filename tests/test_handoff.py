@@ -10,9 +10,12 @@ below answers the reads of the controller and the trusted workflow, records
 every call, and holds the resources the workflow changes.
 """
 
+import contextlib
 import copy
 import hashlib
+import io
 import json
+import re
 import tempfile
 import unittest
 import urllib.parse
@@ -43,6 +46,7 @@ from tests.test_live_handoff_migration import (
 )
 
 DOSSIER = "dossier-closeio--ciso8601--1-r2"
+PACKAGE_OP = "op-" + "a" * 24
 BASE = "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8"
 UPSTREAM_ID = 20633992
 FORK_PATH = "/repos/riseproject-upstreaming/ciso8601"
@@ -227,7 +231,8 @@ class World:
                     result = handoff.close_development_pr(root, op["operation_id"],
                                                           policy=self.policy, api=self.gh)
                 else:
-                    with mock.patch("collect.compare_commits", self.gh.compare_commits):
+                    with mock.patch("collect.compare_commits", self.gh.compare_commits), \
+                            mock.patch("collect.branch_head", self.gh.branch_head):
                         result = handoff.post_package(root, op["operation_id"], policy=self.policy,
                                                       read_api=self.gh, issue_api=self.gh)
                 return handoff.receipt(meta, result)
@@ -317,7 +322,8 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(posted["body"], handoff.build_package(
             world.record, dossier=load("dossier.json"), ci=world.evidence[CI_EVIDENCE],
             commits=[{"sha": HEAD, "message": world.gh.compare["commits"][0]["commit"]["message"]}],
-            files=[".github/workflows/build-wheels.yml", "pyproject.toml"])["comment"])
+            files=[".github/workflows/build-wheels.yml", "pyproject.toml"],
+            operation_id=package_op["operation_id"])["comment"])
         self.assertEqual((world.record["revision"], world.record["fork"], world.record["generation"]),
                          (6, FORK, 0))
         # The ledger entry links the package.
@@ -338,7 +344,7 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(writes, [("PATCH", f"{FORK_PATH}/pulls/1"),
                                   ("POST", f"/repos/{CONTROL_REPO}/issues/1/comments")])
 
-    def test_ticks_without_receipts_change_nothing_but_relaunch_within_the_budget(self):
+    def test_ticks_without_receipts_relaunch_and_then_fail_the_attempt(self):
         world = submitted()
         op_id = world.record["active_operation_id"]
         out = world.tick(at(2))
@@ -346,12 +352,32 @@ class TestLivePath(unittest.TestCase):
         out = world.tick(at(6))
         self.assertEqual([r["attempt"] for r in out.report["handoff_requests"]], [2])
         world.tick(at(12))
+        out = world.tick(at(14))
+        self.assertEqual((out.report["handoff_requests"], world.kinds(out)), ([], []))
+        self.assertEqual(world.operations[op_id]["status"], "planned")
+        # The last allowed launch is old and no receipt came back: the attempt
+        # is a failed infrastructure attempt, and the retry row fires.
         out = world.tick(at(18))
-        self.assertEqual(out.report["handoff_requests"], [])
+        self.assertEqual(world.kinds(out), ["retry_debug_cleanup"])
+        failed_op = world.operations[op_id]
+        self.assertEqual(failed_op["status"], "failed")
+        self.assertEqual((failed_op["external_ids"]["failure"], failed_op["external_ids"]["launches_spent"],
+                          failed_op["external_ids"]["exhausted"]), (handoff.INFRASTRUCTURE, 3, 0))
         self.assertIn({"contribution": CID, "operation": op_id,
-                       "alert": "debug_cleanup launches spent without a receipt"},
+                       "alert": "debug_cleanup launches spent without a receipt: retry_debug_cleanup"},
                       out.report["controller"]["alerts"])
+        self.assertEqual(world.events[-1]["details"]["reason"],
+                         "debug_cleanup launches spent without a receipt")
         self.assertEqual(world.state, "handoff.cleaning_debug")
+        self.assertEqual(world.active["reason_ids"][1:], ["attempt:2", "count:2"])
+        self.assertEqual([r["attempt"] for r in out.report["handoff_requests"]], [1])
+        # A receipt of the failed attempt that arrives late is not folded.
+        late = {"schema_version": 1, "operation_id": op_id, "kind": "debug_cleanup",
+                "contribution_id": CID, "run_id": "9", "result": "applied", "clean_head": HEAD,
+                "rewritten": False, "removed_commits": []}
+        out = world.tick(at(19), receipts=[late])
+        self.assertEqual(world.kinds(out), [])
+        self.assertEqual(world.operations[op_id]["status"], "failed")
 
     def test_a_refused_attempt_is_not_folded(self):
         world = submitted()
@@ -649,7 +675,7 @@ class TestPackage(unittest.TestCase):
         args = {"dossier": load("dossier.json"), "ci": load("evidence-ci.json"),
                 "commits": [{"sha": c["sha"], "message": c["commit"]["message"]}
                             for c in compare["commits"]],
-                "files": [f["filename"] for f in compare["files"]]}
+                "files": [f["filename"] for f in compare["files"]], "operation_id": PACKAGE_OP}
         args.update(over)
         return record, args
 
@@ -664,11 +690,22 @@ class TestPackage(unittest.TestCase):
         self.assertIn("`Build - ubuntu-24.04-riscv (riscv64)`", one["body"])
         self.assertIn("Related: #181", one["body"])
         comment = one["comment"]
-        for part in ("`closeio/ciso8601`, base `master`", "`riseproject-upstreaming/ciso8601`, branch `riscv64`",
-                     f"Exact head: `{HEAD}`", "> [!WARNING]", one["title"], one["body"],
-                     f"/upstreaming retract-pr revision=6 head={HEAD}", "No CLA/DCO",
-                     "`CHANGELOG.md`", one["marker"]):
+        for part in (f"`closeio/ciso8601` (id `{UPSTREAM_ID}`), base `master`",
+                     f"`riseproject-upstreaming/ciso8601` (id `{FORK['repository_id']}`), branch `riscv64`",
+                     f"Exact head: `{HEAD}`", f"Package operation: `{PACKAGE_OP}`",
+                     f"dossier evidence: `{DOSSIER}`", "> [!WARNING]", one["title"], one["body"],
+                     f"/upstreaming retract-pr revision=6 head={HEAD}",
+                     "use the revision of the latest entry on this issue",
+                     "```text\nNo CLA/DCO", "`CHANGELOG.md`", "If GitHub does not let your account",
+                     "pull request template", one["marker"]):
             self.assertIn(part, comment)
+        # The dossier states the sign-off policy: no generic line contradicts it.
+        self.assertNotIn("a sign-off (DCO) or a contributor agreement (CLA)", comment)
+        self.assertIn("apply what the contribution policy above asks", comment)
+        dossier = copy.deepcopy(args["dossier"])
+        dossier["data"]["proposal"]["contribution_rules"] = "Add a CHANGELOG entry."
+        generic = handoff.build_package(record, **dict(args, dossier=dossier))["comment"]
+        self.assertIn("a sign-off (DCO) or a contributor agreement (CLA)", generic)
         self.assertTrue(comment.endswith(one["marker"]))
         self.assertEqual(one["marker"], f"<!-- upstreaming-submission:{CID}:r6:{HEAD} -->")
         self.assertEqual(one["digest"], hashlib.sha256(comment.encode()).hexdigest())
@@ -806,6 +843,310 @@ class TestValidationBeforeAnyWrite(unittest.TestCase):
         self.assertNotIn("PATCH", [c[0] for c in world.gh.calls])
 
 
+class TestNoReceipt(unittest.TestCase):
+    """Every handoff work state has a working exit when its attempts never
+    report: a cancelled or timed-out run, a lost runner, a dispatch that
+    fails, or a pause in between."""
+
+    STATES = {"handoff.cleaning_debug": ("debug_cleanup_failed", "resume_debug_cleanup"),
+              "handoff.closing_internal_pr": ("internal_pr_closure_failed",
+                                              "resume_internal_pr_closure"),
+              "handoff.preparing_submission": ("submission_comment_failed",
+                                               "resume_submission_preparation")}
+
+    def drain(self, world, state, minute, pause_at=None):
+        rows = []
+        while world.state == state:
+            if minute == pause_at:
+                out = world.tick(at(minute), comments=[comment("/upstreaming pause", cid=930)])
+                self.assertEqual(world.kinds(out), ["pause"])
+                # Nothing is launched or failed while paused.
+                for later in (minute + 20, minute + 40):
+                    out = world.tick(at(later))
+                    self.assertEqual((world.kinds(out), out.report["handoff_requests"]), ([], []))
+                revision = world.record["revision"]
+                out = world.tick(at(minute + 41), comments=[comment(
+                    f'/upstreaming resume revision={revision} reason="x"', cid=931)])
+                self.assertEqual(world.kinds(out)[0], "resume_pause")
+                rows += world.kinds(out)[1:]
+                minute += 42
+                continue
+            rows += world.kinds(world.tick(at(minute)))
+            minute += 6
+            self.assertLess(minute, 600, f"stuck in {state}")
+        return rows, minute
+
+    def test_every_work_state_has_an_exit(self):
+        for state, (pending, resume) in self.STATES.items():
+            for pause_at in (None, 48):
+                with self.subTest(state=state, pause=pause_at):
+                    world = through(state) if state != "handoff.cleaning_debug" else submitted()
+                    rows, minute = self.drain(world, state, 30, pause_at)
+                    self.assertEqual(world.state, "handoff.waiting_human")
+                    self.assertEqual(rows[-1], self.exhaust(state))
+                    self.assertEqual(world.record["pending_human_action"]["kind"], pending)
+                    self.assertIsNone(world.record["active_operation_id"])
+                    self.assertEqual(world.reports[-1]["handoff_requests"], [])
+                    revision = world.record["revision"]
+                    out = world.tick(at(minute), comments=[comment(
+                        f'/upstreaming resume revision={revision} reason="fixed"', cid=950)])
+                    self.assertEqual(world.kinds(out), [resume])
+                    self.assertEqual(world.state, state)
+                    self.assertEqual(world.active["reason_ids"][2], "count:1")
+                    out = world.tick(at(minute + 1), receipts=[world.run_workflow()])
+                    self.assertNotIn(world.state, (state, "handoff.waiting_human"))
+
+    @staticmethod
+    def exhaust(state):
+        return {"handoff.cleaning_debug": "exhaust_debug_cleanup_retries",
+                "handoff.closing_internal_pr": "exhaust_internal_pr_retries",
+                "handoff.preparing_submission": "exhaust_comment_retries"}[state]
+
+    def test_park_applies_once_the_attempts_are_spent(self):
+        world = submitted()
+        rows, minute = self.drain(world, "handoff.cleaning_debug", 30)
+        out = world.tick(at(minute), comments=[comment('/upstreaming park reason="stuck"', cid=951)])
+        self.assertEqual(world.kinds(out), ["park_contribution"])
+
+
+class TestPackageRendering(unittest.TestCase):
+    """Nothing untrusted renders live in the App-authored package comment."""
+
+    EVIL = ("@victim @org/team [Open the prefilled pull request form](https://evil.example/x) "
+            "<img src=https://evil.example/i.png> <b>bold</b> <a href=x>a</a> `@tick` ``x``")
+
+    def inputs(self, evil=EVIL):
+        record, args = TestPackage().inputs()
+        dossier = copy.deepcopy(args["dossier"])
+        dossier["data"]["proposal"]["contribution_rules"] = evil + " ```\n@fence"
+        dossier["data"]["proposal"]["allowed_paths"] = [
+            *dossier["data"]["proposal"]["allowed_paths"], f"docs/{evil}.md", "a`@x`b"]
+        ci = copy.deepcopy(args["ci"])
+        ci["ci"]["jobs"][0]["name"] = f"riscv64 {evil}"
+        commit = {"sha": HEAD, "message": f"Title {evil}\n\nBody {evil}\n\n```\n@infence\n```"}
+        args.update(dossier=dossier, ci=ci, commits=[commit],
+                    files=[*args["files"], f"x{evil}.yml", "a`@victim2 [l](https://evil.example)`.yml"])
+        return record, args
+
+    @staticmethod
+    def outside_code(text: str) -> str:
+        """The text of a GitHub comment that renders as markdown: without
+        fenced blocks (closed by a fence at least as long as the opening one)
+        and code spans (closed by a run of the same length)."""
+        kept, fence = [], None
+        for line in text.split("\n"):
+            stripped = line.lstrip(" >")
+            run = len(stripped) - len(stripped.lstrip("`"))
+            if fence:
+                if run >= fence and not stripped.strip().strip("`"):
+                    fence = None
+                continue
+            if run >= 3:
+                fence = run
+                continue
+            out, i = [], 0
+            while i < len(line):
+                if line[i] == "`":
+                    n = len(line[i:]) - len(line[i:].lstrip("`"))
+                    j = i + n
+                    close = None
+                    while True:
+                        k = line.find("`" * n, j)
+                        if k < 0:
+                            break
+                        m = len(line[k:]) - len(line[k:].lstrip("`"))
+                        if m == n:
+                            close = k
+                            break
+                        j = k + m
+                    if close is None:
+                        out.append(line[i:j])
+                        i = j
+                    else:
+                        i = close + n
+                else:
+                    out.append(line[i])
+                    i += 1
+            kept.append("".join(out))
+        return "\n".join(kept)
+
+    def test_every_untrusted_field_stays_in_code(self):
+        record, args = self.inputs()
+        package = handoff.build_package(record, **args)
+        # The prefilled link carries the proposal percent-encoded.
+        rendered = self.outside_code(package["comment"]).replace(package["link"], "LINK")
+        for bad in ("victim", "@org", "evil.example", "<img", "<b>", "<a ", "@tick", "@fence",
+                    "@infence", "@x"):
+            self.assertNotIn(bad, rendered, bad)
+        # The one mention is the human who requested the submission; the one
+        # link of the form is the real compare link.
+        self.assertEqual(re.findall(r"@[A-Za-z0-9/-]+", rendered), [f"@{OWNER['login']}"])
+        self.assertEqual(rendered.count("Open the prefilled pull request form"), 1)
+        self.assertIn("**[Open the prefilled pull request form](LINK)**", rendered)
+        # The untrusted text is shown, not dropped.
+        for shown in ("@victim", "evil.example", "<img"):
+            self.assertIn(shown, package["comment"])
+
+    def test_a_backtick_cannot_open_a_code_span_or_fence(self):
+        for evil in ("`", "``", "```", "````` @a", "x` @b `y", "@c`"):
+            with self.subTest(evil=evil):
+                record, args = self.inputs(evil)
+                rendered = self.outside_code(handoff.build_package(record, **args)["comment"])
+                self.assertEqual(re.findall(r"@[A-Za-z0-9/-]+", rendered), [f"@{OWNER['login']}"])
+                self.assertIn("Open the prefilled pull request form", rendered)
+                self.assertTrue(rendered.rstrip().endswith("-->"))
+
+    def test_an_unusual_requester_login_is_not_a_mention(self):
+        record, args = TestPackage().inputs()
+        record = copy.deepcopy(record)
+        record["handoff_approval"]["actor"]["login"] = "x [y](z)"
+        rendered = self.outside_code(handoff.build_package(record, **args)["comment"])
+        self.assertNotIn("[y](z)", rendered)
+        self.assertEqual(re.findall(r"@[A-Za-z0-9/-]+", rendered), [])
+
+    def test_mentions_in_the_proposed_title_and_body_notify_nobody(self):
+        record, args = TestPackage().inputs()
+        commit = {"sha": HEAD, "message": "Fix @user's report\n\nThanks @org/team and @bob.\n"
+                                          "Mail a@b.example. Code `@kept` stays.\n\n```\n@fenced\n```\n"
+                                          "    @indented"}
+        package = handoff.build_package(record, **dict(args, commits=[commit]))
+        self.assertEqual(package["title"], "Fix `@user`'s report")
+        for part in ("Thanks `@org/team` and `@bob`.", "Mail a@b.example.", "Code `@kept` stays.",
+                     "```\n@fenced\n```", "`@indented`"):
+            self.assertIn(part, package["body"])
+        self.assertIn("notifies nobody upstream", package["comment"])
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(package["link"]).query)
+        self.assertEqual(query["title"], [package["title"]])
+        self.assertEqual(handoff.neutralize_mentions("no mention, a@b.c"), ("no mention, a@b.c", 0))
+        plain = handoff.build_package(record, **args)
+        self.assertNotIn("notifies nobody upstream", plain["comment"])
+
+
+class TestPackageBranchCheck(unittest.TestCase):
+    def test_a_moved_branch_is_not_posted(self):
+        world = through("handoff.preparing_submission")
+        world.gh.branch = "d" * 40
+        receipt = world.run_workflow()
+        self.assertEqual((receipt["result"], receipt["failure"]), ("failed", handoff.INFRASTRUCTURE))
+        self.assertIn("not the clean head", receipt["reason"])
+        self.assertEqual(world.gh.comments, {})
+        self.assertNotIn("POST", [c[0] for c in world.gh.calls])
+        out = world.tick(at(30), receipts=[receipt])
+        self.assertEqual(world.kinds(out), ["retry_submission_comment"])
+        # A package already posted is discovered by its marker and read back.
+        world = through("handoff.preparing_submission")
+        first = world.run_workflow()
+        world.gh.branch = "d" * 40
+        again = world.run_workflow()
+        self.assertEqual((again["result"], again["comment_id"]), ("applied", first["comment_id"]))
+
+
+class TestCleanupReadback(unittest.TestCase):
+    """A rewritten clean head is read back as the approved series without
+    exactly its debug commits."""
+
+    APPROVED, CLEAN = "a" * 40, "c" * 40
+
+    def commits(self, *messages, prefix="1"):
+        return [{"sha": f"{prefix}{n:039x}", "commit": {"message": m}} for n, m in enumerate(messages)]
+
+    def check(self, receipt_over=None, clean_series=None, approved_series=None):
+        world = submitted()
+        op = copy.deepcopy(world.active)
+        op["target"]["expected_head"] = self.APPROVED
+        approved = approved_series or self.commits("Build", "{debug} trace", "Test\n\nbody")
+        clean = clean_series if clean_series is not None else self.commits("Build", "Test\n\nbody", prefix="2")
+        receipt = {"operation_id": op["operation_id"], "clean_head": self.CLEAN, "rewritten": True,
+                   "removed_commits": [approved[1]["sha"]], "run_id": "1"}
+        receipt.update(receipt_over or {})
+
+        def compare(_api, _name, _base, head):
+            series = {self.APPROVED: approved, self.CLEAN: clean}[head]
+            return {"behind_by": 0, "commits": series}
+
+        with mock.patch("collect.branch_head", lambda *_: {"head": self.CLEAN}), \
+                mock.patch("collect.compare_commits", compare):
+            return handoff.readback(None, world.record, op, receipt)
+
+    def test_the_series_without_its_debug_commits(self):
+        ok = self.check()
+        self.assertIsInstance(ok, tuple)
+        self.assertEqual(ok[1]["clean_head_sha"], self.CLEAN)
+        bad = {
+            "not a debug commit": self.check({"removed_commits": [self.commits("Build")[0]["sha"]]}),
+            "not in the series": self.check({"removed_commits": ["9" * 40]}),
+            "invalid id": self.check({"removed_commits": ["x"]}),
+            "duplicate": self.check({"removed_commits": [self.commits("a", "b")[1]["sha"]] * 2}),
+            "rewrite without removal": self.check({"removed_commits": []}),
+            "removal without rewrite": self.check({"rewritten": False}),
+            "a commit dropped": self.check(clean_series=self.commits("Build", prefix="2")),
+            "a commit changed": self.check(clean_series=self.commits("Build", "Other", prefix="2")),
+            "a debug commit left": self.check(
+                approved_series=self.commits("Build", "{debug} a", "{debug} b", "Test\n\nbody")),
+        }
+        for name, result in bad.items():
+            with self.subTest(case=name):
+                self.assertIsInstance(result, str)
+
+
+class TestTrustedCurrentState(unittest.TestCase):
+    """Before a job mints a token, the state it checked out is the head of
+    main and still runs the operation."""
+
+    def repo(self, directory):
+        from tests.helpers import git
+        git(directory, "init", "-q")
+        git(directory, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+            "-m", "state")
+        return git(directory, "rev-parse", "HEAD")
+
+    def test_the_checked_out_state_must_be_the_head_of_main(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            head = self.repo(root)
+            api = mock.Mock()
+            api.get.return_value = {"object": {"sha": head}}
+            self.assertEqual(handoff.current_state(root, api), head)
+            api.get.assert_called_once_with(f"/repos/{CONTROL_REPO}/git/ref/heads/main")
+            api.get.return_value = {"object": {"sha": "f" * 40}}
+            with self.assertRaises(handoff.HandoffRefused):
+                handoff.current_state(root, api)
+            api.get.side_effect = collect.CollectError("HTTP 502")
+            with self.assertRaises(handoff.HandoffRefused):
+                handoff.current_state(root, api)
+
+    def test_a_refused_check_is_its_receipt_and_stops_the_job(self):
+        world = through("handoff.closing_internal_pr")
+        op_id = world.record["active_operation_id"]
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": CONTROL_REPO,
+               "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ID": "5"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = world.root(Path(directory))
+            head = self.repo(root)
+            out = root / "handoff/outcome.json"
+            with mock.patch.dict("os.environ", env), mock.patch("os.getcwd", return_value=str(root)), \
+                    mock.patch("common.load_policy", return_value=world.policy), \
+                    mock.patch("collect.Api.get", return_value={"object": {"sha": head}}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(handoff.main(["check", "--operation-id", op_id, "--kind",
+                                               "internal_pr_closure", "--out", str(out)]), 0)
+                self.assertFalse(out.exists())
+                self.assertEqual(handoff.main(["check", "--operation-id", op_id, "--kind",
+                                               "debug_cleanup", "--out", str(out)]), 1)
+                self.assertEqual(json.loads(out.read_text())["result"], "refused")
+                out.unlink()
+            with mock.patch.dict("os.environ", env), mock.patch("os.getcwd", return_value=str(root)), \
+                    mock.patch("common.load_policy", return_value=world.policy), \
+                    mock.patch("collect.Api.get", return_value={"object": {"sha": "f" * 40}}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(handoff.main(["check", "--operation-id", op_id, "--kind",
+                                               "internal_pr_closure", "--out", str(out)]), 1)
+                self.assertIn("not the head of main", json.loads(out.read_text())["reason"])
+                # The job's failure step keeps the refusal as its receipt.
+                self.assertEqual(handoff.main(["failed", "--operation-id", op_id, "--out", str(out)]), 0)
+                self.assertEqual(json.loads(out.read_text())["result"], "refused")
+
+
 class TestOperationTable(unittest.TestCase):
     def test_fires_and_counts(self):
         for (state, kind), fires in recovery.FIRES.items():
@@ -821,6 +1162,14 @@ class TestOperationTable(unittest.TestCase):
             self.assertIn(verb, engine.PIPELINE_VERBS)
         self.assertEqual({"rerun_interrupted_ci", "exhaust_interrupted_reruns"}
                          & set(engine.PIPELINE_VERBS), set())
+
+    def test_retract_takes_no_reason(self):
+        import commands
+        # `retract_submission` reads no reason, so the grammar refuses one.
+        self.assertNotIn("reason", lifecycle.find_edge("handoff.waiting_upstream_pr",
+                                                       "retract_submission").transition.guard)
+        with self.assertRaises(commands.CommandError):
+            commands.parse(f'/upstreaming retract-pr revision=6 head={HEAD} reason="x"')
 
 
 if __name__ == "__main__":
@@ -918,6 +1267,28 @@ class TestCleanupWithGit(unittest.TestCase):
         pushes = []
         again = self.run_cleanup(head, observed=[clean, clean], push=lambda *a: pushes.append(a))
         self.assertEqual((again["clean_head"], pushes), (clean, []))
+
+    def test_the_token_never_reaches_a_command_line(self):
+        import subprocess as sp
+
+        import fork_publish
+        head = self.series(("Build riscv64", {"setup.py": "b\n"}),
+                           ("{debug} trace", {"ci.yml": "x\n"}))
+        calls, real = [], sp.run
+
+        def run(argv, *args, **kwargs):
+            calls.append((argv, kwargs.get("env") or {}))
+            return real(argv, *args, **kwargs)
+
+        with mock.patch.object(fork_publish.subprocess, "run", run):
+            self.run_cleanup(head)
+        secret = fork_publish._auth_env("t")["GIT_CONFIG_VALUE_0"]
+        self.assertTrue(calls)
+        self.assertFalse([argv for argv, _ in calls if any("extraheader" in a or secret in a for a in argv)])
+        authed = [argv[argv.index("-C") + 2] for argv, env in calls
+                  if env.get("GIT_CONFIG_VALUE_0") == secret]
+        self.assertEqual(sorted(authed), ["fetch", "push"])
+        self.assertEqual(fork_publish._auth_env(None), {})
 
     def test_a_conflict_without_the_debug_commit_is_invalid(self):
         head = self.series(("{debug} trace", {"setup.py": "debug\n"}),

@@ -242,6 +242,72 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+def _code(text: Any, limit: int = 200) -> str:
+    """Untrusted text as one inline code span. A backtick cannot close it, so
+    nothing in it renders: no mention, no link, no image, no HTML."""
+    value = _line(text, limit).replace("`", "'")
+    return f"`{value}`" if value.strip() else "`(empty)`"
+
+
+def _fenced(text: str, info: str = "text") -> list[str]:
+    """Untrusted text as a fenced block, fenced by more backticks than it
+    contains, so nothing in it renders."""
+    fence = _fence(text)
+    return [f"{fence}{info}", text, fence]
+
+
+# A GitHub login: what the package may mention.
+_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+# A mention outside code: `@user` or `@org/team`, not an e-mail address.
+_MENTION = re.compile(r"(?<![A-Za-z0-9_`/.@+-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9_.-]+)?)")
+_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_CODE_SPAN = re.compile(r"(`+)(?:.+?)(?<!`)\1(?!`)")
+
+
+def neutralize_mentions(text: str) -> tuple[str, int]:
+    """``text`` with every mention outside code put in a code span, so the
+    upstream pull request that a human opens from it notifies nobody; and the
+    number of mentions changed. Fenced blocks and code spans are kept."""
+    out, fence, count = [], None, 0
+
+    def wrap(segment: str) -> str:
+        nonlocal count
+
+        def one(match: re.Match) -> str:
+            nonlocal count
+            count += 1
+            return f"`@{match.group(1)}`"
+        return _MENTION.sub(one, segment)
+
+    for line in text.split("\n"):
+        opening = _FENCE_LINE.match(line)
+        if fence is not None:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence) \
+                    and not line.strip().strip(fence[0]):
+                fence = None
+            out.append(line)
+            continue
+        if opening:
+            fence = opening.group(1)
+            out.append(line)
+            continue
+        if line.startswith("    ") or line.startswith("\t"):
+            out.append(line)  # an indented code block
+            continue
+        parts, pos = [], 0
+        for span in _CODE_SPAN.finditer(line):
+            parts += [wrap(line[pos:span.start()]), span.group(0)]
+            pos = span.end()
+        parts.append(wrap(line[pos:]))
+        out.append("".join(parts))
+    return "\n".join(out), count
+
+
+# Contribution rules that state the sign-off or contributor agreement policy.
+_SIGNING_POLICY = re.compile(
+    r"\b(DCO|CLA|sign(?:ed)?[- ]?off(?:-by)?|contributor (?:license )?agreement)\b", re.I)
+
+
 def _ci_jobs(ci: dict) -> tuple[list[str], list[str]]:
     """The distinct names of the executed, passed jobs of the evidence, and
     those of them that ran on riscv64."""
@@ -249,7 +315,7 @@ def _ci_jobs(ci: dict) -> tuple[list[str], list[str]]:
     for job in (ci.get("ci") or {}).get("jobs") or []:
         if not job.get("executed") or job.get("conclusion") != "success":
             continue
-        name = _line(job.get("name"), 200)
+        name = _line(job.get("name"), 200).replace("`", "'")
         if name and name not in names:
             names.append(name)
             labels = " ".join(job.get("runner_labels") or [])
@@ -285,16 +351,26 @@ def compare_url(record: dict, *, title: str | None = None, body: str | None = No
 
 
 def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
-                  files: list[str], retract_revision: int | None = None) -> dict:
+                  files: list[str], operation_id: str, retract_revision: int | None = None) -> dict:
     """The submission package for the record's clean head.
 
     ``commits`` are the commits of ``base..clean head`` (``sha``,
-    ``message``), oldest first; ``files`` the changed paths. Everything
-    is derived from them, the verified dossier, the CI evidence of the clean
-    head, and the record, so the same inputs give the same bytes."""
+    ``message``), oldest first; ``files`` the changed paths; ``operation_id``
+    the submission package operation. Everything is derived from them, the
+    verified dossier, the CI evidence of the clean head, and the record, so
+    the same inputs give the same bytes.
+
+    Every untrusted value (the dossier's rules and paths, file names, commit
+    messages, CI job names) is in a code span or a fenced block of the
+    comment, so none of it renders as a mention, a link, an image, or HTML;
+    the only mention is the human who requested the submission. In the
+    proposed title and description a mention is put in a code span, so the
+    upstream pull request notifies nobody."""
     head = record["clean_head_sha"]
     if not commits or len(commits) > MAX_COMMITS:
         raise HandoffError(f"the clean series has {len(commits)} commits")
+    if not _OP_ID.fullmatch(str(operation_id)):
+        raise HandoffError("the package names no operation")
     subjects, bodies = [], []
     for commit in commits:
         subject, _, rest = str(commit.get("message") or "").partition("\n")
@@ -304,6 +380,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         bodies.append(_clean_block(rest, MAX_COMMIT_BODY))
     title = subjects[0] if len(commits) == 1 else "Build riscv64 wheels"
     title = title or "Build riscv64 wheels"
+    title, title_mentions = neutralize_mentions(title)
     if len(commits) == 1:
         description = bodies[0]
     else:
@@ -322,31 +399,37 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
     body = "\n\n".join(s for s in sections if s).strip()
     if len(body) > MAX_BODY:
         body = body[: MAX_BODY - 3].rstrip() + "..."
+    body, body_mentions = neutralize_mentions(body)
     link = compare_url(record, title=title, body=body)
     body_in_link = len(link) <= MAX_URL
     if not body_in_link:
         link = compare_url(record, title=title)
     approval = record["handoff_approval"]
-    retract = (f"/upstreaming retract-pr revision={retract_revision if retract_revision is not None else record['revision']} "
-               f"head={head}")
+    revision = retract_revision if retract_revision is not None else record["revision"]
+    retract = f"/upstreaming retract-pr revision={revision} head={head}"
     upstream, base = record["upstream"]["full_name"], record["upstream"]["base_ref"]
     proposal = (dossier.get("data") or {}).get("proposal") or {}
-    rules = _line(proposal.get("contribution_rules"), 600).rstrip(".")
-    unchanged = [_line(p, 200) for p in proposal.get("allowed_paths") or []
+    rules = _line(proposal.get("contribution_rules"), 600)
+    unchanged = [p for p in proposal.get("allowed_paths") or []
                  if not any(ch in str(p) for ch in "*?[") and p not in files][:10]
-    fence = _fence(body)
+    login = str(approval["actor"]["login"])
+    requester = f"@{login}" if _LOGIN.fullmatch(login) else _code(login, 40)
     lines = [
         f"**Submission package** for revision {approval['revision']} and the exact clean head "
-        f"`{head}`, requested by @{approval['actor']['login']}.",
+        f"`{head}`, requested by {requester}.",
         "",
         "An authorized human opens the upstream pull request from this package under their own "
         "GitHub account. No App opens it and the pipeline holds no credential that can write "
         "upstream; it verifies the pull request by observation once it is open.",
         "",
-        f"- Upstream repository: `{upstream}`, base `{base}`",
-        f"- Source: `{fork}`, branch `{DEV_REF}`",
+        f"- Upstream repository: {_code(upstream)} (id {_code(record['upstream'].get('repository_id'), 20)}), "
+        f"base {_code(base)}",
+        f"- Source: {_code(fork)} (id {_code(record['fork'].get('repository_id'), 20)}), "
+        f"branch `{DEV_REF}`",
         f"- Exact head: `{head}`",
-        f"- Changed files: {', '.join(f'`{_line(f, 200)}`' for f in files) or 'none'}",
+        f"- Changed files: {', '.join(_code(f) for f in files) or 'none'}",
+        f"- Package operation: {_code(operation_id, 40)}; dossier evidence: "
+        f"{_code(record.get('dossier_evidence_id'), 120)}",
         "",
         "> [!WARNING]",
         f"> The compare form resolves the branch `{DEV_REF}` when it opens. Before you submit, "
@@ -354,6 +437,10 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         "withdraw this package instead:",
         ">",
         f"> `{retract}`",
+        ">",
+        f"> This command names revision {revision}, the revision when the package was posted. A "
+        "pause and its resume bump the revision: use the revision of the latest entry on this "
+        "issue, whose next commands and reminders carry the current one.",
         "",
         f"**[Open the prefilled pull request form]({link})**",
         "",
@@ -364,30 +451,46 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
     else:
         lines.append("The description is too long for a link: the form opens with the title "
                      f"only. Paste the description below. Compare view: {compare_url(record)}")
+    if title_mentions or body_mentions:
+        lines += ["", "Mentions in the proposed title and description are in code spans, so "
+                      "opening the pull request notifies nobody upstream. Edit them in the form "
+                      "only if a mention is intended."]
     lines += [
         "",
         "**Title**",
         "",
-        "```text",
-        title,
-        "```",
+        *_fenced(title),
         "",
         "<details>",
         "<summary>Description</summary>",
         "",
-        f"{fence}markdown",
-        body,
-        fence,
+        *_fenced(body, "markdown"),
         "",
         "</details>",
         "",
-        "**Contribution policy** (from the verified dossier): " + (rules or "none recorded") + ".",
-        *([f"The dossier admitted {', '.join(f'`{p}`' for p in unchanged)}, which the series "
-           "does not change; check whether the project expects a change there (for example a "
-           "changelog entry) before you submit."] if unchanged else []),
-        "Before you submit, apply what the project asks of a contributor: a sign-off (DCO), a "
-        "contributor agreement (CLA), or its pull request template. A prefilled description "
-        "replaces the template; copy the template's required parts into it.",
+        "**Contribution policy** (from the verified dossier):",
+        "",
+        *(_fenced(rules) if rules else ["None recorded."]),
+        "",
+    ]
+    if unchanged:
+        lines.append(f"The dossier admitted {', '.join(_code(p) for p in unchanged)}, which the "
+                     "series does not change; check whether the project expects a change there "
+                     "(for example a changelog entry) before you submit.")
+    if rules and _SIGNING_POLICY.search(rules):
+        lines.append("Before you submit, apply what the contribution policy above asks of a "
+                     "contributor.")
+    else:
+        lines.append("Before you submit, apply what the project asks of a contributor: a "
+                     "sign-off (DCO) or a contributor agreement (CLA).")
+    lines += [
+        "If the project has a pull request template, copy its required parts into the "
+        "description: a prefilled description replaces the template.",
+        f"If GitHub does not let your account open this pull request (for example the project "
+        f"limits who may open one), another human whose account may post `/upstreaming` commands "
+        f"here can open it from this package. Do not open it from another fork or branch: only "
+        f"{_code(fork)} `{DEV_REF}` at the exact head is verified. If nobody can, withdraw the "
+        "package with the command above.",
         "",
         submission_marker(record),
     ]
@@ -489,6 +592,10 @@ def mismatch_text(observed_head: str | None, record: dict, rejected: list[str],
 # Verified receipts: the reconciler's independent readback
 
 
+def _message(commit: dict) -> str:
+    return str((commit.get("commit") or {}).get("message") or "")
+
+
 def receipt_problem(record: dict, op: dict, receipt: dict) -> str | None:
     """Why a receipt does not belong to the operation the record runs now."""
     state = f"{record['phase']}.{record['activity']}"
@@ -502,6 +609,46 @@ def receipt_problem(record: dict, op: dict, receipt: dict) -> str | None:
     return None
 
 
+# What a failed attempt records when its launches are spent without a
+# receipt: the controller closes it as a failed infrastructure attempt.
+LAUNCHES_SPENT = "launches spent without a receipt"
+
+
+def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str, reason: str,
+                 external_ids: dict | None = None):
+    """Close a failed attempt (``begin_effect`` when it is still ``planned``,
+    then ``record_failure``) and fire the one row of its state: the retry
+    row within the budget, the exhaustion row at its limit, or, for an
+    ``invalid`` cleanup, ``return_for_repair``. Returns the closed operation
+    and the outcome of the row. Raises ``lifecycle.TransitionError`` when no
+    single row applies."""
+    import engine
+
+    kind = op["kind"]
+    invalid = kind == "debug_cleanup" and failure == INVALID
+    facts = {INVALID_FACT} if invalid else {FAILURE_FACTS[kind]}
+    counts = {} if invalid else {kind: attempt_count(op)}
+    verbs = [verb for verb in recovery.fired_verbs(record, op, "failed")
+             if engine.refusal(record, verb, policy=policy, now=now, facts=facts,
+                               counts=counts) is None]
+    if len(verbs) != 1:
+        raise lifecycle.TransitionError(
+            f"a failed {kind} attempt fires {verbs or 'no row'} in {engine.state_key(record)}")
+    exhausted = verbs[0] in lifecycle.BUDGETS[kind].exhaustion_verbs
+    new_op = recovery.fold_failure_receipt(
+        op, external_ids=dict(external_ids or {}, failure=str(failure or "unknown")[:40],
+                              exhausted=int(exhausted)), now=now)
+    fired = recovery.fire(
+        record, new_op, policy=policy, now=now, facts=facts, counts=counts,
+        details={"attempt": int(reason_value(op, "attempt") or 0), "count": attempt_count(op),
+                 "reason": isolation.clean_text(reason or "", 300)})
+    if fired is None or not fired.accepted:
+        raise lifecycle.TransitionError(
+            f"a failed {kind} attempt fires no row in {engine.state_key(record)}: "
+            f"{fired.reason if fired else 'none bound'}")
+    return new_op, fired
+
+
 def readback(api: collect.Api, record: dict, op: dict, receipt: dict) -> tuple[dict, dict, str] | str:
     """Read back what a confirmed receipt reports. Returns the external ids,
     the values of the fields the confirm row sets, and a detail, or the
@@ -512,17 +659,41 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict) -> tuple[d
         clean = receipt.get("clean_head")
         if not isinstance(clean, str) or not _SHA.match(clean):
             return "the receipt names no clean head"
-        if not receipt.get("rewritten") and clean != target["expected_head"]:
+        removed = receipt.get("removed_commits") or []
+        if not isinstance(removed, list) or len(removed) > MAX_COMMITS \
+                or any(not isinstance(s, str) or not _SHA.match(s) for s in removed) \
+                or len(set(removed)) != len(removed):
+            return "the receipt names invalid removed commits"
+        if bool(receipt.get("rewritten")) != bool(removed):
+            return "a rewrite removes debug commits, and only a rewrite does"
+        if not removed and clean != target["expected_head"]:
             return "a cleanup without a rewrite must keep the head"
+        if removed and clean == target["expected_head"]:
+            return "a rewrite must change the head"
         head = collect.branch_head(api, target["repository"], DEV_REF)
         if not head or head["head"] != clean:
             return "the branch does not resolve to the clean head"
         cmp = collect.compare_commits(api, target["repository"], target["base_sha"], clean)
         series = cmp.get("commits") or []
         if cmp.get("behind_by") != 0 or not series or len(series) > MAX_COMMITS \
-                or any(str((c.get("commit") or {}).get("message") or "").startswith(DEBUG_PREFIX)
-                       for c in series):
+                or any(_message(c).startswith(DEBUG_PREFIX) for c in series):
             return "the clean series is not the admitted series without debug commits"
+        if removed:
+            # The removed commits are debug commits of the approved series,
+            # and the clean series is the approved series without them, in
+            # order and with the same messages.
+            approved = collect.compare_commits(api, target["repository"], target["base_sha"],
+                                               target["expected_head"])
+            full = approved.get("commits") or []
+            messages = {c.get("sha"): _message(c) for c in full}
+            if approved.get("behind_by") != 0 or not full or len(full) > MAX_COMMITS:
+                return "the approved series cannot be read in full"
+            if any(not messages.get(sha, "").startswith(DEBUG_PREFIX) for sha in removed):
+                return "a removed commit is not a debug commit of the approved series"
+            kept = [_message(c).strip() for c in full if c.get("sha") not in removed]
+            if len(series) != len(full) - len(removed) \
+                    or [_message(c).strip() for c in series] != kept:
+                return "the clean series is not the approved series without the removed commits"
         return (dict(run, clean_head=clean), {"clean_head_sha": clean, "fork.head_sha": clean},
                 f"{DEV_REF} at {clean}")
     if kind == "internal_pr_closure":
@@ -672,7 +843,7 @@ def cleanup(root: Path, operation_id: str, *, policy: dict, read_api: collect.Ap
     try:
         publisher.fresh_workspace(work)
         fetched = _git(work, "fetch", "--quiet", "--no-tags", fork_publish._url(fork), expected,
-                       check=False, extra_config=fork_publish._auth_config(token))
+                       check=False, env=fork_publish._auth_env(token))
         if fetched.returncode:
             raise HandoffError(f"could not fetch {expected[:12]}: {fetched.stderr.decode()[-300:]}")
         clean, removed = rebuild_without_debug(work, base=base, head=expected)
@@ -693,9 +864,9 @@ def cleanup(root: Path, operation_id: str, *, policy: dict, read_api: collect.Ap
             if not token:
                 raise HandoffError("a rewrite needs the fork token")
             args = publisher.lease_refspec(clean, expected)
-            runner = push or (lambda w, a, cfg: _git(w, "push", "--porcelain", fork_publish._url(fork), *a,
-                                                     check=False, extra_config=cfg))
-            pushed = runner(work, args, fork_publish._auth_config(token))
+            runner = push or (lambda w, a, auth: _git(w, "push", "--porcelain", fork_publish._url(fork),
+                                                      *a, check=False, env=auth))
+            pushed = runner(work, args, fork_publish._auth_env(token))
             if pushed.returncode:
                 err = pushed.stderr.decode()[-300:] + (pushed.stdout.decode() if isinstance(pushed.stdout, bytes) else "")
                 if "stale info" in err or "fetch first" in err or "non-fast-forward" in err:
@@ -775,7 +946,8 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
     import status_ledger
 
     record, op = load_request(root, operation_id, policy)
-    package = build_package(record, **package_inputs(root, record, read_api))
+    package = build_package(record, **package_inputs(root, record, read_api),
+                            operation_id=op["operation_id"])
     number = record["tracking_issue"]["number"]
     marker = op["proposed"]["marker"]
     comments = status_ledger.issue_comments(issue_api, number)
@@ -785,6 +957,15 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
     if existing:
         comment = existing[0]
     else:
+        # The final check before the effect: the package is posted only while
+        # the branch still resolves to the clean head it names. A moved branch
+        # is a failed attempt (`retry_submission_comment`, then
+        # `exhaust_comment_retries`): the state has no other failure row.
+        observed = collect.branch_head(read_api, record["fork"]["name"], DEV_REF)
+        observed = observed and observed["head"]
+        if observed != record["clean_head_sha"]:
+            raise HandoffError(f"the branch {DEV_REF} resolves to {observed}, not the clean head; "
+                               "the package is not posted")
         comment = issue_api.request("POST", f"/repos/{CONTROL_REPO}/issues/{number}/comments",
                                     {"body": package["comment"]})
     observed = issue_api.request("GET", f"/repos/{CONTROL_REPO}/issues/comments/{comment['id']}")
@@ -823,14 +1004,34 @@ def _operation_meta(root: Path, operation_id: str) -> dict:
     return meta
 
 
+def current_state(root: Path, api) -> str:
+    """The commit of the checked-out state, which must be the head of ``main``
+    now: a queued or re-run job never acts on state that ``main`` has left.
+    Raises ``HandoffRefused``."""
+    import publisher
+
+    checked_out = subprocess.run(["git", *publisher.SAFE_GIT_CONFIG, "-C", str(root), "rev-parse",
+                                  "HEAD"], capture_output=True, text=True,
+                                 env=publisher.safe_env()).stdout.strip()
+    try:
+        head = ((api.get(f"/repos/{CONTROL_REPO}/git/ref/heads/main") or {}).get("object") or {}).get("sha")
+    except Exception as error:  # a read failure refuses; nothing was attempted
+        raise HandoffRefused(f"the head of main cannot be read: {isolation.clean_text(error, 200)}") from None
+    if not _SHA.match(checked_out or "") or checked_out != head:
+        raise HandoffRefused(f"the checked-out state {checked_out[:12] or 'unknown'} is not the head "
+                             f"of main {str(head)[:12]}")
+    return checked_out
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from common import load_policy
 
     parser = argparse.ArgumentParser(prog="python -m handoff", description=__doc__)
-    parser.add_argument("action", choices=("target", "cleanup", "close", "comment", "failed"))
+    parser.add_argument("action", choices=("target", "check", "cleanup", "close", "comment", "failed"))
     parser.add_argument("--operation-id", required=True)
+    parser.add_argument("--kind")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != CONTROL_REPO \
@@ -838,7 +1039,9 @@ def main(argv: list[str] | None = None) -> int:
         raise HandoffRefused("handoff operations require the trusted control workflow on main")
     root, policy = Path.cwd(), load_policy()
     if args.action == "target":
-        # The kind and the fork name the jobs scope their tokens to.
+        # The kind and the fork name the jobs scope their tokens to, from the
+        # state at the head of main.
+        current_state(root, collect.Api(token=os.environ.get("GH_TOKEN") or None))
         _record, op = load_request(root, args.operation_id, policy)
         fork = op["target"]["repository"] if op["kind"] in FORK_KINDS else None
         name = fork.split("/", 1)[1] if fork else ""
@@ -848,6 +1051,22 @@ def main(argv: list[str] | None = None) -> int:
             out.write(f"kind={op['kind']}\nfork_name={name}\n")
         return 0
     meta = _operation_meta(root, args.operation_id)
+    if args.action == "check":
+        # Before a job mints its token: the state it checked out is the head
+        # of main and still runs this operation. A refusal is its receipt,
+        # and the job's later steps do not run.
+        try:
+            current_state(root, collect.Api(token=os.environ.get("GH_TOKEN") or None))
+            _record, op = load_request(root, args.operation_id, policy)
+            if op["kind"] != args.kind:
+                raise HandoffRefused("the operation is not of this job's kind")
+            return 0
+        except HandoffRefused as error:
+            result = receipt(meta, error=error)
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(result, indent=2))
+            print(json.dumps({k: result.get(k) for k in ("operation_id", "kind", "result", "reason")}))
+            return 1
     if args.action == "failed":
         # A step of the job failed before the attempt wrote its receipt.
         if args.out.exists():

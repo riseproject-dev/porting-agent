@@ -943,9 +943,23 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
     limit = lifecycle.budget_limit("operation_launch", policy)
     if launches >= limit:
         if (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
-                >= LAUNCH_INTERVAL_SECONDS:
-            rep["alerts"].append({"contribution": cid, "operation": op["operation_id"],
-                                  "alert": f"{kind} launches spent without a receipt"})
+                < LAUNCH_INTERVAL_SECONDS:
+            return
+        # The last allowed launch is old and no receipt came back: the attempt
+        # is a definite infrastructure failure. It is closed as failed and
+        # fires the retry row of the state, or its exhaustion row.
+        failed, fired = handoff.fail_attempt(
+            c, op, policy=policy, now=now, failure=handoff.INFRASTRUCTURE,
+            reason=f"{kind} {handoff.LAUNCHES_SPENT}", external_ids={"launches_spent": launches})
+        operations[op["operation_id"]] = failed
+        by_id[cid] = fired.record
+        res.stage("operations", failed)
+        res.stage("contributions", fired.record)
+        res.stage("events", fired.event)
+        rep["alerts"].append({"contribution": cid, "operation": op["operation_id"],
+                              "alert": f"{kind} {handoff.LAUNCHES_SPENT}: {fired.verb}"})
+        if engine.state_key(fired.record) == state:
+            _launch_handoff(fired.record, by_id, operations, res, inputs, now, policy)
         return
     if launches and (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
             < LAUNCH_INTERVAL_SECONDS:

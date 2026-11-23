@@ -882,24 +882,9 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
                                       facts={handoff.CONFIRM_FACTS[kind]}, values=values,
                                       counts={}, details=details)
             elif result == "failed":
-                invalid = kind == "debug_cleanup" and receipt.get("failure") == handoff.INVALID
-                facts = {handoff.INVALID_FACT} if invalid else {handoff.FAILURE_FACTS[kind]}
-                counts = {} if invalid else {kind: handoff.attempt_count(op)}
-                verbs = [verb for verb in recovery.fired_verbs(c, op, "failed")
-                         if engine.refusal(c, verb, policy=policy, now=now, facts=facts,
-                                           counts=counts) is None]
-                if len(verbs) != 1:
-                    raise lifecycle.TransitionError(
-                        f"a failed {kind} attempt fires {verbs or 'no row'} in {engine.state_key(c)}")
-                exhausted = verbs[0] in lifecycle.BUDGETS[kind].exhaustion_verbs
-                new_op = recovery.fold_failure_receipt(
-                    op, external_ids=dict(run, failure=str(receipt.get("failure") or "unknown")[:40],
-                                          exhausted=int(exhausted)), now=now)
-                fired = recovery.fire(
-                    c, new_op, policy=policy, now=now, facts=facts, counts=counts,
-                    details={"attempt": int(handoff.reason_value(op, "attempt") or 0),
-                             "count": handoff.attempt_count(op),
-                             "reason": isolation.clean_text(receipt.get("reason") or "", 300)})
+                new_op, fired = handoff.fail_attempt(
+                    c, op, policy=policy, now=now, failure=str(receipt.get("failure") or "unknown"),
+                    reason=str(receipt.get("reason") or ""), external_ids=run)
             else:
                 report.append(dict(entry, outcome=f"not folded: {str(result)[:40]}",
                                    detail=isolation.clean_text(receipt.get("reason") or "", 300)))
