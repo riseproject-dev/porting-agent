@@ -929,6 +929,66 @@ def compare_commits(api: Api, full_name: str, base: str, head: str) -> dict:
     return data
 
 
+# Bounds of a series whose changed paths are read for the series requirements
+# of the plan: the compare API lists at most 300 files, and each non-debug
+# commit of a series with debug commits is read on its own.
+SERIES_MAX_COMMITS = 50
+SERIES_MAX_FILES = 300
+
+
+def _filenames(files: Any) -> set[str] | None:
+    if not isinstance(files, list):
+        return None
+    names = {f.get("filename") for f in files if isinstance(f, dict)}
+    if not all(isinstance(n, str) and n for n in names):
+        return None
+    return names
+
+
+def series_changed_paths(api: Api, fork_full_name: str, base_sha: str, head: str
+                         ) -> set[str] | None:
+    """The paths the non-debug commits of the series ``base_sha..head`` of
+    the fork change, as a set; ``None`` when the series cannot be read in
+    full (more than ``SERIES_MAX_COMMITS`` commits, ``SERIES_MAX_FILES``
+    files or more, ``head`` behind ``base_sha``, or a response of another
+    shape). A path a later commit reverts is not changed by the series, and
+    a path changed only by ``{debug}`` commits does not count: they are
+    dropped at submission. A failed read raises ``CollectError``."""
+    import commit_rules
+
+    cmp = compare_commits(api, fork_full_name, base_sha, head)
+    commits = cmp.get("commits")
+    ahead, behind = cmp.get("ahead_by"), cmp.get("behind_by")
+    names = _filenames(cmp.get("files"))
+    if not isinstance(commits, list) or names is None or behind != 0 \
+            or not isinstance(ahead, int) or isinstance(ahead, bool) \
+            or ahead != len(commits) or ahead > SERIES_MAX_COMMITS \
+            or len(names) >= SERIES_MAX_FILES:
+        return None
+    messages = []
+    for commit in commits:
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        message = ((commit.get("commit") or {}).get("message")
+                   if isinstance(commit, dict) else None)
+        if not isinstance(sha, str) or not _FULL_SHA.match(sha) or not isinstance(message, str):
+            return None
+        messages.append((sha, message))
+    if not any(commit_rules.is_debug(m) for _sha, m in messages):
+        return names
+    changed: set[str] = set()
+    for sha, message in messages:
+        if commit_rules.is_debug(message):
+            continue
+        data = api.get(f"/repos/{fork_full_name}/commits/{sha}")
+        own = _filenames((data or {}).get("files") if isinstance(data, dict) else None)
+        if own is None or (data or {}).get("sha") != sha:
+            raise CollectError(f"commit {sha[:12]} of the series is malformed")
+        if len(own) >= SERIES_MAX_FILES:
+            return None
+        changed |= own
+    return changed & names
+
+
 def upstream_pull_requests(api: Api, record: dict, ref: str = UPSTREAM_REF) -> list[dict]:
     """The open pull requests of the upstream repository whose head is a
     branch ``ref`` of the fork's owner: the candidates the submission

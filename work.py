@@ -408,6 +408,8 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
                 if request["task"] in SUBMISSION_TASKS else None)
     rewrite = (rewrite_reference(evidence.get(record.get("submission_rewrite_id") or ""))
                if request["task"] == SUBMISSION_REVIEW else None)
+    requirements = (series_requirements_context(record, evidence)
+                    if request["task"] in WRITE_TASKS else None)
     reason_evidence = []
     for evidence_id in request.get("reason_ids") or []:
         item_evidence = evidence.get(evidence_id)
@@ -432,6 +434,9 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
         # its series and text from this artifact and checks them against
         # these digests.
         **({"rewrite": rewrite} if rewrite is not None else {}),
+        # The unmet series requirements of the plan this Work answers, which
+        # the trusted worker gate checks.
+        **({"series_requirements": requirements} if requirements is not None else {}),
     }
     return allowed_paths, context
 
@@ -501,7 +506,31 @@ def _reason_item(evidence: dict) -> dict:
         item["data"] = _feedback_data(evidence.get("data") or {})
     elif evidence.get("kind") == "plan":
         item["data"] = _plan_data(evidence.get("data") or {})
+    elif evidence.get("kind") == "series_requirements":
+        data = evidence.get("data") or {}
+        item["data"] = {"head": data.get("head"),
+                        "unmet": [{"id": u.get("id"), "paths": list(u.get("paths") or [])}
+                                  for u in (data.get("unmet") or [])[:6]]}
     return item
+
+
+def series_requirements_context(record: dict, evidence: dict[str, dict]) -> list[dict] | None:
+    """The series requirements a write Work carries for the trusted worker
+    gate: the unmet ones of the newest ``series_requirements`` evidence
+    among the Work's feedback, as ``{id, paths}``, and only while the fork
+    head is the head that evidence names (a push since then may already
+    meet them). ``None`` when the Work carries none."""
+    work = record.get("active_work") or {}
+    head = (record.get("fork") or {}).get("head_sha")
+    for evidence_id in reversed(list(work.get("feedback_evidence_ids") or [])):
+        found = evidence.get(evidence_id) or {}
+        if found.get("kind") != "series_requirements":
+            continue
+        if not head or (found.get("digests") or {}).get("head") != head:
+            return None
+        return [{"id": u["id"], "paths": list(u["paths"])}
+                for u in ((found.get("data") or {}).get("unmet") or [])[:6]]
+    return None
 
 
 def rewrite_reference(evidence: dict | None) -> dict:

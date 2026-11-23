@@ -47,7 +47,8 @@
         "resolution",
         "worker_report",
         "human_steering",
-        "work_history"
+        "work_history",
+        "series_requirements"
       ]
     },
     "policy_version": {

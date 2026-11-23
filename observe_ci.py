@@ -19,9 +19,12 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   ``record_actionable_review``, then for CI on the exact head
   ``record_ci_failure``, ``rerun_interrupted_ci`` with a ``ci_rerun``
   operation (``exhaust_interrupted_reruns`` once its budget is spent), or
-  ``nominate_for_handoff``, or ``return_for_feedback`` to
+  ``nominate_for_handoff`` when the series meets the series requirements
+  of the verified plan, or ``return_for_feedback`` to
   ``development.fix_needed`` when CI passed while actionable feedback is
-  pending (passing CI behind an open operation keeps the state);
+  pending, or ``return_for_series_requirements`` to
+  ``development.fix_needed`` when CI passed and a series requirement is
+  unmet (passing CI behind an open operation keeps the state);
 * at ``handoff.awaiting_submission``, take the gate's rows for what is
   observed on the candidate head: ``record_head_change``,
   ``record_explanation`` for an explanation-only comment, then
@@ -68,6 +71,7 @@ from typing import Any
 import ci_evidence
 import ci_rerun
 import collect
+import commit_rules
 import engine
 import handoff
 import isolation
@@ -388,10 +392,12 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 continue
             if rec["phase"] == "development":
                 _observe_development(api, obs, entry, rec, head["head"], contracts=contracts,
-                                     policy=policy, now=now, operations=operations)
+                                     policy=policy, now=now, operations=operations,
+                                     evidence=evidence)
             else:
                 _observe_gate(api, obs, entry, rec, head["head"], contracts=contracts,
-                              policy=policy, now=now, operations=operations)
+                              policy=policy, now=now, operations=operations,
+                              evidence=evidence)
             obs.report.append(entry)
     return obs
 
@@ -577,7 +583,8 @@ def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[st
 
 def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
                          *, contracts: dict, policy: dict, now: str,
-                         operations: dict | None = None) -> None:
+                         operations: dict | None = None,
+                         evidence: dict[str, dict] | None = None) -> None:
     """Observe a contribution in development by the table's rows.
 
     ``development.waiting_ci`` is observed by its rows, in order:
@@ -591,13 +598,18 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     (``ci_rerun.awaited``), ``record_ci_failure`` for an executed blocking
     failure, ``rerun_interrupted_ci`` (or ``exhaust_interrupted_reruns``)
     when a required job was cancelled or lost its runner and no job failed
-    on its own, ``nominate_for_handoff`` when every required job passed
-    and no actionable feedback is pending, or ``return_for_feedback`` when
-    every required job passed while actionable feedback is pending: the
-    passing evidence is recorded and Work carrying the feedback is due
-    again in ``development.fix_needed``. Passing CI behind an open
-    operation keeps the contribution in ``development.waiting_ci``, and
-    a CI run that waits for approval is collector health, not a state.
+    on its own, ``nominate_for_handoff`` when every required job passed,
+    no actionable feedback is pending, and the series meets the series
+    requirements of the verified plan (``_series_requirements``),
+    ``return_for_feedback`` when every required job passed while actionable
+    feedback is pending: the passing evidence is recorded and Work carrying
+    the feedback is due again in ``development.fix_needed``, or
+    ``return_for_series_requirements`` when every required job passed
+    without pending feedback and a series requirement is unmet: the unmet
+    requirements are recorded as ``series_requirements`` evidence, which
+    becomes the pending feedback of the Work due again. Passing CI behind
+    an open operation keeps the contribution in ``development.waiting_ci``,
+    and a CI run that waits for approval is collector health, not a state.
 
     ``development.agent_running`` (requested Work, or a Result held for
     publication) is not observed. ``development.fix_needed`` (Work is due)
@@ -692,13 +704,38 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                 return
             entry["handoff_deferred"] = returned.reason
         else:
+            unmet, note, sev = _series_requirements(api, cur, head, ev, evidence or {},
+                                                    policy=policy, now=now)
+            if sev is not None:
+                returned = engine.apply_transition(
+                    cur, "return_for_series_requirements", policy=policy, now=now,
+                    cause_id=sev["evidence_id"],
+                    facts={"ci_passed_on_head", "series_requirements_unmet"},
+                    values={"last_ci_evidence_id": ev["evidence_id"],
+                            "pending_feedback_evidence_ids": list(dict.fromkeys(
+                                (cur.get("pending_feedback_evidence_ids") or [])
+                                + [sev["evidence_id"]]))[-64:]},
+                    details={"evidence_id": sev["evidence_id"], "head": head,
+                             "series_requirements_unmet": unmet})
+                if returned.accepted:
+                    obs.staged.extend([("evidence", sev), ("contributions", returned.record),
+                                       ("events", returned.event)])
+                    _poll(obs, returned.record, None)
+                    entry.update(activity="fix_needed", series_requirements_unmet=unmet)
+                    return
+                entry["handoff_deferred"] = returned.reason
+                _poll(obs, cur, next_poll_at)
+                return
+            details = {"head": head, "revision": cur["revision"]}
+            if note:
+                details["series_requirements"] = note
             nominated = engine.apply_transition(
                 cur, "nominate_for_handoff", policy=policy, now=now, cause_id=ev["evidence_id"],
-                facts={"ci_passed_on_head"},
+                facts={"ci_passed_on_head", "series_requirements_met"},
                 values={"last_ci_evidence_id": ev["evidence_id"],
                         "handoff_request": {"command_id": f"observation-{ev['evidence_id']}",
                                             "head": head, "revision": cur["revision"]}},
-                details={"head": head, "revision": cur["revision"]})
+                details=details)
             if nominated.accepted:
                 cur = _poll(obs, nominated.record, None)
                 obs.staged.append(("events", nominated.event))
@@ -709,6 +746,61 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     if verdict.state == "access_wait":
         entry["note"] = "a CI run waits for approval; CI is read again"
     _poll(obs, cur, next_poll_at)
+
+
+def _series_requirements(api: collect.Api, record: dict, head: str, ci: dict,
+                         evidence: dict[str, dict], *, policy: dict, now: str
+                         ) -> tuple[list[str], str | None, dict | None]:
+    """Whether the series on the exact ``head`` meets the series
+    requirements of the verified plan (``commit_rules.series_requirements_from_plan``):
+    ``(unmet ids, note, evidence)``. The evidence, of kind
+    ``series_requirements``, is returned when a requirement is unmet; its id
+    is the same for the same head, so a restaged observation is idempotent.
+
+    A plan that records none (every plan before schema version 4) needs no
+    read. A series too large to read is not checked, and ``note`` says so.
+    A plan the store does not hold records none, as for the commit rules
+    of the Work payload. A malformed requirement is an unexpected error of
+    the contribution; a failed read raises ``collect.CollectError``, which
+    skips the contribution this tick."""
+    plan_id = record.get("plan_evidence_id")
+    plan = evidence.get(plan_id or "")
+    try:
+        requirements = commit_rules.series_requirements_from_plan((plan or {}).get("data"))
+    except commit_rules.RuleError as error:
+        raise lifecycle.TransitionError(
+            f"the plan {plan_id} records malformed series requirements: {error}") from None
+    if not requirements:
+        return [], None, None
+    paths = collect.series_changed_paths(api, record["fork"]["name"],
+                                         record["upstream"]["base_sha"], head)
+    if paths is None:
+        return [], "not checked: the series is too large to read", None
+    met, unmet = commit_rules.changed_paths_by_requirement(requirements, sorted(paths))
+    if not unmet:
+        return [], None, None
+    repo_id = record["fork"].get("repository_id") or record["fork"]["name"].replace("/", "--")
+    eid = safe_id(f"series-requirements-{repo_id}-{head[:12]}")
+    lines = [f"- `{item['id']}`: change {', '.join(f'`{p}`' for p in item['paths'])}: "
+             f"{isolation.clean_text(item['description'], 300)}" for item in unmet]
+    ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": record["contribution_id"],
+          "kind": "series_requirements", "policy_version": policy["policy_version"],
+          "collected_at": now,
+          "summary": ("CI passed on the exact head, but the non-debug commits of the series do "
+                      "not change a path the plan's contribution guidelines require. Change "
+                      "a matching path in a non-debug commit for each requirement below, or "
+                      "report blocked with the reason it does not apply:\n" + "\n".join(lines)),
+          "limitations": ["A path changed only by a {debug} commit, or reverted later in the "
+                          "series, does not count."],
+          "data": {"head": head, "base_sha": record["upstream"]["base_sha"],
+                   "ci_evidence_id": ci["evidence_id"],
+                   "unmet": [{"id": item["id"], "paths": item["paths"],
+                              "description": isolation.clean_text(item["description"], 300)}
+                             for item in unmet],
+                   "met": met},
+          "digests": {"head": head}}
+    schemas.validate("evidence", ev)
+    return [item["id"] for item in unmet], None, ev
 
 
 def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: dict,
@@ -774,7 +866,8 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
 
 def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str, *,
                   contracts: dict, policy: dict, now: str,
-                  operations: dict | None = None) -> None:
+                  operations: dict | None = None,
+                  evidence: dict[str, dict] | None = None) -> None:
     """Observe ``handoff.awaiting_submission`` by the gate's rows:
     ``record_head_change`` for a new fork head (to ``development.waiting_ci``,
     which is then observed), ``record_explanation`` for an explanation-only
@@ -792,7 +885,7 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
                     values={"fork.head_sha": head}, details={"head": head})
         entry["head_changed"] = True
         _observe_development(api, obs, entry, cur, head, contracts=contracts, policy=policy,
-                             now=now, operations=operations)
+                             now=now, operations=operations, evidence=evidence)
         return
     # The gate has no row for a development PR that does not match; it is
     # not read here.

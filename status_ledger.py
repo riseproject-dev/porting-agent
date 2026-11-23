@@ -221,6 +221,17 @@ def _observed(event: dict) -> str:
         parts.append("PyPI: " + "; ".join(
             _close_finding(name, entry) for name, entry in sorted(details["pypi"].items())
             if isinstance(entry, dict)) + ".")
+    if kind == "return_for_series_requirements" \
+            and isinstance(details.get("series_requirements_unmet"), list):
+        # Ids only: they match a fixed pattern; the descriptions are planner
+        # text and are not rendered.
+        ids = [i for i in details["series_requirements_unmet"][:6]
+               if isinstance(i, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", i)]
+        if ids:
+            parts.append(f"Unmet series requirements of the plan at {_head(details.get('head'))}: "
+                         + ", ".join(f"`{i}`" for i in ids) + ".")
+    if kind == "nominate_for_handoff" and details.get("series_requirements"):
+        parts.append(f"Series requirements: {_quotable(details['series_requirements'], 100)}.")
     if kind == "record_merge" and details.get("merge_sha"):
         parts.append(f"Merge commit: {_head(details['merge_sha'])}.")
     override = details.get("admission_override")

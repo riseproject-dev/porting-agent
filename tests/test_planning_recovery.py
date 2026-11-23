@@ -22,16 +22,16 @@ RUN_ID = "44974390332"
 
 
 class TestPlanningRecordRecovery(unittest.TestCase):
-    def directory(self, temporary, *, version=3):
+    def directory(self, temporary, *, version=4):
         """The live run's partial publication. Its plan is of schema
-        version 1; with ``version=3`` it records the contribution guidelines
+        version 1; with ``version=4`` it records the contribution guidelines
         and the project a plan must now record."""
         directory = Path(temporary) / RUN_ID
         shutil.copytree(FIXTURE, directory)
-        if version == 3:
+        if version == 4:
             path = directory / "plan.json"
             plan = json.loads(path.read_text())
-            plan.update(schema_version=3, contribution_guidelines=guidelines(
+            plan.update(schema_version=4, contribution_guidelines=guidelines(
                 plan["proposal"]["allowed_paths"]), project=project())
             path.write_text(json.dumps(plan))
         return directory
@@ -39,7 +39,7 @@ class TestPlanningRecordRecovery(unittest.TestCase):
     def test_a_plan_without_the_contribution_guidelines_is_not_recovered(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = self.directory(temporary, version=1)
-            with self.assertRaisesRegex(plan_gate.PlanError, "schema version 3"):
+            with self.assertRaisesRegex(plan_gate.PlanError, "schema version 4"):
                 planning_recovery.recover(directory, RUN_ID)
             self.assertFalse((directory / "outcome.json").exists())
 

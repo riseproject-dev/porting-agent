@@ -883,9 +883,21 @@ a contribution shaped. You MUST follow them:
   (`reviewers`): the structure, style, tests and documentation they ask for.
   Record in `diagnosis` how the series meets each recorded expectation and
   contributing instruction.
+- Meet the `series_requirements` (plan schema version 4): each names a path
+  the non-debug commits of the series must change, such as a changelog entry.
+  Trusted code checks them on the exact head before the contribution is
+  nominated for submission, and returns the series to development with the
+  unmet ones as `series_requirements` evidence in `reason_ids`. When
+  `task.context.series_requirements` is present, a `patch` must change, in a
+  non-debug commit, a file matching one of the paths of each listed
+  requirement (a `{debug}` commit does not count): the trusted worker gate
+  rejects one that does not. When a requirement does not apply to this
+  change, report `blocked` with the reason instead.
 
 A plan of schema version 1 records no guidelines; research them in the
-project as above before you shape the commits.
+project as above before you shape the commits. A plan before schema version
+4 records no series requirements: follow the contributing instructions all
+the same.
 
 ## Rules
 
