@@ -8,7 +8,7 @@ import commands
 import compat
 import lifecycle
 import schemas
-from tests.helpers import BACKUP, NOW, OWNER, SHA_A, SHA_B, SHA_C, contribution
+from tests.helpers import BACKUP, NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution
 
 
 def cmd(text):
@@ -16,7 +16,7 @@ def cmd(text):
 
 
 def apply(rec, text, **kw):
-    return compat.apply_command(rec, cmd(text), command_id="comment-1", actor=OWNER, now=NOW, **kw)
+    return apply_command(rec, cmd(text), command_id="comment-1", now=NOW, **kw)
 
 
 CID = "example--proj/12"
@@ -213,7 +213,8 @@ class TestHandoff(unittest.TestCase):
     def test_legacy_paths_cannot_write_the_handoff_phase(self):
         rec = contribution(phase="handoff", activity="awaiting_submission")
         with self.assertRaises(lifecycle.TransitionError):
-            apply(rec, f"/upstreaming pause contribution={CID} revision=0")
+            compat.apply_command(rec, cmd(f"/upstreaming pause contribution={CID} revision=0"),
+                                 command_id="c", actor=OWNER, now=NOW)
         with self.assertRaises(lifecycle.TransitionError):
             compat.observe_head(rec, SHA_C, now=NOW)
         with self.assertRaises(lifecycle.TransitionError):
@@ -259,13 +260,13 @@ if __name__ == "__main__":
 class TestStopEndsRequestedWork(unittest.TestCase):
     def test_stop_commands_clear_active_work(self):
         import commands as C
-        from tests.helpers import NOW, OWNER, contribution
+        from tests.helpers import NOW, contribution
         rec = contribution(phase="investigation", activity="agent_running", revision=1)
         rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 1,
                               "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None}
         for body in ("/upstreaming pause", "/upstreaming abandon reason=x", "/upstreaming park reason=x",
-                     "/upstreaming block reason=x"):
-            out = compat.apply_command(rec, C.parse(body), command_id="c", actor=dict(OWNER), now=NOW)
+                     ):
+            out = apply_command(rec, C.parse(body))
             self.assertTrue(out.accepted, body)
             self.assertIsNone(out.record["active_work"], body)
             self.assertNotEqual(out.record["activity"], "agent_running", body)
@@ -298,7 +299,7 @@ class TestScopeAndProvision(unittest.TestCase):
         self.rec["upstream"]["base_sha"] = None
 
     def apply(self, rec, body, **kw):
-        return compat.apply_command(rec, commands.parse(body), command_id="c", actor=dict(OWNER), now=NOW, **kw)
+        return apply_command(rec, commands.parse(body), **kw)
 
     def test_submit_upstream_outside_the_handoff_phase_names_where_it_applies(self):
         for phase, activity in (("development", "waiting_ci"), ("development", "fix_needed"),

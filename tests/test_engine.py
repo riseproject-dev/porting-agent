@@ -337,7 +337,6 @@ class TestProcessingErrorStop(unittest.TestCase):
         rec = contribution(phase="development", activity="waiting_ci")
         for label, record, why in (
                 ("paused", dict(rec, paused=True, paused_by="human"), "contribution is paused"),
-                ("blocked", dict(rec, blocked_reason="x"), "contribution is paused"),
                 ("terminal", contribution(phase="closed", activity="idle", terminal_reason="x"),
                  "contribution is terminal (closed.idle)")):
             with self.subTest(record=label):

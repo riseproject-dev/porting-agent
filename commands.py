@@ -44,7 +44,6 @@ GRAMMAR: dict[str, dict[str, str]] = {
     "submit-upstream": {"contribution": _ID, "revision": _INT, "head": _SHA},
     "clarify": {"contribution": _ID, "revision": _INT, "decision": _ID, "answer": _REASON},
     "revise-scope": {"contribution": _ID, "revision": _INT, "proposal": _ID},
-    "block": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     "abandon": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     # Start a new lifecycle generation on the same tracking issue. This is
     # deliberately allowed only after abandon and requires an exact revision.
@@ -87,9 +86,13 @@ RETIRED: dict[str, str] = {
            "the upstream pull request is then verified by observation")
     for verb in ("request-handoff", "approve-handoff", "register-upstream-pr")
 }
+RETIRED["block"] = (
+    "`block` is retired. A stop is a pause: "
+    '`/upstreaming pause revision=N reason="..."` records the reason and who set it, and '
+    "`/upstreaming resume revision=N reason=\"...\"` ends it")
 
 # Commands that stop work; processed before everything else in a tick.
-URGENT = frozenset({"pause", "park", "block", "abandon"})
+URGENT = frozenset({"pause", "park", "abandon"})
 
 OPTIONAL: dict[str, frozenset[str]] = {
     verb: frozenset({"contribution"} | ({"revision"} if verb in URGENT else set())

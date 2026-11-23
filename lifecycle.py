@@ -88,8 +88,6 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
         return f"state {record['phase']}.{record['activity']} does not permit fork writes"
     if record.get("paused"):
         return "paused"
-    if record.get("blocked_reason"):
-        return "blocked"
     if ref != DEV_REF:
         return f"ref {ref!r} is not {DEV_REF!r}"
     fork = record.get("fork") or {}

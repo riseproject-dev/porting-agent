@@ -396,8 +396,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
              "`/upstreaming abandon` does not apply in `handoff.awaiting_submission`"),
             ('/upstreaming restart revision=6 reason="x"',
              "`/upstreaming restart` does not apply in `handoff.awaiting_submission`"),
-            ('/upstreaming block revision=6 reason="x"',
-             "`/upstreaming block` does not apply in `handoff.awaiting_submission`"),
+            ('/upstreaming block revision=6 reason="x"', "`block` is retired"),
             ('/upstreaming resume revision=6 reason="x"', "not paused"),
         )
         for body, reason in cases:
@@ -406,9 +405,11 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 receipt = next(r for kind, r in output.staged if kind == "commands")
                 self.assertEqual(receipt["result"], "rejected")
                 self.assertIn(reason, receipt["reason"])
-                if "retired" in reason:
+                if "retired" in reason and "block" not in reason:
                     self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
                                   receipt["reason"])
+                elif "retired" in reason:
+                    self.assertIn('/upstreaming pause revision=N reason="..."', receipt["reason"])
                 self.assertEqual(self.final(output, record), record)
                 self.assertEqual(self.events(output), [])
 

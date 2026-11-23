@@ -70,7 +70,7 @@ def _iso(t: datetime) -> str:
 
 def _actionable(c: dict) -> str | None:
     """What a coding agent could usefully do now, or None (no AI on idle)."""
-    if c["paused"] or c.get("blocked_reason") or c["phase"] in lifecycle.TERMINAL | {"parked"}:
+    if c["paused"] or c["phase"] in lifecycle.TERMINAL | {"parked"}:
         return None
     if c.get("pending_publication"):
         return None   # a delivered proposal is still being published; never re-run the agent for it
@@ -338,24 +338,23 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             current = c["upstream"].get("repository_id")
             if current is not None and current != snapshot["repository_id"]:
                 source_blocked.add(cid)
-                if c["phase"] == "handoff":
-                    # A handoff state is written by the engine: the table verb for
-                    # a changed identity sets the paused flag and keeps the state.
+                # The table verb for a changed identity sets the paused flag
+                # with the controller's reason, clears the requested Work and
+                # what is held for publication, and keeps the state (from an
+                # `agent_running` state, the state in which the Work is due).
+                cause = f"upstream-identity-{snapshot['repository_id']}"
+                if compat.is_legacy_state(c):
+                    out = compat.legacy_pause(c, "pause_on_identity_change",
+                                              reason=compat.IDENTITY_REASON, now=now,
+                                              cause_id=cause)
+                else:
                     out = engine.apply_transition(
-                        c, "pause_on_identity_change", policy=policy, now=now,
-                        cause_id=f"upstream-identity-{snapshot['repository_id']}",
+                        c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
                         facts={"upstream_identity_changed"})
-                    if out.accepted:
-                        by_id[cid] = out.record
-                        res.stage("contributions", out.record)
-                        res.stage("events", out.event)
-                    continue
-                changed = compat.legacy_update(
-                    c, "controller.block_identity_change",
-                    blocked_reason="upstream repository identity changed",
-                    activity="waiting_human", updated_at=now, **compat.held_cleared(c))
-                by_id[cid] = changed
-                res.stage("contributions", changed)
+                if out.accepted:
+                    by_id[cid] = out.record
+                    res.stage("contributions", out.record)
+                    res.stage("events", out.event)
                 continue
             updated = dict(c["upstream"])
             for key in ("repository_id", "base_ref", "base_sha"):
@@ -478,7 +477,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         if cid in skip:
             continue
         with isolation.contribution(cid, "provisioning"):
-            if c["phase"] != "provisioning" or c.get("paused") or c.get("blocked_reason") \
+            if c["phase"] != "provisioning" or c.get("paused") \
                     or c.get("active_operation_id") or cid in source_blocked:
                 continue
             if (c.get("pending_human_action") or {}).get("kind") not in (None, "provision_fork"):
@@ -560,7 +559,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             fork = c.get("fork") or {}
             artifact = c.get("proposal_artifact") or {}
             pubop = operations.get(c.get("publication_operation_id"))
-            if c["phase"] != "development" or c.get("paused") or c.get("blocked_reason") \
+            if c["phase"] != "development" or c.get("paused") \
                     or c.get("active_operation_id") or fork.get("pr_number") is not None \
                     or not fork.get("repository_id") or not fork.get("head_sha") \
                     or fork.get("head_sha") == c["upstream"].get("base_sha") \
@@ -602,7 +601,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         with isolation.contribution(cid, "development_pr"):
             fork = c.get("fork") or {}
             artifact = c.get("proposal_artifact") or {}
-            if c["phase"] != "development" or c.get("paused") or c.get("blocked_reason") \
+            if c["phase"] != "development" or c.get("paused") \
                     or c.get("active_operation_id") or fork.get("pr_number") is None \
                     or c.get("last_ci_evidence_id") or artifact.get("outcome") != "published":
                 continue
@@ -786,9 +785,14 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
 
 def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
-    return tuple(sorted(op["operation_id"] for op in operations.values()
-                        if op["contribution_id"] == record["contribution_id"]
-                        and op["status"] in recovery.OPEN))
+    """The open operations of a record: those of the store, and the one the
+    record names as active, also when the store does not hold it."""
+    ops = {op["operation_id"] for op in operations.values()
+           if op["contribution_id"] == record["contribution_id"] and op["status"] in recovery.OPEN}
+    active = record.get("active_operation_id")
+    if active and (active not in operations or operations[active]["status"] in recovery.OPEN):
+        ops.add(active)
+    return tuple(sorted(ops))
 
 
 def _command_target(decision, by_id: dict, operations: dict) -> str | None:
@@ -802,6 +806,29 @@ def _command_target(decision, by_id: dict, operations: dict) -> str | None:
     return rec["contribution_id"] if rec else None
 
 
+def _refusal(record: dict, cmd: Command, why: str) -> str:
+    """The reply to a command the table refuses, in the words the command
+    feedback recognizes for a pause or resume that has nothing to do."""
+    if cmd.verb == "pause" and record.get("paused") and why == "contribution is paused":
+        return "already paused"
+    state = lifecycle.LIFECYCLE.get(engine.state_key(record))
+    if cmd.verb == "resume" and not record.get("paused") and state is not None \
+            and state.kind not in ("human_wait", "generation_end"):
+        return "not paused"
+    return why
+
+
+def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict) -> dict:
+    """The values of the fields a command's row sets that the engine cannot
+    derive: the refresh a refresh or a stale resume records."""
+    if verb not in ("refresh_investigation", "resume_stale"):
+        return {}
+    fork = rec.get("fork") or {}
+    return {"refresh": {"command_id": receipt["command_id"], "reason": cmd.args["reason"],
+                        "from_phase": rec["phase"], "head_sha": fork.get("head_sha"),
+                        "pr_number": fork.get("pr_number")}}
+
+
 def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,
                          policy: dict, now: str) -> engine.Outcome:
     """Apply a command to a record in a table state, as the table defines it."""
@@ -809,18 +836,33 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
     verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now,
                                        open_operations=open_ops)
     if verb is None:
-        return engine.Outcome(rec, False, why, None)
+        return engine.Outcome(rec, False, _refusal(rec, cmd, why), None)
     if cmd.verb in engine.HELD_COMMANDS:
         return engine.Outcome(rec, False, engine.HELD_COMMANDS[cmd.verb], None, verb)
-    values = {}
-    if verb == "refresh_investigation":
-        fork = rec["fork"]
-        values["refresh"] = {"command_id": receipt["command_id"], "reason": cmd.args["reason"],
-                             "from_phase": rec["phase"], "head_sha": fork["head_sha"],
-                             "pr_number": fork["pr_number"]}
+    details = {}
+    pending = (rec.get("pending_human_action") or {}).get("kind")
+    if verb == "resume_pause" and pending:
+        # A resume clears the flag only; the reply names the wait that remains.
+        details["pending_human_action"] = pending
     return engine.apply_transition(rec, verb, policy=policy, now=now,
-                                   cause_id=receipt["command_id"], command=cmd, values=values,
-                                   open_operations=open_ops, actor=receipt["actor"])
+                                   cause_id=receipt["command_id"], command=cmd,
+                                   values=_command_values(rec, verb, cmd, receipt),
+                                   open_operations=open_ops, actor=receipt["actor"],
+                                   details=details)
+
+
+def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, policy: dict,
+                  now: str, provisioning: dict | None = None,
+                  backup_user: dict | None = None) -> engine.Outcome:
+    """Apply an authenticated command to the record it concerns: through the
+    transition engine where the table defines it (``engine.takes_command``),
+    through the compatibility layer otherwise."""
+    if engine.takes_command(rec, cmd.verb):
+        return _apply_table_command(rec, cmd, receipt, operations, policy, now)
+    out = compat.apply_command(rec, cmd, command_id=receipt["command_id"],
+                               actor=receipt["actor"], now=now, provisioning=provisioning,
+                               backup_user=backup_user)
+    return engine.Outcome(out.record, out.accepted, out.reason, out.event)
 
 
 def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: Inputs,
@@ -848,15 +890,9 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
     receipt = dict(receipt, contribution_id=rec["contribution_id"],
                    revision=cmd.revision if cmd.revision is not None else rec["revision"])
     try:
-        if rec["phase"] == "handoff":
-            # Every handoff state is a state of the lifecycle table: its
-            # commands are the table's, applied by the transition engine.
-            out = _apply_table_command(rec, cmd, receipt, operations, policy, now)
-        else:
-            out = compat.apply_command(rec, cmd, command_id=receipt["command_id"], actor=actor,
-                                       now=now,
-                                       provisioning=inputs.provisioning.get(rec["contribution_id"]),
-                                       backup_user=inputs.users.get(cmd.args.get("backup", "")))
+        out = apply_command(rec, cmd, receipt, operations=operations, policy=policy, now=now,
+                            provisioning=inputs.provisioning.get(rec["contribution_id"]),
+                            backup_user=inputs.users.get(cmd.args.get("backup", "")))
     except lifecycle.TransitionError as e:
         return dict(receipt, result="rejected", reason=str(e))
     if not out.accepted:

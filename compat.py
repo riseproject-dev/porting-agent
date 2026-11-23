@@ -14,6 +14,12 @@ A legacy write can leave a record in a state of the table or in one of
 produce. It can never enter the ``handoff`` phase or change a record that is
 in it: every handoff state is written by the engine.
 
+For a record in a state of ``LEGACY_STATES`` the verbs that set ``paused``
+are written by ``legacy_pause``, and the commands by ``apply_command``; in a
+state of the table the engine takes them. The reviewed record migrations
+(``migrate_handoff_wait``, ``migrate_flags``) bring records written before
+the table to the shapes it describes.
+
 ``LEGACY_SITES`` and ``LEGACY_STATES`` shrink as call sites are converted;
 when both are empty this module is deleted.
 """
@@ -27,7 +33,7 @@ import engine
 import schemas
 from commands import URGENT, Command
 from common import DEV_REF, validate_scope_paths
-from lifecycle import ACTIVITIES, LIFECYCLE, TERMINAL, Outcome, TransitionError, _event
+from lifecycle import ACTIVITIES, FLAGS, LIFECYCLE, TERMINAL, Outcome, TransitionError, _event
 
 # States that are not in the lifecycle table and that legacy paths still
 # write. Each is removed together with the paths that write it.
@@ -39,8 +45,6 @@ LEGACY_STATES = frozenset(
     # they know: `idle` where Work is due or CI passed, `waiting_capacity`
     # where the table keeps the state whose guard does not hold yet.
     {f"{phase}.{activity}" for phase in _LEGACY_PHASES for activity in _LEGACY_ACTIVITIES}
-    # `block` records a human wait in place, also before and after the work.
-    | {"queued.waiting_human", "parked.waiting_human"}
     # `abandon` and a removed intake label; `closed.idle` replaces it.
     | {"abandoned.idle"}) - frozenset(LIFECYCLE)
 
@@ -51,7 +55,6 @@ LEGACY_SITES = frozenset({
     "controller.select_work",
     "controller.defer_destination_operation",
     "controller.cancel_unlabeled_request",
-    "controller.block_identity_change",
     "controller.rearm_provisioning",
     "controller.plan_provisioning",
     "controller.plan_development_pr",
@@ -196,6 +199,122 @@ def migrate_handoff_wait(record: dict, *, evidence: dict | None, policy: dict,
     return new, event
 
 
+# The stop flag before ``blocked`` was merged into ``paused``: a record with a
+# ``blocked_reason``, a paused record without ``paused_at``, and a stopped
+# record that still holds what the table's stops clear. ``migrate_flags``
+# rewrites exactly these shapes, as the table's stop would have left them.
+
+FLAG_MIGRATION = "paused-flag-merge"
+FLAG_MIGRATED = "paused_flag_migrated"
+# The ``blocked_reason`` the controller wrote when the upstream identity
+# changed; the table's ``pause_on_identity_change`` records this reason.
+IDENTITY_BLOCK = "upstream repository identity changed"
+IDENTITY_REASON = "upstream_identity_changed"
+
+
+def _flags_migrated(record: dict) -> tuple[dict, list[str]]:
+    """The record as the table's stop leaves it, and what was changed.
+    Raises ``TransitionError`` for a shape the migration does not cover."""
+    rec = copy.deepcopy(record)
+    changed: list[str] = []
+    blocked = record.get("blocked_reason")
+    if blocked is not None:
+        if not isinstance(blocked, str):
+            raise TransitionError("blocked_reason is not text")
+        if record["phase"] == "handoff":
+            raise TransitionError("a handoff record is never blocked")
+        identity = blocked == IDENTITY_BLOCK
+        if not record.get("paused"):
+            rec.update(paused=True, paused_by="controller" if identity else "human",
+                       paused_reason=IDENTITY_REASON if identity else (blocked[:2000] or None),
+                       paused_at=None)
+        elif not rec.get("paused_reason"):
+            rec["paused_reason"] = blocked[:2000] or None
+        rec["blocked_reason"] = None
+        changed.append("blocked_reason")
+        if record["activity"] == "waiting_human" and not record.get("pending_human_action"):
+            # A block recorded a human wait in place; a resume ended it.
+            rec["activity"] = "idle"
+        elif record["activity"] == "waiting_human" \
+                and f"{record['phase']}.waiting_human" not in LIFECYCLE:
+            raise TransitionError(f"{record['phase']}.waiting_human with a pending human action "
+                                  "has no reviewed migration")
+    if rec.get("paused") and not rec.get("paused_at"):
+        rec["paused_at"] = record["updated_at"]
+        changed.append("paused_at")
+    if rec.get("paused") and not rec.get("paused_by"):
+        rec["paused_by"] = "human"
+        changed.append("paused_by")
+    if stopped(rec):
+        if rec.get("active_work"):
+            rec["active_work"] = None
+            changed.append("active_work")
+            if rec["activity"] == "agent_running":
+                moves = FLAGS["paused"].set_moves.get(engine.state_key(rec))
+                rec["activity"] = moves.split(".", 1)[1] if moves else "idle"
+        for name, value in held_cleared(rec).items():
+            if rec.get(name) is not None:
+                rec[name] = value
+                changed.append(name)
+    return rec, changed
+
+
+def needs_flag_migration(record: dict) -> bool:
+    """Whether a record is in one of the shapes ``migrate_flags`` rewrites."""
+    try:
+        return bool(_flags_migrated(record)[1])
+    except TransitionError:
+        return True
+
+
+def schema_view(record: dict) -> dict:
+    """The record as the schema reads it while it awaits the flag migration:
+    a text ``blocked_reason`` is the one field the current schema no longer
+    admits."""
+    blocked = record.get("blocked_reason")
+    if isinstance(blocked, str) and len(blocked) <= 2000:
+        return dict(record, blocked_reason=None)
+    return record
+
+
+def awaits_flag_migration(record: dict) -> bool:
+    """Whether the flag migration rewrites this record without refusing it."""
+    try:
+        if not needs_flag_migration(record):
+            return False
+        migrate_flags(record, now=record["updated_at"])
+    except (TransitionError, schemas.SchemaError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def migrate_flags(record: dict, *, now: str) -> tuple[dict, dict]:
+    """The record with ``blocked`` merged into ``paused``, with its event.
+
+    ``blocked_reason`` becomes ``paused`` with ``paused_by`` (``controller``
+    for the identity block, ``human`` otherwise) and ``paused_reason``; a
+    block's human wait without a pending action becomes ``idle``, as the
+    legacy resume left it. A paused record without ``paused_at`` gets its
+    ``updated_at``. A stopped record loses the requested Work, the pending
+    publication, and a held proposal, as the table's stops clear them.
+    Nothing else changes. Raises ``TransitionError`` for any other shape.
+    """
+    new, changed = _flags_migrated(record)
+    if not changed:
+        raise TransitionError("the record needs no flag migration")
+    new["updated_at"] = now
+    problem = state_problem(new)
+    if problem:
+        raise TransitionError(f"no reviewed flag migration for this record: {problem}")
+    schemas.validate("contribution", new)
+    event = _event(record, new, FLAG_MIGRATED, "migration", FLAG_MIGRATION, now, False)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
+                        "changed": changed, "paused_by": new.get("paused_by"),
+                        "paused_reason": new.get("paused_reason")}
+    schemas.validate("event", event)
+    return new, event
+
+
 def legacy_update(record: dict, site: str, **fields: Any) -> dict:
     """A copy of ``record`` with ``fields`` set, for a call site that is not
     converted to a table verb yet.
@@ -261,9 +380,8 @@ def record_late_effect(record: dict, *, policy: dict, now: str, cause_id: str | 
 
 
 def stopped(record: dict) -> bool:
-    """Whether a record is stopped: paused, blocked, parked, or terminal."""
-    return bool(record.get("paused") or record.get("blocked_reason")
-                or record["phase"] in TERMINAL | {"parked"})
+    """Whether a record is stopped: paused, parked, or terminal."""
+    return bool(record.get("paused") or record["phase"] in TERMINAL | {"parked"})
 
 
 def held_cleared(record: dict) -> dict[str, Any]:
@@ -359,7 +477,7 @@ def _end_requested(record: dict, rec: dict) -> None:
     # requested task: a late worker outcome is then ignored as stale, and
     # dispatch recovery must not launch it again.
     if rec.get("active_work") and (rec["paused"] or rec["phase"] in TERMINAL | {"parked"}
-                                   or rec["revision"] != record["revision"] or rec.get("blocked_reason")):
+                                   or rec["revision"] != record["revision"]):
         rec["active_work"] = None
         if rec["activity"] == "agent_running":
             rec["activity"] = "idle"
@@ -379,42 +497,53 @@ def _end_requested(record: dict, rec: dict) -> None:
             rec["activity"] = "idle"
 
 
-PROCESSING_ERROR_VERB = "pause_on_processing_error"
+def is_legacy_state(record: dict) -> bool:
+    """Whether a record is in a state that only the legacy paths write."""
+    return engine.state_key(record) not in LIFECYCLE
 
 
-def pause_on_processing_error(record: dict, *, reason: str, policy: dict, now: str,
-                              cause_id: str | None, details: dict[str, Any]) -> Outcome:
-    """Take the table's ``pause_on_processing_error`` on ``record``.
+# The verbs that set ``paused``. In a state of the table they are taken
+# through the engine; ``legacy_pause`` writes them for a record in a state
+# of ``LEGACY_STATES``.
+PAUSE_VERBS = {"pause": ("human", "command"),
+               "pause_on_identity_change": ("controller", "observation"),
+               "pause_on_processing_error": ("controller", "tick")}
 
-    The verb sets ``paused`` with ``reason``, ``paused_by`` ``controller`` and
-    ``paused_at`` and clears the requested Work, the pending publication, and
-    a held proposal. Like the ``pause`` command, it is taken through the
-    engine for a record in a handoff state and written here for every other
-    record, with the effects of the legacy pause. The outcome is not accepted,
-    and nothing changes, when the contribution is already stopped (paused or
-    blocked) or terminal: the guards of the verb. Anything else that keeps
-    the verb from applying raises.
+
+def legacy_pause(record: dict, verb: str, *, reason: str | None, now: str,
+                 cause_id: str | None, details: dict[str, Any] | None = None) -> Outcome:
+    """Set ``paused`` on a record in a legacy state, as the table's ``verb``
+    does in a state of the table.
+
+    The flag records ``paused_at``, ``paused_by`` and ``paused_reason``; the
+    requested Work, the pending publication, and a held proposal are
+    cleared. A legacy state has no row to move to, so the activity that held
+    the Work or the publication (``agent_running``, ``waiting_capacity``)
+    becomes ``idle``, as the legacy paths always did. The outcome is not
+    accepted, and nothing changes, when the record is already paused or is
+    terminal. A record in a state of the table raises: the engine takes it.
     """
-    if not reason.strip():
-        raise TransitionError(f"{PROCESSING_ERROR_VERB} sets paused_reason; the caller states it")
-    if record.get("paused") or record.get("blocked_reason"):
+    if verb not in PAUSE_VERBS:
+        raise TransitionError(f"{verb} does not set paused")
+    if not is_legacy_state(record):
+        raise TransitionError(f"{engine.state_key(record)} is a state of the table; "
+                              f"{verb} is taken by the transition engine")
+    by, cause = PAUSE_VERBS[verb]
+    if by == "controller" and not (reason or "").strip():
+        raise TransitionError(f"{verb} sets paused_reason; the caller states it")
+    if record.get("paused"):
         return Outcome(record, False, "contribution is paused", None)
     if record["phase"] in TERMINAL:
         return Outcome(record, False, f"contribution is terminal ({record['phase']})", None)
-    if record["phase"] == "handoff":
-        out = engine.apply_transition(
-            record, PROCESSING_ERROR_VERB, policy=policy, now=now, cause_id=cause_id,
-            facts={"processing_error"}, values={"paused_reason": reason[:2000]}, details=details)
-        return Outcome(out.record, out.accepted, out.reason, out.event)
     rec = copy.deepcopy(record)
-    rec.update(paused=True, paused_at=now, paused_by="controller", paused_reason=reason[:2000],
-               updated_at=now)
+    rec.update(paused=True, paused_at=now, paused_by=by,
+               paused_reason=reason[:2000] if reason else None, updated_at=now)
     _end_requested(record, rec)
-    _check_legacy_write(record, rec, PROCESSING_ERROR_VERB)
+    _check_legacy_write(record, rec, verb)
     schemas.validate("contribution", rec)
-    event = _event(record, rec, PROCESSING_ERROR_VERB, "tick", cause_id, now, False)
-    event["details"] = {"verb": PROCESSING_ERROR_VERB, "from_state": engine.state_key(record),
-                        "to_state": engine.state_key(rec), **details}
+    event = _event(record, rec, verb, cause, cause_id, now, False)
+    event["details"] = {"verb": verb, "from_state": engine.state_key(record),
+                        "to_state": engine.state_key(rec), **(details or {})}
     schemas.validate("event", event)
     return Outcome(rec, True, None, event)
 
@@ -422,16 +551,18 @@ def pause_on_processing_error(record: dict, *, reason: str, policy: dict, now: s
 def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, now: str,
                   provisioning: dict | None = None,
                   backup_user: dict | None = None) -> Outcome:
-    """Apply an already authenticated, not-yet-consumed command outside the
-    handoff phase.
+    """Apply an already authenticated, not-yet-consumed command that the
+    engine does not take (``engine.takes_command``): a command on a record in
+    a legacy state, or a command the table does not have yet.
 
     Actor authority, replay and digest checks happen in ``intake.accept_command``
     before this is called.
     """
     if cmd.verb == "resolve-operation":
         raise TransitionError("resolve-operation applies to operations, see recovery.py")
-    if record["phase"] == "handoff":
-        raise TransitionError("commands in the handoff phase are applied by the transition engine")
+    if engine.takes_command(record, cmd.verb):
+        raise TransitionError(f"`{cmd.verb}` in `{engine.state_key(record)}` is applied by the "
+                              "transition engine")
     if cmd.contribution is not None and cmd.contribution != record["contribution_id"]:
         return _reject(record, "command names another contribution than this issue's")
     rev = cmd.revision
@@ -442,9 +573,9 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
         rev = cur
     if rev > cur:
         return _reject(record, "revision is not a known revision")
-    # Stopping is always safe, so a stale pause/park/block/abandon is honoured.
+    # Stopping is always safe, so a stale pause/park/abandon is honoured.
     # Everything that (re)activates or approves work must name the current revision.
-    if cmd.verb not in ("pause", "block", "park", "abandon") and rev != cur:
+    if cmd.verb not in ("pause", "park", "abandon") and rev != cur:
         return _reject(record, f"stale revision {rev}, current is {cur}")
     if phase in TERMINAL and cmd.verb not in ("authorize-followup", "restart"):
         return _reject(record, f"contribution is terminal ({phase})")
@@ -456,29 +587,14 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
     a = cmd.args
 
     if v == "pause":
-        if rec["paused"]:
-            return _reject(record, "already paused")
-        rec.update(paused=True, paused_at=now, paused_by="human",
-                   paused_reason=a.get("reason"))
-    elif v == "block":
-        rec["blocked_reason"] = a.get("reason") or "blocked"
-        rec["activity"] = "waiting_human"
+        out = legacy_pause(record, "pause", reason=a.get("reason"), now=now, cause_id=command_id,
+                           details={"actor": {"id": actor["id"], "login": actor["login"]}})
+        if not out.accepted:
+            return _reject(record, "already paused" if record.get("paused") else out.reason)
+        return out
     elif v == "resume":
-        if phase == "parked":
-            # Resume from parked needs
-            # quiescence and starts a clean generation at queued:idle, so the
-            # next generation cannot bypass a complete verified dossier.
-            if record.get("active_work"):
-                return _reject(record, "cannot resume from parked while Work is active")
-            if record.get("active_operation_id") or record.get("pending_publication"):
-                return _reject(record, "cannot resume from parked while a writer operation is active")
-            rec = _restart_generation(record, now)
-            bumped = True
-        elif rec["paused"] or rec.get("blocked_reason"):
+        if rec["paused"]:
             rec.update(paused=False, paused_at=None, paused_by=None, paused_reason=None)
-            rec["blocked_reason"] = None
-            if rec["activity"] == "waiting_human" and rec.get("pending_human_action") is None:
-                rec["activity"] = "idle"
         else:
             return _reject(record, "nothing to resume")
         if not bumped:
@@ -529,7 +645,7 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
         _bump(rec)
         bumped = True
     elif v == "clarify":
-        if rec["activity"] != "waiting_human" and not rec.get("blocked_reason"):
+        if rec["activity"] != "waiting_human":
             return _reject(record, "no pending question")
         rec["activity"] = "idle"
         rec["pending_human_action"] = None

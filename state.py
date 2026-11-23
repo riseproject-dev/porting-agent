@@ -170,14 +170,18 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         problems.append(f"{path}: content matches a credential pattern")
     if _forbidden_state_text(record):
         problems.append(f"{path}: content contains forbidden repository text U+2014")
-    for e in schemas.errors(STATE_KINDS[kind], record):
+    # A record that awaits the flag migration is read as the migration reads it.
+    flag_migration = kind == "contributions" and isinstance(record, dict) \
+        and compat.awaits_flag_migration(record)
+    view = compat.schema_view(record) if flag_migration else record
+    for e in schemas.errors(STATE_KINDS[kind], view):
         problems.append(f"{path}: {e}")
     if kind == "contributions" and not problems:
         # A record is in a state of the lifecycle table, in a state the
-        # compatibility paths still write, or is the one old shape that the
-        # reviewed record migration rewrites before anything else runs.
+        # compatibility paths still write, or is one of the old shapes that
+        # the reviewed record migrations rewrite before anything else runs.
         state_problem = compat.state_problem(record)
-        if state_problem and not compat.is_handoff_wait(record):
+        if state_problem and not compat.is_handoff_wait(record) and not flag_migration:
             problems.append(f"{path}: {state_problem}")
     if not problems:
         try:
@@ -436,13 +440,16 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
 
 def _pending_record_migrations(root: Path, policy: dict, *,
                                now: str | None = None) -> list[tuple[str, dict, dict]]:
-    """Contribution records that are in the handoff phase but not in a state
-    of the lifecycle table, each with its migrated record and event.
+    """Contribution records in a shape that a reviewed record migration
+    rewrites, each with its migrated record and event: a record in the
+    handoff phase but not in a state of the lifecycle table, and a record
+    whose stop flag predates the merge of ``blocked`` into ``paused``.
 
     Reads the checkout without changing it. Every record must be
-    schema-valid, and every such record must be exactly the shape the
-    reviewed migration rewrites: anything else fails closed here, before any
-    caller acts on the state."""
+    schema-valid (a text ``blocked_reason`` aside, which the flag migration
+    removes), and every such record must be exactly the shape the reviewed
+    migration rewrites: anything else fails closed here, before any caller
+    acts on the state."""
     root = Path(root)
     directory = root / STATE_ROOT / "contributions"
     pending: list[tuple[str, dict, dict]] = []
@@ -456,22 +463,28 @@ def _pending_record_migrations(root: Path, policy: dict, *,
             record = json.loads(path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise StateError(f"{rel}: not UTF-8 JSON ({error})") from error
-        errors = schemas.errors("contribution", record)
+        errors = schemas.errors("contribution", compat.schema_view(record))
         if errors:
             raise StateError(f"{rel}: {'; '.join(errors[:5])}")
-        if not compat.needs_migration(record):
+        if compat.needs_migration(record):
+            evidence = None
+            evidence_id = record.get("last_ci_evidence_id")
+            if evidence_id:
+                evidence_path = root / record_path("evidence", {"evidence_id": evidence_id})
+                if evidence_path.is_file() and not evidence_path.is_symlink():
+                    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            try:
+                migrated, event = compat.migrate_handoff_wait(
+                    record, evidence=evidence, policy=policy, now=now or record["updated_at"])
+            except compat.TransitionError as error:
+                raise StateError(f"{rel}: {error}") from error
+        elif compat.needs_flag_migration(record):
+            try:
+                migrated, event = compat.migrate_flags(record, now=now or record["updated_at"])
+            except (compat.TransitionError, schemas.SchemaError) as error:
+                raise StateError(f"{rel}: {error}") from error
+        else:
             continue
-        evidence = None
-        evidence_id = record.get("last_ci_evidence_id")
-        if evidence_id:
-            evidence_path = root / record_path("evidence", {"evidence_id": evidence_id})
-            if evidence_path.is_file() and not evidence_path.is_symlink():
-                evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        try:
-            migrated, event = compat.migrate_handoff_wait(
-                record, evidence=evidence, policy=policy, now=now or record["updated_at"])
-        except compat.TransitionError as error:
-            raise StateError(f"{rel}: {error}") from error
         pending.append((rel, migrated, event))
     return pending
 
@@ -483,11 +496,12 @@ def pending_record_migrations(root: Path, policy: dict) -> list[str]:
 
 def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> list[str]:
     """Rewrite every old handoff approval wait as ``handoff.awaiting_submission``
-    and append one migration event per record.
+    and every old stop flag as the table's ``paused``, and append one
+    migration event per record.
 
-    The migration is bound to the exact shape ``compat.migrate_handoff_wait``
-    accepts; a handoff record in any other shape fails closed. It is
-    idempotent: a migrated record is in a table state and is not selected
+    Each migration is bound to the exact shapes ``compat.migrate_handoff_wait``
+    and ``compat.migrate_flags`` accept; a record in any other such shape
+    fails closed. It is idempotent: a migrated record is not selected
     again. Callers publish only the returned paths, before any ordinary
     reconciliation, so no other lifecycle mutation rides in the commit.
     """
@@ -525,7 +539,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         bad += 1
     else:
         for path in awaiting:
-            print(f"{path}: awaits the handoff record migration by the controller")
+            print(f"{path}: awaits a record migration by the controller")
     total = store.total_bytes()
     if total > policy["storage"]["warn_total_bytes"]:
         print(

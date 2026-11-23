@@ -37,6 +37,7 @@ import capacity
 import collect
 import compat
 import controller
+import engine
 import isolation
 import lifecycle
 import observe_ci
@@ -230,9 +231,8 @@ def _answers_no_request(rec: dict, pub: dict) -> bool:
 
 def _may_hold_work(rec: dict) -> bool:
     """Whether the record is in a state that can request Work at all: a
-    working phase, not paused, and not blocked."""
-    return (rec["phase"] in compat.WORK_PHASES and not rec.get("paused")
-            and not rec.get("blocked_reason"))
+    working phase, and not paused."""
+    return rec["phase"] in compat.WORK_PHASES and not rec.get("paused")
 
 
 def _unrequested_result(rec: dict, pub: dict) -> str | None:
@@ -241,7 +241,7 @@ def _unrequested_result(rec: dict, pub: dict) -> str | None:
     A Result is folded only when it answers what the record still asks for:
     the requested Work at the Result's revision, or the trusted publication
     of the same worker run (a publish-only retry, or a verified proposal the
-    record holds). Park, abandon, pause, and block clear the Work and the
+    record holds). Park, abandon, and pause clear the Work and the
     pending publication without a revision bump, so the revision alone does
     not prove a match.
     """
@@ -480,6 +480,13 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             staged.append(("evidence", ev))
         new["dossier_evidence_id"] = eid
         refresh = new.get("refresh")
+        # The refreshed dossier returns to development on the recorded fork
+        # (`readmit_development`) only when the refresh began with a fork,
+        # and its development PR, that the record still holds; otherwise
+        # development is admitted afresh (`admit_development`).
+        fork = new.get("fork") or {}
+        readmit = bool(refresh and refresh.get("head_sha") and fork.get("repository_id")
+                       and fork.get("pr_number") == refresh.get("pr_number"))
         decision = (dossier.get("proposal") or {}).get("decision") if isinstance(dossier, dict) else None
         if not eid:
             compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_human")
@@ -503,9 +510,9 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         else:
             compat.legacy_assign(
                 new, "reconcile.publication_outcome",
-                activity="fix_needed" if refresh else "idle",
+                activity="fix_needed" if readmit else "idle",
                 phase=("development"
-                       if refresh or not (policy or {}).get("destination_writes", False)
+                       if readmit or not (policy or {}).get("destination_writes", False)
                        else "provisioning"),
                 revision=new["revision"] + 1)
             new["admission_class"] = dossier["proposal"]["admission_class"]
@@ -513,7 +520,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
             new["scope_coverage_complete"] = True
             new["pending_human_action"] = None
             new["refresh"] = None
-            kind = "dossier_refreshed" if refresh else "dossier_develop"
+            kind = "dossier_refreshed" if readmit else "dossier_develop"
             staged.append(("events", lifecycle._event(rec, new, kind, "observation",
                                                        str(worker_run_id or eid), now, True)))
     new["updated_at"] = now
@@ -612,10 +619,7 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         outcome = None
         if record is not None:
             try:
-                outcome = compat.pause_on_processing_error(
-                    record, reason=isolation.pause_reason(description), policy=policy, now=iso,
-                    cause_id=description["run_id"],
-                    details={k: description[k] for k in ("step", "error_class", "message", "run_id")})
+                outcome = pause_on_processing_error(record, description, policy=policy, now=iso)
             except Exception as error:
                 raise isolation.TickFailure(
                     f"pause_on_processing_error could not be applied to {cid} after "
@@ -638,6 +642,33 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     if errored:
         out.report["processing_errors"] = errored
     return out
+
+
+PROCESSING_ERROR_VERB = "pause_on_processing_error"
+
+
+def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
+                              now: str) -> engine.Outcome:
+    """Take the table's ``pause_on_processing_error`` on the committed record.
+
+    It sets ``paused`` with the error as ``paused_reason``, ``paused_by``
+    ``controller`` and ``paused_at``, and clears the requested Work, the
+    pending publication, and a held proposal; from an ``agent_running`` state
+    it leads to the state in which the Work is due. The engine takes it for a
+    record in a state of the table, ``compat.legacy_pause`` for one in a
+    legacy state. The outcome is not accepted, and nothing changes, when the
+    contribution is already paused or terminal.
+    """
+    reason = isolation.pause_reason(description)
+    details = {k: description[k] for k in ("step", "error_class", "message", "run_id")}
+    if compat.is_legacy_state(record):
+        out = compat.legacy_pause(record, PROCESSING_ERROR_VERB, reason=reason, now=now,
+                                  cause_id=description["run_id"], details=details)
+        return engine.Outcome(out.record, out.accepted, out.reason, out.event,
+                              PROCESSING_ERROR_VERB)
+    return engine.apply_transition(record, PROCESSING_ERROR_VERB, policy=policy, now=now,
+                                   cause_id=description["run_id"], facts={"processing_error"},
+                                   values={"paused_reason": reason}, details=details)
 
 
 def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,

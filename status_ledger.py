@@ -53,6 +53,21 @@ MESSAGES = {
         "was launched for it. The requested Work and anything held for publication are "
         "cleared. Other contributions were processed normally."),
     "resume_pause": "Resumed: the pause is cleared.",
+    "resume_stale": ("Resumed after a stop longer than `refresh.stale_after_days` days: the "
+                     "dossier is refreshed, a complete investigation runs again while the fork "
+                     "and development PR are kept."),
+    "restart_generation": ("Resumed from parked: a new generation starts with a complete "
+                           "investigation."),
+    "resume_investigation": "Resumed: the investigation continues.",
+    "resume_provisioning": "Resumed: provisioning continues.",
+    "resume_ci": "Resumed: CI on the head is observed again.",
+    "resume_development": "Resumed: development Work is due again.",
+    "resume_upstream_review": "Resumed: the upstream review is observed again.",
+    "resume_upstream_revision": "Resumed: upstream revision Work is due again.",
+    "resume_release_observation": "Resumed: the release is observed again.",
+    compat.FLAG_MIGRATED: ("Recorded the stop of this contribution in the lifecycle's one stop "
+                           "flag, `paused`, with its reason and who set it. The retired "
+                           "`block` is a pause now; `resume` at the current revision ends it."),
     "park_contribution": "Parked the contribution; its evidence is kept for audit.",
     "refresh_investigation": ("Started a refresh: a complete investigation runs again while the "
                               "fork and development PR are kept."),
@@ -166,7 +181,8 @@ def _command_lines(record: dict) -> list[str]:
             lines.append(f'/upstreaming pause revision={revision} reason="..."')
         lines += [f'/upstreaming park revision={revision} reason="..."',
                   f'/upstreaming abandon revision={revision} reason="..."']
-    if record.get("paused") or record.get("blocked_reason") or phase == "parked":
+    state = lifecycle.LIFECYCLE.get(engine.state_key(record))
+    if record.get("paused") or phase == "parked" or (state and state.kind == "human_wait"):
         lines.append(f'/upstreaming resume revision={revision} reason="..."')
     if phase == "development" and (record.get("fork") or {}).get("pr_number"):
         lines.append(f'/upstreaming refresh revision={revision} reason="..."')
@@ -197,7 +213,12 @@ def render(event: dict, record: dict, run_url: str) -> str:
         message = f"Paused automatic work. Pending lifecycle activity `{pending}` is retained until resume."
     if kind == "record_explanation":
         message += _quoted_comments(event)
-    if kind == compat.PROCESSING_ERROR_VERB:
+    pending = (event.get("details") or {}).get("pending_human_action")
+    if kind == "resume_pause" and pending:
+        message += (f" The contribution still waits for a human: pending action "
+                    f"`{_quotable(pending, 80)}`. A second `resume` at the new revision "
+                    "leaves the wait.")
+    if kind == "pause_on_processing_error":
         message += _processing_error(event)
     request = _submission_request(event, record)
     if request:

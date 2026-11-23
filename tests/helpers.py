@@ -93,3 +93,15 @@ def commit_files(repo: Path, files: dict[str, str | None], msg="c", mode=None) -
         git(repo, "add", rel)
     git(repo, "commit", "-q", "--allow-empty", "-m", msg)
     return git(repo, "rev-parse", "HEAD")
+
+
+def apply_command(record, cmd, *, command_id="c", actor=OWNER, now=NOW, policy_=None,
+                  operations=None, provisioning=None, backup_user=None):
+    """A command applied as the controller applies it: through the engine
+    where the table defines it, through the compatibility layer otherwise."""
+    import controller
+
+    receipt = {"command_id": command_id, "actor": dict(actor)}
+    return controller.apply_command(record, cmd, receipt, operations=operations or {},
+                                    policy=policy_ or policy(), now=now,
+                                    provisioning=provisioning, backup_user=backup_user)

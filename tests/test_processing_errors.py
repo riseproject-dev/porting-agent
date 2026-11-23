@@ -56,8 +56,18 @@ FORK_A = "riseproject-upstreaming/proj"
 FORK_B = "riseproject-upstreaming/lib"
 VERB = "pause_on_processing_error"
 REAL = {name: getattr(module, name) for module, name in (
-    (reconcile, "apply_publication"), (controller, "_actionable"), (compat, "apply_command"),
+    (reconcile, "apply_publication"), (controller, "_actionable"), (controller, "apply_command"),
     (compat, "observe_status"))}
+
+
+def expected_pause(before, reason):
+    """``pause_on_processing_error`` on ``before``: through the engine in a
+    state of the table, through ``compat.legacy_pause`` in a legacy state."""
+    if compat.is_legacy_state(before):
+        return compat.legacy_pause(before, VERB, reason=reason, now=ISO, cause_id="4242").record
+    return engine.apply_transition(before, VERB, policy=POLICY, now=ISO, cause_id="4242",
+                                   facts={"processing_error"},
+                                   values={"paused_reason": reason}).record
 
 
 class Boom(RuntimeError):
@@ -158,10 +168,7 @@ class TestOneContributionErrors(unittest.TestCase):
         staged = staged_for(output, A)
         self.assertEqual([kind for kind, _r in staged], ["contributions", "events"], staged)
         paused, event = staged[0][1], staged[1][1]
-        expected = compat.pause_on_processing_error(
-            before, reason=paused["paused_reason"], policy=POLICY, now=ISO, cause_id="4242",
-            details={}).record
-        self.assertEqual(paused, expected)
+        self.assertEqual(paused, expected_pause(before, paused["paused_reason"]))
         self.assertEqual((paused["paused"], paused["paused_by"], paused["paused_at"]),
                          (True, "controller", ISO))
         self.assertEqual(paused["revision"], before["revision"])
@@ -217,7 +224,9 @@ class TestOneContributionErrors(unittest.TestCase):
         output = tick([a, b], patches=[("work.graph_id", graph_id)])
         self.assert_isolated(output, a, baseline, "dispatch_recovery")
         self.assertEqual(output.report["dispatch_relaunch"], [])
-        self.assertEqual(record_of(output, A)["activity"], "idle")
+        # The pause from `development.agent_running` leads to the state in
+        # which the Work is due again.
+        self.assertEqual(engine.state_key(record_of(output, A)), "development.fix_needed")
 
     def test_observation(self):
         a, b = waiting(), other_waiting()
@@ -275,7 +284,7 @@ class TestOneContributionErrors(unittest.TestCase):
                 self.assertEqual(applied.report["requested_effects"], [])
                 baseline = tick([a, b])
                 output = tick([a, b], comments=comments, patches=[
-                    ("compat.apply_command", only_for(A, REAL["apply_command"]))])
+                    ("controller.apply_command", only_for(A, REAL["apply_command"]))])
                 self.assert_isolated(output, a, baseline, "command")
                 self.assertEqual(output.report["requested_effects"], [])
                 self.assertEqual([r for kind, r in output.staged if kind == "commands"], [])
@@ -360,18 +369,23 @@ class TestPipelineFailures(unittest.TestCase):
             raise lifecycle.TransitionError("the verb does not apply")
         with self.assertRaises(isolation.TickFailure) as raised:
             tick([a, b], head=branch_head(FORK_A),
-                 patches=[("reconcile.compat.pause_on_processing_error", refuse)])
+                 patches=[("reconcile.pause_on_processing_error", refuse)])
         self.assertIn(f"{VERB} could not be applied to {A}", str(raised.exception))
         self.assertIn("the verb does not apply", str(raised.exception))
 
     def test_a_record_outside_every_admitted_state_cannot_be_paused(self):
+        description = {"step": "s", "error_class": "Boom", "message": "m", "run_id": "1"}
         strange = waiting(phase="handoff", activity="waiting_capacity")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.pause_on_processing_error(strange, reason="r", policy=POLICY, now=ISO,
-                                             cause_id=None, details={})
+            reconcile.pause_on_processing_error(strange, description, policy=POLICY, now=ISO)
+        # The controller always states the reason, in a legacy state and in the table.
         with self.assertRaises(lifecycle.TransitionError):
-            compat.pause_on_processing_error(waiting(), reason=" ", policy=POLICY, now=ISO,
-                                             cause_id=None, details={})
+            compat.legacy_pause(waiting(activity="idle"), VERB, reason=" ", now=ISO, cause_id=None)
+        with self.assertRaises(lifecycle.TransitionError):
+            engine.apply_transition(waiting(), VERB, policy=POLICY, now=ISO,
+                                    facts={"processing_error"}, values={"paused_reason": " "})
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.legacy_pause(waiting(), VERB, reason="r", now=ISO, cause_id=None)
 
 
 class TestExpectedRejections(unittest.TestCase):
@@ -389,14 +403,14 @@ class TestExpectedRejections(unittest.TestCase):
         output = tick([a, b], comments=[comment("/upstreaming resume revision=0 reason=r", 12)])
         self.assert_not_isolated(output)
         receipt = [r for kind, r in output.staged if kind == "commands"][0]
-        self.assertEqual((receipt["result"], receipt["reason"]), ("rejected", "nothing to resume"))
+        self.assertEqual((receipt["result"], receipt["reason"]), ("rejected", "not paused"))
         self.assertFalse((record_of(output, A) or a)["paused"])
 
     def test_transition_error_from_a_command(self):
         a, b = waiting(), other_waiting()
         refused = lifecycle.TransitionError("the table refuses this")
         output = tick([a, b], comments=[comment("/upstreaming pause", 12)], patches=[
-            ("compat.apply_command", only_for(A, REAL["apply_command"], refused))])
+            ("controller.apply_command", only_for(A, REAL["apply_command"], refused))])
         self.assert_not_isolated(output)
         receipt = [r for kind, r in output.staged if kind == "commands"][0]
         self.assertEqual((receipt["result"], receipt["reason"]),
@@ -581,8 +595,7 @@ class TestRepeatedErrorAndResume(unittest.TestCase):
         paused = record_of(first, A)
         self.assertEqual(kinds(first, A), [VERB])
         for label, stopped in (("controller", paused),
-                               ("human", dict(a, paused=True, paused_by="human", paused_at=NOW)),
-                               ("blocked", dict(a, blocked_reason="x"))):
+                               ("human", dict(a, paused=True, paused_by="human", paused_at=NOW))):
             with self.subTest(stopped_by=label):
                 again = tick([stopped, b], head=branch_head(FORK_A, Boom("another failure")))
                 self.assertEqual(staged_for(again, A), [])

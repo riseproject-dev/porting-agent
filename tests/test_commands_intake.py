@@ -68,7 +68,7 @@ class TestCommandGrammar(unittest.TestCase):
 class TestShortCommands(unittest.TestCase):
     def test_stop_commands_need_no_ids(self):
         for body in ("/upstreaming pause", "/upstreaming pause reason=\"test\"",
-                     "/upstreaming park reason=x", "/upstreaming block reason=x", "/upstreaming abandon reason=x"):
+                     "/upstreaming park reason=x", "/upstreaming abandon reason=x"):
             with self.subTest(body):
                 c = commands.parse(body)
                 self.assertIsNone(c.contribution)

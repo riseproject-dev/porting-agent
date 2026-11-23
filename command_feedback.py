@@ -20,7 +20,7 @@ TEMPLATES = {
     "register-upstream-pr": "/upstreaming submit-upstream revision=N head=FULL_SHA",
     "pause": '/upstreaming pause revision=N reason="..."',
     "park": '/upstreaming park revision=N reason="..."',
-    "block": '/upstreaming block revision=N reason="..."',
+    "block": '/upstreaming pause revision=N reason="..."',
     "abandon": '/upstreaming abandon revision=N reason="..."',
     "restart": '/upstreaming restart revision=N reason="..."',
     "refresh": '/upstreaming refresh revision=N reason="..."',

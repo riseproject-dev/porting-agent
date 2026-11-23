@@ -23,10 +23,13 @@ name; a fact that is not asserted does not hold, so a transition is refused
 unless every guard is established. The engine never performs remote effects.
 
 ``PIPELINE_VERBS`` lists the verbs that pipeline code takes through this
-engine, from the handoff states and into them. Every other verb of the table
-is in ``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it
-yet and the corresponding behavior still runs through ``compat``. The two sets partition the table, so the share
-of the table the pipeline obeys is measurable.
+engine: the handoff states and the moves into them, the stop flag and the
+stop, resume, and refresh commands in every state of the table, and the
+reminders of a pending human step. Every other verb of the table is in
+``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it yet
+and the corresponding behavior still runs through ``compat``. The two sets
+partition the table, so the share of the table the pipeline obeys is
+measurable.
 """
 
 from __future__ import annotations
@@ -127,9 +130,8 @@ def _fact(guard: str, name: str) -> None:
 
 
 def is_paused(record: dict) -> bool:
-    """Whether the stop flag is set. A legacy ``blocked_reason`` counts as a
-    stop until it is merged into ``paused``."""
-    return bool(record.get("paused")) or bool(record.get("blocked_reason"))
+    """Whether the stop flag is set."""
+    return bool(record.get("paused"))
 
 
 def open_operations(ctx: Context) -> tuple[str, ...]:
@@ -662,16 +664,41 @@ PIPELINE_VERBS: dict[str, str] = {
     "record_head_change": "observe_ci",
     # A worker Result that matches no request of the record, in any state.
     "record_late_effect": "compat",
-    # Commands on a record in a handoff state, and the controller's own stop.
+    # The submission command, the stop and resume commands, and refresh, on a
+    # record in a state of the table, and the controller's own stops.
     "submit_upstream": "controller",
     "pause": "controller",
     "resume_pause": "controller",
+    "resume_stale": "controller",
     "park_contribution": "controller",
     "refresh_investigation": "controller",
+    "restart_generation": "controller",
     "pause_on_identity_change": "controller",
+    # The resumes of the human waits of the table.
+    "resume_investigation": "controller",
+    "resume_provisioning": "controller",
+    "resume_ci": "controller",
+    "resume_development": "controller",
+    "resume_debug_cleanup": "controller",
+    "resume_internal_pr_closure": "controller",
+    "resume_submission_preparation": "controller",
+    "resume_upstream_review": "controller",
+    "resume_upstream_revision": "controller",
+    "resume_release_observation": "controller",
     # The stop after an unexpected error while one contribution was processed.
-    "pause_on_processing_error": "compat",
+    "pause_on_processing_error": "reconcile",
 }
+
+# Commands the controller applies through this engine to a record in a state
+# of the table. In the handoff phase every command is the table's.
+TABLE_COMMANDS = frozenset({"pause", "resume", "park", "refresh"})
+
+
+def takes_command(record: dict, verb: str) -> bool:
+    """Whether the command ``verb`` on ``record`` is applied by this engine."""
+    if record.get("phase") == "handoff":
+        return True
+    return verb in TABLE_COMMANDS and state_key(record) in lc.LIFECYCLE
 
 
 def table_verbs() -> set[str]:

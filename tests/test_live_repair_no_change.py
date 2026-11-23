@@ -26,12 +26,11 @@ from unittest import mock
 
 import capacity
 import commands
-import compat
 import reconcile
 import work
 import worker_gate
 import worker_recovery
-from tests.helpers import policy
+from tests.helpers import apply_command, policy
 from tests.test_observation import TestExactHeadCiReconciliation
 
 ROOT = Path(__file__).parents[1]
@@ -322,7 +321,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertEqual(output.report["dispatch_relaunch"], [])
         # Plan 3.3.4 failure case 2 and 3.5: exact-revision resume starts a
         # clean generation at queued:idle with a fresh retry budget.
-        resumed = compat.apply_command(
+        resumed = apply_command(
             parked, commands.parse(f"/upstreaming resume revision={parked['revision']} reason=r"),
             command_id="comment-1", actor={"login": "owner", "id": 1}, now="2026-11-22T11:40:00+00:00")
         self.assertTrue(resumed.accepted)

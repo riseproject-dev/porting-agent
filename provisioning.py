@@ -60,7 +60,7 @@ def validate_request(record: dict, operation: dict, policy: dict) -> None:
     schemas.validate("operation", operation)
     if policy.get("read_only", True) or not policy.get("destination_writes", False):
         raise ProvisionError("destination writes are disabled by policy")
-    if record["phase"] != "provisioning" or record.get("paused") or record.get("blocked_reason"):
+    if record["phase"] != "provisioning" or record.get("paused"):
         raise ProvisionError("contribution is not authorized for provisioning")
     if not record.get("dossier_evidence_id") or not record.get("admission_class"):
         raise ProvisionError("reviewed dossier and approved scope required")

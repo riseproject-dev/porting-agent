@@ -48,9 +48,9 @@
           "properties": {
             "command_id": {"type": "string", "maxLength": 200},
             "reason": {"type": "string", "maxLength": 2000},
-            "from_phase": {"enum": ["development", "handoff"]},
-            "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "pr_number": {"type": "integer", "minimum": 1}
+            "from_phase": {"enum": ["provisioning", "development", "handoff"]},
+            "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+            "pr_number": {"type": ["integer", "null"], "minimum": 1}
           }
         }
       ]
@@ -113,11 +113,8 @@
       ]
     },
     "blocked_reason": {
-      "type": [
-        "string",
-        "null"
-      ],
-      "maxLength": 2000
+      "description": "Merged into paused: always null. Kept until the strict schema removes it.",
+      "type": "null"
     },
     "parked_reason": {
       "type": [

@@ -48,7 +48,7 @@ def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
     fork = record.get("fork") or {}
     if op["kind"] not in ("dev_pr_create", "dev_pr_update") or op["status"] != "planned" \
             or record["phase"] != "development" or record.get("active_operation_id") != operation_id \
-            or record["revision"] != op["revision"] or record.get("paused") or record.get("blocked_reason"):
+            or record["revision"] != op["revision"] or record.get("paused"):
         raise DevPRError("operation is not the current authorized development PR intent")
     if op["target"].get("repository") != fork.get("name") or op["target"].get("repository_id") != fork.get("repository_id") \
             or op["target"].get("ref") != DEV_REF or op["target"].get("expected_head") != fork.get("head_sha") \
