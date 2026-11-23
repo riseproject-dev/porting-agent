@@ -142,6 +142,21 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
             if broken:
                 raise WorkerGateError("the series breaks the project's commit conventions: "
                                       + "; ".join(broken[:8]))
+        required = (task.get("context") or {}).get("series_requirements")
+        if required:
+            # The unmet series requirements of the plan this Work answers,
+            # from the trusted Work payload: a non-debug commit must change a
+            # matching path, or the worker reports blocked.
+            if not isinstance(required, list) or not all(
+                    isinstance(r, dict) and isinstance(r.get("id"), str)
+                    and isinstance(r.get("paths"), list)
+                    and all(isinstance(p, str) for p in r["paths"]) for r in required):
+                raise WorkerGateError("the Work carries invalid series requirements")
+            _met, unmet = commit_rules.changed_paths_by_requirement(
+                required, commit_rules.mbox_non_debug_paths(mbox))
+            if unmet:
+                raise WorkerGateError("the series still does not meet the project's series "
+                                      "requirements: " + ", ".join(r["id"] for r in unmet))
     elif mbox is not None or proposal.get("patch_digest") is not None or changed:
         raise WorkerGateError("no-change proposal must not carry patch bytes or changed files")
 

@@ -1302,6 +1302,31 @@ flowchart TB
     handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
 ```
 
+### O31. Series requirements of the plan are met before nomination
+
+Whether a contribution-policy item of the plan that needs a change to the series (for example a changelog entry) blocks the nomination for handoff, or is requested as development Work. Before, nothing checked it until the submission rewrite and its review, which sent the series back after a human had asked for `submit-upstream`.
+
+**Decision.** It is requested as development Work. A plan of schema version 4 records its measurable items as `contribution_guidelines.series_requirements`, each a path the non-debug commits of the series must change, and each path is one of the plan's `allowed_paths`. When CI passes on the exact head without pending feedback, the observation reads the changed paths of the series once: `nominate_for_handoff` requires every requirement met (or none recorded, or a series too large to read, which the event says), and `return_for_series_requirements` leads to `development.fix_needed` otherwise. That row records the passing CI evidence, records the unmet requirements as `series_requirements` evidence, sets it as pending feedback, and bumps the revision; `request_patch` then requests a repair that carries it, and the trusted worker gate rejects a patch whose non-debug commits still do not change a matching path while the fork head is the head the evidence names. No budget is charged by the row: the Work is bounded by `no_progress` and `work_total`, then the automatic refresh, park, or a human wait. Qualitative items stay with the submission rewrite and its review (`reject_submission_rewrite`, `reject_submission_review`). A plan of an earlier version records none. The check verifies that every state that blocks a nomination on the requirements has such a row.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+    end
+
+    development_waiting_ci ==>|nominate_for_handoff| handoff_awaiting_submission
+    development_waiting_ci ==>|return_for_series_requirements| development_fix_needed
+    development_waiting_ci -->|return_for_feedback| development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
+    development_agent_running -->|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|record_publish_success| development_waiting_ci
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

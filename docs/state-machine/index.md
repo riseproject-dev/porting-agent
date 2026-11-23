@@ -119,6 +119,7 @@ flowchart TB
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
     development_waiting_ci -->|return_for_feedback| development_fix_needed
+    development_waiting_ci -->|return_for_series_requirements| development_fix_needed
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
     handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
@@ -370,10 +371,11 @@ flowchart TB
     development_waiting_ci -->|record_head_change| development_waiting_ci
     development_fix_needed -->|record_head_change| development_waiting_ci
     development_waiting_ci -->|return_for_feedback| development_fix_needed
+    development_waiting_ci -->|return_for_series_requirements| development_fix_needed
     development_waiting_ci -->|record_pr_mismatch| development_waiting_human
 ```
 
-Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, after which the collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair. A push to the development branch while CI is awaited or Work is due records the new head and waits for its CI. Passing CI while feedback is pending returns to `development.fix_needed` (`return_for_feedback`), so a push while Work is due for a review never strands the review.
+Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, after which the collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair. A push to the development branch while CI is awaited or Work is due records the new head and waits for its CI. Passing CI while feedback is pending returns to `development.fix_needed` (`return_for_feedback`), so a push while Work is due for a review never strands the review. Passing CI on a series that does not meet a series requirement of the plan (a path it must change, such as a changelog entry) returns there too (`return_for_series_requirements`), with the unmet requirements as the feedback of the next Work.
 
 ### Failure case 4: a repair budget is exhausted
 

@@ -9,7 +9,10 @@ the plan (schema version 2 or later), and the required sections of the project's
 pull request template as ``contribution_guidelines.pull_request_template``.
 Trusted code applies them: the worker gate to every non-debug commit a
 worker proposes, and the submission check to the reviewed series and the
-reviewed pull request description.
+reviewed pull request description. The series requirements of a plan of
+schema version 4 (a path the series must change, such as a changelog entry)
+are checked by the development observation on the exact head before
+nomination, and by the worker gate on Work that carries one as feedback.
 
 Only rules a machine can measure are here. Qualitative expectations (the
 imperative mood, the scope of a change, a reviewer's style asks) are checked
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import fnmatch
 import re
 import unicodedata
 from typing import Any
@@ -51,6 +55,7 @@ _COLONS = "\uff1a\ufe55\ufe13\u2236\ua789\u02d0\u02f8\u0589\u05c3\u1361\u1804\u2
 _FOLD = str.maketrans({**{ch: "-" for ch in _HYPHENS}, **{ch: ":" for ch in _COLONS}})
 APP_IDENTITY = f"{APP_COMMIT_NAME} <{APP_COMMIT_EMAIL}>"
 _PATCH_PREFIX = re.compile(r"^\[PATCH[^\]]*\]\s*")
+_DIFF_GIT = re.compile(r"diff --git a/(\S+) b/\S+")
 _MBOX_FROM = re.compile(rb"^From [0-9a-f]{40} Mon Sep 17 00:00:00 2001$", re.M)
 # An ATX heading opener; its text (the rest of the line, without a closing
 # sequence of ``#`` and trailing white space) is cut in Python, so no pattern
@@ -152,6 +157,65 @@ def sections_from_plan(plan: Any) -> list[str] | None:
             if section not in out:
                 out.append(section)
     return out
+
+
+# Bounds of the series requirements a plan records (schema version 4).
+MAX_REQUIREMENTS = 6
+MAX_REQUIREMENT_PATHS = 3
+REQUIREMENT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def series_requirements_from_plan(plan: Any) -> list[dict]:
+    """The series requirements a plan records
+    (``contribution_guidelines.series_requirements``, schema version 4 or
+    later), each as ``{id, paths, description}``: the non-debug commits of
+    the series must change at least one file that matches one of ``paths``.
+    Empty for a plan of an earlier version or one that records none. Raises
+    ``RuleError`` for a malformed value."""
+    version = plan.get("schema_version") if isinstance(plan, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool) or version < 4:
+        return []
+    found = guidelines(plan) or {}
+    value = found.get("series_requirements")
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_REQUIREMENTS:
+        raise RuleError(f"series_requirements must be a list of at most {MAX_REQUIREMENTS} "
+                        "requirements")
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise RuleError("a series requirement must be an object")
+        rid = item.get("id")
+        if not isinstance(rid, str) or not REQUIREMENT_ID.match(rid) \
+                or any(rid == o["id"] for o in out):
+            raise RuleError("a series requirement needs a unique id of lower-case letters, "
+                            "digits, and hyphens")
+        paths = item.get("paths")
+        if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_REQUIREMENT_PATHS:
+            raise RuleError(f"series requirement {rid}: paths must list 1 to "
+                            f"{MAX_REQUIREMENT_PATHS} paths")
+        out.append({"id": rid,
+                    "paths": [_printable(p, 120, f"a path of series requirement {rid}")
+                              for p in paths],
+                    "description": _printable(item.get("description"), 300,
+                                              f"the description of series requirement {rid}")})
+    return out
+
+
+def changed_paths_by_requirement(requirements: list[dict], paths: Any) -> tuple[list[str], list[dict]]:
+    """Which ``requirements`` the changed ``paths`` meet: the ids met, and the
+    requirements unmet. A requirement is met when a changed path matches one
+    of its paths as ``fnmatch.fnmatchcase`` matches the scope."""
+    changed = [p for p in paths or () if isinstance(p, str)]
+    met, unmet = [], []
+    for item in requirements:
+        if any(fnmatch.fnmatchcase(path, pattern) for path in changed
+               for pattern in item["paths"]):
+            met.append(item["id"])
+        else:
+            unmet.append(item)
+    return met, unmet
 
 
 def split_message(message: str) -> tuple[str, list[str]]:
@@ -277,6 +341,25 @@ def attribution_problems(messages: list[str], approved: list[str]) -> list[str]:
 def mbox_starts(data: bytes) -> list[int]:
     """Where each message of a ``git format-patch`` mbox starts."""
     return [m.start() for m in _MBOX_FROM.finditer(data or b"")]
+
+
+def mbox_non_debug_paths(data: bytes) -> list[str]:
+    """The paths the non-debug commits of a ``git format-patch`` mbox
+    change (``diff --git a/<path> b/<path>`` lines), in order and without
+    repeats. A ``{debug}`` commit is dropped at submission, so its paths
+    are not counted."""
+    starts = mbox_starts(data)
+    messages = mbox_messages(data)
+    out: list[str] = []
+    for i, start in enumerate(starts):
+        if is_debug(messages[i]):
+            continue
+        chunk = data[start: starts[i + 1] if i + 1 < len(starts) else len(data)]
+        for line in chunk.decode("utf-8", "replace").splitlines():
+            match = _DIFF_GIT.fullmatch(line)
+            if match and match.group(1) not in out:
+                out.append(match.group(1))
+    return out
 
 
 def mbox_messages(data: bytes) -> list[str]:

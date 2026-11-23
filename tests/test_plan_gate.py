@@ -13,6 +13,7 @@ from pathlib import Path
 
 import capacity
 import collect
+import commit_rules
 import controller
 import plan_gate
 import schemas
@@ -83,6 +84,7 @@ def guidelines(paths=(".github/workflows/*", "README.rst")):
                                       "expectations": "Asks for one commit per architecture."}]}
                       for path in paths],
             "expectations": ["Keep the matrix sorted by architecture."]},
+        "series_requirements": [],
     }
 
 
@@ -114,7 +116,7 @@ def plan():
              "coverage": {"complete": True, "scope": "All matching open and closed discussions reviewed, including all result pages."},
              "sources": [{"url": ISSUE_URL, "finding": "Read the description and all discussion comments."}],
              "findings": "The linked discussions establish architecture requirements and prior reviewer decisions."}
-    d = {"schema_version": 3, "contribution_id": "example--proj/12", "expected_revision": 1,
+    d = {"schema_version": 4, "contribution_id": "example--proj/12", "expected_revision": 1,
          "tracking_issue_description_digest": task()["context"]["tracking_issue"]["description_digest"],
          "summary": "Research covers project history, dependencies, documentation and maintainer review decisions.",
          "research": {category: copy.deepcopy(entry) for category in plan_gate.RESEARCH_CATEGORIES},
@@ -204,7 +206,7 @@ class TestPlanCompleteness(unittest.TestCase):
         with self.assertRaises(schemas.SchemaError):
             plan_gate.validate(d, proposal(), task())
         d["schema_version"] = 1
-        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 3"):
+        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 4"):
             plan_gate.validate(d, proposal(), task())
         for section in ("pull_request_template", "contributing", "commit_conventions", "reviewers"):
             d = plan()
@@ -509,7 +511,7 @@ class TestProjectContract(unittest.TestCase):
         del v1["contribution_guidelines"]
         schemas.validate("plan", v1)
         # ... but no new plan of version 2 is admitted.
-        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 3"):
+        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 4"):
             plan_gate.validate(v2, proposal(), task())
         v3 = plan()
         del v3["project"]
@@ -594,3 +596,82 @@ class TestStoredPlansStayValid(unittest.TestCase):
                 schemas.validate("plan", record["data"])
                 seen += 1
         self.assertGreaterEqual(seen, 4)
+
+
+def changelog_requirement(**change):
+    """A series requirement of a version 4 plan: the series changes the
+    changelog, as the contributing instructions ask."""
+    return {"id": "changelog", "description": "Add a CHANGELOG entry for every user-visible change.",
+            "source_url": f"{REPO}/blob/main/CONTRIBUTING.md", "paths": ["CHANGELOG.md"], **change}
+
+
+class TestSeriesRequirements(unittest.TestCase):
+    def plan(self, *requirements):
+        d = plan()
+        d["proposal"]["allowed_paths"].append("CHANGELOG.md")
+        d["contribution_guidelines"]["reviewers"]["paths"].append(
+            copy.deepcopy(d["contribution_guidelines"]["reviewers"]["paths"][0]) | {"path": "CHANGELOG.md"})
+        d["contribution_guidelines"]["series_requirements"] = list(requirements)
+        return d
+
+    def test_a_requirement_in_scope_that_cites_the_guidelines_is_admitted(self):
+        plan_gate.validate(self.plan(changelog_requirement()), proposal(), task())
+        plan_gate.validate(self.plan(), proposal(), task())
+        self.assertEqual(commit_rules.series_requirements_from_plan(self.plan(changelog_requirement())),
+                         [{"id": "changelog", "paths": ["CHANGELOG.md"],
+                           "description": "Add a CHANGELOG entry for every user-visible change."}])
+
+    def test_the_requirements_are_recorded_unique_cited_and_in_scope(self):
+        d = self.plan()
+        del d["contribution_guidelines"]["series_requirements"]
+        with self.assertRaisesRegex(plan_gate.PlanError, "possibly none"):
+            plan_gate.validate(d, proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "unique id"):
+            plan_gate.validate(self.plan(changelog_requirement(), changelog_requirement()),
+                               proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "cites a source"):
+            plan_gate.validate(self.plan(changelog_requirement(source_url=f"{REPO}/wiki")),
+                               proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "not allowed_paths"):
+            plan_gate.validate(self.plan(changelog_requirement(paths=["NEWS.rst"])),
+                               proposal(), task())
+        for change in ({"id": "Changelog"}, {"paths": []}, {"paths": ["a", "b", "c", "d"]},
+                       {"description": "short"}, {"extra": 1}):
+            with self.subTest(change=change), self.assertRaises(schemas.SchemaError):
+                plan_gate.validate(self.plan(changelog_requirement(**change)), proposal(), task())
+        with self.assertRaises(schemas.SchemaError):
+            plan_gate.validate(self.plan(*(changelog_requirement(id=f"r{i}") for i in range(7))),
+                               proposal(), task())
+
+    def test_a_park_or_close_records_none(self):
+        d = self.plan(changelog_requirement())
+        d["proposal"].update(decision="park", admission_class=None, allowed_paths=[],
+                             rationale="No concrete patch is actionable until a documented external prerequisite is resolved.")
+        with self.assertRaisesRegex(plan_gate.PlanError, "park or close records none"):
+            plan_gate.validate(d, proposal(), task())
+        d["contribution_guidelines"]["series_requirements"] = []
+        plan_gate.validate(d, proposal(), task())
+
+    def test_plans_of_earlier_versions_record_none(self):
+        for version in (1, 2, 3):
+            d = self.plan(changelog_requirement())
+            d["schema_version"] = version
+            self.assertEqual(commit_rules.series_requirements_from_plan(d), [], version)
+        self.assertEqual(commit_rules.series_requirements_from_plan(None), [])
+        d = self.plan()
+        del d["contribution_guidelines"]["series_requirements"]
+        self.assertEqual(commit_rules.series_requirements_from_plan(d), [])
+        for bad in ("x", [1], [changelog_requirement(paths="CHANGELOG.md")],
+                    [changelog_requirement(description="a\x00b" * 5)]):
+            d = self.plan()
+            d["contribution_guidelines"]["series_requirements"] = bad
+            with self.subTest(bad=bad), self.assertRaises(commit_rules.RuleError):
+                commit_rules.series_requirements_from_plan(d)
+
+    def test_a_requirement_is_met_by_a_matching_changed_path(self):
+        reqs = [{"id": "changelog", "paths": ["CHANGELOG.md"], "description": "x" * 10},
+                {"id": "news", "paths": ["changes/*.rst"], "description": "y" * 10}]
+        met, unmet = commit_rules.changed_paths_by_requirement(
+            reqs, ["setup.py", "changes/12.feature.rst"])
+        self.assertEqual(met, ["news"])
+        self.assertEqual([r["id"] for r in unmet], ["changelog"])

@@ -541,6 +541,22 @@ You MUST research the project's upstream history, not just its checkout:
      `expectations`, including what they expect to be tested and how. Use
      `status: "none_found"` only when no code owner and no reviewer of those
      paths exists, with the search that shows it.
+   - `series_requirements`: every contributing instruction, pull request
+     template checklist item or reviewer expectation that requires a specific
+     file of the series to change (a changelog or news fragment, `AUTHORS`, a
+     documentation page), as `{id, description, source_url, paths}`: a short
+     lower-case `id` (letters, digits, hyphens), the requirement in one
+     sentence, the URL of the contributing, template or reviewer source you
+     recorded above that states it, and one to three paths, each written
+     exactly as an entry of `allowed_paths` (add the path to `allowed_paths`,
+     with its reviewer research, when the requirement applies to this
+     contribution). Trusted code checks, before the contribution is
+     nominated for submission, that the non-debug commits of the series change
+     a file matching one of the paths, and returns the series to development
+     otherwise. Record at most six. Use an empty list when there is none, and
+     always for a park or close. Qualitative instructions stay in
+     `instructions` and `expectations`, where the submission review checks
+     them.
 
 For every research category, record the exact queries, source URLs, findings,
 search scope and whether pagination/discussion review is complete. Link concrete
@@ -558,7 +574,7 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
 `claim-<hash>-porting-out`):
 
 - `plan.json`: MUST satisfy `schemas/plan.schema.json`.
-  Include `schema_version: 3`, this task's `contribution_id`,
+  Include `schema_version: 4`, this task's `contribution_id`,
   `expected_revision: task.revision`, and
   `tracking_issue_description_digest: task.context.tracking_issue.description_digest`.
   Every `history` item is a JSON object with keys `url`, `outcome`, `decision`,

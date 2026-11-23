@@ -790,6 +790,8 @@ for _guard, _name in (
     ("the observed development PR does not match the recorded fork, ref, or PR",
      "development_pr_mismatch"),
     ("every required CI job executed and passed on the exact head", "ci_passed_on_head"),
+    (lc.SERIES_REQUIREMENTS_MET, "series_requirements_met"),
+    (lc.SERIES_REQUIREMENTS_UNMET, "series_requirements_unmet"),
     (lc.CANDIDATE_FAILED, "candidate_head_failed"),
     (lc.CANDIDATE_NOT_FAILED, "candidate_head_not_failed"),
     ("the observed fork head differs from the candidate head", "candidate_head_changed"),
@@ -866,7 +868,8 @@ CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
                        ("base_branch_unread", "base_branch_missing"),
                        ("upstream_repository_unread", "base_branch_missing"),
                        ("upstream_repository_renamed", "base_branch_missing"),
-                       ("upstream_read_again", "base_branch_unread"))
+                       ("upstream_read_again", "base_branch_unread"),
+                       ("series_requirements_met", "series_requirements_unmet"))
 
 
 def table_guards() -> set[str]:
@@ -902,6 +905,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # development PR that does not match the record.
     "record_ci_failure": "observe_ci",
     "return_for_feedback": "observe_ci",
+    "return_for_series_requirements": "observe_ci",
     "record_pr_mismatch": "observe_ci",
     # A required job that was cancelled or lost its runner: a `ci_rerun`
     # operation within `interrupted_reruns`, and the wait once it is spent.

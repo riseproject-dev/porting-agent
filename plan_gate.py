@@ -34,10 +34,11 @@ RESEARCH_CATEGORIES = (
 )
 OPTIONALLY_ABSENT = {"website", "mailing_lists", "blogs", "release_repositories", "ecosystem_report"}
 # The schema version of a plan the gate admits: it records the contribution
-# guidelines and the project (its languages, build systems, release channels,
-# and riscv64 toolchain). Stored plans of versions 1 and 2 stay readable; no
-# new one is admitted.
-PLAN_VERSION = 3
+# guidelines with their series requirements, and the project (its languages,
+# build systems, release channels, and riscv64 toolchain). Stored plans of
+# versions 1 to 3 stay readable and record no series requirement; no new one
+# is admitted.
+PLAN_VERSION = 4
 # Where the planner must have looked, as (what, words every one of the
 # searched locations of that kind names). Each kind must be searched; "none
 # found" is admitted only with that evidence.
@@ -123,6 +124,40 @@ def validate_guidelines(plan: dict) -> None:
         missing = [p for p in decision["allowed_paths"] if p not in covered]
         if missing:
             raise PlanError(f"reviewers: no reviewer research for the paths {missing[:8]}")
+    validate_series_requirements(plan)
+
+
+def validate_series_requirements(plan: dict) -> None:
+    """The series requirements a new plan records: the measurable items of
+    the contributing instructions, the template checklist, and the reviewer
+    expectations, each a path the non-debug commits of the series must
+    change. The list is required (it may be empty), the ids are unique, each
+    cites a source the guidelines record, and each path is literally one of
+    the approved ``allowed_paths``, so a requirement can always be met in
+    scope. A park or close records none."""
+    found = plan["contribution_guidelines"]
+    if "series_requirements" not in found:
+        raise PlanError("series_requirements: a new plan records them, possibly none")
+    try:
+        requirements = commit_rules.series_requirements_from_plan(plan)
+    except commit_rules.RuleError as exc:
+        raise PlanError(f"series_requirements: {exc}") from None
+    decision = plan["proposal"]
+    if decision["decision"] != "develop":
+        if requirements:
+            raise PlanError("series_requirements: a park or close records none")
+        return
+    cited = {s["url"] for key in ("contributing", "pull_request_template", "reviewers")
+             for s in found[key]["sources"]}
+    allowed = set(decision["allowed_paths"])
+    for raw, item in zip(found["series_requirements"], requirements):
+        if raw["source_url"] not in cited:
+            raise PlanError(f"series_requirements: {item['id']} cites a source the contributing, "
+                            "template, or reviewer research does not record")
+        outside = [p for p in item["paths"] if p not in allowed]
+        if outside:
+            raise PlanError(f"series_requirements: {item['id']} names paths that are not "
+                            f"allowed_paths: {outside}")
 
 
 def validate_project(plan: dict, task: dict) -> None:

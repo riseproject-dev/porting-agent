@@ -177,7 +177,7 @@ class TestWorkflowContracts(unittest.TestCase):
         flat = " ".join(planner.split())
         self.assertIn("That a project has no Python package, wheel or PyPI release is never a "
                       "reason to park.", flat)
-        self.assertIn("`schema_version: 3`", planner)
+        self.assertIn("`schema_version: 4`", planner)
         self.assertIn("`refresh class=... paths=...`", planner)
         self.assertNotIn("`resume class=", planner)
         self.assertIn("Python projects additionally:", planner)

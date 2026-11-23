@@ -726,6 +726,14 @@ WORK_WITHOUT_FEEDBACK = "the Work carries no feedback"
 # feedback it makes Work due again, so the feedback is never stranded.
 NO_PENDING_FEEDBACK = "no pending actionable feedback"
 PENDING_FEEDBACK = "pending actionable feedback"
+# The series requirements of the verified plan (the measurable items of its
+# contribution guidelines: a path the non-debug commits of the series must
+# change) are checked on the exact head before a nomination; unmet ones make
+# development Work due with them as feedback, so a nomination is never
+# blocked in a wait.
+SERIES_REQUIREMENTS_MET = ("every series requirement of the verified plan is met on the exact "
+                           "head, the plan records none, or the series is too large to read")
+SERIES_REQUIREMENTS_UNMET = "a series requirement of the verified plan is unmet on the exact head"
 EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((WORK_TOTAL_REMAINS,), (WORK_TOTAL_EXHAUSTED,)),
     ((NO_FAILING_JOB,), (FAILING_JOB,)),
@@ -737,12 +745,14 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((CANDIDATE_FAILED,), (CANDIDATE_NOT_FAILED,)),
     ((REWRITE_CURRENT,), (REWRITE_EXPIRED,)),
     ((NO_PENDING_FEEDBACK,), (PENDING_FEEDBACK,)),
+    ((SERIES_REQUIREMENTS_MET,), (SERIES_REQUIREMENTS_UNMET,)),
 )
 # States in which two observations could apply to the same input; their
 # guards are exclusive, so the order of observation never decides.
 EXCLUSIVE_OBSERVATIONS = {
     "handoff.awaiting_submission": ("return_for_repair", "record_actionable_review"),
-    "development.waiting_ci": ("nominate_for_handoff", "return_for_feedback"),
+    "development.waiting_ci": ("nominate_for_handoff", "return_for_feedback",
+                               "return_for_series_requirements"),
 }
 
 _ALLOCATE_WORK_RETRY = Transition(
@@ -1011,7 +1021,8 @@ LIFECYCLE: dict[str, State] = {
         "auto_wait", False, True,
         "A patch is published to the development PR; CI and review evaluate the exact head. "
         "Passing CI nominates the head, or returns to `development.fix_needed` while actionable "
-        "feedback is pending; passing CI behind an open operation keeps the contribution here.",
+        "feedback is pending or a series requirement of the plan is unmet; passing CI behind an "
+        "open operation keeps the contribution here.",
         transitions={
             ("record_ci_failure", "development.fix_needed"): Transition(
                 _O, None,
@@ -1036,7 +1047,7 @@ LIFECYCLE: dict[str, State] = {
             ("nominate_for_handoff", "handoff.awaiting_submission"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
-                 NO_PENDING_FEEDBACK, "no requested Work"),
+                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET, "no requested Work"),
                 _E(sets=("last_ci_evidence_id", "handoff_request",
                         "pending_human_action=submit_upstream"))),
             ("return_for_feedback", "development.fix_needed"): Transition(
@@ -1050,6 +1061,20 @@ LIFECYCLE: dict[str, State] = {
                             "and Work is due again, so `request_patch` requests a repair that "
                             "carries the feedback. The pending feedback is kept; only a "
                             "published Result clears it."),
+            ("return_for_series_requirements", "development.fix_needed"): Transition(
+                _O, None,
+                ("every required CI job executed and passed on the exact head",
+                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_UNMET, "no requested Work"),
+                _E(revision="bump", sets=("last_ci_evidence_id", "pending_feedback_evidence_ids")),
+                description="CI passed on the exact head, no feedback is pending, and the series "
+                            "does not meet a series requirement of the verified plan (a path "
+                            "its non-debug commits must change, such as a changelog entry): "
+                            "the passing evidence is recorded, the unmet requirements are "
+                            "recorded as `series_requirements` evidence and become the pending "
+                            "feedback, and Work is due again, so `request_patch` requests a "
+                            "repair that carries them. Only a published Result clears the "
+                            "feedback. Nothing is charged here: the Work is bounded by "
+                            "`no_progress` and `work_total`."),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
@@ -2293,6 +2318,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("development.waiting_human", "resume_development"),
                 ("development.waiting_ci", "nominate_for_handoff"),
                 ("development.waiting_ci", "return_for_feedback"),
+                ("development.waiting_ci", "return_for_series_requirements"),
                 ("handoff.awaiting_submission", "submit_upstream"),
                 ("handoff.review_due", "request_submission_rewrite"),
                 ("handoff.agent_running", "accept_submission_rewrite"),
@@ -2487,6 +2513,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_ci", "record_head_change"),
                  ("development.fix_needed", "record_head_change"),
                  ("development.waiting_ci", "return_for_feedback"),
+                 ("development.waiting_ci", "return_for_series_requirements"),
                  ("development.waiting_ci", "record_pr_mismatch")),
                 start="development.waiting_ci",
                 text="Build and test failures and actionable comments request repair automatically. "
@@ -2503,7 +2530,11 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "development branch while CI is awaited or Work is due records the new head "
                      "and waits for its CI. Passing CI while feedback is pending returns to "
                      "`development.fix_needed` (`return_for_feedback`), so a push while Work is "
-                     "due for a review never strands the review."),
+                     "due for a review never strands the review. Passing CI on a series that "
+                     "does not meet a series requirement of the plan (a path it must change, "
+                     "such as a changelog entry) returns there too "
+                     "(`return_for_series_requirements`), with the unmet requirements as the "
+                     "feedback of the next Work."),
             Diagram(
                 "Failure case 4: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",
@@ -3347,6 +3378,22 @@ def _check_feedback(problems: list[str]) -> None:
                             "what it clears")
         if not any(entry in e.transition.effects.clears for e in table_edges()):
             problems.append(f"qualified clear {entry!r}: no transition uses it")
+    # A nomination blocked by unmet series requirements always has an
+    # observation row that records them as pending feedback and makes Work
+    # carrying that feedback due, so passing CI never strands them.
+    for state in sorted({e.source for e in table_edges()
+                         if SERIES_REQUIREMENTS_MET in e.transition.guard}):
+        if not any(SERIES_REQUIREMENTS_UNMET in x.transition.guard
+                   and x.transition.trigger == Trigger.OBSERVATION
+                   and "pending_feedback_evidence_ids" in x.transition.effects.sets
+                   and LIFECYCLE[x.target].launches
+                   and any(_is_patch_work(w) and WORK_FEEDBACK in w.transition.effects.sets
+                           for w in state_edges(x.target))
+                   for x in state_edges(state)):
+            problems.append(f"{state}: blocks a nomination on {SERIES_REQUIREMENTS_MET!r} "
+                            f"without an observation row guarded by "
+                            f"{SERIES_REQUIREMENTS_UNMET!r} that records them as pending "
+                            "feedback and makes Work carrying it due")
     # A nomination blocked by pending feedback always has a row that makes
     # Work carrying that feedback due, so passing CI never strands it.
     for state in sorted({e.source for e in table_edges()
