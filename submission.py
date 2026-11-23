@@ -27,8 +27,10 @@ Trusted code decides, without a token, in a fresh repository
   publisher's validation of an upstream-facing rewrite (scope, no debug
   commit, no merge, no forbidden workflow content, no symlink, gitlink, or
   new executable mode); each commit touches only paths the approved series
-  changes, and every reviewed tree holds only content of the base or of the
-  approved series (``intermediate_problems``);
+  changes, every reviewed tree holds only content of the base or of the
+  approved series, and every reviewed tree is a tree of the approved series
+  without its ``{debug}`` commits, in its order, so commits may be squashed
+  and reworded but not reordered or split (``intermediate_problems``);
 * its tree is exactly the tree of the approved series without its
   ``{debug}`` commits: the rewrite changes no code;
 * every attribution trailer names the App's commit identity or repeats one
@@ -205,14 +207,16 @@ def intermediate_problems(work: Path, *, base: str, approved: str, clean: str,
     content, symlinks, gitlinks, modes); each path a commit touches is a path
     the approved series without its debug commits changes; and every file of
     every reviewed tree is the base's or one the approved series without its
-    debug commits has in one of its trees (the same path, mode, and blob). A
-    series that adds and later reverts anything else is refused, even when
-    its head has the approved tree."""
+    debug commits has in one of its trees (the same path, mode, and blob);
+    and every reviewed tree is a tree of that series, in its order
+    (``series_tree_problems``). A series that adds and later reverts
+    anything else, or brings back content the approved series removed, is
+    refused, even when its head has the approved tree."""
     allowed_paths = {path for path, _mode, _blob in _changes(work, base, clean)}
     approved_entries: set[tuple[str, str | None, str | None]] = set()
     for sha in _revs(work, base, clean):
         approved_entries.update(_changes(work, base, sha))
-    problems = []
+    problems = series_tree_problems(work, clean=_revs(work, base, clean), reviewed=reviewed)
     for sha in reviewed[:-1]:
         report = publisher.validate_update(work, base=base, expected_head=approved,
                                            candidate=sha, scope=scope)
@@ -228,6 +232,29 @@ def intermediate_problems(work: Path, *, base: str, approved: str, clean: str,
         if foreign:
             problems.append(f"commit {sha[:12]} has content in {', '.join(foreign[:5])} that no "
                             "commit of the approved series has")
+    return problems
+
+
+def series_tree_problems(work: Path, *, clean: list[str], reviewed: list[str]) -> list[str]:
+    """Why the trees of the reviewed commits are not trees of the approved
+    series without its debug commits, in its order. Each reviewed commit must
+    have the tree of a commit of that series later than the tree of the
+    reviewed commit before it: commits may be squashed (trees skipped) and
+    reworded (the same trees), but not reordered, split into trees the
+    series never has, or made to bring back content the series removed."""
+    trees = [_out(work, "rev-parse", f"{sha}^{{tree}}") for sha in clean]
+    problems = []
+    last = -1
+    for sha in reviewed:
+        tree = _out(work, "rev-parse", f"{sha}^{{tree}}")
+        index = next((i for i in range(last + 1, len(trees)) if trees[i] == tree), None)
+        if index is None:
+            earlier = tree in trees[:last + 1]
+            problems.append(f"commit {sha[:12]} has a tree that "
+                            + ("comes earlier in" if earlier else "is not a tree of")
+                            + " the approved series without its debug commits")
+            continue
+        last = index
     return problems
 
 

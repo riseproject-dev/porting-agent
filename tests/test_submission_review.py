@@ -203,6 +203,75 @@ class TestCheck(unittest.TestCase):
             signed_off_by_required=False)))
         self.assertIn("check: the series has 2 commits, more than 1", out["reasons"])
 
+    def other_series(self, approved, reviewed):
+        """An approved series of ``approved`` steps on the base, pushed to
+        the fork, and a reviewed series of ``reviewed`` steps on the base;
+        returns the rewrite Work of that approved head and the reviewed
+        mbox."""
+        self.runs += 1
+        git(self.work, "checkout", "-q", "-B", f"alt-{self.runs}", self.base)
+        for files, message in approved:
+            commit_files(self.work, files, msg=message)
+        head = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "push", "-q", str(self.root / "riseproject-upstreaming/proj.git"),
+            f"HEAD:refs/heads/alt-{self.runs}")
+        repo = self.root / f"other-{self.runs}"
+        git(self.root, "clone", "-q", str(self.root / "riseproject-upstreaming/proj.git"), str(repo))
+        git(repo, "checkout", "-q", "-B", "review", self.base)
+        for files, message in reviewed:
+            commit_files(repo, files, msg=message)
+        task = dict(self.task(), expected_head=head, allowed_paths=["setup.py", "ci.yml", "tool.py"])
+        return task, git(repo, "format-patch", "--stdout", self.base).encode() + b"\n"
+
+    def other_check(self, task, mbox):
+        self.checks = getattr(self, "checks", 0) + 1
+        return submission.check_rewrite(task, self.review(mbox, expected_head=task["expected_head"]),
+                                        mbox, workdir=self.root / f"check-{self.checks}")
+
+    def test_every_reviewed_tree_is_a_tree_of_the_approved_series_in_order(self):
+        approved = [({"setup.py": "b\n", "tool.py": "BACKDOOR\n"}, "Build"),
+                    ({"tool.py": "fine\n"}, "Fix the tool"),
+                    ({"setup.py": "c\n"}, "Test")]
+        cases = {
+            # Squashed and reworded: trees of the series, in its order.
+            "squash": ([({"setup.py": "c\n", "tool.py": "fine\n"}, "Build and test")], []),
+            "reword": ([({"setup.py": "b\n", "tool.py": "BACKDOOR\n"}, "ci: Build"),
+                        ({"tool.py": "fine\n"}, "ci: Fix the tool"),
+                        ({"setup.py": "c\n"}, "ci: Test")], []),
+            "squash the fix": ([({"setup.py": "b\n", "tool.py": "fine\n"}, "Build"),
+                                ({"setup.py": "c\n"}, "Test")], []),
+            # Reordered: the test before the fix of the tool.
+            "reorder": ([({"setup.py": "b\n", "tool.py": "BACKDOOR\n"}, "Build"),
+                         ({"setup.py": "c\n"}, "Test"),
+                         ({"tool.py": "fine\n"}, "Fix the tool")], ["is not a tree of"]),
+            # The backdoor the series reverted, brought back between trees of
+            # the series: every blob is one the approved series has.
+            "resurrection": ([({"setup.py": "b\n", "tool.py": "fine\n"}, "Build"),
+                              ({"setup.py": "c\n", "tool.py": "BACKDOOR\n"}, "Test"),
+                              ({"tool.py": "fine\n"}, "Tidy")], ["is not a tree of"]),
+            # Back to an earlier tree of the series and forward again.
+            "back and forth": ([({"setup.py": "c\n", "tool.py": "fine\n"}, "All"),
+                                ({"setup.py": "b\n", "tool.py": "BACKDOOR\n"}, "Again"),
+                                ({"setup.py": "c\n", "tool.py": "fine\n"}, "All again")],
+                               ["comes earlier in"]),
+            # A split into a tree the series never has.
+            "split": ([({"setup.py": "b\n"}, "Build"),
+                       ({"tool.py": "BACKDOOR\n"}, "Add the tool"),
+                       ({"tool.py": "fine\n"}, "Fix the tool"),
+                       ({"setup.py": "c\n"}, "Test")], ["is not a tree of"]),
+        }
+        for name, (reviewed, problems) in cases.items():
+            with self.subTest(name):
+                out = self.other_check(*self.other_series(approved, reviewed))
+                reasons = "\n".join(out["reasons"])
+                self.assertEqual(out["verdict"], "fail" if problems else "pass", reasons)
+                for problem in problems:
+                    self.assertIn(problem, reasons)
+        # Only the tree check refuses the resurrection: every file of every
+        # reviewed tree has a path, mode, and blob of the approved series.
+        out = self.other_check(*self.other_series(approved, cases["resurrection"][0]))
+        self.assertFalse(any("content in" in r for r in out["reasons"]), out["reasons"])
+
     def test_a_long_series_is_refused_before_any_commit_is_validated(self):
         steps = [({"setup.py": "b\n" if i % 2 == 0 else "c\n"}, (), f"Step {i}")
                  for i in range(submission.MAX_COMMITS + 9)]

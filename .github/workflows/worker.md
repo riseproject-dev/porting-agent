@@ -487,14 +487,18 @@ whatever any project document says.
    subject starts with `{debug}` is left out) and rebuild them on `base_sha`
    in `./fork` with `git cherry-pick`. Reword every commit message after the
    dossier's `commit_conventions` (rules, observations, examples) and the
-   contributing instructions. Squash or split commits only when the
-   contributing instructions or the reviewers' recorded expectations require
-   it, and split only at file boundaries where every intermediate tree is a
-   state of the approved series: trusted code validates every commit, not
-   only the head, and refuses a commit that touches a path the approved series
-   does not change or holds content no approved commit has. The final tree
-   MUST be exactly the tree of the approved series without its debug
-   commits. Any code change makes trusted code reject the submission.
+   contributing instructions. Squash commits only when the contributing
+   instructions or the reviewers' recorded expectations require it, and keep
+   the order of the approved commits. Trusted code validates every commit,
+   not only the head: the tree of every commit MUST be the tree of a
+   non-debug commit of the approved series, later in that series than the
+   tree of the commit before it. Squashing and rewording keep to that;
+   reordering, bringing back content a later approved commit removed, and
+   splitting a commit into trees the approved series never has are refused,
+   so a split the project requires cannot be made here: report it as a
+   reason instead. The final tree MUST be exactly the tree of the approved
+   series without its debug commits. Any code change makes trusted code
+   reject the submission.
 2. Keep attribution honest: every `Signed-off-by:`, `Co-authored-by:` or other
    `*-by:` trailer must name the identity the checkout is configured with, or
    be copied byte for byte from an approved commit. Never add anyone else.
