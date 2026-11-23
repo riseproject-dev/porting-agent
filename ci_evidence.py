@@ -149,7 +149,8 @@ def evidence_record(*, evidence_id: str, contribution_id: str, policy_version: s
             "run_attempt": run["run_attempt"],
             "jobs": [{"job_id": j["id"], "name": j["name"], "status": j["status"],
                       "conclusion": j.get("conclusion"), "executed": job_executed(j),
-                      "runner_labels": j.get("labels") or []} for j in jobs],
+                      "runner_labels": j.get("labels") or []}
+                     for j in sorted(jobs, key=lambda j: j["id"])],
             "expected_wheels": expected_wheels,
             "artifacts": artifacts,
         },
