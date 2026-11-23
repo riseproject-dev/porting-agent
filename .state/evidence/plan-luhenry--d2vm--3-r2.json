@@ -1,0 +1,2133 @@
+{
+  "collected_at": "2026-11-23T20:11:56.378958+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "contribution_guidelines": {
+      "commit_conventions": {
+        "examples": [
+          "feat: add AlmaLinux and Rocky Linux support",
+          "fix: fix centos / rhel family 8+ grub-bios boot",
+          "feat: add `--hostname` flag to customize the vm hostname",
+          "templates: improve docker build layers caching",
+          "chore(ci): call linter in ci",
+          "actions: add end-to-end tests",
+          "tests: fix manifest for centos:latest not found",
+          "docs: add CNAME to mkdocs build output",
+          "arm64 support with grub-efi"
+        ],
+        "observations": "Titles are short imperative or descriptive phrases in lower case, usually with a conventional-commit style type (feat:, fix:, docs:, chore:) or a component prefix (actions:, tests:, templates:, goreleaser:, Makefile:, run/qemu:, luks:); 26 of 100 titles have no prefix, so a prefix is customary but not enforced, and no title length limit is kept (a few early titles exceed 100 characters). Use feat: for the riscv64 platform support so it appears in the goreleaser changelog, and actions:, tests:, docs: or goreleaser: for CI, test, documentation and release-list commits, which the changelog filters out. Bodies are optional; when present they are short bullet lists. Nearly every commit ends with a Signed-off-by trailer, and the maintainer additionally asks external contributors for cryptographically signed (verified) commits and for squashing fixups; main of linka-cloud/d2vm is a protected branch. Issues are referenced as 'closes #N' in the PR body or '(closes #N)' in the title. Two documentation commits carry a 'skip-checks: true' trailer or a '[skip ci]' title marker; do not use these for code changes. Maintainer feature PRs contain one to four logical commits (PR 44: 1, PR 91: 2, PR 43: 4); keep each commit a self-contained unit and never leave fixup commits.",
+        "rules": {
+          "body_line_max_length": null,
+          "body_required": false,
+          "max_commits": 4,
+          "signed_off_by_required": true,
+          "title_capitalization": "lower",
+          "title_max_length": null,
+          "title_prefix_required": false,
+          "title_prefixes": [
+            "feat:",
+            "fix:",
+            "docs:",
+            "chore:",
+            "actions:",
+            "tests:",
+            "templates:",
+            "goreleaser:",
+            "Makefile:",
+            "run/qemu:",
+            "chore(ci):"
+          ],
+          "title_trailing_period": "forbidden"
+        },
+        "sample": {
+          "commits": 100,
+          "range": "7c12ca465af242be41be27c8d049a7672fe79223..7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0 (last 100 non-merge commits of main, inclusive)"
+        },
+        "sources": [
+          {
+            "finding": "Last 100 non-merge commits of main ending at 7184ff1 measured from the checkout: title length median 38, 90th percentile 71, maximum 181; 74 titles start with a lowercase prefix and colon; 97 start in lower case after the prefix; none ends with a period; 94 carry a Signed-off-by trailer; 11 have a prose body.",
+            "url": "https://github.com/luhenry/d2vm/commits/main"
+          },
+          {
+            "finding": "The release changelog excludes commits whose titles match ^docs:, ^test:, ^tests:, ^actions:, ^Makefile:, ^chore:, ^goreleaser:, so the title prefix decides whether a commit appears in release notes; feat: and fix: commits are listed.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.goreleaser.yaml"
+          },
+          {
+            "finding": "Maintainer asks an external contributor to squash the commits and sign them (link to GitHub commit signature verification).",
+            "url": "https://github.com/linka-cloud/d2vm/pull/61#issuecomment-2692369647"
+          },
+          {
+            "finding": "The arm64 port is a single commit titled 'arm64 support with grub-efi' with a bullet list body and Signed-off-by; PR 43 has 4 commits and PR 91 has 2, each a logical unit.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/44"
+          },
+          {
+            "finding": "Merged commit touching .github/workflows/ci.yaml: 'chore(ci): call linter in ci'; maintainer workflow commits use 'actions: ...' or 'chore: ...'.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/69"
+          }
+        ],
+        "title_lengths": {
+          "max": 181,
+          "median": 38,
+          "p90": 71
+        }
+      },
+      "contributing": {
+        "documents": [],
+        "instructions": [],
+        "searched": [
+          "CONTRIBUTING.md",
+          "CONTRIBUTING.rst",
+          ".github/CONTRIBUTING.md",
+          ".github/CONTRIBUTING.rst",
+          "docs/contributing*",
+          "docs/content/contributing*",
+          "DEVELOPMENT.md",
+          "README.md (development and contributing sections)",
+          "docs/mkdocs.yml navigation",
+          "CODE_OF_CONDUCT.md",
+          "SECURITY.md"
+        ],
+        "sources": [
+          {
+            "finding": "No CONTRIBUTING, DEVELOPMENT, CODE_OF_CONDUCT, SECURITY, GOVERNANCE or MAINTAINERS file exists at the root of main; LICENCE is Apache-2.0.",
+            "url": "https://github.com/luhenry/d2vm/tree/main"
+          },
+          {
+            "finding": "No CONTRIBUTING file under .github; only workflows.",
+            "url": "https://github.com/luhenry/d2vm/tree/main/.github"
+          },
+          {
+            "finding": "No contributing page under docs; mkdocs navigation lists only Home, Complete Example and the generated command line reference.",
+            "url": "https://github.com/luhenry/d2vm/tree/main/docs"
+          },
+          {
+            "finding": "README has install-from-source instructions (make install) but no contributing or development section, no CLA and no DCO statement.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          },
+          {
+            "finding": "In the absence of a document, the maintainer states requirements in PR comments: rebase, squash and sign the commit.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/62#issuecomment-2751105645"
+          },
+          {
+            "finding": "Maintainer: run go generate ./... before building; prefer make install because it sets the build flags.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/12#issuecomment-1246390133"
+          }
+        ],
+        "status": "none_found"
+      },
+      "pull_request_template": {
+        "searched": [
+          "PULL_REQUEST_TEMPLATE.md",
+          "pull_request_template.md",
+          ".github/PULL_REQUEST_TEMPLATE.md",
+          ".github/pull_request_template.md",
+          ".github/PULL_REQUEST_TEMPLATE/",
+          "docs/PULL_REQUEST_TEMPLATE.md",
+          "docs/pull_request_template.md"
+        ],
+        "sources": [
+          {
+            "finding": "Root of main at 7184ff1 contains no PULL_REQUEST_TEMPLATE or pull_request_template file (checked in the checkout and in the root listing of linka-cloud/d2vm).",
+            "url": "https://github.com/luhenry/d2vm/tree/main"
+          },
+          {
+            "finding": "The .github directory contains only the workflows directory (ci.yaml, docs.yaml); no pull request template file or PULL_REQUEST_TEMPLATE directory.",
+            "url": "https://github.com/luhenry/d2vm/tree/main/.github"
+          },
+          {
+            "finding": "docs contains only CNAME, content and mkdocs.yml; no pull request template.",
+            "url": "https://github.com/luhenry/d2vm/tree/main/docs"
+          },
+          {
+            "finding": "Merged pull requests have free-form bodies (for example only 'closes #74'), confirming that no template is applied.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/91"
+          }
+        ],
+        "status": "none_found",
+        "templates": []
+      },
+      "reviewers": {
+        "expectations": [
+          "Add an e2e case for the new platform in e2e/e2e_test.go that converts at least one distribution image for linux/riscv64 with grub-efi and boots it to a serial login in QEMU; the maintainer does not merge behaviour changes without e2e coverage (PR 90, PR 72).",
+          "Keep changes minimal and delete anything not strictly needed; expect empty-suggestion reviews on superfluous lines (PR 90).",
+          "Extend the existing templates with architecture conditionals; do not add new template files (PR 90).",
+          "Do not change behaviour or defaults for linux/amd64 and linux/arm64; prefer additive switch cases and fallbacks (PR 62, PR 45).",
+          "Regenerate docs/content/reference with make cli-docs whenever flag help changes and update README.md and docs/content/index.md together; the docs-up-to-date job must pass.",
+          "All existing CI jobs (make vet, make tests, make test-templates, make e2e, make check-fmt, make build-snapshot, make docker-build) must stay green on ubuntu-latest.",
+          "Deliver squashed, logically separated commits with a Signed-off-by trailer; the maintainer asks external contributors to squash and sign (PR 61, PR 62, PR 68).",
+          "Only add a target that can be tested and maintained; untestable targets are declined (issue 38, PR 58).",
+          "Images must boot reliably and as fast as possible; keep GRUB_TIMEOUT=0, disabled OS prober and the existing kernel cmdline shape for the new architecture (PR 90 final comment)."
+        ],
+        "paths": [
+          {
+            "codeowners": [],
+            "path": ".github/workflows/*",
+            "reviewers": [
+              {
+                "expectations": "CI changes are accepted when small and purposeful (PR 69 added one lint step); new test dependencies are added to the existing apt install step and matrix rows of ci.yaml (PR 43 added ovmf with the efi tests); all jobs must stay green on ubuntu-latest.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/69#issuecomment-2798755854",
+                  "https://github.com/linka-cloud/d2vm/pull/43",
+                  "https://github.com/linka-cloud/d2vm/pull/66#issuecomment-2792089275"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": ".goreleaser.yaml",
+            "reviewers": [
+              {
+                "expectations": "No external review exists for release configuration; the maintainer alone edits .goreleaser.yaml, Makefile and Dockerfile. Keep the release pipeline working unchanged for amd64 and arm64 (make build-snapshot runs on every PR) and keep the Dockerfile package list conditional on uname -m as PR 44 did for extlinux.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/43"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "Makefile",
+            "reviewers": [
+              {
+                "expectations": "No external review exists for release configuration; the maintainer alone edits .goreleaser.yaml, Makefile and Dockerfile. Keep the release pipeline working unchanged for amd64 and arm64 (make build-snapshot runs on every PR) and keep the Dockerfile package list conditional on uname -m as PR 44 did for extlinux.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/43"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "Dockerfile",
+            "reviewers": [
+              {
+                "expectations": "No external review exists for release configuration; the maintainer alone edits .goreleaser.yaml, Makefile and Dockerfile. Keep the release pipeline working unchanged for amd64 and arm64 (make build-snapshot runs on every PR) and keep the Dockerfile package list conditional on uname -m as PR 44 did for extlinux.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/43"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "README.md",
+            "reviewers": [
+              {
+                "expectations": "Flag help changes must be mirrored in README.md, docs/content/index.md and the generated docs/content/reference files (make cli-docs); the docs-up-to-date job fails otherwise. PR 44 and PR 72 both carry the regenerated reference files.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/72"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": ".gitignore",
+            "reviewers": [
+              {
+                "expectations": "No external review exists for release configuration; the maintainer alone edits .goreleaser.yaml, Makefile and Dockerfile. Keep the release pipeline working unchanged for amd64 and arm64 (make build-snapshot runs on every PR) and keep the Dockerfile package list conditional on uname -m as PR 44 did for extlinux.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/43"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "builder.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "bootloader.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "grub.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "grub_bios.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "grub_efi.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "grub_common.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "syslinux.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "config.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "config_test.go",
+            "reviewers": [
+              {
+                "expectations": "Every new feature or target needs a case in the e2e test table that converts an image and boots it to a serial login with QEMU; a target that cannot be tested in CI is not considered supported.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677",
+                  "https://github.com/linka-cloud/d2vm/issues/38#issuecomment-2100814247"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "dockerfile.go",
+            "reviewers": [
+              {
+                "expectations": "One Dockerfile template per distribution family, extended with conditionals; never add an architecture- or distribution-specific template file; keep minimalist distribution defaults; template changes are exercised by make test-templates and the e2e matrix.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122692903",
+                  "https://github.com/linka-cloud/d2vm/pull/45#issuecomment-1816643568",
+                  "https://github.com/linka-cloud/d2vm/pull/61#issuecomment-2692369647"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "docker_image_test.go",
+            "reviewers": [
+              {
+                "expectations": "Every new feature or target needs a case in the e2e test table that converts an image and boots it to a serial login with QEMU; a target that cannot be tested in CI is not considered supported.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677",
+                  "https://github.com/linka-cloud/d2vm/issues/38#issuecomment-2100814247"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "version.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "convert.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "convert_options.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "container_disk.go",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "qemu.sh",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "cmd/d2vm/*",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "cmd/d2vm/run/*",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "pkg/qemu/*",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "pkg/docker/*",
+            "reviewers": [
+              {
+                "expectations": "Behaviour changes must be covered by an e2e case and pass CI; keep the diff minimal and remove code that is not needed; preserve existing behaviour for amd64 and arm64; put validation where it already lives (builder.go and cmd/d2vm/flags.go).",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792",
+                  "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341",
+                  "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "templates/*",
+            "reviewers": [
+              {
+                "expectations": "One Dockerfile template per distribution family, extended with conditionals; never add an architecture- or distribution-specific template file; keep minimalist distribution defaults; template changes are exercised by make test-templates and the e2e matrix.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122692903",
+                  "https://github.com/linka-cloud/d2vm/pull/45#issuecomment-1816643568",
+                  "https://github.com/linka-cloud/d2vm/pull/61#issuecomment-2692369647"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "e2e/*",
+            "reviewers": [
+              {
+                "expectations": "Every new feature or target needs a case in the e2e test table that converts an image and boots it to a serial login with QEMU; a target that cannot be tested in CI is not considered supported.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+                  "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677",
+                  "https://github.com/linka-cloud/d2vm/issues/38#issuecomment-2100814247"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "docs/content/*",
+            "reviewers": [
+              {
+                "expectations": "Flag help changes must be mirrored in README.md, docs/content/index.md and the generated docs/content/reference files (make cli-docs); the docs-up-to-date job fails otherwise. PR 44 and PR 72 both carry the regenerated reference files.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/72"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          },
+          {
+            "codeowners": [],
+            "path": "docs/content/reference/*",
+            "reviewers": [
+              {
+                "expectations": "Flag help changes must be mirrored in README.md, docs/content/index.md and the generated docs/content/reference files (make cli-docs); the docs-up-to-date job fails otherwise. PR 44 and PR 72 both carry the regenerated reference files.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/44",
+                  "https://github.com/linka-cloud/d2vm/pull/72"
+                ],
+                "role": "sole maintainer, reviewer and merger of linka-cloud/d2vm (origin of luhenry/d2vm main)"
+              }
+            ]
+          }
+        ],
+        "searched": [
+          "CODEOWNERS",
+          ".github/CODEOWNERS",
+          "docs/CODEOWNERS",
+          "luhenry/d2vm pull requests (none exist)",
+          "linka-cloud/d2vm: all 51 pull requests, reviews and review threads of #49, #62, #68, #90, comments of every external PR, merged_by of merged PRs",
+          "git log -- .github/workflows, .goreleaser.yaml, templates, e2e"
+        ],
+        "sources": [
+          {
+            "finding": "No CODEOWNERS file in the root, .github or docs.",
+            "url": "https://github.com/luhenry/d2vm/tree/main"
+          },
+          {
+            "finding": "luhenry/d2vm has no pull requests, so no reviewer history exists there; the repository owner luhenry is the requester.",
+            "url": "https://github.com/luhenry/d2vm/pulls?q=is%3Apr"
+          },
+          {
+            "finding": "Adphi requests e2e coverage for boot loader and builder changes.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+          },
+          {
+            "finding": "Adphi: one template per distribution family; minimal changes.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122692903"
+          },
+          {
+            "finding": "Adphi asks for an e2e test case for a new builder option.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677"
+          },
+          {
+            "finding": "Adphi merges an external ci.yaml change without change requests.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/69#issuecomment-2798755854"
+          },
+          {
+            "finding": "Adphi requests backward compatible behaviour in builder.go and later a rebased, squashed, signed commit.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629"
+          },
+          {
+            "finding": "Adphi: validation belongs in builder.go, convert.go only sets defaults.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341"
+          },
+          {
+            "finding": "Maintainer's own arm64 PR: defines which files an architecture addition touches and that generated docs are part of the change.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/44"
+          }
+        ],
+        "status": "found"
+      }
+    },
+    "contribution_id": "luhenry--d2vm/3",
+    "dependency_graph": {
+      "assessment": "The tool succeeded but the graph has no node for d2vm under any identity: no vcs:Repository whose IRI or literals contain d2vm (query repo), no core:identityName equal to d2vm, go.linka.cloud/d2vm, linka-cloud/d2vm or luhenry/d2vm (query ident), and no pkg:golang purl at all (query golang returns 0), so the graph does not cover the Go module ecosystem. Direct, transitive and reverse dependency edges of d2vm are therefore unavailable; this is missing data, not an empty dependency set, and no edge is inferred from it. What the graph does confirm (queries hosttools, grubarch, riscv64_hosttools) is the Ubuntu resolute riscv64 availability of the host tools and guest packages d2vm shells out to or installs: util-linux, udev, parted, kpartx, e2fsprogs, dosfstools, mount, tar, cryptsetup-bin, qemu-utils, qemu-system-riscv, qemu-system-misc, docker.io, golang-go 1.26, grub-common, grub2-common, grub-efi-riscv64, grub-efi-riscv64-bin, linux-image-virtual and linux-image-generic all have riscv64 binaries; qemu-efi-riscv64 exists as an architecture-independent package; extlinux exists for amd64 only, which matches the code restricting syslinux to x86_64. Build dependencies from the checkout (go.mod, not in the graph): 17 direct Go modules (go-containerregistry, hcloud-go, pkg/sftp, logrus, cobra, pflag, testify, sparsecat, go.linka.cloud/console, multierr, x/crypto, x/sys, datasize, go-humanize, fatih/color, uuid, godotenv) and 34 indirect ones, all pure Go; the build sets CGO_ENABLED=0 and the repository contains no assembly, cgo or architecture build tags. A local cross build with GOARCH=riscv64 of ./cmd/d2vm at 7184ff1 produced a static riscv64 executable, which shows every direct and transitive Go dependency compiles for linux/riscv64. Runtime dependencies are external programs (docker, parted, kpartx, mkfs, qemu-img, cryptsetup, grub-install inside the guest chroot, optional qemu-system and VirtualBox), covered by the distribution evidence above. Test dependencies: testify, docker with binfmt, qemu-system and UEFI firmware. No reverse dependencies are known from the graph; pkg.go.dev lists the module as a command-line tool.",
+      "canonical_project": "go.linka.cloud/d2vm (GitHub luhenry/d2vm, mirror of linka-cloud/d2vm); not present in the graph",
+      "query": {
+        "golang": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> PREFIX vcs: <https://purl.org/packagegraph/ontology/vcs#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT (COUNT(?s) AS ?n) WHERE { ?s core:purl ?p . FILTER(STRSTARTS(STR(?p), \"pkg:golang/\")) }",
+        "grubarch": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> PREFIX vcs: <https://purl.org/packagegraph/ontology/vcs#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT DISTINCT ?s WHERE { ?s core:packageName ?n . FILTER(STR(?n) IN (\"grub-efi-riscv64-bin\",\"qemu-efi-riscv64\",\"extlinux\",\"qemu-utils\")) } LIMIT 40",
+        "hosttools": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> PREFIX vcs: <https://purl.org/packagegraph/ontology/vcs#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT DISTINCT ?name WHERE { ?s core:identityName ?name . FILTER(STR(?name) IN (\"grub-efi-riscv64-bin\",\"grub-efi-riscv64\",\"qemu-utils\",\"qemu-system-misc\",\"qemu-efi-riscv64\",\"parted\",\"kpartx\",\"dosfstools\",\"e2fsprogs\",\"cryptsetup-bin\",\"extlinux\",\"u-boot-qemu\",\"opensbi\",\"linux-image-virtual\",\"golang-go\",\"docker.io\")) } LIMIT 40",
+        "ident": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> PREFIX vcs: <https://purl.org/packagegraph/ontology/vcs#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?s ?name WHERE { ?s core:identityName ?name . FILTER(LCASE(STR(?name)) IN (\"d2vm\", \"go.linka.cloud/d2vm\", \"golang-go.linka.cloud-d2vm\", \"linka-cloud/d2vm\", \"luhenry/d2vm\")) } LIMIT 20",
+        "repo": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> PREFIX vcs: <https://purl.org/packagegraph/ontology/vcs#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?s ?p ?o WHERE { ?s a vcs:Repository ; ?p ?o . FILTER(CONTAINS(LCASE(STR(?s)), \"d2vm\") || (isLiteral(?o) && CONTAINS(LCASE(STR(?o)), \"d2vm\"))) } LIMIT 20",
+        "riscv64_hosttools": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> SELECT DISTINCT ?n ?s WHERE { ?s core:packageName ?n . FILTER(STR(?n) IN (\"grub-efi-riscv64-bin\",\"grub-efi-riscv64\",\"grub-common\",\"grub2-common\",\"qemu-utils\",\"qemu-system-misc\",\"qemu-system-riscv\",\"qemu-efi-riscv64\",\"parted\",\"kpartx\",\"dosfstools\",\"e2fsprogs\",\"cryptsetup-bin\",\"extlinux\",\"u-boot-qemu\",\"opensbi\",\"linux-image-virtual\",\"linux-image-generic\",\"golang-go\",\"docker.io\",\"util-linux\",\"udev\",\"mount\",\"tar\",\"ca-certificates\",\"initramfs-tools\",\"systemd-sysv\")) FILTER(CONTAINS(STR(?s), \"/riscv64/\") || CONTAINS(STR(?s), \"/all/\")) } ORDER BY ?n LIMIT 100"
+      },
+      "result": {
+        "golang": {
+          "head": {
+            "vars": [
+              "n"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "n": {
+                  "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+                  "type": "literal",
+                  "value": "0"
+                }
+              }
+            ]
+          }
+        },
+        "grubarch": {
+          "head": {
+            "vars": [
+              "s"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/amd64/extlinux/3%3A6.04~git20190206.bf6db5b4%2Bdfsg1-3.2ubuntu1"
+                }
+              },
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/qemu-utils/1%3A10.2.1%2Bds-1ubuntu3"
+                }
+              },
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/arm64/qemu-utils/1%3A10.2.1%2Bds-1ubuntu3"
+                }
+              },
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/amd64/qemu-utils/1%3A10.2.1%2Bds-1ubuntu3"
+                }
+              },
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/arm64/qemu-efi-riscv64/2025.11-3ubuntu7"
+                }
+              },
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/amd64/qemu-efi-riscv64/2025.11-3ubuntu7"
+                }
+              },
+              {
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/grub-efi-riscv64-bin/2.14-2ubuntu2"
+                }
+              }
+            ]
+          }
+        },
+        "hosttools": {
+          "head": {
+            "vars": [
+              "name"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "cryptsetup-bin"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "docker.io"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "dosfstools"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "e2fsprogs"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "extlinux"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "golang-go"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "kpartx"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "opensbi"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "parted"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "qemu-utils"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "u-boot-qemu"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "linux-image-virtual"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "qemu-efi-riscv64"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "grub-efi-riscv64-bin"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "qemu-system-misc"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "grub-efi-riscv64"
+                }
+              }
+            ]
+          }
+        },
+        "ident": {
+          "head": {
+            "vars": [
+              "s",
+              "name"
+            ]
+          },
+          "results": {
+            "bindings": []
+          }
+        },
+        "repo": {
+          "head": {
+            "vars": [
+              "s",
+              "p",
+              "o"
+            ]
+          },
+          "results": {
+            "bindings": []
+          }
+        },
+        "riscv64_hosttools": {
+          "head": {
+            "vars": [
+              "n",
+              "s"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "cryptsetup-bin"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/cryptsetup-bin/2%3A2.8.4-1ubuntu4"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "docker.io"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/docker.io/29.1.3-0ubuntu4"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "dosfstools"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/dosfstools/4.2-1.2build1"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "e2fsprogs"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/e2fsprogs/1.47.2-3ubuntu4"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "golang-go"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/golang-go/2%3A1.26~1"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "grub-common"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/grub-common/2.14-2ubuntu2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "grub-efi-riscv64"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/grub-efi-riscv64/2.14-2ubuntu2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "grub-efi-riscv64-bin"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/grub-efi-riscv64-bin/2.14-2ubuntu2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "grub2-common"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/grub2-common/2.14-2ubuntu2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "kpartx"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/kpartx/0.14.3-2ubuntu1"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "linux-image-generic"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/linux-image-generic/7.0.0-14.14.2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "linux-image-virtual"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/linux-image-virtual/7.0.0-14.14.2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "mount"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/mount/2.41.3-3ubuntu2"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "parted"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/parted/3.6-6"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "qemu-system-misc"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/qemu-system-misc/1%3A10.2.1%2Bds-1ubuntu3"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "qemu-system-riscv"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/qemu-system-riscv/1%3A10.2.1%2Bds-1ubuntu3"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "qemu-utils"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/qemu-utils/1%3A10.2.1%2Bds-1ubuntu3"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "systemd-sysv"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/systemd-sysv/259.5-0ubuntu3"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "tar"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/tar/1.35%2Bdfsg-4"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "udev"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/udev/259.5-0ubuntu3"
+                }
+              },
+              {
+                "n": {
+                  "type": "literal",
+                  "value": "util-linux"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/util-linux/2.41.3-3ubuntu2"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "success": true,
+      "tool": "project_graph_query"
+    },
+    "ecosystem_report": {
+      "status": "absent"
+    },
+    "expected_revision": 2,
+    "history": [
+      {
+        "decision": "arm64 added as an EFI-only platform: --platform linux/arm64 defaults to and only permits grub-efi, package names in the Debian and Ubuntu templates depend on uname -m, CLI docs regenerated. Merged by the author Adphi without review and without CI test rows or goreleaser changes. This is the direct precedent for riscv64.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/44"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/44"
+      },
+      {
+        "decision": "ARM64 EFI support requested and implemented by the maintainer using grub-efi-arm64, depending on EFI boot support (issue 25); closed by PR 44.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/issues/40"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/issues/40"
+      },
+      {
+        "decision": "FAT32 boot partition and GRUB-EFI support merged together with e2e efi cases and the ovmf dependency in ci.yaml: a boot feature lands with its e2e and CI changes in the same PR.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/43"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/43"
+      },
+      {
+        "decision": "End-to-end tests introduced (convert in the d2vm image, boot with pkg/qemu, serial login); these are the tests the maintainer requires for every behaviour change.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/29"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/29"
+      },
+      {
+        "decision": "External Rocky 10 GRUB-EFI PR. Changes requested: e2e tests must cover the change, no distribution-specific template, minimal changes, remove unneeded code. Closed in favour of maintainer PR 91; maintainer declined to preserve distribution GRUB defaults because images must boot reliably and fast.",
+        "outcome": "superseded",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+          "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122692903",
+          "https://github.com/linka-cloud/d2vm/pull/90#issuecomment-4388365166"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/90"
+      },
+      {
+        "decision": "Maintainer's own fix for RHEL family grub-bios and grub-efi on Rocky and AlmaLinux 9+, merged after a fully green CI run; shows the current boot loader code shape (grub2 naming, BLS disabled) that a riscv64 target reuses.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/91"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/91"
+      },
+      {
+        "decision": "Additional rootfs options stalled since 2025-05 because the requested e2e test case was never added; unresolved objection is missing e2e coverage.",
+        "outcome": "open",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/72"
+      },
+      {
+        "decision": "Ubuntu 12 and 14 support: maintainer does not want to maintain unsupported distribution versions; would accept non official support with optional tests if the contributor maintains it. Still open.",
+        "outcome": "open",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/58#issuecomment-2346989410",
+          "https://github.com/linka-cloud/d2vm/pull/58#issuecomment-2403670880"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/58"
+      },
+      {
+        "decision": "Raw-format shortcut accepted only after it kept backward compatibility across mount points; contributor asked to rebase, squash and sign the commit.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2673873629",
+          "https://github.com/linka-cloud/d2vm/pull/62#issuecomment-2751105645"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/62"
+      },
+      {
+        "decision": "vhd fix: changes requested (validation belongs in builder.go, a case was missed), then closed in favour of maintainer PR 50.",
+        "outcome": "superseded",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/49"
+      },
+      {
+        "decision": "Switching Ubuntu to NetworkManager rejected: the project sticks to minimalist distribution defaults (networkd and netplan).",
+        "outcome": "rejected",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/45#issuecomment-1816643568"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/45"
+      },
+      {
+        "decision": "External CI change adding make vet to the tests job merged without objections; precedent for an external edit of .github/workflows/ci.yaml.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/69#issuecomment-2798755854"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/69"
+      },
+      {
+        "decision": "Template fix merged after the contributor squashed and signed the commits as requested.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/61#issuecomment-2692369647"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/61"
+      },
+      {
+        "decision": "One-line error handling fix approved; merge waited for a signed commit.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/68#pullrequestreview-2761258908",
+          "https://github.com/linka-cloud/d2vm/pull/68#issuecomment-2797756352"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/68"
+      },
+      {
+        "decision": "Bare metal support not pursued because the project has no infrastructure to test it; a target must be testable to be supported.",
+        "outcome": "open",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/issues/38#issuecomment-2100814247"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/issues/38"
+      },
+      {
+        "decision": "Ubuntu 12.04 is not officially supported and the maintainer will not change the project for it; support is limited to what is maintained and tested.",
+        "outcome": "open",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/issues/55#issuecomment-2307059071"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/issues/55"
+      },
+      {
+        "decision": "UEFI with GRUB2: already available through --bootloader=grub-efi; distributions outside the support matrix may fail and pull requests are welcome; closed by PR 91.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/issues/74#issuecomment-3035023633",
+          "https://github.com/linka-cloud/d2vm/issues/74#issuecomment-3101275846"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/issues/74"
+      }
+    ],
+    "maintainers": [
+      {
+        "name": "Adphi",
+        "role": "Sole maintainer, reviewer, merger and release author of the original project linka-cloud/d2vm (author of 90 of the last 100 commits, merged_by of every merged PR, author of all eight releases). Sets the requirements quoted in this plan: e2e coverage, minimal changes, one template per distribution family, squashed and signed commits.",
+        "sources": [
+          "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+          "https://github.com/linka-cloud/d2vm/pull/44",
+          "https://github.com/linka-cloud/d2vm/releases/tag/v0.4.0",
+          "https://github.com/linka-cloud/d2vm/pull/62#pullrequestreview-2714450880"
+        ]
+      },
+      {
+        "name": "luhenry",
+        "role": "Owner of the nominal upstream repository luhenry/d2vm (a mirror of linka-cloud/d2vm main at 7184ff1) and author of the tracking request and of the refresh command; decides scope for this contribution. No review history exists in that repository.",
+        "sources": [
+          "https://github.com/riseproject-dev/porting-agent/issues/3",
+          "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7108875748",
+          "https://github.com/luhenry/d2vm"
+        ]
+      }
+    ],
+    "project": {
+      "build_and_test": "Build: go generate ./... (cross-builds the embedded sparsecat helpers for linux amd64 and arm64) then CGO_ENABLED=0 go build ./cmd/d2vm (make .build, make install); release builds with make build-snapshot, make build and make release (goreleaser); image with make docker-build. Tests: make vet (go vet), make tests (go test -exec sudo of the root package, skipping TestConfig), IMAGE=<distribution> make test-templates (TestConfig builds each kernel-enabled template image with docker), E2E_IMAGES=<image> make e2e (builds the d2vm image, converts distribution images and boots them with QEMU), make docs-up-to-date (regenerates docs/content/reference and fails on a diff), make check-fmt. CI: .github/workflows/ci.yaml jobs tests, templates-tests, e2e-tests, docs-up-to-date, build, build-image, release, release-image, all on ubuntu-latest, triggered by pull requests to main and v* tags.",
+      "build_systems": [
+        "go modules (go 1.25, CGO_ENABLED=0)",
+        "make",
+        "goreleaser v1.10.1",
+        "docker image build",
+        "mkdocs-material (docs site)"
+      ],
+      "languages": [
+        "Go",
+        "Dockerfile",
+        "Shell",
+        "Makefile"
+      ],
+      "release_channels": [
+        {
+          "evidence": "v0.4.0 is built from .goreleaser.yaml goos linux, windows, darwin and goarch amd64, arm64; the generated Homebrew formula references only darwin and linux archives for amd64 and arm64. luhenry/d2vm has no tags or releases.",
+          "kind": "github_release",
+          "name": "linka-cloud/d2vm GitHub releases (goreleaser archives, checksums, signatures)",
+          "riscv64": "absent",
+          "url": "https://github.com/linka-cloud/d2vm/releases"
+        },
+        {
+          "evidence": "Formula 0.4.0 has on_macos and on_linux branches for ARM and Intel CPUs only; Homebrew does not serve linux/riscv64, so this channel will stay without riscv64.",
+          "kind": "other",
+          "name": "Homebrew tap linka-cloud/homebrew-tap (Formula/d2vm.rb)",
+          "riscv64": "absent",
+          "url": "https://github.com/linka-cloud/homebrew-tap/blob/main/Formula/d2vm.rb"
+        },
+        {
+          "evidence": "Docker Hub API lists latest, v0.4.0 and all recent tags as linux/amd64 only; make docker-build is single-platform, and docker:dind used by the Dockerfile has no riscv64 manifest.",
+          "kind": "container_image",
+          "name": "linkacloud/d2vm on Docker Hub",
+          "riscv64": "absent",
+          "url": "https://hub.docker.com/r/linkacloud/d2vm/tags"
+        },
+        {
+          "evidence": "Source-only Go module (latest v0.4.0); it compiles for linux/riscv64 already, verified by a local GOARCH=riscv64 build of ./cmd/d2vm.",
+          "kind": "go_module",
+          "name": "go.linka.cloud/d2vm",
+          "riscv64": "not_applicable",
+          "url": "https://pkg.go.dev/go.linka.cloud/d2vm"
+        },
+        {
+          "evidence": "Static mkdocs site deployed by docs.yaml on tags; architecture independent.",
+          "kind": "other",
+          "name": "Documentation site d2vm.linka.cloud (gh-pages)",
+          "riscv64": "not_applicable",
+          "url": "https://d2vm.linka.cloud/"
+        }
+      ],
+      "riscv64_toolchain": "Go: linux/riscv64 is a supported GOARCH (rv64g, RVA20U64 required since Go 1.23); the project needs Go 1.25 and builds with CGO disabled, has no assembly, cgo or build tags, and cross-compiles to a static riscv64 ELF at 7184ff1 (checked locally with Go 1.26.11 after go generate). golang:1.25 and ubuntu:20.04, 22.04 and 24.04 images have linux/riscv64 manifests. goreleaser accepts goarch riscv64. Missing on riscv64: docker:dind (no manifest), extlinux/syslinux and grub-pc (x86 only, already excluded by code), Alpine linux-virt (use linux-lts), debian:12, almalinux, centos:8, rockylinux:9 and kali base images. Test tooling: tonistiigi/binfmt provides qemu-riscv64 user emulation on ubuntu-latest; qemu-system-riscv64 (qemu-system-misc) and edk2 firmware (qemu-efi-riscv64: RISCV_VIRT_CODE.fd, RISCV_VIRT_VARS.fd, loaded through pflash) are in Ubuntu 24.04."
+    },
+    "proposal": {
+      "admission_class": "architecture_correctness",
+      "allowed_paths": [
+        ".github/workflows/*",
+        ".goreleaser.yaml",
+        "Makefile",
+        "Dockerfile",
+        "README.md",
+        ".gitignore",
+        "builder.go",
+        "bootloader.go",
+        "grub.go",
+        "grub_bios.go",
+        "grub_efi.go",
+        "grub_common.go",
+        "syslinux.go",
+        "config.go",
+        "config_test.go",
+        "dockerfile.go",
+        "docker_image_test.go",
+        "version.go",
+        "convert.go",
+        "convert_options.go",
+        "container_disk.go",
+        "qemu.sh",
+        "cmd/d2vm/*",
+        "cmd/d2vm/run/*",
+        "pkg/qemu/*",
+        "pkg/docker/*",
+        "templates/*",
+        "e2e/*",
+        "docs/content/*",
+        "docs/content/reference/*"
+      ],
+      "architecture_precedent": "Shared host. All Linux work runs on a single ubuntu-latest amd64 runner with docker/setup-qemu-action for user-mode emulation and apt-installed qemu-system for boot tests; there are no native per-architecture runner rows and no architecture matrix. arm64 (PR 44) is the nearest precedent: a goarch entry in .goreleaser.yaml (present since commit 18af322 of 2022-08-05, which set up tests and releases), a linux/arm64 platform case with grub-efi only, uname -m based package selection in the Debian and Ubuntu templates, and no CI row. Recommendation: add riscv64 to the existing lists (goarch, platform switch, template conditionals) and test it on the shared ubuntu-latest host through binfmt and qemu-system-riscv64 with edk2; use ubuntu-24.04-riscv only if emulated conversion plus TCG boot cannot finish within the job limits, and document that incompatibility if it occurs.",
+      "build_and_dependencies": "Go modules with go 1.25, CGO disabled, 17 direct and 34 indirect pure Go modules; local GOARCH=riscv64 build of ./cmd/d2vm succeeds after go generate. Host tools invoked at run time (docker, parted, kpartx, e2fsprogs, dosfstools, qemu-utils, cryptsetup, mount, tar) exist for riscv64 in Ubuntu (project graph, resolute riscv64). Guest packages exist for riscv64: Ubuntu linux-image-virtual and grub-efi-riscv64-bin (jammy, noble, resolute), Debian 13 linux-image-riscv64 and grub-efi-riscv64-bin, Alpine 3.23 linux-lts and grub-efi (linux-virt is not built for riscv64). Not available on riscv64: docker:dind image, extlinux and grub-pc (x86 only by nature), base images debian:12, almalinux:10, centos:8, rockylinux:9, kali. No Python dependency exists, so no PyPI or RISE index setting applies.",
+      "contribution_rules": "No CONTRIBUTING file, pull request template, CODEOWNERS, CLA or DCO document. Apache-2.0. De facto rules from maintainer reviews: e2e coverage for behaviour changes, minimal diffs, one template per distribution family, backward compatibility, squashed commits with Signed-off-by (94 of the last 100 commits) and, for linka-cloud/d2vm, verified signatures; lower-case titles, usually with a feat:, fix:, docs:, chore:, actions:, tests: or component prefix that also drives the goreleaser changelog filter.",
+      "decision": "develop",
+      "existing_riscv64_work": "None on main of luhenry/d2vm or anywhere in linka-cloud/d2vm: no issue, pull request, commit, workflow, documentation or code mentions RISC-V (issue and PR searches for riscv, riscv64, rv64 and RISC-V return nothing; grep of the checkout returns nothing). luhenry/d2vm has a second branch named riscv64-draft; per the tracking issue it was not read and nothing in this plan derives from it.",
+      "fork_guards": "None. ci.yaml and docs.yaml contain no github.repository condition. Publication steps are conditioned on refs/tags/v or refs/heads/main and require secrets (DOCKER_HUB_USERNAME, DOCKER_HUB_ACCESS_TOKEN, GPG_KEY, GPG_PASSWORD, REPOSITORIES_ACCESS_TOKEN); on a fork pull request all test and build jobs run and the release jobs are skipped. Two jobs use linka-cloud/free-disk-space@main, a third-party action pinned to a branch. luhenry/d2vm has never run Actions (no registered workflows), so Actions must be enabled where the development PR runs.",
+      "path_coverage": [
+        {
+          "area": "build",
+          "assessment": "Each path is listed once across the six areas because the gate bounds the combined list: .goreleaser.yaml is listed under release, Dockerfile under packaging and cmd/d2vm/run/* under native_sources although they also belong to the build. The Go build needs no change: CGO_ENABLED=0 GOARCH=riscv64 go build ./cmd/d2vm succeeds at 7184ff1. Makefile may need a riscv64-aware target or variable for tests and the goreleaser download stays x86_64 because the host is ubuntu-latest. .goreleaser.yaml gains riscv64 in goarch (with an ignore for windows and darwin if v1.10.1 requires it). Dockerfile copies the docker CLI from docker:dind, which has no riscv64 manifest; a riscv64 image needs another CLI source (docker.io package or the static riscv64 binary) and is optional because the image channel is amd64 only. cmd/d2vm/run/util.go holds the go:generate lines for the embedded sparsecat helpers (amd64 and arm64, Hetzner only) and .gitignore ignores their outputs; they need a change only if a riscv64 helper is added.",
+          "paths": [
+            "Makefile",
+            ".gitignore"
+          ]
+        },
+        {
+          "area": "test",
+          "assessment": "Makefile test targets are listed under build. ci.yaml runs everything on one ubuntu-latest host with docker/setup-qemu-action (binfmt includes riscv64) and apt qemu-system and ovmf. riscv64 coverage is added on that shared host: an e2e row or parameter for linux/riscv64 (grub-efi cases only, images with a riscv64 manifest: ubuntu:22.04, ubuntu:24.04, debian:13, alpine:3.23), the qemu-efi-riscv64 package in the apt step, and a longer boot timeout under TCG. e2e/e2e_test.go needs a platform parameter, the riscv64 firmware path and skips for images without riscv64. config_test.go (TestConfig, used by test-templates) and docker_image_test.go build for the host Arch and hardcode linux/amd64 in one place; they need a platform override to exercise the templates for riscv64. Makefile test targets may need to pass the platform through.",
+          "paths": [
+            ".github/workflows/*",
+            "e2e/*",
+            "config_test.go",
+            "docker_image_test.go"
+          ]
+        },
+        {
+          "area": "release",
+          "assessment": "The release jobs live in .github/workflows/* (listed under test), the release targets in Makefile (listed under build) and the image in Dockerfile (listed under packaging). Release graph: tag v* triggers ci.yaml jobs release (needs tests, templates-tests, docs-up-to-date, build, e2e-tests; make build then make release, goreleaser publishing archives, checksums, signatures, GitHub release and the Homebrew formula) and release-image (make docker-build, make docker-push, amd64 only); docs.yaml deploys the site. Adding riscv64 to .goreleaser.yaml goarch is enough for release archives, and the build job proves it on every PR through make build-snapshot. The Homebrew formula ignores non ARM and Intel archives. A riscv64 container image would require multi-platform buildx in the Makefile and ci.yaml plus the Dockerfile CLI source change; it is listed for completeness but not needed for a first contribution since arm64 has no image either. No fork guard exists; publish steps depend on secrets and tag or main refs.",
+          "paths": [
+            ".goreleaser.yaml"
+          ]
+        },
+        {
+          "area": "packaging",
+          "assessment": ".goreleaser.yaml is listed under release. Packaging metadata is the goreleaser archive and brew configuration and the Dockerfile. go.mod and go.sum need no change because no dependency is added and all modules are pure Go. The archive name template already handles any GOARCH. The linka-cloud/homebrew-tap repository is generated by goreleaser and is outside this repository.",
+          "paths": [
+            "Dockerfile"
+          ]
+        },
+        {
+          "area": "documentation",
+          "assessment": "README.md and docs/content/index.md state that --platform supports linux/amd64 and linux/arm64, that the bootloader default depends on amd64 or arm64, and give a download snippet that maps every non x86_64 machine to arm64; all three need riscv64. docs/content/reference/d2vm_build.md, d2vm_convert.md and d2vm_run_qemu.md are generated from the flag help by make cli-docs and are checked by the docs-up-to-date job, so they must be regenerated in the same change.",
+          "paths": [
+            "README.md",
+            "docs/content/*",
+            "docs/content/reference/*"
+          ]
+        },
+        {
+          "area": "native_sources",
+          "assessment": "There is no assembly or cgo; the architecture-specific source is a set of Go switches and Dockerfile templates. builder.go (NewBuilder) and cmd/d2vm/flags.go (validateFlags, flag help) reject every platform except linux/amd64 and linux/arm64 and need a linux/riscv64 case that defaults to and only allows grub-efi, like arm64. grub_efi.go builds the grub target from the arch string (riscv64-efi is valid) and grub_common.go holds the shared config; grub.go, grub_bios.go and syslinux.go already refuse non x86 arches and bootloader.go defines the provider interface; config.go holds the kernel cmdline (console device) and dockerfile.go passes template data and may need to expose the architecture. templates/debian.Dockerfile hardcodes linux-image-amd64 and, like templates/ubuntu.Dockerfile, maps every non x86_64 machine to arm64 package names; templates/alpine.Dockerfile installs linux-virt, which Alpine does not build for riscv64 (linux-lts is); templates/centos.Dockerfile installs grub2-efi-x64. pkg/qemu/qemu.go and cmd/d2vm/run/qemu.go lack riscv64 in the default-arch and GOARCH switches, use -cpu host even without KVM, select q35 for unknown arches and pass firmware with -bios, while the riscv64 virt machine needs edk2 on pflash; pkg/qemu/config.go carries the options. cmd/d2vm/run/util.go and hetzner.go select the embedded sparsecat by arch. pkg/docker/docker.go passes --platform to docker and names the d2vm image; version.go derives the default platform from GOARCH; convert.go, convert_options.go and container_disk.go carry the platform string; qemu.sh hardcodes qemu-system-x86_64.",
+          "paths": [
+            "builder.go",
+            "bootloader.go",
+            "grub.go",
+            "grub_bios.go",
+            "grub_efi.go",
+            "grub_common.go",
+            "syslinux.go",
+            "config.go",
+            "dockerfile.go",
+            "version.go",
+            "convert.go",
+            "convert_options.go",
+            "container_disk.go",
+            "qemu.sh",
+            "cmd/d2vm/*",
+            "cmd/d2vm/run/*",
+            "pkg/qemu/*",
+            "pkg/docker/*",
+            "templates/*"
+          ]
+        }
+      ],
+      "rationale": "Develop. d2vm is a pure Go command (CGO_ENABLED=0, no assembly, no cgo, no build tags) that already cross-compiles to a static linux/riscv64 binary at main 7184ff1, but that binary is useless as shipped: version.go makes linux/riscv64 its default platform and both cmd/d2vm/flags.go and builder.go reject every platform other than linux/amd64 and linux/arm64, pkg/qemu and cmd/d2vm/run/qemu.go have no riscv64 case, the Dockerfile templates compute amd64 or arm64 package names only, and .goreleaser.yaml releases amd64 and arm64 only. A concrete bounded patch exists and follows the accepted arm64 precedent (linka-cloud/d2vm PR 44, issue 40): add linux/riscv64 as an EFI-only platform whose bootloader defaults to and is restricted to grub-efi (grub target riscv64-efi), make the Ubuntu, Debian and Alpine templates choose riscv64 kernel and grub packages (linux-image-virtual, linux-image-riscv64, linux-lts; grub-efi-riscv64-bin or grub-efi, all verified to exist), teach pkg/qemu and d2vm run qemu the riscv64 virt machine with edk2 on pflash and a TCG-safe CPU model, add riscv64 to the goreleaser goarch list, add an emulated riscv64 e2e case on the existing shared ubuntu-latest host, and update README, docs/content and the generated CLI reference. Every dependency this needs is available: Go 1.25 for riscv64, golang:1.25 and ubuntu base images, tonistiigi/binfmt with riscv64, qemu-system-riscv64, qemu-efi-riscv64 firmware, and riscv64 manifests for ubuntu:22.04, ubuntu:24.04, debian:13 and alpine:3.23. There is no prior riscv64 work, request or objection in luhenry/d2vm (no issues, PRs, tags or Actions runs) or in linka-cloud/d2vm (42 issues and 51 PRs reviewed); the maintainer's recorded constraints are e2e coverage, minimal diffs, one template per distribution family, unchanged behaviour for existing platforms and squashed signed commits, all of which the proposed shape satisfies. The requester, who owns the upstream repository, explicitly asked for the riscv64 port of this Go project to be planned. Close is not applicable (not a PyPI project, riscv64 served nowhere) and park is not warranted because nothing blocks a first patch. The riscv64-draft branch was not consulted, as the tracking issue requires.",
+      "release_coverage": "GitHub release archives (goreleaser): linux, windows, darwin on amd64 and arm64; riscv64 absent. Homebrew tap: macOS and Linux on ARM and Intel; riscv64 absent and not servable. Docker Hub linkacloud/d2vm: linux/amd64 only; riscv64 and arm64 absent. Go module: source only, builds for riscv64. luhenry/d2vm itself has no tags or releases.",
+      "release_graph": "ci.yaml on pull_request to main: tests, templates-tests (8 images), e2e-tests (9 images), docs-up-to-date, build (check-fmt, goreleaser build-snapshot), build-image. On v* tags additionally release (needs tests, templates-tests, docs-up-to-date, build, e2e-tests; goreleaser release with GPG signing, GitHub release and Homebrew formula push using REPOSITORIES_ACCESS_TOKEN) and release-image (needs tests, docs-up-to-date, build-image, e2e-tests; docker push with Docker Hub secrets). docs.yaml on v* tags builds and force-pushes gh-pages. Release-snapshot and image push also run on refs/heads/main, but the workflow has no push trigger for branches, so in practice only tags publish.",
+      "risks": "1. e2e duration: converting under qemu-user and booting under TCG on ubuntu-latest is slow; the fixed two minute login timeout in e2e_test.go will need a per-platform value and the riscv64 rows should be limited to a few images. 2. pkg/qemu passes firmware with -bios, which on riscv64 is the SBI slot; edk2 must be attached as pflash (code and a writable copy of vars), and -cpu host must not be used without KVM. 3. grub-install --target=riscv64-efi runs inside the guest chroot through binfmt on an amd64 host; the removable path is BOOTRISCV64.EFI and the kernel must be an EFI-stub image, which distribution kernels are, but the generated grub.cfg and console (ttyS0 on virt) need verification per distribution. 4. goreleaser v1.10.1 with goarch riscv64 across windows and darwin must be checked with make build-snapshot; add an ignore list if it fails. 5. When d2vm runs unprivileged or on a non-Linux host it re-executes inside linkacloud/d2vm, which has no riscv64 image; native root use on riscv64 works, the container path does not until a riscv64 image exists (docker:dind lacks riscv64). 6. The Debian template installs linux-image-amd64 unconditionally, which looks broken for arm64 too; fixing it by deriving the package from the architecture changes arm64 behaviour and must be kept minimal. 7. docs-up-to-date fails unless docs/content/reference is regenerated with the built binary on amd64 (the default --platform value in the generated help is the build host platform). 8. The linka-cloud maintainer has stated no position on riscv64 and accepts only targets he can test; open PR 92 edits the same boot loader files and would conflict with a later submission there. 9. No CI evidence exists yet in luhenry/d2vm; the first run establishes the baseline, including jobs that depend on third-party images (centos:8, kali) unrelated to this change.",
+      "target_matrix": "Host: linux/riscv64 d2vm binary released by goreleaser (static, CGO disabled, default GORISCV64 rva20u64). Guest platform: --platform linux/riscv64 with bootloader grub-efi only (GPT, FAT32 ESP, removable riscv64-efi GRUB image), optional split boot and LUKS as on arm64. Distributions to enable and test first: ubuntu:24.04 and ubuntu:22.04, debian:13, alpine:3.23 (linux-lts); Rocky Linux 10 has a riscv64 image and can follow through the RHEL-family template; debian:12, almalinux, centos:8, rockylinux:9 and kali have no riscv64 base image and must be skipped for this platform. Run: d2vm run qemu --arch riscv64 on machine virt with OpenSBI default firmware plus edk2 on pflash, KVM when host matches, TCG otherwise. Out of scope: syslinux, grub-bios and grub (BIOS+EFI) boot loaders, d2vm run hetzner and vbox, the Homebrew formula, and (initially) the Docker image."
+    },
+    "research": {
+      "blogs": {
+        "coverage": {
+          "complete": true,
+          "scope": "Searched for a project or organisation blog, release announcements and third-party articles; read the release notes of the GitHub releases, which are the only announcement stream."
+        },
+        "findings": "No project blog or announcement channel exists. Web searches returned the repository, Docker Hub, pkg.go.dev, a self-hosted Git mirror of the same history and unrelated articles; none discusses d2vm on RISC-V or any architecture policy.",
+        "justification": "The project publishes no blog: the organisation site has no readable blog, README and website link none, and release notes are auto-generated commit lists. Searches for announcements and third-party write-ups about d2vm architecture support found nothing beyond the repository itself.",
+        "queries": [
+          "web_search: linka-cloud d2vm \"Docker to Virtual Machine\" blog announcement",
+          "web_search: d2vm linka-cloud riscv64",
+          "web_search: d2vm docker to vm arm64 grub-efi release v0.2.0",
+          "fetch_content raw https://linka.cloud/blog",
+          "list_releases linka-cloud/d2vm (8 releases) and get_latest_release"
+        ],
+        "sources": [
+          {
+            "finding": "No blog: the URL returns the same empty JavaScript application shell as the organisation home page, with no posts or feed.",
+            "url": "https://linka.cloud/blog"
+          },
+          {
+            "finding": "Release notes are the goreleaser changelog only (commit subject list for v0.4.0, 2026-01-22); no prose announcement and no platform statement. Releases: v0.1.0-rc1 to rc4 (2022-09), v0.1.0, v0.2.0, v0.3.0, v0.4.0, all authored by Adphi.",
+            "url": "https://github.com/linka-cloud/d2vm/releases/tag/v0.4.0"
+          },
+          {
+            "finding": "The only article the project references is the iximiuz post 'From Docker container to bootable Linux disk image', credited as inspiration; it is not a project blog and predates d2vm.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "ci_history": {
+        "coverage": {
+          "complete": true,
+          "scope": "Both workflow files and every build, test and release entry point they call (Makefile targets, goreleaser config, Dockerfile) were read in full; the whole workflow history of the checkout was listed; the job lists of the last release run and the last two PR runs were inspected."
+        },
+        "findings": "Topology: every Linux job shares one ubuntu-latest (amd64) host, with QEMU user emulation registered by docker/setup-qemu-action and qemu-system installed from apt for the boot tests. No native per-architecture runner exists and arm64, although supported by the code since PR 44, is not exercised by any CI job. riscv64 therefore follows the shared-host precedent: add riscv64 as an emulated platform on ubuntu-latest (docker --platform linux/riscv64 through binfmt for conversion, qemu-system-riscv64 with TCG and edk2 for boot) and do not introduce an ubuntu-24.04-riscv runner unless TCG boot proves technically unworkable within job limits. Release is tag-driven through goreleaser (binaries, checksums, signatures, Homebrew formula) plus a single-platform Docker image; fork guards are absent but publication needs secrets that a fork lacks, so on a fork the tag-only release jobs do not run and the pull_request jobs run fully. The Go toolchain builds the project for linux/riscv64 today without source changes (verified locally with CGO disabled), so the missing pieces are the release target list, the runtime architecture switches and test coverage.",
+        "queries": [
+          "actions_list list_workflows luhenry/d2vm (0 workflows registered) and list_workflow_runs (0 runs)",
+          "actions_list list_workflows linka-cloud/d2vm; list_workflow_runs (35 runs, newest 40 requested); list_workflow_runs ci.yaml event=push",
+          "actions_list list_workflow_jobs for runs 21242539853 (tag v0.4.0), 25119211167 (PR 91), 25481904130 (PR 92)",
+          "git log -- .github/workflows and git log -- .goreleaser.yaml on the checkout (154 commits)",
+          "read .github/workflows/ci.yaml, .github/workflows/docs.yaml, Makefile, .goreleaser.yaml, Dockerfile at 7184ff1",
+          "local check: go generate ./... and CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build ./cmd/d2vm on a scratch copy (Go 1.26.11): static riscv64 ELF produced"
+        ],
+        "sources": [
+          {
+            "finding": "Single workflow 'Tests and Build' on push of v* tags and pull_request to main. Jobs: tests (make vet, make tests), templates-tests (matrix of 8 distribution images, make test-templates), e2e-tests (matrix of 9 images, make e2e, installs qemu-system and ovmf), docs-up-to-date (make docs-up-to-date), build (make check-fmt, make build-snapshot, release-snapshot on tags or main), build-image (make docker-build, push on main), release (goreleaser, tags only), release-image (docker push, tags only). Every job runs on ubuntu-latest; six jobs install docker/setup-qemu-action@v1. There is no architecture matrix and no arm64 test row. No github.repository fork guard exists; publication steps are gated on refs/tags/v or refs/heads/main and on secrets (DOCKER_HUB_*, GPG_KEY, REPOSITORIES_ACCESS_TOKEN).",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.github/workflows/ci.yaml"
+          },
+          {
+            "finding": "Docs workflow on v* tags: make build-docs and make deploy-docs force-push the gh-pages branch; architecture independent.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.github/workflows/docs.yaml"
+          },
+          {
+            "finding": "tests: go generate then go test -exec sudo of the root package skipping TestConfig; test-templates: go test -run TestConfig/$(IMAGE); e2e: docker-build, .build, go test ./e2e -args -images; build-snapshot, release-snapshot, build, release call goreleaser v1.10.1 downloaded as goreleaser_Linux_x86_64.tar.gz into ./bin; docker-build is a plain single-platform docker image build; docs-up-to-date regenerates docs/content/reference with the built binary and fails on any diff.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/Makefile"
+          },
+          {
+            "finding": "builds: CGO_ENABLED=0, goos linux, windows, darwin; goarch amd64, arm64. before hooks: go mod tidy, go generate ./..., make completions. Archives named d2vm_VERSION_OS_ARCH; checksums; GPG signs; brews publishes Formula/d2vm.rb to linka-cloud/homebrew-tap. riscv64 is absent from goarch.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.goreleaser.yaml"
+          },
+          {
+            "finding": "Builder golang:1.25, runtime ubuntu:20.04, docker CLI copied from docker:dind. extlinux is installed only when uname -m is x86_64, so the package list is already safe on other architectures; docker:dind has no linux/riscv64 manifest, which blocks a riscv64 image build as written.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/Dockerfile"
+          },
+          {
+            "finding": "Release run 269 for tag v0.4.0 (2026-01-22): all 23 jobs succeeded on ubuntu-latest, including Release Binaries and Release Docker Image. This is the last publication.",
+            "url": "https://github.com/linka-cloud/d2vm/actions/runs/21242539853"
+          },
+          {
+            "finding": "Run 286 for PR 91 (2026-04-29): all test, template, e2e and build jobs succeeded; release jobs skipped. It is the last green run of the commit that is now the parent of main head.",
+            "url": "https://github.com/linka-cloud/d2vm/actions/runs/25119211167"
+          },
+          {
+            "finding": "Run 287 for open PR 92: cancelled with several e2e jobs cancelled; shows e2e jobs are slow and occasionally cancelled by the maintainer.",
+            "url": "https://github.com/linka-cloud/d2vm/actions/runs/25481904130"
+          },
+          {
+            "finding": "luhenry/d2vm has no registered workflows and no runs: Actions has never executed in the nominal upstream, so CI evidence for a development PR must come from the pipeline's fork run.",
+            "url": "https://github.com/luhenry/d2vm/actions"
+          },
+          {
+            "finding": "The lint step (make vet) was added to the tests job by an external PR in 2025-04; workflow history otherwise consists of maintainer commits prefixed actions: or chore:.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/69"
+          }
+        ],
+        "status": "searched"
+      },
+      "documentation": {
+        "coverage": {
+          "complete": true,
+          "scope": "All documentation in the repository (README, mkdocs site sources, generated CLI reference) and every Go, template, script and configuration file that mentions an architecture were read at 7184ff1; the root, .github and docs directory listings of linka-cloud/d2vm were checked for contribution and governance files."
+        },
+        "findings": "Documentation names amd64 and arm64 only. Architecture knowledge is spread over a small, well-defined set of switches: builder.go and cmd/d2vm/flags.go (platform), grub*.go and syslinux.go (bootloader support per arch), pkg/qemu/qemu.go and cmd/d2vm/run/qemu.go (run), the four Dockerfile templates (kernel and grub package names), .goreleaser.yaml (release targets), README and docs (install snippet, flag help) and the generated CLI reference. There is no contribution guide, code of conduct, CLA or DCO document; expectations come from maintainer reviews only.",
+        "queries": [
+          "read README.md, docs/mkdocs.yml, docs/content/index.md, docs/content/full-example.md listing, docs/content/reference/*.md (grep arm64|amd64|aarch64)",
+          "ls for CONTRIBUTING*, .github/CONTRIBUTING*, docs/CONTRIBUTING*, DEVELOPMENT*, CODEOWNERS, SECURITY*, MAINTAINERS*, pull request templates in the checkout and get_file_contents of linka-cloud/d2vm root, .github and docs",
+          "grep -rn 'arm64|amd64|aarch64|x86_64|GOARCH|riscv|i386|platform' over the checkout excluding go.sum"
+        ],
+        "sources": [
+          {
+            "finding": "Lists prerequisites (docker, util-linux, udev, parted, e2fsprogs, dosfstools, mount, tar, extlinux for syslinux, qemu-utils, cryptsetup, optional QEMU), install paths (Docker image linkacloud/d2vm, Homebrew tap, release tarball with ARCH computed as amd64 unless uname -m is not x86_64 then arm64, from source with make install) and the CLI help text stating that --bootloader defaults to syslinux on amd64 and grub-efi on arm64 and that --platform supports linux/amd64 and linux/arm64. No riscv64 mention; no contributing section.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          },
+          {
+            "finding": "Website home page; mirrors the README including the amd64/arm64 release download snippet and flag help.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/docs/content/index.md"
+          },
+          {
+            "finding": "Generated CLI reference (make cli-docs) repeating the --bootloader and --platform help; d2vm_convert.md and d2vm_run_qemu.md (--arch x86_64, aarch64, s390x) likewise. The docs-up-to-date CI job fails if these files differ from the output of the built binary, so any flag help change must regenerate them.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/docs/content/reference/d2vm_build.md"
+          },
+          {
+            "finding": "NewBuilder maps linux/amd64 to x86_64 and linux/arm64 or linux/aarch64 to arm64 and rejects every other platform with 'unexpected platform'.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/builder.go"
+          },
+          {
+            "finding": "validateFlags repeats the same platform switch: amd64 defaults to syslinux, arm64 defaults to and only allows grub-efi, anything else is an error. --platform defaults to d2vm.Arch, which version.go derives from runtime.GOOS/GOARCH, so a riscv64 binary rejects its own default platform.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/cmd/d2vm/flags.go"
+          },
+          {
+            "finding": "grub-install is called with --target=ARCH-efi, so an arch value of riscv64 yields the valid GRUB target riscv64-efi; grub.go, grub_bios.go and syslinux.go refuse any arch but x86_64.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/grub_efi.go"
+          },
+          {
+            "finding": "defaultArch is set for arm64, amd64 and s390x only; the config builder rejects any arch other than s390x, aarch64, x86_64 as unsupported, uses -cpu host unless cross-running aarch64, machine virt for aarch64 and q35 otherwise, and passes firmware with -bios. cmd/d2vm/run/qemu.go duplicates the default-arch switch. riscv64 needs a case in each switch, a non-KVM CPU model, machine virt and edk2 firmware on pflash.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/pkg/qemu/qemu.go"
+          },
+          {
+            "finding": "Installs linux-image-amd64 unconditionally and computes ARCH as amd64 or else arm64 for grub-efi-ARCH-bin; templates/ubuntu.Dockerfile uses the same two-way ARCH test with linux-image-virtual; templates/alpine.Dockerfile installs linux-virt; templates/centos.Dockerfile installs grub2-efi-x64. On riscv64 the two-way test yields arm64 package names.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/templates/debian.Dockerfile"
+          },
+          {
+            "finding": "go:generate builds sparsecat for linux amd64 and arm64 and embeds both; used only by run hetzner, whose server types are x86 or ARM, so riscv64 needs no sparsecat build.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/cmd/d2vm/run/util.go"
+          },
+          {
+            "finding": "TestConvert runs the d2vm Docker image to convert nine distribution images with six option sets, boots each result with pkg/qemu (OVMF at /usr/share/ovmf/OVMF.fd for efi cases), waits at most two minutes for the login prompt and powers off. No platform parameter exists.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/e2e/e2e_test.go"
+          },
+          {
+            "finding": "Root listing: no CONTRIBUTING, CODEOWNERS, SECURITY, GOVERNANCE or MAINTAINERS file and no .github directory content other than workflows; docs holds only CNAME, content and mkdocs.yml.",
+            "url": "https://github.com/linka-cloud/d2vm"
+          }
+        ],
+        "status": "searched"
+      },
+      "ecosystem_report": {
+        "coverage": {
+          "complete": true,
+          "scope": "The complete project-reports directory listing and the full projects.yml of riseproject-dev/sw-ecosystem at revision 91c6708 were searched for the repository, project name, organisation and module path; adjacent dependency reports were opened to confirm they are different projects."
+        },
+        "findings": "No ecosystem report exists for d2vm under any name. The adjacent Go, Docker and go-containerregistry reports corroborate the dependency audit made from primary sources but say nothing about d2vm itself.",
+        "justification": "Verified absence: the full project-reports listing (544 files) and projects.yml at revision 91c6708e9e1809a43e4db100a31b46ed9b403164 contain no entry for d2vm, linka-cloud, luhenry or go.linka.cloud/d2vm. Upstream research was therefore done entirely from the repositories, CI, registries and distribution archives.",
+        "queries": [
+          "get_file_contents riseproject-dev/sw-ecosystem project-reports (544 entries; names filtered for d2vm, linka, docker, qemu, vm, grub, image, kubevirt, go)",
+          "get_file_contents riseproject-dev/sw-ecosystem projects.yml (172 kB; grep d2vm|linka|luhenry: no line)",
+          "list_commits riseproject-dev/sw-ecosystem perPage=1 (head 91c6708e9e1809a43e4db100a31b46ed9b403164)",
+          "read heads of project-reports/go.md, go-containerregistry.md, docker.md, qemu.md for dependency context"
+        ],
+        "sources": [
+          {
+            "finding": "544 entries at 91c6708e9e1809a43e4db100a31b46ed9b403164; none is named d2vm, linka-cloud or docker-to-vm. Reports exist for dependencies and neighbours only: go.md, go-containerregistry.md, golang-org-x-sys.md, golang-org-x-crypto.md, prometheus-client_golang.md, docker.md, qemu.md, kubevirt.md.",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/tree/main/project-reports"
+          },
+          {
+            "finding": "No line of projects.yml contains d2vm, linka or luhenry; the project is not registered in the ecosystem inventory.",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/blob/main/projects.yml"
+          },
+          {
+            "finding": "Dependency context only: the Go toolchain report is rated green for linux/riscv64, consistent with the successful local cross build and go.dev minimum requirements.",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/blob/main/project-reports/go.md"
+          },
+          {
+            "finding": "Dependency context only: Docker is rated orange (downstream-only) for riscv64, consistent with the missing riscv64 manifest of docker:dind found on Docker Hub.",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/blob/main/project-reports/docker.md"
+          },
+          {
+            "finding": "Dependency context only: go-containerregistry (a direct dependency in go.mod) is a pure Go library.",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/blob/main/project-reports/go-containerregistry.md"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "mailing_lists": {
+        "coverage": {
+          "complete": true,
+          "scope": "Every project-owned surface (README, website, mkdocs configuration, repository settings) was checked for a mailing list, forum or discussions link, and a web search looked for third-party archives."
+        },
+        "findings": "The project has no mailing list. Web search for d2vm mailing-list or forum discussions about RISC-V returned only the GitHub repository, its issues, Docker Hub and unrelated Hacker News threads about bootable containers.",
+        "justification": "No mailing list exists: README, website, mkdocs configuration and repository metadata link none, GitHub Discussions is disabled, and the single chat channel (an unarchived Matrix room) was removed from the README by the head commit of main. All archived project discussion lives in the GitHub issues and pull requests, which were read in full.",
+        "queries": [
+          "grep -n -i 'mailing|list|forum|discuss|chat|matrix' README.md docs/content/index.md docs/mkdocs.yml",
+          "web_search: d2vm \"linka cloud\" mailing list OR forum OR discussion riscv",
+          "search_repositories d2vm (has_discussions=false for linka-cloud/d2vm)",
+          "fetch_content https://d2vm.linka.cloud/ findText mailing"
+        ],
+        "sources": [
+          {
+            "finding": "No mailing list, forum or discussion channel is linked. The only community link the project ever had was a Matrix chat badge, removed by the head commit of main.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          },
+          {
+            "finding": "Head commit 'docs: remove Matrix chat badge from README' removes the last non-GitHub communication channel from the repository.",
+            "url": "https://github.com/luhenry/d2vm/commit/7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0"
+          },
+          {
+            "finding": "The published site (v0.4.0 content) links only GitHub, Docker Hub, pkg.go.dev and the Matrix room #d2vm:linka.cloud; no mailing list.",
+            "url": "https://d2vm.linka.cloud/"
+          },
+          {
+            "finding": "Repository metadata from the authenticated search: has_discussions is false; issues and pull requests are the only archived discussion venue.",
+            "url": "https://github.com/linka-cloud/d2vm"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "maintainer_reviews": {
+        "coverage": {
+          "complete": true,
+          "scope": "Every submitted review and review thread in linka-cloud/d2vm was read (only four PRs carry reviews), together with the maintainer's conversation comments on every external PR; merge and release authorship was checked for all merged PRs and all releases."
+        },
+        "findings": "Adphi (linka-cloud member) is the only reviewer, merger and release author of the original project; there is no second maintainer, no CODEOWNERS and no governance document. In luhenry/d2vm the repository owner luhenry is the requester and decision maker; no review history exists there. Consistent maintainer constraints, each backed by a review: (1) behaviour changes must be covered by an e2e case in e2e/e2e_test.go and pass CI; (2) minimal diffs, no speculative code; (3) one Dockerfile template per distribution family, extended with conditionals rather than forked; (4) keep existing behaviour and defaults for existing platforms; (5) do not add targets that cannot be tested or will not be maintained; (6) squash to clean commits and sign them. He has not stated any intent regarding riscv64, so acceptance in linka-cloud/d2vm is not known; the approach that matches his prior decision for arm64 is an EFI-only target with e2e coverage.",
+        "queries": [
+          "pull_request_read get_reviews and get_review_comments for linka-cloud/d2vm #49, #62, #68, #90 (all PRs with submitted reviews) and get_comments for #45, #58, #61, #62, #63, #66, #68, #69, #72, #90",
+          "list_commits linka-cloud/d2vm main; list_releases (author); merged_by of every merged PR read",
+          "git log author statistics on the checkout (last 100 non-merge commits: Adphi 90)"
+        ],
+        "sources": [
+          {
+            "finding": "Adphi, CHANGES_REQUESTED: the e2e tests need to cover this change (pointing at the efi skip in e2e/e2e_test.go).",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+          },
+          {
+            "finding": "Adphi: do not create a distribution-specific template; only one template for the whole RHEL family. Follow-up: we want minimal changes here, so the existing one.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122692903"
+          },
+          {
+            "finding": "Adphi removes unneeded code with empty suggestions: I don't see why it is needed.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#discussion_r3122664792"
+          },
+          {
+            "finding": "Adphi explains design intent: d2vm images are minimal immutable artifacts; the priority is that the generated VM boots reliably and as fast as possible (GRUB_TIMEOUT=0, OS prober disabled for build isolation, BLS disabled); cosmetic cmdline duplicates are not worth complicating the builder unless they cause a concrete boot failure.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#issuecomment-4388365166"
+          },
+          {
+            "finding": "Adphi: can you please add an e2e test case for the feature, linking the test table in e2e/e2e_test.go.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677"
+          },
+          {
+            "finding": "Adphi rejects a non backward compatible shortcut and proposes a fallback that keeps existing behaviour; later asks to rebase, squash and sign the commit.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/62#issuecomment-2713640916"
+          },
+          {
+            "finding": "Adphi: validation belongs in builder.go where it is implemented; identifies a missed case; then supersedes the PR with his own PR 50.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/49#pullrequestreview-2045871341"
+          },
+          {
+            "finding": "Adphi APPROVED a one-line fix and asked the contributor to sign the commit before merging.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/68#pullrequestreview-2761258908"
+          },
+          {
+            "finding": "Adphi: please squash the commits and sign.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/61#issuecomment-2692369647"
+          },
+          {
+            "finding": "Adphi: we do not want to maintain distribution versions that are no longer maintained upstream; this only creates an increasing burden on project maintenance.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/58#issuecomment-2346989410"
+          },
+          {
+            "finding": "Adphi: we do not have the infrastructure to test on bare metal; we need to be able to test it.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/38#issuecomment-2100814247"
+          }
+        ],
+        "status": "searched"
+      },
+      "release_repositories": {
+        "coverage": {
+          "complete": true,
+          "scope": "Followed every publication path named by .goreleaser.yaml, the Makefile and ci.yaml beyond the repository: GitHub releases, the separate Homebrew tap repository and Docker Hub; audited the registry manifests of every base image and the distribution packages the build, the templates and the tests install for linux/riscv64."
+        },
+        "findings": "Release channels and their riscv64 state: GitHub release archives (absent, goarch list), Homebrew tap formula (absent; the tap serves macOS and Linux on ARM and Intel only), Docker Hub image linkacloud/d2vm (absent; amd64 only, arm64 was never published either), Go module (source only, builds for riscv64 already), documentation site (not applicable). Dependencies on linux/riscv64: the Go toolchain, both build base images, the binfmt emulator, qemu-system-riscv64, edk2 firmware, and guest kernels and grub-efi packages for Ubuntu 22.04 and 24.04, Debian 13 and Alpine 3.23 (linux-lts) all exist; missing are docker:dind, debian:12, almalinux, centos:8, rockylinux:9, kali and Alpine linux-virt. No riscv64 release or wheel exists anywhere, so nothing is already served.",
+        "queries": [
+          "get_file_contents linka-cloud/homebrew-tap Formula (listing) and Formula/d2vm.rb",
+          "list_releases and get_release_by_tag v0.4.0 linka-cloud/d2vm; list_tags and list_releases luhenry/d2vm (none)",
+          "fetch_content https://hub.docker.com/v2/repositories/linkacloud/d2vm/tags?page_size=10&ordering=last_updated",
+          "fetch_content Docker Hub tag manifests: library/golang:1.25, library/ubuntu:20.04, 22.04, 24.04, library/docker:dind, library/debian:12, 13, library/alpine:3.23, library/almalinux:10, library/rockylinux:9 and latest, rockylinux/rockylinux:10, library/centos:8, kalilinux/kali-rolling, tonistiigi/binfmt, linkacloud/mkdocs-material",
+          "fetch_content https://download.docker.com/linux/static/stable/",
+          "fetch_content packages.ubuntu.com noble: linux-image-virtual, grub-efi-riscv64-bin, qemu-efi-riscv64 filelist, qemu-system-misc; packages.debian.org trixie: linux-image-riscv64, grub-efi-riscv64-bin; pkgs.alpinelinux.org v3.23: linux-virt, linux-lts, grub-efi",
+          "fetch_content https://go.dev/wiki/MinimumRequirements, https://goreleaser.com/customization/builds/go/, https://www.qemu.org/docs/master/system/riscv/virt.html"
+        ],
+        "sources": [
+          {
+            "finding": "Separate release repository written by goreleaser. Formula 0.4.0 references exactly four archives: d2vm_v0.4.0_darwin_arm64, darwin_amd64, linux_arm64 and linux_amd64 tar.gz. No riscv64 archive exists; the generated formula only has ARM and Intel branches.",
+            "url": "https://github.com/linka-cloud/homebrew-tap/blob/main/Formula/d2vm.rb"
+          },
+          {
+            "finding": "Latest GitHub release (2026-01-22), produced by the release job with goreleaser from goos linux, windows, darwin and goarch amd64, arm64. riscv64 binaries are absent.",
+            "url": "https://github.com/linka-cloud/d2vm/releases/tag/v0.4.0"
+          },
+          {
+            "finding": "luhenry/d2vm has no tags and no releases; it publishes nothing itself.",
+            "url": "https://github.com/luhenry/d2vm/tags"
+          },
+          {
+            "finding": "Docker image linkacloud/d2vm: latest and v0.4.0 and all recent tags are linux/amd64 only. The image has never been multi-arch, not even arm64, because make docker-build is a single-platform build on the amd64 runner.",
+            "url": "https://hub.docker.com/r/linkacloud/d2vm/tags"
+          },
+          {
+            "finding": "golang:1.25 (builder stage) has a linux/riscv64 manifest.",
+            "url": "https://hub.docker.com/_/golang"
+          },
+          {
+            "finding": "ubuntu:20.04 (runtime stage), 22.04 and 24.04 have linux/riscv64 manifests.",
+            "url": "https://hub.docker.com/_/ubuntu"
+          },
+          {
+            "finding": "docker:dind lists amd64, arm/v6, arm/v7, arm64/v8, ppc64le, s390x and no riscv64, so COPY --from=docker:dind cannot resolve on riscv64.",
+            "url": "https://hub.docker.com/_/docker"
+          },
+          {
+            "finding": "Docker publishes static CLI binaries in a riscv64 directory next to aarch64 and x86_64; together with the Ubuntu docker.io package this is an alternative source for the docker CLI in a riscv64 image.",
+            "url": "https://download.docker.com/linux/static/stable/"
+          },
+          {
+            "finding": "debian:13 has linux/riscv64; debian:12 does not (riscv64 became a Debian release architecture with trixie).",
+            "url": "https://hub.docker.com/_/debian"
+          },
+          {
+            "finding": "alpine:3.23 has linux/riscv64.",
+            "url": "https://hub.docker.com/_/alpine"
+          },
+          {
+            "finding": "rockylinux:9 has no riscv64; the latest and 10 tags (also rockylinux/rockylinux:10) do. almalinux:10, centos:8 and kalilinux/kali-rolling have no riscv64 manifest.",
+            "url": "https://hub.docker.com/_/rockylinux"
+          },
+          {
+            "finding": "The binfmt image used by docker/setup-qemu-action includes a riscv64 emulator, so the existing CI step already enables linux/riscv64 containers on ubuntu-latest.",
+            "url": "https://hub.docker.com/r/tonistiigi/binfmt/tags"
+          },
+          {
+            "finding": "Ubuntu 24.04 ships linux-image-virtual for riscv64 (6.8.0-31.31.1), so the Ubuntu template's kernel package resolves on riscv64.",
+            "url": "https://packages.ubuntu.com/noble/linux-image-virtual"
+          },
+          {
+            "finding": "grub-efi-riscv64-bin exists in jammy, noble and resolute; the template must select riscv64 instead of falling through to arm64.",
+            "url": "https://packages.ubuntu.com/noble/grub-efi-riscv64-bin"
+          },
+          {
+            "finding": "edk2 firmware for the QEMU virt machine: /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd and RISCV_VIRT_VARS.fd, installable on the amd64 runner (architecture all).",
+            "url": "https://packages.ubuntu.com/noble/all/qemu-efi-riscv64/filelist"
+          },
+          {
+            "finding": "qemu-system-misc (qemu-system-riscv64) is available on amd64 and riscv64 hosts; ci.yaml already installs the qemu-system metapackage.",
+            "url": "https://packages.ubuntu.com/noble/qemu-system-misc"
+          },
+          {
+            "finding": "Debian 13 kernel metapackage for riscv64 exists; the Debian template hardcodes linux-image-amd64 and must derive the name from the architecture.",
+            "url": "https://packages.debian.org/trixie/linux-image-riscv64"
+          },
+          {
+            "finding": "Debian 13 ships grub-efi-riscv64-bin 2.12.",
+            "url": "https://packages.debian.org/trixie/grub-efi-riscv64-bin"
+          },
+          {
+            "finding": "Alpine 3.23 builds linux-virt for x86, x86_64, armv7 and aarch64 but not riscv64; riscv64 has linux-lts 6.18 instead, and grub-efi 2.12 is built for riscv64. The Alpine template needs a kernel flavour choice for riscv64.",
+            "url": "https://pkgs.alpinelinux.org/packages?name=linux-virt&branch=v3.23&repo=&arch=&maintainer="
+          },
+          {
+            "finding": "Go supports riscv64 as rv64g; since Go 1.23 the RVA20U64 mandatory extensions are required. Go 1.25 from go.mod and CI therefore targets linux/riscv64 natively.",
+            "url": "https://go.dev/wiki/MinimumRequirements"
+          },
+          {
+            "finding": "goreleaser builds accept riscv64 in goarch (with an optional goriscv64 level in newer versions); the project pins v1.10.1, whose behaviour for windows and darwin combined with riscv64 must be checked with make build-snapshot and an ignore list added if needed.",
+            "url": "https://goreleaser.com/customization/builds/go/"
+          },
+          {
+            "finding": "The riscv64 virt machine boots OpenSBI as default -bios and expects edk2 on the pflash devices (pflash0 code, pflash1 vars), not through -bios; pkg/qemu must grow pflash support for an EFI boot test.",
+            "url": "https://www.qemu.org/docs/master/system/riscv/virt.html"
+          }
+        ],
+        "status": "searched"
+      },
+      "tracking_issue": {
+        "coverage": {
+          "complete": true,
+          "scope": "Full issue body and all 4 comments of the tracking issue read through the authenticated GitHub server; the description matches the frozen task snapshot. No links other than the upstream repository URL are given."
+        },
+        "findings": "The requester wants a riscv64 port plan for the Go project d2vm on its own build, test and release tooling. No package list, branch or scope is prescribed. The only constraint is that the riscv64-draft branch of luhenry/d2vm must not be consulted; this plan is derived exclusively from main at 7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0, which is byte-identical to linka-cloud/d2vm main, plus the linka-cloud/d2vm issue, PR, CI and release history.",
+        "queries": [
+          "issue_read get riseproject-dev/porting-agent#3",
+          "issue_read get_comments riseproject-dev/porting-agent#3 (perPage 100, 4 comments, single page)",
+          "read /tmp/gh-aw/agent/task.json context.tracking_issue.description"
+        ],
+        "sources": [
+          {
+            "finding": "Request names only the upstream repository https://github.com/luhenry/d2vm; packages and target branch are empty. The additional note forbids looking at the riscv64-draft branch, so that branch was not read, listed, diffed or searched at any point; only main (7184ff1) was used.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
+          },
+          {
+            "finding": "Earlier investigation result (revision 0) parked the request because d2vm is a Go project with no Python wheel. It recorded arm64 PR 44 as the architecture precedent and the maintainer's e2e-coverage expectation; those facts were re-verified here against the upstream PRs.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7107024187"
+          },
+          {
+            "finding": "Ledger comment: revision 0 parked and idle after the park investigation.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7107056943"
+          },
+          {
+            "finding": "Requester (luhenry, issue author and owner of the upstream repository) asks for a refresh with the reason that planning is language agnostic now and the riscv64 port of this Go project must be planned. This is the newest statement of intent and supersedes the earlier park.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7108875748"
+          },
+          {
+            "finding": "Ledger comment: revision 1 planning stopped in waiting_human after dispatch recovery was exhausted; no plan content was produced by that revision.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/3#issuecomment-7109241351"
+          }
+        ],
+        "status": "searched"
+      },
+      "upstream_issues": {
+        "coverage": {
+          "complete": true,
+          "scope": "Complete issue corpus of both repositories: luhenry/d2vm has no issues; all 42 issues of linka-cloud/d2vm (6 open, 36 closed) were listed with pagination exhausted, every title reviewed, and every architecture, boot, platform and support-policy issue read with all comments."
+        },
+        "findings": "There is no upstream request, discussion, objection or rejection concerning RISC-V. The maintainer has never stated a position on riscv64. Evidence of his general policy: new targets are accepted when they are tested (issue 38, PR 72, PR 90), unmaintained or untestable targets are resisted (issue 55), and contributions are welcomed (issues 2 and 74). arm64 arrived through issue 40 and PR 44 as an EFI-only grub-efi target, which is exactly the shape a riscv64 target must take since syslinux and grub-bios are x86 only.",
+        "queries": [
+          "list_issues luhenry/d2vm (all states): 0 issues",
+          "list_issues linka-cloud/d2vm state=OPEN perPage=100 (6 issues, hasNextPage=false)",
+          "list_issues linka-cloud/d2vm state=CLOSED perPage=100 (36 issues, hasNextPage=false)",
+          "search_issues linka-cloud/d2vm: riscv, riscv64, rv64, RISC-V, architecture, arm64, aarch64, s390x, ppc64le, loongarch ppc64le other architectures, platform, goreleaser",
+          "issue_read get + get_comments for #2, #12, #25, #38, #40, #41, #55, #74, #77",
+          "search_code 'riscv repo:linka-cloud/d2vm' (rate limited twice); replaced by grep -rni riscv over the checkout at the identical commit 7184ff1 (no match)"
+        ],
+        "sources": [
+          {
+            "finding": "The nominal upstream luhenry/d2vm has no issues at all (list_issues totalCount 0).",
+            "url": "https://github.com/luhenry/d2vm/issues"
+          },
+          {
+            "finding": "42 issues in total. No issue mentions RISC-V, riscv64 or rv64 in title, body or comments; the only architecture issue is #40 (ARM64 EFI support).",
+            "url": "https://github.com/linka-cloud/d2vm/issues"
+          },
+          {
+            "finding": "ARM64 EFI support, opened and closed by maintainer Adphi, closed by PR 44. Body: add arm64 EFI boot support using grub-efi-arm64, needs #25. This is the only architecture expansion in the project's history and the template for riscv64.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/40"
+          },
+          {
+            "finding": "EFI boot support (enhancement, good first issue). Maintainer on 2023-08-23: not planned because he had no time and no immediate use for it; three weeks later he implemented it himself in PR 43. Features land when the maintainer needs them or a contributor supplies a tested PR.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/25"
+          },
+          {
+            "finding": "Support for UEFI with Grub2. Maintainer: grub-efi already produces a FAT32 ESP on GPT; distributions outside the support matrix may break and pull requests are more than welcome. Closed by PR 91.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/74"
+          },
+          {
+            "finding": "Bare metal support (open). Maintainer: we do not have the infrastructure to test d2vm on bare metal; it needs to be testable. Testability in CI is the stated bar for new targets.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/38"
+          },
+          {
+            "finding": "Ubuntu 12.04 support. Maintainer: not officially supported and no changes will be made to the project for it; later softened in PR 58 to non official support as long as the contributor maintains it, with optional tests.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/55"
+          },
+          {
+            "finding": "Windows d2vm support (help wanted, open). Maintainer is sceptical but would be more than happy to review a pull request.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/2"
+          },
+          {
+            "finding": "sparsecat-linux-amd64 missing: go generate ./... must run before go build or go install because cmd/d2vm/run embeds generated sparsecat binaries; use make install.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/12"
+          },
+          {
+            "finding": "Open proposal about ENTRYPOINT/CMD conversion and compose support; unrelated to architectures, no maintainer reply.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/77"
+          }
+        ],
+        "status": "searched"
+      },
+      "upstream_pull_requests": {
+        "coverage": {
+          "complete": true,
+          "scope": "Complete PR corpus of both repositories: luhenry/d2vm has no pull requests; all 51 pull requests of linka-cloud/d2vm (open, merged, closed unmerged) were listed in one page, every title reviewed, and every non-dependabot PR touching architecture, boot loaders, templates, CI or review policy was read with its reviews, review threads, comments and file list."
+        },
+        "findings": "No riscv64 PR was ever proposed, accepted or rejected. The accepted approach for a new architecture (PR 44) is one EFI-only platform value routed through --platform, with the bootloader defaulting to and restricted to grub-efi, per-architecture package names in the Debian and Ubuntu templates, and regenerated CLI docs. Rejected or stalled approaches show the constraints: behaviour changes without e2e coverage are not merged (PR 72, PR 90), per-distribution template forks are refused (PR 90), minimal defaults are kept (PR 45), and external contributors are asked to squash and sign (PR 61, 62, 68). The maintainer frequently re-implements external work himself (PR 49 to 50, PR 90 to 91).",
+        "queries": [
+          "list_pull_requests luhenry/d2vm state=all: 0 pull requests",
+          "list_pull_requests linka-cloud/d2vm state=all perPage=100 (51 pull requests, single page)",
+          "search_pull_requests linka-cloud/d2vm: riscv, riscv64, rv64, RISC-V, architecture, arm64, aarch64, s390x, ppc64le, loongarch, platform, goreleaser",
+          "pull_request_read get, get_reviews, get_review_comments, get_comments, get_files for #1, #14, #43, #44, #45, #49, #58, #61, #62, #63, #66, #68, #69, #72, #73, #90, #91, #92; get_files for #29"
+        ],
+        "sources": [
+          {
+            "finding": "No pull request exists in luhenry/d2vm in any state.",
+            "url": "https://github.com/luhenry/d2vm/pulls?q=is%3Apr"
+          },
+          {
+            "finding": "51 pull requests; none mentions RISC-V. Architecture precedent is PR 44 only.",
+            "url": "https://github.com/linka-cloud/d2vm/pulls?q=is%3Apr"
+          },
+          {
+            "finding": "arm64 support with grub-efi, by Adphi, merged 2023-09-13, 1 commit, 29 files, no review. Adds --platform (linux/amd64, linux/arm64), arch plumbing in builder.go, bootloader.go, grub*.go, syslinux.go, cmd/d2vm/flags.go, convert_options.go, pkg/docker/docker.go, version.go, Dockerfile, README, templates/debian.Dockerfile and templates/ubuntu.Dockerfile, sparsecat arm64 in cmd/d2vm/run/util.go and regenerated docs/content/reference. It did not touch .github/workflows, e2e or .goreleaser.yaml: arm64 has no CI test row.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/44"
+          },
+          {
+            "finding": "Fat32 boot partition and GRUB-EFI support, by Adphi, merged, 4 commits. Introduced grub_efi.go, grub_common.go, the efi e2e cases (OVMF through qemu -bios) and the ovmf package in ci.yaml. Feature and e2e and CI change landed together.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/43"
+          },
+          {
+            "finding": "End-to-end tests, by Adphi, merged. Introduced e2e/e2e_test.go, pkg/qemu and the e2e-tests job: convert in the d2vm image, boot with QEMU, log in on the serial console, power off.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/29"
+          },
+          {
+            "finding": "External Rocky 10 GRUB-EFI PR, closed unmerged in favour of the maintainer's PR 91. Adphi requested changes: the e2e tests need to cover this change; no distribution-specific template (one template per distribution family); minimal changes; remove unneeded code.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90"
+          },
+          {
+            "finding": "Maintainer PR, merged 2026-04-29: grub2 for the RHEL family, GRUB_ENABLE_BLSCFG=false, grub2-efi-x64 packages in templates/centos.Dockerfile, e2e adjusted. CI run 286 passed all jobs before merge.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/91"
+          },
+          {
+            "finding": "Additional rootfs options, open since 2025-05. Adphi: can you please add an e2e test case for the feature. Never added, so never merged.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/72"
+          },
+          {
+            "finding": "Ubuntu 12 and 14 support, open. Adphi does not want to maintain unsupported distribution versions; would accept non official support with optional tests if the contributor maintains it.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/58"
+          },
+          {
+            "finding": "Skip disk conversion for raw, merged after review: backward compatibility across mount points required; contributor asked to rebase, squash and sign the commit.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/62"
+          },
+          {
+            "finding": "Use latest kernel when several exist, merged; contributor asked to squash the commits and sign.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/61"
+          },
+          {
+            "finding": "One-line fix merged after APPROVED review; contributor asked to sign the commit first.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/68"
+          },
+          {
+            "finding": "chore(ci): call linter in ci; merged without change requests; the only external PR that changed .github/workflows/ci.yaml.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/69"
+          },
+          {
+            "finding": "NetworkManager for Ubuntu, closed unmerged: we want to stick to the minimalist defaults.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/45"
+          },
+          {
+            "finding": "vhd format fix, changes requested (validation belongs in builder.go), then superseded by maintainer PR 50.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/49"
+          },
+          {
+            "finding": "Closed: touched templates/vmbuilder.sh, which is prototype code not used by the implementation.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/63"
+          },
+          {
+            "finding": "Open maintainer PR removing unused grub cmdline parameters; touches builder.go, bootloader.go, config.go, grub*.go, syslinux.go and Dockerfile, the same files a riscv64 port edits (merge conflict risk only for linka-cloud, not for luhenry/d2vm main).",
+            "url": "https://github.com/linka-cloud/d2vm/pull/92"
+          }
+        ],
+        "status": "searched"
+      },
+      "website": {
+        "coverage": {
+          "complete": true,
+          "scope": "The official documentation site named by docs/CNAME and mkdocs.yml, the Go package page and the organisation home page were fetched and searched for architecture and communication-channel information."
+        },
+        "findings": "The website adds nothing beyond the repository documentation: amd64 and arm64 only, no roadmap, no support-policy page and no riscv64 statement. Its pages are generated from docs/content, so a documentation change in the repository is the only way to update it, and it is published only when a tag is pushed.",
+        "queries": [
+          "fetch_content https://d2vm.linka.cloud/ (findText riscv, arm64, matrix, blog, mailing)",
+          "fetch_content https://pkg.go.dev/go.linka.cloud/d2vm",
+          "fetch_content raw https://linka.cloud/ and https://www.linka.cloud/",
+          "read docs/mkdocs.yml and docs/CNAME"
+        ],
+        "sources": [
+          {
+            "finding": "mkdocs-material site built from docs/content by the Docs workflow on tags. Same content as the README at v0.4.0: supported distributions, prerequisites, install snippet choosing amd64 or arm64, CLI reference. No RISC-V mention. It still shows a Matrix chat badge that main removed on 2026-05-31.",
+            "url": "https://d2vm.linka.cloud/"
+          },
+          {
+            "finding": "Go module go.linka.cloud/d2vm, latest v0.4.0, Apache-2.0, repository github.com/linka-cloud/d2vm. The module path is a vanity import path independent of the GitHub owner.",
+            "url": "https://pkg.go.dev/go.linka.cloud/d2vm"
+          },
+          {
+            "finding": "Organisation site returns a 530 byte JavaScript application shell with no readable content or links; no architecture or project information could be extracted from it.",
+            "url": "https://linka.cloud/"
+          }
+        ],
+        "status": "searched"
+      }
+    },
+    "schema_version": 3,
+    "summary": "d2vm (go.linka.cloud/d2vm; luhenry/d2vm main is identical to linka-cloud/d2vm main at 7184ff1) is a pure Go tool that turns Docker images into bootable VM disk images. It supports linux/amd64 (syslinux, grub, grub-bios, grub-efi) and, since PR 44, linux/arm64 with grub-efi only. It has no riscv64 support and no riscv64 history: no issue, PR, CI job, release artifact or document mentions RISC-V. The code already compiles for linux/riscv64, but the resulting binary rejects its own default platform, the templates pick amd64 or arm64 packages, the QEMU runner has no riscv64 machine and goreleaser releases amd64 and arm64 only. All prerequisites exist on riscv64 (Go, base images, binfmt, qemu-system-riscv64, edk2 firmware, kernels and grub-efi packages for Ubuntu, Debian 13 and Alpine). Decision: develop, admission class architecture_correctness, following the arm64 precedent: add linux/riscv64 as an EFI-only platform across the platform switches, templates, QEMU runner, goreleaser goarch list, documentation and generated CLI reference, with an emulated riscv64 e2e case on the existing shared ubuntu-latest CI host. No ecosystem report and no project-graph node exist for d2vm; both absences are documented. The riscv64-draft branch named in the tracking issue was not consulted.",
+    "tracking_issue_description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b"
+  },
+  "digests": {
+    "artifact": "sha256:3ec81aa2942d8b57702c3e26b75f71d98fe7c3f6ecbf11813f7e50309c6b7347"
+  },
+  "evidence_id": "plan-luhenry--d2vm--3-r2",
+  "kind": "plan",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "d2vm is a pure Go Docker-to-VM image builder with amd64 and arm64 (grub-efi) support and no riscv64 support or history upstream. It cross-compiles for linux/riscv64 today, but the platform switches (builder.go, cmd/d2vm/flags.go), Dockerfile templates, QEMU runner and goreleaser goarch list exclude riscv64. Plan decision: develop, class architecture_correctness, adding linux/riscv64 as an EFI-only platform after the arm64 precedent (linka-cloud/d2vm PR 44), with templates, pkg/qemu, release list, docs and an emulated e2e case on the shared ubuntu-latest host. All needed toolchain, image and distribution package dependencies exist for riscv64; docker:dind and several distribution base images do not. No ecosystem report or project-graph node exists for d2vm. The riscv64-draft branch was not consulted."
+}

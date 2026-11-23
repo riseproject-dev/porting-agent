@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-23T20:11:56.378958+00:00",
+  "cause": {
+    "id": "op-86c874839c048d14aa174d6e",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "attempt": 1,
+    "charged": [
+      "operation_launch"
+    ],
+    "from_state": "provisioning.idle",
+    "operation": "op-86c874839c048d14aa174d6e",
+    "to_state": "provisioning.idle",
+    "verb": "start_operation"
+  },
+  "from": {},
+  "kind": "start_operation",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 14,
+  "to": {}
+}

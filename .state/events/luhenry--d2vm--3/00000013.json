@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-23T20:11:56.378958+00:00",
+  "cause": {
+    "id": "45253650644",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "decision": "develop",
+    "evidence_id": "plan-luhenry--d2vm--3-r2",
+    "from_state": "planning.agent_running",
+    "to_state": "provisioning.idle",
+    "verb": "admit_development"
+  },
+  "from": {
+    "activity": "agent_running",
+    "phase": "planning",
+    "revision": 2
+  },
+  "kind": "admit_development",
+  "revision_bumped": true,
+  "schema_version": 1,
+  "sequence": 13,
+  "to": {
+    "activity": "idle",
+    "phase": "provisioning",
+    "revision": 3
+  }
+}
