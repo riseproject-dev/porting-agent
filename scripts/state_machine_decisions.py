@@ -1145,6 +1145,25 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         highlighted=(("investigation.agent_running", "admit_development"),
                      ("development.fix_needed", "request_patch")),
     ),
+    Item(
+        "When an investigation decides close",
+        "When a dossier may decide close, and who confirms it.",
+        "Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest "
+        "release of every distribution of the request: a riscv64 wheel, or pure-Python wheels "
+        "only. The reconciler reads PyPI itself before it takes `close_investigation` and sets "
+        "`terminal_reason` `already_released` when a riscv64 wheel is published, else "
+        "`no_work`; a close that PyPI does not confirm takes `reject_dossier` within "
+        "`investigation_attempts`. Every other reason to stop is a park, which a human can "
+        "resume.",
+        ("investigation.agent_running", "investigation.idle", "investigation.waiting_human",
+         "closed.idle"),
+        edges=(("investigation.agent_running", "close_investigation"),
+               ("investigation.agent_running", "reject_dossier"),
+               ("investigation.agent_running", "exhaust_investigation_recovery")),
+        highlighted=(("investigation.agent_running", "close_investigation"),
+                     ("investigation.agent_running", "reject_dossier"),
+                     ("investigation.agent_running", "exhaust_investigation_recovery")),
+    ),
 )
 
 OPEN_ITEMS: tuple[Item, ...] = ()

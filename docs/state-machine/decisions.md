@@ -1168,6 +1168,28 @@ flowchart TB
     development_agent_running -->|pause<br/>/upstreaming pause| development_fix_needed_paused
 ```
 
+### O25. When an investigation decides close
+
+When a dossier may decide close, and who confirms it.
+
+**Decision.** Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest release of every distribution of the request: a riscv64 wheel, or pure-Python wheels only. The reconciler reads PyPI itself before it takes `close_investigation` and sets `terminal_reason` `already_released` when a riscv64 wheel is published, else `no_work`; a close that PyPI does not confirm takes `reject_dossier` within `investigation_attempts`. Every other reason to stop is a park, which a human can resume.
+
+```mermaid
+flowchart TB
+    subgraph investigation["investigation"]
+        investigation_agent_running["investigation.agent_running"]
+        investigation_idle["investigation.idle"]
+        investigation_waiting_human["investigation.waiting_human"]
+    end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
+
+    investigation_agent_running ==>|close_investigation| closed_idle
+    investigation_agent_running ==>|reject_dossier| investigation_idle
+    investigation_agent_running ==>|exhaust_investigation_recovery| investigation_waiting_human
+```
+
 ## Further settled changes
 
 ### Dossier refresh after a stop

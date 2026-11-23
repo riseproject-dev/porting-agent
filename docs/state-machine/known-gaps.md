@@ -22,13 +22,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** the review is recorded once CI is observed again.
 - **Required:** record the review evidence when the failure wins, so the repair Work carries it.
 
-## No dossier decides close
-
-- **Where:** `close_investigation` from `investigation.agent_running`; the dossier contract (`schemas/dossier.schema.json`, `dossier_gate.py`, the investigator's instructions).
-- **Today:** the reconciler takes `close_investigation` for a verified dossier whose decision is close, with `terminal_reason` `no_work`. But the dossier schema and the investigator's instructions admit the decisions develop and park only, so the research gate refuses a dossier that decides close before it reaches the reconciler, and no contribution is closed by its dossier.
-- **Table:** a verified dossier decision close leads to `closed.idle` and sets `terminal_reason`.
-- **Required:** a decision on when an investigation decides close (for example riscv64 wheels already published for the latest release), then the decision in the dossier contract and the investigator's instructions.
-
 ## CI is never rerun
 
 - **Where:** `development.agent_running` (`request_ci_rerun`), `development.waiting_ci` (`rerun_interrupted_ci`, `exhaust_interrupted_reruns`), and `resume_ci` in `development.waiting_human` and `handoff.waiting_human` (CI on the clean head in `handoff.waiting_ci` is a separate entry below).
@@ -178,7 +171,6 @@ These follow the literal reading of a decision and are kept until a decision say
 - An operation the tick stages that the state publisher's check would refuse is an unexpected error of its contribution (step `operation_check`): the contribution is paused by the controller and the commit goes ahead for the others.
 - A provisioning operation resolved `confirmed` by a human fires no row: `confirm_provisioning` needs the receipt and the readback. A receipt that arrives while the contribution waits for a human closes the operation and keeps the state.
 - A record whose `last_ci_evidence_id` names evidence that the store does not hold, in a state where Work is allocated, is an unexpected error of that contribution and takes `pause_on_processing_error`; the pause names the missing evidence id.
-- A verified dossier that decides close closes the contribution with `terminal_reason` `no_work` (shown as "not applicable"); the dossier's rationale is kept in the event.
 - `park_investigation` records `previous_phase` `investigation` and keeps a recorded refresh; like every row that ends the generation it does not bump the revision. `parked_reason` is the dossier's rationale.
 - An admission override applies against a decision park only when it names both a class and paths; one that names only one of them (recorded before such a resume was refused) does not admit, and the Result takes `reject_dossier`, so the next investigation runs with the override still recorded, within `investigation_attempts`. The override's paths are the human's scope: the dossier's path coverage is recorded for them in `scope_coverage_complete` but does not refuse them. With a decision develop the dossier's class and paths are admitted and the override is cleared.
 - "The verified dossier names `scope_paths`, and `scope_coverage_complete` holds" is established when the admitted scope has an admission class, names 1 to 32 safe scope paths, and matches every path of the dossier's `path_coverage`; a dossier without `path_coverage` has an incomplete scope. `admit_development` and `readmit_development` do not list `scope_coverage_complete`; the reconciler records it beside the row, as repair Work reads it.

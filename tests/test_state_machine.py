@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import lifecycle as lc
+import reconcile
 from scripts import generate_state_machine_doc as gen
 from scripts.state_machine_decisions import (
     DECISIONS,
@@ -542,8 +543,23 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertIn("no admission_override recorded",
                       lc.find_edge(state, "park_investigation").transition.guard)
         close = lc.find_edge(state, "close_investigation").transition
-        self.assertEqual(close.guard, ("verified dossier decision close",))
+        self.assertEqual(close.guard, ("verified dossier decision close", lc.CLOSE_CONFIRMED))
         self.assertIn("not applied", close.description)
+        reject = lc.find_edge(state, "reject_dossier").transition
+        self.assertEqual(reject.guard[0], lc.DOSSIER_REJECTED)
+        self.assertIn("PyPI does not confirm a decision close", lc.DOSSIER_REJECTED)
+
+    def test_the_dossier_contract_admits_every_decision_the_fold_takes(self):
+        # The contract, the investigator's instructions, and the fold name
+        # the same decisions: a decision the fold takes is never refused by
+        # the research gate before it reaches the reconciler.
+        contract = json.loads((ROOT / "schemas" / "dossier.schema.json").read_text())
+        decisions = contract["properties"]["proposal"]["properties"]["decision"]["enum"]
+        self.assertEqual(tuple(decisions), reconcile.DOSSIER_DECISIONS)
+        prompt = (ROOT / ".github" / "workflows" / "investigator.md").read_text()
+        for decision in reconcile.DOSSIER_DECISIONS:
+            self.assertIn(f"`{decision}`", prompt)
+        self.assertIn("rejects a\n  `close` that PyPI does not confirm", prompt)
 
     def test_budgets_name_policy_keys_and_reachable_exhaustion(self):
         charged = set()
@@ -1033,7 +1049,7 @@ class TestDiagrams(unittest.TestCase):
         for d in (*DECISIONS, *FURTHER_CHANGES):
             self.assertTrue(d.text and not d.options and not d.candidates, d.title)
             self.assertTrue(d.operations or d.highlighted, d.title)
-        self.assertEqual(len(SETTLED_OPEN_ITEMS), 24)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 25)
         self.assertEqual(OPEN_ITEMS, ())
         for d in SETTLED_OPEN_ITEMS:
             self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)

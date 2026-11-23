@@ -643,8 +643,7 @@ for _guard, _name in (
     ("the prerequisite is corrected", "prerequisite_corrected"),
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_lost"),
     ("the Work graph is terminal without a usable Result", "work_terminal_without_result"),
-    ("the Result has no dossier, the dossier is invalid, or its decision is not develop, park, "
-     "or close", "dossier_rejected"),
+    (lc.DOSSIER_REJECTED, "dossier_rejected"),
     ("the Result has no usable dossier", "no_usable_dossier"),
     (lc._ADMISSION, "development_admitted"),
     (lc.PATCH_SCOPE_COMPLETE, "patch_scope_complete"),
@@ -653,6 +652,7 @@ for _guard, _name in (
     ("the recorded fork and development PR still match", "recorded_fork_matches"),
     ("verified dossier decision park", "dossier_decision_park"),
     ("verified dossier decision close", "dossier_decision_close"),
+    (lc.CLOSE_CONFIRMED, "close_confirmed_by_pypi"),
     ("the Result is published, or uncertain and later confirmed", "result_published"),
     ("the proposal no longer applies to the fork head", "proposal_stale"),
     ("the worker reports a failure not caused by the patch", "failure_not_caused_by_patch"),

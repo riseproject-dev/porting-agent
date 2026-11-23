@@ -384,8 +384,10 @@ def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
 # The decisions of a verified dossier. A Result without a dossier, or with a
 # decision that is none of these, has no usable dossier.
 DOSSIER_DECISIONS = ("develop", "park", "close")
-# The `terminal_reason` of a contribution closed by its dossier.
-DOSSIER_CLOSE_REASON = "no_work"
+# The `terminal_reason` of a contribution closed by its dossier is derived by
+# `dossier_gate.close_confirmation` from PyPI documents the reconciler reads
+# itself, never taken from the dossier.
+_DISTRIBUTION_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _reject_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
@@ -394,8 +396,8 @@ def _reject_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
     """Take ``reject_dossier``, or ``exhaust_investigation_recovery`` once
     ``investigation_attempts`` is exhausted, for an investigation Result
     without a usable dossier: no dossier, an invalid one (an incomplete
-    patch scope included), or a decision that is none of develop, park, and
-    close."""
+    patch scope included), a decision that is none of develop, park, and
+    close, or a decision close that PyPI does not confirm."""
     staged: list[tuple[str, dict]] = [("evidence", evidence)] if evidence else []
     facts = {"dossier_rejected", "no_usable_dossier"}
     details = {"result_status": outcome.get("status"),
@@ -425,21 +427,28 @@ def _admitted_scope(rec: dict, decision: dict) -> tuple[str | None, list | None]
 
 
 def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
-                 worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+                 worker_run_id: str | None, pypi=None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold an investigation Result through the table's rows of
     ``investigation.agent_running``.
 
-    * no dossier, a decision that is none of develop, park, and close, or a
-      patch scope that is incomplete where ``admit_development`` checks it:
-      ``reject_dossier`` (``exhaust_investigation_recovery`` once
-      ``investigation_attempts`` is exhausted);
+    * no dossier, a decision that is none of develop, park, and close, a
+      patch scope that is incomplete where ``admit_development`` checks it,
+      or a decision close that PyPI does not confirm: ``reject_dossier``
+      (``exhaust_investigation_recovery`` once ``investigation_attempts`` is
+      exhausted);
     * develop, or park with a recorded ``admission_override``:
       ``readmit_development`` to the recorded fork when a refresh began with
       the fork and development PR the record still holds, otherwise
       ``admit_development`` to provisioning. Both clear the override;
     * park without an override: ``park_investigation``;
-    * close: ``close_investigation`` with ``terminal_reason`` ``no_work``; a
-      recorded override is not applied, and the event says so.
+    * close, confirmed from PyPI: ``close_investigation``. ``pypi`` reads
+      the PyPI document of each recorded distribution
+      (``collect.pypi_project`` by default); ``terminal_reason`` is
+      ``already_released`` when the latest release of a distribution has a
+      riscv64 wheel, else ``no_work`` (pure-Python wheels only). A failed
+      read raises ``collect.CollectError``: a collector failure, so the tick
+      skips the contribution and folds the same Result again. A recorded
+      override is not applied, and the event says so.
 
     The dossier is recorded as evidence first. The rows set the dossier, the
     admission class, and the scope paths; the complete coverage the scope
@@ -470,6 +479,19 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
     if kind not in DOSSIER_DECISIONS:
         return _reject_dossier(rec, outcome, why=f"the dossier decision {kind!r} is not develop, "
                                "park, or close", **common)
+    close_reason = close_finding = None
+    if kind == "close":
+        # `closed.idle` is final and the dossier is worker output: PyPI, read
+        # here, confirms the close and gives its reason.
+        read = pypi or collect.pypi_project
+        names = [n for n in (rec.get("distributions") or []) if isinstance(n, str)]
+        documents = {name: read(name) if _DISTRIBUTION_NAME.fullmatch(name) else None
+                     for name in names}
+        close_reason, problem, close_finding = dossier_gate.close_confirmation(names, documents)
+        if problem:
+            return _reject_dossier(
+                rec, outcome, why=f"PyPI does not confirm the decision close: {problem}",
+                **common)
     staged.append(("evidence", evidence))
     cause = _result_cause(outcome, worker_run_id)
     override = rec.get("admission_override")
@@ -480,9 +502,9 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
             details["admission_override_not_applied"] = override
         out = engine.apply_transition(
             rec, "close_investigation", policy=policy, now=now, cause_id=cause,
-            facts={"dossier_decision_close"},
-            values={"terminal_reason": DOSSIER_CLOSE_REASON},
-            details=details | {"rationale": rationale})
+            facts={"dossier_decision_close", "close_confirmed_by_pypi"},
+            values={"terminal_reason": close_reason},
+            details=details | {"rationale": rationale, "pypi": close_finding})
     elif kind == "park" and not override:
         out = engine.apply_transition(
             rec, "park_investigation", policy=policy, now=now, cause_id=cause,
@@ -743,8 +765,8 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
 
 
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
-                      worker_run_id: str | None = None,
-                      evidence: dict | None = None) -> tuple[dict, list[tuple[str, dict]]]:
+                      worker_run_id: str | None = None, evidence: dict | None = None,
+                      pypi=None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one Result (from fork_publish / queue_result) into the record.
 
     * investigation Work: the dossier decides, by the table (``fold_dossier``);
@@ -752,10 +774,13 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
       (``fold_submission_rewrite``, ``fold_submission_review``);
     * patch Work in development and revision Work in upstream review: the
       table's rows (``fold_patch_result``).
+
+    ``pypi`` reads a PyPI document for the confirmation of a decision close
+    (``collect.pypi_project`` by default).
     """
     if outcome.get("status") == "investigation":
         return fold_dossier(rec, outcome, now=now, policy=policy or {},
-                            worker_run_id=worker_run_id)
+                            worker_run_id=worker_run_id, pypi=pypi)
     if engine.state_key(rec) == SUBMISSION_REWRITE_STATE:
         return fold_submission_rewrite(rec, outcome, now=now, policy=policy or {},
                                        worker_run_id=worker_run_id)
@@ -1271,11 +1296,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
-         skip: frozenset[str] = frozenset()) -> TickOutput:
+         skip: frozenset[str] = frozenset(), pypi=None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
     process. Every step that works on one contribution runs in an
     ``isolation.contribution`` block; an exception that leaves such a block
-    reaches ``tick`` attributed to that contribution."""
+    reaches ``tick`` attributed to that contribution. ``pypi`` reads PyPI
+    for the confirmation of a decision close (``collect.pypi_project`` by
+    default)."""
     out = TickOutput()
     iso = now.isoformat()
     contributions = dict(snap.contributions)
@@ -1514,7 +1541,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 continue
             rec, staged = apply_publication(rec, pub, now=iso, policy=policy,
                                             worker_run_id=pub.get("worker_run_id"),
-                                            evidence=snap.evidence)
+                                            evidence=snap.evidence, pypi=pypi)
             contributions[key] = rec
             out.staged.extend(staged)
             for kind, r in staged:

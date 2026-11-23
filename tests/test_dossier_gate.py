@@ -151,6 +151,17 @@ class TestDossierCompleteness(unittest.TestCase):
         with self.assertRaises(schemas.SchemaError):
             dossier_gate.validate(d, proposal(), task())
 
+    def test_a_close_decision_has_no_class_and_no_paths(self):
+        d = dossier()
+        d["proposal"].update(decision="close", admission_class=None, allowed_paths=[],
+                             rationale="The latest release 2.4.1 publishes a manylinux riscv64 wheel on PyPI.")
+        dossier_gate.validate(d, proposal(), task())
+        for change in ({"admission_class": "configuration_integration"},
+                       {"allowed_paths": ["pyproject.toml"]}):
+            with self.subTest(change=change), self.assertRaises(schemas.SchemaError):
+                dossier_gate.validate(dict(d, proposal=dict(d["proposal"], **change)),
+                                      proposal(), task())
+
     def test_allowed_paths_cover_every_researched_riscv64_path(self):
         d = dossier()
         d["proposal"]["allowed_paths"] = [".github/workflows/wheels.yml", "README.rst"]
@@ -357,3 +368,68 @@ class TestImmutableTrackingIssue(unittest.TestCase):
             collect.tracking_issue_context({"id": 5001, "number": 12, "body": "x"}, expected)
         with self.assertRaises(collect.CollectError):
             collect.tracking_issue_context({"id": 5000, "number": 12, "body": "x" * 16385}, expected)
+
+
+def pypi(version, *files):
+    urls = [{"filename": f, "yanked": False} if isinstance(f, str)
+            else {"filename": f[0], "yanked": f[1]} for f in files]
+    return {"info": {"version": version}, "urls": urls}
+
+
+class TestCloseConfirmation(unittest.TestCase):
+    RISCV = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
+
+    def confirm(self, documents, names=("proj",)):
+        return dossier_gate.close_confirmation(list(names), documents)
+
+    def test_a_riscv64_wheel_confirms_already_released(self):
+        for wheel in (self.RISCV, "proj-2.4.1-cp312-cp312-musllinux_1_2_riscv64.whl",
+                      "proj-2.4.1-cp312-cp312-linux_riscv64.whl"):
+            with self.subTest(wheel=wheel):
+                reason, problem, finding = self.confirm(
+                    {"proj": pypi("2.4.1", "proj-2.4.1.tar.gz", wheel)})
+                self.assertEqual((reason, problem), ("already_released", None))
+                self.assertEqual(finding, {"proj": {"version": "2.4.1", "served_by": "riscv64",
+                                                    "wheel": wheel}})
+
+    def test_pure_python_wheels_only_confirm_no_work(self):
+        reason, problem, finding = self.confirm(
+            {"proj": pypi("2.4.1", "proj-2.4.1-py3-none-any.whl", "proj-2.4.1.tar.gz")})
+        self.assertEqual((reason, problem), ("no_work", None))
+        self.assertEqual(finding["proj"]["served_by"], "pure")
+
+    def test_one_riscv64_and_one_pure_distribution_is_already_released(self):
+        reason, problem, _finding = self.confirm(
+            {"proj": pypi("2.4.1", self.RISCV),
+             "proj-data": pypi("1.0", "proj_data-1.0-py3-none-any.whl")},
+            names=("proj", "proj-data"))
+        self.assertEqual((reason, problem), ("already_released", None))
+
+    def test_what_does_not_confirm_a_close(self):
+        cases = {
+            "platform wheels without riscv64": pypi(
+                "2.4.1", "proj-2.4.1-cp312-cp312-manylinux_2_17_x86_64.whl",
+                "proj-2.4.1-cp312-cp312-manylinux_2_17_aarch64.whl"),
+            "sdist only": pypi("2.4.1", "proj-2.4.1.tar.gz"),
+            "a yanked riscv64 wheel only": pypi("2.4.1", (self.RISCV, True)),
+            "a riscv64 wheel of an older release only": pypi(
+                "2.4.1", "proj-2.4.0-cp312-cp312-manylinux_2_39_riscv64.whl"),
+            "no project": None,
+            "a malformed document": {"info": "x", "urls": {}},
+            "no valid version": {"info": {"version": "not a version"}, "urls": []},
+            "a list": [],
+            "a malformed wheel name only": pypi("2.4.1", "proj-2.4.1-x.whl", "-.whl"),
+        }
+        for name, document in cases.items():
+            with self.subTest(case=name):
+                reason, problem, _finding = self.confirm({"proj": document})
+                self.assertIsNone(reason)
+                self.assertTrue(problem)
+        reason, problem, finding = self.confirm({}, names=())
+        self.assertEqual((reason, problem, finding), (None, "no distribution is recorded", {}))
+
+    def test_a_malformed_wheel_name_is_ignored(self):
+        reason, problem, finding = self.confirm(
+            {"proj": pypi("2.4.1", "proj-2.4.1-x.whl", "proj-2.4.1-py3-none-any.whl")})
+        self.assertEqual((reason, problem), ("no_work", None))
+        self.assertEqual(finding["proj"]["wheel"], "proj-2.4.1-py3-none-any.whl")

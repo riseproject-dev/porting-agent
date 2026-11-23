@@ -63,6 +63,8 @@ RESULTS = {
     "investigation_without_dossier": {"status": "investigation"},
     "investigation_develop": {"status": "investigation", "dossier": _dossier("develop")},
     "investigation_park": {"status": "investigation", "dossier": _dossier("park")},
+    # Every Result here is late. `tick` patches PyPI to have no project, so no
+    # test reaches the network, and a close folded here would be rejected.
     "investigation_close": {"status": "investigation", "dossier": _dossier("close")},
 }
 

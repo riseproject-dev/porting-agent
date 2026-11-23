@@ -91,7 +91,7 @@
       "additionalProperties": true,
       "required": ["decision", "rationale", "admission_class", "allowed_paths", "path_coverage"],
       "properties": {
-        "decision": {"enum": ["develop", "park"]},
+        "decision": {"enum": ["develop", "park", "close"]},
         "rationale": {"type": "string", "minLength": 40, "maxLength": 8000},
         "admission_class": {"enum": ["configuration_integration", "architecture_correctness", "optimized_backend", null]},
         "allowed_paths": {
@@ -118,6 +118,10 @@
         },
         {
           "if": {"properties": {"decision": {"const": "park"}}},
+          "then": {"properties": {"admission_class": {"type": "null"}, "allowed_paths": {"maxItems": 0}}}
+        },
+        {
+          "if": {"properties": {"decision": {"const": "close"}}},
           "then": {"properties": {"admission_class": {"type": "null"}, "allowed_paths": {"maxItems": 0}}}
         }
       ]

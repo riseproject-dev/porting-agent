@@ -689,6 +689,12 @@ _ADMISSION = ("verified dossier decision develop, or verified dossier decision p
               "recorded admission_override")
 PATCH_SCOPE_COMPLETE = ("the verified dossier names `scope_paths`, and `scope_coverage_complete` "
                         "holds")
+# The trusted confirmation of a decision close: the reconciler reads PyPI
+# itself, since `closed.idle` is final and the dossier is worker output.
+CLOSE_CONFIRMED = ("PyPI serves riscv64 for the latest release of every distribution: a riscv64 "
+                   "wheel, or pure-Python wheels only")
+DOSSIER_REJECTED = ("the Result has no dossier, the dossier is invalid, its decision is not "
+                    "develop, park, or close, or PyPI does not confirm a decision close")
 
 
 LIFECYCLE: dict[str, State] = {
@@ -725,9 +731,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_work_recovery", "investigation.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("reject_dossier", "investigation.idle"): Transition(
                 _R, None,
-                ("the Result has no dossier, the dossier is invalid, or its decision is not "
-                 "develop, park, or close",
-                 "investigation_attempts remains"),
+                (DOSSIER_REJECTED, "investigation_attempts remains"),
                 _E(revision="bump", work="clear"), ("investigation_attempts",),
                 "Trusted validation rejects the Result; a new investigation is due."),
             ("exhaust_investigation_recovery", "investigation.waiting_human"): Transition(
@@ -758,10 +762,11 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD)),
             ("close_investigation", "closed.idle"): Transition(
                 _R, None,
-                ("verified dossier decision close",),
+                ("verified dossier decision close", CLOSE_CONFIRMED),
                 _E(work="clear", sets=("terminal_reason",), clears=_HELD),
-                description="A recorded `admission_override` is not applied against a decision close; the "
-                "reply states so."),
+                description="The reconciler reads PyPI itself; `terminal_reason` is `already_released` "
+                "when a riscv64 wheel is published, else `no_work`. A recorded `admission_override` "
+                "is not applied against a decision close; the reply states so."),
         }),
     "investigation.waiting_human": State(
         "human_wait", False, False,
@@ -1927,7 +1932,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("parked.idle", "restart_generation"),
                  ("parked.idle", "abandon")),
                 start="investigation.idle", ends=("closed.idle",),
-                text="The verified dossier decides between development, park, and close. "
+                text="The verified dossier decides between development, park, and close; a close "
+                     "is confirmed from PyPI by the reconciler. "
                      "`closed` is the single terminal phase for work that is not needed; the reason "
                      "is `terminal_reason`. A restart may record an `admission_override`; the new "
                      "generation still runs the complete investigation."),

@@ -5,6 +5,9 @@
 Reads bounded JSON from the exact Claim staging directory, never executes
 agent files. The native queue still authenticates the Claim and verifies upload.
 This gate checks documented research coverage, not the truth of every assertion.
+A dossier decides develop, park, or close; ``close_confirmation`` is the pure
+check the reconciler applies to PyPI documents it read itself before it takes
+a decision close.
 """
 from __future__ import annotations
 
@@ -13,6 +16,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
 
 import commit_rules
 import schemas
@@ -41,6 +47,16 @@ CONTRIBUTING_LOCATIONS = (
     ("`docs/` contributing pages", lambda s: s.startswith("docs/") and "contributing" in s),
     ("DEVELOPMENT.md", lambda s: "development" in s),
 )
+
+
+# The `terminal_reason` of a decision close the reconciler confirmed from PyPI:
+# a riscv64 wheel of the latest release is published, or every distribution
+# publishes pure-Python wheels only.
+CLOSE_REASONS = ("already_released", "no_work")
+# Bounds of the PyPI values a close finding records.
+_MAX_VERSION = 40
+_MAX_FILENAME = 200
+_MAX_NAME = 100
 
 
 class DossierError(ValueError):
@@ -186,6 +202,78 @@ def scope_problem(decision: dict, *, admission_class: str | None,
     if missing:
         return f"the scope omits researched riscv64 paths: {missing[:8]}"
     return None
+
+
+def _served(name: str, document) -> tuple[str | None, str | None, dict]:
+    """How PyPI serves riscv64 for the latest release of ``name``: as
+    (``"riscv64"`` or ``"pure"`` or ``None``, the problem when it is not
+    served, the finding). Only values that parsed as a version or a wheel
+    file name are recorded."""
+    shown = str(name)[:_MAX_NAME]
+    finding = {"version": None, "served_by": None, "wheel": None}
+    info = document.get("info") if isinstance(document, dict) else None
+    files = document.get("urls") if isinstance(document, dict) else None
+    if document is None:
+        return None, f"PyPI has no distribution {shown}", finding
+    if not isinstance(info, dict) or not isinstance(info.get("version"), str) \
+            or not isinstance(files, list):
+        return None, f"the PyPI document of {shown} names no latest release", finding
+    try:
+        latest = Version(info["version"])
+    except InvalidVersion:
+        return None, f"the PyPI document of {shown} names no valid latest version", finding
+    version = str(latest)[:_MAX_VERSION]
+    finding["version"] = version
+    wheels: list[tuple[str, frozenset]] = []
+    for entry in files:
+        if not isinstance(entry, dict) or entry.get("yanked") is True:
+            continue
+        filename = entry.get("filename")
+        if not isinstance(filename, str) or not filename.endswith(".whl"):
+            continue
+        try:
+            _name, wheel_version, _build, tags = parse_wheel_filename(filename)
+        except (InvalidWheelFilename, InvalidVersion):
+            continue
+        if wheel_version != latest:
+            continue
+        wheels.append((filename[:_MAX_FILENAME], tags))
+    if not wheels:
+        return None, f"{shown} {version} publishes no wheel", finding
+    for filename, tags in wheels:
+        if any(tag.platform.endswith("riscv64") for tag in tags):
+            finding.update(served_by="riscv64", wheel=filename)
+            return "riscv64", None, finding
+    if all(tag.platform == "any" for _filename, tags in wheels for tag in tags):
+        finding.update(served_by="pure", wheel=wheels[0][0])
+        return "pure", None, finding
+    return None, f"{shown} {version} has no riscv64 wheel and is not pure Python", finding
+
+
+def close_confirmation(distributions: list[str], documents: dict[str, dict | None]
+                       ) -> tuple[str | None, str | None, dict]:
+    """Whether PyPI confirms a decision close, from the PyPI documents of the
+    record's ``distributions`` (``None`` for a project PyPI does not have).
+
+    Returns ``(terminal_reason, problem, finding)``; exactly one of the
+    first two is set. The close is confirmed when the latest release of
+    every distribution publishes a non-yanked riscv64 wheel, or pure-Python
+    (platform ``any``) wheels only. ``terminal_reason`` is
+    ``already_released`` when at least one distribution has a riscv64 wheel,
+    otherwise ``no_work``. ``finding`` maps each distribution to the version,
+    how it is served, and one matching wheel. Pure: no I/O, never raises."""
+    names = [n for n in (distributions or []) if isinstance(n, str)]
+    if not names:
+        return None, "no distribution is recorded", {}
+    finding: dict[str, dict] = {}
+    served = []
+    for name in names:
+        how, problem, entry = _served(name, (documents or {}).get(name))
+        finding[name[:_MAX_NAME]] = entry
+        if problem:
+            return None, problem, finding
+        served.append(how)
+    return ("already_released" if "riscv64" in served else "no_work"), None, finding
 
 
 def _read(root: Path, relative: Path, limit: int = 256 * 1024) -> str:

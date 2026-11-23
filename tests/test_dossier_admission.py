@@ -16,6 +16,7 @@ import unittest
 from datetime import datetime
 
 import capacity
+import collect
 import commands
 import engine
 import provisioning
@@ -72,9 +73,41 @@ def result(record, research):
     return out
 
 
-def fold(record, research):
+def pypi_document(version, *files):
+    """A PyPI JSON document whose latest release is ``version`` with ``files``
+    (a name, or a ``(name, yanked)`` pair)."""
+    urls = [{"filename": f, "yanked": False} if isinstance(f, str)
+            else {"filename": f[0], "yanked": f[1]} for f in files]
+    return {"info": {"version": version}, "urls": urls}
+
+
+RISCV_WHEEL = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
+RISCV = pypi_document("2.4.1", "proj-2.4.1.tar.gz", RISCV_WHEEL,
+                      "proj-2.4.1-cp312-cp312-manylinux_2_17_x86_64.whl")
+PURE = pypi_document("2.4.1", "proj-2.4.1-py3-none-any.whl", "proj-2.4.1.tar.gz")
+X86_ONLY = pypi_document("2.4.1", "proj-2.4.1-cp312-cp312-manylinux_2_17_x86_64.whl")
+
+
+class Reader:
+    """A PyPI reader that serves fixed documents and counts its calls; no
+    test reaches the network."""
+
+    def __init__(self, documents=None, error=None):
+        self.documents = documents if documents is not None else {"proj": RISCV}
+        self.error = error
+        self.calls = []
+
+    def __call__(self, name):
+        self.calls.append(name)
+        if self.error:
+            raise self.error
+        return self.documents.get(name)
+
+
+def fold(record, research, pypi=None):
     return reconcile.apply_publication(record, result(record, research), now=NOW,
-                                       policy=POLICY, worker_run_id="77")
+                                       policy=POLICY, worker_run_id="77",
+                                       pypi=pypi or Reader())
 
 
 def verb_of(staged):
@@ -173,9 +206,13 @@ class TestDossierDecisionMatrix(unittest.TestCase):
                              (RATIONALE, "investigation"))
             self.assertIsNone(new["pending_publication"])
         elif verb == "close_investigation":
+            # The reason is derived from PyPI: the reader serves a riscv64 wheel.
             self.assertEqual((new["terminal_reason"], new["revision"]),
-                             ("no_work", record["revision"]))
+                             ("already_released", record["revision"]))
             self.assertEqual(event["details"]["rationale"], RATIONALE)
+            self.assertEqual(event["details"]["pypi"],
+                             {"proj": {"version": "2.4.1", "served_by": "riscv64",
+                                       "wheel": RISCV_WHEEL}})
             if override:
                 # The override is not applied against a decision close.
                 self.assertEqual(event["details"]["admission_override_not_applied"], override)
@@ -227,6 +264,86 @@ class TestDossierDecisionMatrix(unittest.TestCase):
                     self.assertIn("Admission override: class", body)
                 if decision == "close" and override:
                     self.assertIn("override was not applied", body)
+
+
+class TestCloseConfirmedFromPyPI(unittest.TestCase):
+    """A decision close is taken only when PyPI, read by the reconciler,
+    confirms it; the reason is derived, never taken from the dossier."""
+
+    def test_pure_python_wheels_only_close_with_no_work(self):
+        new, staged = fold(investigating(), copy.deepcopy(DECISIONS["close"]),
+                           pypi=Reader({"proj": PURE}))
+        self.assertEqual(verb_of(staged), "close_investigation")
+        self.assertEqual((engine.state_key(new), new["terminal_reason"]),
+                         ("closed.idle", "no_work"))
+
+    def test_an_unconfirmed_close_is_rejected_within_the_attempts(self):
+        for name, documents in (("x86_64 only", {"proj": X86_ONLY}), ("no project", {})):
+            with self.subTest(pypi=name):
+                record = investigating(override=OVERRIDE, refresh="matching")
+                new, staged = fold(record, copy.deepcopy(DECISIONS["close"]),
+                                   pypi=Reader(documents))
+                event = [r for kind, r in staged if kind == "events"][0]
+                self.assertEqual(verb_of(staged), "reject_dossier")
+                self.assertEqual(engine.state_key(new), "investigation.idle")
+                self.assertEqual(new["revision"], record["revision"] + 1)
+                self.assertEqual(new["budget"]["investigation_attempts"], 1)
+                self.assertIsNone(new["terminal_reason"])
+                self.assertEqual(len([r for kind, r in staged if kind == "evidence"]), 1)
+                self.assertEqual((new["admission_override"], new["refresh"]),
+                                 (record["admission_override"], record["refresh"]))
+                self.assertTrue(event["details"]["why"].startswith(
+                    "PyPI does not confirm the decision close: "), event["details"]["why"])
+
+    def test_an_unconfirmed_close_with_spent_attempts_waits_for_a_human(self):
+        limit = POLICY["retries"]["investigation_attempts"]
+        new, staged = fold(investigating(attempts=limit), copy.deepcopy(DECISIONS["close"]),
+                           pypi=Reader({"proj": X86_ONLY}))
+        self.assertEqual(verb_of(staged), "exhaust_investigation_recovery")
+        self.assertEqual(engine.state_key(new), "investigation.waiting_human")
+        self.assertEqual(new["pending_human_action"]["kind"], "investigation_failed")
+
+    def test_the_reader_is_called_for_a_decision_close_only(self):
+        for decision in ("develop", "park", "unknown_decision", "no_dossier"):
+            with self.subTest(decision=decision):
+                reader = Reader()
+                fold(investigating(), copy.deepcopy(DECISIONS[decision]), pypi=reader)
+                self.assertEqual(reader.calls, [])
+
+    def test_no_recorded_distribution_rejects_without_a_read(self):
+        record = investigating()
+        record["distributions"] = []
+        reader = Reader()
+        new, staged = fold(record, copy.deepcopy(DECISIONS["close"]), pypi=reader)
+        self.assertEqual(verb_of(staged), "reject_dossier")
+        self.assertEqual(reader.calls, [])
+
+    def test_a_failed_read_skips_the_tick_and_the_same_result_closes_later(self):
+        record = investigating()
+        with self.assertRaises(collect.CollectError):
+            fold(record, copy.deepcopy(DECISIONS["close"]),
+                 pypi=Reader(error=collect.CollectError("PyPI proj: HTTP 503")))
+        publication = result(record, copy.deepcopy(DECISIONS["close"]))
+
+        def tick(reader):
+            snapshot = reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, {})
+            return reconcile.tick(None, snapshot, policy=POLICY,
+                                  now=datetime.fromisoformat("2026-11-23T10:00:00+00:00"),
+                                  publications=[copy.deepcopy(publication)],
+                                  pressure=capacity.Pressure(ok=False, reason="x"),
+                                  observe=False, dispatcher_runs=[], queue_works={},
+                                  pypi=reader)
+
+        failed = tick(Reader(error=collect.CollectError("PyPI proj: HTTP 503")))
+        self.assertEqual(failed.staged, [])
+        self.assertEqual([entry["contribution"] for entry in
+                          failed.report["skipped_contributions"]],
+                         [record["contribution_id"]])
+        closed = tick(Reader())
+        records = [r for kind, r in closed.staged if kind == "contributions"]
+        self.assertEqual((engine.state_key(records[-1]), records[-1]["terminal_reason"]),
+                         ("closed.idle", "already_released"))
+        self.assertIn(5, records[-1]["processed_publications"])
 
 
 class TestOverrideEndToEnd(unittest.TestCase):

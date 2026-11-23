@@ -205,6 +205,10 @@ def _observed(event: dict) -> str:
         parts.append("Releases: " + ", ".join(
             f"`{_quotable(n, 80)} {_quotable(v, 40)}`"
             for n, v in sorted(details["releases"].items())) + ".")
+    if kind == "close_investigation" and isinstance(details.get("pypi"), dict):
+        parts.append("PyPI: " + "; ".join(
+            _close_finding(name, entry) for name, entry in sorted(details["pypi"].items())
+            if isinstance(entry, dict)) + ".")
     if kind == "record_merge" and details.get("merge_sha"):
         parts.append(f"Merge commit: {_head(details['merge_sha'])}.")
     override = details.get("admission_override")
@@ -213,6 +217,18 @@ def _observed(event: dict) -> str:
     if details.get("admission_override_not_applied"):
         parts.append("The recorded admission override was not applied.")
     return "".join(" " + p for p in parts)
+
+
+def _close_finding(name, entry: dict) -> str:
+    """How PyPI serves one distribution, as the reconciler confirmed a
+    decision close: its latest release and one wheel, quoted."""
+    release = f"`{_quotable(name, 100)} {_quotable(entry.get('version'), 40)}`"
+    wheel = f"`{_quotable(entry.get('wheel'), 200)}`"
+    if entry.get("served_by") == "riscv64":
+        return f"{release} (riscv64 wheel {wheel})"
+    if entry.get("served_by") == "pure":
+        return f"{release} (pure-Python wheels only)"
+    return release
 
 
 def _processing_error(event: dict) -> str:

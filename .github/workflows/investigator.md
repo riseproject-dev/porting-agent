@@ -505,14 +505,17 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
 
   The `proposal` object MUST include:
   - `decision`: `develop` when a concrete bounded patch can advance official
-    riscv64 wheel support, otherwise `park`;
+    riscv64 wheel support; `close` only when no riscv64 work is needed because
+    the latest release of every requested PyPI distribution already installs
+    on riscv64 from PyPI: it publishes a riscv64 wheel, or it publishes
+    pure-Python (`py3-none-any`) wheels only; otherwise `park`;
   - `rationale`: a source-grounded explanation of that decision;
   - `admission_class`: one of `configuration_integration`,
     `architecture_correctness`, or `optimized_backend` for `develop`, and null
-    for `park`;
+    for `park` and `close`;
   - `allowed_paths`: 1..32 exact relative paths or directory globs with a
     single final wildcard component for `develop`, and an empty list for
-    `park`. Never use `*`, `**`, absolute paths, `.git`, or `..`;
+    `park` and `close`. Never use `*`, `**`, absolute paths, `.git`, or `..`;
   - `path_coverage`: exactly one assessment for each of `build`, `test`,
     `release`, `packaging`, `documentation`, and `native_sources`. Each entry
     lists every repository path that may need a riscv64 change in that area,
@@ -527,7 +530,14 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   it does not wait for scope approval. A `park` decision stops work; an
   authorized human can later resume the parked contribution with an admission
   class and paths (`resume class=... paths=...`), which a new investigation's
-  `park` decision then admits. Preserve the facts needed to
+  `park` decision then admits. A `close` decision ends the contribution for
+  good; no command resumes it. The controller reads PyPI itself and rejects a
+  `close` that PyPI does not confirm, so never choose `close` for a blocker, a
+  refusal, an sdist-only release, partial or uncertain coverage, or unreleased
+  work on a branch: use `park` (or `develop` when wheels for some interpreters
+  or libc are still missing and a bounded patch adds them). State in
+  `rationale` the release version and the wheel files you saw, and record them
+  in the `release_repositories` research. Preserve the facts needed to
   approve scope, with evidence:
   - release coverage: which platforms and architectures the latest release
     ships wheels for on PyPI, and whether riscv64 is already there;

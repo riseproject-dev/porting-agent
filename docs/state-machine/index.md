@@ -188,7 +188,7 @@ flowchart TB
     closed_idle --> end_2(( ))
 ```
 
-The verified dossier decides between development, park, and close. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs the complete investigation.
+The verified dossier decides between development, park, and close; a close is confirmed from PyPI by the reconciler. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs the complete investigation.
 
 ### Failure case 2: the Result has no usable dossier
 

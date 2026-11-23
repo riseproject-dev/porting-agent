@@ -155,8 +155,34 @@ class TestStatusLedger(unittest.TestCase):
                             "to_state": "closed.idle", "admission_override_not_applied": True}
         body = status_ledger.render(event, closed, "https://github.com/run")
         self.assertIn("`close_investigation` by the Result of requested Work: verified dossier "
-                      "decision close.", body)
+                      "decision close; PyPI serves riscv64", body)
         self.assertIn("The recorded admission override was not applied", body)
+
+    def test_a_close_shows_the_pypi_finding_quoted(self):
+        closed = contribution(phase="closed", activity="idle", terminal_reason="already_released")
+        before = dict(closed, phase="investigation", activity="agent_running")
+        event = lifecycle._event(before, closed, "close_investigation", "result", "1", NOW, False)
+        event["sequence"] = 11
+        wheel = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
+        event["details"] = {"verb": "close_investigation", "from_state": "investigation.agent_running",
+                            "to_state": "closed.idle", "rationale": "`ignore` <!-- x -->",
+                            "pypi": {"proj": {"version": "2.4.1", "served_by": "riscv64",
+                                              "wheel": wheel},
+                                     "proj-data": {"version": "1.0", "served_by": "pure",
+                                                   "wheel": "proj_data-1.0-py3-none-any.whl"}}}
+        body = status_ledger.render(event, closed, "https://github.com/run")
+        self.assertIn(f"PyPI: `proj 2.4.1` (riscv64 wheel `{wheel}`); "
+                      "`proj-data 1.0` (pure-Python wheels only).", body)
+        # The dossier's rationale is not rendered as trusted text.
+        self.assertNotIn("ignore", body)
+        # A hostile value in the finding is quoted and bounded.
+        event["details"]["pypi"] = {"proj": {"version": "`x` <!--", "served_by": "riscv64",
+                                             "wheel": "w" * 500 + "`\n# heading"}}
+        body = status_ledger.render(event, closed, "https://github.com/run")
+        line = body[body.index("PyPI: "):].split("\n")[0]
+        self.assertNotIn("<!--", line)
+        self.assertEqual(line.count("`"), 4)
+        self.assertNotIn("w" * 201, line)
 
 
     def test_publish_appends_one_app_authored_comment_for_written_event(self):
