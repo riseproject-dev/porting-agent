@@ -24,6 +24,9 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import ci_evidence
+import commands
+import intake
+import lifecycle
 from common import CONTROL_REPO, DEV_REF, INTAKE_LABEL, UPSTREAM_REF
 
 API = "https://api.github.com"
@@ -32,6 +35,15 @@ _PATH_RE = re.compile(r"^/[A-Za-z0-9_./%?&=,:+-]*$")
 
 class CollectError(RuntimeError):
     pass
+
+
+class BranchRenamed(CollectError):
+    """GitHub answered the read of a branch with the branch it was renamed
+    to (``name``): the branch asked for no longer exists under its name."""
+
+    def __init__(self, ref: str, name: str):
+        super().__init__(f"GET branch {ref!r}: the response names another branch {name[:100]!r}")
+        self.name = name
 
 
 # Bound of the transport error text that a ``CollectError`` quotes.
@@ -178,11 +190,10 @@ def tracking_issue_context(issue: dict, expected: dict) -> dict:
 
 def tracking_issues(api: Api, contributions: Iterable[dict], intake_issues: list[dict]) -> dict[int, dict]:
     """Fresh descriptions for every live tracked issue (not just labeled intake)."""
-    from lifecycle import TERMINAL
     issues = {i["number"]: i for i in intake_issues}
     for rec in contributions:
         n = rec["tracking_issue"]["number"]
-        if rec["phase"] not in TERMINAL and n not in issues:
+        if rec["phase"] not in lifecycle.TERMINAL and n not in issues:
             issues[n] = api.get(f"/repos/{CONTROL_REPO}/issues/{n}")
     return issues
 
@@ -309,44 +320,83 @@ def _review_feedback(api: Api, record: dict, repository: str, number: int, head:
             "inquiry_conversation_comment_ids": [item["id"] for item in inquiry_conversation]}
 
 
+def _commands_by_issue(comments: Iterable[dict], policy: dict,
+                       consumed: Iterable[int]) -> dict[int, dict[str, commands.Command]]:
+    """The commands on each tracking issue the controller can still take, by
+    verb: a comment that ``commands.parse`` accepts, by an actor of
+    ``command_authority``, whose comment id is not in ``consumed`` (the
+    command ledger). The latest comment of a verb wins."""
+    authority = set(policy["command_authority"]["actor_ids"])
+    seen = set(consumed)
+    out: dict[int, dict[str, commands.Command]] = {}
+    for item in comments:
+        comment = item.get("comment") or {}
+        if comment.get("id") in seen or (comment.get("user") or {}).get("id") not in authority:
+            continue
+        try:
+            command = commands.parse(comment.get("body") or "")
+        except commands.CommandError:
+            continue
+        out.setdefault(int(item["issue_number"]), {})[command.verb] = command
+    return out
+
+
+def _refresh_branch(c: dict, command: commands.Command) -> str | None | bool:
+    """The branch a refresh from ``parked.idle`` binds: its ``branch``, else
+    the target branch the request asked for at intake, else ``None`` (the
+    default branch). ``False`` for a ``branch`` the controller refuses."""
+    if "branch" not in command.args:
+        return intake.requested_target_branch(c["tracking_issue"])
+    try:
+        return intake.canonical_branch(command.args["branch"])
+    except intake.IntakeError:
+        return False
+
+
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
                        comments: Iterable[dict] = (),
                        consumed: Iterable[int] = ()) -> dict[str, dict]:
     """Verify source IDs and initial immutable bases before task admission.
     Errors are data: urgent commands must still run when an upstream is absent.
 
-    A parked contribution whose tracking issue carries a refresh command in
-    ``comments`` is read too: a restart clears the identity and base, and
-    the controller binds them again in the tick that restarts it. Only a
-    command the controller can still take is counted: one that parses as
-    ``refresh`` (``commands.parse``), by an actor of ``command_authority``,
-    whose comment id is not in ``consumed`` (the command ledger). The
-    upstream is read at the target branch the request asked for at intake,
-    or at its default branch when none was asked for."""
-    import commands
-    import intake
-    import lifecycle
+    A snapshot that could not be read is ``{"error": ...}``. When the
+    upstream answered definitively that the base branch is not there (it does
+    not exist, or GitHub redirects it to the branch it was renamed to), the
+    snapshot also carries ``base_ref``, ``missing: True``, and for a rename
+    ``renamed_to``; the controller then takes ``require_base_branch`` at once.
+
+    A contribution waiting for a human because its base branch is
+    unavailable (``pending_human_action`` ``base_branch_unavailable``) is not
+    read, unless its tracking issue carries a resume in ``comments``. A
+    parked contribution is read only when its tracking issue carries a
+    refresh: a restart clears the identity and base, and the controller binds
+    them again in the tick that restarts it. A command is counted only when
+    ``commands.parse`` accepts it, it is by an actor of
+    ``command_authority``, and its comment id is not in ``consumed`` (the
+    command ledger); whether its row then applies is decided by the
+    controller. A parked upstream is read at the ``branch`` of the refresh,
+    else at the target branch the request asked for at intake, else at its
+    default branch."""
     contributions = list(contributions)
+    posted = _commands_by_issue(comments, policy, consumed)
     parked = {c["upstream"]["full_name"] for c in contributions if c["phase"] == "parked"}
-    refs = {c["upstream"]["full_name"]: c["upstream"].get("base_ref") for c in contributions
-            if c["phase"] not in lifecycle.TERMINAL | {"parked"}}
-    authority = set(policy["command_authority"]["actor_ids"])
-    seen = set(consumed)
-    refreshed = set()
-    for item in comments:
-        comment = item.get("comment") or {}
-        if comment.get("id") in seen or (comment.get("user") or {}).get("id") not in authority:
-            continue
-        try:
-            verb = commands.parse(comment.get("body") or "").verb
-        except commands.CommandError:
-            continue
-        if verb == "refresh":
-            refreshed.add(int(item["issue_number"]))
+    refs: dict[str, str | None] = {}
     for c in contributions:
-        if c["phase"] == "parked" and c["tracking_issue"]["number"] in refreshed:
-            refs.setdefault(c["upstream"]["full_name"],
-                            intake.requested_target_branch(c["tracking_issue"]))
+        if c["phase"] in lifecycle.TERMINAL:
+            continue
+        verbs = posted.get(c["tracking_issue"]["number"], {})
+        name = c["upstream"]["full_name"]
+        if c["phase"] == "parked":
+            if "refresh" in verbs:
+                branch = _refresh_branch(c, verbs["refresh"])
+                if branch is not False:
+                    refs.setdefault(name, branch)
+            continue
+        waiting = (c.get("pending_human_action") or {}).get("kind") \
+            == lifecycle.BASE_BRANCH_UNAVAILABLE
+        if waiting and "resume" not in verbs:
+            continue
+        refs[name] = c["upstream"].get("base_ref")
     known = {c["tracking_issue"]["id"] for c in contributions}
     for issue in issues:
         if issue["id"] in known:
@@ -364,9 +414,17 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
             if repo["full_name"].lower() != name.lower():
                 raise CollectError("upstream repository name changed")
             base_ref = ref or repo["default_branch"]
-            base = branch_head(api, name, base_ref)
+            try:
+                base = branch_head(api, name, base_ref)
+            except BranchRenamed as e:
+                snapshots[name] = {"error": f"upstream base branch {base_ref!r} was renamed",
+                                   "base_ref": base_ref, "missing": True,
+                                   "renamed_to": e.name[:255]}
+                continue
             if base is None:
-                raise CollectError("upstream base branch missing")
+                snapshots[name] = {"error": f"upstream base branch {base_ref!r} does not exist",
+                                   "base_ref": base_ref, "missing": True}
+                continue
             snapshots[name] = {"repository_id": repo["id"], "base_ref": base_ref, "base_sha": base["head"]}
         except CollectError as e:
             snapshots[name] = {"error": str(e)}
@@ -397,12 +455,11 @@ def dispatcher_runs(api: Api, workflow_file: str = "dispatcher.lock.yml") -> lis
 
 def command_comments(api: Api, issue_numbers: Iterable[int], since: str | None) -> list[dict]:
     """Comments on tracking issues that look like commands, for controller.Inputs.comments."""
-    from commands import looks_like_command
     out = []
     for n in issue_numbers:
         q = f"?per_page=100&since={urllib.parse.quote(since)}" if since else "?per_page=100"
         for c in api.paginate(f"/repos/{CONTROL_REPO}/issues/{int(n)}/comments{q}", max_pages=3):
-            if looks_like_command(c.get("body") or ""):
+            if commands.looks_like_command(c.get("body") or ""):
                 out.append({"issue_number": int(n), "comment": {"id": c["id"], "body": c["body"],
                                                                   "user": {"id": c["user"]["id"], "login": c["user"]["login"]}}})
     return out
@@ -486,9 +543,12 @@ def branch_head(api: Api, full_name: str, ref: str) -> dict | None:
         raise
     # GitHub answers the branch of a renamed one with a redirect to the new
     # name: a branch whose name is not the one asked for is another branch.
-    if not isinstance(b, dict) or b.get("name") != ref:
-        raise CollectError(f"GET branch {ref!r}: the response names another branch "
-                           f"{str((b or {}).get('name') if isinstance(b, dict) else None)[:100]!r}")
+    if not isinstance(b, dict):
+        raise CollectError(f"GET branch {ref!r}: the response is not a branch")
+    if b.get("name") != ref:
+        if isinstance(b.get("name"), str) and b["name"]:
+            raise BranchRenamed(ref, b["name"])
+        raise CollectError(f"GET branch {ref!r}: the response names no branch")
     c = b["commit"]
     return {"head": c["sha"], "tree": c["commit"]["tree"]["sha"], "parents": [p["sha"] for p in c["parents"]]}
 

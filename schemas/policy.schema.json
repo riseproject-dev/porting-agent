@@ -140,6 +140,10 @@
         "work_recovery": {
           "type": "integer",
           "minimum": 0
+        },
+        "source_unavailable_ticks": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

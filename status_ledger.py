@@ -204,6 +204,11 @@ def _observed(event: dict) -> str:
     if kind in SUBMISSION_REQUESTS and _submission_request(event):
         bound = details.get("bound_to") or details
         parts.append(f"Candidate head: {_head(bound.get('head'))}.")
+    if kind == "require_base_branch" and details.get("base_ref"):
+        renamed = details.get("renamed_to")
+        parts.append(f"Upstream base branch: `{_quotable(details['base_ref'], 255)}`"
+                     + (f", renamed upstream to `{_quotable(renamed, 255)}`" if renamed else "")
+                     + ".")
     for key in ("mismatch", "incomplete", "why"):
         if details.get(key):
             parts.append(f"Observed: `{_quotable(details[key], 600)}`.")
@@ -337,9 +342,26 @@ def _table_command_lines(record: dict) -> list[str]:
     return lines
 
 
-def _command_lines(record: dict) -> list[str]:
-    """The commands an authorized human may post next, from the table."""
-    return _table_command_lines(record)
+# The restart on another upstream target branch, offered while the
+# contribution waits because its base branch is unavailable: after a park
+# (which keeps the revision), a refresh from `parked.idle` with `branch`.
+REFRESH_BRANCH = '/upstreaming refresh revision={revision} branch={branch} reason="..."'
+
+
+def _command_lines(record: dict, event: dict | None = None) -> list[str]:
+    """The commands an authorized human may post next, from the table. While
+    the base branch is unavailable, the refresh that restarts on another
+    branch once the contribution is parked follows them, naming the branch
+    the upstream renamed it to when the event observed one."""
+    lines = _table_command_lines(record)
+    pending = (record.get("pending_human_action") or {}).get("kind")
+    if pending == lifecycle.BASE_BRANCH_UNAVAILABLE \
+            and engine.state_key(record) in engine.HUMAN_WAITS and not record.get("paused"):
+        renamed = ((event or {}).get("details") or {}).get("renamed_to")
+        branch = renamed if isinstance(renamed, str) and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", renamed) else "NAME"
+        lines.append(REFRESH_BRANCH.format(revision=record["revision"], branch=branch))
+    return lines
 
 
 def render(event: dict, record: dict, run_url: str) -> str:
@@ -364,7 +386,7 @@ def render(event: dict, record: dict, run_url: str) -> str:
     visible = f"**Upstreaming r{revision} · {phase}/{activity}** -- {message} [Workflow run]({run_url})"
     if request:
         visible += f"\n\n```text\n{request}\n```"
-    lines = _command_lines(record)
+    lines = _command_lines(record, event)
     details = ""
     if lines:
         details = "\n\n<details>\n<summary>Possible next commands</summary>\n\n```text\n" + "\n".join(lines) + "\n```\n"

@@ -911,6 +911,10 @@
           "type": "integer",
           "minimum": 0
         },
+        "source_unavailable": {
+          "type": "integer",
+          "minimum": 0
+        },
         "spent_estimate_usd_cents": {
           "type": "integer",
           "minimum": 0
@@ -998,6 +1002,7 @@
                 "interrupted_reruns",
                 "dispatch_recovery",
                 "publish_recovery",
+                "source_reads",
                 "operation_launch",
                 "upstream_branch",
                 "submission_comment",

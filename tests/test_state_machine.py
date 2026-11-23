@@ -82,7 +82,9 @@ class TestLifecycleTable(unittest.TestCase):
 
     def test_rules_expand_into_the_table(self):
         self.assertEqual(set(lc.RULES), {"park_contribution", "resume_stale", "record_reminder",
-                                         "record_late_effect"})
+                                         "record_late_effect", "record_source_unavailable"})
+        self.assertEqual(set(lc.rule_states("record_source_unavailable")),
+                         set(lc.BASE_BRANCH_WAITS))
         self.assertEqual(set(lc.rule_states("record_late_effect")), set(lc.LIFECYCLE))
         self.assertEqual(
             set(lc.rule_states("record_reminder")),
@@ -411,7 +413,8 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual(lc.pending_kinds("handoff.waiting_human"),
                          {"work_budget_exhausted", "dispatch_failed", "work_failed",
                           "upstream_branch_failed", "upstream_branch_blocked", "ci_interrupted",
-                          "submission_comment_failed", "clean_head_ci_missing"})
+                          "submission_comment_failed", "clean_head_ci_missing",
+                          "base_branch_unavailable"})
         for key in ("handoff.waiting_human", "development.waiting_human",
                     "upstream_review.waiting_human"):
             resumes = [e for e in lc.state_edges(key)
@@ -632,7 +635,16 @@ class TestLifecycleTable(unittest.TestCase):
             "interrupted_reruns": infrastructure,
             "operation_launch": infrastructure, "upstream_branch": infrastructure,
             "submission_comment": infrastructure,
+            "source_reads": "retries.source_unavailable_ticks",
         })
+        self.assertEqual(policy_value("retries.source_unavailable_ticks"), 12)
+        # The base branch is needed in each state of `BASE_BRANCH_WAITS`; its
+        # wait is that of the phase, or of planning for a request in `queued`.
+        for state, wait in lc.BASE_BRANCH_WAITS.items():
+            edge = lc.find_edge(state, "require_base_branch")
+            self.assertEqual(edge.target, wait)
+            self.assertEqual(lc.state_phase(wait),
+                             "planning" if state == "queued.idle" else lc.state_phase(state))
         self.assertEqual(policy_value("retries.planning_attempts"), 3)
         self.assertGreater(policy_value("retries.max_attempts_per_contribution"), 12)
         for name, b in lc.BUDGETS.items():

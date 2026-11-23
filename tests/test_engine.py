@@ -143,6 +143,8 @@ def scenario(state, verb, t):
                       work_total=lc.budget_limit("work_total", POLICY))
     if verb == "require_provisioning_intervention":
         facts.add("provisioning_blocked")
+    if verb == "require_base_branch":
+        facts.add("base_branch_missing")
     if verb == "reject_patch_proposal" and phase == "development":
         facts.add("proposal_rejected_or_blocked")
     e = t.effects

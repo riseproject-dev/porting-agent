@@ -497,6 +497,16 @@ NO_WORK = "no requested Work"
 # `upstream.base_sha`). Every row that allocates Work requires them; a
 # restart clears them, and the tick that restarts binds them again.
 UPSTREAM_BOUND = "upstream identity and base bound"
+# The upstream base branch, read by the collector in the states that need it
+# (`BASE_BRANCH_WAITS`). A definitive answer (the branch does not exist, or
+# GitHub redirects it to the branch it was renamed to) leads to the human
+# wait at once; any other failed read is charged to `source_reads`, and its
+# exhaustion leads to the same wait.
+BASE_BRANCH_UNREAD = ("the upstream base branch could not be read, and the upstream did not "
+                      "answer that it is missing")
+BASE_BRANCH_GONE = ("the upstream answers that the base branch does not exist or was renamed, "
+                    "or source_reads is exhausted")
+BASE_BRANCH_UNAVAILABLE = "base_branch_unavailable"
 # A stop is stale when it lasted longer than ``refresh.stale_after_days``,
 # counted from the older of ``paused_at`` and
 # ``pending_human_action.requested_at``. ``resume_stale`` requires it; every
@@ -843,7 +853,7 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION, QUIESCENT),
                 _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
-                                   "planning_attempts"),
+                                   "planning_attempts", "source_reads"),
                 description=_RESTART_NOTE),
         }),
     "provisioning.idle": State(
@@ -878,7 +888,8 @@ LIFECYCLE: dict[str, State] = {
             ("resume_provisioning", "provisioning.idle"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, "the prerequisite is corrected", NOT_STALE),
-                _resume_restarting("operation_launch"), description=_RESTART_NOTE),
+                _resume_restarting("operation_launch", "source_reads"),
+                description=_RESTART_NOTE),
         }),
     "development.agent_running": State(
         "work", False, True,
@@ -1026,7 +1037,8 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION, pending_is_not("ci_interrupted"), QUIESCENT, NOT_STALE),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
-                  restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery")),
+                  restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
+                            "source_reads")),
                 description="Fresh Work is requested; a Result held for publication is not "
                             "reused. The pending feedback is kept. " + _RESTART_NOTE),
             ("refresh_planning", "queued.idle"): _REFRESH,
@@ -1281,8 +1293,10 @@ LIFECYCLE: dict[str, State] = {
             ("resume_submission_review", "handoff.review_due"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION,
-                 pending_is("work_budget_exhausted", "dispatch_failed", "work_failed")),
-                _resume_restarting("work_total", "dispatch_recovery", "work_recovery"),
+                 pending_is("work_budget_exhausted", "dispatch_failed", "work_failed",
+                            BASE_BRANCH_UNAVAILABLE)),
+                _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
+                                   "source_reads"),
                 description="Fresh rewrite Work is requested, and its review after it. "
                             + _RESTART_NOTE),
             ("resume_upstream_branch", "handoff.building_upstream_branch"): Transition(
@@ -1449,10 +1463,11 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION,
                  pending_is("dispatch_failed", "work_failed", "publication_infrastructure_failure",
-                            "repair_budget_exhausted")),
+                            "repair_budget_exhausted", BASE_BRANCH_UNAVAILABLE)),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("repair_attempts_cluster", "no_progress", "work_total",
-                            "dispatch_recovery", "work_recovery", "publish_recovery")),
+                            "dispatch_recovery", "work_recovery", "publish_recovery",
+                            "source_reads")),
                 description="Only when revision Work failed: dispatch, Work, publication, or a "
                             "budget. The pending feedback is kept. " + _RESTART_NOTE),
         }),
@@ -1488,11 +1503,14 @@ LIFECYCLE: dict[str, State] = {
             ("restart_generation", "queued.idle"): Transition(
                 _C, REFRESH,
                 (EXACT_REVISION, QUIESCENT, "no open upstream PR"),
-                _E(revision="bump", generation="bump", work="clear", sets=("admission_override",)),
+                _E(revision="bump", generation="bump", work="clear",
+                   sets=("admission_override", "upstream.base_ref")),
                 description="Starts a clean generation that runs complete planning; "
                             "identity, events, evidence, and replay fences are kept. An optional "
                             "class, paths, and reason are stored as `admission_override`. "
-                            "Accepted while paused."),
+                            "`upstream.base_ref` is the optional `branch` of the command, else "
+                            "the target branch the request asked for at intake, else none (the "
+                            "upstream default branch is bound). Accepted while paused."),
             ("abandon", "closed.idle"): Transition(
                 _C, "/upstreaming abandon",
                 ("a reason is given", ANY_REVISION),
@@ -1527,7 +1545,7 @@ RULES: dict[str, Rule] = {
             _E(revision="bump", sets=_REFRESH_EFFECTS.sets,
               clears=(*_REFRESH_EFFECTS.clears, *_FLAG_FIELDS),
               restarts=("operation_launch", "interrupted_reruns", "dispatch_recovery",
-                        "work_recovery", "work_total", "publish_recovery")),
+                        "work_recovery", "work_total", "publish_recovery", "source_reads")),
             description="After a long stop the plan is refreshed: complete planning "
                         "runs again while the fork and development PR are kept. The stop is "
                         "counted from the older of `paused_at` and "
@@ -1549,6 +1567,19 @@ RULES: dict[str, Rule] = {
                         "link and the exact head, and states when an observed PR does not match."),
         "every state of kind `gate`, `human_wait`, or `locked`",
         kinds=REMINDER_KINDS),
+    "record_source_unavailable": Rule(
+        SELF,
+        Transition(
+            _O, None, (BASE_BRANCH_UNREAD, "source_reads remains", NOT_PAUSED, QUIESCENT),
+            charges=("source_reads",),
+            description="A network error, a server error, or a rate limit: the contribution "
+                        "stays, and a later tick reads the upstream again. A tick that reads it "
+                        "starts `source_reads` again."),
+        "every state in which the controller needs the upstream base branch: "
+        "`queued.idle`, `planning.idle`, `provisioning.idle`, `development.fix_needed`, "
+        "`handoff.review_due`, `handoff.review_pending`, and `upstream_review.fix_needed`",
+        states=("queued.idle", "planning.idle", "provisioning.idle", "development.fix_needed",
+                "handoff.review_due", "handoff.review_pending", "upstream_review.fix_needed")),
     "record_late_effect": Rule(
         SELF,
         Transition(
@@ -1584,6 +1615,34 @@ def expand_rules() -> None:
             if any(v == verb for v, _to in transitions):
                 raise ValueError(f"{key} already has a transition {verb}")
             transitions[(verb, SELF if rule.target == key else rule.target)] = rule.transition
+
+
+# The states in which the controller needs the upstream base branch (Work or
+# the fork provisioning is due), each with the human wait it leads to when
+# the base branch is unavailable: the wait of its phase, and for a request
+# in `queued.idle`, which has none, the wait of planning, the phase it is
+# about to begin.
+BASE_BRANCH_WAITS = {
+    "queued.idle": "planning.waiting_human",
+    "planning.idle": "planning.waiting_human",
+    "provisioning.idle": "provisioning.waiting_human",
+    "development.fix_needed": "development.waiting_human",
+    "handoff.review_due": "handoff.waiting_human",
+    "handoff.review_pending": "handoff.waiting_human",
+    "upstream_review.fix_needed": "upstream_review.waiting_human",
+}
+_REQUIRE_BASE_BRANCH = Transition(
+    _O, None, (BASE_BRANCH_GONE, NOT_PAUSED, QUIESCENT),
+    _E(sets=(f"pending_human_action={BASE_BRANCH_UNAVAILABLE}", PENDING_COUNTER)),
+    description="The collector stops reading the upstream while the contribution waits, until "
+                "an authorized `/upstreaming resume` is posted. The entry names the branch, and "
+                "for a rename the branch GitHub redirects to. `pending_human_action.counter` "
+                "names `source_reads` when that budget is exhausted, and no counter when the "
+                "upstream answered that the branch is missing. Once the branch exists again, "
+                "`/upstreaming resume` continues; a contribution that must target another "
+                "branch is parked and restarted with `/upstreaming refresh branch=NAME`.")
+for _state, _wait in BASE_BRANCH_WAITS.items():
+    LIFECYCLE[_state].transitions[("require_base_branch", _wait)] = _REQUIRE_BASE_BRANCH
 
 
 expand_rules()
@@ -1715,6 +1774,13 @@ BUDGETS: dict[str, Budget] = {
         INFRASTRUCTURE_KEY, 1,
         "one publish-only retry of the same verified Result",
         "`pending_publication.attempts`", ("exhaust_publish_recovery",), infrastructure=True),
+    "source_reads": Budget(
+        "retries.source_unavailable_ticks", 0,
+        "one controller tick in which the upstream base branch could not be read and the "
+        "upstream did not answer that it is missing",
+        "`budget.source_unavailable`, the consecutive ticks: a tick that reads the upstream "
+        "starts it again",
+        ("require_base_branch",)),
     "operation_launch": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one launch of a planned fork provisioning operation", "the operation's launch attempts",
@@ -2274,7 +2340,35 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "When an exhausted budget caused the wait, the resume starts again the one "
                      "counter named in `pending_human_action.counter`."),
             Diagram(
-                "Failure case 2: park, then restart as a clean generation or abandon",
+                "Failure case 2: the upstream base branch is missing or cannot be read",
+                ("queued.idle", "planning.idle", "planning.waiting_human", "provisioning.idle",
+                 "provisioning.waiting_human", "development.fix_needed",
+                 "development.waiting_human", "handoff.review_due", "handoff.review_pending",
+                 "handoff.waiting_human", "upstream_review.fix_needed",
+                 "upstream_review.waiting_human"),
+                (("queued.idle", "require_base_branch"),
+                 ("planning.idle", "require_base_branch"),
+                 ("planning.waiting_human", "resume_planning"),
+                 ("provisioning.idle", "require_base_branch"),
+                 ("provisioning.waiting_human", "resume_provisioning"),
+                 ("development.fix_needed", "require_base_branch"),
+                 ("development.waiting_human", "resume_development"),
+                 ("handoff.review_due", "require_base_branch"),
+                 ("handoff.review_pending", "require_base_branch"),
+                 ("handoff.waiting_human", "resume_submission_review"),
+                 ("upstream_review.fix_needed", "require_base_branch"),
+                 ("upstream_review.waiting_human", "resume_upstream_revision")),
+                text="Where Work or the fork provisioning is due, the collector reads the "
+                     "upstream base branch. When GitHub answers that it does not exist, or "
+                     "redirects it to the branch it was renamed to, the contribution waits for a "
+                     "human in its phase at once; a read that fails otherwise (network, server "
+                     "error, rate limit) is retried every tick within `source_reads`, and its "
+                     "exhaustion leads to the same wait. While it waits the upstream is not read, "
+                     "until an authorized resume is posted. A resume once the branch exists "
+                     "again continues; to target another branch, the contribution is parked and "
+                     "restarted with `/upstreaming refresh branch=NAME`."),
+            Diagram(
+                "Failure case 3: park, then restart as a clean generation or abandon",
                 ("development.fix_needed", "parked.idle", "queued.idle", "closed.idle"),
                 (("development.fix_needed", "park_contribution"),
                  ("parked.idle", "record_late_effect"),
@@ -2502,7 +2596,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
     ),
     DiagramSection(
         "Rules that apply in many states",
-        "Four transitions apply in many states. Each is written once as a rule and expanded into "
+        "Five transitions apply in many states. Each is written once as a rule and expanded into "
         "the table; each is drawn once here, from a single node that stands for every state the "
         "rule applies in.",
         (
@@ -2518,6 +2612,12 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`handoff.waiting_upstream_pr` the reminder text carries the package link."),
             Diagram(
                 "Rule: late Results", (), (), rule="record_late_effect"),
+            Diagram(
+                "Rule: the upstream base branch cannot be read", (), (),
+                rule="record_source_unavailable",
+                text="A read that fails without a definitive answer charges `source_reads` and "
+                     "keeps the state; its exhaustion takes `require_base_branch`, drawn with "
+                     "the human waits."),
         ),
     ),
 )

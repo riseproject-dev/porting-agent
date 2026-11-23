@@ -503,6 +503,8 @@ def budget_count(name: str, ctx: Context) -> int | None:
         return int((record.get("active_work") or {}).get("attempt", 1))
     if name == "publish_recovery":
         return int((record.get("pending_publication") or {}).get("attempts", 0))
+    if name == "source_reads":
+        return int(budget.get("source_unavailable", 0))
     if name in RERUN_COUNTERS:
         return int(head_reruns(record)[RERUN_COUNTERS[name]])
     return None
@@ -530,7 +532,7 @@ def head_reruns(record: dict) -> dict:
 # Budgets whose counter is a field of the contribution record.
 RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts",
                    "repair_attempts_cluster", "work_recovery", "publish_recovery",
-                   *RERUN_COUNTERS)
+                   "source_reads", *RERUN_COUNTERS)
 
 
 def remains(name: str, ctx: Context) -> bool | None:
@@ -621,6 +623,13 @@ def _repair_budget_exhausted(ctx: Context) -> str | None:
     if cluster is None:
         return UNKNOWN_EVIDENCE
     return None if cluster else "no_progress and repair_attempts_cluster remain"
+
+
+@_record(lc.BASE_BRANCH_GONE, "base_branch_gone")
+def _base_branch_gone(ctx: Context) -> str | None:
+    if _asserted(ctx, "base_branch_missing") or remains("source_reads", ctx) is False:
+        return None
+    return "the upstream did not answer that the base branch is missing, and source_reads remains"
 
 
 @_record("a prerequisite cannot be satisfied, an uncertain operation has no discovery, or "
@@ -721,6 +730,7 @@ for _guard, _name in (
     ("the observed upstream repository identity differs from the recorded one",
      "upstream_identity_changed"),
     (lc.PROCESSING_ERROR, "processing_error"),
+    (lc.BASE_BRANCH_UNREAD, "base_branch_unread"),
 ):
     _fact(_guard, _name)
 
@@ -734,14 +744,15 @@ _register("for pr_closed_unmerged, the upstream PR is observed open again",
           else "the upstream PR is not observed open again")
 
 # Facts read by a record predicate in addition to the fact predicates above.
-EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked"})
+EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked", "base_branch_missing"})
 FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") | EXTRA_FACTS
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
 CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
                        ("submission_rewrite_passed", "submission_rewrite_failed"),
                        ("submission_rewrite_current", "submission_rewrite_expired"),
-                       ("submission_review_passed", "submission_review_failed"))
+                       ("submission_review_passed", "submission_review_failed"),
+                       ("base_branch_unread", "base_branch_missing"))
 
 
 def table_guards() -> set[str]:
@@ -848,6 +859,11 @@ PIPELINE_VERBS: dict[str, str] = {
     "pause_on_processing_error": "reconcile",
     # The intake label removed from a request that has not started.
     "withdraw_request": "controller",
+    # The upstream base branch, read where Work or provisioning is due: a
+    # failed read within `source_reads`, and the human wait once the
+    # upstream answers that the branch is missing or the budget is spent.
+    "record_source_unavailable": "controller",
+    "require_base_branch": "controller",
     # The fork provisioning operation: its launches within `operation_launch`,
     # the wait once that budget is exhausted or the operation failed, and its
     # confirmation by the receipt and readback (rows the operation fires
@@ -1023,6 +1039,17 @@ def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
         return True, ctx.record["phase"]
     if name in ("pending_publication.exhausted", "automatic_refresh_used"):
         return True, True
+    if name == "upstream.base_ref" and ctx is not None and ctx.command is not None \
+            and ctx.command.verb == "refresh":
+        # The target branch of a new generation: the command's `branch`, else
+        # the one the request asked for at intake (`reset_generation`).
+        branch = _command_arg(ctx, "branch")
+        if not branch:
+            return True, intake.requested_target_branch(ctx.record["tracking_issue"])
+        try:
+            return True, intake.canonical_branch(branch)
+        except intake.IntakeError as error:
+            raise TransitionError(str(error)) from None
     return False, None
 
 
@@ -1106,6 +1133,8 @@ def _restart_counter(rec: dict, name: str) -> None:
         budget["planning_attempts"] = 0
     elif name == "repair_attempts_cluster":
         budget["clusters"] = {}
+    elif name == "source_reads":
+        budget["source_unavailable"] = 0
     elif name in RERUN_COUNTERS:
         budget["reruns"] = dict(head_reruns(rec), **{RERUN_COUNTERS[name]: 0})
 
@@ -1131,6 +1160,8 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
     elif name == "publish_recovery":
         before = int((ctx.record.get("pending_publication") or {}).get("attempts", 0))
         rec["pending_publication"] = dict(rec["pending_publication"], attempts=before + 1)
+    elif name == "source_reads":
+        budget["source_unavailable"] = int(budget.get("source_unavailable", 0)) + 1
     elif name in RERUN_COUNTERS:
         # Counted for the current head: counts of another head start again.
         reruns, key = head_reruns(rec), RERUN_COUNTERS[name]
@@ -1575,6 +1606,9 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # The upstream identity and base, bound from trusted API data once.
     "upstream_identity_bound": ("upstream.repository_id", "upstream.base_ref",
                                 "upstream.base_sha"),
+    # A tick that read the upstream starts `source_reads` again: it counts
+    # consecutive ticks only.
+    "upstream_read": ("budget.source_unavailable",),
     # The replay fences of the review comments a review row recorded.
     "review_fences": ("processed_review_ids", "processed_review_comment_ids",
                       "processed_pr_conversation_comment_ids"),

@@ -29,7 +29,8 @@
     "no_progress_review_after": 2,
     "max_attempts_per_contribution": 24,
     "planning_attempts": 3,
-    "work_recovery": 2
+    "work_recovery": 2,
+    "source_unavailable_ticks": 12
   },
   "refresh": {
     "stale_after_days": 7

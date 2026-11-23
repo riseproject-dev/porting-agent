@@ -1181,6 +1181,260 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
         self.assertEqual(res.requested_effects, [])
 
 
+class TestBaseBranchUnavailable(unittest.TestCase):
+    """An upstream base branch that cannot be read where Work is due: a
+    definitive answer (missing, renamed) leads to the human wait of the
+    phase at once, any other failure only after `source_reads` consecutive
+    ticks; the collector stops reading while the contribution waits, and a
+    resume or a restart on another branch continues."""
+
+    SNAPSHOT = {"repository_id": 1, "base_ref": "main", "base_sha": SHA_B}
+    MISSING = {"error": "upstream base branch 'main' does not exist", "base_ref": "main",
+               "missing": True}
+    RENAMED = {"error": "upstream base branch 'master' was renamed", "base_ref": "master",
+               "missing": True, "renamed_to": "main"}
+    TRANSIENT = {"error": "GET https://api.github.com/repos/example/proj: HTTP 503"}
+
+    class Api:
+        """The upstream as GitHub answers it: ``branches`` maps a branch
+        to the name its response carries (another name for a rename);
+        a branch it lacks is HTTP 404; ``fail`` answers every read with it."""
+
+        def __init__(self, branches=(("main", "main"),), fail=None):
+            self.branches, self.fail, self.paths = dict(branches), fail, []
+
+        def get(self, path):
+            self.paths.append(path)
+            if self.fail:
+                raise collect.CollectError(f"GET {path}: {self.fail}")
+            if path == "/repos/example/proj":
+                return {"id": 1, "full_name": "example/proj", "default_branch": "main"}
+            name = self.branches.get(path.rsplit("/", 1)[1])
+            if name is None:
+                raise collect.CollectError(f"GET {path}: HTTP 404")
+            return {"name": name, "commit": {"sha": SHA_B, "commit": {"tree": {"sha": SHA_A}},
+                                             "parents": []}}
+
+    def queued(self, **over):
+        rec = contribution(phase="queued", activity="idle", fork=None,
+                           upstream={"repository_id": None, "full_name": "example/proj",
+                                     "base_ref": "main", "base_sha": None})
+        rec.update(over)
+        return rec
+
+    def tick(self, rec, snapshot, comments=(), consumed=None):
+        return controller.tick(
+            contributions={rec["contribution_id"]: rec}, operations={},
+            consumed={} if consumed is None else consumed, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, comments=list(comments),
+                                     upstream_snapshots={"example/proj": snapshot}
+                                     if snapshot is not None else {}))
+
+    def final(self, res, rec):
+        staged = [r for k, r in res.staged if k == "contributions"]
+        return staged[-1] if staged else rec
+
+    def events(self, res):
+        return [e for k, e in res.staged if k == "events"]
+
+    # The collector
+
+    def test_the_collector_tells_a_definitive_answer_from_a_failed_read(self):
+        rec = contribution(phase="development", activity="fix_needed")
+        cases = (
+            ("missing", self.Api(branches=()), dict(self.MISSING)),
+            ("renamed", self.Api(branches={"main": "trunk"}),
+             {"error": "upstream base branch 'main' was renamed", "base_ref": "main",
+              "missing": True, "renamed_to": "trunk"}),
+            ("unavailable", self.Api(fail="HTTP 503"),
+             {"error": "GET /repos/example/proj: HTTP 503"}),
+            ("read", self.Api(), dict(self.SNAPSHOT)),
+        )
+        for name, api, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy()),
+                                 {"example/proj": expected})
+
+    def test_the_collector_does_not_read_while_the_contribution_waits(self):
+        rec = contribution(phase="development", activity="waiting_human", pending_human_action={
+            "kind": "base_branch_unavailable", "requested_at": NOW, "reminded_at": None,
+            "escalated_at": None, "counter": None})
+        resume = {"issue_number": 12, "comment": comment(
+            "/upstreaming resume revision=0 reason=restored", cid=61)}
+        cases = (("no command", [], (), False), ("resume", [resume], (), True),
+                 ("consumed", [resume], (61,), False))
+        for name, comments, consumed, read in cases:
+            with self.subTest(name):
+                api = self.Api()
+                got = collect.upstream_snapshots(api, [rec], [], policy(), comments, consumed)
+                self.assertEqual(bool(api.paths), read)
+                self.assertEqual(got, {"example/proj": dict(self.SNAPSHOT)} if read else {})
+
+    def test_the_collector_reads_a_parked_upstream_at_the_branch_of_the_refresh(self):
+        rec = contribution(phase="parked", activity="idle", parked_reason="r",
+                           previous_phase="development")
+        api = self.Api(branches={"trunk": "trunk"})
+        refresh = {"issue_number": 12, "comment": comment(
+            "/upstreaming refresh revision=0 branch=trunk reason=renamed", cid=62)}
+        got = collect.upstream_snapshots(api, [rec], [], policy(), [refresh])
+        self.assertEqual(got, {"example/proj": dict(self.SNAPSHOT, base_ref="trunk")})
+        self.assertEqual(api.paths[-1], "/repos/example/proj/branches/trunk")
+
+    # The controller
+
+    def test_a_missing_branch_waits_for_a_human_in_planning_at_once(self):
+        rec = self.queued()
+        res = self.tick(rec, dict(self.MISSING))
+        final = self.final(res, rec)
+        self.assertEqual(engine.state_key(final), "planning.waiting_human")
+        self.assertEqual(final["pending_human_action"]["kind"], "base_branch_unavailable")
+        self.assertIsNone(final["pending_human_action"]["counter"])
+        self.assertEqual(final["revision"], rec["revision"])
+        self.assertEqual(res.requested_effects, [])
+        [event] = self.events(res)
+        self.assertEqual(event["kind"], "require_base_branch")
+        self.assertEqual(event["details"]["base_ref"], "main")
+        self.assertEqual([d for d in res.report["deferred"]
+                          if d["contribution"] == rec["contribution_id"]],
+                         [{"contribution": rec["contribution_id"],
+                           "why": "source verification unavailable"}])
+
+    def test_a_renamed_branch_of_a_bound_record_waits_in_its_phase(self):
+        import status_ledger
+        rec = contribution(phase="development", activity="fix_needed",
+                           upstream={"repository_id": 1, "full_name": "example/proj",
+                                     "base_ref": "master", "base_sha": SHA_B})
+        res = self.tick(rec, dict(self.RENAMED))
+        final = self.final(res, rec)
+        self.assertEqual(engine.state_key(final), "development.waiting_human")
+        self.assertEqual(final["pending_human_action"]["kind"], "base_branch_unavailable")
+        self.assertEqual(final["upstream"], rec["upstream"])
+        self.assertEqual(res.requested_effects, [])
+        [event] = self.events(res)
+        self.assertEqual((event["details"]["base_ref"], event["details"]["renamed_to"]),
+                         ("master", "main"))
+        event = dict(event, sequence=1)
+        self.assertTrue(status_ledger.notifies(event, "development.fix_needed",
+                                               "development.waiting_human"))
+        text = status_ledger.render(event, final, "https://github.com/r/actions/runs/1")
+        self.assertIn("Upstream base branch: `master`, renamed upstream to `main`.", text)
+        self.assertIn(f"/upstreaming resume revision={final['revision']}", text)
+        self.assertIn(f"/upstreaming park revision={final['revision']}", text)
+        self.assertIn(f"/upstreaming refresh revision={final['revision']} branch=main", text)
+
+    def test_a_failed_read_waits_only_after_the_bound(self):
+        limit = 12
+        rec = self.queued()
+        for count in range(1, limit + 1):
+            res = self.tick(rec, dict(self.TRANSIENT))
+            rec = self.final(res, rec)
+            self.assertEqual(engine.state_key(rec), "queued.idle", count)
+            self.assertEqual(rec["budget"]["source_unavailable"], count)
+            self.assertEqual([e["kind"] for e in self.events(res)], ["record_source_unavailable"])
+            self.assertEqual(res.requested_effects, [])
+        res = self.tick(rec, dict(self.TRANSIENT))
+        final = self.final(res, rec)
+        self.assertEqual(engine.state_key(final), "planning.waiting_human")
+        self.assertEqual(final["pending_human_action"]["counter"], "source_reads")
+        [event] = self.events(res)
+        self.assertEqual((event["kind"], event["details"]["count"], event["details"]["limit"]),
+                         ("require_base_branch", limit, limit))
+
+    def test_a_read_starts_the_count_again(self):
+        rec = self.queued()
+        for _ in range(3):
+            rec = self.final(self.tick(rec, dict(self.TRANSIENT)), rec)
+        self.assertEqual(rec["budget"]["source_unavailable"], 3)
+        res = self.tick(rec, dict(self.SNAPSHOT))
+        final = self.final(res, rec)
+        self.assertEqual(final["budget"]["source_unavailable"], 0)
+        self.assertEqual(final["upstream"]["base_sha"], SHA_B)
+        self.assertEqual(len(res.requested_effects), 1)
+
+    def test_a_paused_record_stays_deferred(self):
+        rec = self.queued(paused=True, paused_at=NOW, paused_by="human")
+        res = self.tick(rec, dict(self.MISSING))
+        self.assertEqual(res.staged, [])
+
+    def resume(self, rec, cid=63):
+        return [{"issue_number": 12, "comment": comment(
+            f"/upstreaming resume revision={rec['revision']} reason=restored", cid=cid)}]
+
+    def test_a_resume_once_the_branch_exists_allocates_the_work(self):
+        rec = self.final(self.tick(self.queued(), dict(self.MISSING)), self.queued())
+        res = self.tick(rec, dict(self.SNAPSHOT), self.resume(rec))
+        self.assertEqual(res.report["commands"][0]["result"], "accepted")
+        final = self.final(res, rec)
+        self.assertEqual(engine.state_key(final), "planning.agent_running")
+        self.assertIsNone(final["pending_human_action"])
+        self.assertEqual(final["upstream"]["base_sha"], SHA_B)
+        self.assertEqual(len(res.requested_effects), 1)
+
+    def test_a_resume_while_the_branch_is_missing_waits_again(self):
+        rec = self.final(self.tick(self.queued(), dict(self.MISSING)), self.queued())
+        res = self.tick(rec, dict(self.MISSING), self.resume(rec))
+        self.assertEqual(res.report["commands"][0]["result"], "accepted")
+        final = self.final(res, rec)
+        self.assertEqual(engine.state_key(final), "planning.waiting_human")
+        self.assertEqual(final["revision"], rec["revision"] + 1)
+        self.assertEqual([e["kind"] for e in self.events(res)],
+                         ["resume_planning", "require_base_branch"])
+
+    def test_a_resume_after_the_bound_starts_the_count_again(self):
+        rec = self.queued()
+        rec["budget"] = dict(rec["budget"], source_unavailable=12)
+        rec = self.final(self.tick(rec, dict(self.TRANSIENT)), rec)
+        self.assertEqual(rec["pending_human_action"]["counter"], "source_reads")
+        res = self.tick(rec, dict(self.SNAPSHOT), self.resume(rec))
+        final = self.final(res, rec)
+        self.assertEqual(final["budget"]["source_unavailable"], 0)
+        # The read of this tick already started the count again, before the
+        # resume restarts the counter its wait names.
+        resumed = [e for e in self.events(res) if e["kind"] == "resume_planning"]
+        self.assertEqual(resumed[0]["details"]["restarted"],
+                         {"counter": "source_reads", "count": 0})
+        self.assertEqual(engine.state_key(final), "planning.agent_running")
+
+    def test_a_restart_from_parked_on_another_branch(self):
+        rec = contribution(phase="parked", activity="idle", parked_reason="base branch renamed",
+                           previous_phase="development", revision=4)
+        body = "/upstreaming refresh revision=4 branch=trunk reason=renamed"
+        res = self.tick(rec, dict(self.SNAPSHOT, base_ref="trunk"),
+                        [{"issue_number": 12, "comment": comment(body, cid=64)}])
+        self.assertEqual(res.report["commands"][0]["result"], "accepted")
+        final = self.final(res, rec)
+        self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
+                                             "base_ref": "trunk", "base_sha": SHA_B})
+        self.assertEqual(len(res.requested_effects), 1)
+        for body, cid in (("/upstreaming refresh revision=4 branch=a..b reason=r", 65),):
+            with self.subTest(body=body):
+                res = self.tick(rec, dict(self.SNAPSHOT),
+                                [{"issue_number": 12, "comment": comment(body, cid=cid)}])
+                self.assertEqual(res.report["commands"][0]["result"], "rejected")
+                self.assertEqual(res.report["commands"][0]["reason"],
+                                 "invalid upstream target branch")
+
+    def test_branch_applies_only_to_a_restart(self):
+        rec = contribution(phase="development", activity="waiting_ci")
+        res = self.tick(rec, dict(self.SNAPSHOT), [{"issue_number": 12, "comment": comment(
+            "/upstreaming refresh revision=0 branch=trunk reason=r", cid=66)}])
+        self.assertEqual(res.report["commands"][0]["result"], "rejected")
+        self.assertIn("`branch` applies only to a refresh from `parked.idle`",
+                      res.report["commands"][0]["reason"])
+        with self.assertRaises(commands.CommandError):
+            commands.parse("/upstreaming resume revision=0 branch=trunk reason=r")
+
+    def test_a_snapshot_of_another_branch_is_deferred_once(self):
+        rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",
+                                    "base_ref": "release-2", "base_sha": None})
+        res = self.tick(rec, dict(self.SNAPSHOT))
+        self.assertEqual([d for d in res.report["deferred"]
+                          if d["contribution"] == rec["contribution_id"]],
+                         [{"contribution": rec["contribution_id"],
+                           "why": "upstream snapshot is not of the requested base branch"}])
+        self.assertEqual(res.staged, [])
+
+
 class _Stop(Exception):
     pass
 

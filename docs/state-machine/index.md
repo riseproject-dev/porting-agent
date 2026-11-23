@@ -531,7 +531,52 @@ flowchart TB
 
 The controller records the concrete reason in `pending_human_action`. Correct the stated problem first, then resume with the exact revision. A contribution that is also paused needs two resumes: the first clears the flag and its reply names the pending action, the second leaves the wait. When an exhausted budget caused the wait, the resume starts again the one counter named in `pending_human_action.counter`.
 
-### Failure case 2: park, then restart as a clean generation or abandon
+### Failure case 2: the upstream base branch is missing or cannot be read
+
+```mermaid
+flowchart TB
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_waiting_human["planning.waiting_human"]
+    end
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+        provisioning_waiting_human["provisioning.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph handoff["handoff"]
+        handoff_review_due["handoff.review_due"]
+        handoff_review_pending["handoff.review_pending"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    queued_idle -->|require_base_branch| planning_waiting_human
+    planning_idle -->|require_base_branch| planning_waiting_human
+    planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    provisioning_idle -->|require_base_branch| provisioning_waiting_human
+    provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
+    development_fix_needed -->|require_base_branch| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    handoff_review_due -->|require_base_branch| handoff_waiting_human
+    handoff_review_pending -->|require_base_branch| handoff_waiting_human
+    handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
+    upstream_fix_needed -->|require_base_branch| upstream_waiting_human
+    upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+```
+
+Where Work or the fork provisioning is due, the collector reads the upstream base branch. When GitHub answers that it does not exist, or redirects it to the branch it was renamed to, the contribution waits for a human in its phase at once; a read that fails otherwise (network, server error, rate limit) is retried every tick within `source_reads`, and its exhaustion leads to the same wait. While it waits the upstream is not read, until an authorized resume is posted. A resume once the branch exists again continues; to target another branch, the contribution is parked and restarted with `/upstreaming refresh branch=NAME`.
+
+### Failure case 3: park, then restart as a clean generation or abandon
 
 ```mermaid
 flowchart TB
@@ -816,7 +861,7 @@ Release observation waits without invoking a worker until the evidence satisfies
 
 ## Rules that apply in many states
 
-Four transitions apply in many states. Each is written once as a rule and expanded into the table; each is drawn once here, from a single node that stands for every state the rule applies in.
+Five transitions apply in many states. Each is written once as a rule and expanded into the table; each is drawn once here, from a single node that stands for every state the rule applies in.
 
 ### Rule: park by command
 
@@ -863,6 +908,17 @@ flowchart TB
 
     any -->|record_late_effect| any
 ```
+
+### Rule: the upstream base branch cannot be read
+
+```mermaid
+flowchart TB
+    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, handoff.review_due, handoff.review_pending, and upstream_review.fix_needed"]
+
+    any -->|record_source_unavailable| any
+```
+
+A read that fails without a definitive answer charges `source_reads` and keeps the state; its exhaustion takes `require_base_branch`, drawn with the human waits.
 
 ## Remote operations
 

@@ -162,22 +162,30 @@ def task_for(verb: str, record: dict) -> str:
 
 
 def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResult,
-                 source_blocked: set[str], policy: dict, now: str) -> None:
+                 source_blocked: dict[str, dict | None], policy: dict, now: str) -> None:
     """Bind the unbound upstream identity and base of ``c`` from this tick's
     verified snapshot of its upstream; a changed identity pauses it, and a
-    source that cannot be verified blocks it for the tick."""
+    source that cannot be verified blocks it for the tick. ``source_blocked``
+    maps each blocked contribution to the snapshot that could not be read,
+    or ``None``; a contribution is reported as deferred once, when it is
+    blocked. A snapshot that was read starts ``source_reads`` again."""
     cid = c["contribution_id"]
     rep = res.report
     snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
     if snapshot is None:
         return
     if snapshot.get("error"):
-        source_blocked.add(cid)
+        source_blocked[cid] = snapshot
         rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
         return
+    if (c.get("budget") or {}).get("source_unavailable"):
+        c = engine.record_beside(c, "upstream_read", now=now,
+                                 budget=dict(c["budget"], source_unavailable=0))
+        by_id[cid] = c
+        res.stage("contributions", c)
     current = c["upstream"].get("repository_id")
     if current is not None and current != snapshot["repository_id"]:
-        source_blocked.add(cid)
+        source_blocked[cid] = None
         # The table verb for a changed identity sets the paused flag
         # with the controller's reason, clears the requested Work and
         # what is held for publication, and keeps the state (from an
@@ -196,6 +204,7 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
         # The base is bound from a snapshot of the branch the record names
         # (the target branch the request asked for) only; a snapshot read
         # at another branch binds nothing, and a later tick reads it again.
+        source_blocked[cid] = None
         rep["deferred"].append({"contribution": cid,
                                 "why": "upstream snapshot is not of the requested base branch"})
         return
@@ -208,6 +217,44 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
                                        upstream=updated)
         by_id[cid] = changed
         res.stage("contributions", changed)
+
+
+def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operations: dict,
+                        res: TickResult, policy: dict, now: str) -> None:
+    """Take the row for an upstream base branch that could not be read in
+    this tick, in a state of ``lifecycle.BASE_BRANCH_WAITS``. A request in
+    `queued.idle` takes `require_base_branch` from there; only a paused or
+    non-quiescent contribution, or one in another state, stays deferred."""
+    cid = c["contribution_id"]
+    if engine.state_key(c) not in lifecycle.BASE_BRANCH_WAITS:
+        return
+    ops = _open_operations(c, operations)
+    if snapshot.get("missing"):
+        verb, facts = "require_base_branch", {"base_branch_missing"}
+        details = {"base_ref": snapshot.get("base_ref"), "why": snapshot["error"]}
+        if snapshot.get("renamed_to"):
+            details["renamed_to"] = snapshot["renamed_to"]
+        values = {lifecycle.PENDING_COUNTER: None}
+    else:
+        facts = {"base_branch_unread"}
+        count = int((c.get("budget") or {}).get("source_unavailable", 0))
+        limit = lifecycle.budget_limit("source_reads", policy)
+        spent = count >= limit
+        verb = "require_base_branch" if spent else "record_source_unavailable"
+        details = {"base_ref": c["upstream"].get("base_ref"), "why": snapshot["error"],
+                   "count": count if spent else count + 1, "limit": limit}
+        values = {lifecycle.PENDING_COUNTER: "source_reads"} if spent else {}
+    out = engine.apply_transition(c, verb, policy=policy, now=now, facts=facts, values=values,
+                                  open_operations=ops, cause_id=f"source-r{c['revision']}",
+                                  details=details)
+    if not out.accepted:
+        return
+    by_id[cid] = out.record
+    res.stage("contributions", out.record)
+    res.stage("events", out.event)
+    if verb == "require_base_branch":
+        res.report.setdefault("base_branch_unavailable", []).append(
+            {"contribution": cid, **{k: v for k, v in details.items() if k != "why"}})
 
 
 def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consumed: dict[int, dict],
@@ -323,7 +370,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # never from the model's plan. Already-bound bases remain immutable. A
     # parked upstream is not read here: it is bound again below, in the same
     # tick, once a restart left `parked` and cleared it.
-    source_blocked: set[str] = set()
+    source_blocked: dict[str, dict | None] = {}
     for cid, c in list(by_id.items()):
         if cid in skip or c["phase"] == "parked":
             continue
@@ -365,8 +412,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # A restart from `parked` (`restart_generation`) cleared the upstream
     # identity and base: they are bound in this tick, before any Work is
     # selected, from the snapshot read for the refresh. Every row that
-    # allocates Work requires them; without a snapshot, or when the source
-    # cannot be verified, the record waits and a later tick binds them.
+    # allocates Work requires them; without a snapshot the record waits and
+    # a later tick binds them.
     for cid, c in list(by_id.items()):
         if cid in skip or cid in source_blocked or c["phase"] in lifecycle.TERMINAL | {"parked"} \
                 or all(c["upstream"].get(k) is not None
@@ -374,6 +421,16 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             continue
         with isolation.contribution(cid, "source_identity"):
             _bind_source(c, inputs, by_id, res, source_blocked, policy, now)
+
+    # An upstream base branch that could not be read, where Work or the fork
+    # provisioning is due: `require_base_branch` once the upstream answered
+    # that it is missing or `source_reads` is exhausted, the charge of
+    # `record_source_unavailable` otherwise.
+    for cid, snapshot in list(source_blocked.items()):
+        if cid in skip or snapshot is None:
+            continue
+        with isolation.contribution(cid, "source_unavailable"):
+            _source_unavailable(by_id[cid], snapshot, by_id, operations, res, policy, now)
 
     # 2b. Reminders of a pending human step: the table's `record_reminder`, in
     # every state of kind gate, human_wait, or locked, once
@@ -1200,6 +1257,9 @@ def _unread_field(cmd: Command, verb: str, state: str) -> str | None:
     if ("class" in cmd.args or "paths" in cmd.args) and verb != "restart_generation":
         return ("`class` and `paths` apply only to a refresh from `parked.idle` that starts a "
                 "new generation")
+    if "branch" in cmd.args and verb != "restart_generation":
+        return ("`branch` applies only to a refresh from `parked.idle` that starts a new "
+                "generation")
     transition, _target = engine.resolve(state, verb)
     if "head" in cmd.args and not _HEAD_GUARDS & set(transition.guard):
         return f"`head` does not apply to `/upstreaming {cmd.verb}` in `{state}`"
@@ -1210,7 +1270,9 @@ def _unread_field(cmd: Command, verb: str, state: str) -> str | None:
 # `provisioning.waiting_human`, each with the counter it names: exhausted
 # launches of the planned operation, and a provisioning operation that failed.
 PROVISIONING_WAITS = frozenset({(LAUNCH_EXHAUSTED, "operation_launch"),
-                                (PROVISIONING_FAILED, None)})
+                                (PROVISIONING_FAILED, None),
+                                (lifecycle.BASE_BRANCH_UNAVAILABLE, "source_reads"),
+                                (lifecycle.BASE_BRANCH_UNAVAILABLE, None)})
 
 
 def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> frozenset[str]:

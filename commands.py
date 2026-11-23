@@ -26,6 +26,8 @@ _INT = r"[0-9]{1,9}"
 _REASON = r".{1,2000}"
 _CLASS = r"configuration_integration|architecture_correctness|optimized_backend"
 _PATHS = r"[A-Za-z0-9_.*/?\[\]{},-]{1,500}"
+# A Git branch name; ``intake.canonical_branch`` checks the rest of the rules.
+_BRANCH = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}"
 
 # verb -> {field: regex}; every listed field is required unless it is in
 # OPTIONAL for that verb; no other fields are allowed.
@@ -45,9 +47,10 @@ GRAMMAR: dict[str, dict[str, str]] = {
     # Re-run planning on an existing development PR. In
     # `handoff.waiting_upstream_pr` it names the exact clean head. In
     # `parked.idle` a refresh starts a new generation; ``class`` and ``paths``
-    # are then recorded as the admission override.
+    # are then recorded as the admission override, and ``branch`` names the
+    # upstream target branch of the new generation.
     "refresh": {"contribution": _ID, "revision": _INT, "reason": _REASON, "head": _SHA,
-                "class": _CLASS, "paths": _PATHS},
+                "class": _CLASS, "paths": _PATHS, "branch": _BRANCH},
     # Only from `parked.idle`; the contribution is then closed.
     "abandon": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     # The one submission command: it names the exact revision and the exact
@@ -133,7 +136,7 @@ OPTIONAL: dict[str, frozenset[str]] = {
     for verb in GRAMMAR if verb != "resolve-operation"
 }
 OPTIONAL["resolve-operation"] = frozenset()
-OPTIONAL["refresh"] = OPTIONAL["refresh"] | {"head", "class", "paths"}
+OPTIONAL["refresh"] = OPTIONAL["refresh"] | {"head", "class", "paths", "branch"}
 
 _TOKEN_RE = re.compile(r'\s*([a-z][a-z-]*)=("((?:[^"\\]|\\.)*)"|[^\s"]+)')
 
