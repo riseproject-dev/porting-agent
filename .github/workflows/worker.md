@@ -83,7 +83,7 @@ pre-agent-steps:
     uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
     with:
       platforms: riscv64
-  - name: Resolve anonymous reproduction image and install pinned gh-act
+  - name: Resolve anonymous reproduction image
     env:
       GH_TOKEN: ${{ github.token }}
       IMAGE: ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv:latest
@@ -104,14 +104,27 @@ pre-agent-steps:
       arch=$(docker run --rm --platform linux/riscv64 "$resolved" uname -m)
       [ "$arch" = riscv64 ] || { echo "reproduction image is not riscv64"; exit 1; }
       printf '%s' "$resolved" > /tmp/gh-aw/agent/reproduction-image
+  - name: Install pinned gh-act when available
+    env:
+      GH_TOKEN: ${{ github.token }}
+    run: |
+      set -uo pipefail
+      status=/tmp/gh-aw/agent/gh-act-status
       extension="$HOME/.local/share/gh/extensions/gh-act"
-      mkdir -p "$extension" "$RUNNER_TEMP/gh-act-download"
-      gh release download v0.2.98 --repo nektos/gh-act --pattern linux-amd64 \
-        --dir "$RUNNER_TEMP/gh-act-download" --clobber
-      echo '34849b32013cb8ac63a1e74015e63602a3374ba3b43df952525739ad15abed7f  '$RUNNER_TEMP'/gh-act-download/linux-amd64' \
-        | sha256sum -c -
-      install -m 0755 "$RUNNER_TEMP/gh-act-download/linux-amd64" "$extension/gh-act.real"
-      cat > "$extension/gh-act" <<'SH'
+      download="$RUNNER_TEMP/gh-act-download"
+      install_gh_act() {
+        mkdir -p "$extension" "$download" || return 1
+        fetched=false
+        for attempt in 1 2 3; do
+          if gh release download v0.2.98 --repo nektos/gh-act --pattern linux-amd64 \
+              --dir "$download" --clobber; then fetched=true; break; fi
+          sleep $((attempt * 10))
+        done
+        [ "$fetched" = true ] || return 1
+        echo '34849b32013cb8ac63a1e74015e63602a3374ba3b43df952525739ad15abed7f  '"$download"'/linux-amd64' \
+          | sha256sum -c - || return 1
+        install -m 0755 "$download/linux-amd64" "$extension/gh-act.real" || return 1
+        cat > "$extension/gh-act" <<'SH'
       #!/bin/sh
       unset GITHUB_TOKEN GH_TOKEN ANTHROPIC_API_KEY RISEPROJECT_APP_PRIVATE_KEY \
         RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY UPSTREAMING_FORK_TOKEN \
@@ -119,8 +132,15 @@ pre-agent-steps:
         AWS_SECRET_ACCESS_KEY SSH_AUTH_SOCK
       exec "$(dirname "$0")/gh-act.real" "$@"
       SH
-      chmod 0755 "$extension/gh-act"
-      gh act --version
+        chmod 0755 "$extension/gh-act" && gh act --version
+      }
+      if install_gh_act; then
+        printf available > "$status"
+      else
+        rm -rf "$extension" "$download"
+        printf unavailable > "$status"
+        echo "::warning::pinned gh-act is unavailable; the worker reproduces directly in the image"
+      fi
   - name: Split Pi provider authentication from untrusted tool environment
     run: python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"
   - name: Install pinned Pi and create credential-free unsandboxed engine wrapper
@@ -578,15 +598,25 @@ it alone, then finish `completed`.
 For every task except `submission_rewrite` and `submission_review`, before editing, read the anonymously resolved exact image reference from
 `/tmp/gh-aw/agent/reproduction-image`. It MUST name
 `ghcr.io/riseproject-dev/porting-agent/ubuntu-24.04-riscv@sha256:<64 hex>`.
-Run the applicable build and test commands in that image with
-`--platform linux/riscv64`; require `uname -m` to report `riscv64`. Use the
-pinned `gh act` extension for applicable project workflows and map
-`ubuntu-24.04-riscv` to that exact image with `-P`. When the selected build or
-test job uses another Linux runner label, map only that selected label to the
-same exact image as an alternate runner mapping. When the image lacks the
+Run the applicable build and test commands directly in that image with
+`docker run --platform linux/riscv64 <exact image reference> ...`; require
+`uname -m` to report `riscv64`. When the image lacks the
 project's toolchain (a Go, Rust, Java or Node toolchain, or a compiler), install
 it inside the container from the distribution packages or the project's
 documented installer, and record those commands with the others.
+
+Running the project's own workflows with the pinned `gh act` extension is
+optional. `/tmp/gh-aw/agent/gh-act-status` says whether it is `available`. Use
+it only when it helps, for example to check a workflow change, and never
+instead of the direct build and test commands. When you use it, map
+`ubuntu-24.04-riscv` to the exact image with `-P` (when the selected job uses
+another Linux runner label, map only that label to the same exact image), and
+record the workflow, the jobs, and each `-P` runner mapping in
+`reproduction.workflows`. When you do not use it, omit `reproduction.workflows`.
+A missing, unsupported or failing `gh act` is never a reason for a blocked
+outcome and never lowers an outcome whose direct build and test commands
+passed: record its command and exit status, name it in
+`validation_not_performed`, and continue.
 
 Select only plan-relevant build and test workflows/jobs. Do not run release,
 publish, deployment, signing, credentialed, or unrelated jobs. Pass no secret,
@@ -596,11 +626,11 @@ reviewed public/RISE dependency resolver policy. Bound each command by the
 reviewed wall-time, memory, process, output, artifact, and log limits; a timeout
 or limit violation is a failed reproduction, not missing evidence.
 
-Capture every exact command, exit status, and bounded log SHA-256. Record the
-selected workflow, jobs, and each `-P` runner mapping. Classify image, QEMU,
-`gh act`, dependency, build, test, and model-infrastructure failures separately.
-Do not claim a patch outcome unless applicable build and test commands passed on
-riscv64; use a blocked/non-patch outcome with exact evidence otherwise.
+Capture every exact command, exit status, and bounded log SHA-256. Classify
+image, QEMU, dependency, build, test, and model-infrastructure failures
+separately; a `gh act` failure is its own class and is advisory. Do not claim a
+patch outcome unless applicable build and test commands passed directly in the
+image on riscv64; use a blocked/non-patch outcome with exact evidence otherwise.
 
 ## What to produce
 
@@ -619,9 +649,9 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   `expected_head` (for `rewrite`, relative to it as well). For a repair or
   revision task, `reason_ids` must include every task `reason_ids` entry.
   Include `reproduction` with the exact image digest, `architecture: riscv64`,
-  exact commands/exit statuses/log digests, selected workflows/jobs/runner
-  mappings, and enforced resource limits. In `diagnosis`, include a checklist
-  with one item per review or CI constraint,
+  exact commands/exit statuses/log digests, enforced resource limits, and,
+  only when you used `gh act`, the selected workflows/jobs/runner mappings.
+  In `diagnosis`, include a checklist with one item per review or CI constraint,
   the exact change that addresses it, and how you verified that change. Never
   claim `no_change` while required review feedback remains unresolved. For
   every item in human-relay `reviews`, `comments`, and `conversation_comments`,

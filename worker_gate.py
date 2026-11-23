@@ -53,6 +53,22 @@ def _patch_paths(text: str) -> list[str]:
     return paths
 
 
+_GH_ACT = re.compile(r"(?:^|[\s;&|(])gh\s+act\b")
+
+
+def _is_gh_act(command: str) -> bool:
+    """Whether a reproduction command runs the optional ``gh act`` extension."""
+    return bool(_GH_ACT.search(command))
+
+
+def _direct(command: str, image: str) -> bool:
+    """Whether a reproduction command runs directly in the exact riscv64
+    image: ``docker run --platform linux/riscv64`` of that exact reference,
+    not through ``gh act``."""
+    return not _is_gh_act(command) and "docker run" in command \
+        and "--platform linux/riscv64" in command and image in command
+
+
 def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
     schemas.validate("proposal", proposal)
     if task.get("task") not in WRITE_TASKS:
@@ -142,9 +158,19 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
     commands = reproduction.get("commands") or []
     if not commands or not all(isinstance(item.get("exit_status"), int) for item in commands):
         raise WorkerGateError("reproduction command evidence is incomplete")
+    # ``gh act`` is an optional aid: its workflow, job and runner-mapping
+    # evidence is recorded only when the worker used it, and then in full.
     workflows = reproduction.get("workflows") or []
-    if not workflows or any(not item.get("jobs") or not item.get("runner_mappings") for item in workflows):
-        raise WorkerGateError("workflow selection or runner mapping evidence is incomplete")
+    if any(not item.get("jobs") or not item.get("runner_mappings") for item in workflows):
+        raise WorkerGateError(
+            "gh act evidence is incomplete: a recorded workflow needs its jobs and runner mappings")
+    direct = [item for item in commands if _direct(item["command"], image)]
+    if proposal.get("outcome") in ("patch", "no_change") \
+            and not any(item["exit_status"] == 0 for item in direct):
+        # The reproduction is the build and test run directly in the exact
+        # image; the exit status of a ``gh act`` command is never read here,
+        # so a failing ``gh act`` beside passing direct commands is accepted.
+        raise WorkerGateError("reproduction lacks a passing direct command in the exact riscv64 image")
     gate_status = "accepted"
     failure_class = None
     # Plan 8.6: a valid exact-task no_change Result is preserved. It is
@@ -153,6 +179,10 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
     # allocate repair Work at a new revision.
     if proposal.get("outcome") not in ("patch", "no_change"):
         cluster = str(proposal.get("failure_cluster") or "")
+        if cluster.startswith("reproduction-image-infrastructure") and not any(
+                item["exit_status"] != 0 and not _is_gh_act(item["command"]) for item in commands):
+            raise WorkerGateError("a gh act failure alone is not a reproduction infrastructure "
+                                  "blocker: build and test directly in the image")
         gate_status = "infrastructure_blocked" if cluster.startswith(
             "reproduction-image-infrastructure"
         ) else "blocked"
@@ -166,6 +196,7 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
         "image": image,
         "commands": len(commands),
         "workflows": len(workflows),
+        "direct_commands": len(direct),
     }
 
 

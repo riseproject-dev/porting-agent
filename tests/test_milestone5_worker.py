@@ -68,7 +68,7 @@ def proposal(patch: bytes, path=".github/workflows/build-wheels.yml"):
         "changed_files": [path],
         "operation": "append",
         "diagnosis": "Add the bounded riscv64 wheel row after exact reproduction.",
-        "validation_performed": ["gh act selected wheel build and tests"],
+        "validation_performed": ["direct riscv64 build and tests in the image"],
         "validation_not_performed": [],
         "progress": "acceptance_row_satisfied",
         "ref": "riscv64",
@@ -78,10 +78,16 @@ def proposal(patch: bytes, path=".github/workflows/build-wheels.yml"):
             "architecture": "riscv64",
             "commands": [
                 {
+                    "command": "docker run --rm --platform linux/riscv64 " + IMAGE + "@sha256:"
+                    + "b" * 64 + " sh -c 'uname -m && make test'",
+                    "exit_status": 0,
+                    "log_sha256": "c" * 64,
+                },
+                {
                     "command": "gh act -j build -P ubuntu-24.04-riscv=<image>",
                     "exit_status": 0,
                     "log_sha256": "c" * 64,
-                }
+                },
             ],
             "workflows": [
                 {
@@ -281,17 +287,25 @@ class TestWorkerContract(unittest.TestCase):
         self.assertIn(
             'docker pull --platform linux/riscv64 "$IMAGE"', setup
         )
+        self.assertIn("set -euo pipefail", setup)
+        self.assertNotIn("gh-act", setup)
         self.assertIn(
             'docker image inspect --platform linux/riscv64 "$IMAGE"', setup
         )
         self.assertIn("for attempt in 1 2 3 4 5 6 7 8 9 10", setup)
         self.assertIn("image pull failed after bounded retry", setup)
         self.assertIn("--platform linux/riscv64", setup)
-        self.assertIn("gh release download v0.2.98", setup)
-        self.assertIn("34849b32013cb8ac63a1e74015e63602a3374ba3b43df952525739ad15abed7f", setup)
-        self.assertIn("gh-act.real", setup)
-        self.assertIn("unset GITHUB_TOKEN GH_TOKEN", setup)
-        self.assertIn("gh act --version", setup)
+        # The pinned gh act install is best effort: it never fails the run.
+        act = steps[2]["run"]
+        self.assertIn("gh release download v0.2.98", act)
+        self.assertIn("34849b32013cb8ac63a1e74015e63602a3374ba3b43df952525739ad15abed7f", act)
+        self.assertIn("gh-act.real", act)
+        self.assertIn("unset GITHUB_TOKEN GH_TOKEN", act)
+        self.assertIn("gh act --version", act)
+        self.assertIn("gh-act-status", act)
+        self.assertIn("printf unavailable", act)
+        self.assertNotIn("set -e", act)
+        self.assertNotIn("exit 1", act)
         suspend = next(step for step in steps if step.get("id") == "suspend_commands")
         self.assertIn("::stop-commands::%s", suspend["run"])
         self.assertEqual(worker["post-steps"][0]["if"], "always()")
@@ -299,6 +313,9 @@ class TestWorkerContract(unittest.TestCase):
         self.assertIn("## Mandatory riscv64 reproduction", prompt)
         self.assertIn("Select only plan-relevant build and test workflows/jobs", prompt)
         self.assertIn("Pass no secret", prompt)
+        self.assertIn("is\noptional", prompt)
+        self.assertIn("gh-act-status", prompt)
+        self.assertIn("never a reason for a blocked\noutcome", prompt)
 
     def test_dispatcher_compiled_policy_contains_only_current_profiles(self):
         lock = workflow("dispatcher.lock.yml")
@@ -326,6 +343,12 @@ class TestWorkerFailureClassification(unittest.TestCase):
         self.assertEqual(capacity.classify_failure("model gateway unavailable"),
                          "model_infrastructure")
         self.assertEqual(capacity.classify_failure("pytest failed"), "code")
+
+    def test_a_gh_act_failure_is_advisory(self):
+        self.assertEqual(capacity.ADVISORY_FAILURE_CLASSES, {"act_unsupported"})
+        self.assertFalse(capacity.blocks_outcome("act_unsupported"))
+        for failure_class in ("image_unavailable", "qemu", "code", "dependency"):
+            self.assertTrue(capacity.blocks_outcome(failure_class), failure_class)
 
 
 class TestProposalOnlyReconciliation(unittest.TestCase):
@@ -407,7 +430,6 @@ class TestWorkerGate(unittest.TestCase):
             (lambda value: value["reproduction"].update(image=IMAGE + ":latest"), "exact-digest"),
             (lambda value: value["reproduction"].update(architecture="x86_64"), "schema"),
             (lambda value: value["reproduction"].update(commands=[]), "schema"),
-            (lambda value: value["reproduction"].update(workflows=[]), "schema"),
         ):
             candidate = proposal(patch)
             mutate(candidate)
@@ -416,6 +438,124 @@ class TestWorkerGate(unittest.TestCase):
                 path.write_bytes(patch)
                 with self.assertRaises((worker_gate.WorkerGateError, ValueError)):
                     worker_gate.validate(task(), candidate, path)
+
+    def _validate(self, candidate, patch=None):
+        patch = mbox() if patch is None else patch
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "patches.mbox"
+            path.write_bytes(patch)
+            return worker_gate.validate(task(), candidate, path)
+
+    def _no_change(self, candidate):
+        candidate.update(outcome="no_change", patch_digest=None, changed_files=[],
+                         operation="none")
+        return candidate
+
+    def test_reproduction_without_gh_act_is_accepted(self):
+        for drop in (True, False):
+            candidate = proposal(mbox())
+            candidate["reproduction"]["commands"] = candidate["reproduction"]["commands"][:1]
+            if drop:
+                del candidate["reproduction"]["workflows"]
+            else:
+                candidate["reproduction"]["workflows"] = []
+            with self.subTest(dropped=drop):
+                report = self._validate(candidate)
+                self.assertEqual(report["status"], "accepted")
+                self.assertEqual(report["workflows"], 0)
+                self.assertGreaterEqual(report["direct_commands"], 1)
+
+    def test_failed_gh_act_does_not_block_passing_direct_commands(self):
+        for outcome in ("patch", "no_change"):
+            candidate = proposal(mbox())
+            candidate["reproduction"]["commands"][1]["exit_status"] = 1
+            patch = mbox()
+            if outcome == "no_change":
+                self._no_change(candidate)
+                patch = b""
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "patches.mbox"
+                if patch:
+                    path.write_bytes(patch)
+                report = worker_gate.validate(task(), candidate, path)
+                self.assertEqual(report["status"], "accepted")
+
+    def test_accepted_outcome_requires_a_passing_direct_image_command(self):
+        exact = IMAGE + "@sha256:" + "b" * 64
+        for name, commands in (
+            ("gh act only", ["gh act -j build -P ubuntu-24.04-riscv=" + exact]),
+            ("direct failed", ["docker run --rm --platform linux/riscv64 " + exact + " make test"]),
+            ("no platform", ["docker run --rm " + exact + " make test"]),
+            ("other digest", ["docker run --rm --platform linux/riscv64 " + IMAGE + "@sha256:"
+                              + "d" * 64 + " make test"]),
+        ):
+            candidate = proposal(mbox())
+            candidate["reproduction"]["commands"] = [
+                {"command": command, "exit_status": 1 if name == "direct failed" else 0,
+                 "log_sha256": "c" * 64} for command in commands]
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(worker_gate.WorkerGateError, "passing direct command"):
+                    self._validate(candidate)
+
+    def test_recorded_gh_act_evidence_must_be_complete(self):
+        for name, item in (
+            ("no mappings", {"workflow": "ci.yml", "jobs": ["build"]}),
+            ("empty jobs", {"workflow": "ci.yml", "jobs": [], "runner_mappings": ["a=b"]}),
+            ("empty mappings", {"workflow": "ci.yml", "jobs": ["build"], "runner_mappings": []}),
+        ):
+            candidate = proposal(mbox())
+            candidate["reproduction"]["workflows"] = [item]
+            with self.subTest(case=name):
+                with self.assertRaises((worker_gate.WorkerGateError, ValueError)):
+                    self._validate(candidate)
+
+    def _blocked(self, commands):
+        candidate = self._no_change(proposal(mbox()))
+        candidate.update(outcome="blocked",
+                         failure_cluster="reproduction-image-infrastructure-gh-act")
+        candidate["reproduction"]["commands"] = [
+            {"command": command, "exit_status": status, "log_sha256": "c" * 64}
+            for command, status in commands]
+        with tempfile.TemporaryDirectory() as directory:
+            return worker_gate.validate(task(), candidate, Path(directory) / "patches.mbox")
+
+    def test_gh_act_failure_alone_is_not_an_infrastructure_blocker(self):
+        exact = IMAGE + "@sha256:" + "b" * 64
+        direct = "docker run --rm --platform linux/riscv64 " + exact + " make test"
+        with self.assertRaisesRegex(worker_gate.WorkerGateError, "gh act failure alone"):
+            self._blocked([(direct, 0), ("timeout 600 gh act -j build -P x=" + exact, 1)])
+        report = self._blocked([("docker info", 1), (direct, 1),
+                                ("gh act -j build -P x=" + exact, 1)])
+        self.assertEqual(report["status"], "infrastructure_blocked")
+
+    def test_stored_evidence_with_runner_mappings_stays_valid(self):
+        import schemas
+        fixtures = ROOT / "tests/fixtures"
+        stored = {name: json.loads((fixtures / name / "proposal.json").read_text())
+                  for name in ("worker-docker-blocked", "worker-no-change-rejected")}
+        for name, value in stored.items():
+            with self.subTest(fixture=name):
+                schemas.validate("proposal", value)
+                self.assertTrue(value["reproduction"]["workflows"][0]["runner_mappings"])
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "patches.mbox"
+            no_change = stored["worker-no-change-rejected"]
+            accepted = worker_gate.validate(
+                json.loads((fixtures / "worker-no-change-rejected/task.json").read_text()),
+                no_change, empty)
+            self.assertEqual(accepted["status"], "accepted")
+            blocked = worker_gate.validate(
+                json.loads((fixtures / "worker-docker-blocked/task.json").read_text()),
+                stored["worker-docker-blocked"], empty)
+            self.assertEqual(blocked["status"], "infrastructure_blocked")
+        record = contribution(phase="development", activity="agent_running", revision=3)
+        evidence = reconcile._rehearsal_evidence(
+            record, {"proposal": stored["worker-docker-blocked"], "reason": "docker unavailable",
+                     "failure_class": "infrastructure", "artifact": {"digest": "sha256:" + "e" * 64}},
+            "44982902579", policy(), "2026-11-22T08:55:56+00:00")
+        schemas.validate("evidence", evidence)
+        self.assertEqual(evidence["data"]["reproduction"]["workflows"][0]["runner_mappings"],
+                         stored["worker-docker-blocked"]["reproduction"]["workflows"][0]["runner_mappings"])
 
 
 if __name__ == "__main__":

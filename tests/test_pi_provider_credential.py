@@ -116,9 +116,15 @@ class TestGeneratedWorkerCredentialBoundary(unittest.TestCase):
             "ACTIONS_RUNTIME_TOKEN", "AWS_ACCESS_KEY_ID", "SSH_AUTH_SOCK",
         ):
             self.assertIn(credential, wrapper)
-        gh_act_setup = steps[1]["run"]
+        gh_act_setup = next(
+            step for step in steps if step.get("name") == "Install pinned gh-act when available"
+        )["run"]
         self.assertIn("unset GITHUB_TOKEN GH_TOKEN ANTHROPIC_API_KEY", gh_act_setup)
-        self.assertNotRegex(gh_act_setup, r"docker (?:run|pull).*\s-e\s")
+        image_setup = next(
+            step for step in steps if step.get("name") == "Resolve anonymous reproduction image"
+        )["run"]
+        for setup in (image_setup, gh_act_setup):
+            self.assertNotRegex(setup, r"docker (?:run|pull).*\s-e\s")
 
         lock = yaml.safe_load(LOCK.read_text())
         execute = next(

@@ -112,9 +112,21 @@ def admit_expensive(p: Pressure, *, reserved: int, estimated_jobs: int, policy: 
     return True, "within thresholds"
 
 
+# ``gh act`` is an optional aid to the worker's reproduction: its failure
+# never blocks an outcome whose direct build and test commands passed in the
+# exact riscv64 image, so its class is advisory.
+ADVISORY_FAILURE_CLASSES = frozenset({"act_unsupported"})
+
+
+def blocks_outcome(failure_class: str) -> bool:
+    """Whether a failure of this class may block an outcome."""
+    return failure_class not in ADVISORY_FAILURE_CLASSES
+
+
 def classify_failure(text: str) -> str:
     """Coarse failure class from a sanitized log excerpt. Unknown stays
-    unknown and goes to bounded evidence collection or a human."""
+    unknown and goes to bounded evidence collection or a human. Whether a
+    class may block an outcome is ``blocks_outcome``."""
     t = text.lower()
     if any(s in t for s in ("manifest unknown", "no matching manifest", "image pull failed")):
         return "image_unavailable"
