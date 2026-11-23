@@ -942,13 +942,6 @@
             "interrupted": {
               "type": "integer",
               "minimum": 0
-            },
-            "answered_ci_evidence_id": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "maxLength": 200
             }
           }
         }

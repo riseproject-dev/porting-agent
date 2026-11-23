@@ -1,0 +1,16 @@
+{
+  "_comment": "Annotation messages as GitHub Actions writes them on a job: the first list on a job whose runner was lost, the second on jobs that failed, timed out, or were cancelled for other reasons.",
+  "runner_lost": [
+    "The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.",
+    "The self-hosted runner: ubuntu-24.04-riscv-7 lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.",
+    "The hosted runner: GitHub Actions 12 lost communication with the server. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."
+  ],
+  "not_runner_lost": [
+    "Process completed with exit code 1.",
+    "The operation was canceled.",
+    "The job running on runner ubuntu-24.04-riscv-7 has exceeded the maximum execution time of 360 minutes.",
+    "Error: The runner has received a shutdown signal. This can happen when the runner service is stopped.",
+    "build failed: The hosted runner: GitHub Actions 12 lost communication with the server.",
+    "The self-hosted runner lost communication with the server."
+  ]
+}

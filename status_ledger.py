@@ -55,9 +55,12 @@ RECORDED_KINDS = {
                              "Work admission."),
     "command:authorize-followup": "Recorded the authorized follow-up of this merged contribution.",
     "development_pr_created": "Created and verified the same-fork development PR.",
+    "ci_rerun_recorded": ("Read back the new attempt of the CI runs rerun on the exact head for the "
+                          "interrupted jobs."),
     "record_fields_migrated": ("Recorded this contribution in the strict record schema: missing "
                                "fields are added with the values the pipeline read for them, and "
-                               "the retired `blocked_reason` is removed. Its state, revision, and "
+                               "the retired `blocked_reason` and the fence of the CI run a rerun "
+                               "answered are removed. Its state, revision, and "
                                "evidence are unchanged."),
     "record_names_migrated": ("Recorded this contribution under the current names of the "
                               "planning phase and its plan. Its state, revision, and evidence are "

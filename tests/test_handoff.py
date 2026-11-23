@@ -1732,8 +1732,10 @@ class TestOperationTable(unittest.TestCase):
                      "verify_upstream_pr", "record_audit_observation", "request_submission_review",
                      "accept_submission_review", "reject_submission_review"):
             self.assertIn(verb, engine.PIPELINE_VERBS)
-        self.assertEqual({"rerun_interrupted_ci", "exhaust_interrupted_reruns"}
-                         & set(engine.PIPELINE_VERBS), set())
+        # The interrupted-CI rows are taken by the observation of
+        # development CI only; CI on the clean head does not take them yet.
+        for verb in ("rerun_interrupted_ci", "exhaust_interrupted_reruns"):
+            self.assertEqual(engine.PIPELINE_VERBS[verb], "observe_ci")
         # Nothing closes the development PR.
         self.assertEqual(set(handoff.KINDS.values()), {"upstream_branch", "submission_comment"})
         for name in ("close_development_pr", "DEVELOPMENT_MARKER", "cleanup"):

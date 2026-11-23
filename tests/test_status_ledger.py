@@ -285,9 +285,28 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
                 ("record_explanation", "handoff.awaiting_submission", "handoff.awaiting_submission"),
                 ("request_patch", "development.fix_needed", "development.agent_running"),
                 ("record_publish_success", "development.agent_running", "development.waiting_ci"),
-                ("request_ci_rerun", "development.agent_running", "development.waiting_ci")):
+                ("request_ci_rerun", "development.agent_running", "development.waiting_ci"),
+                ("rerun_interrupted_ci", "development.waiting_ci", "development.waiting_ci"),
+                ("ci_rerun_recorded", "development.waiting_ci", "development.waiting_ci")):
             with self.subTest(verb=verb):
                 self.assertFalse(self.notifies(table_event(verb, source, target)))
+
+    def test_interrupted_ci_waits_for_a_human_with_an_entry_and_reminders(self):
+        """`exhaust_interrupted_reruns` posts the wait with its pending
+        action, and the wait gets the reminders of every human wait."""
+        event = table_event("exhaust_interrupted_reruns", "development.waiting_ci",
+                            "development.waiting_human")
+        self.assertTrue(self.notifies(event))
+        record = contribution(activity="waiting_human", pending_human_action={
+            "kind": "ci_interrupted", "requested_at": NOW, "reminded_at": None,
+            "escalated_at": None, "counter": "interrupted_reruns"})
+        text = status_ledger.table_message(event, record)
+        self.assertIn("Pending human action: `ci_interrupted`", text)
+        self.assertIn("development.waiting_human", lifecycle.rule_states("record_reminder"))
+        reminder = table_event("record_reminder", "development.waiting_human",
+                               "development.waiting_human")
+        self.assertTrue(self.notifies(reminder))
+        self.assertIn("ci_rerun_recorded", status_ledger.RECORDED_KINDS)
 
     def test_closure_park_and_gate_post(self):
         for verb, source, target in (

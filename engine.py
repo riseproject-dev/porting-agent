@@ -787,6 +787,10 @@ PIPELINE_VERBS: dict[str, str] = {
     # development PR that does not match the record.
     "record_ci_failure": "observe_ci",
     "record_pr_mismatch": "observe_ci",
+    # A required job that was cancelled or lost its runner: a `ci_rerun`
+    # operation within `interrupted_reruns`, and the wait once it is spent.
+    "rerun_interrupted_ci": "observe_ci",
+    "exhaust_interrupted_reruns": "observe_ci",
     # The Result of patch Work: published, rejected, no longer applicable to
     # the fork head, or held for a publish-only retry within
     # `publish_recovery`, and the wait once that budget is exhausted.
@@ -795,6 +799,10 @@ PIPELINE_VERBS: dict[str, str] = {
     "replan_development": "reconcile",
     "schedule_publish_retry": "reconcile",
     "exhaust_publish_recovery": "reconcile",
+    # A failure the repair worker reports not caused by the patch, once the
+    # trusted publication job reran the failed jobs on the exact head and
+    # read the new attempt back (or found nothing to rerun).
+    "request_ci_rerun": "reconcile",
     # A dispatcher run that ended with the requested Work absent or
     # unclaimed, within `dispatch_recovery`.
     "retry_dispatch": "reconcile",
@@ -947,18 +955,8 @@ UNWIRED_VERBS: frozenset[str] = frozenset(table_verbs() - set(PIPELINE_VERBS))
 
 # Every verb of ``UNWIRED_VERBS``, with the entry of the known-gaps page that
 # records the open decision it waits on. A test requires the two to be equal.
-# CI is not rerun: no decision names the trusted mechanism, in particular the
-# credential that may rerun the jobs of a fork's workflow run, and what
-# happens when a rerun request is refused. The repair worker's report that a
-# failure is not caused by the patch is folded by the row of
-# `request_ci_rerun` (``reconcile.fold_patch_result``), which records it and
-# charges `flaky_reruns`, but nothing is rerun, so the verb is not counted
-# as taken.
-OPEN_DECISIONS: dict[str, str] = {
-    "request_ci_rerun": "CI is never rerun",
-    "rerun_interrupted_ci": "CI is never rerun",
-    "exhaust_interrupted_reruns": "CI is never rerun",
-}
+# No decision is open: every verb of the table is taken by the pipeline.
+OPEN_DECISIONS: dict[str, str] = {}
 
 # Commands the grammar and the engine accept but the controller holds: the
 # controller checks such a command against the table, then refuses it with
@@ -1496,12 +1494,15 @@ WORK_DEFAULTS: dict[str, Any] = {
     "feedback_evidence_ids": [],
 }
 RETIRED_FIELDS = ("blocked_reason",)
+# A field of `budget.reruns` that is removed whatever its value.
+RETIRED_RERUN_FIELD = "answered_ci_evidence_id"
 
 
 def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     """``record`` with every field the strict schema requires and it lacks
-    added at the value the pipeline reads for an absent one, and the null
-    retired fields removed, with the names added and removed. Raises
+    added at the value the pipeline reads for an absent one, the null
+    retired fields and `budget.reruns.answered_ci_evidence_id` removed, with
+    the names added and removed. Raises
     ``TransitionError`` for a retired field that is set."""
     new = copy.deepcopy(record)
     added: list[str] = []
@@ -1526,6 +1527,13 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
         if "reruns" not in budget:
             budget["reruns"] = fresh_reruns(new)
             added.append("budget.reruns")
+        elif isinstance(budget["reruns"], dict) and RETIRED_RERUN_FIELD in budget["reruns"]:
+            # The fence of the CI run a `request_ci_rerun` answered, from
+            # before the trusted rerun: a confirmed rerun operation replaces
+            # it (``ci_rerun.awaited``).
+            budget["reruns"] = {k: v for k, v in budget["reruns"].items()
+                                if k != RETIRED_RERUN_FIELD}
+            removed.append(f"budget.reruns.{RETIRED_RERUN_FIELD}")
     pending = new.get("pending_human_action")
     if isinstance(pending, dict) and "counter" not in pending:
         new["pending_human_action"] = dict(pending, counter=None)
@@ -1621,8 +1629,9 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # A published patch: its files join the admitted scope, and `no_progress`
     # starts again.
     "patch_published": ("scope_paths", "budget.no_progress_streak"),
-    # The CI run and attempt a classified Result answered.
-    "answered_ci_run": ("budget.reruns",),
+    # A verified receipt of a `ci_rerun` operation the collector planned
+    # releases it; no row is fired by it.
+    "ci_rerun_recorded": ("active_operation_id",),
     # The held Result is answered, or its publish-only retry is launched.
     "publication_answered": ("pending_publication",),
     "publish_retry_launched": ("pending_publication",),

@@ -31,7 +31,7 @@ import reconcile
 import work
 import worker_gate
 import worker_recovery
-from tests.helpers import apply_command, policy
+from tests.helpers import apply_command, policy, runner_loss
 from tests.test_observation import TestExactHeadCiReconciliation
 
 ROOT = Path(__file__).parents[1]
@@ -96,7 +96,8 @@ def tick(record, *, publications=(), queue_works=None, runs=None, now="2026-11-2
     observed = TestExactHeadCiReconciliation.snapshot(pending=False)
     with mock.patch("observe_ci.collect.branch_head", return_value={"head": HEAD}), \
          mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
-         mock.patch("observe_ci.collect.ci_snapshot", return_value=observed):
+         mock.patch("observe_ci.collect.ci_snapshot", return_value=observed), \
+         mock.patch("observe_ci.collect.classify_runner_loss", side_effect=runner_loss()):
         return reconcile.tick(
             object(), reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, dict(REASONS)),
             policy=policy(read_only=False),
@@ -276,11 +277,16 @@ class TestLiveR6SelfHeals(unittest.TestCase):
     def test_r6_no_change_result_reruns_ci_and_green_ci_nominates_without_new_work(self):
         """The repair worker reports a failure not caused by the patch, and
         the r6 Work carries no feedback (`active_work.feedback_evidence_ids`
-        is unset; its `reason_ids` are not feedback), so the Result takes
-        `request_ci_rerun` within `flaky_reruns`: `development.waiting_ci`
-        at the same revision, nothing charged but `flaky_reruns`. CI on the
-        head is read again there; it passed, so the contribution is
-        nominated without new Work once no actionable feedback is pending."""
+        is unset; its `reason_ids` are not feedback), so `request_ci_rerun`
+        applies within `flaky_reruns`. The r6 worker ran trusted code from
+        before the trusted rerun: its Result carries no rerun receipt, so it
+        is a failed publication (`schedule_publish_retry`) and the
+        publish-only retry performs the rerun. CI on the head passed, so the
+        retry finds nothing to rerun: its Result takes `request_ci_rerun`,
+        `development.waiting_ci` at the same revision, nothing charged but
+        `publish_recovery` and `flaky_reruns`. CI on the head is read again
+        there; the contribution is nominated without new Work once no
+        actionable feedback is pending."""
         record = load("contribution-r6.json")
         with tempfile.TemporaryDirectory() as temporary:
             directory = publication_dir(temporary, R6_RUN, as_r6_result)
@@ -292,23 +298,39 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         queue = dict(self.QUEUE, **{work.graph_id(R6_KEY): "completed"})
         output = tick(record, publications=publications, queue_works=queue,
                       runs=self.RUNS, now="2026-11-22T11:20:00+00:00")
+        self.assertEqual(events(output), ["schedule_publish_retry"])
+        held = final(output, record)
+        self.assertEqual((held["activity"], held["revision"], held["active_work"]),
+                         ("agent_running", 6, None))
+        self.assertEqual(held["pending_publication"]["worker_run_id"], R6_RUN)
+        # The publish-only retry finds nothing to rerun on the head.
+        retry = dict(publications[0], stage="ci_rerun", attempt=2,
+                     rerun={"status": "nothing_to_rerun", "runs": []},
+                     publication_artifact_id=14760000001)
+
+        def retried(rec):
+            launched = dict(rec, pending_publication=dict(
+                rec["pending_publication"], launched_at="2026-11-22T11:40:00+00:00"))
+            return launched, tick(launched, publications=[retry], queue_works=queue,
+                                  runs=self.RUNS, now="2026-11-22T11:45:00+00:00")
+
+        launched, output = retried(held)
         rerun = next(item for kind, item in output.staged
                      if kind == "events" and item["kind"] == "request_ci_rerun")
         self.assertEqual(rerun["cause"], {"type": "result", "id": R6_RUN})
         self.assertFalse(rerun["revision_bumped"])
         self.assertEqual(rerun["details"]["result_status"], "no_change")
         self.assertEqual(rerun["details"]["charged"], ["flaky_reruns"])
+        self.assertEqual(rerun["details"]["rerun"]["status"], "nothing_to_rerun")
         self.assertEqual(rerun["to"]["activity"], "waiting_ci")
         self.assertEqual(events(output), ["request_ci_rerun"])
-        result = final(output, record)
+        result = final(output, launched)
         self.assertEqual((result["phase"], result["activity"], result["revision"]),
                          ("development", "waiting_ci", 6))
         self.assertIsNone(result["active_work"])
+        self.assertIsNone(result["pending_publication"])
         self.assertEqual(result["fork"]["head_sha"], HEAD)
-        self.assertEqual({k: v for k, v in result["budget"].items() if k != "reruns"},
-                         {k: v for k, v in record["budget"].items() if k != "reruns"})
-        self.assertEqual(result["budget"]["reruns"], {"head_sha": HEAD, "flaky": 1, "interrupted": 0,
-                                                      "answered_ci_evidence_id": None})
+        self.assertEqual(result["budget"]["reruns"], {"head_sha": HEAD, "flaky": 1, "interrupted": 0})
         self.assertEqual(output.report["requested_effects"], [])
         self.assertEqual(output.report["dispatch_relaunch"], [])
         # Green CI on the head is read again in the same tick. The rehearsal
@@ -319,11 +341,10 @@ class TestLiveR6SelfHeals(unittest.TestCase):
                       output.report["observation"][0]["handoff_deferred"])
         # With no actionable feedback pending, green CI nominates the head:
         # no new Work is requested.
-        clear = dict(record, pending_feedback_evidence_ids=[])
-        output = tick(clear, publications=publications, queue_works=queue,
-                      runs=self.RUNS, now="2026-11-22T11:20:00+00:00")
+        clear = dict(held, pending_feedback_evidence_ids=[])
+        launched, output = retried(clear)
         self.assertEqual(events(output), ["request_ci_rerun", "nominate_for_handoff"])
-        result = final(output, clear)
+        result = final(output, launched)
         self.assertEqual((result["phase"], result["activity"], result["revision"]),
                          ("handoff", "awaiting_submission", 6))
         self.assertEqual(result["last_ci_evidence_id"], CI_EVIDENCE)

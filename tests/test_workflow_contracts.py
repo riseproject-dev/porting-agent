@@ -231,6 +231,59 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(token["with"]["permission-actions"], "write")
         self.assertEqual(token["with"]["permission-administration"], "write")
         self.assertEqual(token["with"]["repositories"], "${{ steps.target.outputs.fork_name }}")
+        # The development PR token exists only for a development PR
+        # operation, never for a CI rerun.
+        self.assertEqual(token["if"], "steps.target.outputs.kind != 'ci_rerun'")
+        step = next(s for s in workflow_data["jobs"]["create"]["steps"]
+                    if "UPSTREAMING_FORK_TOKEN" in (s.get("env") or {})
+                    and "dev_pr" in s.get("run", ""))
+        self.assertEqual(step["if"], "steps.target.outputs.kind != 'ci_rerun'")
+        self.assertEqual(step["env"]["UPSTREAMING_FORK_TOKEN"],
+                         "${{ steps.fork-token.outputs.token }}")
+
+    def test_ci_rerun_tokens_carry_only_actions_write_for_one_fork(self):
+        """Every token that reruns CI is minted for the one verified fork with
+        `actions: write` alone, only when the rerun applies, and is handed to
+        the rerun step only."""
+        cases = {
+            "worker.lock.yml": (workflow("worker.lock.yml")["jobs"]["publish"]["steps"],
+                                "steps.result.outputs.rerun == 'true'",
+                                "${{ steps.result.outputs.rerun_fork }}", "ci_rerun publish"),
+            "publish-retry.yml": (workflow("publish-retry.yml")["jobs"]["publish"]["steps"],
+                                  "steps.result.outputs.rerun == 'true'",
+                                  "${{ steps.result.outputs.rerun_fork }}", "ci_rerun publish"),
+            "dev-pr.yml": (workflow("dev-pr.yml")["jobs"]["create"]["steps"],
+                           "steps.target.outputs.kind == 'ci_rerun'",
+                           "${{ steps.target.outputs.fork_name }}", "ci_rerun operation"),
+        }
+        for name, (steps, condition, fork, command) in cases.items():
+            with self.subTest(workflow=name):
+                token = next(s for s in steps if s.get("id") == "rerun-token")
+                self.assertEqual(token["if"], condition)
+                self.assertEqual(
+                    {k: v for k, v in token["with"].items() if k.startswith("permission-")},
+                    {"permission-actions": "write"})
+                self.assertEqual(token["with"]["owner"], "riseproject-upstreaming")
+                self.assertEqual(token["with"]["repositories"], fork)
+                users = [s for s in steps
+                         if "steps.rerun-token.outputs.token" in json.dumps(s.get("env") or {})]
+                self.assertEqual(len(users), 1)
+                self.assertEqual(users[0]["if"], condition)
+                self.assertIn(command, users[0]["run"])
+        # The preflight that decides the rerun runs before any token.
+        for name, steps in (("worker.lock.yml", cases["worker.lock.yml"][0]),
+                            ("publish-retry.yml", cases["publish-retry.yml"][0])):
+            result = next(s for s in steps if s.get("id") == "result")
+            self.assertIn("python -m ci_rerun preflight", result["run"], name)
+            self.assertNotIn("UPSTREAMING_FORK_TOKEN", json.dumps(result.get("env") or {}))
+        # The publish-only retry no longer rejects a held no_change Result.
+        retry = next(s for s in cases["publish-retry.yml"][0] if s.get("id") == "result")
+        self.assertIn('status:"no_change"', retry["run"])
+        text = (WORKFLOWS / "controller.yml").read_text()
+        self.assertIn('name == "porting-ci-rerun"', text)
+        self.assertIn("--ci-reruns ci-reruns", text)
+        self.assertIn("for a repair task whose ci failure is not caused by the patch",
+                      " ".join((WORKFLOWS / "worker.md").read_text().split()).lower())
 
     def test_handoff_tokens_are_minimal_and_never_face_upstream(self):
         handoff = workflow("handoff.yml")

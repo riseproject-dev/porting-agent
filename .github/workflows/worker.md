@@ -384,6 +384,16 @@ jobs:
                 jq '{status:(.status // "rejected"), failure_class, reason, stage:"preflight"}' \
                   ../in/preflight.json > ../in/outcome.json
               fi
+              if [ "$(jq -r .status ../in/preflight.json)" = no_change ]; then
+                # A failure the repair worker found not caused by the patch:
+                # trusted code reruns the failed jobs on the exact head when
+                # `request_ci_rerun` applies, with a token of its own.
+                uv run --locked python -m ci_rerun preflight \
+                  --record ../in/record.json --task ../in/task.json \
+                  --proposal ../in/proposal.json --out ../in/rerun.json
+                jq -r '"rerun=" + (.rerun|tostring), "rerun_fork=" + .fork_name' \
+                  ../in/rerun.json >> "$GITHUB_OUTPUT"
+              fi
             elif [ "$gate_rc" = 0 ] && [ "$gate_status" = infrastructure_blocked ]; then
               echo "publish=false" >> "$GITHUB_OUTPUT"
               jq -n --arg reason "$(jq -r .reason ../in/worker-gate.json)" \
@@ -423,6 +433,29 @@ jobs:
             --result ../in/result.json --out ../in/outcome.json || rc=$?
           jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
           exit $(( rc == 1 || rc == 3 ? 0 : rc ))
+      - name: Mint a CI rerun token for exactly this verified fork
+        id: rerun-token
+        if: steps.result.outputs.rerun == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ steps.result.outputs.rerun_fork }}
+          permission-actions: write
+      - name: Rerun the failed jobs on the exact head and read the attempts back
+        if: steps.result.outputs.rerun == 'true'
+        working-directory: control
+        env:
+          UPSTREAMING_FORK_TOKEN: ${{ steps.rerun-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rc=0
+          uv run --locked python -m ci_rerun publish \
+            --record ../in/record.json --task ../in/task.json --out ../in/outcome.json || rc=$?
+          jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
+          exit $(( rc == 1 || rc == 3 ? 0 : rc ))
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
@@ -437,6 +470,7 @@ jobs:
             in/worker-gate.json
             in/preflight.json
             in/record.json
+            in/rerun.json
           if-no-files-found: ignore
           retention-days: 30
   continuation:
@@ -653,7 +687,10 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   only when you used `gh act`, the selected workflows/jobs/runner mappings.
   In `diagnosis`, include a checklist with one item per review or CI constraint,
   the exact change that addresses it, and how you verified that change. Never
-  claim `no_change` while required review feedback remains unresolved. For
+  claim `no_change` while required review feedback remains unresolved. For a
+  repair task whose CI failure is not caused by the patch, deliver `outcome:
+  "no_change"` with `operation: "none"` and the evidence in `diagnosis`;
+  trusted code reruns the failed jobs, and you never rerun CI. For
   every item in human-relay `reviews`, `comments`, and `conversation_comments`,
   add one `feedback_responses` entry with its numeric ID and a short factual
   description of the implemented change. Trusted code posts these responses

@@ -3,8 +3,8 @@
 """CI observation and evidence normalization (plan sections 6.2, 11.4, 14.3).
 
 Only executed, matching jobs count. Missing, skipped, neutral, cancelled,
-approval-required (``action_required``) and stale jobs never count as riscv64
-build or test success. Reruns are resolved to the latest attempt per job name and matrix
+approval-required (``action_required``) and stale jobs, and jobs that lost
+their runner, never count as riscv64 build or test success. Reruns are resolved to the latest attempt per job name and matrix
 identity; duplicate check names are kept apart by job ID.
 """
 
@@ -26,11 +26,24 @@ class CiVerdict:
     state: str                     # passed | failed | pending | not_executed | access_wait | missing
     executed_jobs: list[dict] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    # The required jobs that were interrupted (``job_interrupted``), and the
+    # latest attempt of each workflow run on the head, by run id.
+    interrupted_jobs: list[dict] = field(default_factory=list)
+    attempts: dict[int, int] = field(default_factory=dict)
 
 
 def job_executed(job: dict) -> bool:
+    """Whether ``job`` executed. A job that lost its runner (``runner_lost``,
+    set only when the snapshot classified it) did not."""
     return job.get("status") == "completed" and job.get("conclusion") not in NOT_EXECUTED \
-        and bool(job.get("started_at"))
+        and bool(job.get("started_at")) and not job.get("runner_lost")
+
+
+def job_interrupted(job: dict) -> bool:
+    """Whether ``job`` was interrupted: completed and cancelled, or failed
+    after it lost its runner. A ``timed_out`` job executed."""
+    return job.get("status") == "completed" and (
+        job.get("conclusion") == "cancelled" or bool(job.get("runner_lost")))
 
 
 def latest_attempts(runs: Iterable[dict]) -> list[dict]:
@@ -62,6 +75,7 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
     """
     v = CiVerdict(state="missing")
     relevant = [r for r in latest_attempts(runs) if r.get("head_sha") == head_sha]
+    v.attempts = {r["id"]: r["run_attempt"] for r in relevant}
     if not relevant:
         v.problems.append("no workflow run for this head")
         return v
@@ -91,6 +105,8 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
                 continue
             if not job_executed(j):
                 v.problems.append(f"job {j['name']!r} did not execute ({j.get('conclusion')})")
+                if job_interrupted(j):
+                    v.interrupted_jobs.append(j)
             elif j["conclusion"] != SUCCESS:
                 v.problems.append(f"job {j['name']!r} failed ({j['conclusion']})")
             else:
@@ -149,14 +165,23 @@ def evidence_record(*, evidence_id: str, contribution_id: str, policy_version: s
             "event": run["event"],
             "run_id": run["id"],
             "run_attempt": run["run_attempt"],
-            "jobs": [{"job_id": j["id"], "name": j["name"], "status": j["status"],
-                      "conclusion": j.get("conclusion"), "executed": job_executed(j),
-                      "runner_labels": j.get("labels") or []}
-                     for j in sorted(jobs, key=lambda j: j["id"])],
+            "jobs": [_evidence_job(j) for j in sorted(jobs, key=lambda j: j["id"])],
             "expected_wheels": expected_wheels,
             "artifacts": artifacts,
         },
     }
+
+
+def _evidence_job(job: dict) -> dict[str, Any]:
+    """A job of CI evidence. A job the snapshot classified (it carries
+    ``runner_lost``) and that was interrupted is marked ``interrupted``; an
+    unclassified snapshot records exactly the fields it always did."""
+    out = {"job_id": job["id"], "name": job["name"], "status": job["status"],
+           "conclusion": job.get("conclusion"), "executed": job_executed(job),
+           "runner_labels": job.get("labels") or []}
+    if "runner_lost" in job and job_interrupted(job):
+        out["interrupted"] = True
+    return out
 
 
 _RUNNER_LABEL_PROBLEM = re.compile(r"^job '(.+)' failed runner-label check ")

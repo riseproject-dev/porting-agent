@@ -42,7 +42,7 @@ import reconcile
 import state
 import status_ledger
 from common import canonical_json
-from tests.helpers import NOW, OWNER, SHA_A, awaiting_submission, contribution, policy
+from tests.helpers import NOW, OWNER, SHA_A, awaiting_submission, contribution, policy, runner_loss
 from tests.test_collect_read_errors import Response
 from tests.test_late_results import WORK, ci_snapshot, publication
 
@@ -133,6 +133,8 @@ def tick(records, *, publications=(), comments=(), issues=(), observe=True, verd
                                        return_value=None))
         stack.enter_context(mock.patch("observe_ci.collect.ci_snapshot",
                                        side_effect=lambda _a, repo, sha: ci(repo, sha, verdict)))
+        stack.enter_context(mock.patch("observe_ci.collect.classify_runner_loss",
+                                       side_effect=runner_loss()))
         for target, replacement in patches:
             stack.enter_context(mock.patch(target, side_effect=replacement))
         stack.enter_context(contextlib.redirect_stderr(io.StringIO()))

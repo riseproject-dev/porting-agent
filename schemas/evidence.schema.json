@@ -151,6 +151,9 @@
               "executed": {
                 "type": "boolean"
               },
+              "interrupted": {
+                "type": "boolean"
+              },
               "runner_labels": {
                 "type": "array",
                 "items": {

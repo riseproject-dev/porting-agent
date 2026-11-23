@@ -729,13 +729,16 @@ _RERUN_INTERRUPTED_CI = Transition(
     _O, None, (_INTERRUPTED, "interrupted_reruns remains"),
     charges=("interrupted_reruns",),
     description="The collector reruns the interrupted jobs on the exact head. It reruns for no "
-                "other conclusion.")
+                "other conclusion. The collector records a `ci_rerun` operation that the "
+                "trusted workflow executes; a rerun that fails is requested again by this row "
+                "within the budget.")
 _EXHAUST_INTERRUPTED_RERUNS = Transition(
     _O, None, (_INTERRUPTED, "interrupted_reruns exhausted"),
     _E(sets=("pending_human_action=ci_interrupted", f"{PENDING_COUNTER}=interrupted_reruns")))
 _RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
-_RESUME_CI_NOTE = ("Reruns the interrupted jobs on the exact head and starts `interrupted_reruns` "
-                   "(`budget.reruns.interrupted`) again for the head.")
+_RESUME_CI_NOTE = ("Starts `interrupted_reruns` (`budget.reruns.interrupted`) again for the head; "
+                   "the first observation after it reruns the interrupted jobs on the exact head "
+                   "through `rerun_interrupted_ci`, charging the restarted counter.")
 _LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_id",
                   "submission_review_id", "handoff_request", "pending_human_action")
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
@@ -924,7 +927,10 @@ LIFECYCLE: dict[str, State] = {
                 "The repair worker classifies the failure; the failed jobs are rerun on the exact "
                 "head, and the head and revision are kept. A rerun answers no feedback, so Work "
                 "that carries feedback never takes this row: the same outcome counts as "
-                "`reject_patch_proposal`."),
+                "`reject_patch_proposal`. The rerun is the publication of this Result: the "
+                "trusted publication job requests it on the exact head and reads back the new "
+                "attempt before the row is taken. A rerun that cannot be requested or read back "
+                "is a failed publication (`schedule_publish_retry`, `exhaust_publish_recovery`)."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
         }),
@@ -2221,8 +2227,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "The repair worker classifies a failure: one not caused by the patch takes "
                      "`request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only "
                      "jobs that were cancelled or lost their runner, within `interrupted_reruns` "
-                     "per head; after that a human resumes with `resume_ci`, which reruns the "
-                     "jobs. Both rerun counts are kept for the current head in `budget.reruns` "
+                     "per head; after that a human resumes with `resume_ci`, after which the "
+                     "collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` "
                      "and start again whenever the recorded head changes. The Work request "
                      "carries the pending feedback present at allocation, and "
                      "`record_publish_success` clears exactly that feedback. Work that carries "

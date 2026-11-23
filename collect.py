@@ -658,13 +658,18 @@ def _norm_job(j: dict) -> dict:
             "name": j["name"], "status": j["status"], "conclusion": j.get("conclusion"),
             "started_at": j.get("started_at"), "completed_at": j.get("completed_at"),
             "labels": j.get("labels") or [], "runner_name": j.get("runner_name"),
-            "head_sha": j.get("head_sha")}
+            "runner_id": j.get("runner_id"), "head_sha": j.get("head_sha")}
+
+
+# The failed jobs whose annotations one snapshot reads to classify them.
+MAX_CLASSIFIED_JOBS = 20
 
 
 def ci_snapshot(api: Api, full_name: str, head_sha: str, *, max_runs: int = 30) -> CiSnapshot:
     """Everything CI says about one exact head SHA: workflow runs (all
     attempts resolve to the latest by run_attempt), their jobs for that
-    attempt, check runs and commit statuses, and artifacts."""
+    attempt, check runs and commit statuses, and artifacts. Jobs that lost
+    their runner are classified separately (``classify_runner_loss``)."""
     if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         raise CollectError("head_sha must be a full SHA")
     repo = repository(api, full_name)
@@ -689,6 +694,31 @@ def ci_snapshot(api: Api, full_name: str, head_sha: str, *, max_runs: int = 30) 
     snap.statuses = [{"context": s["context"], "state": s["state"]}
                      for s in api.paginate(f"/repos/{full_name}/commits/{head_sha}/statuses?per_page=100", max_pages=2)]
     return snap
+
+
+def classify_runner_loss(api: Api, full_name: str, snap: CiSnapshot) -> None:
+    """Mark each job of the latest attempts of ``snap`` with ``runner_lost``:
+    true for a completed job that failed with a failure-level annotation
+    matching ``ci_rerun.RUNNER_LOST`` (the annotations of at most
+    ``MAX_CLASSIFIED_JOBS`` failed jobs are read). The annotation text is
+    only matched against those constants, never stored or rendered. A read
+    error propagates like any other snapshot read."""
+    import ci_rerun
+
+    failed = [j for jobs in snap.jobs_by_run.values() for j in jobs
+              if j.get("status") == "completed" and j.get("conclusion") == "failure"]
+    read = {j["id"] for j in sorted(failed, key=lambda j: j["id"])[:MAX_CLASSIFIED_JOBS]}
+    for jobs in snap.jobs_by_run.values():
+        for job in jobs:
+            lost = False
+            if job["id"] in read:
+                annotations = api.paginate(
+                    f"/repos/{full_name}/check-runs/{int(job['id'])}/annotations?per_page=100",
+                    max_pages=1)
+                lost = any(ci_rerun.runner_lost(a.get("message"))
+                           for a in annotations if isinstance(a, dict)
+                           and a.get("annotation_level") == "failure")
+            job["runner_lost"] = lost
 
 
 def wheel_names_from_artifacts(snap: CiSnapshot) -> list[str]:

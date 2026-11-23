@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest import mock
 
 import capacity
+import ci_rerun
 import collect
 import commands
 import controller
@@ -31,6 +32,7 @@ import engine
 import lifecycle
 import observe_ci
 import reconcile
+import recovery
 import schemas
 from tests.helpers import (
     NOW,
@@ -41,6 +43,7 @@ from tests.helpers import (
     ci_record,
     contribution,
     policy,
+    runner_loss,
 )
 from tests.test_late_results import WORK, ci_snapshot, publication
 
@@ -67,8 +70,10 @@ def running(**fields):
 
 
 def tick(rec, publications=(), *, observe=True, verdict="pending", head=SHA_A, feedback=None,
-         now=T, evidence=None, runs=(), queue=None, pull=None, ci=None):
-    snapshot = reconcile.Snapshot({"c": copy.deepcopy(rec)}, {}, {}, {}, dict(evidence or {}))
+         now=T, evidence=None, runs=(), queue=None, pull=None, ci=None, operations=None,
+         lost=(), api=None, ci_reruns=None):
+    snapshot = reconcile.Snapshot({"c": copy.deepcopy(rec)}, dict(operations or {}), {}, {},
+                                  dict(evidence or {}))
 
     def review_feedback(_api, _record, _authority, check_pull=False):
         if check_pull and pull:
@@ -80,11 +85,13 @@ def tick(rec, publications=(), *, observe=True, verdict="pending", head=SHA_A, f
                        side_effect=review_feedback), \
             mock.patch("observe_ci.collect.ci_snapshot",
                        return_value=ci or ci_snapshot(head, verdict)), \
+            mock.patch("observe_ci.collect.classify_runner_loss", side_effect=runner_loss(lost)), \
             contextlib.redirect_stderr(io.StringIO()):
-        return reconcile.tick(object() if observe else None, snapshot, policy=POLICY, now=now,
-                              publications=list(publications),
+        return reconcile.tick(api or (object() if observe else None), snapshot, policy=POLICY,
+                              now=now, publications=list(publications),
                               pressure=capacity.Pressure(ok=True), observe=observe,
-                              dispatcher_runs=list(runs), queue_works=queue or {})
+                              dispatcher_runs=list(runs), queue_works=queue or {},
+                              ci_reruns=ci_reruns)
 
 
 def final(output, rec):
@@ -96,6 +103,24 @@ def kinds(output):
     return [e["kind"] for kind, e in output.staged if kind == "events"]
 
 
+def rerun_outcome(rec, status="rerun", runs=((777, 1, 2),)):
+    """The outcome of a `no_change` Result whose trusted publication job
+    reran the failed jobs (``ci_rerun.publish``): ``rerun`` with a confirmed
+    operation, or ``superseded`` or ``nothing_to_rerun`` without one."""
+    out = dict(publication(rec, "no_change"), stage="ci_rerun",
+               rerun={"status": status, "runs": []})
+    if status == "rerun":
+        out["rerun"]["runs"] = [{"run_id": r, "from_attempt": f, "run_attempt": a}
+                                for r, f, a in runs]
+        op = ci_rerun.operation(rec, rec["fork"]["head_sha"],
+                                [{"run_id": r, "from_attempt": f} for r, f, _a in runs],
+                                ["ci-0", "work:x", "publish-attempt:1"], POLICY, NOW)
+        out["operation"] = recovery.fold_receipt(
+            op, external_ids=ci_rerun.attempt_ids(out["rerun"]["runs"]), detail="read back",
+            now=NOW)
+    return out
+
+
 class TestPatchResults(unittest.TestCase):
     """Every Result of patch Work takes a row of `development.agent_running`."""
 
@@ -104,7 +129,9 @@ class TestPatchResults(unittest.TestCase):
             "published": ("record_publish_success", "development.waiting_ci", False),
             "uncertain": ("record_publish_success", "development.waiting_ci", False),
             "proposal": ("reject_patch_proposal", "development.fix_needed", True),
-            "no_change": ("request_ci_rerun", "development.waiting_ci", False),
+            # A `no_change` report without the receipt of the trusted rerun
+            # is a failed publication; with it, see the next test.
+            "no_change": ("schedule_publish_retry", "development.agent_running", False),
             "rejected_validation": ("reject_patch_proposal", "development.fix_needed", True),
             "worker_blocked": ("reject_patch_proposal", "development.fix_needed", True),
             "rejected_stale": ("replan_development", "development.fix_needed", True),
@@ -146,15 +173,19 @@ class TestPatchResults(unittest.TestCase):
         `reject_patch_proposal`."""
         rec = running(last_ci_evidence_id="ci-0")
         new, staged = reconcile.apply_publication(
-            rec, dict(publication(rec, "no_change")), now=NOW, policy=POLICY,
-            worker_run_id="555")
-        self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
-                         ["request_ci_rerun"])
+            rec, rerun_outcome(rec), now=NOW, policy=POLICY, worker_run_id="555")
+        events = [e for kind, e in staged if kind == "events"]
+        self.assertEqual([e["kind"] for e in events], ["request_ci_rerun"])
+        self.assertEqual(events[0]["details"]["rerun"]["status"], "rerun")
+        self.assertEqual(events[0]["details"]["rerun"]["runs"],
+                         [{"run_id": 777, "from_attempt": 1, "run_attempt": 2}])
+        [op] = [o for kind, o in staged if kind == "operations"]
+        self.assertEqual((op["kind"], op["status"], op["external_ids"]["attempt:777"]),
+                         ("ci_rerun", "confirmed", 2))
         self.assertEqual((engine.state_key(new), new["revision"], new["last_ci_evidence_id"],
-                          new["active_work"]),
-                         ("development.waiting_ci", rec["revision"], None, None))
-        self.assertEqual(new["budget"]["reruns"], {"head_sha": SHA_A, "flaky": 1, "interrupted": 0,
-                                                   "answered_ci_evidence_id": "ci-0"})
+                          new["active_work"], new["pending_human_action"]),
+                         ("development.waiting_ci", rec["revision"], None, None, None))
+        self.assertEqual(new["budget"]["reruns"], {"head_sha": SHA_A, "flaky": 1, "interrupted": 0})
         self.assertEqual(new["budget"]["no_progress_streak"], rec["budget"]["no_progress_streak"])
         # Passing CI on the head nominates; a failed run is a failure again.
         self.assertEqual(kinds(tick(new, verdict="passed")), ["nominate_for_handoff"])
@@ -162,8 +193,7 @@ class TestPatchResults(unittest.TestCase):
         # `flaky_reruns` is spent for this head: the next report is rejected.
         again = dict(running(), budget=new["budget"])
         rejected, staged = reconcile.apply_publication(
-            again, dict(publication(again, "no_change")), now=NOW, policy=POLICY,
-            worker_run_id="555")
+            again, rerun_outcome(again), now=NOW, policy=POLICY, worker_run_id="555")
         self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
                          ["reject_patch_proposal"])
         self.assertEqual(engine.state_key(rejected), "development.fix_needed")
@@ -173,8 +203,7 @@ class TestPatchResults(unittest.TestCase):
         carried = running(pending_feedback_evidence_ids=["review-1"])
         carried["active_work"]["feedback_evidence_ids"] = ["review-1"]
         rejected, staged = reconcile.apply_publication(
-            carried, dict(publication(carried, "no_change")), now=NOW, policy=POLICY,
-            worker_run_id="555")
+            carried, rerun_outcome(carried), now=NOW, policy=POLICY, worker_run_id="555")
         self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
                          ["reject_patch_proposal"])
         self.assertEqual(rejected["pending_feedback_evidence_ids"], ["review-1"])
@@ -543,10 +572,11 @@ def submitted(output):
             if e["type"] == "submit_work"]
 
 
-class TestCiRerunWithoutTrustedRerun(unittest.TestCase):
-    """While no trusted rerun exists, `request_ci_rerun` leads to
-    `development.waiting_ci`, where only CI evidence of another run or
-    attempt than the one the classified Result answered is acted on."""
+class TestFlakyRerun(unittest.TestCase):
+    """`request_ci_rerun` is taken once the trusted publication job reran the
+    failed jobs on the exact head and read the new attempt back (or found
+    nothing to rerun); a `no_change` Result without that receipt is a
+    failed publication, which the publish-only retry performs."""
 
     def setUp(self):
         failing = observed_ci_id()
@@ -558,41 +588,94 @@ class TestCiRerunWithoutTrustedRerun(unittest.TestCase):
         self.work = self.running["active_work"]["dedupe_key"]
         self.assertEqual(submitted(out), [self.work])
 
-    def test_the_answered_run_is_not_recorded_again(self):
+    def result(self, outcome):
+        return dict(outcome, task={"contribution_id": self.running["contribution_id"],
+                                   "revision": self.running["revision"], "generation": 0,
+                                   "dedupe_key": self.work, "task": "development_repair"})
+
+    def test_a_confirmed_rerun_is_awaited_then_acted_on(self):
         import work
-        result = dict(publication(self.running, "no_change"),
-                      task={"contribution_id": self.running["contribution_id"],
-                            "revision": self.running["revision"], "generation": 0,
-                            "dedupe_key": self.work, "task": "development_repair"})
-        out = tick(self.running, [result], verdict="failed", evidence=self.evidence)
+        out = tick(self.running, [self.result(rerun_outcome(self.running))], verdict="failed",
+                   evidence=self.evidence)
         self.assertEqual(kinds(out), ["request_ci_rerun"])
         waiting = final(out, self.running)
-        self.assertEqual(engine.state_key(waiting), "development.waiting_ci")
-        self.assertEqual(waiting["budget"]["reruns"]["answered_ci_evidence_id"],
-                         observed_ci_id())
-        self.assertIn("request_ci_rerun answered", out.report["observation"][0]["note"])
+        [op] = [o for kind, o in out.staged if kind == "operations"]
+        self.assertEqual((op["kind"], op["status"]), ("ci_rerun", "confirmed"))
+        self.assertEqual((engine.state_key(waiting), waiting["pending_human_action"]),
+                         ("development.waiting_ci", None))
+        self.assertIn("behind a confirmed rerun", out.report["observation"][0]["note"])
         self.assertEqual(submitted(out), [])
-        # The queue now holds the Work as completed. The same failed run on
-        # later ticks changes nothing: no Work is requested or recovered.
+        operations = {op["operation_id"]: op}
+        # The snapshot still shows the failed attempt 1: nothing is decided.
         queue = {work.graph_id(self.work): "completed"}
-        runs = [{"id": 5, "status": "completed", "created_at": "2026-11-23T09:05:00Z"}]
-        for minutes in (10, 20, 60):
+        for minutes in (10, 20):
             later = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue,
-                         runs=runs, now=T + timedelta(minutes=minutes))
+                         operations=operations, now=T + timedelta(minutes=minutes))
             self.assertEqual((kinds(later), submitted(later)), ([], []))
             waiting = final(later, waiting)
-        # A newer attempt of the run fails: repair Work is requested under an
-        # id other than the Work that returned the Result.
-        out = attempt_tick(waiting, 2, "failed", evidence=self.evidence, queue=queue, runs=runs,
-                           now=T + timedelta(minutes=70))
+        # The new attempt fails: repair Work under an id other than the Work
+        # that returned the Result.
+        out = attempt_tick(waiting, 2, "failed", evidence=self.evidence, queue=queue,
+                           operations=operations, now=T + timedelta(minutes=70))
         self.assertEqual(kinds(out), ["record_ci_failure", "request_repair"])
         [repair] = submitted(out)
-        self.assertNotEqual(repair, self.work)
         self.assertEqual(repair, self.work.replace(".r0:", ".r0.rerun1:"))
-        self.assertEqual(final(out, waiting)["revision"], self.running["revision"])
-        # A passing run on the head still nominates.
-        out = tick(waiting, verdict="passed", evidence=self.evidence)
+        # The new attempt passes: the head is nominated.
+        out = attempt_tick(waiting, 2, "passed", evidence=self.evidence, operations=operations)
         self.assertEqual(kinds(out), ["nominate_for_handoff"])
+
+    def test_nothing_to_rerun_records_the_same_failure_again(self):
+        """No stall: with nothing rerun, the failing evidence of the head is
+        recorded again, bounded by `flaky_reruns` and `no_progress`."""
+        out = tick(self.running, [self.result(rerun_outcome(self.running, "nothing_to_rerun"))],
+                   verdict="failed", evidence=self.evidence)
+        self.assertEqual(kinds(out)[:2], ["request_ci_rerun", "record_ci_failure"])
+        self.assertEqual(engine.state_key(final(out, self.running)), "development.agent_running")
+
+    def test_a_result_without_a_receipt_is_a_failed_publication(self):
+        rec = running(last_ci_evidence_id="ci-0")
+        new, staged = reconcile.apply_publication(
+            rec, dict(publication(rec, "no_change")), now=NOW, policy=POLICY,
+            worker_run_id="555")
+        events = [e for kind, e in staged if kind == "events"]
+        self.assertEqual([e["kind"] for e in events], ["schedule_publish_retry"])
+        self.assertEqual(events[0]["details"]["rerun"], "the Result carries no CI rerun receipt")
+        self.assertEqual((engine.state_key(new), new["pending_publication"]["attempts"]),
+                         ("development.agent_running", 1))
+        # Each launched retry that reruns nothing is charged, until the
+        # human wait.
+        verbs = []
+        for attempt in range(2, 6):
+            held = new["pending_publication"]
+            new = dict(new, pending_publication=dict(held, launched_at=NOW))
+            new, staged = reconcile.apply_publication(
+                new, dict(publication(new, "no_change"), attempt=attempt), now=NOW,
+                policy=POLICY, worker_run_id="555")
+            verbs += [e["kind"] for kind, e in staged if kind == "events"]
+            if engine.state_key(new) == "development.waiting_human":
+                break
+        self.assertEqual(verbs[-1], "exhaust_publish_recovery")
+        self.assertEqual(new["pending_human_action"]["kind"], "publication_infrastructure_failure")
+        # A retry that reruns the jobs ends the held publication.
+        rec = running(last_ci_evidence_id="ci-0")
+        held, _ = reconcile.apply_publication(rec, dict(publication(rec, "no_change")),
+                                              now=NOW, policy=POLICY, worker_run_id="555")
+        held = dict(held, pending_publication=dict(held["pending_publication"], launched_at=NOW))
+        new, staged = reconcile.apply_publication(
+            held, dict(rerun_outcome(held), attempt=2), now=NOW, policy=POLICY,
+            worker_run_id="555")
+        self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
+                         ["request_ci_rerun"])
+        self.assertIsNone(new["pending_publication"])
+
+    def test_a_receipt_for_another_head_is_not_a_receipt(self):
+        rec = running(last_ci_evidence_id="ci-0")
+        outcome = rerun_outcome(rec)
+        outcome["operation"]["target"]["expected_head"] = SHA_B
+        new, staged = reconcile.apply_publication(rec, outcome, now=NOW, policy=POLICY,
+                                                  worker_run_id="555")
+        self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
+                         ["schedule_publish_retry"])
 
     def test_work_that_returned_a_result_is_never_allocated_again(self):
         """An allocation that would name a Work graph the queue holds as
@@ -615,6 +698,177 @@ class TestCiRerunWithoutTrustedRerun(unittest.TestCase):
         self.assertEqual(kinds(out)[-2:], ["request_repair", "allocate_work_retry"])
         self.assertNotIn("pause_on_processing_error", kinds(out))
         self.assertEqual(submitted(out), [fresh])
+
+
+def interrupted_ci(conclusion="cancelled", attempt=1, failed_too=False):
+    """The fixture's CI run with its required job interrupted: cancelled, or
+    failed after it lost its runner (``conclusion="failure"`` with job 1 in
+    ``lost``). ``failed_too`` adds a required job that failed on its own."""
+    snapshot = ci_snapshot(SHA_A, "failed")
+    snapshot.runs[0].update(run_attempt=attempt, conclusion=conclusion)
+    snapshot.jobs_by_run[777][0]["conclusion"] = conclusion
+    if failed_too:
+        snapshot.jobs_by_run[777].append(dict(snapshot.jobs_by_run[777][0], id=2,
+                                              name="Test - riscv64", conclusion="failure"))
+    return snapshot
+
+
+class RunsApi:
+    """The collector's reads of the runs a CI rerun names."""
+
+    def __init__(self, attempt=2, head=SHA_A):
+        self.attempt, self.head = attempt, head
+
+    def get(self, path):
+        assert path == "/repos/riseproject-upstreaming/proj/actions/runs/777", path
+        return {"id": 777, "head_sha": self.head, "run_attempt": self.attempt,
+                "status": "queued"}
+
+
+def rerun_receipt(op, status="rerun"):
+    return {"schema_version": 1, "status": status, "operation_id": op["operation_id"],
+            "contribution_id": op["contribution_id"], "revision": op["revision"],
+            "repository": op["target"]["repository"], "repository_id": 2,
+            "head_sha": op["target"]["expected_head"], "ci_rerun_run_id": 99,
+            "runs": [{"run_id": 777, "from_attempt": 1, "run_attempt": 2}]}
+
+
+class TestInterruptedRerun(unittest.TestCase):
+    """A required job that was cancelled or lost its runner, with no job
+    failed on its own, takes `rerun_interrupted_ci` in
+    `development.waiting_ci`: a `ci_rerun` operation is recorded before the
+    effect and launched through the development PR workflow, within
+    `interrupted_reruns`; `exhaust_interrupted_reruns` waits for a human."""
+
+    def planned(self, rec=None, **kw):
+        rec = rec or record()
+        out = tick(rec, ci=interrupted_ci(**kw), **({"lost": [1]} if kw.get("conclusion")
+                                                    == "failure" else {}))
+        self.assertEqual(kinds(out), ["rerun_interrupted_ci"])
+        [op] = [o for kind, o in out.staged if kind == "operations" and o["status"] == "planned"]
+        return out, final(out, rec), op
+
+    def test_the_row_plans_the_operation_and_launches_it_once(self):
+        out, rec, op = self.planned()
+        self.assertEqual((engine.state_key(rec), rec["active_operation_id"],
+                          rec["budget"]["reruns"]["interrupted"]),
+                         ("development.waiting_ci", op["operation_id"], 1))
+        self.assertEqual((op["kind"], op["proposed"]["marker"], op["target"]["expected_head"]),
+                         ("ci_rerun", "ci-rerun:777@1", SHA_A))
+        self.assertEqual(op["external_ids"]["launch_attempts"], 1)
+        self.assertEqual(out.report["dev_pr_requests"],
+                         [{"operation_id": op["operation_id"], "contribution_id":
+                           rec["contribution_id"], "attempt": 1}])
+        [event] = [e for kind, e in out.staged if kind == "events"]
+        self.assertEqual(event["details"]["charged"], ["interrupted_reruns"])
+        # While the operation is open, interrupted CI changes nothing and the
+        # operation is not launched again before the launch interval.
+        ops = {op["operation_id"]: op}
+        later = tick(rec, ci=interrupted_ci(), operations=ops, now=T + timedelta(minutes=2))
+        self.assertEqual((kinds(later), later.report["dev_pr_requests"]), ([], []))
+        self.assertIn("open operation", later.report["observation"][0]["note"])
+
+    def test_a_runner_loss_is_interrupted_and_a_real_failure_wins(self):
+        self.planned(conclusion="failure")
+        out = tick(record(), ci=interrupted_ci(failed_too=True))
+        self.assertEqual(kinds(out)[:1], ["record_ci_failure"])
+        # Without the runner-loss annotation the failed job is a failure.
+        out = tick(record(), ci=interrupted_ci(conclusion="failure"))
+        self.assertEqual(kinds(out)[:1], ["record_ci_failure"])
+
+    def test_a_confirmed_rerun_releases_the_operation_and_is_awaited(self):
+        _out, rec, op = self.planned()
+        ops = {op["operation_id"]: op}
+        # The receipt is read back: not yet a new attempt, nothing decided.
+        out = tick(rec, ci=interrupted_ci(), operations=ops, api=RunsApi(attempt=1),
+                   ci_reruns=[rerun_receipt(op)], now=T + timedelta(minutes=1))
+        self.assertEqual(out.report["ci_reruns"][0]["outcome"], "new attempt not read back yet")
+        self.assertEqual(kinds(out), [])
+        # Read back: the operation is confirmed and released, no row fired,
+        # and the snapshot behind the new attempt is awaited.
+        out = tick(rec, ci=interrupted_ci(), operations=ops, api=RunsApi(),
+                   ci_reruns=[rerun_receipt(op)], now=T + timedelta(minutes=2))
+        self.assertEqual(kinds(out), ["ci_rerun_recorded"])
+        after = final(out, rec)
+        self.assertIsNone(after["active_operation_id"])
+        [closed] = [o for kind, o in out.staged if kind == "operations"]
+        self.assertEqual((closed["status"], closed["external_ids"]["attempt:777"]),
+                         ("confirmed", 2))
+        self.assertIn("behind a confirmed rerun", out.report["observation"][0]["note"])
+        # The new attempt passes: nominated.
+        ops = {op["operation_id"]: closed}
+        out = tick(after, ci=interrupted_ci(attempt=2), operations=ops)
+        self.assertEqual(kinds(out), ["rerun_interrupted_ci"])
+        passing = ci_snapshot(SHA_A, "passed")
+        passing.runs[0]["run_attempt"] = 2
+        out = tick(after, ci=passing, operations=ops)
+        self.assertEqual(kinds(out), ["nominate_for_handoff"])
+
+    def test_failed_reruns_exhaust_the_budget_and_resume_ci_reruns_again(self):
+        _out, rec, op = self.planned()
+        ops = {op["operation_id"]: op}
+        # The workflow refuses: the operation closes failed, is released,
+        # and the same observation plans the next rerun, charged.
+        out = tick(rec, ci=interrupted_ci(), operations=ops, api=RunsApi(),
+                   ci_reruns=[rerun_receipt(op, "refused")], now=T + timedelta(minutes=1))
+        self.assertEqual(kinds(out), ["rerun_interrupted_ci"])
+        statuses = {o["operation_id"]: o["status"] for kind, o in out.staged
+                    if kind == "operations"}
+        self.assertEqual(statuses[op["operation_id"]], "failed")
+        rec = final(out, rec)
+        self.assertEqual(rec["budget"]["reruns"]["interrupted"], 2)
+        second = rec["active_operation_id"]
+        self.assertNotEqual(second, op["operation_id"])
+        ops = {o["operation_id"]: o for kind, o in out.staged if kind == "operations"}
+        # Its launches are spent without a receipt: closed and released, no
+        # row; the next observation exhausts the budget.
+        now = T + timedelta(minutes=1)
+        for _ in range(4):
+            now += timedelta(minutes=6)
+            out = tick(rec, ci=interrupted_ci(), operations=ops, now=now)
+            rec = final(out, rec)
+            ops.update({o["operation_id"]: o for kind, o in out.staged if kind == "operations"})
+            if engine.state_key(rec) == "development.waiting_human":
+                break
+        self.assertEqual(ops[second]["status"], "failed")
+        self.assertEqual(kinds(out), ["exhaust_interrupted_reruns"])
+        self.assertEqual((engine.state_key(rec), rec["pending_human_action"]["kind"],
+                          rec["pending_human_action"]["counter"]),
+                         ("development.waiting_human", "ci_interrupted", "interrupted_reruns"))
+        # `resume_ci` restarts the counter, and the next observation reruns.
+        out = apply_command(rec, commands.parse(
+            f"/upstreaming resume revision={rec['revision']} reason=fixed"), policy_=POLICY)
+        self.assertEqual(out.event["kind"], "resume_ci")
+        resumed = out.record
+        self.assertEqual(engine.state_key(resumed), "development.waiting_ci")
+        self.assertEqual(resumed["budget"]["reruns"]["interrupted"], 0)
+        out, after, _op = self.planned(resumed)
+        self.assertEqual(after["budget"]["reruns"]["interrupted"], 1)
+
+    def test_a_paused_contribution_is_not_rerun(self):
+        rec = record(paused=True, paused_reason="maintenance", paused_by="human",
+                     paused_at=NOW)
+        out = tick(rec, ci=interrupted_ci())
+        self.assertEqual(kinds(out), [])
+        self.assertIn("paused", out.report["observation"][0]["note"])
+        # A planned rerun is not launched while paused.
+        _out, planned, op = self.planned()
+        paused = dict(planned, paused=True, paused_reason="maintenance", paused_by="human",
+                      paused_at=NOW)
+        out = tick(paused, ci=interrupted_ci(), operations={op["operation_id"]: op},
+                   now=T + timedelta(minutes=10))
+        self.assertEqual(out.report["dev_pr_requests"], [])
+
+    def test_a_moved_head_closes_the_operation(self):
+        _out, rec, op = self.planned()
+        out = tick(rec, ci=ci_snapshot(SHA_B, "pending"), head=SHA_B,
+                   operations={op["operation_id"]: op}, now=T + timedelta(minutes=1))
+        self.assertEqual(kinds(out), ["record_head_change"])
+        closed = [o for kind, o in out.staged if kind == "operations"]
+        self.assertEqual([o["status"] for o in closed], ["failed"])
+        self.assertIsNone(final(out, rec)["active_operation_id"])
+        self.assertEqual(out.report["controller"]["ci_reruns"][0]["closed"],
+                         "the operation no longer matches the record")
 
 
 class TestSpentWork(unittest.TestCase):

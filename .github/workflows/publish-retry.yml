@@ -9,6 +9,10 @@
 # downloaded by the Result's ID and digest, preflight re-checks state and
 # fork identity, and the push uses the exact expected-head lease. If the push
 # already happened, discovery confirms it instead of pushing again.
+# A held `no_change` Result (a repair worker's report of a failure not caused
+# by the patch) is published by rerunning the failed jobs on the exact head
+# with a token for the one fork that carries only `actions: write`; a rerun
+# that already landed is read back instead of being requested again.
 #
 # Launched by the controller's reconcile job (never by the agent), with the
 # worker run ID it recorded in state.
@@ -105,7 +109,16 @@ jobs:
             python -m fork_publish preflight --record ../in/record.json --task ../in/task.json \
               --proposal ../in/proposal.json --out ../in/preflight.json
           jq -r '"fork_name=" + .fork_name, "publish=" + (.publish|tostring)' ../in/preflight.json >> "$GITHUB_OUTPUT"
-          if [ "$(jq -r .publish ../in/preflight.json)" != true ]; then
+          if [ "$(jq -r .status ../in/preflight.json)" = no_change ]; then
+            # The held Result reports a failure not caused by the patch: its
+            # publication is the rerun of the failed jobs on the exact head.
+            jq '{status:"no_change", failure_class:null, reason, stage:"preflight"}' \
+              ../in/preflight.json > ../in/outcome.json
+            uv run --locked \
+              python -m ci_rerun preflight --record ../in/record.json --task ../in/task.json \
+                --proposal ../in/proposal.json --out ../in/rerun.json
+            jq -r '"rerun=" + (.rerun|tostring), "rerun_fork=" + .fork_name' ../in/rerun.json >> "$GITHUB_OUTPUT"
+          elif [ "$(jq -r .publish ../in/preflight.json)" != true ]; then
             jq '{status:"rejected", failure_class:(.failure_class // "validation"), reason, stage:"preflight"}' \
               ../in/preflight.json > ../in/outcome.json
           fi
@@ -140,6 +153,33 @@ jobs:
           jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
           exit $(( rc == 1 || rc == 3 ? 0 : rc ))
 
+      - name: Mint a CI rerun token for exactly this fork
+        id: rerun-token
+        if: steps.result.outputs.rerun == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ steps.result.outputs.rerun_fork }}
+          permission-actions: write
+
+      - name: Rerun the failed jobs on the exact head and read the attempts back
+        if: steps.result.outputs.rerun == 'true'
+        working-directory: control
+        env:
+          UPSTREAMING_FORK_TOKEN: ${{ steps.rerun-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAMING_PUBLISH_ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          set -euo pipefail
+          rc=0
+          uv run --locked \
+            python -m ci_rerun publish --record ../in/record.json --task ../in/task.json \
+              --out ../in/outcome.json || rc=$?
+          jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
+          exit $(( rc == 1 || rc == 3 ? 0 : rc ))
+
       - name: Record which worker run this retry belongs to
         if: always()
         env:
@@ -155,6 +195,7 @@ jobs:
             in/task.json
             in/result.json
             in/preflight.json
+            in/rerun.json
             in/outcome.json
             in/proposal.json
             in/plan.json

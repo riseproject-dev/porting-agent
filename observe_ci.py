@@ -17,8 +17,10 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * in ``development.waiting_ci``, take the table's rows for what is observed:
   ``record_head_change``, ``record_pr_mismatch``, ``record_explanation``,
   ``record_actionable_review``, then for CI on the exact head
-  ``record_ci_failure`` or ``nominate_for_handoff`` (passing CI that does not
-  satisfy nomination keeps the state);
+  ``record_ci_failure``, ``rerun_interrupted_ci`` with a ``ci_rerun``
+  operation (``exhaust_interrupted_reruns`` once its budget is spent), or
+  ``nominate_for_handoff`` (passing CI that does not satisfy nomination
+  keeps the state);
 * at ``handoff.awaiting_submission``, take the gate's rows for what is
   observed on the candidate head: ``record_head_change``,
   ``record_explanation`` for an explanation-only comment, then
@@ -58,6 +60,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import ci_evidence
+import ci_rerun
 import collect
 import engine
 import handoff
@@ -327,10 +330,10 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 continue
             if rec["phase"] == "development":
                 _observe_development(api, obs, entry, rec, head["head"], contracts=contracts,
-                                     policy=policy, now=now)
+                                     policy=policy, now=now, operations=operations)
             else:
                 _observe_gate(api, obs, entry, rec, head["head"], contracts=contracts,
-                              policy=policy, now=now)
+                              policy=policy, now=now, operations=operations)
             obs.report.append(entry)
     return obs
 
@@ -339,8 +342,19 @@ def _ci(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: d
         repository: str) -> tuple[ci_evidence.CiVerdict, dict | None, str | None]:
     """CI on the exact ``head``: the verdict, the evidence record of its
     newest run (for a verdict that names one), and the next poll time while
-    CI is incomplete."""
+    CI is incomplete. Jobs are not classified for a lost runner."""
+    return _ci_snapshot(api, record, head, contracts=contracts, policy=policy, now=now,
+                        repository=repository)[:3]
+
+
+def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: dict,
+                 now: str, repository: str, classify_interrupted: bool = False
+                 ) -> tuple[ci_evidence.CiVerdict, dict | None, str | None, collect.CiSnapshot]:
+    """``_ci`` and the snapshot it read; with ``classify_interrupted`` a job
+    that lost its runner did not execute (``collect.classify_runner_loss``)."""
     snap = collect.ci_snapshot(api, repository, head)
+    if classify_interrupted:
+        collect.classify_runner_loss(api, repository, snap)
     ctr = contract_for(record, contracts)
     verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
                                         expected_wheels=ctr["expected_wheels"],
@@ -360,7 +374,7 @@ def _ci(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: d
             expected_wheels=ctr["expected_wheels"], artifacts=[], verdict=verdict,
             debug_present=bool(record.get("debug_commits")) and record.get("upstream_pr") is None,
             limitations=[] if verdict.state == "passed" else ["see problems"])
-    return verdict, ev, next_poll_at
+    return verdict, ev, next_poll_at, snap
 
 
 def _take(obs: Observation, record: dict, verb: str, *, policy: dict, now: str,
@@ -499,7 +513,8 @@ def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[st
 
 
 def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
-                         *, contracts: dict, policy: dict, now: str) -> None:
+                         *, contracts: dict, policy: dict, now: str,
+                         operations: dict | None = None) -> None:
     """Observe a contribution in development by the table's rows.
 
     ``development.waiting_ci`` is observed by its rows, in order:
@@ -508,11 +523,13 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     for an explanation-only comment; ``record_actionable_review`` for an
     actionable review (the observation then ends in
     ``development.fix_needed``, which reads no CI); and, for CI
-    on the exact head, ``record_ci_failure`` for an executed blocking
-    failure of a run and attempt other than the one ``request_ci_rerun``
-    answered (``budget.reruns.answered_ci_evidence_id``), or
-    ``nominate_for_handoff`` when every required job passed and
-    no actionable feedback is pending. Passing CI that does not satisfy
+    on the exact head, read with jobs that lost their runner classified:
+    nothing while the snapshot is behind a confirmed rerun
+    (``ci_rerun.awaited``), ``record_ci_failure`` for an executed blocking
+    failure, ``rerun_interrupted_ci`` (or ``exhaust_interrupted_reruns``)
+    when a required job was cancelled or lost its runner and no job failed
+    on its own, or ``nominate_for_handoff`` when every required job passed
+    and no actionable feedback is pending. Passing CI that does not satisfy
     nomination keeps the contribution in ``development.waiting_ci``, and
     a CI run that waits for approval is collector health, not a state.
 
@@ -525,6 +542,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     keeps the state, so the Work requested next carries it. There CI, the
     match of the development PR, and explanation-only comments are not read
     (the state has no row for them), and an inquiry is left unfenced."""
+    operations = {} if operations is None else operations
     state = engine.state_key(rec)
     recorded = rec["fork"].get("head_sha")
     if state not in ("development.waiting_ci", "development.fix_needed"):
@@ -563,22 +581,22 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                               facts=frozenset({"actionable_review"})) is not None:
                 entry["activity"] = "fix_needed"
                 return
-    verdict, ev, next_poll_at = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
-                                    repository=cur["fork"]["name"])
+    verdict, ev, next_poll_at, snap = _ci_snapshot(
+        api, cur, head, contracts=contracts, policy=policy, now=now,
+        repository=cur["fork"]["name"], classify_interrupted=True)
     entry["ci"] = {"repository": cur["fork"]["name"], "state": verdict.state,
                    "problems": verdict.problems[:10]}
+    if ci_rerun.awaited(operations, cur["contribution_id"], head, verdict.attempts):
+        # A confirmed rerun recorded a newer attempt than this snapshot
+        # shows: CI is read again and nothing is decided from the older one.
+        entry["note"] = "CI on the head is behind a confirmed rerun; CI is read again"
+        _poll(obs, cur, _next_ci_observation(now, policy))
+        return
     if ev is not None:
         obs.staged.append(("evidence", ev))
         entry["evidence"] = ev["evidence_id"]
-    answered = engine.head_reruns(cur).get("answered_ci_evidence_id")
-    if verdict.state == "failed" and ev is not None and ev["evidence_id"] == answered:
-        # `request_ci_rerun` answered this run and attempt, and no trusted
-        # rerun exists: only CI evidence of another run or attempt on the
-        # head is acted on. Without a rerun, nothing produces it unless a
-        # human reruns the CI or pushes.
-        entry["note"] = (f"{ev['evidence_id']} is the CI run request_ci_rerun answered; CI "
-                         "evidence of another run or attempt is awaited")
-        _poll(obs, cur, _next_ci_observation(now, policy))
+    if verdict.state == "not_executed" and verdict.interrupted_jobs and ev is not None:
+        _rerun_interrupted(obs, entry, cur, head, ev, snap, operations, policy=policy, now=now)
         return
     if verdict.state == "failed" and ev is not None:
         cur = _take(obs, cur, "record_ci_failure", policy=policy, now=now,
@@ -611,8 +629,62 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     _poll(obs, cur, next_poll_at)
 
 
+def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: dict,
+                       snap: collect.CiSnapshot, operations: dict, *, policy: dict,
+                       now: str) -> None:
+    """A required job on the exact head was cancelled or lost its runner,
+    and no job failed on its own: ``rerun_interrupted_ci`` records a
+    ``ci_rerun`` operation (the intent, before the effect) that the
+    controller launches, within ``interrupted_reruns``;
+    ``exhaust_interrupted_reruns`` waits for a human once that budget is
+    spent. An open operation, or a pause, keeps the state and reads CI
+    again."""
+    later = _next_ci_observation(now, policy)
+    if recovery.open_operations(cur["contribution_id"], operations,
+                                cur.get("active_operation_id")):
+        entry["note"] = (f"interrupted CI waits for the open operation "
+                         f"{cur.get('active_operation_id') or 'of the contribution'}")
+        _poll(obs, cur, later)
+        return
+    if cur.get("paused"):
+        entry["note"] = "interrupted CI is not rerun while the contribution is paused"
+        _poll(obs, cur, later)
+        return
+    facts = {"ci_interrupted_on_head"}
+    cause = ev["evidence_id"]
+    jobs = [j["name"] for j in ev["ci"]["jobs"] if j.get("interrupted")]
+    details = {"evidence_id": cause, "head": head, "interrupted_jobs": jobs[:10]}
+    if engine.refusal(cur, "rerun_interrupted_ci", policy=policy, now=now, facts=facts):
+        cur = _take(obs, cur, "exhaust_interrupted_reruns", policy=policy, now=now,
+                    cause_id=cause, facts=facts, details=details)
+        _poll(obs, cur, None)
+        entry["waiting_for_human"] = "ci_interrupted"
+        return
+    runs, _in_progress = ci_rerun.targets(snap, head, interrupted_only=True)
+    if not runs:
+        entry["note"] = "no completed run on the head holds an interrupted job; CI is read again"
+        _poll(obs, cur, later)
+        return
+    count = engine.head_reruns(cur)["interrupted"]
+    op = ci_rerun.operation(cur, head, runs, [cause, f"rerun:{count}"], policy, now)
+    if op["operation_id"] in operations:
+        raise lifecycle.TransitionError(
+            f"the CI rerun operation {op['operation_id']} of {cause} is already recorded")
+    cur = _take(obs, cur, "rerun_interrupted_ci", policy=policy, now=now, cause_id=cause,
+                facts=facts, details=details | {"operation": op["operation_id"],
+                                                 "runs": runs})
+    cur = engine.record_beside(cur, "operation_planned", now=now,
+                               active_operation_id=op["operation_id"])
+    operations[op["operation_id"]] = op
+    obs.staged.append(("operations", op))
+    cur = _poll(obs, cur, later)
+    obs.staged.append(("contributions", cur))
+    entry.update(ci_rerun=op["operation_id"], activity="waiting_ci")
+
+
 def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str, *,
-                  contracts: dict, policy: dict, now: str) -> None:
+                  contracts: dict, policy: dict, now: str,
+                  operations: dict | None = None) -> None:
     """Observe ``handoff.awaiting_submission`` by the gate's rows:
     ``record_head_change`` for a new fork head (to ``development.waiting_ci``,
     which is then observed), ``record_explanation`` for an explanation-only
@@ -630,7 +702,7 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
                     values={"fork.head_sha": head}, details={"head": head})
         entry["head_changed"] = True
         _observe_development(api, obs, entry, cur, head, contracts=contracts, policy=policy,
-                             now=now)
+                             now=now, operations=operations)
         return
     # The gate has no row for a development PR that does not match; it is
     # not read here.

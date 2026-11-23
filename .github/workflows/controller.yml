@@ -233,6 +233,24 @@ jobs:
             unzip -q -o -j "development-prs/$run/a.zip" -d "development-prs/$run" || continue
             printf '%s' "$id" > "development-prs/$run/artifact-id"
           done
+      - name: Collect trusted CI rerun receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-reruns
+          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/dev-pr.yml/runs?status=completed&per_page=20" \
+            --jq '.workflow_runs[].id') || runs=
+          printf '%s\n' "$runs" | while read -r run; do
+            [ -n "$run" ] || continue
+            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+              --jq '[.artifacts[] | select(.name == "porting-ci-rerun" and (.expired | not))][0].id // empty') || continue
+            [ -n "$id" ] || continue
+            mkdir -p "ci-reruns/$run"
+            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "ci-reruns/$run/a.zip" || continue
+            unzip -q -o -j "ci-reruns/$run/a.zip" -d "ci-reruns/$run" || continue
+            printf '%s' "$id" > "ci-reruns/$run/artifact-id"
+          done
       - name: Collect trusted handoff receipts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -262,6 +280,7 @@ jobs:
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
           uv run --locked python -m reconcile --publications publications \
             --provisions provisions --development-prs development-prs --handoffs handoffs \
+            --ci-reruns ci-reruns \
             --report report.json \
             ${gh_aw:+--gh-aw "$gh_aw"}
           {

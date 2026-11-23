@@ -557,17 +557,36 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             continue
         with isolation.contribution(cid, "development_pr"):
             operation = operations.get(c.get("active_operation_id"))
-            if not operation or operation.get("kind") not in {"dev_pr_create", "dev_pr_update"} \
+            if not operation or operation.get("kind") not in DEVELOPMENT_PR_KINDS \
                     or operation.get("status") != "planned":
                 continue
-            # No row of the table launches a development PR operation; its
-            # launches are counted like `operation_launch`, on the operation.
+            # No row of the table launches a development PR or CI rerun
+            # operation; its launches are counted like `operation_launch`, on
+            # the operation.
             attempts = recovery.launch_attempts(operation)
-            due = attempts == 0 or (
-                (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds()
+            waited = (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() \
                 >= LAUNCH_INTERVAL_SECONDS
-                and attempts < lifecycle.budget_limit("operation_launch", policy)
-            )
+            if operation["kind"] == "ci_rerun":
+                why = _spent_rerun(c, operation, attempts, waited, policy)
+                if why:
+                    # The rerun failed: it is closed and released, and no row
+                    # is fired. The next observation of interrupted CI takes
+                    # `rerun_interrupted_ci` again within `interrupted_reruns`,
+                    # or `exhaust_interrupted_reruns`.
+                    closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
+                    operations[closed["operation_id"]] = closed
+                    released = recovery.release(c, closed, now)
+                    by_id[cid] = released
+                    res.stage("operations", closed)
+                    res.stage("contributions", released)
+                    res.report.setdefault("ci_reruns", []).append(
+                        {"operation_id": closed["operation_id"], "contribution_id": cid,
+                         "closed": why})
+                    continue
+                if c.get("paused"):
+                    continue
+            due = attempts == 0 or (
+                waited and attempts < lifecycle.budget_limit("operation_launch", policy))
             if due:
                 launched = recovery.charge_launch(operation, now)
                 operations[launched["operation_id"]] = launched
@@ -1116,6 +1135,21 @@ def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
 # A planned operation is launched again once this long has passed since its
 # last launch without a receipt, within `operation_launch`.
 LAUNCH_INTERVAL_SECONDS = 300
+# The operations the development PR workflow executes.
+DEVELOPMENT_PR_KINDS = frozenset({"dev_pr_create", "dev_pr_update", "ci_rerun"})
+
+
+def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict) -> str | None:
+    """Why a planned ``ci_rerun`` operation is closed as failed: its
+    launches are spent without a receipt, or it no longer matches the record
+    (another head, revision, or state)."""
+    if op["target"].get("expected_head") != (record.get("fork") or {}).get("head_sha") \
+            or op["revision"] != record["revision"] \
+            or engine.state_key(record) != "development.waiting_ci":
+        return "the operation no longer matches the record"
+    if waited and attempts >= lifecycle.budget_limit("operation_launch", policy):
+        return "operation_launch is spent without a receipt"
+    return None
 # The pending human action of `require_provisioning_intervention` when
 # `operation_launch` is exhausted.
 LAUNCH_EXHAUSTED = "provisioning_launch_exhausted"

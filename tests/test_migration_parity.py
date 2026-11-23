@@ -290,3 +290,41 @@ class TestDeferredAndWorkflowContracts(unittest.TestCase):
                     script.startswith(("scripts/", "native-artifact-compat/scripts/")),
                     script,
                 )
+
+
+class TestRerunFenceMigration(unittest.TestCase):
+    """`budget.reruns.answered_ci_evidence_id`, the fence of the CI run a
+    `request_ci_rerun` answered before the trusted rerun, is removed by the
+    record migration whatever its value; nothing else changes."""
+
+    def test_the_key_is_dropped_once(self):
+        import schemas
+        for value in ("ci-2-777-1", None):
+            with self.subTest(value=value):
+                rec = contribution()
+                rec["budget"]["reruns"] = dict(rec["budget"]["reruns"],
+                                               answered_ci_evidence_id=value)
+                self.assertTrue(schemas.errors("contribution", rec))
+                self.assertTrue(state.needs_field_migration(rec))
+                new, event = state.migrate_record_fields(rec, now="2026-11-23T13:00:00+00:00")
+                self.assertNotIn("answered_ci_evidence_id", new["budget"]["reruns"])
+                self.assertEqual(new["budget"]["reruns"],
+                                 {k: v for k, v in rec["budget"]["reruns"].items()
+                                  if k != "answered_ci_evidence_id"})
+                self.assertEqual(event["details"]["removed"],
+                                 ["budget.reruns.answered_ci_evidence_id"])
+                self.assertEqual(event["details"]["added"], [])
+                self.assertEqual({k: v for k, v in new.items() if k not in ("budget", "updated_at")},
+                                 {k: v for k, v in rec.items() if k not in ("budget", "updated_at")})
+                schemas.validate("contribution", new)
+                self.assertFalse(state.needs_field_migration(new))
+
+    def test_the_live_record_needs_no_migration(self):
+        path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
+        if not path.exists():
+            self.skipTest("no live record in this checkout")
+        import schemas
+        rec = json.loads(path.read_text())
+        schemas.validate("contribution", rec)
+        self.assertNotIn("answered_ci_evidence_id", rec["budget"]["reruns"])
+        self.assertFalse(state.needs_field_migration(rec))

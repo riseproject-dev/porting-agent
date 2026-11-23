@@ -588,9 +588,11 @@ def needs_field_migration(record: Any) -> bool:
 
 
 def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
-    """The record with its missing fields added at their defaults and the
-    null ``blocked_reason`` removed, and its event. Raises ``StateError``
-    for any other shape."""
+    """The record with its missing fields added at their defaults, the null
+    ``blocked_reason`` and ``budget.reruns.answered_ci_evidence_id`` (the
+    fence of the CI run a ``request_ci_rerun`` answered before the trusted
+    rerun) removed, and its event. Raises ``StateError`` for any other
+    shape."""
     try:
         new, added, removed = engine.with_defaults(record)
     except lifecycle.TransitionError as error:

@@ -1191,6 +1191,31 @@ flowchart TB
     planning_agent_running ==>|exhaust_planning_recovery| planning_waiting_human
 ```
 
+### O26. Trusted CI rerun
+
+Which credential reruns the jobs of a fork's workflow run, how a rerun is recorded, and which row applies when it fails.
+
+**Decision.** No new workflow and nothing in the dispatcher. A failure the repair worker reports not caused by the patch (`no_change`) is rerun by the trusted publication job of the worker run, or of its publish-only retry, with a token for the one verified fork that carries only `actions: write`, bound to the exact head and attempt. Interrupted CI is rerun by the development PR workflow, launched by the controller, with the same kind of token. A rerun is an operation of kind `ci_rerun` whose receipt is the readback of the new run attempt; the attempt is a monotonic counter, so every retry reads it first and a rerun operation is never left `uncertain`. `request_ci_rerun` is taken only once the rerun is read back or nothing needed rerunning; a rerun that is refused or not read back, and a `no_change` Result without the receipt, is a failed publication (`schedule_publish_retry`, then `exhaust_publish_recovery`), and a moved head takes `replan_development`. A failed interrupted rerun fires no row: the next observation takes `rerun_interrupted_ci` again within `interrupted_reruns`, then `exhaust_interrupted_reruns`. The wait after `request_ci_rerun` has no pending action and no reminder; CI ends it. `resume_ci` launches nothing: it restarts `interrupted_reruns`, and the first observation after it reruns. Interrupted means a required job that was cancelled, or failed with a runner-loss annotation; `timed_out` and every other executed failure are real failures and win over a rerun. Only `development.waiting_ci` classifies lost runners. Each run is rerun with `rerun-failed-jobs`, at most 5 runs per request, and a rerun reserves no runner capacity. The repair attempt charged at allocation is not refunded.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_agent_running ==>|request_ci_rerun| development_waiting_ci
+    development_agent_running -->|schedule_publish_retry| development_agent_running
+    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running -->|replan_development| development_fix_needed
+    development_waiting_ci ==>|rerun_interrupted_ci| development_waiting_ci
+    development_waiting_ci ==>|exhaust_interrupted_reruns| development_waiting_human
+    development_waiting_ci -->|record_ci_failure| development_fix_needed
+    development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

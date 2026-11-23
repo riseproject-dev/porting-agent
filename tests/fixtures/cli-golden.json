@@ -111,7 +111,8 @@
         "publication_retries": [],
         "written": [],
         "handoff_requests": [],
-        "handoffs": []
+        "handoffs": [],
+        "ci_reruns": []
       },
       "stderr": "",
       "files": []

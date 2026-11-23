@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import capacity
+import ci_rerun
 import collect
 import controller
 import engine
@@ -1011,7 +1012,9 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
       Result's rehearsal evidence is recorded and named in the event;
     * a ``no_change`` report (the repair worker found a failure not caused
       by the patch): ``request_ci_rerun`` when the Work carries no feedback
-      and ``flaky_reruns`` remains, ``reject_patch_proposal`` otherwise;
+      and ``flaky_reruns`` remains and the outcome carries the receipt of
+      the trusted rerun (``ci_rerun.receipt_problem``), a failed publication
+      when it carries none, ``reject_patch_proposal`` otherwise;
     * rejected as stale (the fork head moved): ``replan_development``;
     * an infrastructure error of the publication (in upstream review also an
       uncertain Result): ``schedule_publish_retry`` holds the same Result for
@@ -1044,6 +1047,19 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     if outcome.get("reason"):
         details["reason"] = str(outcome["reason"])[:500]
     failed = status in rows["failed"]
+    rerun_missing = None
+    if status == "no_change" and "no_change" not in rows and not engine.refusal(
+            rec, "request_ci_rerun", policy=policy, now=now,
+            facts={"failure_not_caused_by_patch"}):
+        # `request_ci_rerun` reruns the failed jobs: the trusted publication
+        # job requests the rerun and reads the new attempt back before the
+        # row is taken. A Result without that receipt (a publication job of
+        # older trusted code, or one that died) is a failed publication,
+        # so the publish-only retry performs the rerun.
+        rerun_missing = ci_rerun.receipt_problem(outcome, rec)
+        if rerun_missing:
+            failed = True
+            details["rerun"] = rerun_missing
     if failed and held and not rec.get("active_work") \
             and _charged_launch(held, outcome):
         # The failed publication of this launch is already charged, by the
@@ -1059,8 +1075,8 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                             f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"})
         return rec, staged + [("contributions", rec), ("events", event)]
     if failed:
-        out = _fail_publication(rec, run, str(outcome.get("reason") or ""), now=now,
-                                policy=policy, cause=cause, details=details)
+        out = _fail_publication(rec, run, rerun_missing or str(outcome.get("reason") or ""),
+                                now=now, policy=policy, cause=cause, details=details)
     else:
         if status in rows["success"]:
             verb = rows["published"]
@@ -1072,12 +1088,20 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         elif status == "no_change":
             # The repair worker reports a failure not caused by the patch:
             # `request_ci_rerun` when the Work carries no feedback and
-            # `flaky_reruns` remains, else the outcome counts as
-            # `reject_patch_proposal`, as both rows state.
+            # `flaky_reruns` remains (the outcome then carries the receipt of
+            # the rerun), else the outcome counts as `reject_patch_proposal`,
+            # as both rows state.
             facts = {"failure_not_caused_by_patch"}
             verb = ("reject_patch_proposal" if engine.refusal(
                 rec, "request_ci_rerun", policy=policy, now=now, facts=facts)
                 else "request_ci_rerun")
+            if verb == "request_ci_rerun":
+                rerun = outcome["rerun"]
+                details["rerun"] = {
+                    "status": rerun["status"],
+                    "runs": [{k: int(r[k]) for k in ("run_id", "from_attempt", "run_attempt")}
+                             for r in rerun["runs"][:ci_rerun.MAX_RUNS]],
+                    "operation": (op or {}).get("operation_id")}
         elif status in ("rejected", "worker_blocked"):
             verb, facts = "reject_patch_proposal", {"proposal_rejected_or_blocked"}
         else:
@@ -1115,15 +1139,6 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                  if changed_files else new.get("scope_paths"))
         new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope,
                                    budget=dict(new["budget"], no_progress_streak=0))
-    if out.verb == "request_ci_rerun":
-        # Beside the row: the CI run and attempt the classified Result
-        # answered (the evidence the row clears from `last_ci_evidence_id`)
-        # is kept with the rerun counts of the head. While no trusted rerun
-        # exists, `development.waiting_ci` acts only on CI evidence of
-        # another run or attempt.
-        new = engine.record_beside(new, "answered_ci_run", now=now, budget=dict(
-            new["budget"], reruns=dict(new["budget"]["reruns"],
-                                       answered_ci_evidence_id=rec.get("last_ci_evidence_id"))))
     if held and out.verb not in ("schedule_publish_retry", "exhaust_publish_recovery"):
         # The held Result is answered: the publication is no longer pending.
         new = engine.record_beside(new, "publication_answered", now=now,
@@ -1285,6 +1300,75 @@ def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
                                    values={"paused_reason": reason}, details=details)
 
 
+def fold_ci_rerun_receipts(api: collect.Api, receipts: list[dict], contributions: dict[str, dict],
+                           by_cid: dict[str, str], snap: Snapshot, out: TickOutput, *,
+                           now: str, skip: frozenset[str]) -> list[dict]:
+    """Fold the receipts of the ``ci_rerun`` operations the collector planned
+    for interrupted CI, which the development PR workflow executes.
+
+    A receipt is folded only for the open operation the record names as
+    active, at the record's revision. A ``rerun`` receipt is read back with
+    the collector's own reads: when every run of the operation shows a
+    higher attempt on the expected head (``ci_rerun.discover``), the
+    operation is confirmed and released (``ci_rerun_recorded``); otherwise
+    nothing is decided in this tick, and the receipt is read again in the
+    next one. A ``stale`` or ``refused`` receipt closes the operation as
+    failed and releases it. No row of the table is fired: the next
+    observation of interrupted CI takes ``rerun_interrupted_ci`` again, or
+    its exhaustion row."""
+    report = []
+    for receipt in receipts:
+        cid = receipt.get("contribution_id")
+        if cid not in by_cid or cid in skip:
+            continue
+        with isolation.contribution(cid, "ci_rerun_receipt"):
+            key = by_cid[cid]
+            c = contributions[key]
+            op = snap.operations.get(receipt.get("operation_id"))
+            if not op or op["kind"] != "ci_rerun" or op["status"] not in recovery.OPEN \
+                    or c.get("active_operation_id") != op["operation_id"] \
+                    or c["revision"] != receipt.get("revision") \
+                    or receipt.get("repository") != op["target"]["repository"] \
+                    or receipt.get("head_sha") != op["target"]["expected_head"]:
+                continue
+            entry = {"contribution": cid, "operation": op["operation_id"]}
+            status = receipt.get("status")
+            run_id = str(receipt.get("ci_rerun_run_id") or "")[:40]
+            if status in ("stale", "refused"):
+                if op["status"] not in ("planned", "applying"):
+                    report.append(dict(entry, outcome="failure not folded"))
+                    continue
+                new_op = recovery.fold_failure_receipt(
+                    op, external_ids={"ci_rerun_run_id": run_id}, now=now)
+                new = recovery.release(c, new_op, now)
+                report.append(dict(entry, outcome="failed", receipt=status))
+            elif status == "rerun":
+                runs = [ci_rerun.read_run(api, op["target"]["repository"], r["run_id"])
+                        for r in ci_rerun.marker_runs(op)]
+                if ci_rerun.discover(op, runs) != "confirmed":
+                    report.append(dict(entry, outcome="new attempt not read back yet"))
+                    continue
+                new_op = recovery.fold_receipt(
+                    op, external_ids=ci_rerun.attempt_ids(
+                        [{"run_id": r["id"], "run_attempt": r["run_attempt"]} for r in runs])
+                    | {"ci_rerun_run_id": run_id},
+                    detail=f"new attempts read back on {op['target']['expected_head']}", now=now)
+                new = engine.record_beside(c, "ci_rerun_recorded", now=now,
+                                           active_operation_id=None)
+                out.staged.append(("events", lifecycle._event(
+                    c, new, "ci_rerun_recorded", "observation", op["operation_id"], now, False)))
+                report.append(dict(entry, outcome="confirmed",
+                                   runs=[{"run_id": r["id"], "run_attempt": r["run_attempt"]}
+                                         for r in runs]))
+            else:
+                report.append(dict(entry, outcome=f"not folded: {str(status)[:40]}"))
+                continue
+            contributions[key] = new
+            snap.operations[op["operation_id"]] = new_op
+            out.staged.extend([("operations", new_op), ("contributions", new)])
+    return report
+
+
 def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions: dict[str, dict],
                           by_cid: dict[str, str], snap: Snapshot, out: TickOutput, *,
                           policy: dict, now: str, skip: frozenset[str]) -> list[dict]:
@@ -1382,6 +1466,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
+         ci_reruns: list[dict] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
          queue_policy: dict | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
@@ -1460,6 +1545,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                            op["operation_id"], iso, False))])
             dev_pr_report.append({"contribution": cid, "status": "confirmed", "pr_number": pr["number"]})
     out.report["development_prs"] = dev_pr_report
+
+    # Receipts of the CI reruns of interrupted CI, read back independently.
+    out.report["ci_reruns"] = fold_ci_rerun_receipts(
+        api, ci_reruns or [], contributions, by_cid, snap, out, now=iso, skip=skip)
 
     # Verified receipts of the handoff operations, each read back
     # independently before its operation fires a row of the table.
@@ -1855,6 +1944,10 @@ def _receipt_outcomes(directory: str | None, *, kind: str) -> list[dict]:
             receipt["handoff_artifact_id"] = (
                 int(artifact_id.read_text()) if artifact_id.exists() else None
             )
+        elif kind == "ci_rerun":
+            receipt["ci_rerun_artifact_id"] = (
+                int(artifact_id.read_text()) if artifact_id.exists() else None
+            )
         else:
             receipt["provision_run_id"] = path.parent.name
             receipt["provision_artifact_id"] = (
@@ -1926,6 +2019,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     api = collect.Api()
     publications = _publication_outcomes(args.publications)
     development_prs = _receipt_outcomes(args.development_prs, kind="development_pr")
+    ci_reruns = _receipt_outcomes(getattr(args, "ci_reruns", None), kind="ci_rerun")
     provisions = _receipt_outcomes(args.provisions, kind="provision")
     handoffs = _receipt_outcomes(getattr(args, "handoffs", None), kind="handoff")
     issues = [] if args.offline else collect.intake_issues(api)
@@ -1998,6 +2092,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             provisions=provisions,
             development_prs=development_prs,
             handoffs=handoffs,
+            ci_reruns=ci_reruns,
         )
     except isolation.TickFailure as failure:
         # A pipeline failure: nothing is written, so nothing is committed.
@@ -2053,6 +2148,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publications")
     parser.add_argument("--provisions")
     parser.add_argument("--development-prs")
+    parser.add_argument("--ci-reruns")
     parser.add_argument("--handoffs")
     parser.add_argument("--report")
     parser.add_argument("--since")

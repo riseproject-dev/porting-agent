@@ -30,6 +30,7 @@ from tests.helpers import (
     comment,
     contribution,
     policy,
+    runner_loss,
 )
 
 T = datetime.fromisoformat(NOW)
@@ -174,7 +175,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
     def observe(self, rec, snapshot, evidence=None, contracts=None):
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": self.HEAD}), \
              mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
-             mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
+             mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot), \
+             mock.patch("observe_ci.collect.classify_runner_loss", side_effect=runner_loss()):
             return observe_ci.observe(object(), contributions={"c": rec}, operations={},
                                       contracts=contracts or {}, policy=policy(), now=NOW,
                                       evidence=evidence or {})

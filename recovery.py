@@ -578,13 +578,22 @@ def discover_notification(op: dict, comments: list[dict]) -> str:
     return "absent"
 
 
+def discover_rerun(op: dict, runs: list[dict]) -> str:
+    """A CI rerun is confirmed only by a higher attempt of every run it
+    names on the expected head (``ci_rerun.discover``): a rerun keeps the
+    run id and its creation time, so a launch window cannot confirm it."""
+    import ci_rerun
+
+    return ci_rerun.discover(op, runs)
+
+
 DISCOVERERS: dict[str, Callable[..., str]] = {
     "branch_update": discover_branch,
     "branch_rewrite": discover_branch,
     "dev_pr_create": discover_pr,
     "dev_pr_update": discover_pr,
     "ci_dispatch": discover_dispatch,
-    "ci_rerun": discover_dispatch,
+    "ci_rerun": discover_rerun,
     "notification": discover_notification,
 }
 

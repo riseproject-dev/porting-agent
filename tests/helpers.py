@@ -109,6 +109,18 @@ def apply_command(record, cmd, *, command_id="c", actor=OWNER, now=NOW, policy_=
                                     policy=policy_ or policy(), now=now, upstream_pr=upstream_pr)
 
 
+def runner_loss(lost=()):
+    """A stand-in for ``collect.classify_runner_loss`` without annotation
+    reads: the jobs whose ids are in ``lost`` lost their runner."""
+    lost = frozenset(lost)
+
+    def classify(_api, _repository, snap):
+        for jobs in snap.jobs_by_run.values():
+            for job in jobs:
+                job["runner_lost"] = job["id"] in lost
+    return classify
+
+
 def ci_record(evidence_id: str, head: str, *, failing: str | None = None,
                 contribution_id: str = "example--proj/12") -> dict:
     """CI evidence of ``head``: one job, failing when ``failing`` names it."""

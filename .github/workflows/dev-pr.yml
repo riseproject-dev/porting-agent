@@ -1,12 +1,21 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
+
+# Executes one controller-recorded operation on the contribution fork: a
+# development PR operation (create, or CI bootstrap update) with its token,
+# or a `ci_rerun` operation the collector planned for interrupted CI, which
+# reruns the failed and cancelled jobs of the runs its marker names on the
+# exact head with a token for the one fork that carries only
+# `actions: write`, and reads the new attempts back. Each uploads its
+# receipt; the controller reads every receipt back before it closes the
+# operation.
 name: Development PR
 run-name: "Development PR ${{ inputs.operation-id }}"
 on:
   workflow_dispatch:
     inputs:
       operation-id:
-        description: Controller-recorded dev_pr_create operation
+        description: Controller-recorded development PR or CI rerun operation
         required: true
         type: string
 permissions:
@@ -35,13 +44,20 @@ jobs:
           repo=$(uv run --locked python - <<'PY'
           import json, os
           op=json.load(open(f".state/operations/{os.environ['OPERATION']}.json"))
-          print(op["target"]["repository"].split("/", 1)[1])
+          print(op["target"]["repository"].split("/", 1)[1], op["kind"])
           PY
           )
-          [[ "$repo" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "invalid fork name"; exit 1; }
-          printf 'fork_name=%s\n' "$repo" >> "$GITHUB_OUTPUT"
+          read -r fork kind <<< "$repo"
+          [[ "$fork" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "invalid fork name"; exit 1; }
+          case "$kind" in
+            dev_pr_create|dev_pr_update|ci_rerun) ;;
+            *) echo "unsupported operation kind"; exit 1 ;;
+          esac
+          printf 'fork_name=%s\n' "$fork" >> "$GITHUB_OUTPUT"
+          printf 'kind=%s\n' "$kind" >> "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         id: fork-token
+        if: steps.target.outputs.kind != 'ci_rerun'
         with:
           client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
           private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
@@ -52,6 +68,7 @@ jobs:
           permission-actions: write
           permission-administration: write
       - name: Create or discover and verify the same-fork development PR
+        if: steps.target.outputs.kind != 'ci_rerun'
         env:
           OPERATION: ${{ inputs.operation-id }}
           UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
@@ -60,9 +77,36 @@ jobs:
           uv run --locked \
             python -m dev_pr --operation-id "$OPERATION" --out development-pr/outcome.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: steps.target.outputs.kind != 'ci_rerun'
         with:
           name: porting-development-pr
           path: development-pr/outcome.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: rerun-token
+        if: steps.target.outputs.kind == 'ci_rerun'
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ steps.target.outputs.fork_name }}
+          permission-actions: write
+      - name: Rerun the interrupted jobs on the exact head and read the attempts back
+        if: steps.target.outputs.kind == 'ci_rerun'
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+          UPSTREAMING_FORK_TOKEN: ${{ steps.rerun-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run --locked \
+            python -m ci_rerun operation --operation-id "$OPERATION" --out ci-rerun/outcome.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: steps.target.outputs.kind == 'ci_rerun'
+        with:
+          name: porting-ci-rerun
+          path: ci-rerun/outcome.json
           if-no-files-found: error
           retention-days: 30
 
