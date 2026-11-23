@@ -113,6 +113,7 @@ flowchart TB
     development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|record_ci_failure| development_fix_needed
     development_waiting_ci -->|record_actionable_review| development_fix_needed
+    development_fix_needed -->|record_actionable_review| development_fix_needed
     development_waiting_ci -->|record_explanation| development_waiting_ci
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
@@ -351,6 +352,7 @@ flowchart TB
     start_1(( )) --> development_waiting_ci
     development_waiting_ci -->|record_ci_failure| development_fix_needed
     development_waiting_ci -->|record_actionable_review| development_fix_needed
+    development_fix_needed -->|record_actionable_review| development_fix_needed
     development_waiting_ci -->|record_explanation| development_waiting_ci
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running -->|record_publish_success| development_waiting_ci
@@ -627,6 +629,7 @@ flowchart TB
     handoff_waiting_ci -->|rerun_interrupted_ci| handoff_waiting_ci
     handoff_awaiting_submission -->|return_for_repair| development_fix_needed
     handoff_awaiting_submission -->|record_actionable_review| development_fix_needed
+    development_fix_needed -->|record_actionable_review| development_fix_needed
     handoff_awaiting_submission -->|record_explanation| handoff_awaiting_submission
     handoff_awaiting_submission -->|record_head_change| development_waiting_ci
     handoff_agent_running -->|reject_submission_rewrite| development_fix_needed
@@ -639,7 +642,7 @@ flowchart TB
     handoff_waiting_upstream_pr -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
 ```
 
-Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, or blocking CI on the clean head returns to development; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_investigation` leave it, and none of them changes `riscv64`.
+Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, or blocking CI on the clean head returns to development; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_investigation` leave it, and none of them changes `riscv64`.
 
 ### Failure case 2: a handoff step fails repeatedly or needs a human
 

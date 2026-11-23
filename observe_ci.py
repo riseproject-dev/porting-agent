@@ -11,7 +11,9 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   discovery;
 * in ``development.fix_needed``, take ``record_head_change`` for a fork head
   that moved while Work is due (to ``development.waiting_ci``, which is then
-  observed);
+  observed); on the recorded head, read only the review feedback of the
+  development PR and take ``record_actionable_review`` for an actionable
+  review, so the Work requested next carries it;
 * in ``development.waiting_ci``, take the table's rows for what is observed:
   ``record_head_change``, ``record_pr_mismatch``, ``record_explanation``,
   ``record_actionable_review``, then for CI on the exact head
@@ -20,8 +22,10 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * at ``handoff.awaiting_submission``, take the gate's rows for what is
   observed on the candidate head: ``record_head_change``,
   ``record_explanation`` for an explanation-only comment, then
-  ``return_for_repair`` for a CI failure, or else
-  ``record_actionable_review`` for an actionable review;
+  ``return_for_repair`` for a CI failure, followed by
+  ``record_actionable_review`` in ``development.fix_needed`` for an
+  actionable review observed with it, or else ``record_actionable_review``
+  for an actionable review;
 * in ``handoff.waiting_ci``, take ``accept_clean_head_ci`` or
   ``return_for_repair`` for CI on the clean head of ``riscv64`` (CI of the
   candidate head when the clean head has its tree);
@@ -461,10 +465,12 @@ def _record_explanation(obs: Observation, entry: dict, record: dict,
 
 def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[str, dict, dict],
                    *, policy: dict, now: str, facts: frozenset[str]) -> dict | None:
-    """Take ``record_actionable_review``: the review is recorded as pending
-    feedback; the CI evidence is kept. The ids of the comments are added to
-    the replay fences beside the row, so the same comments are not read
-    again. ``None`` when the row does not apply."""
+    """Take ``record_actionable_review`` from the state of ``record`` (the
+    gate, ``development.waiting_ci``, or ``development.fix_needed``): the
+    review is recorded as pending feedback; the CI evidence is kept. The ids
+    of the comments are added to the replay fences beside the row, so the
+    same comments are not read again. ``None`` when the row does not apply:
+    the ids are then left unfenced and read again on the next tick."""
     eid, ev, feedback = review
     recorded = engine.apply_transition(
         record, "record_actionable_review", policy=policy, now=now, cause_id=eid,
@@ -509,16 +515,25 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
 
     ``development.agent_running`` (requested Work, or a Result held for
     publication) is not observed. ``development.fix_needed`` (Work is due)
-    has one observation row: a fork head that moved there (a human push)
+    has two observation rows: a fork head that moved there (a human push)
     takes ``record_head_change`` to ``development.waiting_ci``, which is
-    then observed in the same tick; an unchanged head there is not read
-    further."""
+    then observed in the same tick; on the recorded head, an actionable
+    review of the development PR takes ``record_actionable_review`` and
+    keeps the state, so the Work requested next carries it. There CI, the
+    match of the development PR, and explanation-only comments are not read
+    (the state has no row for them), and an inquiry is left unfenced."""
     state = engine.state_key(rec)
     recorded = rec["fork"].get("head_sha")
-    if state not in ("development.waiting_ci", "development.fix_needed") \
-            or (state == "development.fix_needed" and head == recorded):
-        entry["note"] = (f"{state} has no observation row" if state != "development.fix_needed"
-                         else "development Work is due on the recorded head")
+    if state not in ("development.waiting_ci", "development.fix_needed"):
+        entry["note"] = f"{state} has no observation row"
+        return
+    if state == "development.fix_needed" and head == recorded:
+        if rec["fork"].get("pr_number"):
+            review, _inquiry, _mismatch = _feedback(api, rec, head, policy=policy, now=now)
+            if review:
+                _record_review(obs, entry, rec, review, policy=policy, now=now,
+                               facts=frozenset({"actionable_review"}))
+        entry.update(activity="fix_needed", note="development Work is due on the recorded head")
         return
     cur = rec
     if head != recorded:
@@ -600,6 +615,10 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
     which is then observed), ``record_explanation`` for an explanation-only
     comment, then ``return_for_repair`` for a CI failure on the candidate
     head, or else ``record_actionable_review`` for an actionable review.
+    The two guards are exclusive and the failure applies first; a review
+    observed with the failure is recorded in the same observation by
+    ``record_actionable_review`` in ``development.fix_needed``, so the repair
+    Work allocated next carries the failing evidence and the review.
     Passing CI keeps the gate and its recorded evidence."""
     cur = rec
     if head != rec["fork"].get("head_sha"):
@@ -626,9 +645,16 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
         entry["evidence"] = ev["evidence_id"]
     if verdict.state == "failed" and ev is not None:
         # Only an executed failure on the candidate head leaves the gate.
-        _take(obs, cur, "return_for_repair", policy=policy, now=now, cause_id=ev["evidence_id"],
-              facts={"candidate_head_failed"}, values={"last_ci_evidence_id": ev["evidence_id"]},
-              details={"evidence_id": ev["evidence_id"]})
+        cur = _take(obs, cur, "return_for_repair", policy=policy, now=now,
+                    cause_id=ev["evidence_id"], facts={"candidate_head_failed"},
+                    values={"last_ci_evidence_id": ev["evidence_id"]},
+                    details={"evidence_id": ev["evidence_id"]})
+        if review:
+            # The review observed with the failure is recorded in
+            # development.fix_needed: once the repair publishes, it is bound
+            # to an earlier head and would not be read again.
+            _record_review(obs, entry, cur, review, policy=policy, now=now,
+                           facts=frozenset({"actionable_review"}))
         entry.update(activity="fix_needed", returned_to_development=True)
         return
     if review:

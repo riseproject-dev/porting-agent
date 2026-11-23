@@ -1054,7 +1054,7 @@ flowchart TB
 
 How a review on the candidate head is recorded when it leaves `handoff.awaiting_submission`.
 
-**Decision.** By its own row. `record_actionable_review` leads from `handoff.awaiting_submission` to `development.fix_needed`: it bumps the revision once, sets `pending_feedback_evidence_ids`, and clears `clean_head_sha`, `handoff_request`, and `pending_human_action`. `return_for_repair` from the gate keeps the CI failure cause only and sets `last_ci_evidence_id`. The two guards are exclusive: a CI failure on the candidate head applies first, and the review is then recorded when CI is observed again in development.
+**Decision.** By its own row. `record_actionable_review` leads from `handoff.awaiting_submission` to `development.fix_needed`: it bumps the revision once, sets `pending_feedback_evidence_ids`, and clears `clean_head_sha`, `handoff_request`, and `pending_human_action`. `return_for_repair` from the gate keeps the CI failure cause only and sets `last_ci_evidence_id`. The two guards are exclusive: a CI failure on the candidate head applies first, and a review observed with it is recorded in the same observation by `record_actionable_review` in `development.fix_needed`, so the repair Work carries both. That row also records a review posted on the recorded head while Work is due.
 
 ```mermaid
 flowchart TB
@@ -1068,6 +1068,7 @@ flowchart TB
 
     handoff_awaiting_submission ==>|return_for_repair| development_fix_needed
     handoff_awaiting_submission ==>|record_actionable_review| development_fix_needed
+    development_fix_needed ==>|record_actionable_review| development_fix_needed
     development_fix_needed -->|request_patch| development_agent_running
     development_fix_needed -->|request_repair| development_agent_running
 ```

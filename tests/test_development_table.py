@@ -325,7 +325,44 @@ class TestPatchResults(unittest.TestCase):
 
 
 class TestObservation(unittest.TestCase):
-    """`development.waiting_ci` is the only development state observed."""
+    """`development.waiting_ci` is observed by its rows; `development.fix_needed`
+    only for a moved head and for review feedback on the recorded head."""
+
+    def test_a_review_while_work_is_due_is_carried_by_the_next_work(self):
+        failed = next(e for kind, e in tick(record(), verdict="failed").staged
+                      if kind == "evidence")
+        for evidence, verb in ((None, "request_patch"), (failed["evidence_id"], "request_repair")):
+            with self.subTest(verb=verb):
+                rec = record("fix_needed", last_ci_evidence_id=evidence)
+                ev = {evidence: failed} if evidence else {}
+                out = tick(rec, feedback=REVIEW, verdict="failed", evidence=ev)
+                after = final(out, rec)
+                self.assertEqual(kinds(out)[0], "record_actionable_review")
+                review = next(e for kind, e in out.staged if kind == "events")
+                self.assertEqual((review["details"]["from_state"], review["details"]["to_state"]),
+                                 ("development.fix_needed", "development.fix_needed"))
+                self.assertEqual(review["revision_bumped"], True)
+                self.assertEqual(after["processed_review_ids"], [77])
+                self.assertEqual(after["last_ci_evidence_id"], evidence)
+                self.assertNotIn("record_ci_failure", kinds(out))
+                self.assertEqual(kinds(out)[1:], [verb])
+                self.assertIn("review-2-1-77", after["active_work"]["feedback_evidence_ids"])
+                self.assertEqual(after["revision"], rec["revision"] + 1)
+
+    def test_a_review_on_a_paused_record_while_work_is_due_is_recorded(self):
+        """Observation rows are not masked by a pause: the review is recorded
+        in `development.fix_needed` and no Work is requested while paused."""
+        paused = apply_command(record("fix_needed"),
+                               commands.parse('/upstreaming pause reason="hold"'))
+        self.assertTrue(paused.accepted)
+        rec = paused.record
+        out = tick(rec, feedback=REVIEW, verdict="failed")
+        after = final(out, rec)
+        self.assertEqual(kinds(out), ["record_actionable_review"])
+        self.assertEqual((engine.state_key(after), after["paused"], after["revision"]),
+                         ("development.fix_needed", True, rec["revision"] + 1))
+        self.assertEqual(after["pending_feedback_evidence_ids"], ["review-2-1-77"])
+        self.assertIsNone(after["active_work"])
 
     def test_review_feedback_is_not_ci_evidence(self):
         rec = record(last_ci_evidence_id=None)

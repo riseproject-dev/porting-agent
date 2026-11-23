@@ -576,7 +576,9 @@ REVISION_BUDGET_EXHAUSTED = ("no_progress or work_total is exhausted, or repair_
                              "is exhausted and a failing CI job is recorded for the head")
 # What leaves the submission gate for repair: a CI failure on the candidate
 # head takes ``return_for_repair``; an actionable review takes
-# ``record_actionable_review`` only when no such failure is observed.
+# ``record_actionable_review`` only when no such failure is observed. A review
+# observed with the failure is recorded in the same observation by
+# ``record_actionable_review`` in ``development.fix_needed``.
 CANDIDATE_FAILED = "an executed blocking failure on the candidate head"
 CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
 # The outcomes of the submission rewrite Work and of the submission review
@@ -934,6 +936,14 @@ LIFECYCLE: dict[str, State] = {
                 description="A push to the development branch while Work is due (a human "
                             "push): the new head is recorded and CI is awaited for it, so no "
                             "Work is requested for the head the record names any more."),
+            ("record_actionable_review", SELF): Transition(
+                _O, None,
+                ("authorized actionable review feedback",),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",)),
+                description="A review on the recorded head while Work is due, including one "
+                            "observed together with the CI failure that left the submission "
+                            "gate: it is recorded as pending feedback, so the Work requested "
+                            "next carries it. The CI evidence is kept."),
             ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
     "development.waiting_human": State(
@@ -971,7 +981,10 @@ LIFECYCLE: dict[str, State] = {
                 (CANDIDATE_FAILED,),
                 _E(revision="bump", sets=("last_ci_evidence_id",), clears=_LEAVE_HANDOFF),
                 description="Only a CI failure takes this row; the evidence of the failure "
-                            "is recorded. An actionable review takes `record_actionable_review`."),
+                            "is recorded. An actionable review without a failure takes "
+                            "`record_actionable_review` at the gate; one observed with the "
+                            "failure is recorded by `record_actionable_review` in "
+                            "`development.fix_needed`."),
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback", CANDIDATE_NOT_FAILED),
@@ -980,7 +993,8 @@ LIFECYCLE: dict[str, State] = {
                 description="The review is recorded as pending feedback, and the CI evidence "
                             "of the candidate head is kept. When CI also failed on the candidate "
                             "head, `return_for_repair` applies instead, and the review is "
-                            "recorded once CI is observed again."),
+                            "recorded in the same observation by `record_actionable_review` in "
+                            "`development.fix_needed`."),
             ("record_explanation", SELF): Transition(
                 _O, None, ("authorized explanation-only inquiry",),
                 _E(sets=_PROCESSED_IDS),
@@ -1870,6 +1884,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("development.agent_running", "request_ci_rerun"),
                 ("development.waiting_ci", "record_ci_failure"),
                 ("development.waiting_ci", "record_actionable_review"),
+                ("development.fix_needed", "record_actionable_review"),
                 ("development.waiting_ci", "record_explanation"),
                 ("development.waiting_human", "resume_development"),
                 ("development.waiting_ci", "nominate_for_handoff"),
@@ -2042,6 +2057,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "development.waiting_human", "handoff.awaiting_submission"),
                 (("development.waiting_ci", "record_ci_failure"),
                  ("development.waiting_ci", "record_actionable_review"),
+                 ("development.fix_needed", "record_actionable_review"),
                  ("development.waiting_ci", "record_explanation"),
                  ("development.fix_needed", "request_repair"),
                  ("development.agent_running", "record_publish_success"),
@@ -2252,6 +2268,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.waiting_ci", "rerun_interrupted_ci"),
                  ("handoff.awaiting_submission", "return_for_repair"),
                  ("handoff.awaiting_submission", "record_actionable_review"),
+                 ("development.fix_needed", "record_actionable_review"),
                  ("handoff.awaiting_submission", "record_explanation"),
                  ("handoff.awaiting_submission", "record_head_change"),
                  ("handoff.agent_running", "reject_submission_rewrite"),
@@ -2271,7 +2288,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "failure on the candidate head takes `return_for_repair` and records the "
                      "failing evidence; an actionable review takes `record_actionable_review` "
                      "and records the feedback; the guards are exclusive, and the failure applies "
-                     "first. An explanation-only comment takes `record_explanation` and keeps the "
+                     "first; a review observed with the failure is then recorded in "
+                     "`development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the "
                      "gate. `handoff.waiting_upstream_pr` is locked: only "
                      "`verify_upstream_pr`, `retract_submission`, and `refresh_investigation` "
                      "leave it, and none of them changes `riscv64`."),
@@ -2788,7 +2806,7 @@ def _check_settled_rows(problems: list[str]) -> None:
         return {_field_name(x) for x in t.effects.sets} | set(t.effects.clears)
 
     gate = "handoff.awaiting_submission"
-    for state in (gate, "development.waiting_ci"):
+    for state in (gate, "development.waiting_ci", "development.fix_needed"):
         t = row(state, "record_actionable_review")
         where = f"{state} --record_actionable_review-->"
         if t is None:

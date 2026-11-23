@@ -199,6 +199,11 @@ class TestLifecycleTable(unittest.TestCase):
         gate = "handoff.awaiting_submission"
         review = lc.find_edge(gate, "record_actionable_review").transition
         dev_review = lc.find_edge("development.waiting_ci", "record_actionable_review").transition
+        due_review = lc.find_edge("development.fix_needed", "record_actionable_review")
+        self.assertEqual((due_review.target, due_review.transition.trigger,
+                          due_review.transition.effects.revision, due_review.transition.charges),
+                         ("development.fix_needed", lc.Trigger.OBSERVATION, "bump", ()))
+        due_review = due_review.transition
         repair = lc.find_edge(gate, "return_for_repair").transition
         explain = lc.find_edge(gate, "record_explanation").transition
         revision = lc.find_edge("upstream_review.fix_needed", "request_review_revision").transition
@@ -215,6 +220,11 @@ class TestLifecycleTable(unittest.TestCase):
              {"sets": (*review.effects.sets, "last_ci_evidence_id")}, "never CI evidence"),
             ("development.waiting_ci", "record_actionable_review",
              {"clears": (*dev_review.effects.clears, "last_ci_evidence_id")}, "never CI evidence"),
+            ("development.fix_needed", "record_actionable_review",
+             {"sets": self.without(due_review.effects.sets, "pending_feedback_evidence_ids")},
+             "recorded as pending_feedback_evidence_ids"),
+            ("development.fix_needed", "record_actionable_review",
+             {"sets": (*due_review.effects.sets, "last_ci_evidence_id")}, "never CI evidence"),
             (gate, "return_for_repair",
              {"sets": self.without(repair.effects.sets, "last_ci_evidence_id")},
              "records its evidence"),

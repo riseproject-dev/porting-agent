@@ -527,6 +527,18 @@ class TestTableDecisions(unittest.TestCase):
         a = lc.find_edge("handoff.awaiting_submission", "return_for_repair").transition
         b = lc.find_edge("handoff.awaiting_submission", "record_actionable_review").transition
         self.assertTrue(lc.excluded(a, b))
+        # The review observed with the failure is recorded in fix_needed.
+        both = engine.apply_transition(
+            failed.record, "record_actionable_review", policy=POLICY, now=NOW,
+            facts={"actionable_review"}, values=values)
+        self.assertTrue(both.accepted, both.reason)
+        self.assertEqual(engine.state_key(both.record), "development.fix_needed")
+        self.assertEqual(both.record["revision"], gate["revision"] + 2)
+        self.assertEqual(both.record["pending_feedback_evidence_ids"], ["review-2-1-5"])
+        self.assertEqual(both.record["last_ci_evidence_id"], "ci-2-9-1")
+        self.assertFalse(engine.apply_transition(
+            failed.record, "record_actionable_review", policy=POLICY, now=NOW,
+            values=values).accepted)
 
     def test_explanation_at_the_gate_keeps_everything(self):
         gate = awaiting_submission()

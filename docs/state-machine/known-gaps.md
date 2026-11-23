@@ -15,13 +15,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 {:toc}
 </details>
 
-## CI failure and an actionable review in the same observation can drop the review
-
-- **Where:** `handoff.awaiting_submission`, rows `return_for_repair` and `record_actionable_review`.
-- **Today:** `return_for_repair` wins and repair Work is allocated in the same tick, so the review is not read. After the repair publishes, the review is bound to an earlier head and the collector filters it out, so no row records it.
-- **Table:** the review is recorded once CI is observed again.
-- **Required:** record the review evidence when the failure wins, so the repair Work carries it.
-
 ## CI is never rerun
 
 - **Where:** `development.agent_running` (`request_ci_rerun`), `development.waiting_ci` (`rerun_interrupted_ci`, `exhaust_interrupted_reruns`), and `resume_ci` in `development.waiting_human` and `handoff.waiting_human` (CI on the clean head in `handoff.waiting_ci` is a separate entry below).
@@ -137,7 +130,7 @@ A Work payload written before the Work identity carried `generation` and `dedupe
 These follow the literal reading of a decision and are kept until a decision says otherwise:
 
 - `resume_upstream_review` still clears pending feedback after `answer_reviewer`, although the pending-feedback decision says every resume keeps it.
-- When a CI failure and a review arrive together at the gate, the failure wins.
+- An explanation-only comment posted while development Work is due is not recorded: `development.fix_needed` has no `record_explanation` row.
 - `record_actionable_review` does not list the processed comment and review ids; the collector records them beside the row.
 - The admission scope guard is on `admit_development` only, not on `readmit_development`.
 - `resume_stale` from a `provisioning` state, which has no fork, records a refresh with the phase `provisioning` and no head or development PR. The refreshed dossier returns to development on the recorded fork only when the refresh began with the fork and development PR the record still holds; otherwise development is admitted afresh.
@@ -184,7 +177,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - A launched publish-only retry whose Result is not folded within 60 minutes of the launch (`pending_publication.launched_at`) is "publication failed with an infrastructure error": `schedule_publish_retry` charges `publish_recovery`, or `exhaust_publish_recovery` waits for a human, as for a lost dispatch. A Result of that retry that arrives later, while the Result is still held and the contribution does not wait for a human, matches the held publication and is folded by its row; in the wait it takes `record_late_effect`. An infrastructure error such a Result reports was already charged by the wait: it takes `record_late_effect` and charges nothing again. A launch is charged once its Result or its wait charges it, so a held Result's `infra_error` is charged already when its attempt (`UPSTREAMING_PUBLISH_ATTEMPT`) is not above `pending_publication.attempts`, or, without an attempt, when no retry is launched.
 - Work that an allocation row names under a graph that returned a Result in the same tick or is completed or cancelled in the queue is "the Work graph is terminal without a usable Result": the controller takes the allocation row and then `allocate_work_retry` or `exhaust_work_recovery` in the same tick, so the allocation charges `work_total` and the fresh graph charges `work_recovery` and `work_total` again, and the spent graph is never submitted.
 - `dispatch_recovery` counts the dispatcher runs that ended since the Work was requested; each ended run is decided once (`retry_dispatch` or `exhaust_dispatch_recovery`), and `active_work.dispatched_run_id` names the last decided run. A dispatcher launch that never shows up as a run is launched again after 15 minutes without a row, since no run ended.
-- In `development.waiting_ci` an actionable review observed with a CI failure in the same tick is recorded (`record_actionable_review`); the failure is not, since `development.fix_needed` reads no CI (its only observation row is `record_head_change`), and the review would be filtered out once the repair publishes a new head. The repair Work carries the review but no failing CI job.
+- In `development.waiting_ci` an actionable review observed with a CI failure in the same tick is recorded (`record_actionable_review`); the failure is not, since `development.fix_needed` reads no CI (its observation rows are `record_head_change` and `record_actionable_review`), and the review would be filtered out once the repair publishes a new head. The repair Work carries the review but no failing CI job.
 - "An executed blocking failure on the exact head" (`record_ci_failure`, `return_for_repair`) is established by a CI verdict `failed`, which also covers a required job that ran on a runner without the contract's runner label.
 - "The observed development PR does not match the recorded fork, ref, or PR" holds when GitHub has no such PR, or its number, head repository, head ref, or base ref differs from the record's; a closed development PR still matches.
 - `nominate_for_handoff` and Work allocation wait while a development PR or CI bootstrap operation is open, although the nomination row has no operation guard.

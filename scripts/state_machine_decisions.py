@@ -1060,15 +1060,19 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`pending_feedback_evidence_ids`, and clears `clean_head_sha`, `handoff_request`, and "
         "`pending_human_action`. `return_for_repair` from the gate keeps the CI failure cause "
         "only and sets `last_ci_evidence_id`. The two guards are exclusive: a CI failure on "
-        "the candidate head applies first, and the review is then recorded when CI is "
-        "observed again in development.",
+        "the candidate head applies first, and a review observed with it is recorded in the "
+        "same observation by `record_actionable_review` in `development.fix_needed`, so the "
+        "repair Work carries both. That row also records a review posted on the recorded "
+        "head while Work is due.",
         ("handoff.awaiting_submission", "development.fix_needed", "development.agent_running"),
         edges=(("handoff.awaiting_submission", "return_for_repair"),
                ("handoff.awaiting_submission", "record_actionable_review"),
+               ("development.fix_needed", "record_actionable_review"),
                ("development.fix_needed", "request_patch"),
                ("development.fix_needed", "request_repair")),
         highlighted=(("handoff.awaiting_submission", "return_for_repair"),
-                     ("handoff.awaiting_submission", "record_actionable_review")),
+                     ("handoff.awaiting_submission", "record_actionable_review"),
+                     ("development.fix_needed", "record_actionable_review")),
     ),
     Item(
         "An explanation-only comment at the submission gate",

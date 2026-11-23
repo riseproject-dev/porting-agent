@@ -559,19 +559,21 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual(evidence["kind"], "human_inquiry")
         self.assertNotIn("review_feedback", observed.report[0])
 
-    def test_only_a_head_change_is_observed_while_development_work_is_due(self):
-        """`development.fix_needed` has one observation row: a moved head
-        takes `record_head_change` to `development.waiting_ci`. An unchanged
-        head reads no review or CI there."""
+    def test_only_review_feedback_is_read_while_development_work_is_due(self):
+        """`development.fix_needed` has two observation rows: on the recorded
+        head an actionable review takes `record_actionable_review` and keeps
+        the state; a moved head takes `record_head_change` to
+        `development.waiting_ci`. CI is never read on the recorded head."""
         import observe_ci
         rec = contribution(phase="development", activity="fix_needed", revision=8)
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": rec["fork"]["head_sha"]}), \
-             mock.patch("observe_ci.collect.development_review_feedback") as feedback, \
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=None) as feedback, \
              mock.patch("observe_ci.collect.ci_snapshot") as snapshot:
             observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
                                           contracts={}, policy=policy(), now=NOW)
         self.assertEqual(observed.staged, [])
-        feedback.assert_not_called()
+        feedback.assert_called_once()
+        self.assertNotIn("check_pull", feedback.call_args.kwargs)
         snapshot.assert_not_called()
         moved = SHA_B if rec["fork"]["head_sha"] != SHA_B else SHA_A
         pending_ci = collect.CiSnapshot(repository={"id": 2, "full_name": "riseproject-upstreaming/proj"},
@@ -586,6 +588,60 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual(events, ["record_head_change"])
         self.assertEqual((final["activity"], final["revision"], final["fork"]["head_sha"]),
                          ("waiting_ci", 9, moved))
+
+    def test_a_review_while_development_work_is_due_is_recorded_once(self):
+        import observe_ci
+        rec = contribution(phase="development", activity="fix_needed", revision=8,
+                           last_ci_evidence_id="ci-2-777-1")
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_A}), \
+             mock.patch("observe_ci.collect.ci_snapshot") as snapshot:
+            observed = observe_ci.observe(self.Api(), contributions={"c": rec}, operations={},
+                                          contracts={}, policy=policy(), now=NOW)
+        snapshot.assert_not_called()
+        events = [item for kind, item in observed.staged if kind == "events"]
+        final = [item for kind, item in observed.staged if kind == "contributions"][-1]
+        self.assertEqual([e["kind"] for e in events], ["record_actionable_review"])
+        self.assertEqual((events[0]["details"]["from_state"], events[0]["details"]["to_state"]),
+                         ("development.fix_needed", "development.fix_needed"))
+        self.assertEqual((final["activity"], final["revision"]), ("fix_needed", 9))
+        self.assertEqual(len(final["pending_feedback_evidence_ids"]), 1)
+        self.assertEqual(final["last_ci_evidence_id"], "ci-2-777-1")
+        self.assertEqual((final["processed_review_ids"], final["processed_review_comment_ids"],
+                          final["processed_pr_conversation_comment_ids"]), ([10], [20], [30]))
+        # The fences keep the same comments from being recorded again.
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_A}):
+            again = observe_ci.observe(self.Api(), contributions={"c": final}, operations={},
+                                       contracts={}, policy=policy(), now=NOW)
+        self.assertEqual(again.staged, [])
+
+    def test_an_inquiry_while_development_work_is_due_is_not_recorded(self):
+        import observe_ci
+        rec = contribution(phase="development", activity="fix_needed", revision=8)
+        inquiry = {"reviews": [], "comments": [], "conversation_comments": [],
+                   "review_ids": [], "comment_ids": [], "conversation_comment_ids": [],
+                   "inquiry_comments": [],
+                   "inquiry_conversation_comments": [{"id": 32, "body": "Why riscv64 only?"}],
+                   "inquiry_comment_ids": [], "inquiry_conversation_comment_ids": [32]}
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_A}), \
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=inquiry), \
+             mock.patch("observe_ci.collect.ci_snapshot") as snapshot:
+            observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
+                                          contracts={}, policy=policy(), now=NOW)
+        self.assertEqual(observed.staged, [])
+        snapshot.assert_not_called()
+
+    def test_no_feedback_is_read_while_work_is_due_without_a_development_pr(self):
+        import observe_ci
+        rec = contribution(phase="development", activity="fix_needed", revision=8)
+        rec["fork"] = dict(rec["fork"], pr_number=None)
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_A}), \
+             mock.patch("observe_ci.collect.development_review_feedback") as feedback, \
+             mock.patch("observe_ci.collect.ci_snapshot") as snapshot:
+            observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
+                                          contracts={}, policy=policy(), now=NOW)
+        self.assertEqual(observed.staged, [])
+        feedback.assert_not_called()
+        snapshot.assert_not_called()
 
     def test_explanation_only_comments_are_separated_from_repairs(self):
         self.assertEqual(collect.review_comment_intent(
