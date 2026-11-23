@@ -1,7 +1,7 @@
 {
   "active_operation_id": null,
   "active_work": null,
-  "activity": "waiting_capacity",
+  "activity": "waiting_ci",
   "admission_class": "configuration_integration",
   "budget": {
     "attempts_used": 0,

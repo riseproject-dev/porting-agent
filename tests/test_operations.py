@@ -665,7 +665,7 @@ class TestOperationIdentity(unittest.TestCase):
 
     def bootstrap_world(self, *prior_status):
         rec = contribution(activity="waiting_ci", proposal_artifact={
-            "work_id": "w", "claim_id": "c", "artifact_id": 1, "name": "n", "digest": "d" * 64,
+            "work_id": "w", "claim_id": "c", "artifact_id": 1, "name": "n", "digest": "sha256:" + "d" * 64,
             "run_id": "5", "result_commit": "e" * 40, "outcome": "published"})
         created = operation("confirmed", kind="dev_pr_create")
         created["target"]["expected_head"] = SHA_A
@@ -747,7 +747,6 @@ class TestOpenOperationFence(unittest.TestCase):
             ops = {op["operation_id"]: op}
             cases = [
                 (contribution(activity="waiting_ci"), '/upstreaming park reason="x"'),
-                (contribution(activity="waiting_capacity"), '/upstreaming park reason="x"'),
                 (contribution(activity="waiting_ci"), '/upstreaming refresh revision=0 reason="x"'),
                 (contribution(activity="fix_needed", paused=True, paused_at="2026-10-01T00:00:00+00:00",
                               paused_by="human", paused_reason="x"),

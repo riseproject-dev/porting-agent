@@ -35,7 +35,6 @@ from typing import Any
 
 import capacity
 import collect
-import compat
 import controller
 import dossier_gate
 import engine
@@ -110,7 +109,7 @@ def migration_report(
     return {
         key: migration,
         "written": written,
-        "controller": {"canary_recovery_requests": []},
+        "controller": {},
         "requested_effects": [],
         "dispatch_relaunch": [],
         "provision_requests": [],
@@ -167,9 +166,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
         with isolation.contribution(c["contribution_id"], "dispatch_recovery"):
             aw = c["active_work"]
             if c["phase"] == "handoff" and engine.state_key(c) not in SUBMISSION_WORK_STATES:
-                new = dict(c, active_work=None, updated_at=iso)
+                new = engine.record_beside(c, "handoff_work_dropped", now=iso, active_work=None)
                 contributions[key] = new
-                schemas.validate("contribution", new)
                 staged.append(("contributions", new))
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
                                "decision": "cleared obsolete Work at handoff"})
@@ -254,9 +252,8 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                                   counts=counts, details=details | {"attempt": count + 1,
                                                                     "limit": limit})
     if out.accepted:
-        new = dict(out.record, active_work=dict(aw, dispatched_run_id=str(run["id"])),
-                   updated_at=iso)
-        schemas.validate("contribution", new)
+        new = engine.record_beside(out.record, "dispatcher_run_decided", now=iso,
+                                   active_work=dict(aw, dispatched_run_id=str(run["id"])))
         return new, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
     out = engine.apply_transition(c, "exhaust_dispatch_recovery", policy=policy, now=iso,
                                   cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
@@ -277,7 +274,7 @@ def _may_hold_work(rec: dict) -> bool:
     """Whether the record is in a state that can request Work at all: a
     working phase, or the submission review of the handoff phase, and not
     paused."""
-    return (rec["phase"] in compat.WORK_PHASES or engine.state_key(rec) in SUBMISSION_WORK_STATES) \
+    return (rec["phase"] in WORK_PHASES or engine.state_key(rec) in SUBMISSION_WORK_STATES) \
         and not rec.get("paused")
 
 
@@ -298,6 +295,8 @@ WORK_PHASE = {"investigation": "investigation", "development_patch": "developmen
 SUBMISSION_REWRITE_STATE = lifecycle.SUBMISSION_REWRITE
 SUBMISSION_REVIEW_STATE = lifecycle.SUBMISSION_REVIEW
 SUBMISSION_WORK_STATES = (SUBMISSION_REWRITE_STATE, SUBMISSION_REVIEW_STATE)
+# The phases whose states can request Work outside the handoff phase.
+WORK_PHASES = frozenset({"investigation", "provisioning", "development", "upstream_review"})
 
 
 def result_mismatch(rec: dict, pub: dict) -> str | None:
@@ -319,7 +318,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         return "late Result during handoff"
     if not _may_hold_work(rec):
         return "late Result for a stopped contribution"
-    if compat.waits_for_human(rec):
+    if engine.waits_for_human(rec):
         # A wait for a human has no Result row; only its own rows leave it.
         return "late Result while the contribution waits for a human"
     state = engine.state_key(rec)
@@ -371,7 +370,7 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str) -> d
     """The audit event of ``record_late_effect`` for one Result."""
     task = pub.get("task") or {}
     generation, key = work.task_identity(task)
-    return compat.record_late_effect(
+    return engine.record_late_effect(
         rec, policy=policy, now=now, cause_id=_result_cause(pub, pub.get("worker_run_id")),
         details={"result_status": pub.get("status"), "task_revision": task.get("revision"),
                  "task_generation": generation, "task_work": key, "why": why})
@@ -532,7 +531,8 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
     new = out.record
     if out.verb in ("admit_development", "readmit_development"):
         # The scope was checked complete for the dossier it came from.
-        new = dict(new, scope_coverage_complete=problem is None)
+        new = engine.record_beside(new, "scope_checked", now=now,
+                                   scope_coverage_complete=problem is None)
     staged.extend([("events", out.event), ("contributions", new)])
     return new, staged
 
@@ -938,7 +938,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         # The failed publication of this launch is already charged, by the
         # wait for its Result: the late Result is recorded once, for audit,
         # and charges nothing again.
-        event = compat.record_late_effect(
+        event = engine.record_late_effect(
             rec, policy=policy, now=now, cause_id=cause,
             details={"result_status": status, "task_revision": rec["revision"],
                      "task_generation": int(rec.get("generation", 0)),
@@ -1000,21 +1000,23 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         # repair backed by review feedback may change a path the dossier
         # missed), and a published patch starts `no_progress` again.
         changed_files = ((op or {}).get("proposed") or {}).get("changed_files") or []
-        if changed_files:
-            new = dict(new, scope_paths=list(dict.fromkeys(
-                (new.get("scope_paths") or []) + changed_files)))
-        new = dict(new, budget=dict(new["budget"], no_progress_streak=0))
+        scope = (list(dict.fromkeys((new.get("scope_paths") or []) + changed_files))
+                 if changed_files else new.get("scope_paths"))
+        new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope,
+                                   budget=dict(new["budget"], no_progress_streak=0))
     if out.verb == "request_ci_rerun":
         # Beside the row: the CI run and attempt the classified Result
         # answered (the evidence the row clears from `last_ci_evidence_id`)
         # is kept with the rerun counts of the head. While no trusted rerun
         # exists, `development.waiting_ci` acts only on CI evidence of
         # another run or attempt.
-        new = dict(new, budget=dict(new["budget"], reruns=dict(
-            new["budget"]["reruns"], answered_ci_evidence_id=rec.get("last_ci_evidence_id"))))
+        new = engine.record_beside(new, "answered_ci_run", now=now, budget=dict(
+            new["budget"], reruns=dict(new["budget"]["reruns"],
+                                       answered_ci_evidence_id=rec.get("last_ci_evidence_id"))))
     if held and out.verb not in ("schedule_publish_retry", "exhaust_publish_recovery"):
         # The held Result is answered: the publication is no longer pending.
-        new = dict(new, pending_publication=None)
+        new = engine.record_beside(new, "publication_answered", now=now,
+                                   pending_publication=None)
     schemas.validate("contribution", new)
     staged.extend([("contributions", new), ("events", out.event)])
     return new, staged
@@ -1030,8 +1032,6 @@ def _touched(out: TickOutput, contribution_id: str) -> list[str]:
     found = [f"staged {kind}" for kind, record in out.staged
              if record.get("contribution_id") == contribution_id]
     requests = [(name, item) for name in _EFFECT_LISTS for item in out.report.get(name) or []]
-    requests += [("canary_recovery_requests", item) for item in
-                 (out.report.get("controller") or {}).get("canary_recovery_requests") or []]
     found += [name for name, item in requests if item.get("contribution_id") == contribution_id]
     return found
 
@@ -1336,9 +1336,9 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             # No row of the table is fired by the development PR operation:
             # the PR number is recorded and the closed operation released,
             # and the state is kept.
-            fork = dict(c["fork"], pr_number=int(pr["number"]))
-            new = dict(c, fork=fork, active_operation_id=None, updated_at=iso)
-            schemas.validate("contribution", new)
+            new = engine.record_beside(c, "development_pr_recorded", now=iso,
+                                       fork=dict(c["fork"], pr_number=int(pr["number"])),
+                                       active_operation_id=None)
             contributions[key] = new
             snap.operations[op["operation_id"]] = new_op
             out.staged.extend([("operations", new_op), ("contributions", new),
@@ -1533,22 +1533,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["dispatch_recovery"] = rep
     out.report["dispatch_relaunch"] = relaunch
 
-    # 1d. Carry durable review constraints across head changes. Older records
-    # predate pending_feedback_evidence_ids, so recover their already-ingested
-    # human relay evidence before selecting another repair.
-    for key, c in list(contributions.items()):
-        if c["contribution_id"] in skip:
-            continue
-        with isolation.contribution(c["contribution_id"], "feedback_recovery"):
-            feedback_ids = sorted(
-                e["evidence_id"] for e in snap.evidence.values()
-                if e.get("kind") == "human_relay" and e.get("contribution_id") == c["contribution_id"])
-            if feedback_ids and "pending_feedback_evidence_ids" not in c \
-                    and c["phase"] in {"development", "handoff", "upstream_review"}:
-                c = dict(c, pending_feedback_evidence_ids=feedback_ids[-64:])
-                contributions[key] = c
-                out.staged.append(("contributions", c))
-
     # 2. Live branch and CI observation.
     if observe:
         contracts = {e["evidence_id"]: e for e in snap.evidence.values() if e.get("kind") == "target_contract"}
@@ -1613,7 +1597,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             continue
         with isolation.contribution(c["contribution_id"], "publication_retry"):
             pp = c.get("pending_publication")
-            if pp and not pp.get("exhausted") and not compat.stopped(c) \
+            if pp and not pp.get("exhausted") and not engine.stopped(c) \
                     and engine.state_key(c) in WORK_RESULT_STATES \
                     and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
                 # `schedule_publish_retry` held the Result and charged
@@ -1640,12 +1624,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     out.staged.extend([("contributions", fired.record), ("events", fired.event)])
                     continue
                 attempt = pp["attempts"] + 1
-                changed = dict(c, pending_publication=dict(
+                changed = engine.record_beside(c, "publish_retry_launched", now=now.isoformat(),
+                                               pending_publication=dict(
                     pp, launched_at=now.isoformat(),
                     next_attempt_at=(now + timedelta(
-                        minutes=PUBLISH_RESULT_WAIT_MINUTES)).isoformat()),
-                    updated_at=now.isoformat())
-                schemas.validate("contribution", changed)
+                        minutes=PUBLISH_RESULT_WAIT_MINUTES)).isoformat()))
                 contributions[key] = changed
                 out.staged.append(("contributions", changed))
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],

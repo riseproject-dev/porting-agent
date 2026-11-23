@@ -69,9 +69,9 @@ def migrated():
 
 
 def canary_operations() -> dict:
-    """The confirmed repair of the tracking issue that the live record's
-    contribution carries in the store; without it the controller holds every
-    Work of the canonical canary contribution."""
+    """The confirmed repair of the tracking issue that the live store holds
+    for the live record's contribution: a closed operation, which changes
+    nothing."""
     op = json.loads((Path(__file__).parent / "fixtures/canary-recovery-operation.json").read_text())
     return {op["operation_id"]: op}
 
@@ -148,7 +148,7 @@ class TestRecordMigration(unittest.TestCase):
                       active_work={"dedupe_key": "k", "task": "development_repair", "revision": 6,
                                    "requested_at": NOW, "deadline_at": NOW})
         after, event = state.migrate_record_fields(record, now=NOW)
-        self.assertEqual(after["active_work"], dict(record["active_work"], **state.WORK_DEFAULTS))
+        self.assertEqual(after["active_work"], dict(record["active_work"], **engine.WORK_DEFAULTS))
         self.assertIn("active_work.feedback_evidence_ids", event["details"]["added"])
         wait = copy.deepcopy(live())
         wait["pending_human_action"].pop("counter")
@@ -162,8 +162,8 @@ class TestRecordMigration(unittest.TestCase):
         always = {"schema_version", "contribution_id", "project_id", "revision", "phase",
                   "activity", "paused", "tracking_issue", "owners", "upstream", "budget",
                   "created_at", "updated_at"}
-        self.assertEqual(set(state.RECORD_DEFAULTS), set(schema["properties"]) - always)
-        self.assertEqual(set(state.BUDGET_DEFAULTS) | {"reruns", "policy_id", "attempts_used"},
+        self.assertEqual(set(engine.RECORD_DEFAULTS), set(schema["properties"]) - always)
+        self.assertEqual(set(engine.BUDGET_DEFAULTS) | {"reruns", "policy_id", "attempts_used"},
                          set(schema["properties"]["budget"]["properties"]))
 
 

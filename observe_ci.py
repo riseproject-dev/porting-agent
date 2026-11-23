@@ -40,7 +40,7 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   depends on whether it is open (``reads_upstream_pr_state``).
 
 A contribution that waits for a human in a state of the table without an
-observation row (``compat.waits_for_human``) is not observed: only the rows
+observation row (``engine.waits_for_human``) is not observed: only the rows
 the table lists for the wait leave it.
 
 Returns staged records for the state publisher. Never writes remotely.
@@ -54,7 +54,6 @@ from typing import Any
 
 import ci_evidence
 import collect
-import compat
 import engine
 import handoff
 import isolation
@@ -109,9 +108,9 @@ def _next_ci_observation(now: str, policy: dict) -> str:
 
 
 def human_wait_without_observation(record: dict) -> bool:
-    """Whether ``record`` waits for a human (``compat.waits_for_human``) in a
+    """Whether ``record`` waits for a human (``engine.waits_for_human``) in a
     state that has no observation row. Observation changes nothing there."""
-    if not compat.waits_for_human(record):
+    if not engine.waits_for_human(record):
         return False
     return not any(edge.transition.trigger == lifecycle.Trigger.OBSERVATION
                    for edge in lifecycle.state_edges(engine.state_key(record)))
@@ -476,8 +475,8 @@ def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[st
     if not recorded.accepted:
         entry["review_feedback_deferred"] = recorded.reason
         return None
-    new = dict(
-        recorded.record,
+    new = engine.record_beside(
+        recorded.record, "review_fences", now=now,
         processed_review_ids=((record.get("processed_review_ids") or [])
                               + feedback["review_ids"])[-256:],
         processed_review_comment_ids=((record.get("processed_review_comment_ids") or [])
@@ -485,7 +484,6 @@ def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[st
         processed_pr_conversation_comment_ids=(
             (record.get("processed_pr_conversation_comment_ids") or [])
             + feedback["conversation_comment_ids"])[-512:])
-    schemas.validate("contribution", new)
     obs.staged.extend([("evidence", ev), ("contributions", new), ("events", recorded.event)])
     entry.update(review_feedback=eid)
     return new

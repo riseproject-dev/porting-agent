@@ -24,10 +24,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import canary
 import capacity
 import collect
-import compat
 import engine
 import handoff
 import intake
@@ -239,74 +237,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         projects[project_id] = proj
         res.stage("projects", proj)
 
-    # Recover only the exact canonical canary defect that was committed before
-    # agent workflows existed. Intent is durable before the trusted issue edit;
-    # an exact live readback finalizes state in a second fast-forward commit.
-    rep["canary_recovery_requests"] = []
-    canary_blocked: set[str] = set()
-    for cid, record in list(by_id.items()):
-        if not canary.is_target(record):
-            continue
-        if cid in skip:
-            continue
-        with isolation.contribution(cid, "canary_recovery"):
-            matching = [
-                operation
-                for operation in operations.values()
-                if operation.get("kind") == canary.OPERATION_KIND
-                and operation.get("contribution_id") == canary.CONTRIBUTION_ID
-            ]
-            if len(matching) == 1 and matching[0].get("status") == "confirmed":
-                try:
-                    canary.validate_operation(matching[0])
-                    if not canary.has_expected_tracking(record):
-                        raise canary.CanaryError(
-                            "confirmed canary operation has mismatched tracking state"
-                        )
-                except canary.CanaryError as error:
-                    canary_blocked.add(cid)
-                    rep["alerts"].append({
-                        "contribution": cid,
-                        "alert": f"canonical canary recovery blocked: {error}",
-                    })
-                continue
-            if canary.is_repaired(record):
-                continue
-            canary_blocked.add(cid)
-            issue = inputs.tracking_issues.get(record["tracking_issue"]["number"])
-            try:
-                if issue is None:
-                    raise canary.CanaryError("canonical canary live issue is unavailable")
-                if len(matching) > 1:
-                    raise canary.CanaryError("multiple canonical canary recovery intents")
-                if matching:
-                    operation = matching[0]
-                    canary.validate_operation(operation)
-                    canary.validate_mismatch(record, operation_id=operation["operation_id"])
-                    current_digest = canary.validate_issue(
-                        issue, {canary.INCOMPLETE_DIGEST, canary.EXPECTED_DIGEST}
-                    )
-                else:
-                    canary.validate_mismatch(record, operation_id=None)
-                    current_digest = canary.validate_issue(issue, {canary.INCOMPLETE_DIGEST})
-                    operation = canary.operation_for(record, policy=policy, now=now)
-                    record = canary.bind_operation(record, operation, now)
-                    operations[operation["operation_id"]] = operation
-                    by_id[cid] = record
-                    res.stage("operations", operation)
-                    res.stage("contributions", record)
-                    res.stage("events", canary.planned_event(record, operation, now))
-                rep["canary_recovery_requests"].append({
-                    "operation_id": operation["operation_id"],
-                    "contribution_id": cid,
-                    "observed_body_digest": current_digest,
-                })
-            except canary.CanaryError as error:
-                rep["alerts"].append({
-                    "contribution": cid,
-                    "alert": f"canonical canary recovery blocked: {error}",
-                })
-
     # Removing the intake label withdraws only an accepted request that has
     # not requested any Work yet (`withdraw_request`, guarded by no Work, no
     # dossier, and no fork). Once Work exists, explicit lifecycle commands are
@@ -341,7 +271,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # Bind initially unspecified source identities/bases from trusted API data,
     # never from the model's dossier. Already-bound bases remain immutable.
-    source_blocked = set(canary_blocked)
+    source_blocked: set[str] = set()
     for cid, c in list(by_id.items()):
         if cid in skip:
             continue
@@ -374,7 +304,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 if updated.get(key) is None:
                     updated[key] = snapshot[key]
             if updated != c["upstream"]:
-                changed = dict(c, upstream=updated, updated_at=now)
+                changed = engine.record_beside(c, "upstream_identity_bound", now=now,
+                                               upstream=updated)
                 by_id[cid] = changed
                 res.stage("contributions", changed)
 
@@ -516,8 +447,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 rep["deferred"].append({"contribution": cid, "why": "existing provisioning operation requires reconciliation"})
                 continue
             # The intent is recorded and launched in the same tick.
-            planned = dict(c, active_operation_id=op["operation_id"], updated_at=now)
-            schemas.validate("contribution", planned)
+            planned = engine.record_beside(c, "operation_planned", now=now,
+                                           active_operation_id=op["operation_id"])
             if not _launch_provisioning(planned, op, by_id, operations, inputs, res, now, policy,
                                         capacity_checked=True):
                 raise lifecycle.TransitionError(
@@ -586,7 +517,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             op = recovery.charge_launch(op, now)
             res.stage("operations", op)
-            changed = dict(c, active_operation_id=op["operation_id"], updated_at=now)
+            changed = engine.record_beside(c, "operation_planned", now=now,
+                                           active_operation_id=op["operation_id"])
             by_id[cid] = changed
             res.stage("contributions", changed)
             res.report["dev_pr_requests"].append({
@@ -633,7 +565,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             op = recovery.charge_launch(op, now)
             res.stage("operations", op)
-            changed = dict(c, active_operation_id=op["operation_id"], updated_at=now)
+            changed = engine.record_beside(c, "operation_planned", now=now,
+                                           active_operation_id=op["operation_id"])
             by_id[cid] = changed
             res.stage("contributions", changed)
             res.report["dev_pr_requests"].append({
@@ -1034,8 +967,8 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
         op = handoff.plan_attempt(c, operations, policy=policy, now=now, evidence=evidence)
         if op["operation_id"] in operations:
             raise lifecycle.TransitionError(f"the next {kind} attempt {op['operation_id']} exists")
-        c = dict(c, active_operation_id=op["operation_id"], updated_at=now)
-        schemas.validate("contribution", c)
+        c = engine.record_beside(c, "operation_planned", now=now,
+                                 active_operation_id=op["operation_id"])
         by_id[cid] = c
         operations[op["operation_id"]] = op
         res.stage("contributions", c)
@@ -1298,18 +1231,44 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
 def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, policy: dict,
                   now: str, upstream_pr: dict | None = None) -> engine.Outcome:
     """Apply an authenticated command to the record it concerns: through the
-    transition engine where the table defines it (``engine.takes_command``),
-    through the compatibility layer otherwise. ``upstream_pr`` is the
-    upstream PR as the observation of this tick read it, if it did."""
+    transition engine where the table defines it (``engine.takes_command``);
+    the intake command ``authorize-followup`` otherwise. ``upstream_pr`` is
+    the upstream PR as the observation of this tick read it, if it did."""
     if engine.takes_command(rec, cmd.verb):
         return _apply_table_command(rec, cmd, receipt, operations, policy, now, upstream_pr)
-    open_ops = _open_operations(rec, operations)
-    if cmd.verb == "park" and open_ops:
-        # `park_contribution` requires no open operation, in every state.
-        return engine.Outcome(rec, False, f"operation {open_ops[0]} is open", None)
-    out = compat.apply_command(rec, cmd, command_id=receipt["command_id"],
-                               actor=receipt["actor"], now=now)
-    return engine.Outcome(out.record, out.accepted, out.reason, out.event)
+    return authorize_followup(rec, cmd, command_id=receipt["command_id"], now=now)
+
+
+# The command that is not the table's: ``authorize-followup`` on a merged
+# contribution records an event; intake creates the new identity.
+FOLLOWUP_COMMANDS = frozenset({"authorize-followup"})
+
+
+def authorize_followup(record: dict, cmd: Command, *, command_id: str,
+                       now: str) -> engine.Outcome:
+    """Apply an authenticated command the engine does not take: only
+    ``authorize-followup`` on a merged contribution, which records an event
+    and leaves the record intact. Any other command is rejected with the
+    states it applies in. Actor authority, replay and digest checks happen in
+    ``intake.accept_command`` before this is called."""
+    def reject(reason: str) -> engine.Outcome:
+        return engine.Outcome(record, False, reason, None)
+
+    if cmd.contribution is not None and cmd.contribution != record["contribution_id"]:
+        return reject("command names another contribution than this issue's")
+    if cmd.verb not in FOLLOWUP_COMMANDS:
+        return reject(engine.not_applicable(cmd.verb, engine.state_key(record)))
+    rev = cmd.revision if cmd.revision is not None else record["revision"]
+    if rev > record["revision"]:
+        return reject("revision is not a known revision")
+    if rev != record["revision"]:
+        return reject(f"stale revision {rev}, current is {record['revision']}")
+    if record["phase"] not in ("release_wait", "released"):
+        return reject("follow-ups need a merged contribution")
+    rec = dict(record, updated_at=now)
+    schemas.validate("contribution", rec)
+    return engine.Outcome(rec, True, None, lifecycle._event(
+        record, rec, "command:authorize-followup", "command", command_id, now, False))
 
 
 # What a human resolution, or a trusted receipt of a definite failure,

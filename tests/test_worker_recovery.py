@@ -157,7 +157,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         record = copy.deepcopy(record)
         record.update(
             phase="development",
-            activity="waiting_capacity",
+            activity="waiting_ci",
             active_work=None,
             active_operation_id=None,
             fork={

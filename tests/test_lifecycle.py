@@ -5,11 +5,11 @@
 import unittest
 
 import commands
-import compat
+import controller
 import engine
 import lifecycle
 import schemas
-from tests.helpers import NOW, OWNER, SHA_A, SHA_B, apply_command, contribution, policy
+from tests.helpers import NOW, SHA_A, SHA_B, apply_command, contribution, policy
 
 
 def cmd(text):
@@ -301,31 +301,28 @@ class TestHandoff(unittest.TestCase):
             self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
                           str(raised.exception))
 
-    def test_legacy_paths_cannot_write_the_handoff_phase(self):
+    def test_a_command_the_engine_does_not_take_is_refused_without_change(self):
         rec = contribution(phase="handoff", activity="awaiting_submission")
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.apply_command(rec, cmd(f"/upstreaming pause contribution={CID} revision=0"),
-                                 command_id="c", actor=OWNER, now=NOW)
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(rec, "canary.repair_mismatch", activity="waiting_human")
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(contribution(), "canary.repair_mismatch", phase="handoff",
-                                 activity="waiting_human")
+        out = controller.authorize_followup(
+            rec, cmd(f"/upstreaming authorize-followup contribution={CID} revision=0 proposal=p-1"),
+            command_id="c", now=NOW)
+        self.assertEqual((out.accepted, out.record), (False, rec))
+        self.assertEqual(out.reason, "follow-ups need a merged contribution")
 
-    def test_legacy_write_needs_a_registered_site_and_an_admitted_state(self):
+    def test_a_write_beside_a_row_names_its_fields(self):
         rec = contribution(activity="agent_running")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(rec, "somewhere.else", phase="queued", activity="idle")
+            engine.record_beside(rec, "somewhere.else", now=NOW, active_operation_id="op-1")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(rec, "reconcile.publication_outcome", activity="waiting_ci")
-        # No state outside the table is admitted any more.
-        for state in ("development.idle", "upstream_review.idle",
-                      "upstream_review.waiting_capacity"):
-            with self.subTest(state=state), self.assertRaises(lifecycle.TransitionError):
-                phase, activity = state.split(".")
-                compat.legacy_update(rec, "canary.repair_mismatch", phase=phase, activity=activity)
-        moved = compat.legacy_update(rec, "canary.repair_mismatch", phase="queued", activity="idle")
-        self.assertEqual(engine.state_key(moved), "queued.idle")
+            engine.record_beside(rec, "operation_planned", now=NOW, fork=None)
+        with self.assertRaises(lifecycle.TransitionError):
+            engine.record_beside(rec, "patch_published", now=NOW,
+                                 budget=dict(rec["budget"], attempts_used=9))
+        with self.assertRaises(lifecycle.TransitionError):
+            engine.record_beside(rec, "operation_planned", now=NOW, revision=7)
+        moved = engine.record_beside(rec, "operation_planned", now=NOW, active_operation_id="op-1")
+        self.assertEqual((moved["active_operation_id"], engine.state_key(moved)),
+                         ("op-1", engine.state_key(rec)))
 
 
 class TestMergeAndRelease(unittest.TestCase):

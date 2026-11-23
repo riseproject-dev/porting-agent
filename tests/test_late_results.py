@@ -28,7 +28,7 @@ from unittest import mock
 import capacity
 import collect
 import commands
-import compat
+import controller
 import engine
 import lifecycle
 import reconcile
@@ -224,8 +224,6 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                  "escalated_at": None, "counter": None}
         records = {
             "queued.idle": contribution(phase="queued", activity="idle", fork=None),
-            "queued.waiting_human": contribution(phase="queued", activity="waiting_human",
-                                                 fork=None, pending_human_action=human),
             "release_wait.idle": contribution(phase="release_wait", activity="idle",
                                               upstream_pr=UPSTREAM_PR),
             "release_wait.waiting_human": contribution(
@@ -235,9 +233,6 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                                           upstream_pr=UPSTREAM_PR),
             "parked.idle": contribution(phase="parked", activity="idle", parked_reason="x",
                                         previous_phase="development"),
-            "parked.waiting_human": contribution(
-                phase="parked", activity="waiting_human", parked_reason="x",
-                previous_phase="development", pending_human_action=human),
             "closed.idle": contribution(phase="closed", activity="idle"),
         }
         for state, record in records.items():
@@ -254,7 +249,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
 
     def test_working_state_without_matching_work(self):
         for phase, activity in (("development", "fix_needed"), ("development", "waiting_ci"),
-                                ("development", "idle"), ("upstream_review", "fix_needed")):
+                                ("upstream_review", "fix_needed")):
             record = contribution(phase=phase, activity=activity, dossier_evidence_id="dossier-1")
             if phase == "upstream_review":
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
@@ -304,15 +299,14 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
         self.assertEqual(final(output, retry)["pending_publication"], pending)
 
-    def test_event_is_the_same_for_a_table_state_and_a_legacy_state(self):
+    def test_the_event_keeps_the_state(self):
         details = {"result_status": "published", "task_revision": 0}
         for record in (contribution(phase="parked", activity="idle", parked_reason="x",
                                     previous_phase="development"),
-                       contribution(phase="upstream_review", activity="idle",
+                       contribution(phase="upstream_review", activity="waiting_ci",
                                     upstream_pr=copy.deepcopy(UPSTREAM_PR))):
             state = engine.state_key(record)
-            self.assertEqual(state in lifecycle.LIFECYCLE, state == "parked.idle")
-            event = compat.record_late_effect(record, policy=POLICY, now=NOW, cause_id="555",
+            event = engine.record_late_effect(record, policy=POLICY, now=NOW, cause_id="555",
                                               details=details)
             schemas.validate("event", event)
             self.assertEqual((event["kind"], event["cause"], event["from"], event["to"]),
@@ -368,7 +362,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
             stopped_record = out.record
             self.assertIsNone(stopped_record["pending_publication"])
             self.assertEqual(stopped_record["revision"], pending["revision"])
-            self.assertTrue(compat.stopped(stopped_record))
+            self.assertTrue(engine.stopped(stopped_record))
             for name in PUBLISHER_RESULTS:
                 with self.subTest(pending=kind, verb=verb, result=name):
                     result = dict(publication(pending, name, artifact_id=1000),
@@ -387,7 +381,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                                           if k in ("operations", "evidence")], [])
                     self.assertIsNone(record["pending_publication"])
                     self.assertIsNone(record["active_work"])
-                    self.assertTrue(compat.stopped(record))
+                    self.assertTrue(engine.stopped(record))
                     self.assertEqual((record["revision"], record["budget"]),
                                      (pending["revision"], pending["budget"]))
                     # The stop no longer keeps the contribution from continuing.
@@ -395,7 +389,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                                               f"revision={record['revision']} reason=go")
                     self.assertTrue(resumed.accepted, resumed.reason)
                     self.assertEqual(resumed.record["revision"], record["revision"] + 1)
-                    self.assertFalse(compat.stopped(resumed.record))
+                    self.assertFalse(engine.stopped(resumed.record))
                     if verb == "park":
                         self.assertEqual(engine.state_key(resumed.record), "queued.idle")
                         self.assertEqual(resumed.record["generation"], record["generation"] + 1)
@@ -472,7 +466,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
     and leaves the record in an admitted state."""
 
     def records(self):
-        states = sorted(set(lifecycle.LIFECYCLE) | compat.LEGACY_STATES)
+        states = sorted(set(lifecycle.LIFECYCLE))
         for state, flag, work in itertools.product(states, (None, "paused"), (False, True)):
             phase, activity = state.split(".")
             record = contribution(phase=phase, activity=activity, dossier_evidence_id="dossier-1",
@@ -493,7 +487,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     "escalated_at": None, "counter": None}
             if phase == "parked":
                 record.update(parked_reason="x", previous_phase="development")
-            if schemas.errors("contribution", record) or compat.state_problem(record):
+            if schemas.errors("contribution", record) or engine.state_problem(record):
                 continue                    # not a record the controller admits
             yield f"{state}|{flag}|work={work}", record
 
@@ -510,8 +504,8 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                 with self.subTest(record=key, case=label, **{k: bool(v) if k == "feedback" else v
                                                              for k, v in kwargs.items()}):
                     after = final(tick(record, pubs, **kwargs), record)
-                    self.assertIsNone(compat.state_problem(after))
-                    if compat.stopped(after):
+                    self.assertIsNone(engine.state_problem(after))
+                    if engine.stopped(after):
                         self.assertIsNone(after["pending_publication"])
                     count += 1
         self.assertGreater(count, 2300)
@@ -519,11 +513,11 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
     # One function of every step of the tick that works on one contribution.
     INJECTIONS = {
         "publication": "reconcile.apply_publication",
-        "late_result": "reconcile.compat.record_late_effect",
+        "late_result": "reconcile.engine.record_late_effect",
         "dispatch_recovery": "work.graph_id",
         "observed_head": "observe_ci.collect.branch_head",
         "observed_ci": "observe_ci.collect.evaluate_snapshot",
-        "command": "compat.apply_command",
+        "command": "controller.authorize_followup",
         "table_command": "controller._apply_table_command",
         "work_selection": "controller._actionable",
     }
@@ -543,14 +537,14 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     output = tick(record, pubs, observe=True, verdict="passed", comments=[pause])
                     count += 1
                     after = final(output, record)
-                    self.assertIsNone(compat.state_problem(after))
+                    self.assertIsNone(engine.state_problem(after))
                     if not hit.called:
                         self.assertEqual(output.failures, [])
                         continue
                     errored += 1
                     self.assertEqual(len(output.failures), 1)
                     self.assertEqual(len(output.report["controller"]["alerts"]), 1)
-                    self.assertTrue(compat.stopped(after))
+                    self.assertTrue(engine.stopped(after))
                     self.assertEqual(output.report["requested_effects"], [])
                     self.assertEqual(output.report["dispatch_relaunch"], [])
                     if record["paused"] or record["phase"] in lifecycle.TERMINAL:
@@ -585,20 +579,20 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     # guard; `abandon` applies in states of the table only),
                     # or the record is terminal.
                     self.assertTrue(engine.takes_command(record, cmd.verb)
-                                    or cmd.verb not in compat.LEGACY_COMMANDS
+                                    or cmd.verb not in controller.FOLLOWUP_COMMANDS
                                     or record["phase"] in lifecycle.TERMINAL, out.reason)
                     continue
                 stopped_record = out.record
                 with self.subTest(record=key, pending=kind, stop=cmd.verb):
-                    self.assertTrue(compat.stopped(stopped_record))
+                    self.assertTrue(engine.stopped(stopped_record))
                     self.assertIsNone(stopped_record["pending_publication"])
                 for name in RESULTS:
                     with self.subTest(record=key, pending=kind, stop=cmd.verb, result=name):
                         output = tick(stopped_record, [publication(record, name)], observe=True,
                                       policy=WRITES)
                         after = final(output, stopped_record)
-                        self.assertIsNone(compat.state_problem(after))
-                        self.assertTrue(compat.stopped(after))
+                        self.assertIsNone(engine.state_problem(after))
+                        self.assertTrue(engine.stopped(after))
                         self.assertIsNone(after["pending_publication"])
                         self.assertEqual(output.report["publication_retries"], [])
                         count += 1

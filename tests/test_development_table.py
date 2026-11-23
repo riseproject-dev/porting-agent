@@ -26,7 +26,6 @@ from unittest import mock
 import capacity
 import collect
 import commands
-import compat
 import controller
 import engine
 import lifecycle
@@ -122,7 +121,7 @@ class TestPatchResults(unittest.TestCase):
                 self.assertEqual(engine.state_key(new), target)
                 self.assertEqual(events[0]["revision_bumped"], bumped)
                 self.assertIsNone(new["active_work"])
-                self.assertIsNone(compat.state_problem(new))
+                self.assertIsNone(engine.state_problem(new))
                 charged = events[0]["details"].get("charged", [])
                 self.assertEqual("no_progress" in charged, verb == "reject_patch_proposal")
                 self.assertEqual("flaky_reruns" in charged, verb == "request_ci_rerun")
@@ -738,9 +737,6 @@ class TestRefreshKeepsFeedback(unittest.TestCase):
 
 class TestNoLegacyDevelopmentWrites(unittest.TestCase):
     def test_development_has_no_legacy_state_or_write_site(self):
-        self.assertFalse(any(s.startswith("development.") for s in compat.LEGACY_STATES))
-        self.assertFalse(any(site.startswith(("controller.", "observe_ci."))
-                             for site in compat.LEGACY_SITES))
         for verb in ("record_publish_success", "reject_patch_proposal", "replan_development",
                      "schedule_publish_retry", "exhaust_publish_recovery", "retry_dispatch",
                      "exhaust_dispatch_recovery", "record_ci_failure", "record_pr_mismatch",

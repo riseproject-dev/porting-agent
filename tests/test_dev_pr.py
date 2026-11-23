@@ -94,7 +94,9 @@ class TestDevelopmentPR(unittest.TestCase):
         rec = contribution(phase="development", activity="waiting_ci", revision=2,
                            dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/build.yml"])
         rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
-        rec["proposal_artifact"] = {"outcome": "published", "result_commit": "q_result", "digest": "sha256:x"}
+        rec["proposal_artifact"] = {"work_id": "w", "claim_id": "c", "artifact_id": 1, "name": "n",
+                                    "run_id": "5", "outcome": "published",
+                                    "result_commit": "q_result", "digest": "sha256:" + "0" * 64}
         branch = recovery.plan(contribution_id=rec["contribution_id"], revision=2, kind="branch_update",
                                policy_version="test", reason_ids=["result"],
                                target={"repository": FORK, "repository_id": 9, "ref": "riscv64-dev",

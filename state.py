@@ -475,87 +475,14 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
 # identity in `active_work`; the stop flag is `paused` alone. A record
 # written before it lacks fields the table added later and may still carry
 # `blocked_reason`, always null. ``migrate_record_fields`` adds each missing
-# field with the value the pipeline reads for an absent one, and removes the
-# null `blocked_reason`; it changes nothing else. Any other difference from
+# field with the value the pipeline reads for an absent one
+# (``engine.with_defaults``), and removes the null `blocked_reason`; it
+# changes nothing else. Any other difference from
 # the strict schema, and a state that is not a state of the table, fail
 # closed.
 
 FIELD_MIGRATION = "strict-record-schema"
 FIELD_MIGRATED = "record_fields_migrated"
-
-# The value of each record field that a record may lack, as the pipeline
-# reads an absent one (``record.get(name)``, an empty list, or false).
-RECORD_DEFAULTS: dict[str, Any] = {
-    "generation": 0, "refresh": None, "paused_at": None, "paused_reason": None,
-    "paused_by": None, "parked_reason": None, "terminal_reason": None, "previous_phase": None,
-    "admission_class": None, "admission_override": None, "automatic_refresh_used": False,
-    "distributions": [], "fork": None, "upstream_pr": None, "target_contract_id": None,
-    "prerequisite_ids": [], "active_operation_id": None, "queue_work_id": None,
-    "queue_claim_handle": None, "queue_result_id": None, "proposal_artifact": None,
-    "publication_operation_id": None, "pending_publication": None,
-    "processed_publications": [], "processed_review_ids": [],
-    "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
-    "pending_feedback_evidence_ids": [], "active_work": None, "dossier_evidence_id": None,
-    "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
-    "clean_head_sha": None, "clean_head_ci_since": None, "submission_rewrite_id": None,
-    "submission_review_id": None, "handoff_request": None, "handoff_approval": None,
-    "last_ci_evidence_id": None, "merge": None, "retirement": None,
-    "release_acceptance": None, "pending_human_action": None, "follows": None,
-    "next_poll_at": None,
-}
-# The counts of `budget` a record may lack; `reruns` starts for the recorded
-# head (``engine.fresh_reruns``), as the engine reads absent rerun counts.
-BUDGET_DEFAULTS: dict[str, Any] = {
-    "no_progress_streak": 0, "clusters": {}, "investigation_attempts": 0,
-    "spent_estimate_usd_cents": 0,
-}
-# The fields of requested Work a record may lack: Work requested before the
-# Work identity carried the generation is generation 0 (``work.work_generation``),
-# its first attempt, undispatched, and carries no reason or feedback.
-WORK_DEFAULTS: dict[str, Any] = {
-    "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [],
-    "feedback_evidence_ids": [],
-}
-RETIRED_FIELDS = ("blocked_reason",)
-
-
-def _added_fields(record: dict) -> tuple[dict, list[str], list[str]]:
-    new = copy.deepcopy(record)
-    added: list[str] = []
-    removed: list[str] = []
-    for name in RETIRED_FIELDS:
-        if name in new:
-            if new[name] is not None:
-                raise StateError(f"{name} is {new[name]!r}: only a null {name} is removed")
-            del new[name]
-            removed.append(name)
-    for name, value in RECORD_DEFAULTS.items():
-        if name not in new:
-            new[name] = copy.deepcopy(value)
-            added.append(name)
-    budget = new.get("budget")
-    if isinstance(budget, dict):
-        budget = new["budget"] = dict(budget)
-        for name, value in BUDGET_DEFAULTS.items():
-            if name not in budget:
-                budget[name] = copy.deepcopy(value)
-                added.append(f"budget.{name}")
-        if "reruns" not in budget:
-            budget["reruns"] = engine.fresh_reruns(new)
-            added.append("budget.reruns")
-    pending = new.get("pending_human_action")
-    if isinstance(pending, dict) and "counter" not in pending:
-        new["pending_human_action"] = dict(pending, counter=None)
-        added.append("pending_human_action.counter")
-    work = new.get("active_work")
-    if isinstance(work, dict):
-        work = new["active_work"] = dict(work)
-        for name, value in WORK_DEFAULTS.items():
-            if name not in work:
-                work[name] = copy.deepcopy(value)
-                added.append(f"active_work.{name}")
-    return new, added, removed
-
 
 def needs_field_migration(record: Any) -> bool:
     """Whether a contribution record lacks a field of the strict schema or
@@ -563,8 +490,8 @@ def needs_field_migration(record: Any) -> bool:
     if not isinstance(record, dict):
         return False
     try:
-        _new, added, removed = _added_fields(record)
-    except StateError:
+        _new, added, removed = engine.with_defaults(record)
+    except lifecycle.TransitionError:
         return True
     return bool(added or removed)
 
@@ -573,7 +500,10 @@ def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
     """The record with its missing fields added at their defaults and the
     null ``blocked_reason`` removed, and its event. Raises ``StateError``
     for any other shape."""
-    new, added, removed = _added_fields(record)
+    try:
+        new, added, removed = engine.with_defaults(record)
+    except lifecycle.TransitionError as error:
+        raise StateError(f"no reviewed record migration for this record: {error}") from error
     if not (added or removed):
         raise StateError("the record needs no field migration")
     new["updated_at"] = now

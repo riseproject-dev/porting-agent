@@ -472,11 +472,7 @@ def release(record: dict, op: dict, now: str) -> dict:
     ``active_operation_id`` names an open operation only."""
     if is_open(op) or record.get("active_operation_id") != op["operation_id"]:
         return record
-    new = copy.deepcopy(record)
-    new["active_operation_id"] = None
-    new["updated_at"] = now
-    schemas.validate("contribution", new)
-    return new
+    return engine.record_beside(record, "operation_released", now=now, active_operation_id=None)
 
 
 def fire(record: dict, op: dict, *, policy: dict, now: str, facts=(), values=None,

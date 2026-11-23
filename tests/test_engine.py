@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import commands
-import compat
 import engine
 import lifecycle as lc
 import schemas
@@ -191,6 +190,17 @@ class TestTableIsExercised(unittest.TestCase):
         self.assertTrue(all(g == lc.ALWAYS or g.endswith((" remains", " exhausted"))
                             for g in unused), unused)
 
+    def test_every_unwired_verb_waits_on_a_recorded_open_decision(self):
+        # No verb is left unwired without a decision that blocks it, named
+        # on the known-gaps page.
+        self.assertEqual(engine.UNWIRED_VERBS, frozenset(engine.OPEN_DECISIONS))
+        gaps = (ROOT / "docs/state-machine/known-gaps.md").read_text()
+        for verb, entry in engine.OPEN_DECISIONS.items():
+            with self.subTest(verb=verb):
+                self.assertIn(f"\n## {entry}\n", gaps)
+                section = gaps.split(f"\n## {entry}\n", 1)[1].split("\n## ", 1)[0]
+                self.assertIn(f"`{verb}`", section)
+
     def test_pipeline_and_unwired_verbs_partition_the_table(self):
         verbs = engine.table_verbs()
         self.assertEqual(set(engine.PIPELINE_VERBS) | engine.UNWIRED_VERBS, verbs)
@@ -209,7 +219,7 @@ class TestTableIsExercised(unittest.TestCase):
         self.assertEqual(len(report["pipeline_verbs"]) + len(report["unwired_verbs"]),
                          report["table_verbs"])
         self.assertEqual(sum(report["guards"].values()), len(engine.table_guards()))
-        self.assertEqual(report["legacy_write_sites"], sorted(compat.LEGACY_SITES))
+        self.assertNotIn("legacy_write_sites", report)
 
     def test_every_row_is_taken_with_its_effects(self):
         rows = all_rows()
@@ -260,7 +270,7 @@ class TestTableIsExercised(unittest.TestCase):
                 self.assertEqual(out.event["details"]["from_state"], state)
                 self.assertEqual(out.event["details"]["to_state"], target)
                 schemas.validate("event", dict(out.event))
-                self.assertIsNone(compat.state_problem(new) if new["phase"] != "handoff"
+                self.assertIsNone(engine.state_problem(new) if new["phase"] != "handoff"
                                   else engine.state_problem(new))
 
     def test_no_row_is_taken_without_each_of_its_facts(self):
@@ -977,10 +987,11 @@ class TestSubmitUpstream(unittest.TestCase):
 
 
 FENCED = set(engine.FENCED_FIELDS)
-WRITERS = {"engine.py", "compat.py"}
-# Names that hold a tick report, a command receipt, or a Work request, never
-# a contribution record.
-REPORT_NAMES = {"entry", "receipt", "aw", "request"}
+WRITERS = {"engine.py"}
+# Names that hold a tick report, a command receipt, a Work request, event
+# details, the values a row sets, a Work context, or the command grammar,
+# never a contribution record.
+REPORT_NAMES = {"entry", "receipt", "aw", "request", "details", "values", "context", "OPTIONAL"}
 
 
 def fenced_writes(path: Path) -> list[str]:
@@ -1017,7 +1028,10 @@ def fenced_writes(path: Path) -> list[str]:
             if name in ("setdefault", "pop", "__setitem__") and node.args \
                     and isinstance(node.args[0], ast.Constant) and node.args[0].value in FENCED:
                 found.append(f"{where}: .{name}({node.args[0].value!r})")
-        if isinstance(node, ast.Dict) and any(k is None for k in node.keys) \
+        unpacked = [v for k, v in zip(node.keys, node.values) if k is None] \
+            if isinstance(node, ast.Dict) else []
+        if any(isinstance(v, (ast.Name, ast.Attribute, ast.Subscript))
+               and not (isinstance(v, ast.Name) and v.id in REPORT_NAMES) for v in unpacked) \
                 and any(isinstance(k, ast.Constant) and k.value in FENCED for k in node.keys):
             found.append(f"{where}: a record is copied with a fenced field replaced")
     return found
@@ -1047,38 +1061,38 @@ class TestSingleWritePath(unittest.TestCase):
             path.write_text('entry["activity"] = "x"\nevent = {"phase": 1}\nx = c["revision"] + 1\n')
             self.assertEqual(fenced_writes(path), [])
 
-    def test_the_shim_writes_no_handoff_state_itself(self):
-        # The one place the shim names the handoff phase in a write is the
-        # record migration, which takes the table verb through the engine.
-        tree = ast.parse((ROOT / "compat.py").read_text())
-        handoff = [node.lineno for node in ast.walk(tree) if isinstance(node, ast.keyword)
-                   and node.arg == "phase" and isinstance(node.value, ast.Constant)
-                   and node.value.value == "handoff"]
-        self.assertEqual(handoff, [])
-
-    def test_every_legacy_write_names_a_registered_site(self):
-        used = set()
+    def test_the_shim_is_gone(self):
+        self.assertFalse((ROOT / "compat.py").exists())
         for path in pipeline_modules():
-            for node in ast.walk(ast.parse(path.read_text())):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                        and node.func.attr in ("legacy_update", "legacy_assign"):
-                    site = node.args[1]
-                    self.assertIsInstance(site, ast.Constant, f"{path.name}:{node.lineno}")
-                    self.assertEqual(site.value.split(".")[0], path.stem)
-                    used.add(site.value)
-        self.assertEqual(used, set(compat.LEGACY_SITES))
+            tree = ast.parse(path.read_text())
+            names = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                     for alias in node.names}
+            self.assertNotIn("compat", names, path.name)
 
-    def test_legacy_states_are_exactly_the_states_outside_the_table(self):
-        # Every state the pipeline writes is a state of the table.
-        self.assertEqual(compat.LEGACY_STATES, frozenset())
-        for key in ("development.idle", "development.waiting_capacity"):
-            self.assertIsNotNone(compat.state_problem(contribution(activity=key.split(".")[1])))
-        for key in ("upstream_review.idle", "upstream_review.waiting_capacity"):
-            self.assertIsNotNone(compat.state_problem(contribution(
-                phase="upstream_review", activity=key.split(".")[1])))
-        for key in ("handoff.idle", "handoff.waiting_capacity", "closed.waiting_human"):
-            self.assertIsNotNone(compat.state_problem(contribution(
-                phase=key.split(".")[0], activity=key.split(".")[1])))
+    def test_the_fence_is_every_field_a_table_effect_names(self):
+        named = set()
+        transitions = [e.transition for e in lc.table_edges()]
+        for flag in lc.FLAGS.values():
+            transitions += [*flag.set_by.values(), *flag.cleared_by.values()]
+        for t in transitions:
+            for entry in (*t.effects.sets, *t.effects.clears):
+                named.add(lc._field_name(entry).removeprefix("carried ").split(".")[0])
+        self.assertLessEqual(named, set(engine.FENCED_FIELDS))
+        self.assertLessEqual(set(engine.STATE_FIELDS) | {"active_work"}, set(engine.FENCED_FIELDS))
+
+    def test_every_write_beside_a_row_writes_fenced_fields_only(self):
+        for write, fields in engine.BESIDE_ROW.items():
+            for name in fields:
+                with self.subTest(write=write, field=name):
+                    self.assertIn(name.split(".")[0], engine.FENCED_FIELDS)
+                    self.assertNotIn(name.split(".")[0], engine.STATE_FIELDS)
+
+    def test_every_state_the_schema_admits_is_a_state_of_the_table(self):
+        for key in ("development.idle", "development.waiting_capacity", "upstream_review.idle",
+                    "upstream_review.waiting_capacity", "handoff.idle", "closed.waiting_human"):
+            with self.subTest(state=key):
+                self.assertIsNotNone(engine.state_problem(contribution(
+                    phase=key.split(".")[0], activity=key.split(".")[1])))
 
     def test_no_fork_write_is_admitted_at_the_submission_gate(self):
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,

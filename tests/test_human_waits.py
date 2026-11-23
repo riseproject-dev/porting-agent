@@ -18,14 +18,13 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import capacity
-import compat
 import engine
 import lifecycle
 import observe_ci
 import reconcile
 import schemas
 import work
-from tests.helpers import OWNER, SHA_A, ci_record, contribution, policy
+from tests.helpers import NOW, OWNER, SHA_A, ci_record, contribution, policy
 from tests.test_late_results import ci_snapshot
 
 P = policy()
@@ -176,16 +175,11 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
                                                 "counter": "work_recovery"}, **fields})
         return record
 
-    def test_a_legacy_write_cannot_leave_a_wait_of_the_table(self):
+    def test_a_write_beside_a_row_cannot_leave_a_wait_of_the_table(self):
         record = self.record()
-        for site in ("observe_ci.ci_passed", "reconcile.publication_outcome",
-                     "reconcile.publish_retry_exhausted", "canary.repair_mismatch"):
-            with self.subTest(site=site), self.assertRaises(lifecycle.TransitionError):
-                compat.legacy_update(record, site, activity="waiting_ci")
-        # The same write in the wait's own state, and every non-state field, is kept.
-        self.assertEqual(compat.legacy_update(record, "canary.repair_mismatch",
-                                              activity="waiting_human")["activity"],
-                         "waiting_human")
+        for write in engine.BESIDE_ROW:
+            with self.subTest(write=write), self.assertRaises(lifecycle.TransitionError):
+                engine.record_beside(record, write, now=NOW, activity="waiting_ci")
 
     def test_every_wait_without_an_observation_row_is_not_observed(self):
         for key, spec in lifecycle.LIFECYCLE.items():
@@ -196,10 +190,10 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
             observed = any(e.transition.trigger == lifecycle.Trigger.OBSERVATION
                            for e in lifecycle.state_edges(key))
             with self.subTest(state=key):
-                self.assertTrue(compat.waits_for_human(record))
+                self.assertTrue(engine.waits_for_human(record))
                 self.assertEqual(observe_ci.human_wait_without_observation(record), not observed)
         # The legacy shape without a pending action is not a wait of the table.
-        self.assertFalse(compat.waits_for_human(self.record(pending_human_action=None)))
+        self.assertFalse(engine.waits_for_human(self.record(pending_human_action=None)))
 
     def test_review_feedback_and_a_new_head_are_not_folded_in_the_wait(self):
         from tests.test_late_results import FEEDBACK

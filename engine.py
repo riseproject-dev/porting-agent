@@ -23,17 +23,13 @@ name; a fact that is not asserted does not hold, so a transition is refused
 unless every guard is established. The engine never performs remote effects.
 
 ``PIPELINE_VERBS`` lists the verbs that pipeline code takes through this
-engine: the handoff states and the moves into them, the stop flag and the
-stop, resume, and refresh commands in every state of the table, the
-reminders of a pending human step, the allocation of Work and the exhaustion
-of its budgets, the dispatch and Work recovery, the Results of patch Work and
-their publication, the observation of the development head, late Results,
-and the rows of the fork provisioning and handoff operations (the operation
-table itself has its engine in ``recovery``). Every other verb of the table is in
-``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it yet
-and the corresponding behavior still runs through ``compat``. The two sets
-partition the table, so the share of the table the pipeline obeys is
-measurable.
+engine, with the module that takes each. Every other verb of the table is in
+``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it,
+because an open decision blocks it (``OPEN_DECISIONS`` names the entry of the
+known-gaps page for each). The two sets partition the table, so the share of
+the table the pipeline obeys is measurable. No other module assigns a field
+that an effect of the table names (``FENCED_FIELDS``); what pipeline code
+records beside a row goes through ``record_beside``.
 """
 
 from __future__ import annotations
@@ -49,9 +45,27 @@ import schemas
 from commands import Command
 from common import UPSTREAM_REF
 
-# The fields only this module (and, until its call sites are converted, the
-# ``compat`` shim) may assign.
-FENCED_FIELDS = ("phase", "activity", "paused", "revision", "generation")
+# The fields only this module assigns: the state, the flag, the revision and
+# the generation, the requested Work, and every field an effect of the table
+# names (by its top-level name). Pipeline code changes them through
+# ``apply_transition``, or beside a row through ``record_beside``.
+STATE_FIELDS = ("phase", "activity", "paused", "revision", "generation")
+
+
+def _effect_fields() -> tuple[str, ...]:
+    names: list[str] = []
+    transitions = [e.transition for e in lc.table_edges()]
+    for flag in lc.FLAGS.values():
+        transitions += [*flag.set_by.values(), *flag.cleared_by.values()]
+    for t in transitions:
+        if t.effects is not None:
+            for entry in (*t.effects.sets, *t.effects.clears):
+                names.append(lc._field_name(entry).split(".")[0])
+    record_fields = schemas._validator("contribution").schema["properties"]
+    return tuple(dict.fromkeys(n for n in names if n in record_fields))
+
+
+FENCED_FIELDS = tuple(dict.fromkeys((*STATE_FIELDS, "active_work", *_effect_fields())))
 
 TransitionError = lc.TransitionError
 
@@ -764,7 +778,7 @@ PIPELINE_VERBS: dict[str, str] = {
     "retry_dispatch": "reconcile",
     "exhaust_dispatch_recovery": "reconcile",
     # A worker Result that matches no request of the record, in any state.
-    "record_late_effect": "compat",
+    "record_late_effect": "reconcile",
     # Work allocation, by the table's rows, and the exhaustion of its budgets
     # where Work is due.
     "begin_investigation": "controller",
@@ -898,9 +912,23 @@ def table_verbs() -> set[str]:
     return verbs
 
 
-# Verbs of the table that no pipeline code takes yet; their behavior still
-# runs through ``compat``.
+# Verbs of the table that no pipeline code takes.
 UNWIRED_VERBS: frozenset[str] = frozenset(table_verbs() - set(PIPELINE_VERBS))
+
+# Every verb of ``UNWIRED_VERBS``, with the entry of the known-gaps page that
+# records the open decision it waits on. A test requires the two to be equal.
+# CI is not rerun: no decision names the trusted mechanism, in particular the
+# credential that may rerun the jobs of a fork's workflow run, and what
+# happens when a rerun request is refused. The repair worker's report that a
+# failure is not caused by the patch is folded by the row of
+# `request_ci_rerun` (``reconcile.fold_patch_result``), which records it and
+# charges `flaky_reruns`, but nothing is rerun, so the verb is not counted
+# as taken.
+OPEN_DECISIONS: dict[str, str] = {
+    "request_ci_rerun": "CI is never rerun",
+    "rerun_interrupted_ci": "CI is never rerun",
+    "exhaust_interrupted_reruns": "CI is never rerun",
+}
 
 # Commands the grammar and the engine accept but the controller holds: the
 # controller checks such a command against the table, then refuses it with
@@ -1327,16 +1355,16 @@ def apply_command(record: dict, command: Command, *, policy: dict, now: str, com
 # Record states
 
 
-def state_problem(record: dict, legacy_states=frozenset()) -> str | None:
+def state_problem(record: dict) -> str | None:
     """Why a record's state is not one the lifecycle admits, or ``None``.
 
-    A record is in a state of the table, or in one of ``legacy_states``
-    (states that ``compat`` paths still write).
+    A record is in a state of the table; a human wait of the handoff phase
+    carries a pending action the table enters it with.
     """
     key = state_key(record)
     state = lc.LIFECYCLE.get(key)
     if state is None:
-        return None if key in legacy_states else f"{key} is not a lifecycle state"
+        return f"{key} is not a lifecycle state"
     if record["phase"] == "handoff" and state.kind in ("gate", "locked", "human_wait"):
         # Every handoff wait is entered through the table, which names its
         # pending action.
@@ -1346,13 +1374,195 @@ def state_problem(record: dict, legacy_states=frozenset()) -> str | None:
     return None
 
 
+# The states of the table that wait for a human (kinds `human_wait`, `gate`,
+# and `locked`).
+HUMAN_WAITS = frozenset(key for key, spec in lc.LIFECYCLE.items()
+                        if spec.kind in lc.REMINDER_KINDS)
+
+
+def waits_for_human(record: dict) -> bool:
+    """Whether ``record`` is in a wait of the table for a human: a state of
+    kind ``gate`` or ``locked``, or of kind ``human_wait`` with a recorded
+    ``pending_human_action``. Only the rows the table lists for the state
+    leave it."""
+    state = state_key(record)
+    if state not in HUMAN_WAITS:
+        return False
+    return lc.LIFECYCLE[state].kind != "human_wait" or bool(record.get("pending_human_action"))
+
+
+def stopped(record: dict) -> bool:
+    """Whether a record is stopped: paused, parked, or terminal."""
+    return bool(record.get("paused") or record["phase"] in lc.TERMINAL | {"parked"})
+
+
+def record_late_effect(record: dict, *, policy: dict, now: str, cause_id: str | None,
+                       details: dict[str, Any]) -> dict:
+    """The audit event of the table's ``record_late_effect`` for ``record``:
+    the rule applies in every state, under the stop flag too, and never
+    changes the record."""
+    outcome = apply_transition(record, "record_late_effect", policy=policy, now=now,
+                               cause_id=cause_id, facts={"result_mismatch"}, details=details)
+    if not outcome.accepted or outcome.record != record:
+        raise TransitionError(f"record_late_effect in {state_key(record)}: "
+                              f"{outcome.reason or 'the record changed'}")
+    return outcome.event
+
+
+# --------------------------------------------------------------------------
+# Fields of records written before the strict record schema
+
+# The value of each record field that a record may lack, as the pipeline
+# reads an absent one (``record.get(name)``, an empty list, or false).
+RECORD_DEFAULTS: dict[str, Any] = {
+    "generation": 0, "refresh": None, "paused_at": None, "paused_reason": None,
+    "paused_by": None, "parked_reason": None, "terminal_reason": None, "previous_phase": None,
+    "admission_class": None, "admission_override": None, "automatic_refresh_used": False,
+    "distributions": [], "fork": None, "upstream_pr": None, "target_contract_id": None,
+    "prerequisite_ids": [], "active_operation_id": None, "queue_work_id": None,
+    "queue_claim_handle": None, "queue_result_id": None, "proposal_artifact": None,
+    "publication_operation_id": None, "pending_publication": None,
+    "processed_publications": [], "processed_review_ids": [],
+    "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
+    "pending_feedback_evidence_ids": [], "active_work": None, "dossier_evidence_id": None,
+    "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
+    "clean_head_sha": None, "clean_head_ci_since": None, "submission_rewrite_id": None,
+    "submission_review_id": None, "handoff_request": None, "handoff_approval": None,
+    "last_ci_evidence_id": None, "merge": None, "retirement": None,
+    "release_acceptance": None, "pending_human_action": None, "follows": None,
+    "next_poll_at": None,
+}
+# The counts of `budget` a record may lack; `reruns` starts for the recorded
+# head (``fresh_reruns``), as the engine reads absent rerun counts.
+BUDGET_DEFAULTS: dict[str, Any] = {
+    "no_progress_streak": 0, "clusters": {}, "investigation_attempts": 0,
+    "spent_estimate_usd_cents": 0,
+}
+# The fields of requested Work a record may lack: Work requested before the
+# Work identity carried the generation is generation 0 (``work.work_generation``),
+# its first attempt, undispatched, and carries no reason or feedback.
+WORK_DEFAULTS: dict[str, Any] = {
+    "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [],
+    "feedback_evidence_ids": [],
+}
+RETIRED_FIELDS = ("blocked_reason",)
+
+
+def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
+    """``record`` with every field the strict schema requires and it lacks
+    added at the value the pipeline reads for an absent one, and the null
+    retired fields removed, with the names added and removed. Raises
+    ``TransitionError`` for a retired field that is set."""
+    new = copy.deepcopy(record)
+    added: list[str] = []
+    removed: list[str] = []
+    for name in RETIRED_FIELDS:
+        if name in new:
+            if new[name] is not None:
+                raise TransitionError(f"{name} is {new[name]!r}: only a null {name} is removed")
+            del new[name]
+            removed.append(name)
+    for name, value in RECORD_DEFAULTS.items():
+        if name not in new:
+            new[name] = copy.deepcopy(value)
+            added.append(name)
+    budget = new.get("budget")
+    if isinstance(budget, dict):
+        budget = new["budget"] = dict(budget)
+        for name, value in BUDGET_DEFAULTS.items():
+            if name not in budget:
+                budget[name] = copy.deepcopy(value)
+                added.append(f"budget.{name}")
+        if "reruns" not in budget:
+            budget["reruns"] = fresh_reruns(new)
+            added.append("budget.reruns")
+    pending = new.get("pending_human_action")
+    if isinstance(pending, dict) and "counter" not in pending:
+        new["pending_human_action"] = dict(pending, counter=None)
+        added.append("pending_human_action.counter")
+    work = new.get("active_work")
+    if isinstance(work, dict):
+        work = new["active_work"] = dict(work)
+        for name, value in WORK_DEFAULTS.items():
+            if name not in work:
+                work[name] = copy.deepcopy(value)
+                added.append(f"active_work.{name}")
+    return new, added, removed
+
+
+# --------------------------------------------------------------------------
+# Writes beside a row
+#
+# A few fields are recorded beside the row that a tick takes, or without a
+# row where the table has none (each listed on the known-gaps page). Each
+# such write is named here with the fields it may change, a dotted name
+# admitting only that part of a field; it never changes the state, the flag,
+# the revision, or the generation.
+
+BESIDE_ROW: dict[str, tuple[str, ...]] = {
+    # The controller records the intent of a planned operation in the same
+    # write that plans it; a closed operation is released.
+    "operation_planned": ("active_operation_id",),
+    "operation_released": ("active_operation_id",),
+    # A verified development PR receipt records the PR and releases its
+    # operation; no row is fired by it.
+    "development_pr_recorded": ("fork.pr_number", "active_operation_id"),
+    # The upstream identity and base, bound from trusted API data once.
+    "upstream_identity_bound": ("upstream.repository_id", "upstream.base_ref",
+                                "upstream.base_sha"),
+    # The replay fences of the review comments a review row recorded.
+    "review_fences": ("processed_review_ids", "processed_review_comment_ids",
+                      "processed_pr_conversation_comment_ids"),
+    # The dispatcher run a dispatch recovery decided.
+    "dispatcher_run_decided": ("active_work.dispatched_run_id",),
+    # Work held in a handoff state that requests none is dropped.
+    "handoff_work_dropped": ("active_work",),
+    # The admitted scope was checked complete for its dossier.
+    "scope_checked": ("scope_coverage_complete",),
+    # A published patch: its files join the admitted scope, and `no_progress`
+    # starts again.
+    "patch_published": ("scope_paths", "budget.no_progress_streak"),
+    # The CI run and attempt a classified Result answered.
+    "answered_ci_run": ("budget.reruns",),
+    # The held Result is answered, or its publish-only retry is launched.
+    "publication_answered": ("pending_publication",),
+    "publish_retry_launched": ("pending_publication",),
+}
+
+
+def record_beside(record: dict, write: str, *, now: str, **fields: Any) -> dict:
+    """A copy of ``record`` with ``fields`` set by the write ``write`` of
+    ``BESIDE_ROW``. Raises ``TransitionError`` for a field, or a part of a
+    field, that the write does not name."""
+    allowed = BESIDE_ROW.get(write)
+    if allowed is None:
+        raise TransitionError(f"{write} is not a write beside a row")
+    new = copy.deepcopy(record)
+    for name, value in fields.items():
+        whole = name in allowed
+        parts = {a.split(".", 1)[1] for a in allowed if a.startswith(name + ".")}
+        if not whole and not parts:
+            raise TransitionError(f"{write} does not write {name}")
+        if not whole:
+            before, after = record.get(name) or {}, value or {}
+            changed = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
+            if not isinstance(value, dict) or changed - parts:
+                raise TransitionError(f"{write} writes only {', '.join(sorted(parts))} of {name}")
+        new[name] = copy.deepcopy(value)
+    if any(new.get(k) != record.get(k) for k in STATE_FIELDS):
+        raise TransitionError(f"{write} cannot change the state, flag, revision, or generation")
+    if new != record:
+        new["updated_at"] = now
+    schemas.validate("contribution", new)
+    return new
+
+
 # --------------------------------------------------------------------------
 # Coverage of the table by the pipeline: ``python -m engine``.
 
 
 def coverage() -> dict[str, Any]:
     """How much of the table the pipeline takes through the engine."""
-    import compat
     import recovery
 
     kinds = [p.kind for g, p in PREDICATES.items() if g in table_guards()]
@@ -1361,10 +1571,11 @@ def coverage() -> dict[str, Any]:
         "table_verbs": len(table_verbs()),
         "pipeline_verbs": sorted(PIPELINE_VERBS),
         "unwired_verbs": sorted(UNWIRED_VERBS),
+        "open_decisions": dict(sorted(OPEN_DECISIONS.items())),
+        "fenced_fields": list(FENCED_FIELDS),
+        "writes_beside_a_row": sorted(BESIDE_ROW),
         "guards": {"record": kinds.count("record"), "fact": kinds.count("fact")},
         "held_commands": sorted(HELD_COMMANDS),
-        "legacy_write_sites": sorted(compat.LEGACY_SITES),
-        "legacy_states": sorted(compat.LEGACY_STATES),
         # The operation table: every verb is taken through ``recovery``.
         "operation_rows": sum(1 for _ in lc.table_edges(lc.OPERATIONS)),
         "operation_verbs": sorted(recovery.table_verbs()),
@@ -1382,7 +1593,8 @@ def main() -> int:
     report = coverage()
     print(json.dumps(report, indent=2))
     print(f"{len(report['pipeline_verbs'])} of {report['table_verbs']} verbs are taken by the "
-          f"pipeline; {len(report['legacy_write_sites'])} legacy write sites remain")
+          f"pipeline; {len(report['unwired_verbs'])} wait on an open decision "
+          f"({', '.join(report['unwired_verbs']) or 'none'})")
     print(f"operation table: {report['operation_rows']} rows, "
           f"{len(report['operation_verbs'])} verbs taken through recovery; every operation "
           "status change is a row of the table")

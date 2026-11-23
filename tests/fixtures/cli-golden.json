@@ -71,7 +71,6 @@
         "note": "read-only: requested effects are reported, not executed",
         "would_stage": [],
         "requested_effects": [],
-        "canary_recovery_requests": [],
         "handoff_requests": []
       },
       "stderr": "",
@@ -104,8 +103,7 @@
           "alerts": [],
           "provision_requests": [],
           "dev_pr_requests": [],
-          "canary_recovery_requests": [],
-          "handoff_requests": []
+            "handoff_requests": []
         },
         "requested_effects": [],
         "provision_requests": [],

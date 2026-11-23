@@ -526,9 +526,6 @@ class TestWorkflowContracts(unittest.TestCase):
         report = reconcile.state_text_migration_report([".state/evidence/example.json"])
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         consumers = {
-            "Repair the exact canonical canary request": [
-                (".controller.canary_recovery_requests", report["controller"]["canary_recovery_requests"]),
-            ],
             "Launch dispatcher for durable selected Work": [
                 (".requested_effects", report["requested_effects"]),
                 (".dispatch_relaunch", report["dispatch_relaunch"]),
@@ -622,19 +619,10 @@ class TestWorkflowContracts(unittest.TestCase):
         )
         self.assertGreater(reconcile["steps"].index(complete), publish_index)
 
-    def test_canary_effect_uses_issue_token_then_state_token(self):
+    def test_no_step_repairs_the_canonical_canary(self):
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
-        repair = next(
-            step for step in steps if step.get("name") == "Repair the exact canonical canary request"
-        )
-        confirm = next(
-            step for step in steps if step.get("name") == "Publish exact canary repair receipt state"
-        )
-        self.assertEqual(repair["env"]["GH_TOKEN"], "${{ steps.issue-token.outputs.token }}")
-        self.assertIn("python -m canary_recovery", repair["run"])
-        self.assertEqual(confirm["env"]["GH_TOKEN"], "${{ steps.state-token.outputs.token }}")
-        self.assertIn("python -m state_commit", confirm["run"])
-        self.assertLess(steps.index(repair), steps.index(confirm))
+        self.assertFalse(any("canary" in (step.get("name") or "").lower()
+                             or "canary" in (step.get("run") or "") for step in steps))
 
     def test_current_milestone_has_only_reviewed_destination_writers(self):
         self.assertEqual(

@@ -33,7 +33,6 @@ from unittest import mock
 
 import capacity
 import collect
-import compat
 import controller
 import engine
 import isolation
@@ -329,7 +328,7 @@ class TestOneContributionErrors(unittest.TestCase):
             with self.subTest(command=body):
                 comments = [comment(body, 12)]
                 applied = tick([a, b], comments=comments)
-                self.assertTrue(compat.stopped(record_of(applied, A)))
+                self.assertTrue(engine.stopped(record_of(applied, A)))
                 self.assertEqual(applied.report["requested_effects"], [])
                 baseline = tick([a, b])
                 output = tick([a, b], comments=comments, patches=[
@@ -574,10 +573,7 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
         record = migrated()
         self.assertEqual(engine.state_key(record), "handoff.awaiting_submission")
         self.cid = record["contribution_id"]
-        canary = json.loads((Path(__file__).parent / "fixtures/canary-recovery-operation.json")
-                            .read_text())
-        for kind, value in (("contributions", record), ("evidence", evidence),
-                            ("operations", canary)):
+        for kind, value in (("contributions", record), ("evidence", evidence)):
             path = self.root / state.record_path(kind, value)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(canonical_json(value))

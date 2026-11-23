@@ -8,7 +8,7 @@ import copy
 import unittest
 
 import commands
-import compat
+import controller
 import engine
 import lifecycle as lc
 from tests.helpers import NOW, SHA_A, SHA_B, apply_command, contribution
@@ -45,9 +45,9 @@ def record_in(state: str, revision: int = 3) -> dict:
 
 
 def admitted_states():
-    for state in sorted(set(lc.LIFECYCLE) | compat.LEGACY_STATES):
+    for state in sorted(set(lc.LIFECYCLE)):
         rec = record_in(state)
-        if compat.state_problem(rec) is None:
+        if engine.state_problem(rec) is None:
             yield state, rec
 
 
@@ -188,7 +188,7 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
             commands.parse('/upstreaming force-develop revision=3 class=configuration_integration '
                            'paths=".github/workflows/*" reason=r')
         self.assertTrue(str(raised.exception).startswith("`force-develop` is retired."))
-        self.assertNotIn("force-develop", compat.LEGACY_COMMANDS)
+        self.assertNotIn("force-develop", controller.FOLLOWUP_COMMANDS)
 
 
 if __name__ == "__main__":

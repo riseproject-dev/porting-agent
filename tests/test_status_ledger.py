@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import compat
 import lifecycle
 import status_ledger
 from tests.helpers import NOW, SHA_A, contribution
@@ -157,7 +156,7 @@ class TestStatusLedger(unittest.TestCase):
         commands of the grammar, never retired, and each parses."""
         import commands
         import engine
-        states = sorted(set(lifecycle.LIFECYCLE) | compat.LEGACY_STATES)
+        states = sorted(set(lifecycle.LIFECYCLE))
         for state, paused in itertools.product(states, (False, True)):
             phase, activity = state.split(".")
             record = contribution(phase=phase, activity=activity, revision=3,

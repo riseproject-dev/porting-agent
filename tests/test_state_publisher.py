@@ -317,7 +317,7 @@ class TestStateDiff(unittest.TestCase):
         report = json.loads(stdout)
         self.assertEqual(report["state_text_migration"], {"written": [], "pending": [path]})
         self.assertEqual(report["written"], [])
-        self.assertEqual(report["controller"], {"canary_recovery_requests": []})
+        self.assertEqual(report["controller"], {})
         for key in (
             "requested_effects",
             "dispatch_relaunch",
@@ -359,7 +359,7 @@ class TestStateDiff(unittest.TestCase):
         self.assertIn(path, report["written"])
         event_path = next(item for item in report["written"] if item != path)
         self.assertRegex(event_path, r"^\.state/events/.+/[0-9]{8}\.json$")
-        self.assertEqual(report["controller"], {"canary_recovery_requests": []})
+        self.assertEqual(report["controller"], {})
         for key in (
             "requested_effects",
             "dispatch_relaunch",
