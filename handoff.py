@@ -219,6 +219,16 @@ def approval(record: dict, *, command_id: str, actor: dict, head: str) -> dict:
 # clean commit series)
 
 
+def _strip_comments(text: str) -> str:
+    """``text`` without HTML comment openers and closers, removed until none
+    is left, so no removal joins the rest into a new one (``<!<!---- ``)."""
+    while True:
+        out = text.replace("<!--", "").replace("-->", "").replace("--!>", "")
+        if out == text:
+            return out
+        text = out
+
+
 def _clean_block(text: Any, limit: int) -> str:
     """Untrusted multi-line text: credential patterns removed, no HTML
     comment that could fake a marker, bounded, Unix newlines."""
@@ -226,7 +236,7 @@ def _clean_block(text: Any, limit: int) -> str:
     lines = []
     for line in value.split("\n"):
         cleaned = isolation.clean_text(line, 1000) if line.strip() else ""
-        lines.append(cleaned.replace("<!--", "").replace("-->", ""))
+        lines.append(_strip_comments(cleaned))
     out = "\n".join(lines).strip("\n")
     while "\n\n\n" in out:
         out = out.replace("\n\n\n", "\n\n")
@@ -234,7 +244,7 @@ def _clean_block(text: Any, limit: int) -> str:
 
 
 def _line(text: Any, limit: int) -> str:
-    return isolation.clean_text(text or "", limit).replace("<!--", "").replace("-->", "")
+    return _strip_comments(isolation.clean_text(text or "", limit))
 
 
 def _fence(text: str) -> str:
@@ -258,54 +268,36 @@ def _fenced(text: str, info: str = "text") -> list[str]:
 
 # A GitHub login: what the package may mention.
 _LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
-# A mention outside code: `@user` or `@org/team`, not an e-mail address.
-_MENTION = re.compile(r"(?<![A-Za-z0-9_`/.@+-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:/[A-Za-z0-9_.-]+)?)")
-_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_CODE_SPAN = re.compile(r"(`+)(?:.+?)(?<!`)\1(?!`)")
+# The at signs a mention could start with, and the entities that produce one.
+_AT_SIGNS = "@\uff20\ufe6b"
+_AT_ENTITY = re.compile(r"&(?:#0*(64|65312|65131)(?![0-9])|#[xX]0*(40|[fF][fF]20|[fF][eE]6[bB])(?![0-9A-Fa-f])"
+                        r"|(commat)(?![A-Za-z0-9]));?")
+# An at sign followed by a login or team character and not preceded by an
+# ASCII letter or digit (an e-mail address keeps its at sign).
+_AT_MENTION = re.compile(rf"(?<![A-Za-z0-9])([{_AT_SIGNS}])(?=[A-Za-z0-9_-])")
+# The invisible character that keeps an at sign from starting a mention.
+WORD_JOINER = "\u2060"
+
+
+def _at_entity(match: re.Match) -> str:
+    if match.group(3):
+        return "@"
+    value = int(match.group(1)) if match.group(1) else int(match.group(2), 16)
+    return chr(value)
 
 
 def neutralize_mentions(text: str) -> tuple[str, int]:
-    """``text`` with every mention outside code put in a code span, so the
-    upstream pull request that a human opens from it notifies nobody; and the
-    number of mentions changed. Fenced blocks and code spans are kept."""
-    out, fence, count = [], None, 0
+    """``text`` in which no at sign can start a mention, whatever the
+    Markdown around it, so the upstream pull request that a human opens from
+    it notifies nobody; and the number of changes.
 
-    def wrap(segment: str) -> str:
-        nonlocal count
-
-        def one(match: re.Match) -> str:
-            nonlocal count
-            count += 1
-            return f"`@{match.group(1)}`"
-        return _MENTION.sub(one, segment)
-
-    for line in text.split("\n"):
-        opening = _FENCE_LINE.match(line)
-        if fence is not None:
-            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence) \
-                    and not line.strip().strip(fence[0]):
-                fence = None
-            out.append(line)
-            continue
-        if opening:
-            fence = opening.group(1)
-            out.append(line)
-            continue
-        if line.startswith("    ") or line.startswith("\t"):
-            out.append(line)  # an indented code block
-            continue
-        parts, pos = [], 0
-        for span in _CODE_SPAN.finditer(line):
-            parts += [wrap(line[pos:span.start()]), span.group(0)]
-            pos = span.end()
-        parts.append(wrap(line[pos:]))
-        out.append("".join(parts))
-    return "\n".join(out), count
-
-
-# Contribution rules that state the sign-off or contributor agreement policy.
-_SIGNING_POLICY = re.compile(
-    r"\b(DCO|CLA|sign(?:ed)?[- ]?off(?:-by)?|contributor (?:license )?agreement)\b", re.I)
+    An HTML entity of an at sign is decoded first; then every at sign that is
+    followed by a login or team character and not preceded by an ASCII letter
+    or digit gets a word joiner (U+2060) after it. Code spans, fences,
+    emphasis, and escapes are not parsed, so none of them can hide one."""
+    decoded, entities = _AT_ENTITY.subn(_at_entity, text)
+    out, breaks = _AT_MENTION.subn(lambda m: m.group(1) + WORD_JOINER, decoded)
+    return out, entities + breaks
 
 
 def _ci_jobs(ci: dict) -> tuple[list[str], list[str]]:
@@ -350,6 +342,35 @@ def compare_url(record: dict, *, title: str | None = None, body: str | None = No
     return f"{url}?{query}"
 
 
+_FILES_LINE = "\0changed files\0"
+
+
+def _files_line(files: list[str], shown: int) -> str:
+    listed = ", ".join(_code(f) for f in files[:shown])
+    rest = len(files) - shown
+    if rest:
+        noun = "file" if rest == 1 else "files"
+        listed = f"{listed}, and {rest} more {noun}" if shown else f"{rest} {noun}"
+    return f"- Changed files: {listed or 'none'}"
+
+
+def _fit_files(template: str, files: list[str]) -> str:
+    """The comment with its changed-file list, cut with the count of the
+    files it leaves out when the whole list would not fit ``MAX_COMMENT``."""
+    room = MAX_COMMENT - (len(template) - len(_FILES_LINE))
+    shown = len(files)
+    if len(_files_line(files, shown)) > room:
+        low, high = 0, shown - 1  # the longest list that fits is in [low, high]
+        while low < high:
+            middle = (low + high + 1) // 2
+            low, high = (middle, high) if len(_files_line(files, middle)) <= room else (low, middle - 1)
+        shown = low
+    comment = template.replace(_FILES_LINE, _files_line(files, shown), 1)
+    if len(comment) > MAX_COMMENT:
+        raise HandoffError(f"the submission package has {len(comment)} characters")
+    return comment
+
+
 def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
                   files: list[str], operation_id: str, retract_revision: int | None = None) -> dict:
     """The submission package for the record's clean head.
@@ -364,8 +385,10 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
     messages, CI job names) is in a code span or a fenced block of the
     comment, so none of it renders as a mention, a link, an image, or HTML;
     the only mention is the human who requested the submission. In the
-    proposed title and description a mention is put in a code span, so the
-    upstream pull request notifies nobody."""
+    proposed title and description no at sign can start a mention
+    (``neutralize_mentions``), so the upstream pull request notifies nobody.
+    A changed-file list too long for the comment is cut with the count of
+    the files it leaves out."""
     head = record["clean_head_sha"]
     if not commits or len(commits) > MAX_COMMITS:
         raise HandoffError(f"the clean series has {len(commits)} commits")
@@ -380,7 +403,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         bodies.append(_clean_block(rest, MAX_COMMIT_BODY))
     title = subjects[0] if len(commits) == 1 else "Build riscv64 wheels"
     title = title or "Build riscv64 wheels"
-    title, title_mentions = neutralize_mentions(title)
+    title, title_changes = neutralize_mentions(title)
     if len(commits) == 1:
         description = bodies[0]
     else:
@@ -399,7 +422,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
     body = "\n\n".join(s for s in sections if s).strip()
     if len(body) > MAX_BODY:
         body = body[: MAX_BODY - 3].rstrip() + "..."
-    body, body_mentions = neutralize_mentions(body)
+    body, body_changes = neutralize_mentions(body)
     link = compare_url(record, title=title, body=body)
     body_in_link = len(link) <= MAX_URL
     if not body_in_link:
@@ -427,8 +450,9 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         f"- Source: {_code(fork)} (id {_code(record['fork'].get('repository_id'), 20)}), "
         f"branch `{DEV_REF}`",
         f"- Exact head: `{head}`",
-        f"- Changed files: {', '.join(_code(f) for f in files) or 'none'}",
-        f"- Package operation: {_code(operation_id, 40)}; dossier evidence: "
+        _FILES_LINE,
+        f"- Package operation: {_code(operation_id, 40)}; approval: "
+        f"{_code(approval['command_id'], 120)}; dossier evidence: "
         f"{_code(record.get('dossier_evidence_id'), 120)}",
         "",
         "> [!WARNING]",
@@ -451,10 +475,11 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
     else:
         lines.append("The description is too long for a link: the form opens with the title "
                      f"only. Paste the description below. Compare view: {compare_url(record)}")
-    if title_mentions or body_mentions:
-        lines += ["", "Mentions in the proposed title and description are in code spans, so "
-                      "opening the pull request notifies nobody upstream. Edit them in the form "
-                      "only if a mention is intended."]
+    if title_changes or body_changes:
+        lines += ["", "Every at sign that could mention someone in the proposed title and "
+                      "description has an invisible word joiner (U+2060) after it, so opening the "
+                      "pull request notifies nobody upstream. Edit them in the form only if a "
+                      "mention is intended."]
     lines += [
         "",
         "**Title**",
@@ -473,16 +498,17 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         *(_fenced(rules) if rules else ["None recorded."]),
         "",
     ]
+    lines.append(f"Open the pull request at exactly this head. Do not add commits to `{DEV_REF}` "
+                 "or edit files in the form. If the contribution policy needs a change to the "
+                 "series (for example a CHANGELOG entry or a commit sign-off it asks for), do "
+                 "not submit: withdraw this package with the `retract-pr` command above, which "
+                 "returns the contribution to development for a repair. Only steps outside the "
+                 "series (such as signing a CLA) are yours to do before you submit.")
     if unchanged:
-        lines.append(f"The dossier admitted {', '.join(_code(p) for p in unchanged)}, which the "
-                     "series does not change; check whether the project expects a change there "
-                     "(for example a changelog entry) before you submit.")
-    if rules and _SIGNING_POLICY.search(rules):
-        lines.append("Before you submit, apply what the contribution policy above asks of a "
-                     "contributor.")
-    else:
-        lines.append("Before you submit, apply what the project asks of a contributor: a "
-                     "sign-off (DCO) or a contributor agreement (CLA).")
+        lines += ["", f"The dossier admitted {', '.join(_code(p) for p in unchanged)}, which the "
+                      "series does not change: if the project expects a change there (for example "
+                      "a changelog entry), withdraw this package rather than submit it."]
+    lines.append("")
     lines += [
         "If the project has a pull request template, copy its required parts into the "
         "description: a prefilled description replaces the template.",
@@ -494,9 +520,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, commits: list[dict],
         "",
         submission_marker(record),
     ]
-    comment = "\n".join(lines)
-    if len(comment) > MAX_COMMENT:
-        raise HandoffError(f"the submission package has {len(comment)} characters")
+    comment = _fit_files("\n".join(lines), files)
     return {"title": title, "body": body, "link": link, "body_in_link": body_in_link,
             "comment": comment, "marker": submission_marker(record),
             "digest": hashlib.sha256(comment.encode()).hexdigest()}
@@ -938,6 +962,21 @@ def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
     return {"dossier": dossier, "ci": ci, "commits": commits, "files": files}
 
 
+def is_package_of(body: str, record: dict, package: dict) -> bool:
+    """Whether a comment found by its marker is a package of the record's
+    current approval: the exact bytes of this package, or a package of
+    another attempt of the same approval, which ends with the marker and
+    names the approval's command. A marker anywhere else (quoted, or in
+    another comment) is not a package."""
+    if hashlib.sha256(body.encode()).hexdigest() == package["digest"]:
+        return True
+    lines = body.split("\n")
+    approval = _code(record["handoff_approval"]["command_id"], 120)
+    named = re.compile(rf"- Package operation: `op-[0-9a-f]{{24}}`; approval: {re.escape(approval)}; "
+                       r"dossier evidence: `[^`\n]*`")
+    return lines[-1] == package["marker"] and any(named.fullmatch(line) for line in lines)
+
+
 def post_package(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
                  issue_api) -> dict:
     """``submission_comment``: post, or discover by its marker, the one
@@ -951,9 +990,11 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
     number = record["tracking_issue"]["number"]
     marker = op["proposed"]["marker"]
     comments = status_ledger.issue_comments(issue_api, number)
-    existing = [c for c in comments if marker in (c.get("body") or "")]
-    if any((c.get("user") or {}).get("login") != APP_LOGIN for c in existing):
-        raise HandoffError("a comment with the package marker is not App-authored")
+    # Only an App-authored package of this approval is discovered; a comment
+    # of anyone else, or one that only carries the marker, is not the package.
+    existing = [c for c in comments if (c.get("user") or {}).get("login") == APP_LOGIN
+                and marker in (c.get("body") or "")
+                and is_package_of(c.get("body") or "", record, package)]
     if existing:
         comment = existing[0]
     else:

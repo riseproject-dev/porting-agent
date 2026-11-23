@@ -699,13 +699,20 @@ class TestPackage(unittest.TestCase):
                      "```text\nNo CLA/DCO", "`CHANGELOG.md`", "If GitHub does not let your account",
                      "pull request template", one["marker"]):
             self.assertIn(part, comment)
-        # The dossier states the sign-off policy: no generic line contradicts it.
-        self.assertNotIn("a sign-off (DCO) or a contributor agreement (CLA)", comment)
-        self.assertIn("apply what the contribution policy above asks", comment)
-        dossier = copy.deepcopy(args["dossier"])
-        dossier["data"]["proposal"]["contribution_rules"] = "Add a CHANGELOG entry."
-        generic = handoff.build_package(record, **dict(args, dossier=dossier))["comment"]
-        self.assertIn("a sign-off (DCO) or a contributor agreement (CLA)", generic)
+        # The package is opened at the exact head; a change the policy needs
+        # in the series withdraws the package instead of editing it.
+        for part in ("Open the pull request at exactly this head.",
+                     "Do not add commits to `riscv64` or edit files in the form.",
+                     "do not submit: withdraw this package with the `retract-pr` command above",
+                     "returns the contribution to development for a repair",
+                     "Only steps outside the series (such as signing a CLA)",
+                     "The dossier admitted `CHANGELOG.md`, which the series does not change: if "
+                     "the project expects a change there (for example a changelog entry), withdraw "
+                     "this package rather than submit it."):
+            self.assertIn(part, comment)
+        for invitation in ("apply what", "Before you submit, apply", "a sign-off (DCO) or"):
+            self.assertNotIn(invitation, comment)
+        self.assertIn("approval: `comment-900`", comment)
         self.assertTrue(comment.endswith(one["marker"]))
         self.assertEqual(one["marker"], f"<!-- upstreaming-submission:{CID}:r6:{HEAD} -->")
         self.assertEqual(one["digest"], hashlib.sha256(comment.encode()).hexdigest())
@@ -740,6 +747,16 @@ class TestPackage(unittest.TestCase):
         self.assertIn("too long for a link", package["comment"])
         self.assertIn(package["body"], package["comment"])
         self.assertLessEqual(len(package["comment"]), handoff.MAX_COMMENT)
+        # A changed-file list too long for the comment is cut with a count.
+        files = [f"src/{'d' * 150}/{n:05}.py" for n in range(2000)]
+        package = handoff.build_package(record, **dict(args, files=files))
+        self.assertLessEqual(len(package["comment"]), handoff.MAX_COMMENT)
+        line = next(x for x in package["comment"].split("\n") if x.startswith("- Changed files: "))
+        shown = line.count("`") // 2
+        self.assertGreater(shown, 0)
+        self.assertTrue(line.endswith(f", and {2000 - shown} more files"))
+        self.assertEqual(handoff.build_package(record, **dict(args, files=files)), package)
+        self.assertEqual(handoff._files_line(["a"], 0), "- Changed files: 1 file")
         with self.assertRaises(handoff.HandoffError):
             handoff.build_package(record, **dict(args, commits=[]))
         with self.assertRaises(handoff.HandoffError):
@@ -754,6 +771,21 @@ class TestPackage(unittest.TestCase):
         self.assertEqual(package["comment"].count("<!--"), 1)
         self.assertNotIn("ghp_" + "a" * 36, package["comment"])
         self.assertIn("````markdown", package["comment"])
+        # A removal cannot join what is left into a new opener or closer.
+        nested = "<!<!---- upstreaming-submission:x -<!---->- --<!---->> --!-->>"
+        self.assertEqual(handoff._strip_comments(nested).count("<!--"), 0)
+        for field in ("message", "rules", "file"):
+            with self.subTest(field=field):
+                over = {"commits": [{"sha": HEAD, "message": f"T {nested}\n\n{nested}"}]} \
+                    if field == "message" else {"files": [*args["files"], nested]}
+                dossier = copy.deepcopy(args["dossier"])
+                if field == "rules":
+                    dossier["data"]["proposal"]["contribution_rules"] = nested
+                    over = {"dossier": dossier}
+                comment = handoff.build_package(record, **dict(args, **over))["comment"]
+                self.assertEqual(comment.count("<!--"), 1)
+                self.assertEqual(comment.count("-->"), 1)
+                self.assertNotIn("--!>", comment)
 
 
 class TestIdempotentComment(unittest.TestCase):
@@ -765,13 +797,34 @@ class TestIdempotentComment(unittest.TestCase):
         self.assertEqual((first["comment_id"], second["comment_id"], second["existing"]),
                          (first["comment_id"], first["comment_id"], True))
         self.assertEqual(first["body_sha256"], second["body_sha256"])
-        # A comment with the marker that the App did not write is refused.
+        # A comment with the marker that the App did not write, or an App
+        # comment that only carries the marker, is not the package: the
+        # package is posted and read back.
         world = through("handoff.preparing_submission")
         marker = handoff.submission_marker(world.record)
         world.gh.comments[1] = {"id": 1, "body": marker, "user": {"login": "someone"}}
+        world.gh.comments[2] = {"id": 2, "body": f"Quoted:\n```\n{marker}\n```\n{marker}",
+                                "user": {"login": handoff.APP_LOGIN}}
         receipt = world.run_workflow()
-        self.assertEqual((receipt["result"], receipt["failure"]), ("failed", handoff.INFRASTRUCTURE))
-        self.assertEqual(len(world.gh.comments), 1)
+        self.assertEqual((receipt["result"], receipt["existing"]), ("applied", False))
+        self.assertNotIn(receipt["comment_id"], (1, 2))
+        self.assertEqual(len(world.gh.comments), 3)
+
+    def test_a_package_of_another_attempt_of_the_same_approval_is_discovered(self):
+        record, args = TestPackage().inputs()
+        earlier = handoff.build_package(record, **dict(args, operation_id="op-" + "b" * 24))
+        self.assertTrue(handoff.is_package_of(earlier["comment"], record, dict(
+            earlier, digest="0" * 64)))
+        other = copy.deepcopy(record)
+        other["handoff_approval"]["command_id"] = "comment-999"
+        self.assertFalse(handoff.is_package_of(earlier["comment"], other, dict(
+            earlier, digest="0" * 64)))
+        # The next revision's marker in an App comment of another approval
+        # (or anywhere but the last line) is not a package.
+        spoof = earlier["comment"].replace("approval: `comment-900`", "approval: `x`")
+        self.assertFalse(handoff.is_package_of(spoof, record, dict(earlier, digest="0" * 64)))
+        self.assertFalse(handoff.is_package_of(earlier["marker"] + "\n" + "text", record,
+                                               dict(earlier, digest="0" * 64)))
 
     def test_a_failed_post_is_a_failed_attempt(self):
         world = through("handoff.preparing_submission")
@@ -1010,9 +1063,10 @@ class TestPackageRendering(unittest.TestCase):
                                           "Mail a@b.example. Code `@kept` stays.\n\n```\n@fenced\n```\n"
                                           "    @indented"}
         package = handoff.build_package(record, **dict(args, commits=[commit]))
-        self.assertEqual(package["title"], "Fix `@user`'s report")
-        for part in ("Thanks `@org/team` and `@bob`.", "Mail a@b.example.", "Code `@kept` stays.",
-                     "```\n@fenced\n```", "`@indented`"):
+        wj = handoff.WORD_JOINER
+        self.assertEqual(package["title"], f"Fix @{wj}user's report")
+        for part in (f"Thanks @{wj}org/team and @{wj}bob.", "Mail a@b.example.",
+                     f"Code `@{wj}kept` stays.", f"```\n@{wj}fenced\n```", f"\n@{wj}indented"):
             self.assertIn(part, package["body"])
         self.assertIn("notifies nobody upstream", package["comment"])
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(package["link"]).query)
@@ -1020,6 +1074,55 @@ class TestPackageRendering(unittest.TestCase):
         self.assertEqual(handoff.neutralize_mentions("no mention, a@b.c"), ("no mention, a@b.c", 0))
         plain = handoff.build_package(record, **args)
         self.assertNotIn("notifies nobody upstream", plain["comment"])
+        # An entity of an at sign alone is a change the package shows.
+        entity = {"sha": HEAD, "message": "Fix\n\nmail a&#64;b.example"}
+        package = handoff.build_package(record, **dict(args, commits=[entity]))
+        self.assertIn("mail a@b.example", package["body"])
+        self.assertIn("notifies nobody upstream", package["comment"])
+
+    def test_no_markdown_context_keeps_a_mention_live(self):
+        wj = handoff.WORD_JOINER
+        cases = {
+            "_@victim_": f"_@{wj}victim_",
+            "*@victim*": f"*@{wj}victim*",
+            "\\`@victim`": f"\\`@{wj}victim`",
+            "```x`y\n@victim": f"```x`y\n@{wj}victim",
+            "`multi\n@victim line`": f"`multi\n@{wj}victim line`",
+            "&#64;victim": f"@{wj}victim",
+            "&#064;victim": f"@{wj}victim",
+            "&#x40;victim": f"@{wj}victim",
+            "&#X0040;victim": f"@{wj}victim",
+            "&commat;victim": f"@{wj}victim",
+            "&#64victim": f"@{wj}victim",
+            "a/@x": f"a/@{wj}x",
+            "x-@x": f"x-@{wj}x",
+            "x+@x": f"x+@{wj}x",
+            ".@x": f".@{wj}x",
+            "@@x": f"@@{wj}x",
+            "x_@x": f"x_@{wj}x",
+            "@org/team": f"@{wj}org/team",
+            "\uff20victim": f"\uff20{wj}victim",
+            "\ufe6bvictim": f"\ufe6b{wj}victim",
+            "&#xff20;victim": f"\uff20{wj}victim",
+            "\u200b@victim": f"\u200b@{wj}victim",
+            "a\u200b@victim": f"a\u200b@{wj}victim",
+            "\u200d@victim": f"\u200d@{wj}victim",
+            "<b>@victim</b>": f"<b>@{wj}victim</b>",
+            "[@victim](https://x)": f"[@{wj}victim](https://x)",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                out, changes = handoff.neutralize_mentions(text)
+                self.assertEqual(out, expected)
+                self.assertGreater(changes, 0)
+                self.assertIsNone(re.search(r"(?<![A-Za-z0-9])[@\uff20\ufe6b][A-Za-z0-9_-]", out))
+        # E-mail addresses, an at sign followed by nothing a login starts
+        # with, and the text around them are kept; neutralizing is stable.
+        for text in ("a@b.example", "x&#645;", "@ alone", "&amp;#64;victim", "@\u2060victim"):
+            with self.subTest(text=text):
+                self.assertEqual(handoff.neutralize_mentions(text), (text, 0))
+        once, _ = handoff.neutralize_mentions("_@a_ &#64;b `@c`")
+        self.assertEqual(handoff.neutralize_mentions(once), (once, 0))
 
 
 class TestPackageBranchCheck(unittest.TestCase):

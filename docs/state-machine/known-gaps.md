@@ -92,9 +92,30 @@ These table mutations break a settled decision but still pass the check:
 ## Dossier contribution-policy items are not enforced before handoff
 
 - **Where:** `nominate_for_handoff` from development CI in `observe_ci.py`; the submission package in `handoff.build_package`.
-- **Today:** the dossier's contribution rules (for example "add a CHANGELOG entry") and its admitted paths are not checked against the series before the contribution is nominated for handoff. The submission package only flags them: it shows the rules and names the admitted paths the series does not change, for the human to resolve before submitting. The live contribution `closeio--ciso8601/1` is in this case: its dossier asks for a CHANGELOG entry and its series does not change `CHANGELOG.md`.
+- **Today:** the dossier's contribution rules (for example "add a CHANGELOG entry") and its admitted paths are not checked against the series before the contribution is nominated for handoff. The submission package only flags them: it shows the rules and names the admitted paths the series does not change, and tells the human not to submit when the series needs a change but to withdraw the package with `retract-pr`, which returns the contribution to development. The live contribution `closeio--ciso8601/1` is in this case: its dossier asks for a CHANGELOG entry and its series does not change `CHANGELOG.md`.
 - **Table:** `nominate_for_handoff` requires every required CI job to pass on the exact head; it states no contribution-policy check.
 - **Required:** a table decision on whether unmet contribution-policy items block nomination or are requested as development Work, then the check from the dossier.
+
+## A pause or retraction after the final check is not seen by the effect
+
+- **Where:** `handoff.yml`; `python -m handoff check` and the effects in `handoff.cleanup`, `handoff.close_development_pr`, and `handoff.post_package`.
+- **Today:** each job checks that its checkout is the head of `main` and that the state still runs the operation before it mints its token; the effect then runs `load_request` again, but on the same checkout. A pause, a retraction, or any other change committed to `main` after that check is not seen, so the effect can still run once. The effects check the GitHub side right before they write (the exact-head lease, the exact development PR at the clean head, the branch at the clean head before the package is posted), which keeps the window narrow.
+- **Table:** `pause` stops new Work and writer admission; `retract_submission` requires quiescence (no open operation).
+- **Required:** a check of the head of `main` immediately before each effect, or a decision that the remaining window is acceptable.
+
+## A slow healthy handoff run can be closed as spent
+
+- **Where:** the handoff launches in `controller.py`; `LAUNCH_INTERVAL_SECONDS` and `handoff.fail_attempt`.
+- **Today:** an attempt is launched again after 300 seconds without a receipt and closed as failed once its last allowed launch is 300 seconds old. A `handoff.yml` run may take up to 20 minutes (its job timeouts) and waits in the shared concurrency group `porting-fork-writer` behind other runs, so a slow but healthy run can be closed as spent while it still runs. The effects are idempotent (the lease write, the close of the exact PR, the package found by its marker), so the next attempt finds the effect in place and reads it back, and the late receipt is not folded; the cost is a charged attempt.
+- **Table:** `operation_launch` counts launches; it states no interval tied to the run timeout or the queueing of the workflow.
+- **Required:** an interval at least as long as the workflow's timeout plus its queueing, or a check of the run's status before an attempt is closed as spent.
+
+## The cleanup readback compares commit messages, not trees
+
+- **Where:** `debug_cleanup` readback in `handoff.readback`.
+- **Today:** the readback of a rewritten clean head checks that the removed commits are `{debug}` commits of the series and that the clean series is that series without them, in order and with the same messages. It does not compare the trees or patches of the kept commits with those of the approved series, so a rewrite that kept the messages and changed the content would be read back as clean. The rewrite runs only in the trusted workflow, under an exact-head lease, and CI on the clean head runs before the package.
+- **Table:** `confirm_clean_head` requires that the lease write and the ref readback match.
+- **Required:** the readback compares the patch of each kept commit (or the final tree against the approved head without the debug commits' changes).
 
 ## The development PR stays closed after a retraction
 
@@ -235,8 +256,8 @@ These follow the literal reading of a decision and are kept until a decision say
 - The workflow posts the submission package only while `riscv64` resolves to the clean head. A moved branch fails the attempt as an infrastructure failure ("posting the package failed"), the only failure row of `handoff.preparing_submission`; a package already posted is found by its marker and read back without that check.
 - `/upstreaming retract-pr` takes the revision and the head only. The spec's form also carries `reason="..."`, but `retract_submission` reads no reason, so the grammar refuses it.
 - The submission package names the revision of the record when it was posted in its `retract-pr` command; after a pause and its resume, the command of the latest tracking-issue entry carries the current revision, as the package states.
-- Contribution rules of the dossier that mention a sign-off, a DCO, a CLA, or a contributor agreement state the signing policy: the package then shows no generic sign-off line.
-- A mention in the proposed title or description (`@user` or `@org/team` outside code) is put in a code span, so the upstream pull request notifies nobody; the package says so.
+- The submission package asks for no change to the series: a change the contribution policy needs (a CHANGELOG entry, a commit sign-off) withdraws the package with `retract-pr`, and only steps outside the series (such as signing a CLA) are the human's before submitting.
+- In the proposed title and description every at sign that could start a mention gets a word joiner (U+2060) after it, whatever the Markdown around it, so the upstream pull request notifies nobody; the package says so.
 - A handoff operation that a human resolves with `resolve-operation` fires no row: the confirm rows need the receipt and its readback, and the retry and exhaustion rows a reported failure. The record releases the operation and the controller plans the next attempt, which finds the cleanup, the closure, or the package already in place and reads it back.
 
 ## Code still outside the engine
