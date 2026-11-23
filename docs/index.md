@@ -21,7 +21,7 @@ A request starts as an issue labelled `upstreaming-request` in the control repos
 
 | Page | Contents |
 |:-----|:---------|
-| [Status]({{ '/status/' | relative_url }}) | Current state of every contribution, generated from committed lifecycle state. |
+| [Status]({{ '/status/' | relative_url }}) | Current state of every contribution, generated from committed lifecycle state, with each contribution's event log. |
 | [Repository setup]({{ '/setup/' | relative_url }}) | Reviewed repository settings, bootstrap resources, and the canonical request fixture. |
 | [Integration contract]({{ '/integration/' | relative_url }}) | Ownership of lifecycle state, queue state, tracking issues, and remote operation receipts. |
 | [Investigation contract]({{ '/investigation/' | relative_url }}) | What the investigator researches and how its dossier is validated. |

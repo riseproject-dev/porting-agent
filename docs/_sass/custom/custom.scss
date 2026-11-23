@@ -1,0 +1,110 @@
+// SPDX-FileCopyrightText: 2026 The RISE Project
+// SPDX-License-Identifier: MIT
+//
+// The event log of the status page: a native <details> disclosure under each
+// project row, closed by default. Compiled once per color scheme, so the
+// scheme's variables give its light and dark colors.
+
+.status-table {
+  .event-log-row td {
+    min-width: 0;
+    padding-top: $sp-1;
+    padding-bottom: $sp-2;
+  }
+}
+
+.event-log {
+  // On a narrow screen the table scrolls sideways; the log stays in view.
+  position: sticky;
+  left: 0;
+  max-width: calc(100vw - 4rem);
+
+  @include mq(md) {
+    max-width: none;
+  }
+
+  > summary {
+    display: inline-flex;
+    gap: $sp-1;
+    align-items: center;
+    padding: $sp-1 0;
+    color: $link-color;
+    cursor: pointer;
+    list-style: none;
+
+    @include fs-2;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+
+    &:focus-visible {
+      outline: 2px solid $link-color;
+      outline-offset: 2px;
+    }
+  }
+
+  &__chevron {
+    flex: none;
+    transition: transform 0.15s ease-in-out;
+
+    @media (prefers-reduced-motion: reduce) {
+      transition: none;
+    }
+  }
+
+  &[open] > summary &__chevron {
+    transform: rotate(180deg);
+  }
+
+  &__count {
+    color: $body-text-color;
+    opacity: 0.8;
+  }
+
+  &__list {
+    padding: 0;
+    margin: $sp-2 0 0;
+    list-style: none;
+
+    > li::before {
+      display: none;
+      content: none;
+    }
+  }
+
+  &__event {
+    padding: $sp-2 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    border-top: $border rgba($border-color, 0.6);
+
+    @include fs-2;
+  }
+
+  &__head,
+  &__change,
+  &__links {
+    margin-top: $sp-1;
+
+    &:first-child {
+      margin-top: 0;
+    }
+  }
+
+  &__seq,
+  &__cause,
+  &__revision,
+  &__flag {
+    color: $body-text-color;
+    opacity: 0.8;
+  }
+
+  &__flag {
+    font-weight: 500;
+  }
+
+  code {
+    white-space: normal;
+  }
+}

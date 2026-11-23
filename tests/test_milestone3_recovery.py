@@ -161,15 +161,16 @@ class TestStatusSite(unittest.TestCase):
         self.assertIn("permalink: /status/", rendered)
         self.assertIn("title: Status", rendered)
         self.assertIn("nav_order: 2", rendered)
-        self.assertIn("| Project | Tracking issue |", rendered)
+        self.assertIn('<th scope="col">Project</th><th scope="col">Tracking issue</th>', rendered)
         self.assertNotIn("None", rendered)
 
     def test_generated_cells_escape_untrusted_markdown(self):
         state = contribution(updated_at=NOW)
-        state["upstream"]["full_name"] = "example/proj|escape"
+        state["upstream"]["full_name"] = "example/proj|<i>escape{{x}}"
         rendered = generate_doc.render([state])
-        self.assertIn("proj\\|escape", rendered)
-        self.assertNotIn("proj|escape", rendered)
+        self.assertIn("<td>example/proj|&lt;i&gt;escape&#123;&#123;x&#125;&#125;</td>", rendered)
+        self.assertNotIn("<i>", rendered)
+        self.assertNotIn('href="https://github.com/example/proj|', rendered)
 
     def test_pages_uses_actions_deployment_without_contents_write(self):
         website = yaml.safe_load((WORKFLOWS / "website.yml").read_text())
