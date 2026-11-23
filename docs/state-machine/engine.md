@@ -136,9 +136,9 @@ The retired commands are rejected with a message that names their replacement, a
 | `request-handoff`, `approve-handoff`, `register-upstream-pr` | `submit-upstream` at the submission gate; the upstream PR is verified by observation. |
 | `block` | `pause`, with a reason. |
 | `approve-scope` | None needed: the verified dossier decides admission and provisioning starts automatically. A parked contribution resumes from `parked.idle`, with `class` and `paths` as an admission override. |
-| `provision` | None needed: the fork is provisioned automatically. In `provisioning.waiting_human`, `resume` once the prerequisite is corrected. |
+| `provision` | None needed: the fork is provisioned automatically. In `provisioning.waiting_human`, correct the prerequisite, then `park` and `resume` from `parked.idle`; a plain `resume` there applies only after a long stop. |
 | `restart` | `resume` from `parked.idle`; `closed.idle` is final. |
-| `clarify` | `resume` in the human wait once the cause is corrected. |
+| `clarify` | `resume` in the human wait once the cause is corrected; in `provisioning.waiting_human`, `park` then `resume` from `parked.idle`. |
 | `revise-scope` | `refresh`, or `resume` from `parked.idle` with `class` and `paths`. |
 
 The tracking-issue entries offer, under "Possible next commands", the commands the table takes in the contribution's state (and `force-develop` in `parked.idle`); in a state that only the compatibility layer writes they offer `pause`, `park`, and `resume`. A retired command is never offered.

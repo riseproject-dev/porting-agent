@@ -122,6 +122,13 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** the reminder in that state carries the package link and the exact head, and states when the observed upstream PR does not match.
 - **Required:** render the reminder from the posted package once the handoff operations exist. Nothing reaches the state while `submit-upstream` is held.
 
+## A legacy pending action in upstream review has no resume
+
+- **Where:** `upstream_review.waiting_human` with `pending_human_action` `task_without_outcome`, written by the legacy Work deadline in `reconcile.py`.
+- **Today:** no resume row's guard admits that pending action, and `restart_generation` is refused while the upstream PR is open, so the only exit is `park` then `abandon`. Nothing reaches the state while `submit-upstream` is held.
+- **Table:** Work that ends without a Result takes `allocate_work_retry` within its budget and `exhaust_work_recovery` into the human wait with a pending action that `resume_upstream_revision` admits.
+- **Required:** replace the legacy Work deadline by the table's Work recovery verbs before upstream review becomes reachable.
+
 ## Records written before `budget.reruns` existed
 
 The migrated live record has no `budget.reruns`. The schema makes it optional and the engine counts from zero. Make the field required once every record carries it.

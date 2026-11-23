@@ -95,13 +95,16 @@ RETIRED["approve-scope"] = (
     f"`parked.idle` with `{RESUME_FORM}`; `class=` and `paths=` record an admission override")
 RETIRED["provision"] = (
     "`provision` is retired. The fork is provisioned automatically. When provisioning waits "
-    f"for a human in `provisioning.waiting_human`, correct the prerequisite and post `{RESUME_FORM}`")
+    f"for a human in `provisioning.waiting_human`, correct the prerequisite, then post "
+    "`/upstreaming park revision=N reason=\"...\"` and, from `parked.idle`, "
+    f"`{RESUME_FORM}` (a plain resume there applies only after a long stop)")
 RETIRED["restart"] = (
     "`restart` is retired. A new generation starts from `parked.idle` with "
     f"`{RESUME_FORM}`; `closed.idle` is final")
 RETIRED["clarify"] = (
     "`clarify` is retired. A contribution that waits for a human continues with "
-    f"`{RESUME_FORM}` once the cause is corrected")
+    f"`{RESUME_FORM}` once the cause is corrected; in `provisioning.waiting_human`, park "
+    "it first and resume from `parked.idle`")
 RETIRED["revise-scope"] = (
     "`revise-scope` is retired. A new scope comes from a new investigation: "
     f"`{REFRESH_FORM}` keeps the fork and development PR, and a contribution in "
