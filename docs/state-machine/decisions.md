@@ -1281,6 +1281,27 @@ flowchart TB
     development_fix_needed ==>|request_repair| development_agent_running
 ```
 
+### O30. A moved `riscv64` before the package is posted
+
+What a package attempt in `handoff.preparing_submission` takes when its final check finds that `riscv64` no longer resolves to the clean head (moved, deleted, or renamed). The state had no row for it, so the attempt failed as an infrastructure failure and ended in a human wait whose resume led to the same step.
+
+**Decision.** `return_for_repair` to `development.fix_needed`, guarded by `riscv64` of the fork not resolving to the clean head, as from `handoff.building_upstream_branch` and `handoff.waiting_ci`. Nothing is posted and nothing is written to `riscv64`. The row bumps the revision, clears the handoff fields, and keeps the recorded CI evidence, since a moved branch has no CI verdict; it charges no `submission_comment` budget. The workflow reports the failure class `moved`; the reconciler reads `riscv64` again before it fires the row, and a branch read at the clean head, or not read, is folded as an infrastructure failure (`retry_submission_comment`, then `exhaust_comment_retries`). A missing branch counts as moved only when the fork is read under its recorded repository id.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_preparing_submission["handoff.preparing_submission"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_preparing_submission ==>|return_for_repair| development_fix_needed
+    handoff_preparing_submission -->|retry_submission_comment| handoff_preparing_submission
+    handoff_preparing_submission -->|exhaust_comment_retries| handoff_waiting_human
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

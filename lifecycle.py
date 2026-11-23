@@ -717,6 +717,7 @@ CLEAN_HEAD_CI_WAIT_HOURS = 12
 CLEAN_HEAD_CI_MISSING = ("CI on the clean head is not complete, and either no run exists and its "
                          "workflow cannot be dispatched, or "
                          f"{CLEAN_HEAD_CI_WAIT_HOURS} hours have passed since the wait began")
+CLEAN_HEAD_MOVED = "`riscv64` of the fork does not resolve to the clean head"
 CLEAN_HEAD_CI_PASSED = ("every required CI job executed and passed on the clean head, or on the "
                         "candidate head when the clean head has its tree")
 # Work that carries feedback is never answered by a CI rerun.
@@ -1362,7 +1363,8 @@ LIFECYCLE: dict[str, State] = {
         }),
     "handoff.preparing_submission": State(
         "work", False, False,
-        "The submission package (title, body, prefilled compare link) is posted to the tracking issue.",
+        "The submission package (title, body, prefilled compare link) is posted to the tracking "
+        "issue. It is posted only while `riscv64` still resolves to the clean head.",
         transitions={
             ("retry_submission_comment", SELF): Transition(
                 _P, None,
@@ -1372,6 +1374,14 @@ LIFECYCLE: dict[str, State] = {
                 _P, None,
                 ("the package comment is read back",),
                 _E(sets=("pending_human_action=open_upstream_pr", "handoff_request"))),
+            ("return_for_repair", "development.fix_needed"): Transition(
+                _P, None,
+                (CLEAN_HEAD_MOVED,),
+                _RETURN_FOR_REPAIR,
+                description="The package is not posted: the final check of the attempt found "
+                            "`riscv64` moved, deleted, or renamed, and the reconciler read the "
+                            "same. The recorded CI evidence is kept, and nothing is written to "
+                            "`riscv64`."),
             ("exhaust_comment_retries", "handoff.waiting_human"): Transition(
                 _P, None,
                 ("submission_comment exhausted",),
@@ -2749,6 +2759,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
                  "handoff.review_pending", "handoff.reviewing",
                  "handoff.building_upstream_branch", "handoff.waiting_ci",
+                 "handoff.preparing_submission",
                  "handoff.waiting_upstream_pr", "development.fix_needed", "development.waiting_ci",
                  "queued.idle"),
                 (("handoff.awaiting_submission", "submit_upstream"),
@@ -2767,6 +2778,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.reviewing", "reject_submission_review"),
                  ("handoff.building_upstream_branch", "return_for_repair"),
                  ("handoff.waiting_ci", "return_for_repair"),
+                 ("handoff.waiting_ci", "accept_clean_head_ci"),
+                 ("handoff.preparing_submission", "return_for_repair"),
                  ("handoff.awaiting_submission", "refresh_planning"),
                  ("handoff.waiting_upstream_pr", "record_audit_observation"),
                  ("handoff.waiting_upstream_pr", "retract_submission"),
@@ -2774,8 +2787,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 start="handoff.awaiting_submission",
                 text="Before the package is posted, a changed candidate head, a rewrite that "
                      "fails the trusted check, a failed review, a reviewed series that does not rebuild, a "
-                     "lease conflict on `riscv64`, or blocking CI on the clean head returns to "
-                     "development; blocking CI on the clean head records its failing evidence, "
+                     "lease conflict on `riscv64`, blocking CI on the clean head, or a `riscv64` "
+                     "that no longer resolves to the clean head when the package is about to "
+                     "be posted returns to development; blocking CI on the clean head records its failing evidence, "
                      "which names the candidate head it was built from, so the repair names the "
                      "failing job; a failed review records its reasons as the pending feedback "
                      "of the next development Work, and nothing is posted. At the gate, a CI "
@@ -3381,6 +3395,18 @@ def _check_settled_rows(problems: list[str]) -> None:
             problems.append(f"{where}: a CI failure records no pending feedback")
         if not set(_LEAVE_HANDOFF) <= set(t.effects.clears):
             problems.append(f"{where}: leaving the handoff clears {', '.join(_LEAVE_HANDOFF)}")
+    # A return without a CI verdict keeps the recorded evidence.
+    for state in ("handoff.building_upstream_branch", "handoff.preparing_submission"):
+        t = row(state, "return_for_repair")
+        if t is None:
+            continue
+        where = f"{state} --return_for_repair-->"
+        if not set(_LEAVE_HANDOFF) <= set(t.effects.clears):
+            problems.append(f"{where}: leaving the handoff clears {', '.join(_LEAVE_HANDOFF)}")
+        if t.effects.revision != "bump":
+            problems.append(f"{where}: a return to development bumps the revision")
+        if "last_ci_evidence_id" in touched(t):
+            problems.append(f"{where}: a return without a CI verdict keeps last_ci_evidence_id")
     t = row(gate, "record_explanation")
     if t is not None and "last_ci_evidence_id" in touched(t):
         problems.append(f"{gate} --record_explanation-->: an explanation keeps "

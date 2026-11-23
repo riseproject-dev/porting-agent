@@ -733,6 +733,7 @@ flowchart TB
         handoff_reviewing["handoff.reviewing"]
         handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_preparing_submission["handoff.preparing_submission"]
         handoff_waiting_upstream_pr["handoff.waiting_upstream_pr"]
     end
     subgraph development["development"]
@@ -760,13 +761,15 @@ flowchart TB
     handoff_reviewing -->|reject_submission_review| development_fix_needed
     handoff_building_upstream_branch -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
+    handoff_waiting_ci -->|accept_clean_head_ci| handoff_preparing_submission
+    handoff_preparing_submission -->|return_for_repair| development_fix_needed
     handoff_awaiting_submission -->|refresh_planning<br/>/upstreaming refresh| queued_idle
     handoff_waiting_upstream_pr -->|record_audit_observation| handoff_waiting_upstream_pr
     handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
     handoff_waiting_upstream_pr -->|refresh_planning<br/>/upstreaming refresh| queued_idle
 ```
 
-Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, or blocking CI on the clean head returns to development; blocking CI on the clean head records its failing evidence, which names the candidate head it was built from, so the repair names the failing job; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_planning` leave it, and none of them changes `riscv64`.
+Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, blocking CI on the clean head, or a `riscv64` that no longer resolves to the clean head when the package is about to be posted returns to development; blocking CI on the clean head records its failing evidence, which names the candidate head it was built from, so the repair names the failing job; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_planning` leave it, and none of them changes `riscv64`.
 
 ### Failure case 2: a handoff step fails repeatedly or needs a human
 

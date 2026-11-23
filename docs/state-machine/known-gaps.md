@@ -22,13 +22,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `require_renamed_upstream` leads to the human wait with `upstream_unavailable` and no counter, and `resume_renamed_upstream` leaves it only once the repository is read under its recorded name again; a resume before then waits again at once.
 - **Required:** a table decision to follow a repository rename while the upstream PR is open, verified by `upstream.repository_id` equality (for example rebind `upstream.full_name` and the PR URL, keeping the contribution id and project under the old name).
 
-## A moved branch before the package is posted waits for a human
-
-- **Where:** `handoff.preparing_submission`; `handoff.post_package`.
-- **Today:** the workflow posts the package only while `riscv64` still resolves to the clean head. When the branch moved, the attempt fails as an infrastructure failure: `retry_submission_comment` within the budget, then `exhaust_comment_retries` to `handoff.waiting_human`, whose only exit is the resume to the same step. Nothing returns the contribution to development, so a human restores the branch or abandons.
-- **Table:** this state has no row for a changed `riscv64` head; the decision that a changed head before the package is posted returns to development is taken by `return_for_repair` in `handoff.building_upstream_branch` and `handoff.waiting_ci` only.
-- **Required:** a table decision for a changed head in `handoff.preparing_submission` (for example `return_for_repair`), then take it from the attempt's failure.
-
 ## Plan contribution-policy items are not enforced before nomination
 
 - **Where:** `nominate_for_handoff` from development CI in `observe_ci.py`.
@@ -195,7 +188,8 @@ These follow the literal reading of a decision and are kept until a decision say
 - An observation of the locked wait that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.
 - The submission package's title and description are the reviewed ones; a reviewed title that is empty once cleaned is `Add riscv64 support`. The package states in the comment, not in the description, how many required CI jobs passed and on which head.
 - Handoff receipts are read only from completed `handoff.yml` runs on `main` dispatched by `workflow_dispatch`, and only for the open operation the record runs.
-- The workflow posts the submission package only while `riscv64` resolves to the clean head. A moved branch fails the attempt as an infrastructure failure ("posting the package failed"), the only failure row of `handoff.preparing_submission`; a package already posted is found by its marker and read back without that check.
+- The workflow posts the submission package only while `riscv64` resolves to the clean head; a package already posted is found by its marker and read back without that check.
+- A `riscv64` that is missing when the fork cannot be read under its recorded id is not a moved branch: the attempt is an infrastructure failure (`retry_submission_comment`). A branch that moves after the package is posted is not read in `handoff.preparing_submission`; the locked wait verifies the upstream PR at the exact clean head.
 - `/upstreaming retract-pr` takes the revision and the head only. The spec's form also carries `reason="..."`, but `retract_submission` reads no reason, so the grammar refuses it.
 - The submission package names the revision of the record when it was posted in its `retract-pr` command; after a pause and its resume, the command of the latest tracking-issue entry carries the current revision, as the package states.
 - The submission package asks for no change to the series: a change the contribution policy needs (a CHANGELOG entry, a commit sign-off) withdraws the package with `retract-pr`, and only steps outside the series (such as signing a CLA) are the human's before submitting.

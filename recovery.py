@@ -449,6 +449,9 @@ FIRES: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
     # establishes ``upstream_branch_invalid`` and supplies no count, so neither
     # budget row applies. One that finds an upstream PR open from `riscv64`
     # waits for a human: its caller establishes ``upstream_branch_blocked``.
+    # A package attempt that finds `riscv64` off the clean head, read back the
+    # same by the reconciler, returns to development: its caller establishes
+    # ``clean_head_moved`` and supplies no count, so neither budget row applies.
     ("handoff.building_upstream_branch", "upstream_branch"): {
         "confirmed": ("confirm_clean_head",),
         "failed": ("retry_upstream_branch", "exhaust_upstream_branch_retries",
@@ -456,7 +459,7 @@ FIRES: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
     },
     ("handoff.preparing_submission", "submission_comment"): {
         "confirmed": ("confirm_submission_package",),
-        "failed": ("retry_submission_comment", "exhaust_comment_retries"),
+        "failed": ("retry_submission_comment", "exhaust_comment_retries", "return_for_repair"),
     },
 }
 

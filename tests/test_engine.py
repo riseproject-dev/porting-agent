@@ -581,6 +581,25 @@ class TestTableDecisions(unittest.TestCase):
                                        facts={"upstream_branch_invalid"})
         self.assertTrue(back.accepted, back.reason)
         self.assertEqual(back.record["last_ci_evidence_id"], "ci-2-7-1")
+        # A package attempt that finds `riscv64` off the clean head returns
+        # without a CI verdict too, only with that fact.
+        preparing = dict(waiting, activity="preparing_submission", clean_head_ci_since=None)
+        self.assertFalse(engine.apply_transition(
+            preparing, "return_for_repair", policy=POLICY, now=NOW,
+            facts={"submission_comment_failed"}).accepted)
+        with self.assertRaisesRegex(lc.TransitionError, "does not set last_ci_evidence_id"):
+            engine.apply_transition(preparing, "return_for_repair", policy=POLICY, now=NOW,
+                                    facts={"clean_head_moved"},
+                                    values={"last_ci_evidence_id": "ci-2-9-1"})
+        moved = engine.apply_transition(preparing, "return_for_repair", policy=POLICY, now=NOW,
+                                        facts={"clean_head_moved"})
+        self.assertTrue(moved.accepted, moved.reason)
+        self.assertEqual(engine.state_key(moved.record), "development.fix_needed")
+        self.assertEqual(moved.record["revision"], preparing["revision"] + 1)
+        self.assertEqual(moved.record["last_ci_evidence_id"], "ci-2-7-1")
+        self.assertEqual(moved.charged, ())
+        for name in lc._LEAVE_HANDOFF:
+            self.assertIsNone(moved.record.get(name), name)
 
     def test_explanation_at_the_gate_keeps_everything(self):
         gate = awaiting_submission()

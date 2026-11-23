@@ -1898,16 +1898,41 @@ class TestPackageRendering(unittest.TestCase):
 
 
 class TestPackageBranchCheck(unittest.TestCase):
+    """The package is posted only while `riscv64` resolves to the clean head;
+    a branch read moved, deleted, or renamed returns to development."""
+
+    def assert_returned(self, world, receipt):
+        before = copy.deepcopy(world.record)
+        writes = world.gh.fork_writes()
+        op_id = world.record["active_operation_id"]
+        self.assertEqual((receipt["result"], receipt["failure"]), ("failed", handoff.MOVED))
+        self.assertEqual(world.gh.comments, {})
+        self.assertNotIn("POST", [c[0] for c in world.gh.calls])
+        out = world.tick(at(30), receipts=[receipt])
+        self.assertEqual(world.kinds(out), ["return_for_repair", "request_patch"])
+        self.assertEqual(world.state, "development.agent_running")
+        record = world.record
+        self.assertEqual(record["revision"], before["revision"] + 1)
+        for name in ("clean_head_sha", "submission_rewrite_id", "submission_review_id",
+                     "handoff_request", "active_operation_id"):
+            self.assertIsNone(record[name], name)
+        self.assertEqual(record["last_ci_evidence_id"], before["last_ci_evidence_id"])
+        op = world.operations[op_id]
+        self.assertEqual((op["status"], op["external_ids"]["failure"]), ("failed", "moved"))
+        returned = next(e for e in world.events if e["kind"] == "return_for_repair")
+        self.assertFalse(returned["details"].get("charged"))
+        self.assertEqual((returned["details"]["clean_head"], returned["details"]["kept_evidence_id"]),
+                         (CLEAN, before["last_ci_evidence_id"]))
+        self.assertEqual(world.gh.fork_writes(), writes)
+        return returned
+
     def test_a_moved_branch_is_not_posted(self):
         world = through("handoff.preparing_submission")
         world.gh.branches["riscv64"] = "d" * 40
         receipt = world.run_workflow()
-        self.assertEqual((receipt["result"], receipt["failure"]), ("failed", handoff.INFRASTRUCTURE))
         self.assertIn("riscv64 resolves to", receipt["reason"])
-        self.assertEqual(world.gh.comments, {})
-        self.assertNotIn("POST", [c[0] for c in world.gh.calls])
-        out = world.tick(at(30), receipts=[receipt])
-        self.assertEqual(world.kinds(out), ["retry_submission_comment"])
+        returned = self.assert_returned(world, receipt)
+        self.assertEqual(returned["details"]["head"], "d" * 40)
         # The development branch is not what the package names.
         world = through("handoff.preparing_submission")
         world.gh.branches["riscv64-dev"] = "d" * 40
@@ -1917,6 +1942,82 @@ class TestPackageBranchCheck(unittest.TestCase):
         world.gh.branches["riscv64"] = "d" * 40
         again = world.run_workflow()
         self.assertEqual((again["result"], again["comment_id"]), ("applied", first["comment_id"]))
+
+    def test_a_deleted_branch_returns_for_repair(self):
+        world = through("handoff.preparing_submission")
+        world.gh.branches["riscv64"] = None
+        returned = self.assert_returned(world, world.run_workflow())
+        self.assertEqual(returned["details"]["head"], handoff.ABSENT)
+
+    def test_a_renamed_branch_returns_for_repair(self):
+        world = through("handoff.preparing_submission")
+        branch_head = world.gh.branch_head
+
+        def renamed(api, full_name, ref):
+            if ref == "riscv64":
+                raise collect.BranchRenamed(ref, "renamed")
+            return branch_head(api, full_name, ref)
+
+        with mock.patch.object(world.gh, "branch_head", renamed):
+            receipt = world.run_workflow()
+            self.assert_returned(world, receipt)
+
+    def test_a_missing_branch_of_an_unread_fork_is_retried(self):
+        original = FakeGitHub.get
+
+        def another_id(self, path):
+            if path == f"/repos/{FORK['name']}":
+                return dict(original(self, path), id=1)
+            return original(self, path)
+
+        def missing(self, path):
+            if path == f"/repos/{FORK['name']}":
+                raise collect.CollectError(f"GET {path}: HTTP 404")
+            return original(self, path)
+
+        for name, get in (("another id", another_id), ("not found", missing)):
+            with self.subTest(name):
+                world = through("handoff.preparing_submission")
+                world.gh.branches["riscv64"] = None
+                with mock.patch.object(FakeGitHub, "get", get):
+                    receipt = world.run_workflow()
+                    self.assertEqual((receipt["result"], receipt["failure"]),
+                                     ("failed", handoff.INFRASTRUCTURE))
+                    out = world.tick(at(30), receipts=[receipt])
+                self.assertEqual(world.kinds(out), ["retry_submission_comment"])
+                self.assertEqual(world.state, "handoff.preparing_submission")
+                self.assertEqual(world.gh.comments, {})
+
+    def test_a_branch_read_back_at_the_clean_head_is_retried(self):
+        world = through("handoff.preparing_submission")
+        limit = lifecycle.budget_limit("submission_comment", world.policy)
+        minute = 30
+        for attempt in range(1, limit + 1):
+            world.gh.branches["riscv64"] = "d" * 40
+            receipt = world.run_workflow()
+            self.assertEqual(receipt["failure"], handoff.MOVED)
+            world.gh.branches["riscv64"] = CLEAN
+            op_id = world.record["active_operation_id"]
+            out = world.tick(at(minute), receipts=[receipt])
+            minute += 1
+            op = world.operations[op_id]
+            self.assertEqual(op["external_ids"]["failure"], handoff.INFRASTRUCTURE)
+            if attempt < limit:
+                self.assertEqual(world.kinds(out), ["retry_submission_comment"])
+                self.assertEqual(world.state, "handoff.preparing_submission")
+                self.assertEqual(world.events[-1]["details"]["charged"], ["submission_comment"])
+                self.assertTrue(world.events[-1]["details"]["reason"].startswith(
+                    "riscv64 is not read back away from the clean head; "))
+            else:
+                self.assertEqual(world.kinds(out), ["exhaust_comment_retries"])
+        self.assertEqual(world.state, "handoff.waiting_human")
+        self.assertEqual(world.gh.comments, {})
+
+    def test_moved_is_a_package_class_only(self):
+        world = reviewed()
+        out = world.tick(at(2), receipts=[failed(world, handoff.MOVED)])
+        self.assertEqual(world.kinds(out), ["retry_upstream_branch"])
+        self.assertEqual(world.state, "handoff.building_upstream_branch")
 
 
 class TestUpstreamBranchReadback(unittest.TestCase):

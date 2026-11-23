@@ -18,7 +18,9 @@ table run one remote operation each, through the trusted workflow
 * ``handoff.preparing_submission``, kind ``submission_comment``: one
   App-authored tracking-issue comment carries the submission package (the
   reviewed title and description, and a prefilled compare link from
-  ``riscv64``) and is read back.
+  ``riscv64``) and is read back. It is posted only while ``riscv64`` still
+  resolves to the clean head; a moved branch returns the contribution to
+  development (``return_for_repair``).
 
 Each attempt is its own operation of the same intent (the approval), with
 its attempt index and its count in the budget of the state in ``reason_ids``
@@ -87,10 +89,21 @@ CONFIRM_FACTS = {
 # (`require_branch_intervention`).
 INVALID_FACT = "upstream_branch_invalid"
 BLOCKED_FACT = "upstream_branch_blocked"
+# A package that is not posted because `riscv64` does not resolve to the clean
+# head returns to development too (`return_for_repair`).
+MOVED_FACT = "clean_head_moved"
 # Failure classes a receipt may report.
 INFRASTRUCTURE = "infrastructure"
 INVALID = "invalid"
 BLOCKED = "blocked"
+MOVED = "moved"
+# The fact a failure class of a kind establishes instead of the failure fact
+# of its retry row; such a failure charges no budget.
+SPECIAL_FACTS = {
+    ("upstream_branch", INVALID): INVALID_FACT,
+    ("upstream_branch", BLOCKED): BLOCKED_FACT,
+    ("submission_comment", MOVED): MOVED_FACT,
+}
 
 APP_LOGIN = "riseproject-dev[bot]"
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -113,6 +126,12 @@ class HandoffError(RuntimeError):
 class HandoffInvalid(HandoffError):
     """The reviewed series does not rebuild to the reviewed head, or the lease
     on `riscv64` conflicts: the contribution returns to development."""
+
+
+class HandoffMoved(HandoffError):
+    """`riscv64` of the fork does not resolve to the clean head before the
+    package is posted: nothing is posted, and the contribution returns to
+    development."""
 
 
 class HandoffBlocked(HandoffError):
@@ -727,19 +746,20 @@ LAUNCHES_SPENT = "launches spent without a receipt"
 
 
 def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str, reason: str,
-                 external_ids: dict | None = None):
+                 external_ids: dict | None = None, details: dict | None = None):
     """Close a failed attempt (``begin_effect`` when it is still ``planned``,
     then ``record_failure``) and fire the one row of its state: the retry
     row within the budget, the exhaustion row at its limit, or, for a build of
     `riscv64` that is ``invalid``, ``return_for_repair``, and for one that is
-    ``blocked``, ``require_branch_intervention``. Returns the closed operation
-    and the outcome of the row. Raises ``lifecycle.TransitionError`` when no
-    single row applies."""
+    ``blocked``, ``require_branch_intervention``, and for a package attempt
+    that is ``moved``, ``return_for_repair`` (``SPECIAL_FACTS``; any other
+    class is an infrastructure failure). ``details`` are added to the details
+    of the event. Returns the closed operation and the outcome of the row.
+    Raises ``lifecycle.TransitionError`` when no single row applies."""
     import engine
 
     kind = op["kind"]
-    special = {INVALID: INVALID_FACT, BLOCKED: BLOCKED_FACT}.get(failure) \
-        if kind == "upstream_branch" else None
+    special = SPECIAL_FACTS.get((kind, failure))
     facts = {special} if special else {FAILURE_FACTS[kind]}
     counts = {} if special else {kind: attempt_count(op)}
     verbs = [verb for verb in recovery.fired_verbs(record, op, "failed")
@@ -755,12 +775,44 @@ def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str
     fired = recovery.fire(
         record, new_op, policy=policy, now=now, facts=facts, counts=counts,
         details={"attempt": int(reason_value(op, "attempt") or 0), "count": attempt_count(op),
-                 "reason": isolation.clean_text(reason or "", 300)})
+                 "reason": isolation.clean_text(reason or "", 300), **(details or {})})
     if fired is None or not fired.accepted:
         raise lifecycle.TransitionError(
             f"a failed {kind} attempt fires no row in {engine.state_key(record)}: "
             f"{fired.reason if fired else 'none bound'}")
     return new_op, fired
+
+
+ABSENT = "absent"
+
+
+def upstream_branch_at(api: collect.Api, record: dict) -> str:
+    """What `riscv64` of the recorded fork resolves to: its head, or
+    ``ABSENT`` when the fork is read under its recorded id and has no branch
+    of that name (deleted or renamed). Raises ``collect.CollectError`` when
+    neither is established, so a failed read is never taken for a moved
+    branch."""
+    fork = record["fork"]
+    try:
+        head = collect.branch_head(api, fork["name"], UPSTREAM_REF)
+    except collect.BranchRenamed:
+        return ABSENT
+    if head is not None:
+        return head["head"]
+    if collect.repository(api, fork["name"]).get("id") != fork["repository_id"]:
+        raise collect.CollectError(f"{fork['name']} is not read under its recorded id")
+    return ABSENT
+
+
+def moved_readback(api: collect.Api, record: dict) -> str | None:
+    """The independent readback of a receipt that reports `riscv64` moved:
+    what the branch resolves to when that is not the clean head, else
+    ``None`` (the branch is at the clean head again, or cannot be read)."""
+    try:
+        observed = upstream_branch_at(api, record)
+    except collect.CollectError:
+        return None
+    return None if observed == record["clean_head_sha"] else observed
 
 
 def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
@@ -1298,13 +1350,13 @@ def post_package(root: Path, operation_id: str, *, policy: dict, read_api: colle
         comment = existing[0]
     else:
         # The final check before the effect: the package is posted only while
-        # the branch still resolves to the clean head it names. A moved branch
-        # is a failed attempt (`retry_submission_comment`, then
-        # `exhaust_comment_retries`): the state has no other failure row.
-        observed = collect.branch_head(read_api, record["fork"]["name"], UPSTREAM_REF)
-        observed = observed and observed["head"]
+        # the branch still resolves to the clean head it names. A moved,
+        # deleted, or renamed branch fails the attempt with the class
+        # ``moved``, which the reconciler reads back and folds as
+        # `return_for_repair`; a failed read is an infrastructure failure.
+        observed = upstream_branch_at(read_api, record)
         if observed != record["clean_head_sha"]:
-            raise HandoffError(f"the branch {UPSTREAM_REF} resolves to {observed}, not the clean "
+            raise HandoffMoved(f"the branch {UPSTREAM_REF} resolves to {observed}, not the clean "
                                "head; the package is not posted")
         comment = issue_api.request("POST", f"/repos/{CONTROL_REPO}/issues/{number}/comments",
                                     {"body": package["comment"]})
@@ -1356,7 +1408,8 @@ def receipt(op_meta: dict, result: dict | None = None, *, error: BaseException |
     else:
         out.update(result="failed",
                    failure=INVALID if isinstance(error, HandoffInvalid)
-                   else BLOCKED if isinstance(error, HandoffBlocked) else INFRASTRUCTURE)
+                   else BLOCKED if isinstance(error, HandoffBlocked)
+                   else MOVED if isinstance(error, HandoffMoved) else INFRASTRUCTURE)
     out["reason"] = isolation.clean_text(error, 300)
     return out
 

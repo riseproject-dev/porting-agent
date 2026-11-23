@@ -10,7 +10,7 @@ permalink: /state-machine/table/
 # Lifecycle table
 {: .no_toc }
 
-This is the contribution state machine as defined in `lifecycle.py`: 29 states, 242 transitions with 95 distinct verbs (70 of the transitions are expanded from 5 rules), 1 flag, and 13 retry budgets, plus the operation table with 6 states and 14 transitions. A contribution starts in `queued.idle` (`accept_request`).
+This is the contribution state machine as defined in `lifecycle.py`: 29 states, 243 transitions with 95 distinct verbs (70 of the transitions are expanded from 5 rules), 1 flag, and 13 retry budgets, plus the operation table with 6 states and 14 transitions. A contribution starts in `queued.idle` (`accept_request`).
 
 Requested Work is identified by its generation, revision, and Work id. A Result that differs in any of them is never folded and never published.
 
@@ -66,7 +66,7 @@ Requested Work is identified by its generation, revision, and Work id. A Result 
 | `handoff.reviewing` | `work` | no | no | 6 + 2 | Submission review Work is requested or running; its Result is pass or fail with reasons for exactly the rewritten series and text. |
 | `handoff.building_upstream_branch` | `work` | no | yes | 6 + 2 | The upstream branch `riscv64` is created, or replaced under an exact-head lease, from the reviewed series, and read back. It is never written while an upstream PR is open from it, and `riscv64-dev` is not changed. |
 | `handoff.waiting_ci` | `auto_wait` | no | no | 5 + 2 | Required CI runs on the clean head of `riscv64`. |
-| `handoff.preparing_submission` | `work` | no | no | 3 + 2 | The submission package (title, body, prefilled compare link) is posted to the tracking issue. |
+| `handoff.preparing_submission` | `work` | no | no | 4 + 2 | The submission package (title, body, prefilled compare link) is posted to the tracking issue. It is posted only while `riscv64` still resolves to the clean head. |
 | `handoff.waiting_human` | `human_wait` | no | no | 9 + 3 | A handoff step failed repeatedly or needs a human: the submission rewrite or review Work, writing `riscv64` (also while an upstream PR is open from it), CI on the clean head, or posting the submission package. A human corrects it and resumes; the resume returns to the step named by `pending_human_action` and starts again the counter named in `pending_human_action.counter`. |
 | `handoff.waiting_upstream_pr` | `locked` | no | no | 4 + 2 | Waiting for a human to open the upstream PR from the package. Exactly three exits leave it: `verify_upstream_pr`, `retract_submission`, and `refresh_planning`. |
 | `upstream_review.waiting_ci` | `auto_wait` | no | no | 7 + 1 | The upstream PR is open; upstream CI, review, and merge are observed. Upstream CI is never rerun by the pipeline. |
@@ -440,6 +440,7 @@ For each state, the verbs available from it. A verb leads from a state to one ta
 |:-----|:--------|:---|:------|:--------|:--------|
 | `retry_submission_comment` | operation | same state | posting the package failed; submission_comment remains | none | `submission_comment` |
 | `confirm_submission_package` | operation | `handoff.waiting_upstream_pr` | the package comment is read back | sets `pending_human_action=open_upstream_pr`, `handoff_request` | - |
+| `return_for_repair` | operation | `development.fix_needed` | `riscv64` of the fork does not resolve to the clean head. The package is not posted: the final check of the attempt found `riscv64` moved, deleted, or renamed, and the reconciler read the same. The recorded CI evidence is kept, and nothing is written to `riscv64`. | revision +1; clears `clean_head_sha`, `clean_head_ci_since`, `submission_rewrite_id`, `submission_review_id`, `handoff_request`, `pending_human_action` | - |
 | `exhaust_comment_retries` | operation | `handoff.waiting_human` | submission_comment exhausted | sets `pending_human_action=submission_comment_failed`, `pending_human_action.counter=submission_comment` | - |
 | `park_contribution` (rule) | command (`/upstreaming park`) | `parked.idle` | a reason is given; any revision, current or stale; no open operation. Ends the current generation; evidence is kept for audit. A Result held for publication is not published. Accepted while paused. | Work: clear; sets `parked_reason`, `previous_phase`; clears `pending_publication` | - |
 | `record_late_effect` (rule) | result | same state | the Result does not match the current generation, revision, and requested Work. Recorded in the events for audit. The Result is never folded, the publisher refuses it, and the state never changes. | none | - |

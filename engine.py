@@ -811,6 +811,7 @@ for _guard, _name in (
     ("a blocking CI failure on the clean head, or the observed `riscv64` head differs from the "
      "clean head", "clean_head_needs_repair"),
     ("posting the package failed", "submission_comment_failed"),
+    (lc.CLEAN_HEAD_MOVED, "clean_head_moved"),
     ("the package comment is read back", "submission_package_read_back"),
     ("an observation that does not satisfy verify_upstream_pr", "unverified_upstream_observation"),
     (lc.UPSTREAM_PR_ON_BASE, "upstream_pr_open_on_base"),
@@ -887,7 +888,8 @@ PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
 # Verbs that pipeline code takes through ``apply_transition``, with the module
 # that takes them. ``return_for_repair`` is taken by observation at the gate
 # and in ``handoff.waiting_ci``, and fired by a build of `riscv64` whose
-# reviewed series does not rebuild or whose lease conflicts.
+# reviewed series does not rebuild or whose lease conflicts, and by a package
+# attempt that finds `riscv64` off the clean head.
 PIPELINE_VERBS: dict[str, str] = {
     # Entering and leaving the submission gate, by observation, and the
     # review comments observed at the gate.

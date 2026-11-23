@@ -1481,8 +1481,12 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
     budget of the state, the exhaustion row beyond it, or, for a build of
     `riscv64` whose reviewed series does not rebuild or whose lease
     conflicts, `return_for_repair`, and for one that found an upstream PR open
-    from `riscv64`, `require_branch_intervention`. A receipt of an attempt
-    the workflow refused before any effect is not folded."""
+    from `riscv64`, `require_branch_intervention`. A package attempt that
+    found `riscv64` off the clean head is read back first: when the branch is
+    read moved, deleted, or renamed (under the recorded fork id), it fires
+    `return_for_repair`; when it is read at the clean head or cannot be read,
+    the failure is folded as an infrastructure failure. A receipt of an
+    attempt the workflow refused before any effect is not folded."""
     report = []
     for receipt in receipts:
         cid = receipt.get("contribution_id")
@@ -1521,9 +1525,20 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
                                       facts={handoff.CONFIRM_FACTS[kind]}, values=values,
                                       counts={}, details=details)
             elif result == "failed":
+                failure = str(receipt.get("failure") or "unknown")
+                reason = str(receipt.get("reason") or "")
+                details = None
+                if (kind, failure) == ("submission_comment", handoff.MOVED):
+                    observed = handoff.moved_readback(api, c)
+                    if observed is None:
+                        failure = handoff.INFRASTRUCTURE
+                        reason = f"{UPSTREAM_REF} is not read back away from the clean head; " + reason
+                    else:
+                        details = {"head": observed, "clean_head": c["clean_head_sha"],
+                                   "kept_evidence_id": c.get("last_ci_evidence_id")}
                 new_op, fired = handoff.fail_attempt(
-                    c, op, policy=policy, now=now, failure=str(receipt.get("failure") or "unknown"),
-                    reason=str(receipt.get("reason") or ""), external_ids=run)
+                    c, op, policy=policy, now=now, failure=failure,
+                    reason=reason, external_ids=run, details=details)
             else:
                 report.append(dict(entry, outcome=f"not folded: {str(result)[:40]}",
                                    detail=isolation.clean_text(receipt.get("reason") or "", 300)))

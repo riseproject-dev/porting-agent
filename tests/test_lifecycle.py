@@ -344,6 +344,20 @@ class TestHandoff(unittest.TestCase):
             self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
                           str(raised.exception))
 
+    def test_a_moved_branch_before_the_package_returns_for_repair(self):
+        import recovery
+        state = "handoff.preparing_submission"
+        self.assertEqual(recovery.FIRES[(state, "submission_comment")]["failed"],
+                         ("retry_submission_comment", "exhaust_comment_retries",
+                          "return_for_repair"))
+        t = lifecycle.find_edge(state, "return_for_repair").transition
+        self.assertEqual(t.trigger, lifecycle.Trigger.OPERATION)
+        self.assertEqual(t.guard, (lifecycle.CLEAN_HEAD_MOVED,))
+        self.assertIs(t.effects, lifecycle._RETURN_FOR_REPAIR)
+        self.assertEqual(t.charges, ())
+        self.assertEqual(lifecycle.find_edge(state, "return_for_repair").target,
+                         "development.fix_needed")
+
     def test_a_command_the_engine_does_not_take_is_refused_without_change(self):
         rec = contribution(phase="handoff", activity="awaiting_submission")
         out = controller.authorize_followup(
