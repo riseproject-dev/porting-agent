@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest import mock
 
 import capacity
+import ci_rerun
 import collect
 import engine
 import handoff
@@ -86,6 +87,11 @@ class FakeGitHub:
         self.comments: dict[int, dict] = {}
         self.upstream: list[dict] = []
         self.ci_state = "success"
+        # Other jobs of the run, as (name, conclusion), the attempt of the
+        # run, and the annotations of each job by its id.
+        self.ci_extra_jobs: list[tuple[str, str]] = []
+        self.ci_attempt = 1
+        self.annotations: dict[int, list[dict]] = {}
         self.ci_heads: list[str] = []
         self.calls: list[tuple[str, str]] = []
         self.fail_post = False
@@ -98,7 +104,27 @@ class FakeGitHub:
         for pr in self.upstream:
             if path == f"/repos/closeio/ciso8601/pulls/{pr['number']}":
                 return copy.deepcopy(pr)
+        if path == f"/repos/{FORK['name']}/actions/runs/45008094068" and self.ci_heads:
+            return {"id": 45008094068, "head_sha": self.ci_heads[-1],
+                    "run_attempt": self.ci_attempt, "status": "completed"}
+        if path == f"/repos/{FORK['name']}":
+            return {"id": FORK["repository_id"], "full_name": FORK["name"],
+                    "default_branch": "master", "fork": True,
+                    "parent": {"full_name": "closeio/ciso8601", "id": UPSTREAM_ID}}
         raise collect.CollectError(f"GET {path}: HTTP 404")
+
+    def paginate(self, path: str, *, key=None, max_pages=10):
+        self.calls.append(("GET", path))
+        match = re.fullmatch(rf"/repos/{FORK['name']}/check-runs/([0-9]+)/annotations\?per_page=100",
+                             path)
+        if match:
+            return copy.deepcopy(self.annotations.get(int(match.group(1)), []))
+        raise collect.CollectError(f"GET {path}: HTTP 404")
+
+    def mutate(self, method: str, path: str):
+        """The rerun request of the CI rerun token: a new attempt."""
+        self.calls.append((method, path))
+        self.ci_attempt += 1
 
     def branch_head(self, _api, full_name, ref):
         self.calls.append(("GET", f"/repos/{full_name}/branches/{ref}"))
@@ -124,12 +150,14 @@ class FakeGitHub:
     def ci_snapshot(self, _api, full_name, head):
         self.calls.append(("GET", f"/repos/{full_name}/actions/runs?head_sha={head}"))
         self.ci_heads.append(head)
-        run = {"id": 45008094068, "head_sha": head, "run_attempt": 1, "status": "completed",
-               "conclusion": self.ci_state, "workflow_id": 426522359, "event": "pull_request",
-               "path": ".github/workflows/lint.yml"}
-        jobs = [{"id": 1, "run_id": run["id"], "name": "Build - ubuntu-24.04-riscv (riscv64)",
-                 "status": "completed", "conclusion": self.ci_state, "started_at": "x",
-                 "labels": ["ubuntu-24.04-riscv"]}]
+        run = {"id": 45008094068, "head_sha": head, "run_attempt": self.ci_attempt,
+               "status": "completed", "conclusion": self.ci_state, "workflow_id": 426522359,
+               "event": "pull_request", "path": ".github/workflows/lint.yml"}
+        jobs = [{"id": job_id, "run_id": run["id"], "name": name, "status": "completed",
+                 "conclusion": conclusion, "started_at": "x", "labels": ["ubuntu-24.04-riscv"]}
+                for job_id, (name, conclusion) in enumerate(
+                    [("Build - ubuntu-24.04-riscv (riscv64)", self.ci_state),
+                     *self.ci_extra_jobs], start=1)]
         return collect.CiSnapshot(repository={"id": FORK["repository_id"], "full_name": FORK["name"]},
                                   head_sha=head, runs=[run], jobs_by_run={run["id"]: jobs},
                                   artifacts_by_run={})
@@ -177,7 +205,7 @@ class World:
                 if e["kind"] == "record_audit_observation"}
         return {CID: {k for k in keys if k}}
 
-    def tick(self, now: datetime, *, comments=(), receipts=(), publications=()):
+    def tick(self, now: datetime, *, comments=(), receipts=(), publications=(), ci_reruns=()):
         gh = self.gh
         snap = reconcile.Snapshot({"c": self.record}, copy.deepcopy(self.operations),
                                   dict(self.consumed), {}, dict(self.evidence), self.audited())
@@ -190,6 +218,7 @@ class World:
             out = reconcile.tick(gh, snap, policy=self.policy, now=now,
                                  publications=list(publications),
                                  comments=list(comments), handoffs=list(receipts),
+                                 ci_reruns=list(ci_reruns),
                                  pressure=capacity.Pressure(ok=True), dispatcher_runs=[],
                                  queue_works={})
         self.assertion_free(out)
@@ -306,6 +335,18 @@ class World:
                 return handoff.receipt(meta, result)
             except Exception as error:
                 return handoff.receipt(meta, error=error)
+
+
+    def run_rerun(self, op_id: str | None = None) -> dict:
+        """The receipt the ``ci-rerun`` job of the handoff workflow uploads:
+        the check before any token, then the rerun and its readback."""
+        op_id = op_id or self.record["active_operation_id"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.root(Path(directory))
+            ci_rerun.load_request(root, op_id, self.policy, phase="handoff")
+            with mock.patch("collect.branch_head", self.gh.branch_head):
+                return ci_rerun.run_operation(root, op_id, self.gh, self.policy, "4242",
+                                              phase="handoff", sleep=lambda _s: None)
 
 
 def failed(world: World, failure=handoff.INFRASTRUCTURE) -> dict:
@@ -873,14 +914,152 @@ class TestCleanHeadCi(unittest.TestCase):
         self.assertEqual(world.gh.ci_heads[-1], CLEAN)
         self.assertEqual(world.evidence[world.record["last_ci_evidence_id"]]["ci"]["head_sha"], CLEAN)
 
-    def test_a_cancelled_job_keeps_the_wait_and_reruns_nothing(self):
+    LOST = [{"annotation_level": "failure",
+             "message": "The runner has received a shutdown signal."}]
+
+    def rerun_of(self, world):
+        op = world.active
+        self.assertEqual((op["kind"], op["status"]), ("ci_rerun", "planned"))
+        return op
+
+    def test_a_cancelled_job_is_rerun_on_the_ci_head(self):
         world = reviewed()
         world.gh.ci_state = "cancelled"
         out = world.tick(at(2), receipts=[world.run_workflow()])
-        self.assertEqual(world.kinds(out), ["confirm_clean_head"])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head", "rerun_interrupted_ci"])
         self.assertEqual(world.state, "handoff.waiting_ci")
-        self.assertEqual(world.tick(at(3)).report["handoff_requests"], [])
+        self.assertEqual(engine.head_reruns(world.record)["interrupted"], 1)
+        self.assertEqual(world.record["clean_head_ci_since"], at(2).isoformat())
+        self.assertIsNone(world.record["next_poll_at"])
+        # The reviewed series has the tree of the candidate head: its CI,
+        # on `riscv64-dev`, is CI on the clean head.
+        op = self.rerun_of(world)
+        self.assertEqual((op["target"]["ref"], op["target"]["expected_head"]),
+                         ("riscv64-dev", HEAD))
+        # The handoff workflow runs it, not the development PR workflow.
+        [request] = out.report["controller"]["handoff_requests"]
+        self.assertEqual((request["operation_id"], request["kind"]),
+                         (op["operation_id"], "ci_rerun"))
+        self.assertEqual(out.report["controller"]["dev_pr_requests"], [])
+        # The receipt is read back: the operation is confirmed and released,
+        # and the snapshot of the new attempt decides.
+        receipt = world.run_rerun()
+        self.assertEqual((receipt["status"], receipt["runs"][0]["run_attempt"]), ("rerun", 2))
+        world.gh.ci_state = "success"
+        out = world.tick(at(3), ci_reruns=[receipt])
+        self.assertEqual(world.operations[op["operation_id"]]["status"], "confirmed")
+        self.assertEqual(world.kinds(out)[:2], ["ci_rerun_recorded", "accept_clean_head_ci"])
+        self.assertEqual(world.state, "handoff.preparing_submission")
 
+    def test_a_snapshot_behind_the_rerun_and_passing_ci_behind_an_open_one_decide_nothing(self):
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        op = self.rerun_of(world)
+        # Passing CI while the rerun is still open keeps the wait.
+        world.gh.ci_state = "success"
+        out = world.tick(at(3))
+        self.assertEqual(world.kinds(out), [])
+        self.assertIn("accept_deferred", out.report["observation"][0])
+        receipt = world.run_rerun()
+        world.gh.ci_state = "cancelled"
+        snapshot = FakeGitHub.ci_snapshot
+
+        def behind(gh, api, name, head):
+            snap = snapshot(gh, api, name, head)
+            snap.runs[0]["run_attempt"] = 1
+            return snap
+
+        # The new attempt is read back, but the snapshot still shows the
+        # attempt before the rerun: nothing is decided from it.
+        with mock.patch.object(FakeGitHub, "ci_snapshot", behind):
+            out = world.tick(at(4), ci_reruns=[receipt])
+        self.assertEqual(world.kinds(out), ["ci_rerun_recorded"])
+        self.assertEqual(world.operations[op["operation_id"]]["status"], "confirmed")
+        self.assertEqual(out.report["observation"][0]["note"],
+                         "CI on the clean head is behind a confirmed rerun")
+        self.assertEqual(world.state, "handoff.waiting_ci")
+
+    def test_a_lost_runner_is_rerun_and_a_failure_returns_for_repair(self):
+        world = reviewed()
+        world.gh.ci_state = "failure"
+        world.gh.annotations[1] = self.LOST
+        out = world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head", "rerun_interrupted_ci"])
+        # Interrupted and failed: the failure returns for repair.
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        world.gh.ci_extra_jobs = [("Lint", "failure")]
+        out = world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head", "return_for_repair",
+                                            "request_repair"])
+
+    def test_the_budget_then_the_resume_restarts_the_count_and_the_wait(self):
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        confirmed = world.record["clean_head_ci_since"]
+        minute = 3
+        for _ in range(lifecycle.budget_limit("interrupted_reruns", world.policy) - 1):
+            receipt = world.run_rerun()
+            out = world.tick(at(minute), ci_reruns=[receipt])
+            self.assertEqual(world.kinds(out), ["ci_rerun_recorded", "rerun_interrupted_ci"])
+            minute += 1
+        receipt = world.run_rerun()
+        out = world.tick(at(minute), ci_reruns=[receipt])
+        self.assertEqual(world.kinds(out), ["ci_rerun_recorded", "exhaust_interrupted_reruns"])
+        self.assertEqual(world.state, "handoff.waiting_human")
+        pending = world.record["pending_human_action"]
+        self.assertEqual((pending["kind"], pending["counter"]),
+                         ("ci_interrupted", "interrupted_reruns"))
+        # The resume, 13 hours after the confirm: the counter and the
+        # bounded wait start again, and the next observation reruns.
+        late = at(2 + 13 * 60)
+        out = world.tick(late, comments=[comment(
+            f'/upstreaming resume revision={world.record["revision"]} reason="runners back"',
+            cid=993)])
+        self.assertEqual(world.kinds(out), ["resume_ci"])
+        self.assertEqual(engine.head_reruns(world.record)["interrupted"], 0)
+        self.assertEqual(world.record["clean_head_ci_since"], late.isoformat())
+        self.assertNotEqual(confirmed, late.isoformat())
+        out = world.tick(late + timedelta(minutes=1))
+        self.assertEqual(world.kinds(out), ["rerun_interrupted_ci"])
+        self.assertEqual(world.state, "handoff.waiting_ci")
+
+    def test_paused_or_an_open_operation_plans_no_rerun(self):
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        op = self.rerun_of(world)
+        out = world.tick(at(3))
+        self.assertEqual(world.kinds(out), [])
+        self.assertIn(op["operation_id"], out.report["observation"][0]["note"])
+        out = world.tick(at(4), comments=[comment(
+            f'/upstreaming pause revision={world.record["revision"]} reason="x"', cid=994)])
+        self.assertIn("pause", world.kinds(out))
+        # The paused rerun is closed and nothing new is planned.
+        self.assertEqual(world.operations[op["operation_id"]]["status"], "failed")
+        self.assertIsNone(world.record["active_operation_id"])
+        out = world.tick(at(5))
+        self.assertEqual(world.kinds(out), [])
+        self.assertFalse(any(o["kind"] == "ci_rerun" and o["status"] == "planned"
+                             for o in world.operations.values()))
+
+    def test_interrupted_ci_with_no_completed_run_waits_twelve_hours(self):
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        snapshot = FakeGitHub.ci_snapshot
+
+        def running(gh, api, name, head):
+            snap = snapshot(gh, api, name, head)
+            snap.runs[0]["status"] = "in_progress"
+            return snap
+
+        with mock.patch.object(FakeGitHub, "ci_snapshot", running):
+            out = world.tick(at(2), receipts=[world.run_workflow()])
+            self.assertEqual(world.kinds(out), ["confirm_clean_head"])
+            out = world.tick(at(3 + 12 * 60))
+        self.assertEqual(world.kinds(out), ["require_clean_head_ci"])
 
     def other_tree(self):
         """The live record whose rewritten series has another tree than the
@@ -934,6 +1113,78 @@ class TestCleanHeadCi(unittest.TestCase):
         self.assertEqual(world.kinds(out), ["resume_clean_head_ci"])
         self.assertNotEqual(world.record["clean_head_ci_since"], since)
         self.assertEqual(world.state, "handoff.waiting_ci")
+
+
+class TestCleanHeadRerun(unittest.TestCase):
+    def test_another_tree_reruns_on_riscv64_fenced_by_the_clean_head(self):
+        world = TestCleanHeadCi.other_tree(None)
+        world.gh.ci_state = "cancelled"
+        out = world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.kinds(out), ["confirm_clean_head", "rerun_interrupted_ci"])
+        op = world.active
+        self.assertEqual((op["target"]["ref"], op["target"]["expected_head"]), ("riscv64", CLEAN))
+        # A moved `riscv64-dev` does not block it; a moved `riscv64` is stale.
+        world.gh.branches["riscv64-dev"] = "b" * 40
+        self.assertEqual(world.run_rerun()["status"], "rerun")
+        world.gh.ci_attempt = 1
+        world.gh.branches["riscv64"] = "e" * 40
+        self.assertEqual(world.run_rerun()["status"], "stale")
+
+
+    def test_only_the_current_clean_head_intent_runs(self):
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        op_id = world.record["active_operation_id"]
+        good = copy.deepcopy(world.record)
+        op = copy.deepcopy(world.active)
+        with tempfile.TemporaryDirectory() as directory:
+            root = world.root(Path(directory))
+            self.assertEqual(ci_rerun.load_request(root, op_id, world.policy, phase="handoff")[1],
+                             op)
+            with self.assertRaisesRegex(ci_rerun.RerunError, "current authorized"):
+                ci_rerun.load_request(root, op_id, world.policy)
+        refusals = [
+            ({"paused": True, "paused_reason": "x", "paused_by": "human", "paused_at": T0}, {}),
+            ({"revision": good["revision"] + 1}, {}),
+            ({"phase": "handoff", "activity": "preparing_submission"}, {}),
+            ({}, {"expected_head": CLEAN}),
+            ({}, {"ref": "riscv64"}),
+        ]
+        for change, target in refusals:
+            with self.subTest(change=sorted(change), target=sorted(target)):
+                world.record = dict(good, **change)
+                world.operations[op_id] = dict(op, target=dict(op["target"], **target))
+                with tempfile.TemporaryDirectory() as directory:
+                    root = world.root(Path(directory))
+                    with self.assertRaises(ci_rerun.RerunError):
+                        ci_rerun.load_request(root, op_id, world.policy, phase="handoff")
+        world.record, world.operations[op_id] = good, op
+
+    def test_the_controller_closes_a_rerun_that_no_longer_matches(self):
+        import controller
+
+        world = reviewed()
+        world.gh.ci_state = "cancelled"
+        world.tick(at(2), receipts=[world.run_workflow()])
+        op = world.active
+        spent = lambda record, attempts=1, waited=False: controller._spent_rerun(  # noqa: E731
+            record, op, attempts, waited, world.policy, world.evidence)
+        self.assertIsNone(spent(world.record))
+        self.assertEqual(spent(dict(world.record, paused=True)), "the contribution is paused")
+        self.assertEqual(spent(world.record, attempts=3, waited=True),
+                         "operation_launch is spent without a receipt")
+        self.assertEqual(spent(dict(world.record, clean_head_sha="e" * 40,
+                                    submission_review_id=None)),
+                         "the operation no longer matches the record")
+        # `riscv64` moved: `return_for_repair`, and the open rerun is closed
+        # in the same tick.
+        world.gh.branches["riscv64"] = "e" * 40
+        out = world.tick(at(3))
+        self.assertEqual(world.kinds(out)[0], "return_for_repair")
+        self.assertEqual(world.operations[op["operation_id"]]["status"], "failed")
+        self.assertEqual(out.report["controller"]["ci_rerun_closures"][0]["closed"],
+                         "the operation no longer matches the record")
 
 
 class TestLockedWait(unittest.TestCase):

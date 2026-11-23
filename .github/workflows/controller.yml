@@ -239,9 +239,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci-reruns
-          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/dev-pr.yml/runs?status=completed&per_page=20" \
-            --jq '.workflow_runs[].id') || runs=
-          printf '%s\n' "$runs" | while read -r run; do
+          # The development PR workflow reruns CI in development, the
+          # handoff workflow CI on the clean head.
+          dev=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/dev-pr.yml/runs?status=completed&per_page=20" \
+            --jq '.workflow_runs[].id') || dev=
+          handoff=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/handoff.yml/runs?status=completed&branch=main&event=workflow_dispatch&per_page=20" \
+            --jq '.workflow_runs[].id') || handoff=
+          printf '%s\n%s\n' "$dev" "$handoff" | while read -r run; do
             [ -n "$run" ] || continue
             id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
               --jq '[.artifacts[] | select(.name == "porting-ci-rerun" and (.expired | not))][0].id // empty') || continue

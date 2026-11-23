@@ -6,7 +6,10 @@
 # exact-head lease (never while a pull request is open from it or riscv64-dev
 # is missing; riscv64-dev and the development PR are not touched), dispatch
 # the project's required CI workflow on riscv64 when the clean head needs its
-# own CI and the workflow can be dispatched, and post the submission package on the tracking issue. Each job checks out the state at the head of main, checks
+# own CI and the workflow can be dispatched, rerun the interrupted jobs of CI
+# on the clean head (a `ci_rerun` operation the collector planned in
+# handoff.waiting_ci) with a token for the one fork that carries only
+# `actions: write`, and post the submission package on the tracking issue. Each job checks out the state at the head of main, checks
 # that it is still the head and still runs the controller-recorded operation
 # before it mints a token, validates the operation again before any effect, and
 # uploads a receipt the controller reads back. No model runs here and no
@@ -184,8 +187,51 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  ci-rerun:
+    needs: [target]
+    if: needs.target.outputs.kind == 'ci_rerun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The state at the head of main when the job starts, not the
+          # commit the run was dispatched at: a queued or re-run job reads
+          # the current state.
+          ref: main
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: false
+      - name: Check the operation against the head of main before any token is minted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation-id }}
+        run: uv run --locked python -m ci_rerun check --operation-id "$OPERATION" --phase handoff
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: rerun-token
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ needs.target.outputs.fork_name }}
+          permission-actions: write
+      - name: Rerun the interrupted jobs of CI on the clean head and read the attempts back
+        env:
+          OPERATION: ${{ inputs.operation-id }}
+          UPSTREAMING_FORK_TOKEN: ${{ steps.rerun-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --locked python -m ci_rerun operation --operation-id "$OPERATION" --phase handoff --out ci-rerun/outcome.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: porting-ci-rerun
+          path: ci-rerun/outcome.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   continuation:
-    needs: [target, upstream-branch, submission-comment]
+    needs: [target, upstream-branch, submission-comment, ci-rerun]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

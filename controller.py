@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import capacity
+import ci_rerun
 import collect
 import commands
 import engine
@@ -711,7 +712,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             waited = (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() \
                 >= LAUNCH_INTERVAL_SECONDS
             if operation["kind"] == "ci_rerun":
-                why = _spent_rerun(c, operation, attempts, waited, policy)
+                why = _spent_rerun(c, operation, attempts, waited, policy, evidence or {})
                 if why:
                     # The rerun failed: it is closed and released, and no row
                     # is fired. The next observation of interrupted CI takes
@@ -729,6 +730,18 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     continue
             due = attempts == 0 or (
                 waited and attempts < lifecycle.budget_limit("operation_launch", policy))
+            if due and operation["kind"] == "ci_rerun" \
+                    and engine.state_key(c) == "handoff.waiting_ci":
+                # CI on the clean head is rerun by the handoff workflow, the
+                # workflow that writes `riscv64`; `controller.yml`
+                # dispatches every handoff request.
+                launched = recovery.charge_launch(operation, now)
+                operations[launched["operation_id"]] = launched
+                res.stage("operations", launched)
+                res.report["handoff_requests"].append({
+                    "operation_id": launched["operation_id"], "contribution_id": cid,
+                    "kind": "ci_rerun", "attempt": attempts + 1})
+                continue
             if due:
                 launched = recovery.charge_launch(operation, now)
                 operations[launched["operation_id"]] = launched
@@ -1277,21 +1290,25 @@ def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
 # A planned operation is launched again once this long has passed since its
 # last launch without a receipt, within `operation_launch`.
 LAUNCH_INTERVAL_SECONDS = 300
-# The operations the development PR workflow executes.
+# The operations the development PR workflow executes (a `ci_rerun` of
+# `handoff.waiting_ci` is executed by the handoff workflow).
 DEVELOPMENT_PR_KINDS = frozenset({"dev_pr_create", "dev_pr_update", "ci_rerun"})
 
 
-def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict) -> str | None:
+def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict,
+                 evidence: dict) -> str | None:
     """Why a planned ``ci_rerun`` operation is closed as failed: the
     contribution is paused (the workflow refuses a paused record, so the
     operation would otherwise stay open through the pause and fence `park`
     and a stale `resume`), its launches are spent without a receipt, or it
-    no longer matches the record (another head, revision, or state)."""
+    no longer matches the record (another head, revision, or a state that
+    does not rerun interrupted CI, ``ci_rerun.INTERRUPTED_STATES``). The
+    head is the one the CI of the state is on (``ci_rerun.expected_head``)."""
     if record.get("paused"):
         return "the contribution is paused"
-    if op["target"].get("expected_head") != (record.get("fork") or {}).get("head_sha") \
-            or op["revision"] != record["revision"] \
-            or engine.state_key(record) != "development.waiting_ci":
+    if engine.state_key(record) not in ci_rerun.INTERRUPTED_STATES \
+            or op["target"].get("expected_head") != ci_rerun.expected_head(record, evidence) \
+            or op["revision"] != record["revision"]:
         return "the operation no longer matches the record"
     if waited and attempts >= lifecycle.budget_limit("operation_launch", policy):
         return "operation_launch is spent without a receipt"

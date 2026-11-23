@@ -21,14 +21,20 @@ Two paths use it, and no workflow of its own:
   the reconciler takes ``request_ci_rerun`` only for an outcome that
   carries the receipt;
 * the interrupted path: the CI observation in ``development.waiting_ci``
-  takes ``rerun_interrupted_ci`` and records the ``ci_rerun`` operation
-  before the effect; the controller launches it through the development PR
-  workflow (``operation``), and the reconciler reads the new attempt back
-  before it closes the operation.
+  or ``handoff.waiting_ci`` (``INTERRUPTED_STATES``) takes
+  ``rerun_interrupted_ci`` and records the ``ci_rerun`` operation before
+  the effect; the controller launches it through the development PR
+  workflow in development, and through the ``ci-rerun`` job of the handoff
+  workflow in handoff (``operation --phase``, after ``check`` before any
+  token), and the reconciler reads the new attempt back before it closes
+  the operation. In handoff the operation reruns CI on the clean head on
+  ``riscv64`` (or on the approved candidate head on ``riscv64-dev`` when
+  the reviewed series has its tree, ``handoff.ci_head``).
 
     python -m ci_rerun preflight --record R --task T --proposal P --out O
     python -m ci_rerun publish --record R --task T --out O
-    python -m ci_rerun operation --operation-id ID --out O
+    python -m ci_rerun check --operation-id ID --phase handoff
+    python -m ci_rerun operation --operation-id ID [--phase PHASE] --out O
 
 The fork token comes from ``UPSTREAMING_FORK_TOKEN`` (``publish`` and
 ``operation``) and is used for the rerun request only; the fork is read with
@@ -53,8 +59,13 @@ import engine
 import lifecycle
 import recovery
 import schemas
-from common import CONTROL_REPO, DEV_REF, FORK_ORG, contribution_file_id
+from common import CONTROL_REPO, DEV_REF, FORK_ORG, UPSTREAM_REF, contribution_file_id
 
+# The states whose CI observation reruns interrupted jobs
+# (``rerun_interrupted_ci``), and the phase of the workflow that executes the
+# operation of each.
+INTERRUPTED_STATES = ("development.waiting_ci", "handoff.waiting_ci")
+PHASES = {"development": "development.waiting_ci", "handoff": "handoff.waiting_ci"}
 # The conclusions of a job that ``rerun-failed-jobs`` reruns.
 RERUN_CONCLUSIONS = ("failure", "cancelled", "timed_out")
 # The runs one request reruns at most.
@@ -253,10 +264,34 @@ def marker_runs(op: dict) -> list[dict]:
             for run, attempt in (part.split("@") for part in match.group(1).split(","))]
 
 
+def target_ref(record: dict, head: str) -> str:
+    """The branch the CI of ``head`` runs on: ``riscv64`` for the clean head
+    in handoff, else ``riscv64-dev`` (the development head, or the approved
+    candidate head whose tree the clean head has)."""
+    if record.get("phase") == "handoff" and head == record.get("clean_head_sha"):
+        return UPSTREAM_REF
+    return DEV_REF
+
+
+def expected_head(record: dict, evidence: dict) -> str | None:
+    """The head the CI a ``ci_rerun`` operation of ``record`` reruns is on:
+    the development head, or in ``handoff.waiting_ci`` the head whose CI is
+    CI on the clean head (``handoff.ci_head``, from the submission review
+    in ``evidence``)."""
+    if record.get("phase") == "handoff":
+        import handoff
+
+        if not record.get("clean_head_sha"):
+            return None
+        return handoff.ci_head(record, evidence.get(record.get("submission_review_id") or "")
+                               or {})
+    return (record.get("fork") or {}).get("head_sha")
+
+
 def operation(record: dict, head: str, runs: list[dict], reason_ids: list[str], policy: dict,
-              now: str) -> dict:
+              now: str, *, ref: str = DEV_REF) -> dict:
     """The planned ``ci_rerun`` operation of ``runs`` on ``head`` of the
-    record's fork."""
+    record's fork, on the branch ``ref``."""
     if not runs:
         raise RerunError("a rerun names at least one run")
     fork = record["fork"]
@@ -264,7 +299,7 @@ def operation(record: dict, head: str, runs: list[dict], reason_ids: list[str], 
         contribution_id=record["contribution_id"], revision=record["revision"], kind="ci_rerun",
         policy_version=policy["policy_version"], reason_ids=reason_ids,
         target={"repository": fork["name"], "repository_id": fork.get("repository_id"),
-                "ref": DEV_REF, "expected_head": head},
+                "ref": ref, "expected_head": head},
         proposed={"marker": marker(runs)}, now=now)
 
 
@@ -465,9 +500,14 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
 # The interrupted path: the operation the collector planned
 
 
-def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dict]:
+def load_request(root: Path, operation_id: str, policy: dict, *,
+                 phase: str = "development") -> tuple[dict, dict]:
     """The planned ``ci_rerun`` operation and its record, when the operation
-    is the record's current authorized intent."""
+    is the record's current authorized intent in the state of ``phase``
+    (``PHASES``) and targets the head and branch the CI of that state is
+    on."""
+    if phase not in PHASES:
+        raise RerunError("unknown CI rerun phase")
     if not re.fullmatch(r"op-[0-9a-f]{24}", operation_id):
         raise RerunError("invalid operation ID")
     op = json.loads((root / ".state/operations" / f"{operation_id}.json").read_text())
@@ -476,37 +516,59 @@ def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dic
     record = json.loads((root / ".state/contributions" / f"{cid}.json").read_text())
     schemas.validate("contribution", record)
     fork = record.get("fork") or {}
-    if op["kind"] != "ci_rerun" or op["status"] != "planned" or record["phase"] != "development" \
+    if op["kind"] != "ci_rerun" or op["status"] != "planned" \
+            or engine.state_key(record) != PHASES[phase] \
             or record.get("active_operation_id") != operation_id \
             or record["revision"] != op["revision"] or record.get("paused") \
             or policy.get("read_only"):
         raise RerunError("operation is not the current authorized CI rerun intent")
     if op["target"].get("repository") != fork.get("name") \
-            or op["target"].get("repository_id") != fork.get("repository_id") \
-            or op["target"].get("ref") != DEV_REF:
+            or op["target"].get("repository_id") != fork.get("repository_id"):
+        raise RerunError("CI rerun target does not match the recorded fork")
+    if phase == "handoff":
+        review_id = record.get("submission_review_id") or ""
+        path = root / ".state/evidence" / f"{review_id}.json"
+        review = json.loads(path.read_text()) if review_id and path.is_file() else {}
+        head = expected_head(record, {review_id: review})
+        if not head or op["target"].get("expected_head") != head \
+                or op["target"].get("ref") != target_ref(record, head):
+            raise RerunError("CI rerun target is not CI on the clean head")
+    elif op["target"].get("ref") != DEV_REF:
         raise RerunError("CI rerun target does not match the recorded fork")
     marker_runs(op)
     return record, op
 
 
 def run_operation(root: Path, operation_id: str, api: Api, policy: dict, run_id: str, *,
+                  phase: str = "development",
                   sleep: Callable[[float], None] = time.sleep) -> dict:
-    """Execute a planned ``ci_rerun`` operation and return its receipt."""
-    record, op = load_request(root, operation_id, policy)
+    """Execute a planned ``ci_rerun`` operation and return its receipt.
+
+    The stale fence before the request: in development the development head
+    is the recorded head and ``riscv64-dev`` still resolves to it; in
+    handoff ``riscv64`` still resolves to the clean head (the guard of the
+    observation), and a moved ``riscv64-dev`` does not block it. Every run
+    is read on the expected head before it is rerun (``request``)."""
+    record, op = load_request(root, operation_id, policy, phase=phase)
     fork = op["target"]["repository"]
     head = op["target"]["expected_head"]
     base = {"schema_version": 1, "operation_id": operation_id,
             "contribution_id": record["contribution_id"], "revision": record["revision"],
             "repository": fork, "repository_id": op["target"]["repository_id"],
             "head_sha": head, "ci_rerun_run_id": int(run_id)}
-    if head != record["fork"].get("head_sha"):
+    if phase == "development" and head != record["fork"].get("head_sha"):
         return base | {"status": "stale", "runs": []}
     repo = collect.repository(api, fork)
     if repo["id"] != op["target"]["repository_id"] \
             or repo.get("parent_id") != record["upstream"]["repository_id"]:
         raise RerunError("fork identity changed")
-    observed = collect.branch_head(api, fork, DEV_REF)
-    if not observed or observed["head"] != head:
+    if phase == "handoff":
+        observed = collect.branch_head(api, fork, UPSTREAM_REF)
+        fence = record["clean_head_sha"]
+    else:
+        observed = collect.branch_head(api, fork, DEV_REF)
+        fence = head
+    if not observed or observed["head"] != fence:
         return base | {"status": "stale", "runs": []}
     return base | request(api, fork, head, marker_runs(op), sleep=sleep)
 
@@ -524,21 +586,42 @@ def main(argv: list[str] | None = None) -> int:
     from common import load_policy
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=["preflight", "publish", "operation"])
+    ap.add_argument("cmd", choices=["preflight", "publish", "check", "operation"])
     ap.add_argument("--record", type=Path)
     ap.add_argument("--task", type=Path)
     ap.add_argument("--proposal", type=Path)
     ap.add_argument("--operation-id")
-    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--phase", choices=sorted(PHASES), default="development")
+    ap.add_argument("--out", type=Path)
     a = ap.parse_args(argv)
     policy = load_policy()
     now = datetime.now(timezone.utc).isoformat()
+    if a.cmd == "check":
+        # Before the handoff job mints its token: the checked-out state is
+        # the head of main and still runs this operation. A refusal writes
+        # no receipt (it can be transient); the launch budget relaunches the
+        # operation, then closes it.
+        import handoff
+        import isolation
+
+        _trusted_workflow()
+        try:
+            handoff.current_state(Path.cwd(), collect.Api(token=os.environ.get("GH_TOKEN") or None))
+            load_request(Path.cwd(), a.operation_id or "", policy, phase=a.phase)
+        except (handoff.HandoffRefused, RerunError, OSError, ValueError,
+                schemas.SchemaError) as error:
+            print(json.dumps({"operation_id": a.operation_id, "result": "refused",
+                              "reason": isolation.clean_text(error, 200)}))
+            return 1
+        return 0
+    if a.out is None:
+        ap.error("--out is required")
     if a.cmd == "operation":
         _trusted_workflow()
         token = os.environ.pop("UPSTREAMING_FORK_TOKEN", "")
         result = run_operation(Path.cwd(), a.operation_id or "",
                                Api(token=token, reader=collect.Api()), policy,
-                               os.environ["GITHUB_RUN_ID"])
+                               os.environ["GITHUB_RUN_ID"], phase=a.phase)
         code = 0
     elif a.cmd == "preflight":
         result = preflight(record=json.loads(a.record.read_text()),

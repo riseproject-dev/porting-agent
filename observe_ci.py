@@ -29,9 +29,13 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   ``record_actionable_review`` in ``development.fix_needed`` for an
   actionable review observed with it, or else ``record_actionable_review``
   for an actionable review;
-* in ``handoff.waiting_ci``, take ``accept_clean_head_ci`` or
-  ``return_for_repair`` for CI on the clean head of ``riscv64`` (CI of the
-  candidate head when the clean head has its tree);
+* in ``handoff.waiting_ci``, take for CI on the clean head of ``riscv64``
+  (CI of the candidate head when the clean head has its tree), read with
+  jobs that lost their runner classified: ``rerun_interrupted_ci`` with a
+  ``ci_rerun`` operation (``exhaust_interrupted_reruns`` once its budget is
+  spent), ``accept_clean_head_ci`` (passing CI behind an open operation
+  keeps the state), ``return_for_repair``, or ``require_clean_head_ci``
+  once the bounded wait for CI that is not complete has passed;
 * in the locked ``handoff.waiting_upstream_pr``, discover the upstream PR
   read-only and take ``verify_upstream_pr`` for exactly one that matches, or
   record what does not match once (``record_audit_observation``);
@@ -132,12 +136,19 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
                            evidence: dict[str, dict], operations: dict[str, dict]) -> None:
     """``handoff.waiting_ci``: CI on the clean head of `riscv64`.
 
-    ``accept_clean_head_ci`` when every required job executed and passed on
-    the clean head, ``return_for_repair`` for a blocking failure there or a
-    `riscv64` head that is not the clean head. CI is a function of the tree:
-    when the reviewed series has the tree of the candidate head, the CI of
-    the candidate head is read (``handoff.ci_head``). Anything else (CI still
-    running, missing, or not executed) keeps the wait; nothing is rerun."""
+    A `riscv64` head that is not the clean head takes ``return_for_repair``.
+    CI is a function of the tree: when the reviewed series has the tree of
+    the candidate head, the CI of the candidate head is read
+    (``handoff.ci_head``), with jobs that lost their runner classified as
+    not executed. In order: nothing is decided while the snapshot is behind
+    a confirmed rerun (``ci_rerun.awaited``); a required job that was
+    cancelled or lost its runner, with no job failed on its own, takes
+    ``rerun_interrupted_ci`` with a ``ci_rerun`` operation the handoff
+    workflow executes (``exhaust_interrupted_reruns`` once its budget is
+    spent); CI that is not complete keeps the wait until its bounded wait
+    takes ``require_clean_head_ci``; passing CI takes
+    ``accept_clean_head_ci``, except behind an open operation, which keeps
+    the wait; a blocking failure takes ``return_for_repair``."""
     clean = rec["clean_head_sha"]
     if head != clean:
         out = engine.apply_transition(
@@ -149,19 +160,29 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
         return
     clean = handoff.ci_head(rec, evidence.get(rec.get("submission_review_id") or "") or {})
     entry["ci_head"] = clean
-    snap = collect.ci_snapshot(api, rec["fork"]["name"], clean)
-    ctr = contract_for(rec, contracts)
-    verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
-                                        expected_wheels=ctr["expected_wheels"],
-                                        required_runner_label=ctr["required_runner_label"])
-    entry["ci"] = {"repository": rec["fork"]["name"], "state": verdict.state,
-                   "problems": verdict.problems[:10]}
+    fork = rec["fork"]["name"]
+    verdict, ev, _next_poll_at, snap = _ci_snapshot(
+        api, rec, clean, contracts=contracts, policy=policy, now=now, repository=fork,
+        classify_interrupted=True, debug_present=False)
+    entry["ci"] = {"repository": fork, "state": verdict.state, "problems": verdict.problems[:10]}
+    if ci_rerun.awaited(operations, rec["contribution_id"], clean, verdict.attempts):
+        # A confirmed rerun recorded a newer attempt than this snapshot
+        # shows: nothing is decided from the older one.
+        entry["note"] = "CI on the clean head is behind a confirmed rerun"
+        return
+    if verdict.state == "not_executed" and verdict.interrupted_jobs and ev is not None:
+        if _rerun_interrupted(obs, entry, rec, clean, ev, snap, operations, policy=policy,
+                              now=now, poll=False):
+            obs.staged.append(("evidence", ev))
+            entry["evidence"] = ev["evidence_id"]
+            return
     latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == clean])
-    if verdict.state not in ("passed", "failed") or not latest:
-        entry["note"] = "CI on the clean head is not complete"
+    if verdict.state not in ("passed", "failed") or not latest or ev is None:
+        entry.setdefault("note", "CI on the clean head is not complete")
         if handoff.clean_head_ci_missing(rec, operations, now, has_runs=bool(latest)):
             # `riscv64` has no pull request: CI that was not dispatched, or
-            # that never completes, waits for a human after a bounded wait.
+            # that never completes (also interrupted CI that could not be
+            # rerun), waits for a human after a bounded wait.
             out = engine.apply_transition(
                 rec, "require_clean_head_ci", policy=policy, now=now,
                 cause_id=f"clean-head-ci-{clean[:12]}", facts={"clean_head_ci_missing"},
@@ -169,15 +190,14 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
             obs.staged.extend([("contributions", out.record), ("events", out.event)])
             entry["waiting_for_human"] = "clean_head_ci_missing"
         return
-    run = max(latest, key=lambda r: r["id"])
-    eid = _evidence_id(snap.repository["id"], run)
-    ev = ci_evidence.evidence_record(
-        evidence_id=eid, contribution_id=rec["contribution_id"],
-        policy_version=policy["policy_version"], collected_at=now, repository=snap.repository,
-        run=run, jobs=[j for r in latest for j in snap.jobs_by_run.get(r["id"], [])],
-        base_sha=rec["upstream"].get("base_sha"), test_merge_sha=None,
-        expected_wheels=ctr["expected_wheels"], artifacts=[], verdict=verdict,
-        debug_present=False, limitations=[] if verdict.state == "passed" else ["see problems"])
+    eid = ev["evidence_id"]
+    if verdict.state == "passed" and recovery.open_operations(
+            rec["contribution_id"], operations, rec.get("active_operation_id")):
+        # As in development: passing CI behind an open operation (a rerun
+        # still to be read back) keeps the wait, bounded by its launches.
+        active = rec.get("active_operation_id") or "of the contribution"
+        entry["accept_deferred"] = f"operation {active} is open"
+        return
     obs.staged.append(("evidence", ev))
     if verdict.state == "passed":
         out = engine.apply_transition(
@@ -365,10 +385,14 @@ def _ci(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: d
 
 
 def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: dict,
-                 now: str, repository: str, classify_interrupted: bool = False
+                 now: str, repository: str, classify_interrupted: bool = False,
+                 debug_present: bool | None = None
                  ) -> tuple[ci_evidence.CiVerdict, dict | None, str | None, collect.CiSnapshot]:
     """``_ci`` and the snapshot it read; with ``classify_interrupted`` a job
-    that lost its runner did not execute (``collect.classify_runner_loss``)."""
+    that lost its runner did not execute (``collect.classify_runner_loss``).
+    ``debug_present`` overrides what the evidence records about debug
+    commits (by default, whether the record holds debug commits and no
+    upstream PR)."""
     snap = collect.ci_snapshot(api, repository, head)
     if classify_interrupted:
         collect.classify_runner_loss(api, repository, snap)
@@ -389,7 +413,8 @@ def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, 
             run=run, jobs=[j for r in latest for j in snap.jobs_by_run.get(r["id"], [])],
             base_sha=record["upstream"].get("base_sha"), test_merge_sha=None,
             expected_wheels=ctr["expected_wheels"], artifacts=[], verdict=verdict,
-            debug_present=bool(record.get("debug_commits")) and record.get("upstream_pr") is None,
+            debug_present=(bool(record.get("debug_commits")) and record.get("upstream_pr") is None
+                           if debug_present is None else debug_present),
             limitations=[] if verdict.state == "passed" else ["see problems"])
     return verdict, ev, next_poll_at, snap
 
@@ -667,25 +692,31 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
 
 def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: dict,
                        snap: collect.CiSnapshot, operations: dict, *, policy: dict,
-                       now: str) -> None:
+                       now: str, poll: bool = True) -> bool:
     """A required job on the exact head was cancelled or lost its runner,
     and no job failed on its own: ``rerun_interrupted_ci`` records a
     ``ci_rerun`` operation (the intent, before the effect) that the
     controller launches, within ``interrupted_reruns``;
     ``exhaust_interrupted_reruns`` waits for a human once that budget is
-    spent. An open operation, or a pause, keeps the state and reads CI
-    again."""
+    spent. An open operation, a pause, or no completed run that holds an
+    interrupted job keeps the state and reads CI again. Returns whether a
+    row was taken. With ``poll`` the next CI observation is recorded
+    (``next_poll_at``, which development records and handoff does not)."""
     later = _next_ci_observation(now, policy)
+
+    def again(record: dict, at: str | None) -> dict:
+        return _poll(obs, record, at) if poll else record
+
     if recovery.open_operations(cur["contribution_id"], operations,
                                 cur.get("active_operation_id")):
         entry["note"] = (f"interrupted CI waits for the open operation "
                          f"{cur.get('active_operation_id') or 'of the contribution'}")
-        _poll(obs, cur, later)
-        return
+        again(cur, later)
+        return False
     if cur.get("paused"):
         entry["note"] = "interrupted CI is not rerun while the contribution is paused"
-        _poll(obs, cur, later)
-        return
+        again(cur, later)
+        return False
     facts = {"ci_interrupted_on_head"}
     cause = ev["evidence_id"]
     jobs = [str(j["name"])[:200] for j in ev["ci"]["jobs"] if j.get("interrupted")]
@@ -693,16 +724,17 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
     if engine.refusal(cur, "rerun_interrupted_ci", policy=policy, now=now, facts=facts):
         cur = _take(obs, cur, "exhaust_interrupted_reruns", policy=policy, now=now,
                     cause_id=cause, facts=facts, details=details)
-        _poll(obs, cur, None)
+        again(cur, None)
         entry["waiting_for_human"] = "ci_interrupted"
-        return
+        return True
     runs, _in_progress = ci_rerun.targets(snap, head, interrupted_only=True)
     if not runs:
         entry["note"] = "no completed run on the head holds an interrupted job; CI is read again"
-        _poll(obs, cur, later)
-        return
+        again(cur, later)
+        return False
     count = engine.head_reruns(cur)["interrupted"]
-    op = ci_rerun.operation(cur, head, runs, [cause, f"rerun:{count}"], policy, now)
+    op = ci_rerun.operation(cur, head, runs, [cause, f"rerun:{count}"], policy, now,
+                            ref=ci_rerun.target_ref(cur, head))
     if op["operation_id"] in operations:
         raise lifecycle.TransitionError(
             f"the CI rerun operation {op['operation_id']} of {cause} is already recorded")
@@ -713,9 +745,10 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
                                active_operation_id=op["operation_id"])
     operations[op["operation_id"]] = op
     obs.staged.append(("operations", op))
-    cur = _poll(obs, cur, later)
+    cur = again(cur, later)
     obs.staged.append(("contributions", cur))
     entry.update(ci_rerun=op["operation_id"], activity="waiting_ci")
+    return True
 
 
 def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str, *,

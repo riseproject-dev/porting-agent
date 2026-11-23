@@ -693,7 +693,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`clean_head_ci_missing` at once when no run exists and the workflow cannot be "
         "dispatched, and in any case when CI is not complete 12 hours after the wait began; "
         "reminders apply, and `resume_clean_head_ci` returns to `handoff.waiting_ci`, observes "
-        "CI again, and starts the wait again.",
+        "CI again, and starts the wait again. The wait also starts again when CI is started "
+        "again: on `rerun_interrupted_ci` there and on `resume_ci` from the human wait.",
         ("handoff.building_upstream_branch", "handoff.waiting_ci", "handoff.waiting_human"),
         edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
                ("handoff.waiting_ci", "require_clean_head_ci"),
@@ -743,6 +744,35 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         edges=(("parked.idle", "restart_generation"),
                ("parked.idle", "abandon")),
         highlighted=(("parked.idle", "restart_generation"),),
+    ),
+    Item(
+        "Interrupted CI on the clean head",
+        "`handoff.waiting_ci` had the rows `rerun_interrupted_ci` and "
+        "`exhaust_interrupted_reruns`, but CI on the clean head was read unclassified and "
+        "nothing reran it: a cancelled job waited for `require_clean_head_ci`, and a job that "
+        "lost its runner read as a failure and returned to development.",
+        "CI on the clean head is read with lost runners classified. A required job that was "
+        "cancelled or lost its runner, with no job failed on its own, takes "
+        "`rerun_interrupted_ci` with a `ci_rerun` operation on the head the runs are on "
+        "(`riscv64` at the clean head, or `riscv64-dev` at the approved candidate head whose "
+        "tree it has), executed by the `ci-rerun` job of the handoff workflow with a token of "
+        "the destination App for the one fork that carries only `actions: write`, minted after "
+        "a check of the head of `main` and of the operation; `exhaust_interrupted_reruns` waits "
+        "for a human with `ci_interrupted` once `interrupted_reruns` is spent. The executor's "
+        "stale fence is that `riscv64` still resolves to the clean head. Interrupted CI takes a "
+        "row before the bounded wait, which applies only when no row could be taken; "
+        "`rerun_interrupted_ci` and `resume_ci` start that wait again (`clean_head_ci_since`), "
+        "so one incident never needs two human resumes. Passing CI behind an open operation "
+        "keeps the wait. An executed blocking failure still takes `return_for_repair`. The "
+        "rerun counts stay keyed on the fork head, which `confirm_clean_head` starts again, so "
+        "no record field changes.",
+        ("handoff.waiting_ci", "handoff.waiting_human"),
+        edges=(("handoff.waiting_ci", "rerun_interrupted_ci"),
+               ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+               ("handoff.waiting_human", "resume_ci")),
+        highlighted=(("handoff.waiting_ci", "rerun_interrupted_ci"),
+                     ("handoff.waiting_ci", "exhaust_interrupted_reruns"),
+                     ("handoff.waiting_human", "resume_ci")),
     ),
 )
 
@@ -1210,8 +1240,9 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "caused by the patch (`no_change`) is rerun by the trusted publication job of the "
         "worker run, or of its publish-only retry, with a token for the one verified fork that "
         "carries only `actions: write`, bound to the exact head and attempt. Interrupted CI is "
-        "rerun by the development PR workflow, launched by the controller, with the same kind "
-        "of token. A rerun is an operation of kind `ci_rerun` whose receipt is the readback of "
+        "rerun by the development PR workflow in `development.waiting_ci`, and in "
+        "`handoff.waiting_ci` by the handoff workflow, launched by the controller, with the "
+        "same kind of token; each workflow executes only the reruns of its own phase. A rerun is an operation of kind `ci_rerun` whose receipt is the readback of "
         "the new run attempt; the attempt is a monotonic counter, so every retry reads it first "
         "and a rerun operation is never left `uncertain`. `request_ci_rerun` is taken only once "
         "the rerun is read back or nothing needed rerunning; a rerun that is refused or not "
@@ -1227,7 +1258,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "annotation, so a head whose CI the gate would read as failed is never nominated; "
         "`timed_out` "
         "and every other executed failure are real failures and win over a rerun. Only "
-        "`development.waiting_ci` classifies lost runners. Each run is rerun with "
+        "`development.waiting_ci` and `handoff.waiting_ci` classify lost runners. Each run is rerun with "
         "`rerun-failed-jobs`, at most 5 runs per request, and a rerun reserves no runner "
         "capacity. The repair attempt charged at allocation is not refunded.",
         ("development.agent_running", "development.waiting_ci", "development.waiting_human",

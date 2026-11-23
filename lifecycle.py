@@ -1310,7 +1310,12 @@ LIFECYCLE: dict[str, State] = {
                             "tree of the candidate head (the approved series had no debug "
                             "commit), the CI evidence of the candidate head is CI on the clean "
                             "head."),
-            ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
+            ("rerun_interrupted_ci", SELF): Transition(
+                _RERUN_INTERRUPTED_CI.trigger, _RERUN_INTERRUPTED_CI.command,
+                _RERUN_INTERRUPTED_CI.guard, _E(sets=("clean_head_ci_since",)),
+                charges=_RERUN_INTERRUPTED_CI.charges,
+                description=_RERUN_INTERRUPTED_CI.description + " The bounded wait for CI on "
+                            "the clean head starts again, since CI was started again."),
             ("exhaust_interrupted_reruns", "handoff.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
             ("return_for_repair", "development.fix_needed"): Transition(
                 _O, None,
@@ -1366,8 +1371,11 @@ LIFECYCLE: dict[str, State] = {
                 (EXACT_REVISION, pending_is("upstream_branch_failed", "upstream_branch_blocked")),
                 _resume_restarting("upstream_branch")),
             ("resume_ci", "handoff.waiting_ci"): Transition(
-                _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted")), _RESUME_CI,
-                description=_RESUME_CI_NOTE),
+                _C, RESUME, (EXACT_REVISION, pending_is("ci_interrupted")),
+                _E(revision="bump", sets=("clean_head_ci_since",),
+                   clears=("pending_human_action",), restarts=("interrupted_reruns",)),
+                description=_RESUME_CI_NOTE[:-1] + ", and the bounded wait for CI on the clean "
+                            "head starts again."),
             ("resume_clean_head_ci", "handoff.waiting_ci"): Transition(
                 _C, RESUME, (EXACT_REVISION, pending_is("clean_head_ci_missing")),
                 _E(revision="bump", sets=("clean_head_ci_since",),

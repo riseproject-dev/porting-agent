@@ -452,6 +452,21 @@ class TestLifecycleTable(unittest.TestCase):
                 applies = [e.verb for e in resumes if lc._admits(e.transition, kind)]
                 self.assertEqual(len(applies), 1, (key, kind, applies))
 
+    def test_starting_clean_head_ci_again_restarts_its_bounded_wait(self):
+        for state, verb in (("handoff.waiting_ci", "rerun_interrupted_ci"),
+                            ("handoff.waiting_human", "resume_ci"),
+                            ("handoff.waiting_human", "resume_clean_head_ci")):
+            with self.subTest(verb=verb):
+                self.assertIn("clean_head_ci_since",
+                              lc.find_edge(state, verb).transition.effects.sets)
+        # In development there is no bounded wait to restart.
+        for state, verb in (("development.waiting_ci", "rerun_interrupted_ci"),
+                            ("development.waiting_human", "resume_ci")):
+            self.assertNotIn("clean_head_ci_since",
+                             lc.find_edge(state, verb).transition.effects.sets)
+        self.assertEqual(lc.find_edge("handoff.waiting_ci", "rerun_interrupted_ci")
+                         .transition.charges, ("interrupted_reruns",))
+
     def test_resume_after_exhaustion_restarts_the_named_counter(self):
         cases = (("planning.idle", "exhaust_work_total", "resume_planning", {"work_total"}),
                  ("development.fix_needed", "exhaust_work_total", "resume_development",

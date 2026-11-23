@@ -1407,6 +1407,27 @@ def current_state(root: Path, api) -> str:
     return checked_out
 
 
+def _rerun_target(root: Path, operation_id: str, policy: dict) -> dict | None:
+    """The ``ci_rerun`` operation of ``handoff.waiting_ci`` that
+    ``operation_id`` names (``ci_rerun.load_request`` for the handoff
+    phase), or ``None`` for an operation of another kind. Raises
+    ``HandoffRefused``."""
+    import ci_rerun
+
+    if not _OP_ID.match(operation_id or ""):
+        return None
+    try:
+        kind = json.loads((root / ".state/operations" / f"{operation_id}.json").read_text()).get("kind")
+    except (OSError, ValueError):
+        return None
+    if kind != "ci_rerun":
+        return None
+    try:
+        return ci_rerun.load_request(root, operation_id, policy, phase="handoff")[1]
+    except (ci_rerun.RerunError, OSError, ValueError) as error:
+        raise HandoffRefused(f"CI rerun: {isolation.clean_text(error, 200)}") from None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -1433,8 +1454,10 @@ def main(argv: list[str] | None = None) -> int:
         # The kind and the fork name the jobs scope their tokens to, from the
         # state at the head of main.
         current_state(root, collect.Api(token=os.environ.get("GH_TOKEN") or None))
-        _record, op = load_request(root, args.operation_id, policy)
-        fork = op["target"]["repository"] if op["kind"] in FORK_KINDS else None
+        op = _rerun_target(root, args.operation_id, policy)
+        if op is None:
+            _record, op = load_request(root, args.operation_id, policy)
+        fork = op["target"]["repository"] if op["kind"] in FORK_KINDS | {"ci_rerun"} else None
         name = fork.split("/", 1)[1] if fork else ""
         if fork and not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
             raise HandoffRefused("invalid fork name")

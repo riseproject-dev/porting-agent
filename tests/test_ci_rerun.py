@@ -457,6 +457,33 @@ class TestOperationRequest(unittest.TestCase):
             ci_rerun.load_request(self.root, "../x", POLICY)
 
 
+class TestPhases(unittest.TestCase):
+    def test_the_states_that_rerun_interrupted_ci_are_the_table_rows(self):
+        import lifecycle
+
+        rows = {state for state in lifecycle.LIFECYCLE
+                if any(e.verb == "rerun_interrupted_ci" for e in lifecycle.state_edges(state))}
+        self.assertEqual(set(ci_rerun.INTERRUPTED_STATES), rows)
+        self.assertEqual(set(ci_rerun.PHASES.values()), rows)
+
+    def test_a_phase_runs_only_its_own_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".state/operations").mkdir(parents=True)
+            (root / ".state/contributions").mkdir(parents=True)
+            record = contribution()
+            op = ci_rerun.operation(record, SHA_A, [{"run_id": 5, "from_attempt": 1}],
+                                    ["ci-2-5-1", "rerun:0"], POLICY, NOW)
+            record["active_operation_id"] = op["operation_id"]
+            (root / f".state/operations/{op['operation_id']}.json").write_text(json.dumps(op))
+            (root / ".state/contributions/example--proj--12.json").write_text(json.dumps(record))
+            self.assertEqual(ci_rerun.load_request(root, op["operation_id"], POLICY)[1], op)
+            with self.assertRaisesRegex(ci_rerun.RerunError, "current authorized"):
+                ci_rerun.load_request(root, op["operation_id"], POLICY, phase="handoff")
+            with self.assertRaisesRegex(ci_rerun.RerunError, "phase"):
+                ci_rerun.load_request(root, op["operation_id"], POLICY, phase="release")
+
+
 class TestEngineWiring(unittest.TestCase):
     def test_every_rerun_verb_is_taken(self):
         self.assertEqual(engine.OPEN_DECISIONS, {})

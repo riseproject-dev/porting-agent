@@ -1395,7 +1395,8 @@ def fold_ci_rerun_receipts(api: collect.Api, receipts: list[dict], contributions
                            by_cid: dict[str, str], snap: Snapshot, out: TickOutput, *,
                            now: str, skip: frozenset[str]) -> list[dict]:
     """Fold the receipts of the ``ci_rerun`` operations the collector planned
-    for interrupted CI, which the development PR workflow executes.
+    for interrupted CI, which the development PR workflow executes in
+    development and the handoff workflow in ``handoff.waiting_ci``.
 
     A receipt is folded only for the open operation the record names as
     active, at the record's revision. A ``rerun`` receipt is read back with

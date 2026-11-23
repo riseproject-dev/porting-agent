@@ -281,6 +281,12 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn('status:"no_change"', retry["run"])
         text = (WORKFLOWS / "controller.yml").read_text()
         self.assertIn('name == "porting-ci-rerun"', text)
+        # The receipts of both workflows that execute a rerun are collected.
+        collect_step = next(s for s in workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+                            if s.get("name") == "Collect trusted CI rerun receipts")
+        self.assertIn("workflows/dev-pr.yml/runs", collect_step["run"])
+        self.assertIn("workflows/handoff.yml/runs?status=completed&branch=main"
+                      "&event=workflow_dispatch", collect_step["run"])
         self.assertIn("--ci-reruns ci-reruns", text)
         self.assertIn("for a repair task whose ci failure is not caused by the patch",
                       " ".join((WORKFLOWS / "worker.md").read_text().split()).lower())
@@ -299,10 +305,14 @@ class TestWorkflowContracts(unittest.TestCase):
                                  {"permission-actions": "write"}]),
             "submission-comment": ("riseproject-dev", "porting-agent",
                                    [{"permission-issues": "write"}]),
+            # The rerun of interrupted CI on the clean head: only the rerun
+            # request of the one fork.
+            "ci-rerun": ("riseproject-upstreaming", "${{ needs.target.outputs.fork_name }}",
+                         [{"permission-actions": "write"}]),
         }
         # No job can write a pull request: the development PR is never closed.
         self.assertEqual(set(jobs), {"target", "upstream-branch", "submission-comment",
-                                     "continuation"})
+                                     "ci-rerun", "continuation"})
         self.assertNotIn("pull-requests", (WORKFLOWS / "handoff.yml").read_text())
         self.assertNotIn("internal", (WORKFLOWS / "handoff.yml").read_text())
         # The job's own token may only read the control repository's artifacts,
@@ -329,16 +339,27 @@ class TestWorkflowContracts(unittest.TestCase):
                         self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
                 runs = [step["run"] for step in job["steps"] if "run" in step
                         and step.get("name") != "Download the reviewed series of the accepted review"]
-                self.assertTrue(all("python -m handoff" in run for run in runs))
+                module = "ci_rerun" if name == "ci-rerun" else "handoff"
+                self.assertTrue(all(f"python -m {module}" in run for run in runs))
                 # The job checks out the head of main and checks it, and the
                 # operation, before it mints its token.
                 steps = job["steps"]
                 checkout = next(s for s in steps if "actions/checkout" in str(s.get("uses")))
                 self.assertEqual(checkout["with"]["ref"], "main")
-                check = next(i for i, s in enumerate(steps) if "python -m handoff check" in str(s.get("run")))
+                check = next(i for i, s in enumerate(steps)
+                             if f"python -m {module} check" in str(s.get("run")))
                 mint = next(i for i, s in enumerate(steps) if "create-github-app-token" in str(s.get("uses")))
                 self.assertLess(check, mint)
-                self.assertIn(f"--kind {job['if'].split(chr(39))[1]}", steps[check]["run"])
+                if name == "ci-rerun":
+                    self.assertIn("--phase handoff", steps[check]["run"])
+                    self.assertNotIn("UPSTREAMING", json.dumps(steps[check].get("env") or {}))
+                    rerun = next(s for s in steps if "ci_rerun operation" in str(s.get("run")))
+                    self.assertIn("--phase handoff", rerun["run"])
+                    upload = next(s for s in steps if "upload-artifact" in str(s.get("uses")))
+                    self.assertEqual((upload["with"]["name"], upload["if"]),
+                                     ("porting-ci-rerun", "always()"))
+                else:
+                    self.assertIn(f"--kind {job['if'].split(chr(39))[1]}", steps[check]["run"])
         self.assertEqual(next(s for s in jobs["target"]["steps"]
                               if "actions/checkout" in str(s.get("uses")))["with"]["ref"], "main")
         # Only the target job reads the operation before a token exists, and
@@ -346,10 +367,12 @@ class TestWorkflowContracts(unittest.TestCase):
         # control repository: nothing can write upstream.
         text = (WORKFLOWS / "handoff.yml").read_text()
         self.assertNotIn("closeio", text)
-        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 2)
+        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 3)
         self.assertNotIn("permission-administration", text)
         continuation = jobs["continuation"]
         self.assertEqual(continuation["if"], "always()")
+        self.assertEqual(continuation["needs"], ["target", "upstream-branch",
+                                                 "submission-comment", "ci-rerun"])
         self.assertIn("gh workflow run controller.yml", str(continuation))
 
     def test_the_branch_job_downloads_the_series_before_any_token(self):
