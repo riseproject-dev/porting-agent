@@ -60,7 +60,8 @@ def normalize(directory: Path, run_id: str) -> dict:
         )
     ):
         return outcome
-    report = worker_gate.validate(task, proposal, directory / "patches.mbox")
+    report = worker_gate.validate(task, proposal, directory / "patches.mbox",
+                                  directory / "report.json")
     if report.get("status") != "infrastructure_blocked":
         raise WorkerRecoveryError("blocked proposal did not pass infrastructure classification")
     normalized = {
@@ -93,7 +94,8 @@ def _recover_no_change(directory: Path, run_id: str, task: dict, proposal: dict,
         return outcome
     record = _load(directory, "record.json")
     try:
-        report = worker_gate.validate(task, proposal, directory / "patches.mbox")
+        report = worker_gate.validate(task, proposal, directory / "patches.mbox",
+                                      directory / "report.json")
     except (worker_gate.WorkerGateError, schemas.SchemaError, ValueError):
         return outcome
     if report.get("status") != "accepted":

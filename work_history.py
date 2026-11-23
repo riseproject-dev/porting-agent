@@ -147,13 +147,14 @@ def _short(full: dict) -> dict:
                      failing_jobs=full.get("failing_jobs"), after_report=full.get("after_report"))
     elif kind in ("review_feedback", "review_inquiry"):
         entry["items"] = [{"id": i.get("id"), "url": i.get("url"),
-                           "body": (i.get("body") or "")[:SHORT]} for i in full.get("items") or []]
+                           "body": _text(i.get("body") or "", SHORT)}
+                          for i in full.get("items") or []]
     elif kind in ("submission_rewrite", "submission_review"):
         entry.update(verdict=full.get("verdict"),
-                     reasons=[r[:SHORT] for r in (full.get("reasons") or [])[:5]])
+                     reasons=[_text(r, SHORT) for r in (full.get("reasons") or [])[:5]])
     else:
         entry.update({k: full.get(k) for k in ("source", "id", "author", "url")},
-                     body=(full.get("body") or "")[:SHORT])
+                     body=_text(full.get("body") or "", SHORT))
     return entry
 
 
@@ -172,7 +173,7 @@ def _fold(earlier: dict | None, entry: dict) -> dict:
         for line in entry.get("approaches") or []:
             parts = line.split(": ")
             if len(parts) > 1 and parts[1] in ("failed", "abandoned"):
-                earlier["failed_approaches"].append(line[:120])
+                earlier["failed_approaches"].append(_text(line, 120))
     return earlier
 
 
@@ -180,11 +181,16 @@ def _cap_earlier(earlier: dict) -> None:
     """Keep the lists of the ``earlier`` entry bounded: the newest are
     kept, and the number left out is stated."""
     for key, keep in (("evidence_ids", 100), ("failed_approaches", 100)):
-        values = earlier[key]
-        if len(values) > keep:
-            earlier[f"{key}_not_listed"] = earlier.get(f"{key}_not_listed", 0) \
-                + len(values) - keep
-            earlier[key] = values[-keep:]
+        _cap_list(earlier, key, keep)
+
+
+def _cap_list(entry: dict, key: str, keep: int) -> None:
+    """Keep the newest ``keep`` values of ``entry[key]`` and count the rest
+    in ``entry[key + "_not_listed"]``."""
+    values = entry[key]
+    if len(values) > keep:
+        entry[f"{key}_not_listed"] = entry.get(f"{key}_not_listed", 0) + len(values) - keep
+        entry[key] = values[-keep:]
 
 
 def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[dict],
@@ -214,14 +220,24 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
         elif kind in ("submission_rewrite", "submission_review"):
             timeline.append(_submission_entry(e))
     timeline += [_upstream_entry(i) for i in items if i.get("authority") is not True]
-    timeline.sort(key=lambda t: (str(t.get("at") or ""), str(t.get("evidence_id") or ""),
-                                 str(t.get("id") or "")))
-    reports: dict[str, str] = {}
-    for entry in timeline:
+    # A report is collected in the tick that folds its Result, which can
+    # observe CI on the published head too, with the same time: at equal
+    # times a report sorts first.
+    timeline.sort(key=lambda t: (str(t.get("at") or ""), t["kind"] != "worker_report",
+                                 str(t.get("evidence_id") or ""), str(t.get("id") or "")))
+    # Each CI run is linked to the report that published the head it ran on,
+    # whatever their order: the newest such report that sorts before the
+    # run, else the oldest one on that head.
+    by_head: dict[str, list[int]] = {}
+    for index, entry in enumerate(timeline):
         if entry["kind"] == "worker_report" and entry.get("head_after"):
-            reports[entry["head_after"]] = entry["evidence_id"]
-        elif entry["kind"] == "ci":
-            entry["after_report"] = reports.get(entry.get("head"))
+            by_head.setdefault(entry["head_after"], []).append(index)
+    for index, entry in enumerate(timeline):
+        if entry["kind"] == "ci" and entry.get("head") in by_head:
+            candidates = by_head[entry["head"]]
+            before = [i for i in candidates if i < index]
+            entry["after_report"] = timeline[before[-1] if before
+                                             else candidates[0]]["evidence_id"]
     for seq, entry in enumerate(timeline, 1):
         entry["seq"] = seq
     for seq, item in enumerate(steer, 1):
@@ -281,7 +297,7 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
     # 2. Steering items, oldest first.
     for item in steer:
         if not item.get("condensed"):
-            item["body"] = (item.get("body") or "")[:SHORT]
+            item["body"] = _text(item.get("body") or "", SHORT)
             item["condensed"] = True
             doc["condensed"]["steering_short"] += 1
             if fits():
@@ -298,6 +314,7 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
         if fits():
             return doc
     fold(0)
+    folded_ids: set[str] = set()
     while not fits() and steer:
         item = steer.pop(0)
         folded = doc.setdefault("steering_earlier", {
@@ -305,8 +322,10 @@ def document(record: dict, work: dict, evidence: dict[str, dict]) -> dict:
             "first_at": item.get("created_at"), "evidence_ids": []})
         folded["items"] += 1
         folded["last_at"] = item.get("created_at")
-        if item.get("evidence_id") and item["evidence_id"] not in folded["evidence_ids"]:
+        if item.get("evidence_id") and item["evidence_id"] not in folded_ids:
+            folded_ids.add(item["evidence_id"])
             folded["evidence_ids"].append(item["evidence_id"])
+            _cap_list(folded, "evidence_ids", 100)
         doc["condensed"]["folded"] += 1
     if not fits():
         raise ValueError(f"the history of {work['dedupe_key']} cannot be condensed to "
@@ -332,5 +351,9 @@ def build(record: dict, work: dict, evidence: dict[str, dict], *, policy: dict,
         "data": doc,
         "digests": {"work": hashlib.sha256(work["dedupe_key"].encode()).hexdigest()},
     }
+    # A condensation cut of cleaned text can create a credential match; it
+    # is redacted here, or this raises inside the contribution's isolation
+    # block, so that the store never refuses the whole tick.
+    record_ = worker_report.scrub(record_)
     schemas.validate("evidence", record_)
     return record_

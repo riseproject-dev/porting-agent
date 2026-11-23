@@ -2141,7 +2141,8 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
             if candidate.exists() and key not in outcome:
                 try:
                     outcome[key] = json.loads(candidate.read_text())
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+                    # A deeply nested document is as unusable as a malformed one.
                     pass
         publications.append(outcome)
     return publications

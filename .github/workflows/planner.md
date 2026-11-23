@@ -99,7 +99,7 @@ pre-agent-steps:
   - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
     with:
       enable-cache: false
-  - name: Check out the upstream project (read-only)
+  - name: Read the Work and its history
     env:
       GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
       GH_TOKEN: ${{ github.token }}
@@ -142,6 +142,11 @@ pre-agent-steps:
           /tmp/gh-aw/agent/history.json >/dev/null || { echo "history identity mismatch"; exit 1; }
         echo "verified history $evidence_id at /tmp/gh-aw/agent/history.json"
       fi
+  # No token in this step: it fetches and checks out upstream code.
+  - name: Check out the upstream project (read-only)
+    run: |
+      set -euo pipefail
+      task=/tmp/gh-aw/agent/task.json
       fork=$(jq -r '.fork // empty' "$task")
       upstream=$(jq -r '.upstream' "$task")
       head=$(jq -r '.expected_head // empty' "$task")

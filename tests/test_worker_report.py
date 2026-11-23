@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import artifact
 import schemas
@@ -105,6 +106,22 @@ class TestCheck(unittest.TestCase):
             with self.assertRaises(worker_report.ReportError):
                 worker_report.check(task(), value)
 
+    def test_a_deeply_nested_report_is_invalid(self):
+        nested = b"[" * (worker_report.MAX_REPORT_BYTES - 1)
+        with self.assertRaisesRegex(worker_report.ReportError, "RecursionError"):
+            worker_report.check(task(), nested)
+        self.assertIsNone(worker_report.check(task(history=False), nested))
+
+    def test_the_controller_loader_skips_a_deeply_nested_report(self):
+        import reconcile
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "9001"
+            directory.mkdir()
+            (directory / "outcome.json").write_text(json.dumps({"status": "published"}))
+            (directory / "report.json").write_text("[" * (worker_report.MAX_REPORT_BYTES - 1))
+            [outcome] = reconcile._publication_outcomes(root)
+        self.assertNotIn("worker_report", outcome)
+
     def test_a_link_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             real = Path(directory) / "real.json"
@@ -184,6 +201,20 @@ class TestGates(unittest.TestCase):
                                       report=raw(report(task="submission_rewrite")))
         self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
         self.assertIn("worker report", out["reason"])
+
+
+class TestRecovery(unittest.TestCase):
+    def test_the_recovery_gate_reads_the_report_of_the_run(self):
+        import worker_recovery
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "record.json").write_text("{}")
+            outcome = {"status": "rejected"}
+            with mock.patch("worker_gate.validate",
+                            side_effect=worker_gate.WorkerGateError("no")) as gate:
+                self.assertIs(worker_recovery._recover_no_change(directory, "1", task(), {},
+                                                                 outcome), outcome)
+            self.assertEqual(gate.call_args.args[3], directory / "report.json")
 
 
 class TestArtifact(unittest.TestCase):

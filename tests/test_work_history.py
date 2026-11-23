@@ -14,6 +14,7 @@ from unittest import mock
 
 import collect
 import isolation
+import state
 import work
 import work_history
 from common import canonical_json
@@ -155,6 +156,59 @@ class TestBuild(unittest.TestCase):
         again = work_history.build(record(), WORK, copy.deepcopy(evidence), policy=POLICY,
                                    now=NOW)
         self.assertEqual(canonical_json(again), canonical_json(history))
+
+    def test_a_condensation_cut_never_creates_a_credential_match(self):
+        # Each body is clean on its own: the AWS key id is followed by more
+        # capitals, so it has no word boundary. The condensation cut at
+        # SHORT characters falls right after its 16th character.
+        straddling = "x" * (work_history.SHORT - 21) + " AKIA" + "B" * 30 + " " + "y" * 3500
+        self.assertFalse(state.find_secrets(straddling))
+        items = [steer(i, straddling, at=f"2026-11-{1 + i % 9:02d}T00:00:{i:02d}Z",
+                       authority=i % 2 == 0,
+                       source="tracking_issue_comment" if i % 2 == 0 else "upstream_pr_review")
+                 for i in range(40)]
+        evidence = {"steering-1": steering_evidence("steering-1", items,
+                                                    at="2026-11-10T00:00:00+00:00")}
+        reason = {"title": "t", "description": "d", "outcome": "failed",
+                  "evidence": straddling[:1900], "lesson": "l"}
+        for i in range(4):
+            evidence[f"report-{i}"] = report_evidence(
+                f"report-{i}", at=f"2026-11-0{1 + i}T05:00:00+00:00",
+                summary=straddling[:1900], approaches=[reason])
+        history = work_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
+        condensed = history["data"]["condensed"]
+        self.assertTrue(condensed["timeline_short"] and condensed["steering_short"])
+        path = f".state/evidence/{history['evidence_id']}.json"
+        self.assertEqual(state.check_blob(path, canonical_json(history).encode(), POLICY), [])
+
+    def test_a_record_that_still_matches_after_redaction_raises(self):
+        evidence = {"report-1": report_evidence("report-1", at="2026-11-20T10:00:00+00:00")}
+        with mock.patch("worker_report.redact_tree", side_effect=lambda value: value), \
+                mock.patch("work_history.document",
+                           return_value=dict(work_history.document(record(), WORK, evidence),
+                                             notice="AKIA" + "B" * 16)):
+            with self.assertRaises(ValueError):
+                work_history.build(record(), WORK, evidence, policy=POLICY, now=NOW)
+
+    def test_ci_observed_in_the_tick_that_folds_the_report_is_linked_to_it(self):
+        # The tick folds the publication and observes CI on the new head
+        # with the same time; "ci-" sorts before "report-" by id.
+        at = "2026-11-20T10:00:00+00:00"
+        evidence = {"report-1": report_evidence("report-1", at=at, head_after=SHA_B),
+                    "ci-1": ci_evidence("ci-1", SHA_B, at=at)}
+        timeline = work_history.document(record(), WORK, evidence)["timeline"]
+        self.assertEqual([(t["kind"], t["seq"]) for t in timeline],
+                         [("worker_report", 1), ("ci", 2)])
+        self.assertEqual(timeline[1]["after_report"], "report-1")
+
+    def test_ci_is_linked_to_its_report_whatever_their_order(self):
+        evidence = {"report-1": report_evidence("report-1", at="2026-11-20T10:00:00+00:00",
+                                                head_after=SHA_B),
+                    "ci-1": ci_evidence("ci-1", SHA_B, at="2026-11-20T09:00:00+00:00"),
+                    "ci-2": ci_evidence("ci-2", SHA_A, at="2026-11-20T11:00:00+00:00")}
+        timeline = work_history.document(record(), WORK, evidence)["timeline"]
+        links = {t["evidence_id"]: t.get("after_report") for t in timeline if t["kind"] == "ci"}
+        self.assertEqual(links, {"ci-1": "report-1", "ci-2": None})
 
     def test_a_small_history_is_not_condensed(self):
         data = work_history.build(record(), WORK, self.evidence(), policy=POLICY,

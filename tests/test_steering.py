@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest import mock
 
 import collect
+import state
 import steering
-from common import CONTROL_REPO, sha256_text
+from common import CONTROL_REPO, canonical_json, sha256_text
 from tests.helpers import NOW, OWNER, STRANGER, contribution, policy
 
 POLICY = policy()
@@ -95,6 +97,17 @@ class TestCollect(unittest.TestCase):
         frozen = dict(issue, body=rec["tracking_issue"]["description"])
         self.assertEqual(collect.steering(Api(), rec, [OWNER["id"]], issue=frozen)["items"], [])
 
+    def test_a_list_read_in_full_is_flagged(self):
+        rec = record()
+        issue_comments = f"/repos/{CONTROL_REPO}/issues/{rec['tracking_issue']['number']}/comments"
+        full = [comment(i, BOT, "status") for i in range(1, collect.STEERING_PAGES * 100 + 1)]
+        out = collect.steering(Api({issue_comments: full}), rec, [OWNER["id"]], issue=None)
+        self.assertEqual(out["omitted"], {
+            "tracking_issue_comment": len(full),
+            "tracking_issue_comment" + collect.STEERING_CAP_SUFFIX: 1})
+        out = collect.steering(Api({issue_comments: full[:-1]}), rec, [OWNER["id"]], issue=None)
+        self.assertEqual(out["omitted"], {"tracking_issue_comment": len(full) - 1})
+
     def test_a_failed_read_raises(self):
         class Failing(Api):
             def paginate(self, path, **kwargs):
@@ -147,6 +160,27 @@ class TestEvidence(unittest.TestCase):
                                  steering.recorded(rec["contribution_id"], known)}),
                          [(1, "2026-11-21T00:00:00Z"), (1, "2026-11-29T00:00:00Z"),
                           (2, "2026-11-22T00:00:00Z")])
+
+    def test_a_list_read_in_full_is_recorded_once_even_with_nothing_new(self):
+        rec = record()
+        flag = "tracking_issue_comment" + collect.STEERING_CAP_SUFFIX
+        first = steering.new_evidence(rec, {"items": [item(1)]}, {}, policy=POLICY, now=NOW)
+        known = {first["evidence_id"]: first}
+        capped = {"items": [item(1)], "omitted": {flag: 1, "tracking_issue_comment": 499}}
+        flagged = steering.new_evidence(rec, capped, known, policy=POLICY, now=NOW)
+        self.assertEqual((flagged["data"]["items"], flagged["data"]["omitted"][flag]), ([], 1))
+        self.assertIn("newer items may be unread", flagged["summary"])
+        self.assertNotEqual(flagged["evidence_id"], first["evidence_id"])
+        known[flagged["evidence_id"]] = flagged
+        self.assertIsNone(steering.new_evidence(rec, capped, known, policy=POLICY, now=NOW))
+
+    def test_a_join_that_creates_a_credential_match_is_redacted(self):
+        rec = record()
+        with mock.patch("worker_report.clean", side_effect=lambda value, _limit: str(value)):
+            out = steering.new_evidence(rec, {"items": [item(1, body="AKIA" + "B" * 16)]}, {},
+                                        policy=POLICY, now=NOW)
+        self.assertEqual(state.find_secrets(canonical_json(out)), [])
+        self.assertEqual(out["data"]["items"][0]["body"], "[redacted]")
 
     def test_bodies_are_bounded_and_cleaned(self):
         rec = record()

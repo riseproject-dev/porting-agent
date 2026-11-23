@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 
+import collect
 import schemas
 import worker_report
 from common import canonical_json, safe_id
@@ -109,7 +110,14 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
             cleaned["supersedes"] = worker_report.clean(previous, 300)
         latest[key[:2]] = key[2]
         fresh.append(cleaned)
-    if not fresh:
+    # A list read in full is recorded once, even with no new item, so the
+    # history says that newer text may be unread.
+    capped = {k for k in (collected.get("omitted") or {})
+              if isinstance(k, str) and k.endswith(collect.STEERING_CAP_SUFFIX)}
+    for e in known.values():
+        if e.get("kind") == KIND and e.get("contribution_id") == cid:
+            capped -= set((e.get("data") or {}).get("omitted") or {})
+    if not fresh and not capped:
         return None
     kept, size = [], 0
     for item in fresh[:MAX_ITEMS]:
@@ -119,7 +127,8 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
         kept.append(item)
     deferred = len(fresh) - len(kept)
     fresh = kept
-    digest = hashlib.sha256("\n".join(sorted("\x1f".join(item_key(i)) for i in fresh))
+    digest = hashlib.sha256(("\n".join(sorted("\x1f".join(item_key(i)) for i in fresh))
+                             + "".join(f"\n{k}" for k in sorted(capped)))
                             .encode()).hexdigest()[:16]
     omitted = {worker_report.clean(k, 100): int(v)
                for k, v in sorted((collected.get("omitted") or {}).items())
@@ -127,7 +136,10 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
     counts: dict[str, int] = {}
     for item in fresh:
         counts[item["source"]] = counts.get(item["source"], 0) + 1
-    summary = "; ".join(f"{source}: {count}" for source, count in sorted(counts.items()))
+    summary = "; ".join(f"{source}: {count}" for source, count in sorted(counts.items())) \
+        or "none"
+    if capped:
+        summary += "; lists read in full, newer items may be unread: " + ", ".join(sorted(capped))
     evidence = {
         "schema_version": 1,
         "evidence_id": safe_id(f"steering-{cid.replace('/', '--')}-{digest}"),
@@ -138,5 +150,6 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
         "data": {"items": fresh, "omitted": omitted, "deferred": deferred},
         "digests": {"items": digest},
     }
+    evidence = worker_report.scrub(evidence)
     schemas.validate("evidence", evidence)
     return evidence

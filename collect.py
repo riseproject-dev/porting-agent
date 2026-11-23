@@ -411,6 +411,9 @@ def base_contained(api: Api, record: dict, ref: str) -> bool:
 
 # The bound of every list read for steering: pages of 100.
 STEERING_PAGES = 5
+# The ``omitted`` key suffix of a steering list read in full: the list may
+# hold newer items than were read.
+STEERING_CAP_SUFFIX = "_list_cap_reached"
 # Accounts of the upstream repository whose reviews on the upstream PR are
 # recorded as maintainer feedback (never as steering).
 MAINTAINER_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
@@ -444,7 +447,8 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     whose association is OWNER, MEMBER or COLLABORATOR are kept with
     ``authority`` false: maintainer review feedback, never steering.
     Everything else (other accounts, bots, empty bodies) is counted per
-    source in ``omitted``. Returns ``{"items": [...], "omitted": {...}}``;
+    source in ``omitted``; a list that filled every page is flagged there
+    with ``STEERING_CAP_SUFFIX``, since newer items may be unread. Returns ``{"items": [...], "omitted": {...}}``;
     the text is untrusted and is bounded where it is stored. A failed read
     raises ``CollectError``."""
     from common import sha256_text
@@ -464,6 +468,14 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
             return
         items.append(_steering_item(source, raw, authority=trusted, **keys))
 
+    def read(source: str, path: str) -> list:
+        # Each list is read oldest first; one that fills every page may hold
+        # newer items than were read, which is recorded, never silent.
+        raws = api.paginate(path, max_pages=STEERING_PAGES)
+        if len(raws) >= STEERING_PAGES * 100:
+            omitted[source + STEERING_CAP_SUFFIX] = 1
+        return raws
+
     tracking = record["tracking_issue"]
     if isinstance(issue, dict) and issue.get("id") == tracking.get("id"):
         body = issue.get("body") or ""
@@ -474,8 +486,9 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
                 items.append(item)
             else:
                 omitted["tracking_issue_description"] = 1
-    for raw in api.paginate(f"/repos/{CONTROL_REPO}/issues/{int(tracking['number'])}/comments"
-                            "?per_page=100", max_pages=STEERING_PAGES):
+    for raw in read("tracking_issue_comment",
+                    f"/repos/{CONTROL_REPO}/issues/{int(tracking['number'])}/comments"
+                    "?per_page=100"):
         keep("tracking_issue_comment", raw, maintainers=False)
     pulls = []
     fork = record.get("fork") or {}
@@ -486,15 +499,15 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
         pulls.append(("upstream_pr", record["upstream"]["full_name"], int(upstream_pr["number"]),
                       True))
     for prefix, repository, number, maintainers in pulls:
-        for raw in api.paginate(f"/repos/{repository}/pulls/{number}/reviews?per_page=100",
-                                max_pages=STEERING_PAGES):
+        for raw in read(f"{prefix}_review",
+                        f"/repos/{repository}/pulls/{number}/reviews?per_page=100"):
             keep(f"{prefix}_review", raw, maintainers=maintainers, created_key="submitted_at",
                  updated_key="submitted_at")
-        for raw in api.paginate(f"/repos/{repository}/pulls/{number}/comments?per_page=100",
-                                max_pages=STEERING_PAGES):
+        for raw in read(f"{prefix}_review_comment",
+                        f"/repos/{repository}/pulls/{number}/comments?per_page=100"):
             keep(f"{prefix}_review_comment", raw, maintainers=maintainers)
-        for raw in api.paginate(f"/repos/{repository}/issues/{number}/comments?per_page=100",
-                                max_pages=STEERING_PAGES):
+        for raw in read(f"{prefix}_comment",
+                        f"/repos/{repository}/issues/{number}/comments?per_page=100"):
             keep(f"{prefix}_comment", raw, maintainers=maintainers)
     return {"items": items, "omitted": omitted}
 

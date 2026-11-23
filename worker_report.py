@@ -49,9 +49,15 @@ class ReportError(ValueError):
 
 
 def _redact(text: str) -> str:
-    for pattern in state.SECRET_PATTERNS:
-        text = pattern.sub(REDACTED, text)
-    return text
+    """``text`` with every credential match redacted, repeated until none
+    is left: a redaction can give a neighbouring run the boundary it
+    lacked. Every match is longer than the marker, so this ends."""
+    while True:
+        before = text
+        for pattern in state.SECRET_PATTERNS:
+            text = pattern.sub(REDACTED, text)
+        if text == before:
+            return text
 
 
 def clean(text: Any, limit: int) -> str:
@@ -80,6 +86,34 @@ def clean_tree(value: Any, limit: int = MAX_FIELD) -> Any:
     return value
 
 
+def redact_tree(value: Any) -> Any:
+    """Every string of a JSON value (keys included) with the credential
+    patterns redacted, and nothing else changed."""
+    if isinstance(value, str):
+        return _redact(value)
+    if isinstance(value, list):
+        return [redact_tree(item) for item in value]
+    if isinstance(value, dict):
+        return {_redact(key): redact_tree(item) for key, item in value.items()}
+    return value
+
+
+def scrub(record: dict) -> dict:
+    """``record`` as it may be staged: when its canonical JSON matches a
+    credential pattern (a cut or a join of cleaned text can create a match
+    the parts did not have), every string is redacted again. Raises
+    ``ValueError`` when a match remains, so that the caller's isolation
+    block pauses the one contribution instead of the store refusing the
+    whole tick."""
+    if not state.find_secrets(canonical_json(record)):
+        return record
+    record = redact_tree(record)
+    if state.find_secrets(canonical_json(record)):
+        raise ValueError(f"the {record.get('kind')} evidence {record.get('evidence_id')} "
+                         "matches a credential pattern after redaction")
+    return record
+
+
 def _history(task: dict) -> dict | None:
     history = (task.get("context") or {}).get("history")
     return history if isinstance(history, dict) else None
@@ -98,7 +132,8 @@ def _load(raw: bytes | dict | None) -> dict | None:
         raise ReportError(f"the report has {len(data)} bytes, more than {MAX_REPORT_BYTES}")
     try:
         report = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        # A deeply nested document raises RecursionError: an invalid report.
         raise ReportError(f"the report is not UTF-8 JSON: {type(error).__name__}") from None
     if not isinstance(report, dict):
         raise ReportError("the report is not a JSON object")
