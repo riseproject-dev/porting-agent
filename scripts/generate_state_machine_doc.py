@@ -243,8 +243,8 @@ def render_index() -> str:
         "- a stop set by the controller records its reason, and every stop clears the pending "
         "publication;",
         "- every row that allocates patch or revision Work carries the pending feedback, only a "
-        "published Result clears the feedback its Work carried, and Work that carries feedback "
-        "takes no CI rerun;",
+        "published Result clears the feedback its Work carried, Work that carries feedback "
+        "takes no CI rerun, and passing CI with pending feedback always makes Work due;",
         "- patch Work is requested only from a `fix_needed` state under write admission, "
         "`repair_attempts_cluster` is charged exactly when a failing CI job is recorded for the "
         "head, and the rows that apply when Work is due exclude each other;",

@@ -693,6 +693,10 @@ CLEAN_HEAD_CI_PASSED = ("every required CI job executed and passed on the clean 
                         "candidate head when the clean head has its tree")
 # Work that carries feedback is never answered by a CI rerun.
 WORK_WITHOUT_FEEDBACK = "the Work carries no feedback"
+# Passing CI nominates a head only without pending feedback; with pending
+# feedback it makes Work due again, so the feedback is never stranded.
+NO_PENDING_FEEDBACK = "no pending actionable feedback"
+PENDING_FEEDBACK = "pending actionable feedback"
 EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((WORK_TOTAL_REMAINS,), (WORK_TOTAL_EXHAUSTED,)),
     ((NO_FAILING_JOB,), (FAILING_JOB,)),
@@ -703,11 +707,13 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((NO_FAILING_JOB, REVIEW_REVISION_BUDGETS_REMAIN), (REVISION_BUDGET_EXHAUSTED,)),
     ((CANDIDATE_FAILED,), (CANDIDATE_NOT_FAILED,)),
     ((REWRITE_CURRENT,), (REWRITE_EXPIRED,)),
+    ((NO_PENDING_FEEDBACK,), (PENDING_FEEDBACK,)),
 )
 # States in which two observations could apply to the same input; their
 # guards are exclusive, so the order of observation never decides.
 EXCLUSIVE_OBSERVATIONS = {
     "handoff.awaiting_submission": ("return_for_repair", "record_actionable_review"),
+    "development.waiting_ci": ("nominate_for_handoff", "return_for_feedback"),
 }
 
 _ALLOCATE_WORK_RETRY = Transition(
@@ -953,7 +959,8 @@ LIFECYCLE: dict[str, State] = {
     "development.waiting_ci": State(
         "auto_wait", False, True,
         "A patch is published to the development PR; CI and review evaluate the exact head. "
-        "Passing CI that does not yet satisfy `nominate_for_handoff` keeps the contribution here.",
+        "Passing CI nominates the head, or returns to `development.fix_needed` while actionable "
+        "feedback is pending; passing CI behind an open operation keeps the contribution here.",
         transitions={
             ("record_ci_failure", "development.fix_needed"): Transition(
                 _O, None,
@@ -978,16 +985,27 @@ LIFECYCLE: dict[str, State] = {
             ("nominate_for_handoff", "handoff.awaiting_submission"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
-                 "no pending actionable feedback", "no requested Work"),
+                 NO_PENDING_FEEDBACK, "no requested Work"),
                 _E(sets=("last_ci_evidence_id", "handoff_request",
                         "pending_human_action=submit_upstream"))),
+            ("return_for_feedback", "development.fix_needed"): Transition(
+                _O, None,
+                ("every required CI job executed and passed on the exact head", PENDING_FEEDBACK,
+                 "no requested Work"),
+                _E(sets=("last_ci_evidence_id",)),
+                description="CI passed on the exact head while actionable feedback is still "
+                            "pending (a push while Work was due for a review, or feedback the "
+                            "published Work did not carry): the passing evidence is recorded "
+                            "and Work is due again, so `request_patch` requests a repair that "
+                            "carries the feedback. The pending feedback is kept; only a "
+                            "published Result clears it."),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
         "auto_wait", True, True,
         "Development Work is due: the fork is ready for a first patch, or a CI failure, "
-        "actionable review, rejected proposal, refreshed plan, or a resume needs a bounded "
-        "repair. It is the only state in which patch Work is requested, so none is requested "
+        "actionable review, passing CI with feedback still pending, rejected proposal, "
+        "refreshed plan, or a resume needs a bounded repair. It is the only state in which patch Work is requested, so none is requested "
         "before `confirm_provisioning`.",
         transitions={
             ("request_patch", "development.agent_running"): Transition(
@@ -1034,7 +1052,9 @@ LIFECYCLE: dict[str, State] = {
                   clears=("last_ci_evidence_id",)),
                 description="A push to the development branch while Work is due (a human "
                             "push): the new head is recorded and CI is awaited for it, so no "
-                            "Work is requested for the head the record names any more."),
+                            "Work is requested for the head the record names any more. The "
+                            "pending feedback is kept; when CI passes on the new head "
+                            "`return_for_feedback` makes Work due again for it."),
             ("record_actionable_review", SELF): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
@@ -2085,6 +2105,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("development.waiting_ci", "record_explanation"),
                 ("development.waiting_human", "resume_development"),
                 ("development.waiting_ci", "nominate_for_handoff"),
+                ("development.waiting_ci", "return_for_feedback"),
                 ("handoff.awaiting_submission", "submit_upstream"),
                 ("handoff.review_due", "request_submission_rewrite"),
                 ("handoff.agent_running", "accept_submission_rewrite"),
@@ -2274,6 +2295,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_human", "resume_ci"),
                  ("development.waiting_ci", "record_head_change"),
                  ("development.fix_needed", "record_head_change"),
+                 ("development.waiting_ci", "return_for_feedback"),
                  ("development.waiting_ci", "record_pr_mismatch")),
                 start="development.waiting_ci",
                 text="Build and test failures and actionable comments request repair automatically. "
@@ -2288,7 +2310,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "feedback never takes `request_ci_rerun`. Explanation-only comments do not "
                      "bump the revision, invalidate CI, or request repair. A push to the "
                      "development branch while CI is awaited or Work is due records the new head "
-                     "and waits for its CI."),
+                     "and waits for its CI. Passing CI while feedback is pending returns to "
+                     "`development.fix_needed` (`return_for_feedback`), so a push while Work is "
+                     "due for a review never strands the review."),
             Diagram(
                 "Failure case 4: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",
@@ -3087,6 +3111,19 @@ def _check_feedback(problems: list[str]) -> None:
                             "what it clears")
         if not any(entry in e.transition.effects.clears for e in table_edges()):
             problems.append(f"qualified clear {entry!r}: no transition uses it")
+    # A nomination blocked by pending feedback always has a row that makes
+    # Work carrying that feedback due, so passing CI never strands it.
+    for state in sorted({e.source for e in table_edges()
+                         if NO_PENDING_FEEDBACK in e.transition.guard}):
+        if not any(PENDING_FEEDBACK in x.transition.guard
+                   and x.transition.trigger == Trigger.OBSERVATION
+                   and LIFECYCLE[x.target].launches
+                   and any(_is_patch_work(w) and WORK_FEEDBACK in w.transition.effects.sets
+                           for w in state_edges(x.target))
+                   for x in state_edges(state)):
+            problems.append(f"{state}: blocks a nomination on {NO_PENDING_FEEDBACK!r} without an "
+                            f"observation row guarded by {PENDING_FEEDBACK!r} that makes Work "
+                            "carrying the feedback due")
 
 
 # The guards of `request_patch`: write admission and the guards every Work

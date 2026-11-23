@@ -231,15 +231,20 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                                  "development.agent_running has no observation row")
                 self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
 
-    def test_pending_feedback_keeps_green_ci_in_waiting_ci(self):
-        """Nomination requires that no actionable feedback is pending."""
+    def test_pending_feedback_with_green_ci_returns_to_due_work(self):
+        """Nomination requires that no actionable feedback is pending; with
+        feedback pending, `return_for_feedback` makes Work due again."""
         rec = dict(self.record(), pending_feedback_evidence_ids=["review-1"])
         observation = self.observe(rec, self.snapshot(pending=False))
         final = self.final(observation, rec)
-        self.assertEqual(engine.state_key(final), "development.waiting_ci")
-        self.assertIsNone(final["last_ci_evidence_id"])
-        self.assertIn("actionable feedback is pending", observation.report[0]["handoff_deferred"])
-        self.assertEqual([kind for kind, _ in observation.staged if kind == "events"], [])
+        self.assertEqual(engine.state_key(final), "development.fix_needed")
+        self.assertEqual(final["revision"], rec["revision"])
+        self.assertEqual(final["last_ci_evidence_id"], observation.report[0]["evidence"])
+        self.assertEqual(final["pending_feedback_evidence_ids"], ["review-1"])
+        self.assertEqual(observation.report[0]["feedback_due"], ["review-1"])
+        self.assertNotIn("handoff_deferred", observation.report[0])
+        self.assertEqual([e["kind"] for kind, e in observation.staged if kind == "events"],
+                         ["return_for_feedback"])
 
     def test_new_head_in_handoff_clears_readiness_while_ci_pending(self):
         """A new head leaves the gate by the table's record_head_change."""

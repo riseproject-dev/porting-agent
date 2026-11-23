@@ -249,10 +249,14 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(new["scope_paths"], ["a", "b"])
         self.assertEqual(new["budget"]["reruns"],
                          {"head_sha": SHA_A, "flaky": 0, "interrupted": 0})
-        # Feedback recorded after the allocation stays pending: no nomination.
+        # Feedback recorded after the allocation stays pending: no nomination,
+        # Work carrying it is due again and requested in the same tick.
         out = tick(new, verdict="passed")
-        self.assertEqual(engine.state_key(final(out, new)), "development.waiting_ci")
-        self.assertIn("review-2", out.report["observation"][0]["handoff_deferred"])
+        self.assertEqual(kinds(out), ["return_for_feedback", "request_patch"])
+        after = final(out, new)
+        self.assertEqual(engine.state_key(after), "development.agent_running")
+        self.assertEqual(after["active_work"]["feedback_evidence_ids"], ["review-2"])
+        self.assertNotIn("handoff_deferred", out.report["observation"][0])
         # Without it, passing CI nominates.
         cleared = dict(new, pending_feedback_evidence_ids=[])
         out = tick(cleared, verdict="passed")
@@ -542,6 +546,89 @@ class TestObservation(unittest.TestCase):
         # An unchanged head is not read: Work is requested for it.
         out = tick(dict(rec, last_ci_evidence_id=None), head=SHA_A)
         self.assertEqual(kinds(out), ["request_patch"])
+
+    def test_a_push_while_work_is_due_for_a_review_is_answered_after_ci_passes(self):
+        """A push while Work is due for a review keeps the review pending;
+        once CI passes on the new head, `return_for_feedback` makes Work due
+        again and the repair that carries the review is requested."""
+        rec = record("fix_needed", pending_feedback_evidence_ids=["review-1"])
+        out = tick(rec, head=SHA_B, verdict="passed")
+        self.assertEqual(kinds(out), ["record_head_change", "return_for_feedback",
+                                      "request_patch"])
+        after = final(out, rec)
+        returned = next(e for k, e in out.staged
+                        if k == "events" and e["kind"] == "return_for_feedback")
+        self.assertFalse(returned["revision_bumped"])
+        self.assertEqual(returned["details"]["feedback"], ["review-1"])
+        self.assertEqual(engine.state_key(after), "development.agent_running")
+        self.assertEqual(after["revision"], rec["revision"] + 1)
+        self.assertEqual(after["pending_feedback_evidence_ids"], ["review-1"])
+        self.assertEqual(after["last_ci_evidence_id"], returned["details"]["evidence_id"])
+        work = after["active_work"]
+        self.assertEqual((work["task"], work["feedback_evidence_ids"]),
+                         ("development_repair", ["review-1"]))
+        effect = out.report["requested_effects"][0]
+        self.assertEqual(effect["expected_head"], SHA_B)
+        self.assertIn("review-1", effect["reason_ids"])
+        self.assertIn(after["last_ci_evidence_id"], effect["reason_ids"])
+        # The Work is not the one that would have been requested for the old head.
+        before = tick(rec, head=SHA_A)
+        self.assertEqual(kinds(before), ["request_patch"])
+        self.assertNotEqual(final(before, rec)["active_work"]["dedupe_key"], work["dedupe_key"])
+        # A failure on the new head is one repair carrying both.
+        failed = tick(rec, head=SHA_B, verdict="failed")
+        self.assertEqual(kinds(failed), ["record_head_change", "record_ci_failure",
+                                         "request_repair"])
+        self.assertEqual(final(failed, rec)["active_work"]["feedback_evidence_ids"],
+                         ["review-1"])
+        # While CI on the new head is pending, nothing more is decided.
+        pending = tick(rec, head=SHA_B, verdict="pending")
+        self.assertEqual(kinds(pending), ["record_head_change"])
+        self.assertEqual(engine.state_key(final(pending, rec)), "development.waiting_ci")
+
+    def test_passing_ci_with_pending_feedback_is_bounded_by_the_budgets(self):
+        """The cycle through `return_for_feedback` is bounded by the
+        existing budgets: `no_progress` ends in the automatic refresh, and
+        `work_total` in the human wait."""
+        limit = lifecycle.budget_limit("no_progress", POLICY)
+        rec = record(pending_feedback_evidence_ids=["review-1"],
+                     budget=dict(record()["budget"], no_progress_streak=limit))
+        out = tick(rec, verdict="passed")
+        self.assertEqual(kinds(out), ["return_for_feedback", "refresh_on_exhaustion"])
+        self.assertEqual(engine.state_key(final(out, rec)), "queued.idle")
+        total = lifecycle.budget_limit("work_total", POLICY)
+        rec = record(pending_feedback_evidence_ids=["review-1"],
+                     budget=dict(record()["budget"], attempts_used=total))
+        out = tick(rec, verdict="passed")
+        self.assertEqual(kinds(out), ["return_for_feedback", "exhaust_work_total"])
+        after = final(out, rec)
+        self.assertEqual((engine.state_key(after), after["pending_human_action"]["kind"]),
+                         ("development.waiting_human", "work_budget_exhausted"))
+
+    def test_passing_ci_with_pending_feedback_while_paused_requests_no_work(self):
+        rec = record(pending_feedback_evidence_ids=["review-1"], paused=True,
+                     paused_reason="hold", paused_by="human", paused_at=NOW)
+        out = tick(rec, verdict="passed")
+        self.assertEqual(kinds(out), ["return_for_feedback"])
+        after = final(out, rec)
+        self.assertEqual((engine.state_key(after), after["active_work"]),
+                         ("development.fix_needed", None))
+        resumed = apply_command(after, commands.parse(
+            f'/upstreaming resume revision={after["revision"]} reason="go"'))
+        self.assertTrue(resumed.accepted, resumed.reason)
+        evidence = {e["evidence_id"]: e for k, e in out.staged if k == "evidence"}
+        out = tick(resumed.record, observe=False, now=T + timedelta(minutes=10),
+                   evidence=evidence)
+        self.assertEqual(kinds(out), ["request_patch"])
+        self.assertEqual(final(out, resumed.record)["active_work"]["feedback_evidence_ids"],
+                         ["review-1"])
+
+    def test_passing_ci_with_pending_feedback_behind_an_open_operation_waits(self):
+        rec = record(pending_feedback_evidence_ids=["review-1"], active_operation_id="op-9")
+        out = tick(rec, verdict="passed")
+        self.assertEqual(kinds(out), [])
+        self.assertEqual(engine.state_key(final(out, rec)), "development.waiting_ci")
+        self.assertIn("op-9", out.report["observation"][0]["handoff_deferred"])
 
     def test_green_ci_at_the_gate_changes_nothing(self):
         from tests.helpers import awaiting_submission
@@ -1151,7 +1238,8 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
         for verb in ("record_publish_success", "reject_patch_proposal", "replan_development",
                      "schedule_publish_retry", "exhaust_publish_recovery", "retry_dispatch",
                      "exhaust_dispatch_recovery", "record_ci_failure", "record_pr_mismatch",
-                     "record_actionable_review", "record_explanation", "record_head_change"):
+                     "record_actionable_review", "record_explanation", "record_head_change",
+                     "return_for_feedback"):
             self.assertIn(verb, engine.PIPELINE_VERBS)
 
     def test_nomination_reads_pending_feedback_from_the_record(self):
@@ -1163,6 +1251,24 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
                     "handoff_request": {"command_id": "c", "head": SHA_A, "revision": 0}})
         self.assertFalse(out.accepted)
         self.assertIn("review-1", out.reason)
+
+    def test_returning_for_feedback_reads_pending_feedback_from_the_record(self):
+        self.assertEqual(engine.PREDICATES[lifecycle.PENDING_FEEDBACK].kind, "record")
+        self.assertEqual(engine.PREDICATES[lifecycle.NO_PENDING_FEEDBACK].kind, "record")
+        rec = record(pending_feedback_evidence_ids=[])
+        out = engine.apply_transition(
+            rec, "return_for_feedback", policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
+            values={"last_ci_evidence_id": "ci-1"})
+        self.assertFalse(out.accepted)
+        self.assertIn("no actionable feedback is pending", out.reason)
+        out = engine.apply_transition(
+            dict(rec, pending_feedback_evidence_ids=["review-1"]), "return_for_feedback",
+            policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
+            values={"last_ci_evidence_id": "ci-1"})
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual((engine.state_key(out.record), out.record["revision"],
+                          out.record["last_ci_evidence_id"]),
+                         ("development.fix_needed", rec["revision"], "ci-1"))
 
     def test_the_selection_requests_no_work_outside_the_table(self):
         legacy = record("idle")

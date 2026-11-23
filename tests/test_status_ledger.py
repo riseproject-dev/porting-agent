@@ -288,6 +288,7 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
                 ("record_publish_success", "development.agent_running", "development.waiting_ci"),
                 ("request_ci_rerun", "development.agent_running", "development.waiting_ci"),
                 ("rerun_interrupted_ci", "development.waiting_ci", "development.waiting_ci"),
+                ("return_for_feedback", "development.waiting_ci", "development.fix_needed"),
                 ("ci_rerun_recorded", "development.waiting_ci", "development.waiting_ci")):
             with self.subTest(verb=verb):
                 self.assertFalse(self.notifies(table_event(verb, source, target)))
@@ -432,6 +433,20 @@ class TestWordingIsTheTable(unittest.TestCase):
         import engine
         self.assertFalse(set(status_ledger.RECORDED_KINDS) & engine.table_verbs())
         self.assertFalse(hasattr(status_ledger, "MESSAGES"))
+
+    def test_returning_for_feedback_renders_from_the_row_with_ids_only(self):
+        event = table_event("return_for_feedback", "development.waiting_ci",
+                            "development.fix_needed")
+        event["details"].update(evidence_id="ci-1-2-1", head=SHA_A,
+                                feedback=["review-1", "review-2"])
+        record = contribution(phase="development", activity="fix_needed",
+                              pending_feedback_evidence_ids=["review-1", "review-2"])
+        body = status_ledger.render(event, record, "https://github.com/run")
+        self.assertIn("`return_for_feedback` ", body)
+        self.assertIn(lifecycle.PENDING_FEEDBACK, body)
+        self.assertIn("Now `development.fix_needed`", body)
+        self.assertNotIn("review-1", body)
+        self.assertNotIn(chr(0x2014), body)
 
     def test_an_unknown_kind_is_named_quoted(self):
         record = contribution()

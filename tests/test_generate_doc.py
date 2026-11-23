@@ -241,6 +241,21 @@ class TestEventLog(unittest.TestCase):
         self.assertNotIn("ci-missing-1.json", log)
         self.assertNotIn("javascript", log)
 
+    def test_returning_for_feedback_lists_its_states_and_evidence_only(self):
+        events = [event(0, "return_for_feedback", "observation", CI["evidence_id"],
+                        details={"verb": "return_for_feedback",
+                                 "from_state": "development.waiting_ci",
+                                 "to_state": "development.fix_needed",
+                                 "evidence_id": CI["evidence_id"], "head": HEAD,
+                                 "feedback": ["review-<b>1</b>"]})]
+        log = self.log(self.render(events=events))
+        self.assertIn('<code class="event-log__kind">return_for_feedback</code>', log)
+        self.assertIn("<code>development.waiting_ci</code> &rarr; "
+                      "<code>development.fix_needed</code>", log)
+        self.assertIn(f'href="https://github.com/riseproject-dev/porting-agent/blob/main/'
+                      f'.state/evidence/{CI["evidence_id"]}.json"', log)
+        self.assertNotIn("review-", log)
+
     def test_rendering_is_deterministic(self):
         first = self.render()
         self.assertEqual(first, self.render())

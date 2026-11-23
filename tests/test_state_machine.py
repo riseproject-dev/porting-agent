@@ -227,6 +227,34 @@ class TestLifecycleTable(unittest.TestCase):
             self.assertFalse({"pending_feedback_evidence_ids", lc.CARRIED_FEEDBACK} & set(clears))
         self.assertEqual(lc.FEEDBACK_ANSWERED_BY, ("resume_upstream_review",))
 
+    def test_passing_ci_with_pending_feedback_makes_work_due(self):
+        edge = lc.find_edge("development.waiting_ci", "return_for_feedback")
+        t = edge.transition
+        self.assertEqual((edge.target, t.trigger, t.command, t.charges),
+                         ("development.fix_needed", lc.Trigger.OBSERVATION, None, ()))
+        self.assertEqual(t.guard, ("every required CI job executed and passed on the exact head",
+                                   lc.PENDING_FEEDBACK, "no requested Work"))
+        self.assertEqual((t.effects.sets, t.effects.clears, t.effects.revision, t.effects.work),
+                         (("last_ci_evidence_id",), (), "keep", "keep"))
+        self.assertFalse(lc.must_bump(edge))
+        self.assertIn(lc.NO_PENDING_FEEDBACK,
+                      lc.find_edge("development.waiting_ci", "nominate_for_handoff")
+                      .transition.guard)
+        self.assertEqual(lc.EXCLUSIVE_OBSERVATIONS["development.waiting_ci"],
+                         ("nominate_for_handoff", "return_for_feedback"))
+        self.assertIn(((lc.NO_PENDING_FEEDBACK,), (lc.PENDING_FEEDBACK,)), lc.EXCLUSIVE_GUARDS)
+        key = next(k for k in lc.LIFECYCLE["development.waiting_ci"].transitions
+                   if k[0] == "return_for_feedback")
+        with mock.patch.dict(lc.LIFECYCLE["development.waiting_ci"].transitions):
+            del lc.LIFECYCLE["development.waiting_ci"].transitions[key]
+            problems = lc.check_table(POLICY)
+        self.assertTrue(any(p.startswith("development.waiting_ci: blocks a nomination on")
+                            for p in problems), problems)
+        problems = self.mutated("development.waiting_ci", "return_for_feedback",
+                                guard=self.without(t.guard, lc.PENDING_FEEDBACK))
+        self.assertTrue(any("nominate_for_handoff and return_for_feedback can apply together" in p
+                            for p in problems), problems)
+
     def test_the_check_holds_the_settled_rows(self):
         gate = "handoff.awaiting_submission"
         review = lc.find_edge(gate, "record_actionable_review").transition
@@ -1107,7 +1135,7 @@ class TestDiagrams(unittest.TestCase):
         for d in (*DECISIONS, *FURTHER_CHANGES):
             self.assertTrue(d.text and not d.options and not d.candidates, d.title)
             self.assertTrue(d.operations or d.highlighted, d.title)
-        self.assertEqual(len(SETTLED_OPEN_ITEMS), 26)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 27)
         self.assertEqual(OPEN_ITEMS, ())
         for d in SETTLED_OPEN_ITEMS:
             self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)

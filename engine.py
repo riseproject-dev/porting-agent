@@ -384,10 +384,15 @@ def carried_feedback(record: dict) -> list[str]:
     return []
 
 
-@_record("no pending actionable feedback", "no_pending_actionable_feedback")
+@_record(lc.NO_PENDING_FEEDBACK, "no_pending_actionable_feedback")
 def _no_pending_feedback(ctx: Context) -> str | None:
     pending = ctx.record.get("pending_feedback_evidence_ids") or []
     return f"actionable feedback is pending: {', '.join(pending[:4])}" if pending else None
+
+
+@_record(lc.PENDING_FEEDBACK, "pending_actionable_feedback")
+def _pending_feedback(ctx: Context) -> str | None:
+    return None if ctx.record.get("pending_feedback_evidence_ids") else "no actionable feedback is pending"
 
 
 @_record(lc.WORK_WITHOUT_FEEDBACK, "work_without_feedback")
@@ -824,6 +829,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # Observation of the published development head: a CI failure, and a
     # development PR that does not match the record.
     "record_ci_failure": "observe_ci",
+    "return_for_feedback": "observe_ci",
     "record_pr_mismatch": "observe_ci",
     # A required job that was cancelled or lost its runner: a `ci_rerun`
     # operation within `interrupted_reruns`, and the wait once it is spent.

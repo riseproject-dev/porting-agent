@@ -707,7 +707,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "no Work could be requested for the recorded head and nothing recorded the new one.",
         "A head change in `development.fix_needed` takes `record_head_change` to "
         "`development.waiting_ci`: the new head is recorded, the revision is bumped, the rerun "
-        "counts start again, and CI is awaited for the new head.",
+        "counts start again, and CI is awaited for the new head. The pending feedback is kept, "
+        "and `return_for_feedback` makes Work due again once CI passes on the new head.",
         ("development.fix_needed", "development.waiting_ci"),
         edges=(("development.fix_needed", "record_head_change"),),
         highlighted=(("development.fix_needed", "record_head_change"),),
@@ -1065,7 +1066,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`active_work.feedback_evidence_ids`. `record_publish_success` clears exactly those "
         "ids, and `record_revision_publish_success` does the same in upstream review; feedback "
         "recorded while the Work ran stays pending. `reject_patch_proposal`, "
-        "`replan_development`, every resume that requests Work again, and both refresh verbs "
+        "`replan_development`, `record_head_change`, every resume that requests Work again, and both refresh verbs "
         "keep the pending feedback; `resume_upstream_review` still clears it after a human "
         "answered the reviewer. A fresh Work graph and a publish retry carry the same ids. Work "
         "that carries feedback cannot take `request_ci_rerun`: that outcome counts as "
@@ -1242,6 +1243,26 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         highlighted=(("development.agent_running", "request_ci_rerun"),
                      ("development.waiting_ci", "rerun_interrupted_ci"),
                      ("development.waiting_ci", "exhaust_interrupted_reruns")),
+    ),
+    Item(
+        "Pending feedback when CI passes",
+        "What happens in `development.waiting_ci` when CI passes on the exact head while "
+        "actionable feedback is still pending (after a push while Work was due for a review, or "
+        "feedback the published Work did not carry).",
+        "`return_for_feedback` leads to `development.fix_needed`: it records the passing CI "
+        "evidence, keeps the revision and the pending feedback, and `request_patch` then "
+        "requests a repair that carries the feedback. A head change never clears pending "
+        "feedback; only a published Result does. The guards of `nominate_for_handoff` and "
+        "`return_for_feedback` are exclusive, and the check verifies that every state that "
+        "blocks a nomination on pending feedback has such a row.",
+        ("development.fix_needed", "development.waiting_ci", "development.agent_running",
+         "handoff.awaiting_submission"),
+        edges=(("development.fix_needed", "record_head_change"),
+               ("development.waiting_ci", "return_for_feedback"),
+               ("development.waiting_ci", "nominate_for_handoff"),
+               ("development.fix_needed", "request_patch"),
+               ("development.agent_running", "record_publish_success")),
+        highlighted=(("development.waiting_ci", "return_for_feedback"),),
     ),
 )
 

@@ -124,6 +124,8 @@ def scenario(state, verb, t):
         rec["last_ci_evidence_id"] = "ci-2-7-1"
     if lc.REFRESH_USED in guards:
         rec["automatic_refresh_used"] = True
+    if lc.PENDING_FEEDBACK in guards:
+        rec["pending_feedback_evidence_ids"] = ["review-1"]
     if "exact clean head" in guards:
         rec["clean_head_sha"] = SHA_A
     if "no fork" in guards:

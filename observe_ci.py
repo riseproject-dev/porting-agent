@@ -19,8 +19,9 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   ``record_actionable_review``, then for CI on the exact head
   ``record_ci_failure``, ``rerun_interrupted_ci`` with a ``ci_rerun``
   operation (``exhaust_interrupted_reruns`` once its budget is spent), or
-  ``nominate_for_handoff`` (passing CI that does not satisfy nomination
-  keeps the state);
+  ``nominate_for_handoff``, or ``return_for_feedback`` to
+  ``development.fix_needed`` when CI passed while actionable feedback is
+  pending (passing CI behind an open operation keeps the state);
 * at ``handoff.awaiting_submission``, take the gate's rows for what is
   observed on the candidate head: ``record_head_change``,
   ``record_explanation`` for an explanation-only comment, then
@@ -528,9 +529,12 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     (``ci_rerun.awaited``), ``record_ci_failure`` for an executed blocking
     failure, ``rerun_interrupted_ci`` (or ``exhaust_interrupted_reruns``)
     when a required job was cancelled or lost its runner and no job failed
-    on its own, or ``nominate_for_handoff`` when every required job passed
-    and no actionable feedback is pending. Passing CI that does not satisfy
-    nomination keeps the contribution in ``development.waiting_ci``, and
+    on its own, ``nominate_for_handoff`` when every required job passed
+    and no actionable feedback is pending, or ``return_for_feedback`` when
+    every required job passed while actionable feedback is pending: the
+    passing evidence is recorded and Work carrying the feedback is due
+    again in ``development.fix_needed``. Passing CI behind an open
+    operation keeps the contribution in ``development.waiting_ci``, and
     a CI run that waits for approval is collector health, not a state.
 
     ``development.agent_running`` (requested Work, or a Result held for
@@ -607,8 +611,24 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         entry["activity"] = "fix_needed"
         return
     if verdict.state == "passed" and ev is not None:
+        pending = list(cur.get("pending_feedback_evidence_ids") or [])
         if cur.get("active_operation_id"):
             entry["handoff_deferred"] = f"operation {cur['active_operation_id']} is open"
+        elif pending:
+            # Only a published Result clears pending feedback: Work that
+            # carries it is due again rather than the nomination waiting.
+            returned = engine.apply_transition(
+                cur, "return_for_feedback", policy=policy, now=now, cause_id=ev["evidence_id"],
+                facts={"ci_passed_on_head"}, values={"last_ci_evidence_id": ev["evidence_id"]},
+                details={"evidence_id": ev["evidence_id"], "head": head,
+                         "feedback": pending[:8]})
+            if returned.accepted:
+                obs.staged.extend([("contributions", returned.record),
+                                   ("events", returned.event)])
+                _poll(obs, returned.record, None)
+                entry.update(activity="fix_needed", feedback_due=pending[:8])
+                return
+            entry["handoff_deferred"] = returned.reason
         else:
             nominated = engine.apply_transition(
                 cur, "nominate_for_handoff", policy=policy, now=now, cause_id=ev["evidence_id"],

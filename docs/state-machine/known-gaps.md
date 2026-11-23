@@ -15,13 +15,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 {:toc}
 </details>
 
-## Pending feedback after a head change while Work is due
-
-- **Where:** `development.fix_needed`, row `record_head_change`; `nominate_for_handoff` in `development.waiting_ci`.
-- **Today:** a push to `riscv64-dev` while development Work is due takes `record_head_change` to `development.waiting_ci` and keeps `pending_feedback_evidence_ids`, as the row states. When Work was due for actionable review feedback, that feedback stays pending: a failure on the new head takes `record_ci_failure` and the repair Work carries the feedback, but passing CI cannot take `nominate_for_handoff` ("no pending actionable feedback"), and `development.waiting_ci` requests no Work. The contribution then waits in `development.waiting_ci` until another push, a new review, `/upstreaming refresh`, or `/upstreaming park`; the tick report states the deferred nomination, and no reminder runs.
-- **Table:** `record_head_change` from `development.fix_needed` sets the head and the rerun counts and clears `last_ci_evidence_id`; it keeps the pending feedback, and no row of `development.waiting_ci` requests Work for it.
-- **Required:** a table decision on the pending feedback a head change carries into `development.waiting_ci` (for example clear it with the head change, or return to `development.fix_needed` when CI passes with feedback pending).
-
 ## An uncertain publication is recorded before it is confirmed
 
 - **Where:** `record_publish_success` in `reconcile.fold_patch_result`.
@@ -138,6 +131,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - The reminder interval is counted in whole days from the exact time of the request or of the last reminder; a day counts when it ends on a weekday (UTC). Any pending action in a human wait of the table gets reminders.
 - A reminder is suppressed while paused and counted from the request, so after a long pause the resume and an overdue reminder can be posted in the same tick.
 - `/upstreaming resume` on a contribution that is neither paused nor in a human wait or in `parked.idle` is answered with `not paused`.
+- Feedback that is pending when CI passes is answered by repair Work even when a human push to `riscv64-dev` may already have addressed it: only a published Result clears pending feedback, so a `no_change` outcome of that Work counts as `reject_patch_proposal` and charges `no_progress`, ending in the automatic refresh and then a park.
 - `/upstreaming resume` in `parked.idle` that is not paused is rejected with the refresh form (`/upstreaming refresh revision=N reason="..."`, with `class=` and `paths=` for an admission override); when paused it clears the flag only.
 - `/upstreaming refresh` from `parked.idle` records `admission_override` only when it names both `class` and `paths`; the override's reason is the refresh's reason. A refresh that names only one of them is refused when it is posted and changes nothing, because such an override could never admit development. Every other refresh refuses `class` and `paths`, and a resume that names them is rejected when it is parsed.
 - `abandon` records `terminal_reason` `abandoned`; the reason the human gives is kept in the event only. A paused record stays paused when it is abandoned, and a later `resume` of the closed record takes `resume_pause`, which clears the flag and changes nothing else (the clearer of the flag has no terminal guard).
