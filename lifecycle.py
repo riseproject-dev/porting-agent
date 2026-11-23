@@ -766,7 +766,9 @@ _SCHEDULE_PUBLISH_RETRY = Transition(
     "The same verified Result is published again; no new Work is requested. The pending "
     "publication carries the feedback ids of its Work. A publication whose push was not read "
     "back (`uncertain`) is such a failure; the retry reads the branch first and never pushes "
-    "over a push that landed.")
+    "over a push that landed. Its push may have landed, so the report of an `uncertain` "
+    "Result is stored as `worker_report` evidence with the commit it proposed, whatever ends "
+    "the hold.")
 _EXHAUST_PUBLISH_RECOVERY = Transition(
     _R, None,
     ("publish_recovery exhausted",),
@@ -985,7 +987,10 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
                 _E(revision="bump", work="clear"),
-                description="The pending feedback is kept."),
+                description="The pending feedback is kept. The worker's report is discarded, "
+                            "unless this is a publish-only retry whose earlier attempt's "
+                            "operation is still open: that push may have landed, so the report "
+                            "is stored with the commit it proposed."),
             ("request_ci_rerun", "development.waiting_ci"): Transition(
                 _R, None,
                 ("the worker reports a failure not caused by the patch", WORK_WITHOUT_FEEDBACK,
@@ -1556,7 +1561,10 @@ LIFECYCLE: dict[str, State] = {
                  "blocked",
                  "no_progress remains"),
                 _E(revision="bump", work="clear"), ("no_progress",),
-                "The pending feedback is kept. The worker's report is discarded."),
+                "The pending feedback is kept. The worker's report is discarded, unless this is "
+                "a publish-only retry rejected as stale behind the operation of an earlier "
+                "attempt: that push landed or may have, so the report is stored with the commit "
+                "it proposed."),
             ("require_reviewer_answer", "upstream_review.waiting_human"): Transition(
                 _R, None,
                 ("the worker reports that no change is needed",),

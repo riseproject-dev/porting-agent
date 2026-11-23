@@ -95,10 +95,17 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 
 ## An accepted Result whose report cannot be stored pauses the contribution
 
-- **Where:** `worker_report.evidence` and `reconcile.report_evidence`, in the folds of the six rows of `reconcile.REPORT_VERBS`.
+- **Where:** `worker_report.evidence`, `reconcile.report_evidence` in the folds of the six rows of `reconcile.REPORT_VERBS`, and `reconcile.pushed_report_evidence` in the folds of a Result whose push may have landed (an `uncertain` Result held for a publish-only retry, a retry rejected as stale behind the operation of an earlier attempt).
 - **Today:** a success Result of Work that carries a history always has a report the gate accepted. When the reconciler finds that report missing, unreadable or invalid in the publication artifact, or cannot build its evidence, it raises `worker_report.ReportError` inside the contribution's isolation block: the tick takes `pause_on_processing_error` instead of the success row, with a reason that names the Work. The pause is specific to that contribution (`isolation.ContributionPause`) and any number of them in one tick stop nothing else. The pause clears the Work, so that Result takes `record_late_effect` the next tick, whose event records that its report could not be stored, and the artifact is not acted on again; a publication it made is seen only by head observation after the resume. The report itself cannot be recovered from that artifact.
 - **Table:** the six rows store the report of the Work as `worker_report` evidence; no row folds a success Result without its report.
 - **Required:** a table decision on an accepted Result whose report is lost after the gate (for example a row that folds it with a recorded loss, or a retry of the publication artifact).
+
+## A publication job lost after its push leaves no report
+
+- **Where:** the publication job of `worker.md` and `publish-retry.yml`, and `reconcile.fold_patch_result`.
+- **Today:** the report of a Result whose push may have landed is stored when the Result is folded, whatever ends the hold afterwards. A publication job whose runner is lost after its push and before it uploads the publication artifact, which it uploads even after a failed step, leaves no Result: dispatch recovery or the wait for a publish-only retry ends the Work, the branch observation can confirm the push, and CI runs on that head, but no report of that Work is ever read, so a repair after failing CI on it reads the CI without the report of the worker that left the head.
+- **Table:** a held publication ends by a retry Result, the exhaustion of `publish_recovery`, or a stop; no row reads a report from anywhere but a folded Result.
+- **Required:** the report uploaded before the push (for example in a separate artifact the reconciler reads when the branch observation confirms an operation whose Result never arrived).
 
 ## A long request description makes its Work undispatchable
 

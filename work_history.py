@@ -630,7 +630,16 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
 
 def _work_order(entry: dict) -> tuple:
     """The order of the Work a report entry describes: its generation, its
-    revision, then the time it is placed at."""
+    revision, then the time it is placed at.
+
+    This order is the order the Work was requested in only because a
+    contribution's generation and revision never decrease: every row that
+    bumps the revision adds one (``engine.apply_transition``) and a new
+    generation (``restart_generation``) bumps the revision as well.
+    The newest report and the newest-published fallback of
+    ``protected_reports`` rely on it, so a report stored late (a late
+    Result, a held one stored at the hold) never passes for a newer Work's
+    one; ``tests.test_work_history`` pins both."""
     work = entry.get("work") or {}
     generation, revision = work.get("generation", 0), work.get("revision")
     return (generation if isinstance(generation, int) else 0,

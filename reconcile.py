@@ -1023,8 +1023,9 @@ _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_i
 # The rows that fold the Result of a successful worker: its Result was
 # accepted and the pipeline acts on it. Only their reports are stored, as
 # `worker_report` evidence that every later Work of the contribution
-# carries in its history; the report of any other fold is discarded with
-# the artifact.
+# carries in its history. A Result whose push may have landed stores it too
+# (`pushed_report_evidence`); the report of any other fold is discarded
+# with the artifact.
 REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_success",
                           "accept_submission_rewrite", "accept_submission_review",
                           "request_ci_rerun", "require_reviewer_answer"})
@@ -1046,6 +1047,35 @@ def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: di
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
                                       run=str(run or "0"), operation=operation)
+    if evidence is None:
+        details["report"] = "absent"
+        return []
+    details["report_evidence_id"] = evidence["evidence_id"]
+    return [("evidence", evidence)]
+
+
+def pushed_report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: dict,
+                           run: str, details: dict,
+                           operation: dict | None = None) -> list[tuple[str, dict]]:
+    """The report of a Result of patch or revision Work that a row other
+    than the success row folds although its push may have landed: an
+    ``uncertain`` Result held for a publish-only retry, or a retry rejected
+    as stale behind the operation of an earlier attempt (``operation``).
+    The Result is marked processed by this fold, so its report is stored
+    now, as ``worker_report`` evidence with the commit it proposed as
+    ``head_candidate``, whatever ends the hold later (a retry, its
+    exhaustion, a pause, a park); the success fold of a retry of the same
+    worker run stores the same evidence id again with ``head_after``. A
+    Result that proposed no commit stores nothing. Like a success row, a
+    report the gate accepted that cannot be stored raises
+    ``worker_report.ReportError``, so the contribution pauses and the
+    Result stays unfolded."""
+    landed = WORK_RESULT_STATES[engine.state_key(rec)]["published"]
+    if worker_report.head_after(outcome, landed, operation) is None \
+            and worker_report.head_candidate(outcome, landed, operation) is None:
+        return []
+    evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
+                                      run=str(run), head_verb=landed, operation=operation)
     if evidence is None:
         details["report"] = "absent"
         return []
@@ -1256,7 +1286,9 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     * an infrastructure error of the publication, or an uncertain Result:
       ``schedule_publish_retry`` holds the same Result for
       a publish-only retry within ``publish_recovery``,
-      ``exhaust_publish_recovery`` once it is spent.
+      ``exhaust_publish_recovery`` once it is spent; an uncertain Result
+      stores its report at the hold (``pushed_report_evidence``), as does a
+      stale retry behind the operation of an earlier attempt.
 
     The Result of a publish-only retry ends the held publication: every row
     that folds it is taken with ``pending_publication`` cleared beside it.
@@ -1327,6 +1359,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                             f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"})
         return rec, staged + [("contributions", rec), ("events", event)]
     if failed:
+        if status == "uncertain":
+            # The push may have landed: the report is kept whatever ends
+            # the hold (`pushed_report_evidence`).
+            holds = "exhaust_publish_recovery" if engine.refusal(
+                rec, "schedule_publish_retry", policy=policy, now=now,
+                facts={"publication_infrastructure_error"}) else "schedule_publish_retry"
+            staged.extend(pushed_report_evidence(
+                rec, outcome, holds, now=now, policy=policy, run=run, details=details))
         out = _fail_publication(rec, run, rerun_missing or str(outcome.get("reason") or ""),
                                 now=now, policy=policy, cause=cause, details=details)
     else:
@@ -1343,6 +1383,13 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             details["confirmed_by"] = earlier["operation_id"]
         elif status == "rejected" and fclass == "stale" and "stale" in rows:
             verb, facts = rows["stale"], {"proposal_stale"}
+            if earlier:
+                # The operation of an earlier attempt is still open: its
+                # push may have landed, so the report is kept with the
+                # commit it proposed.
+                staged.extend(pushed_report_evidence(
+                    rec, outcome, verb, now=now, policy=policy, run=run, details=details,
+                    operation=earlier))
         elif status == "no_change" and "no_change" in rows:
             verb, facts = rows["no_change"], {"no_change_needed"}
         elif status == "no_change":
@@ -1364,6 +1411,13 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                     "operation": (op or {}).get("operation_id")}
         elif status in ("rejected", "worker_blocked"):
             verb, facts = "reject_patch_proposal", {"proposal_rejected_or_blocked"}
+            if status == "rejected" and fclass == "stale" and earlier:
+                # A revision retry rejected as stale behind the operation of
+                # an earlier attempt: that push landed or may have, so the
+                # report is kept with the commit it proposed.
+                staged.extend(pushed_report_evidence(
+                    rec, outcome, verb, now=now, policy=policy, run=run, details=details,
+                    operation=earlier))
         else:
             raise lifecycle.TransitionError(f"no row folds a patch Result with status {status!r}")
         values: dict[str, Any] = {}

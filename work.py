@@ -436,12 +436,20 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
     return allowed_paths, context
 
 
+# The digits of the longest GitHub repository id (a signed 64-bit integer,
+# at most 9223372036854775807).
+CONTROL_REPO_ID_MAX_DIGITS = 19
+
+
 def payload_floor(record: dict, evidence: dict[str, dict] | None = None) -> int | None:
     """The fewest bytes the payload of the record's requested Work can take
     (as ``cmd_plan`` measures it): the payload built from the committed
     ``evidence`` as the dispatcher builds it (``payload_inputs``: the
     allowed paths, the reason evidence, the commit rules), with references
-    to the history and the plan of their exact size. ``None`` when the
+    to the history and the plan of their exact size and the control
+    repository id at its longest (``CONTROL_REPO_ID_MAX_DIGITS``: the
+    dispatcher passes the real id, which the controller does not read), so
+    the floor is never below the payload the dispatcher builds. ``None`` when the
     record holds no Work it could dispatch, or the payload cannot be built.
     The controller names it when a dispatch fails, so that a payload over
     ``MAX_PAYLOAD_BYTES`` (a long frozen tracking issue description) is a
@@ -463,7 +471,7 @@ def payload_floor(record: dict, evidence: dict[str, dict] | None = None) -> int 
                                                 plan_reference=plan_reference)
         if "generation" in request:
             context["history"] = history
-        built = payload(request, record, control_repo_id="0" * 12,
+        built = payload(request, record, control_repo_id="9" * CONTROL_REPO_ID_MAX_DIGITS,
                         allowed_paths=allowed_paths, context=context)
         return len(json.dumps(built, separators=(",", ":"), ensure_ascii=False).encode())
     except (KeyError, TypeError, ValueError):

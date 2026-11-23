@@ -579,6 +579,39 @@ class TestCondensationOrder(unittest.TestCase):
             rec, work_history._entries(rec, evidence)[1])
         self.assertEqual(latest["evidence_id"], "report-new")
 
+    def test_the_newest_published_fallback_relies_on_monotonic_revisions(self):
+        """When no report left the recorded head, the report of the head is
+        the newest report with a ``head_after``, by the Work it describes:
+        a report of an older revision stored later never passes for it.
+        That order is the request order only because the revision and the
+        generation of a contribution never decrease, which the engine
+        guarantees: a bumping row adds one, and a new generation bumps the
+        revision too."""
+        import commands
+        import engine
+        late = report_evidence("report-late", at="2026-11-22T12:00:00+00:00",
+                               head_before=_sha(1), head_after=_sha(2))
+        late["data"]["work"]["revision"] = 2
+        newest = report_evidence("report-newest", at="2026-11-19T12:00:00+00:00",
+                                 head_before=_sha(2), head_after=_sha(3))
+        newest["data"]["work"]["revision"] = 5
+        rec = record()
+        rec["fork"]["head_sha"] = _sha(9)
+        timeline = work_history._entries(
+            rec, {e["evidence_id"]: e for e in (late, newest)})[1]
+        latest, head = work_history.protected_reports(rec, timeline)
+        self.assertEqual((latest["evidence_id"], head["evidence_id"]),
+                         ("report-newest", "report-newest"))
+        # The engine never makes a revision or a generation go back.
+        parked = contribution(phase="parked", activity="idle", parked_reason="x",
+                              previous_phase="development", revision=4)
+        out = engine.apply_command(parked, commands.parse(
+            '/upstreaming refresh revision=4 reason="r"'), policy=policy(), now=NOW,
+            command_id="c", open_operations=())
+        self.assertEqual(out.verb, "restart_generation")
+        self.assertEqual((out.record["revision"], out.record["generation"]),
+                         (5, parked.get("generation", 0) + 1))
+
     def test_the_newest_report_is_reduced_before_any_steering_is_folded(self):
         """Thirty owner comments of 1500 bytes and a report of 32 KiB: the
         report takes its reduced form, every section kept, and no steering

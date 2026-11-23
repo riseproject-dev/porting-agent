@@ -289,7 +289,7 @@ class TestPayload(unittest.TestCase):
             for eid in (history, "plan-x"):
                 (Path(directory) / ".state" / "evidence" / f"{eid}.json").write_text("{}")
             args = type("A", (), {"root": directory, "out": str(out),
-                                  "control_repo_id": "1" * 12})
+                                  "control_repo_id": "1" * work.CONTROL_REPO_ID_MAX_DIGITS})
             work.cmd_plan(args)
             payload = json.loads(out.read_text())["nodes"][0]["payload"]
         self.assertEqual(len(payload["allowed_paths"]), 40)
@@ -297,6 +297,21 @@ class TestPayload(unittest.TestCase):
         self.assertEqual(payload["context"]["reason_evidence"][0]["evidence_id"], "plan-x")
         size = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode())
         self.assertEqual(work.payload_floor(record, evidence), size)
+        # A shorter real control repository id makes a smaller payload: the
+        # floor counts the longest id, so it is never below the payload.
+        args.control_repo_id = "1" * 9
+        with tempfile.TemporaryDirectory() as directory, \
+                unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
+                unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="c" * 40)):
+            (Path(directory) / ".state" / "evidence").mkdir(parents=True)
+            for eid in (history, "plan-x"):
+                (Path(directory) / ".state" / "evidence" / f"{eid}.json").write_text("{}")
+            args.root, args.out = directory, str(Path(directory) / "plan.json")
+            work.cmd_plan(args)
+            short = json.loads(Path(args.out).read_text())["nodes"][0]["payload"]
+        self.assertEqual(work.payload_floor(record, evidence) - len(json.dumps(
+            short, separators=(",", ":"), ensure_ascii=False).encode()), 10)
         # Without the evidence, the floor misses those parts.
         self.assertLess(work.payload_floor(record), size)
 

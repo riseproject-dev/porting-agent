@@ -243,6 +243,10 @@ def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str |
     import reconcile
 
     if verb == "record_revision_publish_success":
+        # Only a published Result read its head back; the candidate of an
+        # uncertain one may not be on the branch.
+        if outcome.get("status") != "published":
+            return None
         try:
             return reconcile.published_head(outcome)
         except Exception:
@@ -259,17 +263,19 @@ def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str |
 
 
 def head_candidate(outcome: dict, verb: str, operation: dict | None = None) -> str | None:
-    """The commit a publication proposed whose push was not read back: the
-    proposed commit of an open (``applying`` or ``uncertain``) branch
-    operation, or the candidate of an ``uncertain`` Result. It may be on the
-    branch or not; the history treats it as the head the Work left only
-    when the recorded head (or the head a CI run ran on) is that very
-    commit. ``None`` when ``head_after`` names a head, or nothing was
-    proposed."""
+    """The commit a publication proposed that the row does not record as
+    the head it left: the proposed commit of an open (``applying`` or
+    ``uncertain``) branch operation, of a ``confirmed`` one that a row
+    other than the success row names (a revision retry rejected as stale
+    behind the confirmed operation of an earlier attempt), or the candidate
+    of an ``uncertain`` Result. It may be on the branch or not; the history
+    treats it as the head the Work left only when the recorded head (or the
+    head a CI run ran on) is that very commit. ``None`` when ``head_after``
+    names a head, or nothing was proposed."""
     if verb not in _PUBLISH_VERBS or head_after(outcome, verb, operation):
         return None
     op = operation if operation is not None else outcome.get("operation")
-    if op and op.get("status") in ("applying", "uncertain") \
+    if op and op.get("status") in ("applying", "uncertain", "confirmed") \
             and op.get("kind") in ("branch_update", "branch_rewrite"):
         return _sha((op.get("proposed") or {}).get("commit"))
     if outcome.get("status") == "uncertain":

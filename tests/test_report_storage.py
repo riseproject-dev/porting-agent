@@ -4,7 +4,10 @@
 
 The six success rows (``reconcile.REPORT_VERBS``) store it as
 ``worker_report`` evidence bound to the Work and name it in their event;
-every other fold discards it."""
+every other fold discards it. A Result whose push may have landed (an
+``uncertain`` Result held for a publish-only retry, a retry rejected as
+stale behind the operation of an earlier attempt) stores it with the
+commit it proposed (``reconcile.pushed_report_evidence``)."""
 
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from common import canonical_json
 from tests import test_development_table as dev
 from tests import test_upstream_review_table as up
 from tests.helpers import NOW, SHA_A, SHA_B, policy
-from tests.test_late_results import publication
+from tests.test_late_results import PENDING, publication
 from tests.test_worker_report import HISTORY, TOKEN, report
 
 POLICY = policy()
@@ -496,10 +499,6 @@ class TestFoldFromArtifact(unittest.TestCase):
                     self.assertIn("not a regular file", reason)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestUncertainPublicationHistory(unittest.TestCase):
     """The owner's case after a lost push response: patch Work U pushes H2
     but its push is not read back (`uncertain`); the publish-only retry
@@ -553,8 +552,11 @@ class TestUncertainPublicationHistory(unittest.TestCase):
         lost = with_report(start, dev.uncertain(start, op), **_big_report("u", 0.7))
         rec, verbs = step(start, [lost], observe=False)
         self.assertEqual(verbs, ["schedule_publish_retry"])
-        self.assertEqual([e["evidence_id"] for e in stored(
-            [("evidence", e) for e in evidence.values()])], ["report-p"])
+        # The held report is stored at once, with the commit it proposed.
+        [held] = [e for e in evidence.values()
+                  if e["kind"] == "worker_report" and e["evidence_id"] != "report-p"]
+        self.assertEqual((held["data"]["head_after"], held["data"]["head_candidate"],
+                          held["data"]["verb"]), (None, SHA_B, "schedule_publish_retry"))
         if stale:
             ops[op["operation_id"]] = dev.branch_operation(start, confirmed=True)
             retry = dev.retried(rec, "rejected_stale")
@@ -565,7 +567,10 @@ class TestUncertainPublicationHistory(unittest.TestCase):
         self.assertEqual(verbs, ["record_publish_success", "record_head_change"])
         [own] = [e for e in evidence.values()
                  if e["kind"] == "worker_report" and e["evidence_id"] != "report-p"]
+        # The success fold stores the same evidence again, upgraded.
+        self.assertEqual(own["evidence_id"], held["evidence_id"])
         self.assertEqual(own["data"]["head_after"], SHA_B)
+        self.assertNotIn("head_candidate", own["data"])
         rec, verbs = step(settle(rec), minutes=20, head=SHA_B, verdict="failed")
         self.assertEqual(verbs, ["record_ci_failure", "request_repair"])
         repair = rec
@@ -600,3 +605,272 @@ class TestUncertainPublicationHistory(unittest.TestCase):
                     self.assertEqual(ci.get("after_report"), own["evidence_id"])
                 older = entries.get("report-p")
                 self.assertTrue(older is None or older.get("condensed"))
+
+
+class TestHeldReportOutlivesTheHold(unittest.TestCase):
+    """An `uncertain` Result is marked processed when it is held: its push
+    may have landed, so its report is stored at the hold, with the commit it
+    proposed as ``head_candidate``, whatever ends the hold. The owner's case:
+    the push of H2 landed but its response was lost, the branch observation
+    confirms H2, and the hold ends by anything but a retry Result (the
+    retries are exhausted, the owner pauses or parks, or the controller
+    stops on an error or an identity change). After the resume, CI fails on
+    H2 and the repair Work reads the report with that CI linked to it."""
+
+    def chain(self, end):
+        from datetime import timedelta
+        from unittest import mock
+
+        import commands
+        import controller
+        import recovery
+        from tests.helpers import apply_command
+        evidence: dict = {}
+        ops: dict = {}
+        now = dev.T
+
+        def at(minutes):
+            return now + timedelta(minutes=minutes)
+
+        def step(rec, pubs=(), minutes=0, failures=0, **kw):
+            out = dev.tick(rec, list(pubs), evidence=evidence, operations=ops, now=at(minutes),
+                           **kw)
+            self.assertEqual(len(out.failures), failures, [str(f) for f in out.failures])
+            for kind, item in out.staged:
+                if kind == "evidence":
+                    evidence[item["evidence_id"]] = item
+                if kind == "operations":
+                    ops[item["operation_id"]] = item
+            return dev.final(out, rec), dev.kinds(out)
+
+        def command(rec, text, minutes):
+            out = apply_command(rec, commands.parse(text), operations=ops,
+                                now=at(minutes).isoformat())
+            self.assertTrue(out.accepted, out.reason)
+            return out.record
+
+        start = dev.running()
+        op = dev.branch_operation(start)
+        rec, verbs = step(start, [with_report(start, dev.uncertain(start, op))], observe=False)
+        self.assertEqual(verbs, ["schedule_publish_retry"])
+        [held] = [e for e in evidence.values() if e["kind"] == "worker_report"]
+        self.assertEqual((held["data"]["verb"], held["data"]["head_after"],
+                          held["data"]["head_candidate"]),
+                         ("schedule_publish_retry", None, SHA_B))
+        ops[op["operation_id"]] = op
+        rec, _ = step(rec, minutes=5, head=SHA_B)
+        self.assertEqual(ops[op["operation_id"]]["status"], "confirmed")
+        minutes = 5
+        if end == "exhausted":
+            # The retries return nothing until `publish_recovery` is spent.
+            while engine.state_key(rec) == "development.agent_running":
+                minutes += 10
+                self.assertLess(minutes, 4000)
+                rec, verbs = step(rec, minutes=minutes, head=SHA_B)
+            self.assertEqual(verbs, ["exhaust_publish_recovery"])
+        elif end == "pause":
+            rec = command(rec, '/upstreaming pause reason="look"', minutes + 1)
+        elif end == "park":
+            rec = command(rec, '/upstreaming park reason="later"', minutes + 1)
+        elif end == "pause_on_processing_error":
+            with mock.patch("observe_ci._observe_development", side_effect=KeyError("x")):
+                rec, verbs = step(rec, minutes=minutes + 1, head=SHA_B, failures=1)
+            self.assertEqual(verbs, ["pause_on_processing_error"])
+        elif end == "pause_on_identity_change":
+            result = controller.tick(
+                contributions={"c": copy.deepcopy(rec)}, operations=dict(ops), consumed={},
+                projects={}, policy=POLICY, inputs=controller.Inputs(
+                    now=at(minutes + 1), issues=[], comments=[],
+                    pressure=reconcile.capacity.Pressure(ok=True),
+                    upstream_snapshots={"example/proj": {"repository_id": 99,
+                                                         "base_ref": "main",
+                                                         "base_sha": "c" * 40}}))
+            self.assertEqual([e["kind"] for k, e in result.staged if k == "events"],
+                             ["pause_on_identity_change"])
+            rec = [r for k, r in result.staged if k == "contributions"][-1]
+        # The hold ended without a retry Result: exhausted, or cleared.
+        self.assertEqual((rec["pending_publication"] or {}).get("exhausted"),
+                         True if end == "exhausted" else None)
+        if end == "park":
+            return rec, evidence, held
+        rec = command(rec, f'/upstreaming resume revision={rec["revision"]} reason="ok"',
+                      minutes + 2)
+        for verdict in ("pending", "failed", "failed"):
+            minutes += 10
+            for key, planned in list(ops.items()):
+                if planned["status"] == "planned":
+                    ops[key] = recovery.record_discovery(
+                        dict(planned, status="uncertain"), "confirmed", "done",
+                        at(minutes).isoformat())
+            rec, _ = step(dict(rec, active_operation_id=None), minutes=minutes, head=SHA_B,
+                          verdict=verdict)
+            if rec.get("active_work"):
+                break
+        self.assertEqual(rec["active_work"]["task"], "development_repair")
+        return rec, evidence, held
+
+    def test_the_repair_reads_the_held_report_with_the_failing_ci(self):
+        for end in ("exhausted", "pause", "pause_on_processing_error",
+                    "pause_on_identity_change"):
+            with self.subTest(end=end):
+                rec, evidence, held = self.chain(end)
+                history = evidence[work_history.evidence_id(
+                    rec["active_work"]["dedupe_key"])]["data"]
+                entries = {t.get("evidence_id"): t for t in history["timeline"]}
+                report_entry = entries[held["evidence_id"]]
+                self.assertEqual(report_entry.get("head_candidate"), SHA_B)
+                [ci] = [t for t in history["timeline"] if t["kind"] == "ci"]
+                self.assertEqual((ci["head"], ci.get("after_report")),
+                                 (SHA_B, held["evidence_id"]))
+                self.assertEqual([r and r["evidence_id"] for r in
+                                  work_history.protected_reports(rec, history["timeline"])],
+                                 [held["evidence_id"], held["evidence_id"]])
+
+    def test_a_park_keeps_the_held_report_for_the_next_generation(self):
+        import commands
+        from tests.helpers import apply_command
+        rec, evidence, held = self.chain("park")
+        self.assertEqual(engine.state_key(rec), "parked.idle")
+        restarted = apply_command(rec, commands.parse(
+            f'/upstreaming refresh revision={rec["revision"]} reason="again"'),
+            now="2026-11-23T10:00:00+00:00")
+        self.assertEqual(restarted.verb, "restart_generation")
+        nxt = restarted.record
+        doc = work_history.document(nxt, {
+            "dedupe_key": f"{nxt['contribution_id']}@g{nxt['generation']}.r{nxt['revision']}"
+                          ":planning", "task": "planning", "generation": nxt["generation"],
+            "revision": nxt["revision"]}, evidence)
+        [entry] = [t for t in doc["timeline"] if t["kind"] == "worker_report"]
+        self.assertEqual((entry["evidence_id"], entry.get("head_candidate")),
+                         (held["evidence_id"], SHA_B))
+
+    def test_an_uncertain_result_that_spends_the_budget_keeps_the_report(self):
+        rec = dev.running(pending_publication=dict(dev.HELD, attempts=99))
+        op = dev.branch_operation(rec)
+        out = dev.tick(rec, [with_report(rec, dict(dev.uncertain(rec, op), attempt=100))],
+                       observe=False)
+        self.assertEqual(dev.kinds(out), ["exhaust_publish_recovery"])
+        [evidence] = stored(out.staged)
+        self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_candidate"]),
+                         ("exhaust_publish_recovery", SHA_B))
+        self.assertEqual(events(out.staged)[0]["details"]["report_evidence_id"],
+                         evidence["evidence_id"])
+
+    def test_a_report_that_cannot_be_stored_at_the_hold_pauses(self):
+        """Like a success row: the gate accepted the Result with its report,
+        so a report the reconciler cannot store pauses the contribution
+        instead of holding the Result without it."""
+        rec = dev.running()
+        lost = with_report(rec, dev.uncertain(rec, dev.branch_operation(rec)))
+        del lost["worker_report"]
+        lost["worker_report_error"] = "report.json cannot be read: gone"
+        out = dev.tick(rec, [lost], observe=False)
+        self.assertEqual(dev.kinds(out), ["pause_on_processing_error"])
+        self.assertIn("carries no report that can be stored",
+                      events(out.staged)[0]["details"]["message"])
+        self.assertEqual(stored(out.staged), [])
+
+    def test_a_stale_retry_behind_an_open_operation_keeps_the_report(self):
+        """The publish-only retry of a held Result is rejected as stale while
+        the operation of the earlier attempt is still open: the push may
+        have landed, so `replan_development` stores the report with the
+        commit that operation proposed."""
+        rec = dev.running(pending_publication=dict(dev.HELD))
+        op = dev.branch_operation(rec)
+        self.assertEqual(op["status"], "uncertain")
+        out = dev.tick(rec, [with_report(rec, dev.retried(rec, "rejected_stale"))],
+                       observe=False, operations={op["operation_id"]: op})
+        self.assertEqual(dev.kinds(out)[:1], ["replan_development"])
+        [evidence] = stored(out.staged)
+        self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_after"],
+                          evidence["data"]["head_candidate"]),
+                         ("replan_development", None, SHA_B))
+        self.assertEqual(events(out.staged)[0]["details"]["report_evidence_id"],
+                         evidence["evidence_id"])
+        # Without an operation of an earlier attempt nothing landed: the
+        # report is discarded.
+        out = dev.tick(rec, [with_report(rec, dev.retried(rec, "rejected_stale"))],
+                       observe=False)
+        self.assertEqual((dev.kinds(out)[:1], stored(out.staged)), (["replan_development"], []))
+
+
+class TestHeldRevisionReport(unittest.TestCase):
+    """The same in `upstream_review.agent_running`."""
+
+    def run_hold(self, end):
+        from datetime import timedelta
+
+        import commands
+        from tests.helpers import apply_command
+        evidence: dict = {}
+        ops: dict = {}
+
+        def step(rec, pubs=(), now=up.T, **kw):
+            out = up.tick(rec, list(pubs), evidence=evidence, operations=ops, now=now, **kw)
+            self.assertEqual([str(f) for f in out.failures], [])
+            for kind, item in out.staged:
+                if kind == "evidence":
+                    evidence[item["evidence_id"]] = item
+                if kind == "operations":
+                    ops[item["operation_id"]] = item
+            return up.final(out, rec), up.kinds(out)
+        rec = up.record("agent_running", active_work=dict(up.REVISION_WORK))
+        lost = up.branch_operation(rec, SHA_B, confirmed=False)
+        rec, verbs = step(rec, [with_report(rec, dict(
+            publication(rec, "uncertain"), candidate=SHA_B, operation=lost))])
+        self.assertEqual(verbs, ["schedule_publish_retry"])
+        [held] = [e for e in evidence.values() if e["kind"] == "worker_report"]
+        self.assertEqual((held["data"]["head_after"], held["data"]["head_candidate"]),
+                         (None, SHA_B))
+        ops[lost["operation_id"]] = lost
+        now = up.T
+        if end == "exhausted":
+            while engine.state_key(rec) == "upstream_review.agent_running":
+                now += timedelta(hours=1)
+                self.assertLess(now, up.T + timedelta(days=3))
+                rec, verbs = step(rec, now=now, pr=up.pull(head=SHA_B), branch=SHA_B)
+            self.assertEqual(verbs, ["exhaust_publish_recovery"])
+        else:
+            paused = apply_command(rec, commands.parse('/upstreaming pause reason="x"'),
+                                   operations=ops, now=now.isoformat())
+            self.assertTrue(paused.accepted, paused.reason)
+            rec = paused.record
+        self.assertEqual((rec["pending_publication"] or {}).get("exhausted"),
+                         True if end == "exhausted" else None)
+        resumed = apply_command(rec, commands.parse(
+            f'/upstreaming resume revision={rec["revision"]} reason="ok"'),
+            operations=ops, now=now.isoformat())
+        self.assertTrue(resumed.accepted, resumed.reason)
+        rec, verbs = step(resumed.record, now=now + timedelta(minutes=30),
+                          pr=up.pull(head=SHA_B), branch=SHA_B, capacity_ok=True)
+        self.assertEqual(verbs, ["request_review_revision"])
+        history = evidence[work_history.evidence_id(rec["active_work"]["dedupe_key"])]["data"]
+        return history, held
+
+    def test_the_next_revision_reads_the_held_report(self):
+        for end in ("exhausted", "pause"):
+            with self.subTest(end=end):
+                history, held = self.run_hold(end)
+                [entry] = [t for t in history["timeline"] if t["kind"] == "worker_report"]
+                self.assertEqual((entry["evidence_id"], entry.get("head_candidate")),
+                                 (held["evidence_id"], SHA_B))
+
+    def test_a_stale_retry_behind_a_confirmed_operation_keeps_the_report(self):
+        """A revision retry rejected as stale behind the confirmed operation
+        of an earlier attempt takes `reject_patch_proposal`; that push
+        landed, so the report is stored with its commit."""
+        rec = up.record("agent_running", active_work=dict(up.REVISION_WORK),
+                        pending_publication=dict(PENDING))
+        landed = up.branch_operation(rec, SHA_B, confirmed=True)
+        retry = dict(publication(rec, "rejected_stale"), attempt=2)
+        out = up.tick(rec, [with_report(rec, retry)], operations={landed["operation_id"]: landed},
+                      pr=up.pull(head=SHA_B), branch=SHA_B)
+        self.assertEqual(up.kinds(out)[:1], ["reject_patch_proposal"])
+        [evidence] = stored(out.staged)
+        self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_after"],
+                          evidence["data"]["head_candidate"]),
+                         ("reject_patch_proposal", None, SHA_B))
+
+
+if __name__ == "__main__":
+    unittest.main()
