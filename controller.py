@@ -585,6 +585,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         with isolation.contribution(c["contribution_id"], "work_selection"):
             if c["contribution_id"] in source_blocked:
                 continue
+            if c["phase"] not in lifecycle.TERMINAL | {"parked"} and (
+                    not c["upstream"].get("repository_id") or not c["upstream"].get("base_sha")):
+                # A Work names the verified upstream identity and base. A
+                # restart from `parked` clears them after this tick's source
+                # binding, which never reads a parked upstream: the next tick
+                # binds them, and the Work is requested then.
+                rep["deferred"].append({"contribution": c["contribution_id"],
+                                        "why": "upstream identity not yet bound"})
+                continue
             kind = _actionable(c)
             if kind is None:
                 continue

@@ -954,12 +954,35 @@ class TestTick(unittest.TestCase):
         from tests.test_commands_intake import issue
         res = controller.tick(contributions={}, operations={}, consumed={}, projects={},
                               policy=policy(), inputs=controller.Inputs(
-                                  now=T, issues=[issue()], acceptances={77: OWNER["id"]}))
+                                  now=T, issues=[issue()], acceptances={77: OWNER["id"]},
+                                  upstream_snapshots={"example/proj": {
+                                      "repository_id": 99, "base_ref": "main", "base_sha": "a" * 40}}))
         kinds = [k for k, _ in res.staged]
         self.assertIn("contributions", kinds)
         self.assertIn("projects", kinds)
         # Planning is selected; it needs no write admission.
         self.assertEqual(res.requested_effects[0]["effect_contract"], {"kind": "none"})
+
+    def test_work_waits_for_a_bound_upstream_identity(self):
+        # A restart from `parked` clears the upstream identity and base, and
+        # source binding never reads a parked upstream: no Work is requested
+        # in that tick, since its payload needs them; the next tick binds
+        # them and requests it.
+        from tests.test_commands_intake import issue
+        res = controller.tick(contributions={}, operations={}, consumed={}, projects={},
+                              policy=policy(), inputs=controller.Inputs(
+                                  now=T, issues=[issue()], acceptances={77: OWNER["id"]}))
+        self.assertEqual(res.requested_effects, [])
+        self.assertIn({"contribution": "example--proj/12", "why": "upstream identity not yet bound"},
+                      res.report["deferred"])
+        queued = [r for k, r in res.staged if k == "contributions"][-1]
+        self.assertEqual((queued["phase"], queued["active_work"]), ("queued", None))
+        again = controller.tick(contributions={queued["contribution_id"]: queued}, operations={},
+                                consumed={}, projects={}, policy=policy(), inputs=controller.Inputs(
+                                    now=T, upstream_snapshots={"example/proj": {
+                                        "repository_id": 99, "base_ref": "main",
+                                        "base_sha": "a" * 40}}))
+        self.assertEqual(len(again.requested_effects), 1)
 
 
 if __name__ == "__main__":
