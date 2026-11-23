@@ -190,8 +190,9 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     cancelled, timed out or lost its runner): the queue retries it, within
     the retry attempts of its Policy, once its backoff has passed. Such a
     retry is not a lost dispatch. The dispatcher runs are counted from the
-    retry time, and when none was created since, the dispatcher is launched
-    at once without a row and nothing is charged. A retry the queue exhausts
+    retry time, and when none was created within
+    ``DISPATCH_LAUNCH_GRACE_MINUTES`` of it, the dispatcher is launched
+    without a row and nothing is charged. A retry the queue exhausts
     cancels the Work, which ``allocate_work_retry`` or
     ``exhaust_work_recovery`` then decides.
 
@@ -272,23 +273,22 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                                    "Policy refuses every dispatch until the "
                                                    "dispatcher reinstalls it"})
                 continue
-            if not after and retry is not None:
-                # The worker run of the last Claim ended without a Result
-                # and no dispatcher ran since: the queue holds the Work for
-                # its next attempt, which only a dispatcher run claims.
-                if now < retry["retry_at"]:
-                    report.append(entry | {"decision": "waiting for the queue's retry backoff"})
-                    continue
-                relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
-                report.append(entry | {"decision": "relaunch: the queue retries the Work after "
-                                                   "its worker run ended without a Result"})
+            if not after and retry is not None and now < retry["retry_at"]:
+                report.append(entry | {"decision": "waiting for the queue's retry backoff"})
                 continue
             if not after:
+                # With a retry, `requested` is the retry time: the worker run
+                # of the last Claim ended without a Result and the queue holds
+                # the Work for its next attempt, which only a dispatcher run
+                # claims. The launch grace keeps a run list that lags behind
+                # a dispatcher run created since from launching another.
                 if now - requested < timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
                     report.append(entry | {"decision": "waiting for the dispatcher to start"})
                     continue
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
-                report.append(entry | {"decision": "relaunch: no dispatcher run"})
+                report.append(entry | {"decision": "relaunch: the queue retries the Work after "
+                                                   "its worker run ended without a Result"
+                                       if retry is not None else "relaunch: no dispatcher run"})
                 continue
             latest = max(after, key=lambda r: r["created_at"])
             if str(latest["id"]) == str(aw.get("dispatched_run_id")):
@@ -2669,7 +2669,10 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             runs = collect.dispatcher_runs(api)
             projection = queue_result.queue_projection(args.gh_aw, collect.CONTROL_REPO)
             queue = queue_result.work_states(projection)
-            retries = queue_result.work_retries(projection)
+            skipped_retries: list[str] = []
+            retries = queue_result.work_retries(projection, skipped_retries)
+            for line in skipped_retries:
+                print(line, file=sys.stderr)
             queue_state = queue_policy_facts.status(
                 projection or {}, queue_policy_facts.load_compiled(repository=collect.CONTROL_REPO))
         except (collect.CollectError, OSError, ValueError) as error:

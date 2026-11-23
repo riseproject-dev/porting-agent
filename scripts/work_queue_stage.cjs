@@ -25,6 +25,13 @@
 // Work that is available. When the ledger cannot be read, the plan is
 // staged unchanged and gh-aw's own checks decide.
 //
+// The agent that runs after this step exposes gh-aw's work-queue tools,
+// which append intents to the same file, and gh-aw rejects extra intents
+// only in a batch that holds plan intents. The intents this step wrote are
+// therefore its output, and a step after the agent (`enforce`) keeps only
+// those in the collected intent file, drops every other intent and reports
+// it. A dispatcher holds no Claim, so a staged finish intent is dropped too.
+//
 // Every queue function comes from the gh-aw actions directory of the run
 // (`actionsDir`), so the checks are exactly those of the pinned gh-aw.
 
@@ -94,7 +101,7 @@ async function stage(options) {
   } catch (error) {
     core.warning(`The work queue could not be read before staging (${error && error.message ? error.message : error}); the plan is staged unchanged.`);
     lib.intents.stagePlanIntents(options.intentsPath, plan);
-    return { decision: "unread", submitted: plan.nodes.length, queued: [] };
+    return { decision: "unread", submitted: plan.nodes.length, queued: [], intents: lib.intents.readStagedIntents(options.intentsPath) };
   }
   const { fresh, queued } = partition(lib, projection, plan);
   for (const item of queued) {
@@ -105,12 +112,12 @@ async function stage(options) {
   }
   if (fresh.length) {
     lib.intents.stagePlanIntents(options.intentsPath, { ...plan, nodes: fresh });
-    return { decision: queued.length ? "partial" : "submit", submitted: fresh.length, queued };
+    return { decision: queued.length ? "partial" : "submit", submitted: fresh.length, queued, intents: lib.intents.readStagedIntents(options.intentsPath) };
   }
   const intent = dispatchIntent(lib, plan, options.run || {});
   const previous = lib.intents.readStagedIntents(options.intentsPath);
   if (!previous.some(existing => existing.intent_id === intent.intent_id)) lib.intents.stageIntent(options.intentsPath, intent);
-  return { decision: "dispatch_only", submitted: 0, queued };
+  return { decision: "dispatch_only", submitted: 0, queued, intents: lib.intents.readStagedIntents(options.intentsPath) };
 }
 
 // The dispatcher step. A failure to stage fails the step, as staging the
@@ -119,7 +126,69 @@ async function main(options) {
   const result = await stage(options);
   options.core.info(`Staged ${result.submitted} porting task(s) for submission; ${result.queued.length} already queued.`);
   options.core.setOutput("decision", result.decision);
+  options.core.setOutput("intents", JSON.stringify(result.intents));
   return result;
 }
 
-module.exports = { dispatchIntent, main, partition, stage };
+// Describe an intent the agent staged, bounded, for the report.
+function describe(line) {
+  let intent;
+  try {
+    intent = JSON.parse(line);
+  } catch {
+    return "an unparseable line";
+  }
+  const field = value => (typeof value === "string" ? JSON.stringify(value.slice(0, 120)) : "none");
+  return `intent ${field(intent && intent.intent_id)} (${field(intent && intent.kind)})`;
+}
+
+// Keep exactly the `expected` intents in one collected intent file.
+function enforceFile(lib, file, expected) {
+  const wanted = expected.map(intent => lib.codec.canonical(intent));
+  const content = wanted.length ? `${wanted.join("\n")}\n` : undefined;
+  let stat;
+  try {
+    stat = fs.lstatSync(file);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const current = stat && stat.isFile() ? fs.readFileSync(file, "utf8") : undefined;
+  const dropped = stat && !stat.isFile() ? ["a non-file entry"] : [];
+  for (const line of (current || "").split("\n").filter(text => text.trim())) {
+    let kept = false;
+    try {
+      kept = wanted.includes(lib.codec.canonical(JSON.parse(line)));
+    } catch {
+      kept = false;
+    }
+    if (!kept) dropped.push(describe(line));
+  }
+  if (current === content && !dropped.length) return { dropped };
+  fs.rmSync(file, { force: true, recursive: true });
+  if (content !== undefined) fs.writeFileSync(file, content, { mode: 0o644, flag: "wx" });
+  return { dropped };
+}
+
+// The step after the agent: the collected intent file holds exactly the
+// intents the trusted stage wrote (`trusted`, its `intents` output; empty
+// when no plan was staged), and the finish file holds none. Every other
+// intent is dropped and reported.
+function enforce(options) {
+  const lib = options.lib || library(options.actionsDir);
+  const core = options.core;
+  const trusted = options.trusted ? JSON.parse(options.trusted) : [];
+  if (!Array.isArray(trusted)) throw new TypeError("the trusted intents are not a list");
+  const intents = enforceFile(lib, options.intentsPath, trusted);
+  const finish = options.finishPath ? enforceFile(lib, options.finishPath, []) : { dropped: [] };
+  const dropped = [...intents.dropped, ...finish.dropped];
+  if (dropped.length) {
+    core.warning(
+      `Dropped ${dropped.length} work-queue intent(s) the trusted stage did not write: ${dropped.slice(0, 8).join(", ")}${dropped.length > 8 ? ", ..." : ""}. Only the ${trusted.length} staged intent(s) reach the queue.`
+    );
+  } else {
+    core.info(`The collected intents are the ${trusted.length} the trusted stage wrote.`);
+  }
+  return { kept: trusted.length, dropped: dropped.length };
+}
+
+module.exports = { dispatchIntent, enforce, main, partition, stage };

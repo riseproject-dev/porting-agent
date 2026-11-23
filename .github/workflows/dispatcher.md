@@ -89,6 +89,7 @@ steps:
   # already holds (a retry after a cancelled worker run, a relaunch after
   # its history was recorded) is never submitted again, only dispatched.
   - name: Stage the plan as trusted queue intents
+    id: stage
     uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
     with:
       script: |
@@ -102,6 +103,42 @@ steps:
                      planPath: file,
                      intentsPath: path.join(process.env.RUNNER_TEMP, "gh-aw/safeoutputs/work-queue/work-queue.intents.jsonl"),
                      run: { id: String(context.runId), attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1) } });
+# The agent's work-queue tools append to the intent file the stage wrote,
+# and gh-aw rejects extra intents only in a batch with plan intents. After
+# the agent, the collected files keep exactly the intents of the stage's
+# output (none without a plan); every other intent is dropped and reported.
+# The check is read from a fresh checkout of the run's commit, and when it
+# cannot run no intent is kept.
+post-steps:
+  - name: Check out the trusted intent check
+    if: always()
+    continue-on-error: true
+    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    with:
+      ref: ${{ github.sha }}
+      persist-credentials: false
+      path: trusted-intent-check
+      sparse-checkout: scripts/work_queue_stage.cjs
+      sparse-checkout-cone-mode: false
+  - name: Keep only the intents the trusted stage wrote
+    if: always()
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+    env:
+      TRUSTED_INTENTS: ${{ steps.stage.outputs.intents }}
+    with:
+      script: |
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const intentsPath = "/tmp/gh-aw/work-queue.intents.jsonl";
+        const finishPath = "/tmp/gh-aw/work-queue.finish.jsonl";
+        try {
+          const { enforce } = require(path.join(process.env.GITHUB_WORKSPACE, "trusted-intent-check/scripts/work_queue_stage.cjs"));
+          enforce({ core, actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
+                    trusted: process.env.TRUSTED_INTENTS, intentsPath, finishPath });
+        } catch (error) {
+          for (const file of [intentsPath, finishPath]) fs.rmSync(file, { force: true, recursive: true });
+          core.setFailed(`The collected work-queue intents could not be checked (${error && error.message ? error.message : error}); none are kept.`);
+        }
 jobs:
   continuation:
     needs: [safe_outputs]

@@ -161,14 +161,18 @@ def work_states(projection: dict | None) -> dict[str, str]:
     return {w["graph_id"]: w.get("state") or "unknown" for w in works if w.get("graph_id")}
 
 
-def work_retries(projection: dict | None) -> dict[str, dict]:
+def work_retries(projection: dict | None,
+                 skipped: list[str] | None = None) -> dict[str, dict]:
     """``graph_id -> retry`` for every available Work of a replayed queue
     whose earlier Claim ended without a Result: the worker run was
     cancelled, timed out or lost its runner, and gh-aw cancelled its Claim
     and holds the Work for another attempt (``attempts`` Claims so far, at
     most ``max_attempts``, the retry Policy of its pool) once ``retry_at``
     (its ``retry_not_before``) has passed. Once the attempts are spent gh-aw
-    cancels the Work itself, so it is not listed."""
+    cancels the Work itself, so it is not listed. A Work whose
+    ``retry_not_before`` is no representable time is left out, and
+    ``skipped``, when given, receives one line that says why, so one
+    malformed entry never costs the dispatch recovery of the others."""
     projection = projection or {}
     pools = ((projection.get("policy") or {}).get("pools")) or {}
     retries: dict[str, dict] = {}
@@ -178,11 +182,18 @@ def work_retries(projection: dict | None) -> dict[str, dict]:
                 or not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 1 \
                 or not isinstance(at, int) or isinstance(at, bool) or at < 0:
             continue
+        try:
+            retry_at = datetime.fromtimestamp(at / 1000, tz=timezone.utc)
+        except (ValueError, OverflowError, OSError) as error:
+            if skipped is not None:
+                skipped.append(f"queue retry of {item['graph_id']} skipped: its retry_not_before "
+                               f"{at} is no representable time ({error})")
+            continue
         limit = ((pools.get(item.get("pool")) or {}).get("retry") or {}).get("max_attempts")
         retries[item["graph_id"]] = {
             "attempts": attempts,
             "max_attempts": limit if isinstance(limit, int) and not isinstance(limit, bool) else None,
-            "retry_at": datetime.fromtimestamp(at / 1000, tz=timezone.utc),
+            "retry_at": retry_at,
         }
     return retries
 

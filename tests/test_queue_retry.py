@@ -55,6 +55,20 @@ class TestWorkRetries(unittest.TestCase):
                 self.assertEqual(queue_result.work_retries(projection(state, attempts, retry)), {})
         self.assertEqual(queue_result.work_retries(None), {})
 
+    def test_a_retry_time_out_of_range_skips_that_work_only(self):
+        # datetime.fromtimestamp refuses a time past year 9999: that one
+        # Work is left out and reported, and the others are still read.
+        p = projection()
+        p["works"]["far"] = dict(p["works"]["b7ec5153"], work_id="far", graph_id="porting:far",
+                                 retry_not_before=10 ** 20)
+        skipped: list[str] = []
+        retries = queue_result.work_retries(p, skipped)
+        self.assertEqual(list(retries), [work.graph_id(DEDUPE)])
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("porting:far", skipped[0])
+        self.assertIn(str(10 ** 20), skipped[0])
+        self.assertEqual(list(queue_result.work_retries(p)), [work.graph_id(DEDUPE)])
+
 
 class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
     def setUp(self):
@@ -79,14 +93,27 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
             queue_works={graph: "available"}, now=at(now), policy=policy(),
             queue_retries=queue_result.work_retries(p) if retries else None)
 
-    def test_the_retry_is_dispatched_at_once_and_charges_nothing(self):
-        relaunch, staged, report = self.recover("2026-11-23T22:21:19+00:00")
+    def test_the_retry_is_dispatched_after_the_launch_grace_and_charges_nothing(self):
+        relaunch, staged, report = self.recover(
+            (RETRY_AT + timedelta(minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES)).isoformat())
         self.assertEqual(staged, [])
         self.assertEqual(relaunch, [{"type": "relaunch_dispatcher",
                                      "contribution_id": "luhenry--d2vm/3"}])
         self.assertIn("the queue retries the Work", report[0]["decision"])
         self.assertEqual(report[0]["queue_retry"]["attempts"], 1)
         self.assertEqual(report[0]["dispatcher_runs"], [])
+
+    def test_no_dispatcher_is_launched_within_the_launch_grace(self):
+        # A dispatcher run created since the retry time may not be listed
+        # yet: within the grace nothing is launched and nothing charged.
+        for now in ("2026-11-23T22:21:19+00:00",
+                    (RETRY_AT + timedelta(minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES)
+                     - timedelta(seconds=1)).isoformat()):
+            with self.subTest(now=now):
+                relaunch, staged, report = self.recover(now)
+                self.assertEqual((relaunch, staged), ([], []))
+                self.assertEqual(report[0]["decision"], "waiting for the dispatcher to start")
+                self.assertEqual(report[0]["queue_retry"]["attempts"], 1)
 
     def test_without_the_retry_the_live_tick_charged_a_lost_dispatch(self):
         # What controller run 45278754335 decided: `retry_dispatch`, attempt
@@ -110,7 +137,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         relaunch, staged, report = reconcile.dispatch_recovery(
             {"c": copy.deepcopy(self.record)}, runs=runs,
             queue_works={work.graph_id(DEDUPE): "available"},
-            now=at("2026-11-24T00:31:00+00:00"), policy=policy(),
+            now=at("2026-11-24T00:46:00+00:00"), policy=policy(),
             queue_retries=queue_result.work_retries(later))
         self.assertEqual(staged, [])
         self.assertEqual(len(relaunch), 1)
@@ -119,7 +146,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         _relaunch, staged, _report = reconcile.dispatch_recovery(
             {"c": copy.deepcopy(self.record)}, runs=runs,
             queue_works={work.graph_id(DEDUPE): "available"},
-            now=at("2026-11-24T00:31:00+00:00"), policy=policy())
+            now=at("2026-11-24T00:46:00+00:00"), policy=policy())
         self.assertEqual([r["kind"] for kind, r in staged if kind == "events"],
                          ["exhaust_dispatch_recovery"])
 
@@ -159,6 +186,24 @@ class TestDispatcherStaging(unittest.TestCase):
                 text = (root / ".github/workflows" / name).read_text()
                 self.assertIn("scripts/work_queue_stage.cjs", text)
                 self.assertNotIn("stagePlanIntents", text)
+
+    def test_the_dispatcher_keeps_only_the_staged_intents_after_the_agent(self):
+        # The agent's work-queue tools append to the staged intents; the
+        # step after the agent keeps only those of the stage's output.
+        lock = (Path(__file__).parents[1] / ".github/workflows/dispatcher.lock.yml").read_text()
+        stage = lock.index("name: Stage the plan as trusted queue intents")
+        agent = lock.index("name: Execute Pi CLI")
+        collect = lock.index("name: Collect work queue intents")
+        finish = lock.index("name: Copy work queue claim finish intent")
+        checkout = lock.index("name: Check out the trusted intent check")
+        keep = lock.index("name: Keep only the intents the trusted stage wrote")
+        upload = lock.index("name: Upload agent artifacts")
+        self.assertLess(stage, agent)
+        self.assertLess(max(agent, collect, finish), checkout)
+        self.assertLess(checkout, keep)
+        self.assertLess(keep, upload)
+        self.assertIn("TRUSTED_INTENTS: ${{ steps.stage.outputs.intents }}", lock[checkout:upload])
+        self.assertIn("trusted-intent-check/scripts/work_queue_stage.cjs", lock[keep:upload])
 
 
 if __name__ == "__main__":
