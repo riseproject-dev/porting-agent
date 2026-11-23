@@ -733,9 +733,12 @@ _ADMISSION = ("verified plan decision develop, or verified plan decision park an
 PATCH_SCOPE_COMPLETE = ("the verified plan names `scope_paths`, and `scope_coverage_complete` "
                         "holds")
 # The trusted confirmation of a decision close: the reconciler reads PyPI
-# itself, since `closed.idle` is final and the plan is worker output.
-CLOSE_CONFIRMED = ("PyPI serves riscv64 for the latest release of every distribution: a riscv64 "
-                   "wheel, or pure-Python wheels only")
+# itself, since `closed.idle` is final and the plan is worker output. PyPI is
+# the one registry it reads, so a project not released there is never closed
+# by its plan.
+CLOSE_CONFIRMED = ("PyPI serves riscv64 for the latest release of every distribution, and each "
+                   "PyPI project names the upstream repository: a riscv64 wheel, or pure-Python "
+                   "wheels only")
 PLAN_REJECTED = ("the Result has no plan, the plan is invalid, its decision is not "
                     "develop, park, or close, or PyPI does not confirm a decision close")
 
@@ -808,8 +811,9 @@ LIFECYCLE: dict[str, State] = {
                 ("verified plan decision close", CLOSE_CONFIRMED),
                 _E(work="clear", sets=("terminal_reason",), clears=_HELD),
                 description="The reconciler reads PyPI itself; `terminal_reason` is `already_released` "
-                "when a riscv64 wheel is published, else `no_work`. A recorded `admission_override` "
-                "is not applied against a decision close; the reply states so."),
+                "when a riscv64 wheel is published, else `no_work`. A project that is not released "
+                "on PyPI is never closed by its plan: it is parked with the evidence. A recorded "
+                "`admission_override` is not applied against a decision close; the reply states so."),
         }),
     "planning.waiting_human": State(
         "human_wait", False, False,
@@ -1990,7 +1994,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("parked.idle", "abandon")),
                 start="planning.idle", ends=("closed.idle",),
                 text="The verified plan decides between development, park, and close; a close "
-                     "is confirmed from PyPI by the reconciler. "
+                     "is confirmed from PyPI by the reconciler, so a project that is not released on PyPI "
+                     "is parked instead. "
                      "`closed` is the single terminal phase for work that is not needed; the reason "
                      "is `terminal_reason`. A restart may record an `admission_override`; the new "
                      "generation still runs complete planning."),

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 name: Planner
-description: Plan the riscv64 wheel contribution of one upstream project (read and report only)
+description: Plan the riscv64 contribution of one upstream project in any language (read and report only)
 on:
   workflow_dispatch:
 permissions:
@@ -23,6 +23,12 @@ network:
   allowed:
     - defaults
     - python
+    - go
+    - rust
+    - node
+    - java
+    - containers
+    - linux-distros
     - github
 tools:
   work-queue:
@@ -324,10 +330,16 @@ sandbox:
 
 # riscv64 porting planner
 
-You plan the riscv64 contribution of one upstream project for the RISE riscv64 Python project porting pipeline. The trusted pre-agent step wrote the immutable task to
+You plan the riscv64 contribution of one upstream project for the RISE riscv64 porting pipeline. The trusted pre-agent step wrote the immutable task to
 `/tmp/gh-aw/agent/task.json` and checked out the upstream project in
 `./fork` (read-only: nothing you change there is used). The task's `instructions`
 field says what to do; `reason_ids` and `context` say why.
+
+The project may be written in any language (Python, Go, Rust, C or C++, Java,
+JavaScript, or another) and may publish wheels, crates, modules, jars, npm
+packages, binaries, container images, distribution packages or nothing. Plan
+riscv64 support on the project's own build, test and release tooling. That a
+project has no Python package, wheel or PyPI release is never a reason to park.
 
 Only process the compiler-supplied `work_queue_assignment`. It has exactly
 one Claim; use its `handle` as `claim_handle` on every safe output and on
@@ -371,8 +383,8 @@ the fork or PR.
 You MUST research the project's upstream history, not just its checkout:
 
 1. Search the full upstream issue and PR corpus (all states: open, closed,
-   merged, unmerged and superseded) for RISC-V/riscv64/rv64/RVV, wheel and
-   release work, architecture support and relevant native dependencies. Use
+   merged, unmerged and superseded) for RISC-V/riscv64/rv64/RVV, architecture
+   and platform support, release artifacts and relevant native dependencies. Use
    multiple queries and follow pagination. Read every relevant discussion,
    linked predecessor and follow-up. Record accepted AND rejected approaches,
    their reasons, unresolved objections, and who made the decisions. Do not
@@ -382,8 +394,8 @@ You MUST research the project's upstream history, not just its checkout:
    (reviews, governance, CODEOWNERS, contribution docs). Explain their stated
    constraints and prior decisions. Do not guess maintainer intent.
 3. Inspect current and historical CI, workflow changes, relevant job results,
-   architecture precedent, fork guards, wheel build/test/publication paths and
-   any separate release repository. Follow the release path beyond this repo.
+   architecture precedent, fork guards, build, test and release or publication
+   paths and any separate release repository. Follow the release path beyond this repo.
 4. Read contribution, governance, packaging and architecture documentation,
    the official website, relevant mailing-list archives, blogs, announcements,
    release notes and linked external discussions. Discover those channels from
@@ -407,7 +419,27 @@ You MUST research the project's upstream history, not just its checkout:
    distinguish build/runtime/optional dependencies where the data supports it,
    report omissions/conflicts explicitly, and never invent edges. A missing
    project or tool failure is not an empty or complete dependency graph.
-7. Audit every direct and transitive build and test dependency against both
+7. Identify the project's languages, build systems and release channels, and
+   record them in `plan.project`. Then audit every direct and transitive build
+   and test dependency, and every tool the CI downloads, for linux/riscv64 in
+   that ecosystem's registry and toolchain:
+   - Go: `GOARCH=riscv64` support of the Go version in use, cgo, assembly
+     files and build tags without a riscv64 variant, and the `goarch` list of
+     goreleaser or the release scripts;
+   - Rust: the tier of `riscv64gc-unknown-linux-gnu` (and musl) for the
+     toolchain in use, `-sys` crates and their native libraries, and prebuilt
+     binaries the build downloads;
+   - C and C++: compiler support, the distribution libraries the build links,
+     and vendored assembly or architecture tables;
+   - Java: JDK availability for linux/riscv64 and JNI native libraries
+     packaged inside jars;
+   - JavaScript: prebuilt native addons, node-gyp builds, and per-architecture
+     optional dependencies;
+   - containers: base image manifests that list linux/riscv64;
+   - prebuilt release assets any CI job fetches.
+
+   Python projects additionally: audit every direct and transitive build and
+   test dependency against both
    public PyPI and `https://pypi.riseproject.dev/simple` for the proposed
    riscv64 interpreter and libc matrix. Inspect actual filenames and wheel tags,
    not only package-page existence. Read relevant CI logs for unexpected sdist
@@ -475,7 +507,7 @@ reviews when discussing a decision. Sources must actually be read, not merely
 found in snippets. If a site is blocked, a tool fails, or the research cannot be
 completed within the task budget, use `report_incomplete` and finish `cancelled`.
 Do not claim `completed` with missing, inaccessible or inferred required research.
-Do not replace this porting task with downstream wheel-build advice.
+Do not replace this porting task with downstream packaging advice.
 
 ## What to produce
 
@@ -485,14 +517,14 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
 `claim-<hash>-porting-out`):
 
 - `plan.json`: MUST satisfy `schemas/plan.schema.json`.
-  Include `schema_version: 2`, this task's `contribution_id`,
+  Include `schema_version: 3`, this task's `contribution_id`,
   `expected_revision: task.revision`, and
   `tracking_issue_description_digest: task.context.tracking_issue.description_digest`.
   Every `history` item is a JSON object with keys `url`, `outcome`, `decision`,
   `reviewers`, and `review_urls`; arrays/tuples are invalid. The schema requires
   `summary`, `research`, `history`, `maintainers`,
-  `dependency_graph`, `ecosystem_report`, `proposal`, and
-  `contribution_guidelines` (step 8). Every `research` category requires
+  `dependency_graph`, `ecosystem_report`, `proposal`,
+  `contribution_guidelines` (step 8), and `project` (step 7). Every `research` category requires
   `status`, `queries`, `coverage: {complete: true, scope: "..."}`, `sources`
   (URL and finding pairs), and `findings`. Only genuinely absent website,
   mailing-list, blog or separate-release-repo channels may be `not_applicable`,
@@ -503,26 +535,48 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   `ecosystem_report` object records its URL/revision, support status, used
   findings, and current corroboration/conflicts.
 
+  The `project` object records `languages` (for example Go, Rust, C, Python),
+  `build_systems` (for example go, cargo, cmake, maven, gradle, npm,
+  setuptools, goreleaser), `build_and_test` (the commands and CI jobs that
+  build and test the project), `riscv64_toolchain` (the state of the language
+  toolchain and runtime on linux/riscv64: Go `GOARCH`, the Rust target tier, a
+  JDK port, Node builds, compiler support), and `release_channels`: one entry
+  per channel the project releases through, with its `kind` (`pypi`,
+  `crates_io`, `npm`, `go_module`, `maven`, `container_image`,
+  `github_release`, `distribution_package`, or `other`), `name`, `url`,
+  whether `riscv64` is `published`, `absent` or `not_applicable` there, and
+  the `evidence`. Use an empty list only for a project that publishes nothing.
+
   The `proposal` object MUST include:
   - `decision`: `develop` when a concrete bounded patch can advance official
-    riscv64 wheel support; `close` only when no riscv64 work is needed because
-    the latest release of every requested PyPI distribution already installs
-    on riscv64 from PyPI: it publishes a riscv64 wheel, or it publishes
-    pure-Python (`py3-none-any`) wheels only; otherwise `park`;
+    riscv64 support in the project's own build, test or release; `close` only
+    for a project released on PyPI whose latest release of every requested
+    PyPI distribution already installs on riscv64 from PyPI (it publishes a
+    riscv64 wheel, or it publishes pure-Python (`py3-none-any`) wheels only)
+    and whose PyPI metadata links this upstream repository; for every other
+    ecosystem, a project that already serves riscv64 is a `park` with that
+    evidence; otherwise `park`;
   - `rationale`: a source-grounded explanation of that decision;
-  - `admission_class`: one of `configuration_integration`,
-    `architecture_correctness`, or `optimized_backend` for `develop`, and null
-    for `park` and `close`;
+  - `admission_class`: one of `configuration_integration` (build, CI,
+    packaging and release configuration), `architecture_correctness` (source
+    changes that make the project build and behave correctly on riscv64,
+    including a missing architecture case), or `optimized_backend` (optional
+    accelerated paths) for `develop`, and null for `park` and `close`;
   - `allowed_paths`: 1..32 exact relative paths or directory globs with a
     single final wildcard component for `develop`, and an empty list for
     `park` and `close`. Never use `*`, `**`, absolute paths, `.git`, or `..`;
   - `path_coverage`: exactly one assessment for each of `build`, `test`,
     `release`, `packaging`, `documentation`, and `native_sources`. Each entry
     lists every repository path that may need a riscv64 change in that area,
-    or an empty path list with a source-grounded explanation. For `develop`,
+    or an empty path list with a source-grounded explanation. The areas apply
+    to every language: `packaging` is the package or module metadata and the
+    distribution manifests of any ecosystem, and `native_sources` is the
+    architecture-specific source of any language (assembly, intrinsics,
+    architecture tables and switches, build tags, per-architecture boot,
+    emulator or loader code). For `develop`,
     every listed path must be matched by `allowed_paths`. Inspect sibling
     workflows, called reusable workflows, action files, build configuration,
-    package metadata, native source dispatch, support documentation, artifact
+    package or module metadata, native source dispatch, support documentation, artifact
     validation, and release/publish consumers. Do not scope only the first file
     that appears sufficient.
 
@@ -534,22 +588,23 @@ call: `{"path": "porting-out"}` (the native handler names the artifact
   good; no command resumes it. The controller reads PyPI itself and rejects a
   `close` that PyPI does not confirm, so never choose `close` for a blocker, a
   refusal, an sdist-only release, partial or uncertain coverage, or unreleased
-  work on a branch: use `park` (or `develop` when wheels for some interpreters
-  or libc are still missing and a bounded patch adds them). State in
+  work on a branch, and never for a project that is not released on PyPI: use
+  `park` (or `develop` when artifacts for some interpreters, targets or libc
+  are still missing and a bounded patch adds them). For a close, state in
   `rationale` the release version and the wheel files you saw, and record them
   in the `release_repositories` research. Preserve the facts needed to
   approve scope, with evidence:
-  - release coverage: which platforms and architectures the latest release
-    ships wheels for on PyPI, and whether riscv64 is already there;
-  - build backend and native dependencies, plus build/test dependency wheel
-    availability across the target matrix. For any dependency without a
-    compatible public-PyPI wheel, state whether the RISE index has a compatible
-    wheel and where the paired `PIP_EXTRA_INDEX_URL` and `PIP_PREFER_BINARY`
-    settings must propagate;
+  - release coverage: which platforms and architectures each release channel
+    ships for, and whether riscv64 is already there;
+  - build system and native dependencies, plus build and test dependency
+    availability for riscv64 across the target matrix. For a Python
+    dependency without a compatible public-PyPI wheel, state whether the RISE
+    index has a compatible wheel and where the paired `PIP_EXTRA_INDEX_URL`
+    and `PIP_PREFER_BINARY` settings must propagate;
   - release graph: the workflows and jobs that build, test and publish
-    wheels, and how they are triggered;
-  - existing architecture precedent: the nearest aarch64/s390x/ppc64le
-    wheel rows a riscv64 row should follow. Explicitly classify whether Linux
+    release artifacts, and how they are triggered;
+  - existing architecture precedent: the nearest aarch64/s390x/ppc64le/loong64
+    rows, target lists or target triples a riscv64 entry should follow. Explicitly classify whether Linux
     architectures share one `ubuntu-latest` host through an architecture list /
     QEMU, or use dedicated native runner rows. Recommend adding `riscv64` to the
     existing shared list when that is the precedent; recommend

@@ -386,7 +386,9 @@ def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
 PLAN_DECISIONS = ("develop", "park", "close")
 # The `terminal_reason` of a contribution closed by its plan is derived by
 # `plan_gate.close_confirmation` from PyPI documents the reconciler reads
-# itself, never taken from the plan.
+# itself, never taken from the plan. PyPI is the one registry a close is
+# confirmed from: the recorded distributions may name packages of any
+# registry, so each PyPI project must also name the upstream repository.
 _DISTRIBUTION_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -443,7 +445,8 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
     * park without an override: ``park_planning``;
     * close, confirmed from PyPI: ``close_planning``. ``pypi`` reads
       the PyPI document of each recorded distribution
-      (``collect.pypi_project`` by default); ``terminal_reason`` is
+      (``collect.pypi_project`` by default), and each must name the
+      record's upstream repository; ``terminal_reason`` is
       ``already_released`` when the latest release of a distribution has a
       riscv64 wheel, else ``no_work`` (pure-Python wheels only). A failed
       read raises ``collect.CollectError``: a collector failure, so the tick
@@ -487,7 +490,8 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
         names = [n for n in (rec.get("distributions") or []) if isinstance(n, str)]
         documents = {name: read(name) if _DISTRIBUTION_NAME.fullmatch(name) else None
                      for name in names}
-        close_reason, problem, close_finding = plan_gate.close_confirmation(names, documents)
+        close_reason, problem, close_finding = plan_gate.close_confirmation(
+            names, documents, upstream=(rec.get("upstream") or {}).get("full_name"))
         if problem:
             return _reject_plan(
                 rec, outcome, why=f"PyPI does not confirm the decision close: {problem}",

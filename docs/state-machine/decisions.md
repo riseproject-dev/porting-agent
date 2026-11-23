@@ -1173,7 +1173,7 @@ flowchart TB
 
 When a plan may decide close, and who confirms it.
 
-**Decision.** Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest release of every distribution of the request: a riscv64 wheel, or pure-Python wheels only. The reconciler reads PyPI itself before it takes `close_planning` and sets `terminal_reason` `already_released` when a riscv64 wheel is published, else `no_work`; a close that PyPI does not confirm takes `reject_plan` within `planning_attempts`. Every other reason to stop is a park, which a human can resume.
+**Decision.** Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest release of every distribution of the request: a riscv64 wheel, or pure-Python wheels only. The reconciler reads PyPI itself before it takes `close_planning` and sets `terminal_reason` `already_released` when a riscv64 wheel is published, else `no_work`; a close that PyPI does not confirm takes `reject_plan` within `planning_attempts`. PyPI is the one registry a close is confirmed from: each PyPI project must name the upstream repository, and a project that is not released on PyPI is parked with the evidence that riscv64 is served. Every other reason to stop is a park, which a human can restart with `/upstreaming refresh`.
 
 ```mermaid
 flowchart TB
@@ -1497,6 +1497,32 @@ flowchart TB
     end
 
     development_fix_needed ==>|record_head_change| development_waiting_ci
+```
+
+### Projects of any language
+
+Whether planning and development serve projects other than Python wheels.
+
+**Change.** They do: a project in any language (Go, Rust, C or C++, Java, JavaScript, Python, or another) is planned and developed for riscv64 on its own build, test, and release tooling, and Python wheels are one case among others. A plan of schema version 3 records the project (languages, build systems, build and test, release channels with their riscv64 status, and the riscv64 toolchain); stored plans of versions 1 and 2 stay readable. The path coverage areas and the admission classes keep their names with a language-neutral meaning. A decision close is still confirmed from PyPI only, and each PyPI project must name the upstream repository.
+
+```mermaid
+flowchart TB
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+    end
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+    end
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
+
+    planning_agent_running -->|admit_development| provisioning_idle
+    planning_agent_running -->|park_planning| parked_idle
+    planning_agent_running ==>|close_planning| closed_idle
 ```
 
 ### A parked contribution restarts with refresh

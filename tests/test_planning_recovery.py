@@ -14,7 +14,7 @@ import plan_gate
 import planning_recovery
 import reconcile
 from tests.helpers import policy
-from tests.test_plan_gate import guidelines
+from tests.test_plan_gate import guidelines, project
 
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "tests/fixtures/planning-record-failure"
@@ -22,24 +22,24 @@ RUN_ID = "44974390332"
 
 
 class TestPlanningRecordRecovery(unittest.TestCase):
-    def directory(self, temporary, *, version=2):
+    def directory(self, temporary, *, version=3):
         """The live run's partial publication. Its plan is of schema
-        version 1; with ``version=2`` it records the contribution guidelines
-        a plan must now record."""
+        version 1; with ``version=3`` it records the contribution guidelines
+        and the project a plan must now record."""
         directory = Path(temporary) / RUN_ID
         shutil.copytree(FIXTURE, directory)
-        if version == 2:
+        if version == 3:
             path = directory / "plan.json"
             plan = json.loads(path.read_text())
-            plan.update(schema_version=2, contribution_guidelines=guidelines(
-                plan["proposal"]["allowed_paths"]))
+            plan.update(schema_version=3, contribution_guidelines=guidelines(
+                plan["proposal"]["allowed_paths"]), project=project())
             path.write_text(json.dumps(plan))
         return directory
 
     def test_a_plan_without_the_contribution_guidelines_is_not_recovered(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = self.directory(temporary, version=1)
-            with self.assertRaisesRegex(plan_gate.PlanError, "schema version 2"):
+            with self.assertRaisesRegex(plan_gate.PlanError, "schema version 3"):
                 planning_recovery.recover(directory, RUN_ID)
             self.assertFalse((directory / "outcome.json").exists())
 

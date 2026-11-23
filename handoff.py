@@ -481,7 +481,7 @@ def build_package(record: dict, *, plan: dict, ci: dict, review: dict, commits: 
             raise HandoffError(f"the clean series has a debug commit {commit.get('sha')}")
     if [str(c.get("message") or "").rstrip("\n") for c in commits] != reviewed:
         raise HandoffError("the clean series is not the reviewed series")
-    title = _line(data.get("title"), MAX_TITLE) or "Build riscv64 wheels"
+    title = _line(data.get("title"), MAX_TITLE) or "Add riscv64 support"
     title, title_changes = neutralize_mentions(title)
     body = _clean_block(data.get("body"), MAX_BODY)
     body, body_changes = neutralize_mentions(body)

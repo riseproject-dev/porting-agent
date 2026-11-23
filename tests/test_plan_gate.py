@@ -26,6 +26,7 @@ REPORT_URL = "https://github.com/riseproject-dev/sw-ecosystem/blob/main/project-
 
 def task():
     return {"task": "planning", "contribution_id": "example--proj/12", "revision": 1, "expected_head": None,
+            "distributions": ["proj"],
             "context": {"tracking_issue": {"id": 5000, "number": 12, "url": ISSUE_URL,
                                            "description": "Full original issue body, including user links.",
                                            "description_digest": sha256_text("Full original issue body, including user links.")}}}
@@ -85,12 +86,35 @@ def guidelines(paths=(".github/workflows/*", "README.rst")):
     }
 
 
+def project(riscv64="absent"):
+    """The project a schema version 3 plan records: a Python project with
+    a native extension, released on PyPI."""
+    return {"languages": ["Python", "C"], "build_systems": ["setuptools", "cibuildwheel"],
+            "build_and_test": "cibuildwheel in .github/workflows/wheels.yml builds and tests the wheels.",
+            "release_channels": [{"kind": "pypi", "name": "proj", "url": "https://pypi.org/project/proj/",
+                                  "riscv64": riscv64, "evidence": "The 2.4.1 files list on PyPI."}],
+            "riscv64_toolchain": "GCC and CPython are packaged for riscv64 in Ubuntu 24.04."}
+
+
+def go_project():
+    """The project of a Go plan: a Go module released with goreleaser."""
+    return {"languages": ["Go"], "build_systems": ["go", "goreleaser"],
+            "build_and_test": "go build ./... and go test ./... in .github/workflows/ci.yml.",
+            "release_channels": [
+                {"kind": "go_module", "name": "github.com/example/proj",
+                 "url": "https://pkg.go.dev/github.com/example/proj", "riscv64": "not_applicable",
+                 "evidence": "A Go module is built from source by its users."},
+                {"kind": "github_release", "name": "proj", "url": f"{REPO}/releases/tag/v1.2.0",
+                 "riscv64": "absent", "evidence": "The release lists linux amd64 and arm64 archives."}],
+            "riscv64_toolchain": "Go supports GOARCH=riscv64 on linux since Go 1.14."}
+
+
 def plan():
     entry = {"status": "searched", "queries": ["riscv64 all states"],
              "coverage": {"complete": True, "scope": "All matching open and closed discussions reviewed, including all result pages."},
              "sources": [{"url": ISSUE_URL, "finding": "Read the description and all discussion comments."}],
              "findings": "The linked discussions establish architecture requirements and prior reviewer decisions."}
-    d = {"schema_version": 2, "contribution_id": "example--proj/12", "expected_revision": 1,
+    d = {"schema_version": 3, "contribution_id": "example--proj/12", "expected_revision": 1,
          "tracking_issue_description_digest": task()["context"]["tracking_issue"]["description_digest"],
          "summary": "Research covers project history, dependencies, documentation and maintainer review decisions.",
          "research": {category: copy.deepcopy(entry) for category in plan_gate.RESEARCH_CATEGORIES},
@@ -118,6 +142,7 @@ def plan():
                       ]}}
     d["research"]["ecosystem_report"]["sources"][0]["url"] = REPORT_URL
     d["contribution_guidelines"] = guidelines()
+    d["project"] = project()
     return d
 
 
@@ -153,6 +178,7 @@ class TestPlanCompleteness(unittest.TestCase):
 
     def test_a_close_decision_has_no_class_and_no_paths(self):
         d = plan()
+        d["project"] = project(riscv64="published")
         d["proposal"].update(decision="close", admission_class=None, allowed_paths=[],
                              rationale="The latest release 2.4.1 publishes a manylinux riscv64 wheel on PyPI.")
         plan_gate.validate(d, proposal(), task())
@@ -178,7 +204,7 @@ class TestPlanCompleteness(unittest.TestCase):
         with self.assertRaises(schemas.SchemaError):
             plan_gate.validate(d, proposal(), task())
         d["schema_version"] = 1
-        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 2"):
+        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 3"):
             plan_gate.validate(d, proposal(), task())
         for section in ("pull_request_template", "contributing", "commit_conventions", "reviewers"):
             d = plan()
@@ -370,17 +396,17 @@ class TestImmutableTrackingIssue(unittest.TestCase):
             collect.tracking_issue_context({"id": 5000, "number": 12, "body": "x" * 16385}, expected)
 
 
-def pypi(version, *files):
+def pypi(version, *files, source=REPO):
     urls = [{"filename": f, "yanked": False} if isinstance(f, str)
             else {"filename": f[0], "yanked": f[1]} for f in files]
-    return {"info": {"version": version}, "urls": urls}
+    return {"info": {"version": version, "project_urls": {"Source": source}}, "urls": urls}
 
 
 class TestCloseConfirmation(unittest.TestCase):
     RISCV = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
 
-    def confirm(self, documents, names=("proj",)):
-        return plan_gate.close_confirmation(list(names), documents)
+    def confirm(self, documents, names=("proj",), upstream="example/proj"):
+        return plan_gate.close_confirmation(list(names), documents, upstream=upstream)
 
     def test_a_riscv64_wheel_confirms_already_released(self):
         for wheel in (self.RISCV, "proj-2.4.1-cp312-cp312-musllinux_1_2_riscv64.whl",
@@ -433,3 +459,138 @@ class TestCloseConfirmation(unittest.TestCase):
             {"proj": pypi("2.4.1", "proj-2.4.1-x.whl", "proj-2.4.1-py3-none-any.whl")})
         self.assertEqual((reason, problem), ("no_work", None))
         self.assertEqual(finding["proj"]["wheel"], "proj-2.4.1-py3-none-any.whl")
+
+    def test_the_pypi_project_must_name_the_upstream_repository(self):
+        wheel = "proj-2.4.1-py3-none-any.whl"
+        for source in ("https://github.com/example/proj", "https://github.com/Example/Proj.git",
+                       "https://www.github.com/example/proj/tree/main", "http://github.com/example/proj/"):
+            with self.subTest(source=source):
+                reason, problem, _ = self.confirm({"proj": pypi("2.4.1", wheel, source=source)})
+                self.assertEqual((reason, problem), ("no_work", None))
+        document = pypi("2.4.1", wheel)
+        document["info"] = {"version": "2.4.1", "home_page": "https://github.com/example/proj"}
+        self.assertEqual(self.confirm({"proj": document})[:2], ("no_work", None))
+        document["info"] = {"version": "2.4.1", "download_url": "https://github.com/example/proj/releases"}
+        self.assertEqual(self.confirm({"proj": document})[:2], ("no_work", None))
+        for source in ("https://github.com/other/proj", "https://github.com/example/proj2",
+                       "https://gitlab.com/example/proj", "https://github.com/example",
+                       "https://github.example.com/example/proj", "not a url", None, 7):
+            with self.subTest(source=source):
+                reason, problem, _ = self.confirm({"proj": pypi("2.4.1", wheel, source=source)})
+                self.assertIsNone(reason)
+                self.assertEqual(problem, "the PyPI project proj does not name the upstream repository")
+        # A same-named PyPI project of another repository confirms nothing.
+        self.assertIsNone(self.confirm({"proj": pypi("2.4.1", wheel)}, upstream="someone/proj")[0])
+        for upstream in (None, "", "example", "a/b/c"):
+            with self.subTest(upstream=upstream):
+                self.assertIsNone(self.confirm({"proj": pypi("2.4.1", wheel)}, upstream=upstream)[0])
+
+    def test_malformed_metadata_never_raises(self):
+        wheel = "proj-2.4.1-py3-none-any.whl"
+        for info_extra in ({"project_urls": "x"}, {"project_urls": None}, {"project_urls": {"a": 1}},
+                           {"project_urls": {"a": "https://[bad"}}, {"home_page": ["x"]},
+                           {"project_urls": {str(n): "x" for n in range(500)}}):
+            with self.subTest(info=info_extra):
+                document = pypi("2.4.1", wheel)
+                document["info"] = {"version": "2.4.1", **info_extra}
+                reason, problem, _ = self.confirm({"proj": document})
+                self.assertIsNone(reason)
+                self.assertTrue(problem)
+
+
+class TestProjectContract(unittest.TestCase):
+    def test_stored_plans_of_earlier_versions_stay_schema_valid(self):
+        v2 = plan()
+        v2["schema_version"] = 2
+        del v2["project"]
+        schemas.validate("plan", v2)
+        v1 = copy.deepcopy(v2)
+        v1["schema_version"] = 1
+        del v1["contribution_guidelines"]
+        schemas.validate("plan", v1)
+        # ... but no new plan of version 2 is admitted.
+        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 3"):
+            plan_gate.validate(v2, proposal(), task())
+        v3 = plan()
+        del v3["project"]
+        with self.assertRaises(schemas.SchemaError):
+            plan_gate.validate(v3, proposal(), task())
+
+    def test_the_project_is_bounded(self):
+        for change in ({"languages": []}, {"languages": ["x" * 41]}, {"build_systems": []},
+                       {"build_and_test": "x" * 4001}, {"riscv64_toolchain": ""},
+                       {"release_channels": [{"kind": "pip", "name": "p", "url": REPO,
+                                              "riscv64": "absent", "evidence": "e"}]},
+                       {"release_channels": [{"kind": "pypi", "name": "p", "url": "file:///x",
+                                              "riscv64": "absent", "evidence": "e"}]},
+                       {"release_channels": [{"kind": "pypi", "name": "p", "url": REPO,
+                                              "riscv64": "maybe", "evidence": "e"}]},
+                       {"release_channels": [{"kind": "pypi", "name": "p", "url": REPO,
+                                              "riscv64": "absent", "evidence": "e", "x": 1}]},
+                       {"unknown": "x"}):
+            with self.subTest(change=change):
+                d = plan()
+                d["project"].update(change)
+                with self.assertRaises(schemas.SchemaError):
+                    plan_gate.validate(d, proposal(), task())
+
+    def test_a_close_is_refused_unless_pypi_can_confirm_it(self):
+        def close(project_, task_=None):
+            d = plan()
+            d["project"] = project_
+            d["proposal"].update(decision="close", admission_class=None, allowed_paths=[],
+                                 rationale="The latest release already serves riscv64 for every user.")
+            plan_gate.validate(d, proposal(), task_ or task())
+        close(project(riscv64="published"))
+        without_pypi = go_project()
+        without_pypi["release_channels"][1]["riscv64"] = "published"
+        absent = project(riscv64="published")
+        absent["release_channels"].append(
+            {"kind": "container_image", "name": "ghcr.io/example/proj", "url": REPO,
+             "riscv64": "absent", "evidence": "The image manifest has no linux/riscv64."})
+        no_names = dict(task(), distributions=[])
+        for name, args in (("no pypi channel", (without_pypi,)), ("an absent channel", (absent,)),
+                           ("no distributions", (project(riscv64="published"), no_names)),
+                           ("no channel at all", (dict(project(), release_channels=[]),))):
+            with self.subTest(case=name), self.assertRaisesRegex(
+                    plan_gate.PlanError, "confirmed from PyPI only"):
+                close(*args)
+
+    def test_a_go_project_is_planned_and_developed(self):
+        d = plan()
+        d["project"] = go_project()
+        d["proposal"].update(
+            decision="develop", admission_class="architecture_correctness",
+            allowed_paths=[".goreleaser.yaml", "internal/arch/*"],
+            rationale="Add riscv64 to the goreleaser targets and the architecture switch of the loader.",
+            path_coverage=[
+                {"area": "build", "paths": [".goreleaser.yaml"], "assessment": "goreleaser lists the goarch values."},
+                {"area": "test", "paths": [], "assessment": "go test runs on the host architecture only."},
+                {"area": "release", "paths": [".goreleaser.yaml"], "assessment": "The same file publishes the archives."},
+                {"area": "packaging", "paths": [], "assessment": "go.mod has no architecture-specific content."},
+                {"area": "documentation", "paths": [], "assessment": "The README names no architectures."},
+                {"area": "native_sources", "paths": ["internal/arch/riscv64.go"],
+                 "assessment": "The loader switches on runtime.GOARCH and has no riscv64 case."}])
+        d["contribution_guidelines"] = guidelines(paths=(".goreleaser.yaml", "internal/arch/*"))
+        plan_gate.validate(d, proposal(), dict(task(), distributions=[]))
+
+
+class TestStoredPlansStayValid(unittest.TestCase):
+    """Every committed plan, of every schema version, stays valid under the
+    current plan contract: no stored plan needs a migration."""
+
+    def test_every_committed_plan_validates(self):
+        root = Path(__file__).resolve().parent.parent
+        paths = [*sorted((root / ".state/evidence").glob("*.json")),
+                 *sorted((root / "tests/fixtures/plan-rename/evidence").glob("*.json")),
+                 root / "tests/fixtures/live-handoff-r6/plan.json",
+                 root / "tests/fixtures/canary-m5-plan.json"]
+        seen = 0
+        for path in paths:
+            record = json.loads(path.read_text())
+            if record.get("kind") not in ("plan", "dossier"):
+                continue
+            with self.subTest(path=path.name):
+                schemas.validate("plan", record["data"])
+                seen += 1
+        self.assertGreaterEqual(seen, 4)

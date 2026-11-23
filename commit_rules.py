@@ -5,7 +5,7 @@ deterministic checks.
 
 The planner measures the project's commit conventions from its history
 and records them as ``contribution_guidelines.commit_conventions.rules`` in
-the plan (schema version 2), and the required sections of the project's
+the plan (schema version 2 or later), and the required sections of the project's
 pull request template as ``contribution_guidelines.pull_request_template``.
 Trusted code applies them: the worker gate to every non-debug commit a
 worker proposes, and the submission check to the reviewed series and the
@@ -122,7 +122,8 @@ def normalize_sections(sections: Any) -> list[str]:
 def guidelines(plan: Any) -> dict | None:
     """The contribution guidelines of a plan, or ``None`` for a plan
     written before they were part of the contract (schema version 1)."""
-    if not isinstance(plan, dict) or plan.get("schema_version") != 2:
+    version = plan.get("schema_version") if isinstance(plan, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool) or version < 2:
         return None
     value = plan.get("contribution_guidelines")
     return value if isinstance(value, dict) else None

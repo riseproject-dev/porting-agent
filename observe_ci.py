@@ -93,12 +93,14 @@ def _evidence_id(repo_id: int, run: dict) -> str:
 
 
 def contract_for(record: dict, contracts: dict[str, dict]) -> dict:
-    """The plan target contract: required job patterns + expected wheels.
+    """The plan target contract: required job patterns + expected wheels
+    (the field keeps its name; it is empty unless a contract names Python
+    wheels).
 
     Plan 9.2 accepts exact-head CI when every required build/test job
-    executed and passed. Uploaded workflow artifacts are not a development CI
-    requirement: many projects build and test wheels in PR CI but upload only
-    from release workflows.
+    executed and passed, whatever the project's language. Uploaded workflow
+    artifacts are not a development CI requirement: many projects build and
+    test in PR CI but upload release artifacts only from release workflows.
     """
     c = contracts.get(record.get("target_contract_id") or "") or {}
     data = c.get("data") or {}

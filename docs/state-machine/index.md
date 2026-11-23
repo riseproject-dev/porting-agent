@@ -189,7 +189,7 @@ flowchart TB
     closed_idle --> end_2(( ))
 ```
 
-The verified plan decides between development, park, and close; a close is confirmed from PyPI by the reconciler. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs complete planning.
+The verified plan decides between development, park, and close; a close is confirmed from PyPI by the reconciler, so a project that is not released on PyPI is parked instead. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs complete planning.
 
 ### Failure case 2: the Result has no usable plan
 

@@ -160,6 +160,38 @@ class TestWorkflowContracts(unittest.TestCase):
         )
         self.assertIn("PIP_PREFER_BINARY=true", skill)
 
+    def test_prompts_plan_and_develop_projects_of_any_language(self):
+        planner = (WORKFLOWS / "planner.md").read_text()
+        worker = (WORKFLOWS / "worker.md").read_text()
+        for name, text in (("planner", planner), ("worker", worker)):
+            with self.subTest(prompt=name):
+                flat = " ".join(text.split())
+                self.assertIn("The project may be written in any language (Python, Go, Rust, C or "
+                              "C++, Java, JavaScript, or another)", flat)
+                self.assertNotIn("Python project porting pipeline", flat)
+                self.assertNotIn("wheel scope", flat)
+                network = source(name)["network"]["allowed"]
+                for ecosystem in ("python", "go", "rust", "node", "java", "containers",
+                                  "linux-distros", "github"):
+                    self.assertIn(ecosystem, network)
+        flat = " ".join(planner.split())
+        self.assertIn("That a project has no Python package, wheel or PyPI release is never a "
+                      "reason to park.", flat)
+        self.assertIn("`schema_version: 3`", planner)
+        self.assertIn("`refresh class=... paths=...`", planner)
+        self.assertNotIn("`resume class=", planner)
+        self.assertIn("Python projects additionally:", planner)
+        self.assertIn("For Python wheel projects:", worker)
+        for word in ("Go:", "Rust:", "C and C++:", "Java:", "JavaScript:"):
+            self.assertIn(word, planner)
+
+    def test_work_instructions_name_no_wheel(self):
+        import work
+        for task in ("planning", "development_patch"):
+            with self.subTest(task=task):
+                self.assertNotIn("wheel", work._INSTRUCTIONS[task])
+                self.assertIn("release", work._INSTRUCTIONS[task])
+
     def test_worker_forbids_unrelated_fork_ci_debug_changes(self):
         worker = source("worker")
         github = worker["mcp-servers"]["github-authenticated"]

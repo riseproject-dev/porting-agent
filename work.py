@@ -240,7 +240,8 @@ def task_digest(pl: dict) -> str:
 
 _INSTRUCTIONS = {
     "planning": (
-        "Research this upstream project and produce the plan for a riscv64 wheel contribution. "
+        "Research this upstream project and produce the plan for a riscv64 contribution, whatever "
+        "the project's language and its build, test and release tooling. "
         "Read the full tracking issue description in context.tracking_issue and fetch its comments. "
         "Research upstream issues, open/closed PRs, CI/history, docs, websites, mailing lists, blogs, "
         "maintainers and their past reviews before recommending scope. Query project_graph_query for "
@@ -251,12 +252,14 @@ _INSTRUCTIONS = {
         "do not finish completed. Do not modify any repository. Return the plan JSON as the proposal artifact."),
     "development_patch": (
         "Write the smallest patch to the fork's riscv64 branch that makes the upstream project build, "
-        "test and publish Linux riscv64 wheels through its normal release process, following the "
-        "nearest existing architecture pattern. The project's own CI must run on the fork: if a job is "
-        "guarded to the upstream repository (for example `if: github.repository == 'owner/repo'`), "
-        "lift the guard in a separate {debug} commit. CI must execute natively on `ubuntu-24.04-riscv` "
-        "and upload the built riscv64 wheel as an artifact. If the project already has such a job, "
-        "the fix may be only the {debug} commit. Return the proposal and patch series as the artifact."),
+        "test and release for Linux riscv64 through its own build, test and release tooling, "
+        "following the nearest existing architecture pattern. The project's own CI must run on the "
+        "fork: if a job is guarded to the upstream repository (for example "
+        "`if: github.repository == 'owner/repo'`), lift the guard in a separate {debug} commit. The "
+        "project's CI must build and test riscv64 on the fork following the project's runner "
+        "topology (a native `ubuntu-24.04-riscv` row only where the project uses native "
+        "per-architecture rows). If the project already has such a job, the fix may be only the "
+        "{debug} commit. Return the proposal and patch series as the artifact."),
     "development_repair": (
         "Diagnose the failing fork CI identified by reason_ids on the expected head and propose a "
         "focused fix within scope. Return the proposal and patch series as the artifact."),

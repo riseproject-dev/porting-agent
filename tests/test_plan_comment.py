@@ -26,6 +26,24 @@ class TestPlanComment(unittest.TestCase):
         self.assertIn(plan_comment.marker(self.task(), self.result()), body)
         self.assertLess(len(body.encode()), 60_000)
 
+    def test_the_project_and_the_path_coverage_are_rendered_bounded(self):
+        value = plan()
+        body = plan_comment.render(value, self.task(), self.result())
+        self.assertIn("### Project", body)
+        self.assertIn("- **Languages:** Python, C", body)
+        self.assertIn("  - pypi `proj`: riscv64 absent (https://pypi.org/project/proj/)", body)
+        self.assertIn("  - build: `.github/workflows/wheels.yml` (The wheel workflow owns", body)
+        self.assertNotIn("{'area'", body)
+        value["project"]["languages"] = ["<!-- x", "Go\nInjected"]
+        value["project"]["release_channels"][0]["name"] = "a`b<!--"
+        body = plan_comment.render(value, self.task(), self.result())
+        self.assertNotIn("<!-- x", body)
+        self.assertIn("&lt;!-- x, Go Injected", body)
+        self.assertIn("`ab&lt;!--`", body)
+        older = plan()
+        del older["project"]
+        self.assertNotIn("### Project", plan_comment.render(older, self.task(), self.result()))
+
     def test_trusted_worker_ref_is_accepted_without_weakening_workflow_identity(self):
         env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "riseproject-dev/porting-agent",
                "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_WORKFLOW": "Planner",

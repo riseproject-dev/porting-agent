@@ -152,6 +152,29 @@ class TestDevelopmentPR(unittest.TestCase):
             self.assertEqual(receipt["pr_number"], 4)
             self.assertEqual([call[2]["state"] for call in api.writes if call[0] == "PATCH"], ["closed", "open"])
 
+    def test_the_development_pr_names_no_wheel(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); rec, op = records(root); api = FakeApi(rec, op)
+            with patch("dev_pr.Api", return_value=api), \
+                 patch("dev_pr.provisioning.WriteApi", return_value=api):
+                dev_pr.publish(root, op["operation_id"], "token", "99")
+            pr_write = next(call for call in api.writes if call[0] == "POST")
+            self.assertEqual(pr_write[2]["title"], "CI: develop riscv64 support")
+            self.assertIn("## riscv64 development", pr_write[2]["body"])
+            self.assertNotIn("wheel", pr_write[2]["body"])
+
+    def test_a_retried_create_accepts_the_body_its_marker_wrote(self):
+        """A create started before a change of the body wording finds its
+        own marked PR on the retry and accepts that PR's body."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); rec, op = records(root); api = FakeApi(rec, op, existing=True)
+            api.pr["body"] = "## riscv64 wheel development\n\n" + op["proposed"]["marker"]
+            with patch("dev_pr.Api", return_value=api), \
+                 patch("dev_pr.provisioning.WriteApi", return_value=api):
+                receipt = dev_pr.publish(root, op["operation_id"], "token", "100")
+            self.assertEqual(receipt["pr_number"], 4)
+            self.assertEqual(api.writes, [])
+
     def test_existing_marked_pr_is_reused_without_duplicate(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); rec, op = records(root); api = FakeApi(rec, op, existing=True)

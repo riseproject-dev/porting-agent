@@ -111,6 +111,15 @@ class TestRules(unittest.TestCase):
         self.assertIsNone(commit_rules.sections_from_plan(v1))
         self.assertIsNone(commit_rules.from_plan(v1))
         self.assertEqual(commit_rules.from_plan(d)["title_max_length"], 72)
+        # Plans of version 2 and 3 both carry their guidelines.
+        for version in (2, 3):
+            with self.subTest(version=version):
+                versioned = dict(d, schema_version=version)
+                self.assertEqual(commit_rules.sections_from_plan(versioned), ["Summary", "Testing"])
+                self.assertEqual(commit_rules.from_plan(versioned)["title_max_length"], 72)
+        for version in (True, "3", None, 0):
+            with self.subTest(version=version):
+                self.assertIsNone(commit_rules.guidelines(dict(d, schema_version=version)))
 
 
 class TestWorkerGate(unittest.TestCase):

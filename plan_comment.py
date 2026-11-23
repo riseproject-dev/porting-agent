@@ -22,6 +22,22 @@ def _text(value, limit=8000):
     return str(value).replace("\x00", "").replace("<!--", "&lt;!--").strip()[:limit]
 
 
+def _names(values, limit: int) -> str:
+    """A bounded list of short names, as one line."""
+    values = values if isinstance(values, list) else []
+    return ", ".join(_text(v, limit).replace("\n", " ") for v in values[:10]) or "none"
+
+
+def _coverage(entry) -> str:
+    """One path coverage entry as `area: paths (assessment)`."""
+    if not isinstance(entry, dict):
+        return _text(entry, 500)
+    paths = entry.get("paths") if isinstance(entry.get("paths"), list) else []
+    shown = ", ".join(f"`{_text(p, 200).replace('`', '')}`" for p in paths[:32]) or "none"
+    return (f"{_text(entry.get('area', ''), 40)}: {shown} "
+            f"({_text(entry.get('assessment', ''), 1000).replace(chr(10), ' ')})")
+
+
 def marker(task: dict, result: dict) -> str:
     identity = {"contribution_id": task["contribution_id"], "revision": task["revision"],
                 "work_id": result["work_id"], "claim_id": result["claim_id"],
@@ -38,8 +54,28 @@ def render(plan: dict, task: dict, result: dict) -> str:
             label = _text(str(key).replace("_", " ").capitalize(), 100)
             if isinstance(value, (str, int, float, bool)) or value is None:
                 lines.append(f"- **{label}:** {_text(value, 2000)}")
+            elif key == "path_coverage" and isinstance(value, list):
+                lines.append(f"- **{label}:**")
+                lines += [f"  - {_coverage(entry)}" for entry in value[:20]]
             elif isinstance(value, list):
                 lines.append(f"- **{label}:** " + "; ".join(_text(v, 500) for v in value[:20]))
+        lines.append("")
+    project = plan.get("project")
+    if isinstance(project, dict):
+        lines += ["### Project", ""]
+        lines.append("- **Languages:** " + _names(project.get("languages"), 40))
+        lines.append("- **Build systems:** " + _names(project.get("build_systems"), 100))
+        lines.append(f"- **Build and test:** {_text(project.get('build_and_test', ''), 2000)}")
+        lines.append(f"- **riscv64 toolchain:** {_text(project.get('riscv64_toolchain', ''), 2000)}")
+        channels = project.get("release_channels")
+        channels = channels if isinstance(channels, list) else []
+        lines.append("- **Release channels:**" + ("" if channels else " none"))
+        for channel in channels[:20]:
+            if isinstance(channel, dict):
+                lines.append(f"  - {_text(channel.get('kind', ''), 40)} "
+                             f"`{_text(channel.get('name', ''), 200).replace('`', '')}`: "
+                             f"riscv64 {_text(channel.get('riscv64', ''), 40)} "
+                             f"({_text(channel.get('url', ''), 2000)})")
         lines.append("")
     lines += ["### Dependency and ecosystem evidence", "", _text(plan["dependency_graph"]["assessment"]), ""]
     report = plan["ecosystem_report"]

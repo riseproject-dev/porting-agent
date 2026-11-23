@@ -5,9 +5,12 @@
 Reads bounded JSON from the exact Claim staging directory, never executes
 agent files. The native queue still authenticates the Claim and verifies upload.
 This gate checks documented research coverage, not the truth of every assertion.
-A plan decides develop, park, or close; ``close_confirmation`` is the pure
-check the reconciler applies to PyPI documents it read itself before it takes
-a decision close.
+A plan decides develop, park, or close, for a project in any language and on
+its own build, test, and release tooling; ``project`` records which. PyPI is
+the one registry the reconciler can confirm a close from:
+``close_confirmation`` is the pure check it applies to PyPI documents it read
+itself before it takes a decision close, and a close of a project that is not
+released on PyPI is refused here already.
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
@@ -30,9 +34,10 @@ RESEARCH_CATEGORIES = (
 )
 OPTIONALLY_ABSENT = {"website", "mailing_lists", "blogs", "release_repositories", "ecosystem_report"}
 # The schema version of a plan the gate admits: it records the contribution
-# guidelines. A stored plan of version 1 stays readable; no new one is
-# admitted.
-PLAN_VERSION = 2
+# guidelines and the project (its languages, build systems, release channels,
+# and riscv64 toolchain). Stored plans of versions 1 and 2 stay readable; no
+# new one is admitted.
+PLAN_VERSION = 3
 # Where the planner must have looked, as (what, words every one of the
 # searched locations of that kind names). Each kind must be searched; "none
 # found" is admitted only with that evidence.
@@ -77,7 +82,7 @@ def validate_guidelines(plan: dict) -> None:
     Each may be "none found" only with the record of the search."""
     if plan.get("schema_version") != PLAN_VERSION or "contribution_guidelines" not in plan:
         raise PlanError(f"a new plan must be schema version {PLAN_VERSION} and record "
-                           "the contribution guidelines")
+                           "the contribution guidelines and the project")
     found = plan["contribution_guidelines"]
     template = found["pull_request_template"]
     _searched(template, TEMPLATE_LOCATIONS, "pull_request_template")
@@ -118,6 +123,26 @@ def validate_guidelines(plan: dict) -> None:
         missing = [p for p in decision["allowed_paths"] if p not in covered]
         if missing:
             raise PlanError(f"reviewers: no reviewer research for the paths {missing[:8]}")
+
+
+def validate_project(plan: dict, task: dict) -> None:
+    """The project a new plan records, and the close it may decide: a close
+    is confirmed from PyPI only, so it needs a PyPI release channel, no
+    release channel that lacks riscv64, and recorded distributions to read.
+    Any other project that already supports riscv64 is parked with the
+    evidence."""
+    project = plan.get("project")
+    if not isinstance(project, dict):
+        raise PlanError("a new plan must record the project")
+    if plan["proposal"]["decision"] != "close":
+        return
+    channels = project["release_channels"]
+    if not any(c["kind"] == "pypi" for c in channels) \
+            or any(c["riscv64"] == "absent" for c in channels) \
+            or not [n for n in (task.get("distributions") or []) if isinstance(n, str)]:
+        raise PlanError("a decision close is confirmed from PyPI only: use park for a project "
+                        "that is not released on PyPI, that lacks riscv64 on a release "
+                        "channel, or whose request names no distribution")
 
 
 def validate(plan: dict, proposal: dict, task: dict) -> None:
@@ -171,6 +196,7 @@ def validate(plan: dict, proposal: dict, task: dict) -> None:
         if missing:
             raise PlanError(f"allowed_paths omit researched riscv64 paths: {sorted(set(missing))}")
     validate_guidelines(plan)
+    validate_project(plan, task)
 
 
 def scope_problem(decision: dict, *, admission_class: str | None,
@@ -250,13 +276,50 @@ def _served(name: str, document) -> tuple[str | None, str | None, dict]:
     return None, f"{shown} {version} has no riscv64 wheel and is not pure Python", finding
 
 
-def close_confirmation(distributions: list[str], documents: dict[str, dict | None]
-                       ) -> tuple[str | None, str | None, dict]:
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
+def _repository(url) -> tuple[str, str] | None:
+    """The GitHub repository a URL names, as casefolded (owner, name)."""
+    if not isinstance(url, str) or len(url) > 2000:
+        return None
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or (parts.hostname or "") not in _GITHUB_HOSTS:
+        return None
+    segments = [s for s in parts.path.split("/") if s]
+    if len(segments) < 2:
+        return None
+    return segments[0].casefold(), segments[1].casefold().removesuffix(".git")
+
+
+def _names_repository(info, upstream) -> bool:
+    """Whether PyPI project metadata names the GitHub repository ``upstream``
+    (``owner/name``) in its project URLs, home page, or download URL. Pure,
+    never raises."""
+    if not isinstance(info, dict) or not isinstance(upstream, str) or upstream.count("/") != 1:
+        return False
+    owner, _, name = upstream.casefold().partition("/")
+    wanted = (owner, name.removesuffix(".git"))
+    urls = info.get("project_urls")
+    candidates = list(urls.values()) if isinstance(urls, dict) else []
+    candidates += [info.get("home_page"), info.get("download_url")]
+    return any(_repository(url) == wanted for url in candidates[:200])
+
+
+def close_confirmation(distributions: list[str], documents: dict[str, dict | None], *,
+                       upstream: str | None) -> tuple[str | None, str | None, dict]:
     """Whether PyPI confirms a decision close, from the PyPI documents of the
-    record's ``distributions`` (``None`` for a project PyPI does not have).
+    record's ``distributions`` (``None`` for a project PyPI does not have)
+    and the record's ``upstream`` repository (``owner/name``).
 
     Returns ``(terminal_reason, problem, finding)``; exactly one of the
-    first two is set. The close is confirmed when the latest release of
+    first two is set. The close is confirmed when each PyPI project names
+    the upstream repository in its metadata (the distributions of a request
+    may name packages of any registry, and a PyPI project of the same name
+    from another repository confirms nothing), and the latest release of
     every distribution publishes a non-yanked riscv64 wheel, or pure-Python
     (platform ``any``) wheels only. ``terminal_reason`` is
     ``already_released`` when at least one distribution has a riscv64 wheel,
@@ -268,10 +331,14 @@ def close_confirmation(distributions: list[str], documents: dict[str, dict | Non
     finding: dict[str, dict] = {}
     served = []
     for name in names:
-        how, problem, entry = _served(name, (documents or {}).get(name))
+        document = (documents or {}).get(name)
+        how, problem, entry = _served(name, document)
         finding[name[:_MAX_NAME]] = entry
         if problem:
             return None, problem, finding
+        if not _names_repository(document.get("info"), upstream):
+            return None, (f"the PyPI project {str(name)[:_MAX_NAME]} does not name the "
+                          "upstream repository"), finding
         served.append(how)
     return ("already_released" if "riscv64" in served else "no_work"), None, finding
 

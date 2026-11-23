@@ -92,6 +92,13 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `verify_release` requires "verified release coverage satisfies the acceptance contract".
 - **Required:** a decision on whether release acceptance requires the install-and-import probe in a clean target environment, then a trusted probe run before `verify_release`.
 
+## Release coverage is read from PyPI only
+
+- **Where:** `release_wait.idle` (`verify_release`, `require_release_intervention`, `record_release_incomplete`); `release.py`.
+- **Today:** planning and development serve projects of any language, but the release observation reads release coverage from PyPI only. A contribution whose project releases through another channel (crates.io, npm, Go modules, Maven, container images, GitHub releases, distribution packages) can never have its release verified from that channel, so it waits in `release_wait.waiting_human` for an operator, like a contribution without a recorded contract.
+- **Table:** `verify_release` requires verified release coverage that satisfies the acceptance contract, whatever channel the project releases through.
+- **Required:** a trusted reader of the release channels the plan records in `project.release_channels`, and the acceptance contract for them.
+
 ## A completed Work graph whose Result is not collected yet is retried
 
 - **Where:** `reconcile.dispatch_recovery`, `allocate_work_retry` and `exhaust_work_recovery`.
@@ -209,7 +216,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - In the locked wait `handoff_request.command_id` names the submission package operation; the reminder links the comment that operation read back.
 - "A compatible human author" of the upstream PR is a `User` account whose id is in `command_authority.actor_ids`; it need not be the human who requested the submission. A draft pull request is open.
 - An observation of the locked wait that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.
-- The submission package's title and description are the reviewed ones; a reviewed title that is empty once cleaned is `Build riscv64 wheels`. The package states in the comment, not in the description, how many required CI jobs passed and on which head.
+- The submission package's title and description are the reviewed ones; a reviewed title that is empty once cleaned is `Add riscv64 support`. The package states in the comment, not in the description, how many required CI jobs passed and on which head.
 - Handoff receipts are read only from completed `handoff.yml` runs on `main` dispatched by `workflow_dispatch`, and only for the open operation the record runs.
 - The workflow posts the submission package only while `riscv64` resolves to the clean head. A moved branch fails the attempt as an infrastructure failure ("posting the package failed"), the only failure row of `handoff.preparing_submission`; a package already posted is found by its marker and read back without that check.
 - `/upstreaming retract-pr` takes the revision and the head only. The spec's form also carries `reason="..."`, but `retract_submission` reads no reason, so the grammar refuses it.

@@ -23,9 +23,9 @@ class DevPRError(ValueError):
 
 def body(record: dict, operation: dict) -> str:
     return "\n".join([
-        "## riscv64 wheel development",
+        "## riscv64 development",
         "",
-        "This same-fork pull request is the automated development and CI workspace for a bounded riscv64 wheel contribution.",
+        "This same-fork pull request is the automated development and CI workspace for a bounded riscv64 contribution.",
         "",
         f"Tracking issue: https://github.com/{CONTROL_REPO}/issues/{record['tracking_issue']['number']}",
         f"Verified plan: `{record['plan_evidence_id']}`",
@@ -106,9 +106,12 @@ def publish(root: Path, operation_id: str, token: str, run_id: str) -> dict:
         unrelated = [pr for pr in pulls if marker not in (pr.get("body") or "")]
         if len(matching) > 1 or unrelated:
             raise DevPRError("existing development-head PR is ambiguous or unrelated")
-        expected_body = body(record, op)
+        # A create that finds the PR its own marker names was started
+        # earlier: that PR's body is the one it wrote, whatever wording
+        # the code had then, so a retry stays idempotent.
+        expected_body = matching[0]["body"] if matching else body(record, op)
     pr = matching[0] if matching else api.mutate("POST", f"/repos/{repo['full_name']}/pulls", {
-        "title": "CI: develop riscv64 wheel support",
+        "title": "CI: develop riscv64 support",
         "head": DEV_REF,
         "base": base_ref,
         "body": expected_body,

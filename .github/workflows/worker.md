@@ -21,6 +21,12 @@ network:
   allowed:
     - defaults
     - python
+    - go
+    - rust
+    - node
+    - java
+    - containers
+    - linux-distros
     - github
 tools:
   work-queue:
@@ -447,7 +453,7 @@ sandbox:
 
 # riscv64 porting worker
 
-You handle exactly one task for the RISE riscv64 Python project porting
+You handle exactly one task for the RISE riscv64 porting
 pipeline. The trusted pre-agent step wrote the immutable task to
 `/tmp/gh-aw/agent/task.json` and checked out the contribution's development
 branch (`riscv64-dev`, or `riscv64` for an upstream revision) in `./fork`. The task's
@@ -467,6 +473,13 @@ PR conversation comment and
 rejected-change description in every reason evidence record as a required
 repair constraint, then verify each one against repository history. A repair is
 incomplete if even one requested change is omitted.
+
+The project may be written in any language (Python, Go, Rust, C or C++, Java,
+JavaScript, or another) and may publish wheels, crates, modules, jars, npm
+packages, binaries, container images, distribution packages or nothing. Work
+on riscv64 support through the project's own build, test and release
+tooling. When the plan records `project`, read it for the project's
+languages, build systems, release channels and riscv64 toolchain.
 
 Only process the compiler-supplied `work_queue_assignment`. It has exactly
 one Claim; use its `handle` as `claim_handle` on every safe output and on
@@ -570,7 +583,10 @@ Run the applicable build and test commands in that image with
 pinned `gh act` extension for applicable project workflows and map
 `ubuntu-24.04-riscv` to that exact image with `-P`. When the selected build or
 test job uses another Linux runner label, map only that selected label to the
-same exact image as an alternate runner mapping.
+same exact image as an alternate runner mapping. When the image lacks the
+project's toolchain (a Go, Rust, Java or Node toolchain, or a compiler), install
+it inside the container from the distribution packages or the project's
+documented installer, and record those commands with the others.
 
 Select only plan-relevant build and test workflows/jobs. Do not run release,
 publish, deployment, signing, credentialed, or unrelated jobs. Pass no secret,
@@ -697,9 +713,18 @@ project as above before you shape the commits.
 
 1. Change only files matching `allowed_paths`. Make the smallest change that
    follows the nearest existing architecture pattern in the project (for
-   example an existing aarch64 or s390x wheel row). No unrelated refactors,
+   example an existing aarch64 or s390x matrix row, target list, build tag or
+   architecture case). No unrelated refactors,
    formatting or dependency changes.
-2. Follow the upstream project's existing architecture runner topology. If one
+2. Follow the upstream project's existing architecture runner topology. Add
+   riscv64 where the project already lists its architectures: the shared
+   architecture list, the build matrix, the `goarch` or target-triple list, or
+   the buildx platform list, and keep the shared runner. Add a dedicated
+   `ubuntu-24.04-riscv` row only for an existing native-per-architecture
+   topology or a documented technical incompatibility with the established
+   path.
+
+   For Python wheel projects: if one
    `ubuntu-latest` job already builds aarch64, ppc64le or other non-host Linux
    architectures from `CIBW_ARCHS_LINUX` (typically through QEMU), add `riscv64`
    to that same list and keep the shared runner. Do not introduce
@@ -739,13 +764,14 @@ project as above before you shape the commits.
    upload conditions, artifact retention or release behavior solely to make fork
    validation produce extra evidence. In particular, do not broaden conditions
    such as `inputs.upload`, add `github.event_name == 'push'`, or otherwise alter
-   non-riscv64 behavior. If PR CI builds a wheel but intentionally does not upload
+   non-riscv64 behavior. If PR CI builds an artifact but intentionally does not upload
    it, leave that policy unchanged and record the acceptance limitation for a
    separate trusted probe. `riseproject-upstreaming` is a credentialless,
    configuration-free shell organization used only to hold contribution forks.
    It has no package secrets, publishing environments, repository variables or
    configured external OIDC trust, and none will be added. Do not change or
-   disable `id-token: write`, Twine, or package-publisher actions merely because
+   disable `id-token: write` or the package-publisher steps of any registry
+   (Twine, cargo publish, npm publish, goreleaser, container pushes) merely because
    they exist: publication should fail out of the box for the fork identity. A
    successful external publication would demonstrate that the upstream relying
    party already trusts an equivalently broad identity and must be reported, not
@@ -753,7 +779,7 @@ project as above before you shape the commits.
    `pull_request_target` remain forbidden because they can mutate the fork itself.
    Add a separate `{debug}` trigger/guard adjustment only when no PR-compatible
    CI trigger exists, and explain the repository history that justifies it. If
-   the project already builds riscv64 wheels upstream, a necessary `{debug}`
+   the project already builds for riscv64 upstream, a necessary `{debug}`
    guard adjustment alone can be the whole series.
 4. Baseline code is `rv64gc`. Optional RVV only behind Linux `riscv_hwprobe`
    (`RISCV_HWPROBE_KEY_IMA_EXT_0` / `RISCV_HWPROBE_IMA_V`) with an `rv64gc`

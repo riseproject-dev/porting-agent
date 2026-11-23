@@ -3,8 +3,8 @@
 """CI observation and evidence normalization (plan sections 6.2, 11.4, 14.3).
 
 Only executed, matching jobs count. Missing, skipped, neutral, cancelled,
-approval-required (``action_required``) and stale jobs never count as wheel
-success. Reruns are resolved to the latest attempt per job name and matrix
+approval-required (``action_required``) and stale jobs never count as riscv64
+build or test success. Reruns are resolved to the latest attempt per job name and matrix
 identity; duplicate check names are kept apart by job ID.
 """
 
@@ -54,8 +54,10 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
              produced_wheels: list[str], required_runner_label: str | None = None) -> CiVerdict:
     """Decide what the observed CI establishes for ``head_sha``.
 
-    ``required_job_patterns`` are substrings identifying the wheel jobs the
-    target contract requires (from the plan). A run for another SHA is
+    ``required_job_patterns`` are substrings identifying the riscv64 build
+    and test jobs the target contract requires (from the plan), in any
+    language; ``expected_wheels`` applies to a contract that names Python
+    wheels only. A run for another SHA is
     ignored: evidence is bound to the exact head that ran.
     """
     v = CiVerdict(state="missing")
@@ -77,8 +79,8 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
     ]
     for j in blocking_failures:
         v.problems.append(f"job {j['name']!r} failed ({j.get('conclusion')})")
-    # Wheel success means the wheel was built on the native runner label: a
-    # job only matches when its name matches and it ran on that label.
+    # When the contract names a runner label, success means the job ran on
+    # it: a job only matches when its name matches and it ran on that label.
     for pat in required_job_patterns:
         matching = [j for j in all_jobs if pat in j["name"]]
         if not matching:

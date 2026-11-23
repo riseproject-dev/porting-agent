@@ -73,12 +73,13 @@ def result(record, research):
     return out
 
 
-def pypi_document(version, *files):
+def pypi_document(version, *files, source="https://github.com/example/proj"):
     """A PyPI JSON document whose latest release is ``version`` with ``files``
-    (a name, or a ``(name, yanked)`` pair)."""
+    (a name, or a ``(name, yanked)`` pair), whose metadata names the
+    repository ``source``."""
     urls = [{"filename": f, "yanked": False} if isinstance(f, str)
             else {"filename": f[0], "yanked": f[1]} for f in files]
-    return {"info": {"version": version}, "urls": urls}
+    return {"info": {"version": version, "project_urls": {"Source": source}}, "urls": urls}
 
 
 RISCV_WHEEL = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
@@ -309,6 +310,42 @@ class TestCloseConfirmedFromPyPI(unittest.TestCase):
                 reader = Reader()
                 fold(planning(), copy.deepcopy(DECISIONS[decision]), pypi=reader)
                 self.assertEqual(reader.calls, [])
+
+    def test_packages_of_other_registries_never_confirm_a_close(self):
+        """The recorded packages may name any registry: an npm or Go module
+        name is never read from PyPI, and a same-named PyPI project of
+        another repository confirms nothing."""
+        for names, documents in (
+                (["@example/proj"], {}),
+                (["github.com/example/proj"], {}),
+                (["proj"], {"proj": pypi_document("2.4.1", "proj-2.4.1-py3-none-any.whl",
+                                                  source="https://github.com/someone/proj")}),
+                (["proj"], {"proj": dict(PURE, info={"version": "2.4.1"})})):
+            with self.subTest(names=names):
+                record = planning()
+                record["distributions"] = names
+                reader = Reader(documents)
+                new, staged = fold(record, copy.deepcopy(DECISIONS["close"]), pypi=reader)
+                self.assertEqual(verb_of(staged), "reject_plan")
+                self.assertIsNone(new["terminal_reason"])
+                self.assertEqual(reader.calls, [n for n in names if "/" not in n and "@" not in n])
+
+    def test_a_develop_plan_of_a_go_project_is_admitted(self):
+        record = planning()
+        record["distributions"] = []
+        research = plan("develop", allowed_paths=[".goreleaser.yaml", "internal/arch/*"],
+                        admission_class="architecture_correctness",
+                        covered=(".goreleaser.yaml", "internal/arch/riscv64.go"))
+        research["project"] = {"languages": ["Go"], "build_systems": ["go", "goreleaser"],
+                               "build_and_test": "go build ./... and go test ./... in CI.",
+                               "release_channels": [], "riscv64_toolchain": "Go supports GOARCH=riscv64."}
+        reader = Reader()
+        new, staged = fold(record, research, pypi=reader)
+        self.assertEqual(verb_of(staged), "admit_development")
+        self.assertEqual(engine.state_key(new), "provisioning.idle")
+        self.assertEqual((new["admission_class"], new["scope_paths"]),
+                         ("architecture_correctness", [".goreleaser.yaml", "internal/arch/*"]))
+        self.assertEqual(reader.calls, [])
 
     def test_no_recorded_distribution_rejects_without_a_read(self):
         record = planning()

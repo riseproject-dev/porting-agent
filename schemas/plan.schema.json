@@ -4,7 +4,7 @@
   "type": "object",
   "required": ["schema_version", "contribution_id", "expected_revision", "tracking_issue_description_digest", "summary", "research", "history", "maintainers", "dependency_graph", "ecosystem_report", "proposal"],
   "properties": {
-    "schema_version": {"enum": [1, 2]},
+    "schema_version": {"enum": [1, 2, 3]},
     "contribution_id": {"type": "string", "minLength": 1, "maxLength": 127},
     "expected_revision": {"type": "integer", "minimum": 0},
     "tracking_issue_description_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -125,6 +125,31 @@
           "then": {"properties": {"admission_class": {"type": "null"}, "allowed_paths": {"maxItems": 0}}}
         }
       ]
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["languages", "build_systems", "build_and_test", "release_channels", "riscv64_toolchain"],
+      "properties": {
+        "languages": {"type": "array", "minItems": 1, "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 40}},
+        "build_systems": {"type": "array", "minItems": 1, "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 100}},
+        "build_and_test": {"type": "string", "minLength": 20, "maxLength": 4000},
+        "release_channels": {
+          "type": "array", "maxItems": 20,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["kind", "name", "url", "riscv64", "evidence"],
+            "properties": {
+              "kind": {"enum": ["pypi", "crates_io", "npm", "go_module", "maven", "container_image", "github_release", "distribution_package", "other"]},
+              "name": {"type": "string", "minLength": 1, "maxLength": 200},
+              "url": {"$ref": "#/$defs/url"},
+              "riscv64": {"enum": ["published", "absent", "not_applicable"]},
+              "evidence": {"type": "string", "minLength": 1, "maxLength": 2000}
+            }
+          }
+        },
+        "riscv64_toolchain": {"type": "string", "minLength": 20, "maxLength": 4000}
+      }
     },
     "contribution_guidelines": {
       "type": "object",
@@ -663,6 +688,8 @@
   },
   "allOf": [
     {"if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
-     "then": {"required": ["contribution_guidelines"]}}
+     "then": {"required": ["contribution_guidelines"]}},
+    {"if": {"properties": {"schema_version": {"const": 3}}, "required": ["schema_version"]},
+     "then": {"required": ["contribution_guidelines", "project"]}}
   ]
 }

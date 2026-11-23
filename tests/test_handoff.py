@@ -1555,6 +1555,10 @@ class TestPackageRendering(unittest.TestCase):
         self.assertIn("mail a@b.example", package["body"])
         self.assertIn("notifies nobody upstream", package["comment"])
 
+    def test_an_empty_reviewed_title_falls_back_to_a_neutral_title(self):
+        record, args = TestPackage().inputs(review_data={"title": "  \n ", "body": "Body."})
+        self.assertEqual(handoff.build_package(record, **args)["title"], "Add riscv64 support")
+
     def test_no_markdown_context_keeps_a_mention_live(self):
         wj = handoff.WORD_JOINER
         cases = {

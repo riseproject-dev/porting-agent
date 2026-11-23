@@ -713,6 +713,23 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.fix_needed", "record_head_change"),),
     ),
     Item(
+        "Projects of any language",
+        "Whether planning and development serve projects other than Python wheels.",
+        "They do: a project in any language (Go, Rust, C or C++, Java, JavaScript, Python, or "
+        "another) is planned and developed for riscv64 on its own build, test, and release "
+        "tooling, and Python wheels are one case among others. A plan of schema version 3 "
+        "records the project (languages, build systems, build and test, release channels with "
+        "their riscv64 status, and the riscv64 toolchain); stored plans of versions 1 and 2 "
+        "stay readable. The path coverage areas and the admission classes keep their names "
+        "with a language-neutral meaning. A decision close is still confirmed from PyPI only, "
+        "and each PyPI project must name the upstream repository.",
+        ("planning.agent_running", "provisioning.idle", "parked.idle", "closed.idle"),
+        edges=(("planning.agent_running", "admit_development"),
+               ("planning.agent_running", "park_planning"),
+               ("planning.agent_running", "close_planning")),
+        highlighted=(("planning.agent_running", "close_planning"),),
+    ),
+    Item(
         "A parked contribution restarts with refresh",
         "Which command starts a new generation from `parked.idle`.",
         "In `parked.idle` the clean restart (`restart_generation`) and its admission override "
@@ -1171,8 +1188,10 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "only. The reconciler reads PyPI itself before it takes `close_planning` and sets "
         "`terminal_reason` `already_released` when a riscv64 wheel is published, else "
         "`no_work`; a close that PyPI does not confirm takes `reject_plan` within "
-        "`planning_attempts`. Every other reason to stop is a park, which a human can "
-        "resume.",
+        "`planning_attempts`. PyPI is the one registry a close is confirmed from: each PyPI "
+        "project must name the upstream repository, and a project that is not released on "
+        "PyPI is parked with the evidence that riscv64 is served. Every other reason to stop "
+        "is a park, which a human can restart with `/upstreaming refresh`.",
         ("planning.agent_running", "planning.idle", "planning.waiting_human",
          "closed.idle"),
         edges=(("planning.agent_running", "close_planning"),
