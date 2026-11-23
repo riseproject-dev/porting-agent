@@ -43,6 +43,17 @@ class NoReadApi:
     def get(self, path):
         raise collect.CollectError(f"GET {path}: not expected in this test")
 
+def committed_history(record: dict, policy_: dict | None = None) -> dict[str, dict]:
+    """The committed ``work_history`` evidence of the record's requested
+    Work, by evidence id, recorded when the Work was requested: what the
+    tick that allocated it committed with it."""
+    import work_history
+    aw = record["active_work"]
+    history = work_history.build(record, aw, {}, policy=policy_ or policy(),
+                                 now=aw["requested_at"])
+    return {history["evidence_id"]: history}
+
+
 NOW = "2026-11-18T12:00:00+00:00"
 OWNER = {"id": 1001, "login": "owner"}
 BACKUP = {"id": 1002, "login": "backup"}

@@ -456,6 +456,94 @@ class TestCondensationOrder(unittest.TestCase):
                 doc = self.check(evidence, steering_whole=True)
                 self.assertEqual(doc["timeline"][-1]["kind"], "ci")
 
+    def test_the_report_of_the_failing_head_outlives_a_later_rerun(self):
+        """A worker publishes a head, CI fails on it, the repair worker asks
+        for a rerun (its report publishes nothing), and CI fails again: the
+        next repair reads the report of the worker whose head failed, whole,
+        with the CI linked to it, besides the newest report."""
+        evidence = {}
+        for i in range(25):
+            report = report_evidence(f"report-{i:03d}", at=f"2026-10-{1 + i:02d}T10:00:00+00:00",
+                                     head_before=_sha(i), head_after=_sha(i + 1),
+                                     **_big_report(scale=0.3))
+            evidence[report["evidence_id"]] = report
+            ci = ci_evidence(f"ci-{i:03d}", _sha(i + 1), at=f"2026-10-{1 + i:02d}T11:00:00+00:00")
+            evidence[ci["evidence_id"]] = ci
+        rerun = report_evidence("report-rerun", at="2026-10-27T10:00:00+00:00",
+                                head_before=_sha(25), head_after=None, **_big_report(scale=0.7))
+        rerun["data"]["verb"] = "request_ci_rerun"
+        evidence["report-rerun"] = rerun
+        evidence["ci-rerun"] = ci_evidence("ci-rerun", _sha(25), at="2026-10-27T12:00:00+00:00")
+        self.maintainers(evidence, 50, 800)
+        evidence["steering-a"] = steering_evidence("steering-a", [
+            steer(i, "s" * 1500, at=f"2026-09-01T00:00:{i:02d}Z") for i in range(12)],
+            at="2026-11-01T00:00:00+00:00")
+        rec = record()
+        rec["fork"]["head_sha"] = _sha(25)
+        doc = work_history.document(rec, WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), work_history.HISTORY_MAX_BYTES)
+        whole = {t["evidence_id"]: t for t in doc["timeline"]
+                 if t["kind"] in ("worker_report", "ci") and not t.get("condensed")}
+        self.assertIn("report-024", whole)
+        self.assertIn("report-rerun", whole)
+        self.assertEqual(whole["ci-rerun"]["after_report"], "report-024")
+        self.assertEqual(len(doc["steering"]), 12)
+        # Without a report on the recorded head, the newest report that
+        # published a head is the one protected.
+        rec["fork"]["head_sha"] = _sha(99)
+        latest, head = work_history.protected_reports(
+            rec, work_history._entries(rec, evidence)[1])
+        self.assertEqual((latest["evidence_id"], head["evidence_id"]),
+                         ("report-rerun", "report-024"))
+
+    def test_a_report_stored_late_never_passes_for_the_newest(self):
+        """The report of a late Result whose push landed is stored when the
+        Result is seen, possibly after newer Work: it is placed at the time
+        its Work was requested, and the newest report is decided by the
+        Work each describes."""
+        older = report_evidence("report-old", at="2026-11-20T12:00:00+00:00",
+                                head_before=_sha(1), head_after=_sha(2))
+        older["data"]["verb"] = "record_late_effect"
+        older["data"]["work"].update(revision=3, requested_at="2026-11-18T09:00:00+00:00")
+        newer = report_evidence("report-new", at="2026-11-19T12:00:00+00:00",
+                                head_before=_sha(2), head_after=_sha(3))
+        newer["data"]["work"]["revision"] = 4
+        evidence = {e["evidence_id"]: e for e in (older, newer)}
+        rec = record()
+        rec["fork"]["head_sha"] = _sha(3)
+        timeline = work_history._entries(rec, evidence)[1]
+        self.assertEqual([(t["evidence_id"], t["at"], t.get("stored_at")) for t in timeline],
+                         [("report-old", "2026-11-18T09:00:00+00:00",
+                           "2026-11-20T12:00:00+00:00"),
+                          ("report-new", "2026-11-19T12:00:00+00:00", None)])
+        latest, head = work_history.protected_reports(rec, timeline)
+        self.assertEqual((latest["evidence_id"], head["evidence_id"]),
+                         ("report-new", "report-new"))
+        # Even without the time of its Work, the revision decides.
+        del older["data"]["work"]["requested_at"]
+        latest, _head = work_history.protected_reports(
+            rec, work_history._entries(rec, evidence)[1])
+        self.assertEqual(latest["evidence_id"], "report-new")
+
+    def test_the_newest_report_is_reduced_before_any_steering_is_folded(self):
+        """Thirty owner comments of 1500 bytes and a report of 32 KiB: the
+        report takes its reduced form, every section kept, and no steering
+        item is folded."""
+        evidence = self.reports(1, scale=1.0, steering=30, length=1500)
+        doc = work_history.document(record(), WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), work_history.HISTORY_MAX_BYTES)
+        self.assertNotIn("steering_earlier", doc)
+        self.assertEqual(len(doc["steering"]), 30)
+        [report] = [t for t in doc["timeline"] if t["kind"] == "worker_report"]
+        self.assertTrue(report["reduced"])
+        self.assertNotIn("condensed", report)
+        self.assertEqual(sorted(report["report"]),
+                         ["approaches", "attempted", "failures", "open_items", "revisited",
+                          "summary", "verification"])
+        self.assertEqual(len(report["report"]["approaches"]), 10)
+        self.assertEqual(set(report["report"]["approaches"][0]),
+                         {"title", "outcome", "lesson", "evidence", "description"})
+
     def test_maintainer_feedback_never_displaces_owner_steering(self):
         rows = [(0.7, 5, count, length) for count, length in ((20, 3000), (40, 1500),
                                                               (150, 1500), (400, 400))]
@@ -579,6 +667,11 @@ class TestCondensationOrder(unittest.TestCase):
             self.assertEqual(item["evidence_path"], ".state/evidence/steering-a.json")
 
 
+def engine_state(record):
+    import engine
+    return engine.state_key(record)
+
+
 class TestTick(unittest.TestCase):
     """The tick records the history of the Work it allocates, in the same commit."""
 
@@ -602,12 +695,17 @@ class TestTick(unittest.TestCase):
         again = dev.tick(rec, evidence=evidence)
         self.assertEqual(again.report["work_history"], [])
 
-    def test_a_failed_steering_read_skips_the_contribution(self):
+    def test_a_failed_steering_read_defers_only_the_history(self):
         with mock.patch("collect.steering", side_effect=collect.CollectError("HTTP 502")):
             out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
-        self.assertEqual(out.staged, [])
-        self.assertEqual(out.report["skipped_contributions"][0]["step"], "work_history")
-        self.assertEqual(out.report["requested_effects"], [])
+        # The allocation is committed; the history is not, and the report
+        # says why.
+        self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
+        self.assertFalse([e for k, e in out.staged if k == "evidence"
+                          and e["kind"] in ("work_history", "human_steering")])
+        self.assertNotIn("skipped_contributions", out.report)
+        [entry] = out.report["work_history"]
+        self.assertIn("a steering list could not be read: HTTP 502", entry["deferred"])
 
     def test_an_unexpected_error_pauses_the_contribution(self):
         with mock.patch("work_history.build", side_effect=RuntimeError("boom")):
@@ -691,26 +789,64 @@ class TestTick(unittest.TestCase):
                          and e["kind"] == "work_history"])
 
     def test_a_steering_list_that_keeps_failing_stops_holding_the_work(self):
-        rec = dev.final(dev.tick(dev.record("waiting_ci"), verdict="failed",
-                                 evidence=self.evidence()), None)
-        failing = [collect.CollectError("GET x: HTTP 403", status=403)]
+        """A list that fails from the tick that allocates the Work on: the
+        allocation is committed at once, so the grace is measured from its
+        durable ``requested_at``; the ticks within the grace build no
+        history and charge no dispatch, and the first tick after it builds
+        the history without that list, with an alert."""
+        import reconcile
+
+        calls = []
 
         def read(api, record, authority, *, issue, degrade=False):
+            calls.append(degrade)
             if not degrade:
-                raise failing[0]
+                raise collect.CollectError("GET x: HTTP 403", status=403)
             return {"items": [], "omitted": {}, "unreadable": ["development_pr_review"],
                     "failed": {"development_pr_review": 403}}
+        rec, evidence = dev.record("waiting_ci"), self.evidence()
+        runs = []
         with mock.patch("collect.steering", side_effect=read):
-            # Within the grace, the contribution is skipped for the tick.
-            early = dev.tick(rec, evidence=self.evidence())
-            self.assertEqual(early.report["skipped_contributions"][0]["step"], "work_history")
-            late = dev.tick(rec, evidence=self.evidence(), now=dev.T + timedelta(hours=2))
-        [history] = [e for k, e in late.staged if k == "evidence" and e["kind"] == "work_history"]
+            for minutes in (0, 10, 20, 30, 45, 61):
+                now = dev.T + timedelta(minutes=minutes)
+                # The dispatcher ran after every tick and deferred the Work.
+                out = dev.tick(rec, verdict="failed", evidence=evidence, now=now,
+                               runs=list(runs))
+                rec = dev.final(out, rec)
+                evidence.update({e["evidence_id"]: e for k, e in out.staged if k == "evidence"})
+                runs.insert(0, {"id": 100 + minutes, "status": "completed",
+                                "created_at": (now + timedelta(minutes=1)).isoformat()})
+                eid = work_history.evidence_id(rec["active_work"]["dedupe_key"])
+                if minutes == 0:
+                    self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
+                    requested = rec["active_work"]["requested_at"]
+                self.assertEqual(rec["active_work"]["requested_at"], requested)
+                self.assertNotIn("skipped_contributions", out.report)
+                if minutes < 60:
+                    self.assertNotIn(eid, evidence)
+                    self.assertIn("deferred", out.report["work_history"][0])
+                    self.assertNotIn("retry_dispatch", dev.kinds(out))
+                    if minutes:
+                        self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
+                                         "waiting for the history of the Work")
+        self.assertEqual(calls, [False] * 5 + [True])
+        history = evidence[eid]
         self.assertEqual(history["data"]["steering_unreadable"], ["development_pr_review"])
-        self.assertEqual(late.report["work_history"][0]["steering_failed"],
+        self.assertEqual(out.report["work_history"][0]["steering_failed"],
                          {"development_pr_review": 403})
         self.assertTrue(any("development_pr_review (HTTP 403)" in a["alert"]
-                            for a in late.report["controller"]["alerts"]))
+                            for a in out.report["controller"]["alerts"]))
+        self.assertEqual((engine_state(rec), rec["pending_human_action"]),
+                         ("development.agent_running", None))
+        # The dispatcher runs before the history was recorded charge
+        # nothing: the next tick relaunches it once the launch grace passed.
+        later = dev.tick(rec, verdict="failed", evidence=evidence, observe=False,
+                         now=dev.T + timedelta(minutes=61) + timedelta(
+                             minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES),
+                         runs=list(runs[1:]))
+        self.assertEqual(later.report["dispatch_recovery"][0]["decision"],
+                         "relaunch: no dispatcher run")
+        self.assertEqual(dev.kinds(later), [])
 
 
     def test_an_unreadable_steering_list_does_not_hold_the_work(self):
@@ -825,6 +961,31 @@ class TestPayload(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(node["payload"], separators=(",", ":"),
                                             ensure_ascii=False).encode()),
                              work.MAX_PAYLOAD_BYTES)
+
+    def test_the_human_wait_of_an_undispatchable_payload_names_its_cause(self):
+        """The dispatcher skips Work whose payload is over the queue budget
+        because of a long frozen description; the controller cannot read
+        the skip, so it measures the smallest payload itself, and the event
+        that waits for a human, and its tracking issue entry, name the
+        cause and what to do."""
+        import reconcile
+        import status_ledger
+
+        largest = self.record("\u00e9" * (POLICY["intake"]["max_request_bytes"] // 2))
+        self.assertGreater(work.payload_floor(largest), work.MAX_PAYLOAD_BYTES)
+        self.assertIsNone(reconcile.payload_cause(self.record("short")))
+        self.assertLess(work.payload_floor(self.record("short")), work.MAX_PAYLOAD_BYTES)
+        run = {"id": 7, "status": "completed", "created_at": "2026-11-18T12:05:00Z"}
+        limit = __import__("lifecycle").budget_limit("dispatch_recovery", POLICY)
+        new, event, decision = reconcile._lost_dispatch(
+            largest, largest["active_work"], run, limit + 1,
+            now=dev.T, policy=POLICY)
+        self.assertEqual(decision, "dispatch failed; waiting for a human")
+        self.assertEqual(new["pending_human_action"]["kind"], "dispatch_failed")
+        self.assertIn("frozen tracking issue description (16384 bytes)", event["details"]["why"])
+        text = status_ledger.render(event, new, "https://run")
+        self.assertIn("because it carries the frozen tracking issue description", text)
+        self.assertIn("made again with a description of at most about", text)
 
     def test_work_without_a_recorded_history_is_deferred(self):
         with tempfile.TemporaryDirectory() as root:

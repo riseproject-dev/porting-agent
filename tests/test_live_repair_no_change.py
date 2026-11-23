@@ -100,7 +100,11 @@ def tick(record, *, publications=(), queue_works=None, runs=None, now="2026-11-2
          mock.patch("observe_ci.collect.ci_snapshot", return_value=observed), \
          mock.patch("observe_ci.collect.classify_runner_loss", side_effect=runner_loss()):
         return reconcile.tick(
-            helpers.NoReadApi(), reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, dict(REASONS)),
+            helpers.NoReadApi(), reconcile.Snapshot(
+                {"c": copy.deepcopy(record)}, {}, {}, {},
+                dict(REASONS) | (helpers.committed_history(record)
+                                 if (record.get("active_work") or {}).get("generation") is not None
+                                 else {})),
             policy=policy(read_only=False),
             now=datetime.fromisoformat(now), publications=list(publications),
             pressure=capacity.Pressure(ok=True), issues=[], comments=[],

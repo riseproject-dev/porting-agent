@@ -408,8 +408,10 @@ class TestDispatchRecovery(unittest.TestCase):
         self.gid = work.graph_id(self.rec["active_work"]["dedupe_key"])
 
     def tick(self, runs, queue, rec=None, now=None):
-        snap = reconcile.Snapshot(contributions={"c": rec or self.rec}, operations={}, consumed={},
-                                  projects={}, evidence={})
+        rec = rec or self.rec
+        snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
+                                  projects={}, evidence=helpers.committed_history(rec)
+                                  if rec.get("active_work") else {})
         return reconcile.tick(None, snap, policy=policy(read_only=False), now=now or self.now, publications=[],
                               pressure=capacity.Pressure(ok=True), observe=False,
                               dispatcher_runs=runs, queue_works=queue)
@@ -476,7 +478,7 @@ class TestDispatchRecovery(unittest.TestCase):
                 for count in (1, 2, 3):
                     runs.insert(0, self.drun(count))
                     snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
-                                              projects={}, evidence={})
+                                              projects={}, evidence=helpers.committed_history(rec))
                     with mock.patch.object(observe_ci, "observe", return_value=observe_ci.Observation()):
                         t = reconcile.tick(helpers.NoReadApi(), snap, policy=policy(read_only=False), now=self.now,
                                            publications=[], pressure=capacity.Pressure(ok=True),

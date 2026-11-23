@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import artifact
+import isolation
 import schemas
 import state
 import submission
@@ -287,6 +288,31 @@ class TestEvidence(unittest.TestCase):
             worker_report.evidence(rec, dict(outcome, worker_report=None),
                                    verb="record_publish_success",
                                    now="2026-11-23T00:00:00+00:00", policy={}, run="77")
+
+
+    def test_the_id_and_the_time_of_the_work_are_recorded_safely(self):
+        outcome = {"status": "published", "publication_artifact_id": 9,
+                   "task": task(context={"history": {"sha256": HISTORY},
+                                         "requested_at": "2026-11-22T08:00:00+00:00"}),
+                   "worker_report": report(),
+                   "operation": {"status": "confirmed",
+                                 "proposed": {"commit": "c" * 40, "changed_files": ["a"]}}}
+        kwargs = {"verb": "record_publish_success", "now": "2026-11-23T00:00:00+00:00",
+                  "policy": {}, "run": "77"}
+        evidence = worker_report.evidence({"contribution_id": CID, "revision": 3},
+                                          copy.deepcopy(outcome), **kwargs)
+        self.assertEqual(evidence["data"]["work"]["requested_at"], "2026-11-22T08:00:00+00:00")
+        # An id over the bound of a record id is shortened with a digest.
+        long_id = "o" * 39 + "--" + "r" * 80 + "/12"
+        evidence = worker_report.evidence({"contribution_id": long_id, "revision": 3},
+                                          copy.deepcopy(outcome), **kwargs)
+        self.assertEqual(len(evidence["evidence_id"]), 128)
+        # An id that cannot be stored is a report that cannot be stored:
+        # a pause of its own contribution, never a processing error.
+        with self.assertRaises(worker_report.ReportError) as raised:
+            worker_report.evidence({"contribution_id": "bad id/1", "revision": 3},
+                                   copy.deepcopy(outcome), **kwargs)
+        self.assertIsInstance(raised.exception, isolation.PauseRequest)
 
 
 def state_policy():

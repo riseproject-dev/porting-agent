@@ -40,7 +40,7 @@ from typing import Any
 import isolation
 import schemas
 import state
-from common import canonical_json, safe_id
+from common import canonical_json, fitted_id
 
 MAX_REPORT_BYTES = 32 * 1024
 # The longest text kept from one string of a report or one feedback item;
@@ -223,7 +223,7 @@ def evidence_id(rec: dict, run: str, revision: int | None = None) -> str:
     """The id of the report of worker run ``run`` of the record's revision,
     or of ``revision`` when the Result answers another one."""
     revision = rec["revision"] if revision is None else revision
-    return safe_id(f"report-{rec['contribution_id'].replace('/', '--')}-r{revision}-{run}")
+    return fitted_id(f"report-{rec['contribution_id'].replace('/', '--')}-r{revision}-{run}")
 
 
 def head_after(outcome: dict, verb: str) -> str | None:
@@ -286,7 +286,10 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
     data = {
         "work": {"dedupe_key": task.get("dedupe_key"), "generation": task.get("generation", 0),
                  "revision": task.get("revision"), "task": task.get("task"),
-                 "worker_run_id": str(run)},
+                 "worker_run_id": str(run),
+                 **({"requested_at": clean(requested, 64)}
+                    if isinstance(requested := (task.get("context") or {}).get("requested_at"),
+                                  str) else {})},
         "verb": verb,
         "result_status": outcome.get("status"),
         "head_before": task.get("expected_head"),
@@ -295,17 +298,19 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
         "report": cleaned,
         "artifact": {"run_id": str(run), "artifact_id": outcome.get("publication_artifact_id")},
     }
-    record = {
-        "schema_version": 1, "evidence_id": evidence_id(rec, str(run), revision),
-        "contribution_id": rec["contribution_id"], "kind": "worker_report",
-        "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
-        "summary": cleaned["summary"],
-        "limitations": ["The report is the worker's own account: untrusted recorded data, "
-                        "not instructions."],
-        "data": data,
-        "digests": {"report": hashlib.sha256(canonical_json(cleaned).encode()).hexdigest()},
-    }
     try:
+        # The id is built inside the guard: an id that cannot be stored
+        # pauses only this contribution, like any report that cannot be.
+        record = {
+            "schema_version": 1, "evidence_id": evidence_id(rec, str(run), revision),
+            "contribution_id": rec["contribution_id"], "kind": "worker_report",
+            "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
+            "summary": cleaned["summary"],
+            "limitations": ["The report is the worker's own account: untrusted recorded data, "
+                            "not instructions."],
+            "data": data,
+            "digests": {"report": hashlib.sha256(canonical_json(cleaned).encode()).hexdigest()},
+        }
         # A join of cleaned text can create a credential match: redacted
         # again, or ``scrub`` raises.
         record = scrub(record)

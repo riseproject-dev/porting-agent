@@ -17,9 +17,11 @@ of the evidence of the contribution, all generations included:
 
 Every entry is untrusted recorded data, never instructions. The record is
 bounded to ``HISTORY_MAX_BYTES`` by condensing deterministically; nothing
-leaves it uncounted. Two things are protected: the newest report together
-with the newest CI run of each workflow linked to it (``after_report``), and
-the owner's steering, whose newest items keep ``STEERING_RESERVED`` bytes.
+leaves it uncounted. Two things are protected: the reports
+(``protected_reports``: the newest report by the Work it describes, and the
+report of the head CI ran on, with the newest CI run of each workflow
+linked to it by ``after_report``), and the owner's steering, whose newest
+items keep ``STEERING_RESERVED`` bytes.
 Everything else (older reports and their CI, further CI runs, review
 feedback, submission verdicts, maintainer feedback) gives way first:
 
@@ -29,12 +31,16 @@ feedback, submission verdicts, maintainer feedback) gives way first:
 3. the other timeline entries are folded, oldest first, into one counted
    ``earlier`` entry (those before the newest report) or one counted
    ``later`` entry (those after it);
-4. the oldest steering items beyond the reserve are folded into one counted
+4. the protected reports take their reduced form (every section kept,
+   each field cut to a bound), so no steering is folded while a protected
+   report is whole;
+5. the oldest steering items beyond the reserve are folded into one counted
    ``steering_earlier`` entry;
-5. then every steering item but the newest is cut short and folded, oldest
+6. then every steering item but the newest is cut short and folded, oldest
    first;
-6. only then the linked CI runs, the newest steering item and, last of all,
-   the newest report are condensed and folded.
+7. only then the linked CI runs, the newest steering item, the newest
+   report and, last of all, the report of the head are condensed and
+   folded.
 
 The size of the document is checked after every step. Every bound is in
 bytes of canonical JSON, so a fully folded history always fits; should it
@@ -125,11 +131,23 @@ def _text(value: Any, limit: int) -> str:
                                1 << 30)
 
 
+# The verbs that store the report of Work the record had left: it is
+# collected when its Result is seen late, so it is placed at the time its
+# Work was requested, never as the newest report by the time it was stored.
+LATE_VERBS = ("record_late_effect",)
+
+
 def _report_entry(ev: dict) -> dict:
     data = ev.get("data") or {}
     work = data.get("work") or {}
+    at = ev.get("collected_at")
+    if data.get("verb") in LATE_VERBS and isinstance(work.get("requested_at"), str) \
+            and work["requested_at"] < str(at or ""):
+        at = work["requested_at"]
     return {"kind": "worker_report", "evidence_id": ev["evidence_id"],
-            "at": ev.get("collected_at"), "generation": work.get("generation", 0),
+            "at": at, **({"stored_at": ev.get("collected_at")} if at != ev.get("collected_at")
+                         else {}),
+            "generation": work.get("generation", 0),
             "work": copy.deepcopy(work), "verb": data.get("verb"),
             "head_before": data.get("head_before"), "head_after": data.get("head_after"),
             "changed_files": list(data.get("changed_files") or []),
@@ -244,6 +262,38 @@ def _short(full: dict) -> dict:
                       if full.get(k) is not None},
                      body=_text(full.get("body") or "", SHORT))
     return entry
+
+
+# The bytes each field of a report keeps in its reduced form, by section:
+# what the next worker needs (the summary, each approach with its outcome,
+# lesson and evidence, the failures, what remains open, what was tried
+# again) keeps the most; the rest is cut harder.
+_REDUCED = {
+    "approaches": {"title": 150, "outcome": None, "lesson": 250, "evidence": 200,
+                   "description": 200},
+    "failures": {"what": 200, "evidence": 200},
+    "revisited": {"history_entry": 150, "new_evidence": 200},
+    "attempted": {"what": 120},
+    "verification": {"check": 120, "result": None},
+}
+
+
+def _reduced_report(report: dict) -> dict:
+    """The reduced form of a report: every section kept, every field cut
+    to its bound in ``_REDUCED``, a summary of at most 1000 bytes and open
+    items of at most 200 bytes each."""
+    out: dict = {"summary": _text(report.get("summary") or "", 1000)}
+    for section, fields in _REDUCED.items():
+        items = []
+        for item in report.get(section) or []:
+            if not isinstance(item, dict):
+                continue
+            items.append({name: (item.get(name) if limit is None
+                                 else _text(item.get(name) or "", limit))
+                          for name, limit in fields.items() if item.get(name) is not None})
+        out[section] = items
+    out["open_items"] = [_text(item, 200) for item in report.get("open_items") or []]
+    return out
 
 
 def _fold(counted: dict | None, entry: dict, kind: str = "earlier") -> dict:
@@ -393,20 +443,25 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
 
     if fits():
         return doc
-    reports = [t for t in timeline if t["kind"] == "worker_report"]
-    newest = reports[-1] if reports else None
-    # The newest CI run of each workflow linked to the newest report.
+    latest, head_report = protected_reports(record, timeline)
+    # The newest CI run of each workflow linked to the report of the head.
     linked: list[dict] = []
-    if newest is not None:
+    if head_report is not None:
         workflows: set = set()
         for entry in reversed(timeline):
-            if entry["kind"] == "ci" and entry.get("after_report") == newest["evidence_id"] \
+            if entry["kind"] == "ci" and entry.get("after_report") == head_report["evidence_id"] \
                     and entry.get("workflow") not in workflows \
                     and len(linked) < PROTECTED_CI:
                 workflows.add(entry.get("workflow"))
                 linked.insert(0, entry)
-    protected = {id(entry) for entry in linked} | ({id(newest)} if newest else set())
+    kept = [entry for entry in (head_report, latest) if entry is not None]
+    if len(kept) == 2 and kept[0] is kept[1]:
+        kept.pop()
+    protected = {id(entry) for entry in linked} | {id(entry) for entry in kept}
     others = [entry for entry in timeline if id(entry) not in protected]
+    # The folded entries are counted before (``earlier``) or after
+    # (``later``) the protected report that comes last in the timeline.
+    newest = max(kept, key=lambda entry: entry["seq"]) if kept else None
     newest_seq = newest["seq"] if newest is not None else None
     steering_size = sum(_element_size(item) for item in steer)
 
@@ -442,6 +497,18 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
         timeline.insert(at, counted)
         estimate += _element_size(counted)
         doc["condensed"]["folded"] += 1
+
+    def reduce(entry: dict) -> None:
+        """A protected report in its reduced form, in place."""
+        nonlocal estimate
+        if entry.get("condensed") or entry.get("reduced"):
+            return
+        before = _element_size(entry)
+        entry["report"] = _reduced_report(entry.get("report") or {})
+        entry["reduced"] = True
+        entry["evidence_path"] = _path(entry["evidence_id"])
+        estimate += _element_size(entry) - before
+        doc["condensed"]["reports_reduced"] = doc["condensed"].get("reports_reduced", 0) + 1
 
     def condense_steering(item: dict) -> None:
         nonlocal estimate, steering_size
@@ -497,12 +564,18 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
         fold(entry)
         if fits():
             return doc
-    # 4. The oldest steering items beyond the reserve folded into a count.
+    # 4. The protected reports in their reduced form (every section kept,
+    # each field cut), the newest first, before any steering is folded.
+    for entry in reversed(kept):
+        reduce(entry)
+        if fits():
+            return doc
+    # 5. The oldest steering items beyond the reserve folded into a count.
     while len(steer) > 1 and steering_size > STEERING_RESERVED:
         fold_steering()
         if fits():
             return doc
-    # 5. Every steering item but the newest, cut short, then folded.
+    # 6. Every steering item but the newest, cut short, then folded.
     for item in steer[:-1]:
         condense_steering(item)
         if fits():
@@ -511,8 +584,9 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
         fold_steering()
         if fits():
             return doc
-    # 6. Last resorts: the linked CI runs, the newest steering item and,
-    # last of all, the newest report.
+    # 7. Last resorts: the linked CI runs, the newest steering item, the
+    # newest report when it is not the report of the head and, last of
+    # all, the report of the head.
     for entry in linked:
         condense(entry)
         if fits():
@@ -525,8 +599,12 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
         condense_steering(steer[0])
         if fits():
             return doc
-    if newest is not None:
-        condense(newest)
+    for entry in reversed(kept):
+        condense(entry)
+        if fits():
+            return doc
+    if latest is not None and latest is not head_report:
+        fold(latest)
         if fits():
             return doc
     for entry in linked[-1:]:
@@ -537,11 +615,44 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
         fold_steering()
         if fits():
             return doc
-    if newest is not None:
-        fold(newest)
+    if head_report is not None:
+        fold(head_report)
         if fits():
             return doc
     return _degrade(doc)
+
+
+def _work_order(entry: dict) -> tuple:
+    """The order of the Work a report entry describes: its generation, its
+    revision, then the time it is placed at."""
+    work = entry.get("work") or {}
+    generation, revision = work.get("generation", 0), work.get("revision")
+    return (generation if isinstance(generation, int) else 0,
+            revision if isinstance(revision, int) else -1,
+            str(entry.get("at") or ""), entry["seq"])
+
+
+def protected_reports(record: dict, timeline: list[dict]) -> tuple[dict | None, dict | None]:
+    """The two reports the condensation protects: the newest report, by the
+    Work it describes (its generation and revision, then its time, so a
+    report stored late never passes for the newest), and the report of the
+    head: the newest report whose ``head_after`` is the recorded head of the
+    branch the record works on (the head CI ran on), else the newest report
+    with a ``head_after``. A report that published nothing (a CI rerun, a
+    reviewer answer, a submission rewrite or review) is never the report of
+    the head, so a repair after failing CI reads the report of the worker
+    whose head failed whatever was stored after it."""
+    import lifecycle
+
+    reports = [t for t in timeline if t["kind"] == "worker_report"]
+    if not reports:
+        return None, None
+    latest = max(reports, key=_work_order)
+    head = lifecycle.recorded_head(record)
+    published = [t for t in reports if t.get("head_after")]
+    on_head = [t for t in published if head and t.get("head_after") == head]
+    head_report = max(on_head or published, key=_work_order) if published else None
+    return latest, head_report
 
 
 def _degrade(doc: dict) -> dict:

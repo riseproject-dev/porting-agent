@@ -607,9 +607,12 @@ read through `github-authenticated`. When the history is long, an `earlier`
 entry counts the entries folded before the newest report, a `later` entry
 those folded after it, and `steering_earlier` the oldest steering items folded;
 each lists their evidence ids and the failed or abandoned approaches. An
-`unverified_edit` entry is a comment or review of an account that steers,
-edited after it was written: GitHub does not say who edited it, so it is not
-steering, and only the version recorded before the edit steers.
+`unverified_edit` entry is a comment or review on the upstream PR of an
+account that steers, edited after it was written: the upstream maintainers
+can edit it and GitHub does not say who did, so it is not steering, and only
+the version recorded before the edit steers. A report entry marked `reduced`
+keeps every section with each field cut; its full record is the evidence
+file it names in `evidence_path`.
 
 ## The worker report
 

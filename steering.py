@@ -29,7 +29,7 @@ import hashlib
 import collect
 import schemas
 import worker_report
-from common import canonical_json, safe_id
+from common import canonical_json, fitted_id
 
 KIND = "human_steering"
 MAX_BODY = 4000
@@ -109,10 +109,11 @@ def _fresh(record: dict, collected: dict, known: dict[str, dict]) -> tuple[list[
         previous = latest.get(key[:2])
         if previous is not None:
             cleaned["supersedes"] = worker_report.clean(previous, 300)
-            if cleaned["authority"] and str(cleaned.get("source", "")).endswith("_review"):
+            if cleaned["authority"] and str(cleaned.get("source", "")).endswith("_review") \
+                    and collect.edits_unverified(cleaned.get("source", "")):
                 # GitHub gives an edited review no edit time and no editor:
-                # a new version of an authority review is shown, never
-                # trusted, like an edited comment.
+                # on the upstream PR a new version of an authority review is
+                # shown, never trusted, like an edited comment there.
                 cleaned["authority"] = False
                 cleaned["edit_unverified"] = True
         latest[key[:2]] = key[2]
@@ -142,9 +143,11 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
     number of the rest is recorded as ``deferred``: the caller passes the
     record back in ``known`` and calls again to record them
     (``reconcile.work_histories``).
-    A new version of a review of the command authority is recorded with
-    ``authority`` false and ``edit_unverified`` true: GitHub does not say
-    who edited it."""
+    On the upstream PR (``collect.edits_unverified``), a new version of a
+    review of the command authority is recorded with ``authority`` false and
+    ``edit_unverified`` true: GitHub does not say who edited it, and the
+    upstream maintainers can. On the control repository and the fork it
+    steers."""
     cid = record["contribution_id"]
     fresh, capped = _fresh(record, collected, known)
     if not fresh and not capped:
@@ -171,10 +174,10 @@ def new_evidence(record: dict, collected: dict, known: dict[str, dict], *, polic
     summary = "; ".join(f"{source}: {count}" for source, count in sorted(counts.items())) \
         or "none"
     if capped:
-        summary += "; lists read in full, newer items may be unread: " + ", ".join(sorted(capped))
+        summary += "; lists read in part, older items are unread: " + ", ".join(sorted(capped))
     evidence = {
         "schema_version": 1,
-        "evidence_id": safe_id(f"steering-{cid.replace('/', '--')}-{digest}"),
+        "evidence_id": fitted_id(f"steering-{cid.replace('/', '--')}-{digest}"),
         "contribution_id": cid, "kind": KIND,
         "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
         "summary": f"New human steering and review text: {summary}"[:8000],

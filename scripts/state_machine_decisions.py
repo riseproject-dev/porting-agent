@@ -804,11 +804,16 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "(`work_history` evidence, derived from the Work id) in the same commit: the steering "
         "of the owner and one chronological timeline of every successful report, the CI runs "
         "and reviews that followed, and the submission verdicts, all generations included. It "
-        "is capped at 64 KiB and condensed deterministically, never dropped uncounted: the "
-        "newest report with its linked CI, then the owner's steering, are kept longest, and "
-        "everything else gives way first, oldest first. The payload names it by pinned commit and SHA-256, and a trusted pre-agent "
-        "step fetches and verifies it; the dispatcher defers Work whose history is not "
-        "committed yet, within `retry_dispatch`. No record field changes.",
+        "is capped at 64 KiB and condensed deterministically, never dropped uncounted: two "
+        "reports are kept longest, the newest by the Work it describes and the report of the "
+        "head CI ran on (so a CI rerun or a reviewer answer, which publish nothing, never "
+        "displaces the report of the worker whose head failed), with the CI linked to it; "
+        "they take a reduced form, every section kept, before any of the owner's steering is "
+        "folded, and everything else gives way first, oldest first. The payload names it by "
+        "pinned commit and SHA-256, and a trusted pre-agent step fetches and verifies it; the "
+        "dispatcher defers Work whose history is not committed yet, and dispatch recovery "
+        "charges nothing for it for two hours, after which a history never recorded ends in "
+        "the human wait of `exhaust_dispatch_recovery`. No record field changes.",
         ("development.agent_running", "development.waiting_ci",
          "handoff.agent_running", "handoff.review_pending", "handoff.reviewing",
          "handoff.building_upstream_branch"),
@@ -829,11 +834,16 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "included in the planning prompt\". The tracking issue description (when edited) and "
         "comments, and the reviews, review comments and comments of the development PR and the "
         "upstream PR, are collected when Work is allocated and recorded as `human_steering` "
-        "evidence with author, time and link; every Work, planning included, receives them in "
-        "its history. Only accounts in the command authority steer. An edited description is "
-        "steering only when the issue author is in the command authority, as at intake; the "
-        "REST API does not name the editor, so an edit by another collaborator of such an issue "
-        "cannot be told apart. On the upstream PR, accounts whose association is OWNER, MEMBER "
+        "evidence with author, time and link, the newest pages of each list first; a list "
+        "with more pages than were read is flagged, never silently cut; every Work, planning "
+        "included, receives them in its history. Only accounts in the command authority "
+        "steer. The REST API does not name the editor of a text. On the control repository and "
+        "the fork, whose write access is part of the authority's trust, an edited description "
+        "(when the issue author is in the command authority, as at intake), comment or review "
+        "steers. On the upstream PR, where maintainers outside the authority can edit it, an "
+        "edited authority comment or a new version of an authority review is shown as an "
+        "unverified edit and never steers; the version recorded before the edit still does. "
+        "On the upstream PR, accounts whose association is OWNER, MEMBER "
         "or COLLABORATOR are recorded as maintainer feedback, never steering; other accounts "
         "and bots are counted, not recorded. Steering is append-only (an edit is a new version "
         "naming the one it supersedes; a deleted comment stays recorded), never fires a row, "
@@ -841,10 +851,12 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "credentials. The frozen intake description stays the request identity and the plan's "
         "digest. All of this text is untrusted: redacted, bounded, never rendered on the "
         "tracking issue or the status page, and given to agents as a data file separate from "
-        "their instructions. If GitHub cannot be read for it, the contribution is skipped for "
-        "the tick and the Work is not allocated without it, except that a list GitHub answers "
-        "as gone or not accessible (404, 410 or 451) is named as unreadable in the history, "
-        "which no retry would change.",
+        "their instructions. If GitHub cannot be read for it, the Work is allocated and its "
+        "history waits: the dispatcher defers it and later ticks read again, and once the "
+        "Work has waited an hour from its committed request the lists that still fail are "
+        "read without, with an alert. A list GitHub answers as gone or not accessible (404, "
+        "410 or 451) is named as unreadable in the history at once, which no retry would "
+        "change.",
         ("development.fix_needed", "development.agent_running", "planning.idle",
          "planning.agent_running"),
         edges=(("development.fix_needed", "request_patch"),

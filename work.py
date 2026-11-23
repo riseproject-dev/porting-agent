@@ -389,6 +389,31 @@ MAX_PAYLOAD_BYTES = 15_500
 _HISTORY_PATH = re.compile(r"\.state/evidence/history-[0-9a-f]{32}\.json")
 
 
+def payload_floor(record: dict) -> int | None:
+    """The fewest bytes the payload of the record's requested Work can take
+    (as ``cmd_plan`` measures it): the payload built with a history
+    reference of its exact size and no reason evidence. ``None`` when the
+    record holds no Work it could dispatch, or the payload cannot be built.
+    The controller names it when a dispatch fails, so that a payload over
+    ``MAX_PAYLOAD_BYTES`` (a long frozen tracking issue description) is a
+    visible cause."""
+    request = request_from_active(record)
+    if request is None:
+        return None
+    history = {"repository": CONTROL_REPO, "ref": "0" * 40,
+               "path": f".state/evidence/history-{'0' * 32}.json", "sha256": "0" * 64,
+               "evidence_id": f"history-{'0' * 32}"}
+    try:
+        built = payload(request, record, control_repo_id="0" * 12,
+                        allowed_paths=record.get("scope_paths") or [".github/workflows/*"],
+                        context={"requested_at": record["active_work"]["requested_at"],
+                                 "reason_evidence": [],
+                                 **({"history": history} if "generation" in request else {})})
+        return len(json.dumps(built, separators=(",", ":"), ensure_ascii=False).encode())
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _history_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
     """The history of a Work as its payload names it: the committed
     ``work_history`` evidence at the pinned control commit, with its

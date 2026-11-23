@@ -817,13 +817,44 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         runs = [{"id": 100 + i, "status": "completed",
                  "created_at": f"2026-11-23T08:{10 + i:02d}:00Z"} for i in range(limit)]
         current = rec
+        history = helpers.committed_history(rec, POLICY)
         for count in range(1, limit + 1):
-            out = tick(current, observe=False, runs=runs[:count])
+            out = tick(current, observe=False, runs=runs[:count], evidence=history)
             current = final(out, current)
         self.assertEqual(kinds(out), ["exhaust_dispatch_recovery"])
         self.assertEqual((engine.state_key(current), current["active_work"],
                           current["pending_human_action"]["counter"]),
                          ("development.waiting_human", None, "dispatch_recovery"))
+
+    def test_work_waiting_for_its_history_is_not_charged_for_a_while(self):
+        """The dispatcher defers Work whose history is not committed: the
+        runs that deferred it charge nothing until ``reconcile.HISTORY_WAIT``
+        has passed since the request, and then the dispatch is decided as
+        any other, so a history that is never recorded ends in a human
+        wait. A history recorded by a later tick counts the runs from the
+        time it was recorded."""
+        rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair",
+                                       requested_at="2026-11-23T08:00:00+00:00"))
+        runs = [{"id": 100 + i, "status": "completed",
+                 "created_at": f"2026-11-23T08:{10 + i:02d}:00Z"} for i in range(3)]
+        out = tick(rec, observe=False, runs=runs)
+        self.assertEqual((out.staged, out.report["dispatch_relaunch"]), ([], []))
+        self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
+                         "waiting for the history of the Work")
+        late = tick(rec, observe=False, runs=runs, now=T + reconcile.HISTORY_WAIT)
+        self.assertEqual(kinds(late), ["exhaust_dispatch_recovery"])
+        # The history was recorded at 08:50: the runs before it are not
+        # counted, and the dispatcher is launched again after the grace.
+        history = helpers.committed_history(
+            dict(rec, active_work=dict(rec["active_work"], requested_at="2026-11-23T08:50:00+00:00")),
+            POLICY)
+        out = tick(rec, observe=False, runs=runs, evidence=history,
+                   now=T + timedelta(minutes=10))
+        self.assertEqual((kinds(out), out.report["dispatch_relaunch"]),
+                         ([], [{"type": "relaunch_dispatcher",
+                                "contribution_id": rec["contribution_id"]}]))
+        self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
+                         "relaunch: no dispatcher run")
 
     def test_terminal_work_is_reallocated_within_its_budget(self):
         rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair"))

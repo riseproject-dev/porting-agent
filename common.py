@@ -71,6 +71,16 @@ def safe_id(value: str) -> str:
     return value
 
 
+def fitted_id(value: str) -> str:
+    """``value`` as a safe record identifier of at most 128 characters: a
+    longer one keeps its first 111 characters and the first 16 hex digits of
+    its SHA-256, so it stays deterministic and distinct. Raises like
+    ``safe_id`` for a value with other unsafe characters."""
+    if isinstance(value, str) and len(value) > 128:
+        value = f"{value[:111]}-{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
+    return safe_id(value)
+
+
 def contribution_file_id(contribution_id: str) -> str:
     """Map a contribution ID such as ``R_kgDO/1`` to a file-safe name."""
     return safe_id(contribution_id.replace("/", "--"))

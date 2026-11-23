@@ -139,6 +139,7 @@ def migration_report(
 def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None,
                       queue_works: dict[str, str] | None, now: datetime, policy: dict,
                       skip: frozenset[str] = frozenset(), queue_policy: dict | None = None,
+                      evidence: dict[str, dict] | None = None,
                       ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
 
@@ -172,6 +173,16 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     ``allocate_work_retry`` or ``exhaust_work_recovery``. A record in a state
     the table does not have is left unchanged and reported.
 
+    Work that carries a history is dispatched only once its history is
+    committed (``evidence``, the committed evidence; ``None`` skips this
+    check). While it is not, and for at most ``HISTORY_WAIT`` since the
+    request, the dispatch is not decided: nothing is charged and nothing is
+    launched, since the dispatcher defers that Work by design. After that it
+    is decided as above, so a history that is never recorded ends in the
+    human wait of ``exhaust_dispatch_recovery``. Once the history is
+    committed, the dispatcher runs are counted from the later of the request
+    and the time the history was recorded.
+
     Returns (relaunch requests, staged records, report). No model is involved
     in deciding; a relaunch is an ordinary dispatcher run.
     """
@@ -200,6 +211,19 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             if state not in (None, "available", "completed", "cancelled"):
                 continue      # a live Claim is resolved by the worker outcome
             requested = datetime.fromisoformat(aw["requested_at"])
+            history = _committed_history(aw, evidence)
+            if history is False and state is None \
+                    and now - requested < HISTORY_WAIT:
+                report.append({"contribution": c["contribution_id"], "task": aw["task"],
+                               "queue_state": state,
+                               "decision": "waiting for the history of the Work"})
+                continue
+            if isinstance(history, dict):
+                try:
+                    recorded = datetime.fromisoformat(str(history.get("collected_at")))
+                except ValueError:
+                    recorded = requested
+                requested = max(requested, recorded)
             after = [r for r in runs if datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) >= requested]
             entry = {"contribution": c["contribution_id"], "task": aw["task"], "queue_state": state,
                      "dispatcher_runs": [r["id"] for r in after]}
@@ -260,6 +284,16 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
             report.append(entry | {"decision": decision})
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
+
+
+def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
+    """The committed ``work_history`` evidence of the requested Work ``aw``,
+    ``False`` when it carries a history that is not committed yet, ``None``
+    when it carries none (Work requested before the identity carried the
+    generation) or ``evidence`` is not known."""
+    if evidence is None or "generation" not in aw or not aw.get("dedupe_key"):
+        return None
+    return evidence.get(work_history.evidence_id(aw["dedupe_key"])) or False
 
 
 def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict | None,
@@ -340,6 +374,9 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                             "not have")
     counts = {"dispatch_recovery": count}
     details = {"dispatcher_run": str(run["id"]), "work": aw["dedupe_key"]}
+    cause = payload_cause(c)
+    if cause:
+        details["why"] = cause
     limit = lifecycle.budget_limit("dispatch_recovery", policy)
     out = engine.apply_transition(c, "retry_dispatch", policy=policy, now=iso,
                                   cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
@@ -355,6 +392,26 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     if not out.accepted:
         return None, None, f"dispatch lost: {out.reason}"
     return out.record, out.event, "dispatch failed; waiting for a human"
+
+
+def payload_cause(record: dict) -> str | None:
+    """Why the dispatcher cannot dispatch the record's Work, when the
+    controller can tell: its payload is over the queue's budget
+    (``work.MAX_PAYLOAD_BYTES``) at the least, since it carries the frozen
+    tracking issue description inline. The dispatcher skips such Work and
+    dispatches every other; the event of the dispatch recovery names the
+    cause, so the tracking issue entry of the human wait says what to do."""
+    floor = work.payload_floor(record)
+    if floor is None or floor <= work.MAX_PAYLOAD_BYTES:
+        return None
+    description = ((record.get("active_work") or {}).get("tracking_issue") or {}).get(
+        "description") or ""
+    size = len(json.dumps(description, ensure_ascii=False).encode()) - 2
+    return (f"the Work payload takes at least {floor} bytes, over the queue's budget of "
+            f"{work.MAX_PAYLOAD_BYTES}, because it carries the frozen tracking issue "
+            f"description ({size} bytes) inline: the dispatcher skips this Work. The frozen "
+            "description cannot change, so the request must be made again with a description "
+            f"of at most about {max(0, size - (floor - work.MAX_PAYLOAD_BYTES))} bytes")
 
 
 def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
@@ -1947,7 +2004,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # dispatcher (bounded), then wait for a human.
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
                                               now=now, policy=policy, skip=skip,
-                                              queue_policy=queue_policy)
+                                              queue_policy=queue_policy, evidence=snap.evidence)
     out.staged.extend(staged)
     out.report["dispatch_recovery"] = rep
     # 1d. A dispatch refused by the installed work-queue Policy: re-arm it
@@ -2066,9 +2123,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # 5. The history of every requested Work that has none yet, normally
     # recorded in the tick that allocates it: the new human steering of the
     # contribution, then the history built from all its evidence. A failed
-    # read skips the contribution for this tick, so the allocation and its
-    # history are committed together or not at all; a steering list that is
-    # gone for good is recorded as unreadable instead.
+    # steering read defers only the history: the allocation is committed and
+    # the dispatcher defers the Work until a later tick records its history;
+    # a steering list that is gone for good is recorded as unreadable, and
+    # one that still fails once the Work has waited
+    # ``STEERING_FAILURE_GRACE`` is read without.
     if observe:
         out.report["work_history"] = work_histories(
             api, contributions, out, snap, policy=policy, now=iso,
@@ -2096,6 +2155,10 @@ STEERING_RECORDS_PER_TICK = 64
 # error that is not final (a 403, a 5xx, a rate limit): after that, the list
 # is recorded as unreadable and the Work proceeds without it.
 STEERING_FAILURE_GRACE = timedelta(hours=1)
+# How long dispatch recovery leaves requested Work alone while its history is
+# not committed (the dispatcher defers it by design): the steering grace and
+# a margin for the ticks that build the history.
+HISTORY_WAIT = STEERING_FAILURE_GRACE + timedelta(hours=1)
 
 
 def _waited(record: dict, now: str) -> timedelta:
@@ -2117,9 +2180,12 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     record as this tick leaves it is used, so Work allocated in this tick is
     covered. What is staged is bounded in bytes per contribution and per
     tick; a Work left out by the bound of the tick gets its history in a
-    later tick. A steering list that keeps failing with an error that is
-    not final is read without for Work that has waited
-    ``STEERING_FAILURE_GRACE``, so one failing list never holds the Work."""
+    later tick. A steering list that fails with an error that is not final
+    defers the history, never the allocation, which the tick commits; it is
+    read without, with an alert, once the Work has waited
+    ``STEERING_FAILURE_GRACE`` since its committed ``requested_at``, so one
+    failing list never holds the Work. Dispatch recovery launches the
+    dispatcher again for Work whose history a later tick recorded."""
     latest = {c["contribution_id"]: c for c in contributions.values()}
     for kind, record in out.staged:
         if kind == "contributions":
@@ -2133,23 +2199,40 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
         if cid in skip:
             continue
         record = latest[cid]
-        request = work.request_from_active(record)
-        if request is None or "generation" not in request:
-            # Nothing to dispatch, or Work requested before the identity
-            # carried the generation, whose payload carries no history.
-            continue
-        eid = work_history.evidence_id(request["dedupe_key"])
-        if eid in evidence:
-            continue
-        if budget < HISTORY_RECORD_BYTES:
-            report.append({"contribution": cid, "work": request["dedupe_key"],
-                           "deferred": "the histories of this tick reached their byte bound"})
-            continue
         with isolation.contribution(cid, "work_history"):
-            degrade = _waited(record, now) >= STEERING_FAILURE_GRACE
-            collected = collect.steering(
-                api, record, authority,
-                issue=tracking_issues.get(record["tracking_issue"]["number"]), degrade=degrade)
+            request = work.request_from_active(record)
+            if request is None or "generation" not in request:
+                # Nothing to dispatch, or Work requested before the identity
+                # carried the generation, whose payload carries no history.
+                continue
+            eid = work_history.evidence_id(request["dedupe_key"])
+            if eid in evidence:
+                continue
+            if budget < HISTORY_RECORD_BYTES:
+                report.append({"contribution": cid, "work": request["dedupe_key"],
+                               "deferred": "the histories of this tick reached their byte bound"})
+                continue
+            waited = _waited(record, now)
+            degrade = waited >= STEERING_FAILURE_GRACE
+            try:
+                collected = collect.steering(
+                    api, record, authority,
+                    issue=tracking_issues.get(record["tracking_issue"]["number"]),
+                    degrade=degrade)
+            except collect.CollectError as error:
+                # A list that fails with an error that is not final defers
+                # only the history: the allocation is committed, so the
+                # grace is measured from its durable ``requested_at``, and
+                # the dispatcher defers the Work until a later tick builds
+                # its history (without that list once the grace is over).
+                report.append({
+                    "contribution": cid, "work": request["dedupe_key"],
+                    "deferred": "a steering list could not be read: "
+                                f"{isolation.clean_text(error)}; the Work has waited "
+                                f"{int(waited.total_seconds()) // 60} minutes, and once it "
+                                f"has waited {STEERING_FAILURE_GRACE} its history is built "
+                                "without the lists that still fail"})
+                continue
             # One record holds at most ``steering.MAX_ITEMS`` items; the
             # rest are recorded in further records of the same tick, within
             # the byte bounds, so the history holds the newest steering too.

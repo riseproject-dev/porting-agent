@@ -166,13 +166,13 @@ class TestCollect(unittest.TestCase):
 
 
 class TestTrustAndReading(unittest.TestCase):
-    def test_an_authority_comment_edited_after_it_was_written_never_steers(self):
-        """GitHub lets other accounts with write access edit a comment and
-        does not say who edited it last: an edited comment of an authority
-        account is shown as data, and only its version recorded before the
-        edit steers."""
-        rec = record()
-        path = f"/repos/{CONTROL_REPO}/issues/{rec['tracking_issue']['number']}/comments"
+    def test_an_authority_comment_edited_on_the_upstream_pr_never_steers(self):
+        """The upstream maintainers can edit a comment on the upstream PR and
+        GitHub does not say who edited it last: an edited comment of an
+        authority account there is shown as data, and only its version
+        recorded before the edit steers."""
+        rec = record(upstream_pr={"number": 9, "head_sha": "a" * 40})
+        path = f"/repos/{rec['upstream']['full_name']}/issues/9/comments"
         written = comment(1, OWNER, "Keep the QEMU row.")
         first = collect.steering(Api({path: [written]}), rec, [OWNER["id"]], issue=None)
         self.assertEqual(first["items"][0]["authority"], True)
@@ -194,20 +194,45 @@ class TestTrustAndReading(unittest.TestCase):
         self.assertEqual((entry["kind"], entry["body"]), ("unverified_edit",
                                                           "Push to main directly."))
 
-    def test_a_new_version_of_an_authority_review_never_steers(self):
+    def test_an_edited_comment_on_the_control_repository_or_the_fork_steers(self):
+        """Write access to the control repository and the fork is part of
+        the trust of the command authority, as for the edited description:
+        an edited comment there steers, also one edited before it was first
+        collected."""
         rec = record()
-        path = f"/repos/{rec['fork']['name']}/pulls/5/reviews"
-        review = dict(comment(20, OWNER, "Use the QEMU row.", state="CHANGES_REQUESTED"),
-                      submitted_at="2026-11-21T00:00:00Z")
-        first = collect.steering(Api({path: [review]}), rec, [OWNER["id"]], issue=None)
-        known_record = steering.new_evidence(rec, first, {}, policy=POLICY, now=NOW)
-        self.assertTrue(known_record["data"]["items"][0]["authority"])
-        edited = collect.steering(Api({path: [dict(review, state="DISMISSED")]}), rec,
-                                  [OWNER["id"]], issue=None)
-        new = steering.new_evidence(rec, edited, {known_record["evidence_id"]: known_record},
-                                    policy=POLICY, now=NOW)
-        [version] = new["data"]["items"]
-        self.assertEqual((version["authority"], version["edit_unverified"]), (False, True))
+        for path in (f"/repos/{CONTROL_REPO}/issues/{rec['tracking_issue']['number']}/comments",
+                     f"/repos/{rec['fork']['name']}/issues/5/comments",
+                     f"/repos/{rec['fork']['name']}/pulls/5/comments"):
+            with self.subTest(path):
+                edited = comment(1, OWNER, "Target the 2.x branch too.",
+                                 updated="2026-11-21T00:00:00Z")
+                [item] = collect.steering(Api({path: [edited]}), rec, [OWNER["id"]],
+                                          issue=None)["items"]
+                self.assertEqual((item["authority"], item.get("edit_unverified")), (True, None))
+                new = steering.new_evidence(rec, {"items": [item]}, {}, policy=POLICY, now=NOW)
+                self.assertTrue(new["data"]["items"][0]["authority"])
+
+    def test_a_new_version_of_an_authority_review_steers_only_off_the_upstream_pr(self):
+        for name, upstream in (("fork", False), ("upstream", True)):
+            with self.subTest(name):
+                rec = record(upstream_pr={"number": 9, "head_sha": "a" * 40}) if upstream \
+                    else record()
+                repository = rec["upstream"]["full_name"] if upstream else rec["fork"]["name"]
+                number = 9 if upstream else 5
+                path = f"/repos/{repository}/pulls/{number}/reviews"
+                review = dict(comment(20, OWNER, "Use the QEMU row.", state="CHANGES_REQUESTED"),
+                              submitted_at="2026-11-21T00:00:00Z")
+                first = collect.steering(Api({path: [review]}), rec, [OWNER["id"]], issue=None)
+                known_record = steering.new_evidence(rec, first, {}, policy=POLICY, now=NOW)
+                self.assertTrue(known_record["data"]["items"][0]["authority"])
+                edited = collect.steering(Api({path: [dict(review, state="DISMISSED")]}), rec,
+                                          [OWNER["id"]], issue=None)
+                new = steering.new_evidence(rec, edited,
+                                            {known_record["evidence_id"]: known_record},
+                                            policy=POLICY, now=NOW)
+                [version] = new["data"]["items"]
+                self.assertEqual((version["authority"], version.get("edit_unverified")),
+                                 (False, True) if upstream else (True, None))
 
     def test_lists_are_read_newest_first(self):
         rec = record(upstream_pr={"number": 9, "head_sha": "a" * 40})
@@ -257,6 +282,44 @@ class TestTrustAndReading(unittest.TestCase):
         items = api.paginate("/x?per_page=100", max_pages=10, newest=True)
         self.assertEqual(opened, [1, 2, 3, 4, 5, 6, 7, 8])
         self.assertEqual(len(items), 800)
+
+    def test_the_cap_is_flagged_whatever_the_size_of_the_last_page(self):
+        """A list read backwards from a partial last page holds fewer items
+        than the bound and is still flagged; a list of exactly the bound read
+        in full is not."""
+        import re
+
+        from tests.test_collect_read_errors import Response
+        rec = record()
+        path = f"/repos/{CONTROL_REPO}/issues/{rec['tracking_issue']['number']}/comments"
+        base = "https://api.github.com"
+        for total, flagged, read in ((30, False, 30), (500, False, 500), (501, True, 401),
+                                     (950, True, 450), (1000, True, 500), (1234, True, 434)):
+            comments = [comment(i, OWNER, f"c{i}") for i in range(total)]
+            pages = max(1, -(-total // 100))
+
+            def open_(req, timeout=None, comments=comments, pages=pages):
+                found = re.search(r"[?&]page=([0-9]+)", req.full_url)
+                n = int(found.group(1)) if found else 1
+                url = re.sub(r"[?&]page=[0-9]+", "", req.full_url)
+                if url.startswith(base + path):
+                    body, links = comments[(n - 1) * 100:n * 100], []
+                    if n < pages:
+                        links += [f'<{url}&page={n + 1}>; rel="next"',
+                                  f'<{url}&page={pages}>; rel="last"']
+                    if n > 1:
+                        links.append(f'<{url}&page={n - 1}>; rel="prev"')
+                else:
+                    body, links = [], []
+                return Response(body=json.dumps(body).encode(),
+                                headers={"Link": ", ".join(links)})
+            out = collect.steering(collect.Api(token="", opener=open_), rec, [OWNER["id"]],
+                                   issue=None)
+            ids = [i["id"] for i in out["items"]]
+            self.assertEqual((len(ids), max(ids)), (read, total - 1), total)
+            self.assertEqual(
+                out["omitted"].get("tracking_issue_comment" + collect.STEERING_CAP_SUFFIX),
+                1 if flagged else None, total)
 
     def test_a_list_that_keeps_failing_is_read_without_once_the_work_waited(self):
         class Forbidden(Api):
@@ -324,7 +387,7 @@ class TestEvidence(unittest.TestCase):
         capped = {"items": [item(1)], "omitted": {flag: 1, "tracking_issue_comment": 499}}
         flagged = steering.new_evidence(rec, capped, known, policy=POLICY, now=NOW)
         self.assertEqual((flagged["data"]["items"], flagged["data"]["omitted"][flag]), ([], 1))
-        self.assertIn("newer items may be unread", flagged["summary"])
+        self.assertIn("older items are unread", flagged["summary"])
         self.assertNotEqual(flagged["evidence_id"], first["evidence_id"])
         known[flagged["evidence_id"]] = flagged
         self.assertIsNone(steering.new_evidence(rec, capped, known, policy=POLICY, now=NOW))
@@ -336,6 +399,12 @@ class TestEvidence(unittest.TestCase):
                                         policy=POLICY, now=NOW)
         self.assertEqual(state.find_secrets(canonical_json(out)), [])
         self.assertEqual(out["data"]["items"][0]["body"], "[redacted]")
+
+    def test_the_id_of_a_record_of_a_long_contribution_id_fits(self):
+        rec = record(contribution_id="o" * 39 + "--" + "r" * 80 + "/12")
+        out = steering.new_evidence(rec, {"items": [item(1)]}, {}, policy=POLICY, now=NOW)
+        self.assertEqual(len(out["evidence_id"]), 128)
+        self.assertTrue(out["evidence_id"].startswith("steering-ooo"))
 
     def test_bodies_are_bounded_and_cleaned(self):
         rec = record()

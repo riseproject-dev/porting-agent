@@ -142,12 +142,18 @@ class Api:
         return data
 
     def paginate(self, path: str, *, key: str | None = None, max_pages: int = 10,
-                 newest: bool = False) -> list:
+                 newest: bool = False, report: dict | None = None) -> list:
         """Follow Link: rel=next up to ``max_pages``. ``key`` selects the list
         inside an object response (e.g. ``check_runs``). With ``newest``, a
         list longer than ``max_pages`` is read from its last page backwards
         (Link: rel=last, then rel=prev), so the newest items are the ones
-        read; the result is in the order of the list either way."""
+        read; the result is in the order of the list either way. When
+        ``report`` is a dict, ``report["truncated"]`` is set to whether the
+        list holds pages that were not read (a rel=next left after the last
+        page read, or a rel=last past ``max_pages``), whatever the number of
+        items on its last page."""
+        if report is not None:
+            report["truncated"] = False
         if not _PATH_RE.match(path) or ".." in path:
             raise CollectError(f"refusing unexpected API path {path!r}")
         url = self.base + path
@@ -159,10 +165,16 @@ class Api:
                 last = _link(link, "last")
                 pages = re.search(r"[?&]page=([0-9]+)", last or "")
                 if last and pages and int(pages.group(1)) > max_pages:
+                    if report is not None:
+                        report["truncated"] = True
                     return self._backwards(last, key=key, max_pages=max_pages)
             out.extend(data[key] if key else data)
             nxt = _link(link, "next")
             if not nxt:
+                break
+            if index == max_pages - 1:
+                if report is not None:
+                    report["truncated"] = True
                 break
             if not nxt.startswith(self.base + "/"):
                 raise CollectError("pagination left the API host")
@@ -456,6 +468,19 @@ STEERING_REVIEW_STATES = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
 MAINTAINER_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
 
 
+# The steering sources on which accounts outside the command authority can
+# edit the text of an authority account: the upstream PR, whose maintainers
+# have write access to the upstream repository.
+UNVERIFIED_EDIT_PREFIX = "upstream_pr_"
+
+
+def edits_unverified(source: str) -> bool:
+    """Whether an edit of the text of an authority account on ``source``
+    may be by an account outside the command authority, so that the edited
+    version never steers."""
+    return str(source).startswith(UNVERIFIED_EDIT_PREFIX)
+
+
 def _steering_item(source: str, item: dict, *, authority: bool, body_key: str = "body",
                    created_key: str = "created_at", updated_key: str = "updated_at") -> dict:
     user = item.get("user") or {}
@@ -486,17 +511,22 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     ``authority`` true, on every source. On the upstream PR only, accounts
     whose association is OWNER, MEMBER or COLLABORATOR are kept with
     ``authority`` false: maintainer review feedback, never steering.
-    A comment of an authority account that was edited after it was written
-    (``updated_at`` differs from ``created_at``) is kept with ``authority``
-    false and ``edit_unverified`` true: GitHub lets other accounts with
-    write access edit it and does not say who edited it last, so it is
-    shown as data and never steers.
+    On the upstream PR (``edits_unverified``), a comment of an authority
+    account that was edited after it was written (``updated_at`` differs
+    from ``created_at``) is kept with ``authority`` false and
+    ``edit_unverified`` true: the upstream maintainers, who are not in the
+    command authority, can edit it, and GitHub does not say who edited it
+    last, so it is shown as data and never steers. On the control
+    repository and the fork, whose write access is part of the command
+    authority's trust (as for the edited tracking issue description), an
+    edited comment steers like any other.
     A review with an empty body is kept when its state is a verdict
     (``STEERING_REVIEW_STATES``); its version is its submission time and the
     digest of its state and body, since GitHub gives an edited review no new
     time. Everything else (other accounts, bots, empty bodies) is counted
-    per source in ``omitted``; a list that filled every page is flagged
-    there with ``STEERING_CAP_SUFFIX``, since older items may be unread.
+    per source in ``omitted``; a list that holds more pages than were read
+    (whatever the number of items on its last page) is flagged there with
+    ``STEERING_CAP_SUFFIX``, since its older items are unread.
     Returns ``{"items": [...], "omitted": {...}, "unreadable": [...],
     "failed": {...}}``; the text is untrusted and is bounded where it is
     stored. A list GitHub answers with a status of ``STEERING_GONE`` is
@@ -524,8 +554,8 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
                 or not (trusted or maintainer):
             omitted[source] = omitted.get(source, 0) + 1
             return
-        edited = trusted and not review and raw.get("updated_at") \
-            and raw.get("updated_at") != raw.get("created_at")
+        edited = trusted and not review and edits_unverified(source) \
+            and raw.get("updated_at") and raw.get("updated_at") != raw.get("created_at")
         item = _steering_item(source, raw, authority=trusted and not edited, **keys)
         if edited:
             item["edit_unverified"] = True
@@ -538,8 +568,10 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
         # The newest pages of each list are read; one that fills every page
         # may hold older items than were read, which is recorded, never
         # silent.
+        pagination: dict = {}
         try:
-            raws = api.paginate(path, max_pages=STEERING_PAGES, newest=newest)
+            raws = api.paginate(path, max_pages=STEERING_PAGES, newest=newest,
+                                report=pagination)
         except CollectError as error:
             status = getattr(error, "status", None)
             if status not in STEERING_GONE and not degrade:
@@ -548,7 +580,9 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
             if status not in STEERING_GONE:
                 failed[source] = status
             return []
-        if len(raws) >= STEERING_PAGES * 100:
+        # A client that does not report truncation is judged by the number
+        # of items read.
+        if pagination.get("truncated", len(raws) >= STEERING_PAGES * 100):
             omitted[source + STEERING_CAP_SUFFIX] = 1
         return raws
 
