@@ -5,7 +5,6 @@
   "admission_class": "configuration_integration",
   "admission_override": null,
   "automatic_refresh_used": false,
-  "blocked_reason": null,
   "budget": {
     "attempts_used": 1,
     "clusters": {
@@ -14,8 +13,14 @@
     "investigation_attempts": 0,
     "no_progress_streak": 1,
     "policy_id": "2026-11-18.1-proposed",
+    "reruns": {
+      "flaky": 0,
+      "head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
+      "interrupted": 0
+    },
     "spent_estimate_usd_cents": 0
   },
+  "clean_head_ci_since": null,
   "clean_head_sha": null,
   "contribution_id": "closeio--ciso8601/1",
   "created_at": "2026-11-22T01:09:36.980391+00:00",
@@ -106,6 +111,8 @@
     "pyproject.toml",
     "CHANGELOG.md"
   ],
+  "submission_review_id": null,
+  "submission_rewrite_id": null,
   "target_contract_id": null,
   "terminal_reason": null,
   "tracking_issue": {
@@ -116,7 +123,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-23T10:24:36.615111+00:00",
+  "updated_at": "2026-11-23T14:55:15.187182+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
