@@ -644,7 +644,8 @@ for _guard, _name in (
     ("the lease write and ref readback match the reviewed series", "clean_head_read_back"),
     ("the reviewed series does not rebuild to the reviewed head, or the lease on `riscv64` "
      "conflicts", "upstream_branch_invalid"),
-    ("an upstream PR is open from `riscv64`", "upstream_branch_blocked"),
+    (("a pull request is open from `riscv64` (upstream or in the fork), `riscv64-dev` is "
+                 "missing, or the record's development branch is not `riscv64-dev`"), "upstream_branch_blocked"),
     (lc.REVIEW_PASSED, "submission_review_passed"),
     (lc.REVIEW_FAILED, "submission_review_failed"),
     (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),

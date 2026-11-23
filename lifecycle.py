@@ -1024,10 +1024,12 @@ LIFECYCLE: dict[str, State] = {
                 _RETURN_FOR_REPAIR),
             ("require_branch_intervention", "handoff.waiting_human"): Transition(
                 _P, None,
-                ("an upstream PR is open from `riscv64`",),
+                (("a pull request is open from `riscv64` (upstream or in the fork), `riscv64-dev` is "
+                 "missing, or the record's development branch is not `riscv64-dev`"),),
                 _E(sets=("pending_human_action=upstream_branch_blocked",)),
-                description="`riscv64` is left as it is: a human closes the upstream PR or "
-                            "decides otherwise, then resumes."),
+                description="`riscv64` is left as it is and the reason is recorded: a human "
+                            "closes the pull request, restores `riscv64-dev`, or decides "
+                            "otherwise, then resumes."),
             ("exhaust_upstream_branch_retries", "handoff.waiting_human"): Transition(
                 _P, None,
                 ("upstream_branch exhausted",),

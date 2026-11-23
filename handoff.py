@@ -56,6 +56,7 @@ import schemas
 from common import (
     CONTROL_REPO,
     DEBUG_PREFIX,
+    DEV_REF,
     FORK_ORG,
     UPSTREAM_REF,
     contribution_file_id,
@@ -115,8 +116,9 @@ class HandoffInvalid(HandoffError):
 
 
 class HandoffBlocked(HandoffError):
-    """An upstream PR is open from `riscv64`: it is not written, and a human
-    decides."""
+    """`riscv64` may not be written: a pull request is open from it (upstream
+    or in the fork), `riscv64-dev` is missing, or the record does not develop
+    on `riscv64-dev`. It is not written, and a human decides."""
 
 
 class HandoffRefused(RuntimeError):
@@ -863,6 +865,25 @@ def rebuild_without_debug(work: Path, *, base: str, head: str) -> tuple[str, lis
     return parent, removed
 
 
+def upstream_branch_blocked(read_api: collect.Api, record: dict) -> str | None:
+    """Why `riscv64` may not be written now (``require_branch_intervention``),
+    or ``None``: the record's development branch is not `riscv64-dev`,
+    `riscv64-dev` is missing on the fork, or a pull request of the fork is
+    open from `riscv64`."""
+    fork = record.get("fork") or {}
+    if fork.get("head_ref") != DEV_REF:
+        return (f"the record's development branch is {fork.get('head_ref')!r}, not {DEV_REF!r}; "
+                f"{UPSTREAM_REF} is not written")
+    if collect.branch_head(read_api, fork["name"], DEV_REF) is None:
+        return f"{DEV_REF} is missing on {fork['name']}; {UPSTREAM_REF} is not written"
+    open_prs = collect.fork_pull_requests(read_api, fork["name"], UPSTREAM_REF)
+    if open_prs:
+        return (f"a pull request of {fork['name']} is open from {UPSTREAM_REF}: "
+                + ", ".join(f"#{p.get('number')}" for p in open_prs[:5])
+                + f"; {UPSTREAM_REF} is not written while it heads one")
+    return None
+
+
 def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
                           token: str | None, series: bytes, workdir: Path | None = None,
                           push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess]
@@ -904,9 +925,16 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
                                 for c in review.get("commits") or []]:
             raise HandoffInvalid("the reviewed series does not rebuild to the reviewed head: "
                                  + "; ".join(built["problems"][:3]))
-        # The final check before the effect: the head `riscv64` resolves to
-        # now is the lease; nothing is written while an upstream PR is open
-        # from it.
+        # The final checks before the effect. `riscv64` is the upstream
+        # branch only once development is on `riscv64-dev`: nothing is written
+        # while the record still develops on another branch, while
+        # `riscv64-dev` is missing, or while `riscv64` heads an open pull
+        # request of the fork, whose head a rewrite would change.
+        blocked = upstream_branch_blocked(read_api, record)
+        if blocked:
+            raise HandoffBlocked(blocked)
+        # The head `riscv64` resolves to now is the lease; nothing is written
+        # while an upstream PR is open from it.
         observed = collect.branch_head(read_api, fork, UPSTREAM_REF)
         observed = observed and observed["head"]
         if observed != built["head"]:

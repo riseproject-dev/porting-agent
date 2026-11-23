@@ -655,6 +655,18 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("handoff.agent_running", "reject_submission_review"),
                      ("handoff.building_upstream_branch", "require_branch_intervention")),
     ),
+    Item(
+        "When `riscv64` may not be written",
+        "Which states of the fork keep the build of `riscv64` from writing it.",
+        "`require_branch_intervention` applies when a pull request is open from `riscv64`, "
+        "upstream or in the fork, when `riscv64-dev` is missing on the fork, or when the "
+        "record's development branch is not `riscv64-dev`: `riscv64` is not written, the "
+        "reason is recorded, and a human resolves it and resumes (`resume_upstream_branch`).",
+        ("handoff.building_upstream_branch", "handoff.waiting_human"),
+        edges=(("handoff.building_upstream_branch", "require_branch_intervention"),
+               ("handoff.waiting_human", "resume_upstream_branch")),
+        highlighted=(("handoff.building_upstream_branch", "require_branch_intervention"),),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (

@@ -1490,6 +1490,7 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         self.root = root
         self.contribution = contribution
         self.upstream_prs: list[dict] = []
+        self.fork_prs: list[dict] = []
 
     def tearDown(self):
         import fork_publish
@@ -1574,10 +1575,46 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
             head = self.branch(ref)
             return {"head": head} if head else None
 
-        with mock.patch("collect.branch_head", branch_head), \
-                mock.patch("collect.upstream_pull_requests", lambda *_a, **_k: list(self.upstream_prs)):
+        def guarded(api, name, ref):
+            # `riscv64-dev` is read by the guard before the lease's reads.
+            if ref == "riscv64-dev":
+                head = self.branch(ref)
+                return {"head": head} if head else None
+            return branch_head(api, name, ref)
+
+        with mock.patch("collect.branch_head", guarded), \
+                mock.patch("collect.upstream_pull_requests", lambda *_a, **_k: list(self.upstream_prs)), \
+                mock.patch("collect.fork_pull_requests", lambda *_a, **_k: list(self.fork_prs)):
             return handoff.build_upstream_branch(state, op["operation_id"], policy=policy(),
                                                  read_api=object(), token="t", series=mbox, push=push)
+
+    def test_riscv64_is_not_written_while_it_heads_a_fork_pr_or_without_riscv64_dev(self):
+        approved = self.development(("Build riscv64", {"setup.py": "b\n"}))
+        mbox = self.reviewed_series(approved, "ci: Build riscv64 wheels")
+        state, op, _checked = self.state(approved, mbox)
+        # A pull request of the fork is open from `riscv64`.
+        self.fork_prs = [{"number": 1, "state": "open", "head": {"ref": "riscv64"}}]
+        with self.assertRaisesRegex(handoff.HandoffBlocked, "open from riscv64: #1"):
+            self.build(state, op, mbox)
+        self.fork_prs = []
+        # `riscv64-dev` is missing.
+        self.git(self.root, "--git-dir", str(self.bare), "update-ref", "-d", "refs/heads/riscv64-dev")
+        with self.assertRaisesRegex(handoff.HandoffBlocked, "riscv64-dev is missing"):
+            self.build(state, op, mbox)
+        self.git(self.root, "--git-dir", str(self.bare), "update-ref", "refs/heads/riscv64-dev",
+                 approved)
+        # The record names another development branch.
+        path = next((state / ".state/contributions").iterdir())
+        record = json.loads(path.read_text())
+        record["fork"]["head_ref"] = "riscv64"
+        path.write_text(canonical_json(record))
+        with self.assertRaisesRegex(handoff.HandoffBlocked, "development branch is 'riscv64'"):
+            self.build(state, op, mbox)
+        self.assertIsNone(self.branch())
+        # Each refusal is a receipt that fires `require_branch_intervention`.
+        receipt = handoff.receipt({"operation_id": op["operation_id"]},
+                                  error=handoff.HandoffBlocked("riscv64-dev is missing"))
+        self.assertEqual((receipt["result"], receipt["failure"]), ("failed", handoff.BLOCKED))
 
     def test_riscv64_is_created_from_the_reviewed_series(self):
         approved = self.development(("Build riscv64", {"setup.py": "b\n"}),

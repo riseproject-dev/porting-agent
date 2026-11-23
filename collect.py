@@ -420,6 +420,19 @@ def upstream_pull_requests(api: Api, record: dict, ref: str = UPSTREAM_REF) -> l
     return [handoff.normalize_pull(pr) for pr in pulls]
 
 
+def fork_pull_requests(api: Api, fork: str, ref: str) -> list[dict]:
+    """The open pull requests of the fork itself whose head is its branch
+    ``ref``."""
+    owner = fork.split("/", 1)[0]
+    query = urllib.parse.urlencode({"state": "open", "head": f"{owner}:{ref}", "per_page": 100})
+    pulls = api.get(f"/repos/{fork}/pulls?{query}")
+    if not isinstance(pulls, list):
+        raise CollectError("pull request inventory is malformed")
+    # The API filters by the head; every listed pull request counts, so an
+    # unexpected entry blocks rather than admits.
+    return [pr for pr in pulls if isinstance(pr, dict)]
+
+
 def dev_pull_request(api: Api, fork: str, ref: str = DEV_REF) -> dict | None:
     owner = fork.split("/")[0]
     prs = api.get(f"/repos/{fork}/pulls?state=open&head={owner}:{ref}&per_page=10")
