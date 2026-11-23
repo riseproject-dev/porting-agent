@@ -776,6 +776,53 @@ class TestPayload(unittest.TestCase):
             self.assertFalse(payload["review_scope_extension"])
             self.assertEqual(payload["allowed_operations"], ["append", "rewrite"])
 
+    def test_the_history_reference_carries_no_url(self):
+        eid = work_history.evidence_id(WORK["dedupe_key"])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / ".state" / "evidence" / f"{eid}.json"
+            path.parent.mkdir(parents=True)
+            path.write_text("{}")
+            _selection, plan = self.plan({eid: {}}, self.record(), root)
+        self.assertEqual(set(plan["nodes"][0]["payload"]["context"]["history"]),
+                         {"repository", "ref", "path", "sha256", "evidence_id"})
+
+    def test_a_payload_at_the_largest_description_never_fails_the_dispatch(self):
+        """A request description at the intake limit (16384 bytes) makes a
+        payload over the queue budget: that Work is skipped and reported,
+        and every other Work is dispatched."""
+        largest = self.record("\u00e9" * (POLICY["intake"]["max_request_bytes"] // 2))
+        other = self.record("short")
+        other["contribution_id"] = "other--lib/13"
+        other["active_work"] = dict(other["active_work"], dedupe_key="other--lib/13@g0.r4:"
+                                    "development_repair", requested_at="2026-11-19T00:00:00Z")
+        with tempfile.TemporaryDirectory() as root:
+            for key in (WORK["dedupe_key"], other["active_work"]["dedupe_key"]):
+                path = Path(root) / ".state" / "evidence" / f"{work_history.evidence_id(key)}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}")
+            evidence = {work_history.evidence_id(WORK["dedupe_key"]): {},
+                        work_history.evidence_id(other["active_work"]["dedupe_key"]): {}}
+            snapshot = type("S", (), {"contributions": {"a": largest, "b": other},
+                                      "evidence": evidence})
+            out = Path(root) / "plan.json"
+            args = type("A", (), {"root": root, "out": str(out), "control_repo_id": "1"})
+            with mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
+                    mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                        [], 0, stdout="c" * 40)), \
+                    mock.patch("builtins.print") as printed:
+                self.assertEqual(work.cmd_plan(args), 0)
+            selection = json.loads(printed.call_args.args[0])
+            plan = json.loads(out.read_text())
+        self.assertEqual([s["contribution"] for s in selection["selected"]], ["other--lib/13"])
+        [skipped] = selection["skipped"]
+        self.assertEqual(skipped["contribution"], largest["contribution_id"])
+        self.assertIn("exceeds safe queue budget", skipped["reason"])
+        [node] = plan["nodes"]
+        self.assertEqual(node["payload"]["contribution_id"], "other--lib/13")
+        self.assertLessEqual(len(json.dumps(node["payload"], separators=(",", ":"),
+                                            ensure_ascii=False).encode()),
+                             work.MAX_PAYLOAD_BYTES)
+
     def test_work_without_a_recorded_history_is_deferred(self):
         with tempfile.TemporaryDirectory() as root:
             selection, plan = self.plan({}, self.record(), root)

@@ -150,6 +150,40 @@ class TestPolicyRecovery(unittest.TestCase):
         self.assertEqual(event[0]["details"]["restarted"]["counter"], "dispatch_recovery")
         self.assertIn("re-armed", report[0]["decision"])
 
+    def test_the_re_armed_work_gets_a_new_history_with_the_steering_of_the_wait(self):
+        """The re-arm bumps the revision, so the Work allocated after it has
+        a new Work id and its own history, built with the steering written
+        while the dispatch waited; the history of the Work that failed is
+        not reused."""
+        record, _launch, _staged, _report = self.recover(
+            reinstalled(self.failed + timedelta(hours=1)))
+        cid, generation = record["contribution_id"], int(record.get("generation", 0))
+        failed_key = work.work_key(cid, generation, self.record["revision"], "planning")
+        key = work.work_key(cid, generation, record["revision"], "planning")
+        self.assertNotEqual(key, failed_key)
+        allocated = copy.deepcopy(record)
+        allocated["activity"] = "agent_running"
+        allocated["active_work"] = {
+            "dedupe_key": key, "task": "planning", "generation": generation,
+            "revision": record["revision"], "attempt": 1, "requested_at": NOW,
+            "deadline_at": NOW, "dispatched_run_id": None, "reason_ids": [],
+            "feedback_evidence_ids": []}
+        old = work_history.evidence_id(failed_key)
+        snap = reconcile.Snapshot({"c": allocated}, {}, {}, {}, {old: {"kind": "work_history"}})
+        out = reconcile.TickOutput(report={"controller": {"alerts": []}})
+        written = {"source": "tracking_issue_comment", "id": 77, "author": "owner",
+                   "author_id": 1001, "authority": True, "created_at": NOW,
+                   "updated_at": NOW, "url": "u", "body": "Target the 2.x branch."}
+        with unittest.mock.patch("collect.steering",
+                                 return_value={"items": [written], "omitted": {}}):
+            report = reconcile.work_histories(None, snap.contributions, out, snap,
+                                              policy=self.policy, now=NOW,
+                                              tracking_issues={}, skip=frozenset())
+        self.assertEqual(report[0]["evidence_id"], work_history.evidence_id(key))
+        [history] = [r for kind, r in out.staged if r.get("kind") == "work_history"]
+        self.assertEqual([i["body"] for i in history["data"]["steering"]],
+                         ["Target the 2.x branch."])
+
     def test_a_reinstall_before_the_failure_re_arms_nothing(self):
         record, _launch, staged, report = self.recover(
             reinstalled(self.failed - timedelta(minutes=1)))

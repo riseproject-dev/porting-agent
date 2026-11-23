@@ -383,6 +383,9 @@ def _plan_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
     }
 
 
+# The bytes of a Work payload the queue accepts with a margin (its limit is
+# 16384).
+MAX_PAYLOAD_BYTES = 15_500
 _HISTORY_PATH = re.compile(r"\.state/evidence/history-[0-9a-f]{32}\.json")
 
 
@@ -393,6 +396,9 @@ def _history_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
     reference = _plan_reference(root, evidence_id, control_ref)
     if not _HISTORY_PATH.fullmatch(reference["path"]):
         raise ValueError("invalid history evidence path")
+    # The pre-agent step reads it by repository, ref and path: no URL, so
+    # the reference takes as few bytes of the payload as it can.
+    reference.pop("url", None)
     return dict(reference, evidence_id=evidence_id)
 
 
@@ -481,66 +487,75 @@ def cmd_plan(args: argparse.Namespace) -> int:
             skipped.append({"contribution": record["contribution_id"], "task": request["task"],
                             "reason": "no frozen tracking-issue description"})
             continue
-        contract = (
-            contracts.get(record.get("target_contract_id") or "") or {}
-        ).get("data") or {}
-        plan_document = (snapshot.evidence.get(record.get("plan_evidence_id") or "") or {}).get("data")
-        rules = commit_rules.from_plan(plan_document) if request["task"] != "planning" else None
-        sections = (commit_rules.sections_from_plan(plan_document)
-                    if request["task"] in SUBMISSION_TASKS else None)
-        rewrite = (rewrite_reference(snapshot.evidence.get(record.get("submission_rewrite_id")
-                                                           or ""))
-                   if request["task"] == SUBMISSION_REVIEW else None)
-        reason_evidence = []
-        for evidence_id in request.get("reason_ids") or []:
-            evidence = snapshot.evidence.get(evidence_id)
-            if evidence:
-                item = _reason_item(evidence)
-                if evidence.get("kind") == "plan":
-                    item["reference"] = _plan_reference(
-                        root, evidence["evidence_id"], control_ref
-                    )
-                reason_evidence.append(item)
-        nodes.append(
-            node(
-                request,
-                record,
-                control_repo_id=args.control_repo_id,
-                allowed_paths=record.get("scope_paths")
-                or contract.get("allowed_paths")
-                or [".github/workflows/*"],
-                context={
-                    "requested_at": record["active_work"]["requested_at"],
-                    "reason_evidence": reason_evidence,
-                    # The measurable commit conventions of the verified
-                    # plan, which the trusted worker gate checks. A
-                    # plan of schema version 1 records none.
-                    **({"commit_rules": rules} if rules is not None else {}),
-                    # The required sections of the pull request template,
-                    # which the submission check requires in the reviewed
-                    # description.
-                    **({"template_sections": sections} if sections is not None else {}),
-                    # The rewrite a review reviews: the trusted pre-agent
-                    # step downloads its series and text from this artifact
-                    # and checks them against these digests.
-                    **({"rewrite": rewrite} if rewrite is not None else {}),
-                    # Everything tried before and the owner's steering: the
-                    # trusted pre-agent step fetches it at the pinned
-                    # commit and checks its digest.
-                    **({"history": _history_reference(root, history_id, control_ref)}
-                       if history_id is not None else {}),
-                },
+        # A Work this run cannot build (an evidence file missing at the
+        # pinned commit, a payload over the queue budget) is skipped and
+        # reported: one such record never fails the dispatch of the others.
+        try:
+            contract = (
+                contracts.get(record.get("target_contract_id") or "") or {}
+            ).get("data") or {}
+            plan_document = (snapshot.evidence.get(record.get("plan_evidence_id") or "") or {}).get("data")
+            rules = commit_rules.from_plan(plan_document) if request["task"] != "planning" else None
+            sections = (commit_rules.sections_from_plan(plan_document)
+                        if request["task"] in SUBMISSION_TASKS else None)
+            rewrite = (rewrite_reference(snapshot.evidence.get(record.get("submission_rewrite_id")
+                                                               or ""))
+                       if request["task"] == SUBMISSION_REVIEW else None)
+            reason_evidence = []
+            for evidence_id in request.get("reason_ids") or []:
+                evidence = snapshot.evidence.get(evidence_id)
+                if evidence:
+                    item = _reason_item(evidence)
+                    if evidence.get("kind") == "plan":
+                        item["reference"] = _plan_reference(
+                            root, evidence["evidence_id"], control_ref
+                        )
+                    reason_evidence.append(item)
+            nodes.append(
+                node(
+                    request,
+                    record,
+                    control_repo_id=args.control_repo_id,
+                    allowed_paths=record.get("scope_paths")
+                    or contract.get("allowed_paths")
+                    or [".github/workflows/*"],
+                    context={
+                        "requested_at": record["active_work"]["requested_at"],
+                        "reason_evidence": reason_evidence,
+                        # The measurable commit conventions of the verified
+                        # plan, which the trusted worker gate checks. A
+                        # plan of schema version 1 records none.
+                        **({"commit_rules": rules} if rules is not None else {}),
+                        # The required sections of the pull request template,
+                        # which the submission check requires in the reviewed
+                        # description.
+                        **({"template_sections": sections} if sections is not None else {}),
+                        # The rewrite a review reviews: the trusted pre-agent
+                        # step downloads its series and text from this artifact
+                        # and checks them against these digests.
+                        **({"rewrite": rewrite} if rewrite is not None else {}),
+                        # Everything tried before and the owner's steering: the
+                        # trusted pre-agent step fetches it at the pinned
+                        # commit and checks its digest.
+                        **({"history": _history_reference(root, history_id, control_ref)}
+                           if history_id is not None else {}),
+                    },
+                )
             )
-        )
-        payload_bytes = len(
-            json.dumps(
-                nodes[-1]["payload"], separators=(",", ":"), ensure_ascii=False
-            ).encode()
-        )
-        if payload_bytes > 15_500:
-            raise ValueError(
-                f"requested task payload exceeds safe queue budget: {payload_bytes} bytes"
+            payload_bytes = len(
+                json.dumps(
+                    nodes[-1]["payload"], separators=(",", ":"), ensure_ascii=False
+                ).encode()
             )
+            if payload_bytes > MAX_PAYLOAD_BYTES:
+                raise ValueError(
+                    f"requested task payload exceeds safe queue budget: {payload_bytes} bytes"
+                )
+        except (ValueError, OSError) as error:
+            del nodes[len(selected):]
+            skipped.append({"contribution": record["contribution_id"], "task": request["task"],
+                            "reason": str(error)[:300]})
+            continue
         selected.append(
             {
                 "contribution": record["contribution_id"],

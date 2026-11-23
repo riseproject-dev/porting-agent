@@ -100,6 +100,12 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** the six rows store the report of the Work as `worker_report` evidence; no row folds a success Result without its report.
 - **Required:** a table decision on an accepted Result whose report is lost after the gate (for example a row that folds it with a recorded loss, or a retry of the publication artifact).
 
+## A long request description makes its Work undispatchable
+
+- **Where:** `work.payload` and `work.cmd_plan`.
+- **Today:** every Work payload carries the frozen tracking issue description in `context.tracking_issue`, and intake admits a description of up to 16384 bytes (`intake.max_request_bytes`), while the dispatcher keeps a payload within 15500 bytes (`work.MAX_PAYLOAD_BYTES`) of the queue's limit of 16384. The rest of a payload takes about 2 KB with its history reference, more with reason evidence, so a description over about 13 KB makes a payload over the budget. The dispatcher skips that one Work and reports it (`skipped`), and dispatches every other Work; the skipped Work is never claimed, so dispatch recovery relaunches the dispatcher (`retry_dispatch`) and then waits for a human (`exhaust_dispatch_recovery`), who can only shorten the request.
+- **Required:** the description passed by reference like the history (the frozen description in the committed contribution record at the pinned commit, fetched and verified by the trusted pre-agent step), or an intake limit that leaves the payload room.
+
 ## Steering edits whose last editor is unknown
 
 - **Where:** `collect.steering` and `steering.new_evidence`.
