@@ -90,10 +90,11 @@ jobs:
           gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT/zip" > review/artifact.zip
           unzip -q -o -j review/artifact.zip -d review/files
           [ -f review/files/patches.mbox ] && [ ! -L review/files/patches.mbox ] || { echo "no reviewed series"; exit 1; }
-      - name: Check the artifact and the digest of the reviewed series before any token is minted
+      - name: Check the artifact and the digest of the reviewed series and rebuild and check it anonymously before any token is minted
+        id: series
         env:
           OPERATION: ${{ inputs.operation-id }}
-        run: uv run --locked python -m handoff series --operation-id "$OPERATION" --series review/files/patches.mbox --artifact-meta review/artifact.json --out handoff/outcome.json
+        run: uv run --locked python -m handoff series --operation-id "$OPERATION" --series review/files/patches.mbox --artifact-meta review/artifact.json --workdir "$RUNNER_TEMP/handoff-series" --out handoff/outcome.json
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         id: fork-token
         with:
@@ -103,15 +104,25 @@ jobs:
           repositories: ${{ needs.target.outputs.fork_name }}
           permission-contents: write
           permission-workflows: write
-          # Dispatches the project's required CI workflow on riscv64 when the
-          # clean head has another tree than the candidate head.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        id: ci-token
+        # Only when the clean head has another tree than the candidate head
+        # and needs its own CI: dispatches the project's required CI workflow
+        # on riscv64.
+        if: steps.series.outputs.needs_ci == 'true'
+        with:
+          client-id: ${{ vars.RISEPROJECT_UPSTREAMING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}
+          owner: riseproject-upstreaming
+          repositories: ${{ needs.target.outputs.fork_name }}
           permission-actions: write
-      - name: Build riscv64 from the reviewed series under the exact-head lease and read back
+      - name: Verify the checked series and push riscv64 under the exact-head lease and read back
         env:
           GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation-id }}
           UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
-        run: uv run --locked python -m handoff branch --operation-id "$OPERATION" --series review/files/patches.mbox --artifact-meta review/artifact.json --out handoff/outcome.json
+          UPSTREAMING_CI_TOKEN: ${{ steps.ci-token.outputs.token }}
+        run: uv run --locked python -m handoff branch --operation-id "$OPERATION" --series review/files/patches.mbox --artifact-meta review/artifact.json --workdir "$RUNNER_TEMP/handoff-series" --out handoff/outcome.json
       - name: Record a failed attempt
         if: failure()
         env:

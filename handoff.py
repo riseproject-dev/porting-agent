@@ -925,19 +925,16 @@ def upstream_branch_blocked(read_api: collect.Api, record: dict) -> str | None:
     return None
 
 
-def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
-                          token: str | None, series: bytes, workdir: Path | None = None,
-                          push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess]
-                          | None = None,
-                          dispatch: Callable[[str, dict], Any] | None = None) -> dict:
-    """``upstream_branch``: rebuild the reviewed series, check it again, and
-    create `riscv64` at its head or replace it under an exact-head lease,
-    never while an upstream PR is open from it; read it back.
-
-    ``series`` is the reviewed ``patches.mbox`` from the worker run's
-    publication artifact; it must be the series the accepted review names.
-    `riscv64-dev` is only read. A branch that already resolves to the
-    reviewed head is read back without a write."""
+def check_upstream_series(root: Path, operation_id: str, *, policy: dict, series: bytes,
+                          workdir: Path) -> dict:
+    """Before any token is minted: rebuild the reviewed series in ``workdir``
+    without any credential (``submission.reconstruct`` reads the public fork
+    and upstream anonymously), run every check of the submission check
+    again, and require the reviewed head, tree, and messages. Returns the
+    head and whether the clean head needs its own CI (its tree is not the
+    candidate head's), which is when a CI dispatch may be needed. Raises
+    ``HandoffInvalid`` for a series that is not the reviewed one and
+    ``HandoffError`` when the series cannot be fetched."""
     import fork_publish
     import submission
 
@@ -945,28 +942,78 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
     review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_review_id'])}"
                                                     ".json").read_text())["data"]
     target, proposed = op["target"], op["proposed"]
-    fork, approved, base = target["repository"], target["expected_head"], target["base_sha"]
     if hashlib.sha256(series).hexdigest() != proposed["content_digest"]:
         raise HandoffInvalid("the reviewed series does not match the accepted review")
+    try:
+        built = submission.reconstruct(
+            workdir, fork=target["repository"], upstream=record["upstream"]["full_name"],
+            base=target["base_sha"], approved=target["expected_head"], mbox=series,
+            scope_paths=list(record.get("scope_paths") or []), read_token=None)
+    except submission.CheckError as error:
+        raise HandoffError(f"could not fetch the series: {error}") from None
+    except fork_publish.PublishRejected as error:
+        raise HandoffInvalid(f"the reviewed series does not rebuild: {error}") from None
+    messages = [c["message"] for c in built["commits"]]
+    if built["head"] != proposed["commit"] or built["tree"] != proposed["tree"] \
+            or built["clean_tree"] != proposed["tree"] or built["problems"] \
+            or messages != [str(c.get("message") or "").rstrip("\n")
+                            for c in review.get("commits") or []]:
+        raise HandoffInvalid("the reviewed series does not rebuild to the reviewed head: "
+                             + "; ".join(built["problems"][:3]))
+    return {"head": built["head"],
+            "needs_ci": review.get("clean_tree") != review.get("candidate_tree")}
+
+
+def verify_prepared(work: Path, op: dict, series: bytes) -> str:
+    """After the token is minted: the series still has the reviewed digest,
+    and the repository ``check_upstream_series`` prepared holds the reviewed
+    head with the reviewed tree. Nothing is fetched. Returns the head."""
+    proposed = op["proposed"]
+    if hashlib.sha256(series).hexdigest() != proposed["content_digest"]:
+        raise HandoffInvalid("the reviewed series does not match the accepted review")
+    head = str(proposed.get("commit") or "")
+    found = _git(work, "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}", check=False) \
+        if _SHA.match(head) and (work / "HEAD").is_file() and (work / "objects").is_dir() \
+        else None
+    if found is None or found.returncode or _out(found) != head:
+        raise HandoffError("the checked series is not prepared for the push")
+    if _out(_git(work, "rev-parse", f"{head}^{{tree}}")) != proposed.get("tree"):
+        raise HandoffInvalid("the prepared head does not have the reviewed tree")
+    return head
+
+
+def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_api: collect.Api,
+                          token: str | None, series: bytes, workdir: Path | None = None,
+                          push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess]
+                          | None = None,
+                          dispatch: Callable[[str, dict], Any] | None = None,
+                          prepared: bool = False) -> dict:
+    """``upstream_branch``: create `riscv64` at the head of the reviewed
+    series or replace it under an exact-head lease, never while an upstream
+    PR is open from it; read it back.
+
+    ``series`` is the reviewed ``patches.mbox`` from the worker run's
+    publication artifact; it must be the series the accepted review names.
+    The series is rebuilt and checked without any credential
+    (``check_upstream_series``): by the workflow's step before the token is
+    minted (``prepared``, with that step's ``workdir``), or here first.
+    Then only the digest, head, and tree are verified again, and the token
+    only pushes: it never fetches. `riscv64-dev` is only read. A branch that
+    already resolves to the reviewed head is read back without a write."""
+    import fork_publish
+
+    record, op = load_request(root, operation_id, policy)
+    review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_review_id'])}"
+                                                    ".json").read_text())["data"]
+    fork = op["target"]["repository"]
+    if prepared and workdir is None:
+        raise HandoffError("the checked series is not prepared for the push")
     tmp = tempfile.TemporaryDirectory(prefix="upstreaming-handoff-") if workdir is None else None
     work = Path(tmp.name) / "repo" if tmp else workdir
     try:
-        try:
-            built = submission.reconstruct(
-                work, fork=fork, upstream=record["upstream"]["full_name"], base=base,
-                approved=approved, mbox=series, scope_paths=list(record.get("scope_paths") or []),
-                read_token=token)
-        except submission.CheckError as error:
-            raise HandoffError(f"could not fetch the series: {error}") from None
-        except fork_publish.PublishRejected as error:
-            raise HandoffInvalid(f"the reviewed series does not rebuild: {error}") from None
-        messages = [c["message"] for c in built["commits"]]
-        if built["head"] != proposed["commit"] or built["tree"] != proposed["tree"] \
-                or built["clean_tree"] != proposed["tree"] or built["problems"] \
-                or messages != [str(c.get("message") or "").rstrip("\n")
-                                for c in review.get("commits") or []]:
-            raise HandoffInvalid("the reviewed series does not rebuild to the reviewed head: "
-                                 + "; ".join(built["problems"][:3]))
+        if not prepared:
+            check_upstream_series(root, operation_id, policy=policy, series=series, workdir=work)
+        built = {"head": verify_prepared(work, op, series)}
         # The final checks before the effect. `riscv64` is the upstream
         # branch only once development is on `riscv64-dev`: nothing is written
         # while the record still develops on another branch, while
@@ -1081,8 +1128,9 @@ def dispatch_clean_head_ci(read_api: collect.Api, *, fork: str, head: str,
 
     The workflow of the required CI run on the candidate head is read at the
     clean head, as data. When it can be dispatched (``workflow_dispatch``
-    with no required input), it is dispatched on `riscv64` with the fork
-    token (``actions: write`` on the one fork) unless a run of it already
+    with no required input), it is dispatched on ``refs/heads/riscv64`` with
+    the CI token (``actions: write`` on the one fork, minted only for an
+    attempt whose clean head needs its own CI) unless a run of it already
     exists for the head, and the run is read back by its head SHA. A
     workflow that cannot be dispatched is reported as such: the CI wait then
     waits for a human (``require_clean_head_ci``). A failed dispatch or a run
@@ -1106,9 +1154,10 @@ def dispatch_clean_head_ci(read_api: collect.Api, *, fork: str, head: str,
         return {"ci_dispatch": EXISTS, "ci_workflow": workflow_path,
                 "ci_run_id": int(max(r.get("id") or 0 for r in runs))}
     if dispatch is None:
-        raise HandoffError("dispatching CI on the clean head needs the fork token")
+        raise HandoffError("dispatching CI on the clean head needs the CI token")
     try:
-        dispatch(f"/repos/{fork}/actions/workflows/{name}/dispatches", {"ref": UPSTREAM_REF})
+        dispatch(f"/repos/{fork}/actions/workflows/{name}/dispatches",
+                 {"ref": f"refs/heads/{UPSTREAM_REF}"})
     except Exception as error:  # every failure of the write is a failed attempt
         raise HandoffError(f"the CI dispatch failed: {isolation.clean_text(error, 200)}") from None
     for attempt in range(readbacks):
@@ -1281,7 +1330,8 @@ def receipt(op_meta: dict, result: dict | None = None, *, error: BaseException |
 
 
 def _dispatcher(token: str | None) -> Callable[[str, dict], Any] | None:
-    """The one write of the CI dispatch, with the fork token."""
+    """The one write of the CI dispatch, with the CI token (``actions:
+    write`` on the one fork)."""
     if not token:
         return None
     import provisioning
@@ -1339,6 +1389,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--series", type=Path, help="the reviewed patches.mbox (branch)")
     parser.add_argument("--artifact-meta", type=Path,
                         help="the API record of the publication artifact it came from (branch)")
+    parser.add_argument("--workdir", type=Path,
+                        help="where the series step rebuilds the series and the branch step "
+                             "pushes it from (series, branch)")
     args = parser.parse_args(argv)
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != CONTROL_REPO \
             or os.environ.get("GITHUB_REF") != "refs/heads/main":
@@ -1376,15 +1429,26 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({k: result.get(k) for k in ("operation_id", "kind", "result", "reason")}))
             return 1
     if args.action == "series":
-        # Before the job mints its token: the downloaded series is the
+        # Before the job mints any token: the downloaded series is the
         # accepted rewrite's, from its run's publication artifact, and has
-        # its digest. A refusal is the attempt's receipt.
+        # its digest, and it rebuilds anonymously in the work directory to
+        # the reviewed head with every check passing. The step names whether
+        # the clean head needs its own CI, the only case for the CI token. A
+        # refusal is the attempt's receipt.
         try:
-            reviewed_series(root, args.operation_id, args.series, args.artifact_meta)
+            if args.workdir is None:
+                raise HandoffError("the series check needs a work directory")
+            checked = check_upstream_series(
+                root, args.operation_id, policy=policy, workdir=args.workdir,
+                series=reviewed_series(root, args.operation_id, args.series, args.artifact_meta))
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                out.write(f"needs_ci={'true' if checked['needs_ci'] else 'false'}\n")
             return 0
-        except (HandoffError, OSError, ValueError) as error:
+        except Exception as error:  # every refusal is reported by a receipt
             result = receipt(meta, error=error if isinstance(error, HandoffError)
-                             else HandoffInvalid(f"the reviewed series cannot be read: {error}"))
+                             else HandoffInvalid(f"the reviewed series cannot be read: {error}")
+                             if isinstance(error, (OSError, ValueError))
+                             else HandoffError(f"the series check failed: {error}"))
             args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(json.dumps(result, indent=2))
             print(json.dumps({k: result.get(k) for k in ("operation_id", "kind", "result",
@@ -1399,10 +1463,13 @@ def main(argv: list[str] | None = None) -> int:
         read_api = collect.Api(token=os.environ.get("GH_TOKEN") or None)
         try:
             if args.action == "branch":
-                token = os.environ.get("UPSTREAMING_FORK_TOKEN") or None
+                # The fork token only pushes; the CI token, minted only when
+                # the clean head needs its own CI, only dispatches.
                 result = build_upstream_branch(
                     root, args.operation_id, policy=policy, read_api=read_api,
-                    token=token, dispatch=_dispatcher(token),
+                    token=os.environ.get("UPSTREAMING_FORK_TOKEN") or None,
+                    dispatch=_dispatcher(os.environ.get("UPSTREAMING_CI_TOKEN") or None),
+                    workdir=args.workdir, prepared=True,
                     series=reviewed_series(root, args.operation_id, args.series,
                                            args.artifact_meta))
             else:

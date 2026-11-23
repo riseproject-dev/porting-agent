@@ -782,7 +782,7 @@ class TestCleanHeadCiDispatch(unittest.TestCase):
         self.assertEqual(out, {"ci_dispatch": handoff.DISPATCHED, "ci_workflow": self.PATH,
                                "ci_run_id": 7})
         self.assertEqual(calls, [(f"/repos/{self.FORK}/actions/workflows/build.yml/dispatches",
-                                  {"ref": "riscv64"})])
+                                  {"ref": "refs/heads/riscv64"})])
         self.assertIn(f"/repos/{self.FORK}/contents/.github/workflows/build.yml?ref={CLEAN}",
                       api.paths)
         # A run that already exists for the head is not dispatched again.
@@ -801,7 +801,7 @@ class TestCleanHeadCiDispatch(unittest.TestCase):
         with self.assertRaisesRegex(handoff.HandoffError, "dispatch failed"):
             self.go(self.Api("on: workflow_dispatch\n"),
                      lambda *_a: (_ for _ in ()).throw(RuntimeError("HTTP 403")))
-        with self.assertRaisesRegex(handoff.HandoffError, "needs the fork token"):
+        with self.assertRaisesRegex(handoff.HandoffError, "needs the CI token"):
             self.go(self.Api("on: workflow_dispatch\n"), None)
 
 
@@ -1971,6 +1971,52 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
                             for argv, env in calls if "push" in argv))
         self.assertEqual(len(pushes), 1)
         self.assertIn("--force-with-lease=refs/heads/riscv64:", pushes[0])
+        # The write token is never a read token: every fetch is anonymous.
+        self.assertTrue([argv for argv, _ in calls if "fetch" in argv])
+        self.assertFalse([argv for argv, env in calls if "push" not in argv
+                          and env.get("GIT_CONFIG_VALUE_0") == secret])
+
+    def test_the_series_is_checked_before_the_token_and_only_pushed_after(self):
+        """The workflow's series step rebuilds and checks the series without
+        any token; after the mint the branch step only verifies the digest,
+        head, and tree and pushes, fetching nothing."""
+        import fork_publish
+        approved = self.development(("Build riscv64", {"setup.py": "b\n"}),
+                                    ("Test riscv64", {"setup.py": "c\n"}))
+        mbox = self.reviewed_series(approved, "Build riscv64 wheels", "Test riscv64 wheels")
+        state, op, checked = self.state(approved, mbox)
+        work = self.root / "prepared"
+        real_auth = fork_publish._auth_env
+
+        def anonymous(token):
+            self.assertIsNone(token)
+            return real_auth(token)
+
+        with mock.patch("fork_publish._auth_env", anonymous):
+            out = handoff.check_upstream_series(state, op["operation_id"], policy=policy(),
+                                                series=mbox, workdir=work)
+        self.assertEqual(out, {"head": checked["head"], "needs_ci": False})
+        # A series that is not the reviewed one, or a work directory the
+        # series step did not prepare, is not pushed.
+        with self.assertRaisesRegex(handoff.HandoffInvalid, "accepted review"):
+            self.build_prepared(state, op, mbox + b"x", work)
+        with self.assertRaisesRegex(handoff.HandoffError, "not prepared"):
+            self.build_prepared(state, op, mbox, self.root / "nothing")
+        with mock.patch("fork_publish.rebuild", side_effect=AssertionError("fetched")):
+            result = self.build_prepared(state, op, mbox, work)
+        self.assertEqual((result["clean_head"], self.branch()), (checked["head"], checked["head"]))
+
+    def build_prepared(self, state, op, mbox, work):
+        def branch_head(_api, _name, ref):
+            head = self.branch(ref)
+            return {"head": head} if head else None
+
+        with mock.patch("collect.branch_head", branch_head), \
+                mock.patch("collect.upstream_pull_requests", lambda *_a, **_k: []), \
+                mock.patch("collect.fork_pull_requests", lambda *_a, **_k: []):
+            return handoff.build_upstream_branch(state, op["operation_id"], policy=policy(),
+                                                 read_api=object(), token="t", series=mbox,
+                                                 workdir=work, prepared=True)
 
 
 class TestCollector(unittest.TestCase):

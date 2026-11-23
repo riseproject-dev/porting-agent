@@ -201,11 +201,13 @@ class TestWorkflowContracts(unittest.TestCase):
         jobs = handoff["jobs"]
         self.assertEqual(jobs["target"]["if"], "github.ref == 'refs/heads/main'")
         expected = {
+            # The fork token pushes; the CI token, minted only for an attempt
+            # whose clean head needs its own CI, dispatches it.
             "upstream-branch": ("riseproject-upstreaming", "${{ needs.target.outputs.fork_name }}",
-                                {"permission-contents": "write", "permission-workflows": "write",
-                                 "permission-actions": "write"}),
+                                [{"permission-contents": "write", "permission-workflows": "write"},
+                                 {"permission-actions": "write"}]),
             "submission-comment": ("riseproject-dev", "porting-agent",
-                                   {"permission-issues": "write"}),
+                                   [{"permission-issues": "write"}]),
         }
         # No job can write a pull request: the development PR is never closed.
         self.assertEqual(set(jobs), {"target", "upstream-branch", "submission-comment",
@@ -225,11 +227,12 @@ class TestWorkflowContracts(unittest.TestCase):
                     self.assertNotIn("permissions", job)
                 tokens = [step for step in job["steps"]
                           if "create-github-app-token" in str(step.get("uses"))]
-                self.assertEqual(len(tokens), 1)
-                given = tokens[0]["with"]
-                self.assertEqual((given["owner"], given["repositories"]), (owner, repositories))
-                self.assertEqual({k: v for k, v in given.items() if k.startswith("permission-")},
-                                 permissions)
+                self.assertEqual(len(tokens), len(permissions))
+                for token, wanted in zip(tokens, permissions):
+                    given = token["with"]
+                    self.assertEqual((given["owner"], given["repositories"]), (owner, repositories))
+                    self.assertEqual({k: v for k, v in given.items()
+                                      if k.startswith("permission-")}, wanted)
                 for step in job["steps"]:
                     if step.get("uses"):
                         self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
@@ -252,7 +255,7 @@ class TestWorkflowContracts(unittest.TestCase):
         # control repository: nothing can write upstream.
         text = (WORKFLOWS / "handoff.yml").read_text()
         self.assertNotIn("closeio", text)
-        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 1)
+        self.assertEqual(text.count("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY"), 2)
         self.assertNotIn("permission-administration", text)
         continuation = jobs["continuation"]
         self.assertEqual(continuation["if"], "always()")
@@ -280,6 +283,17 @@ class TestWorkflowContracts(unittest.TestCase):
         branch = next(s for s in steps if "python -m handoff branch" in str(s.get("run")))
         self.assertIn("--artifact-meta review/artifact.json", branch["run"])
         self.assertIn("--series review/files/patches.mbox", branch["run"])
+        # The series step rebuilds and checks the series anonymously in the
+        # work directory the branch step pushes from, and names whether the
+        # CI token is minted at all.
+        workdir = '--workdir "$RUNNER_TEMP/handoff-series"'
+        self.assertIn(workdir, steps[check]["run"])
+        self.assertIn(workdir, branch["run"])
+        self.assertEqual(steps[check]["id"], "series")
+        self.assertNotIn("GH_TOKEN", str(steps[check]))
+        ci = next(s for s in steps if s.get("id") == "ci-token")
+        self.assertEqual(ci["if"], "steps.series.outputs.needs_ci == 'true'")
+        self.assertEqual(branch["env"]["UPSTREAMING_CI_TOKEN"], "${{ steps.ci-token.outputs.token }}")
 
     def test_the_rewrite_and_review_tasks_are_checked_without_a_token(self):
         worker = workflow("worker.lock.yml")
