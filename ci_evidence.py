@@ -26,7 +26,8 @@ class CiVerdict:
     state: str                     # passed | failed | pending | not_executed | access_wait | missing
     executed_jobs: list[dict] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
-    # The required jobs that were interrupted (``job_interrupted``), and the
+    # The required jobs that were interrupted (``job_interrupted``) and the
+    # other blocking jobs that lost their runner, and the
     # latest attempt of each workflow run on the head, by run id.
     interrupted_jobs: list[dict] = field(default_factory=list)
     attempts: dict[int, int] = field(default_factory=dict)
@@ -86,13 +87,21 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
     all_jobs = [j for r in relevant for j in jobs_by_run.get(r["id"], [])]
     pending = ([r for r in relevant if r.get("status") != "completed"]
                + [j for j in all_jobs if j.get("status") != "completed"])
-    blocking_failures = [
-        j for j in all_jobs
-        if job_executed(j) and j.get("conclusion") != SUCCESS
-        and not any(marker in j.get("name", "").lower() for marker in CREDENTIALLESS_JOB_MARKERS)
-    ]
+    blocking = [j for j in all_jobs
+                if not any(marker in j.get("name", "").lower() for marker in CREDENTIALLESS_JOB_MARKERS)]
+    blocking_failures = [j for j in blocking
+                         if job_executed(j) and j.get("conclusion") != SUCCESS]
     for j in blocking_failures:
         v.problems.append(f"job {j['name']!r} failed ({j.get('conclusion')})")
+    # A blocking job that failed after it lost its runner did not execute,
+    # but it is not a pass either: unclassified, the same CI reads as failed.
+    # It is interrupted, whether or not a required pattern names it.
+    required = [j for j in all_jobs if any(pat in j["name"] for pat in required_job_patterns)]
+    for j in blocking:
+        if j.get("status") == "completed" and j.get("runner_lost") \
+                and not any(j is r for r in required):
+            v.problems.append(f"job {j['name']!r} did not execute (lost its runner)")
+            v.interrupted_jobs.append(j)
     # When the contract names a runner label, success means the job ran on
     # it: a job only matches when its name matches and it ran on that label.
     for pat in required_job_patterns:

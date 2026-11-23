@@ -344,6 +344,16 @@ class TestPublish(unittest.TestCase):
                          ("rerun", [5]))
         out = self.publish(FakeApi([run(5, attempt=2)]))
         self.assertEqual((out["status"], out["rerun"]["status"]), ("no_change", "superseded"))
+        # An earlier attempt reran only run 4: the retry reruns run 5 instead
+        # of reading the rerun in progress as superseding it.
+        out = self.publish(FakeApi([run(4, attempt=2, status="in_progress", conclusion=None),
+                                    run(5)]))
+        self.assertEqual((out["rerun"]["status"], [r["run_id"] for r in out["rerun"]["runs"]]),
+                         ("rerun", [5]))
+        # The answered run already has a newer attempt: only the other runs.
+        out = self.publish(FakeApi([run(4), run(5, attempt=2)]))
+        self.assertEqual((out["rerun"]["status"], [r["run_id"] for r in out["rerun"]["runs"]]),
+                         ("rerun", [4]))
         api = FakeApi([run(5)])
         api.paginate = lambda path, **_k: ([copy.deepcopy(r) for r in api.runs.values()]
                                            if "head_sha=" in path else [job(50, 5, "success")])

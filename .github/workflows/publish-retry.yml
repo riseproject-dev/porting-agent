@@ -9,7 +9,7 @@
 # downloaded by the Result's ID and digest, preflight re-checks state and
 # fork identity, and the push uses the exact expected-head lease. If the push
 # already happened, discovery confirms it instead of pushing again.
-# A held `no_change` Result (a repair worker's report of a failure not caused
+# A held `no_change` Result (a development worker's report of a failure not caused
 # by the patch) is published by rerunning the failed jobs on the exact head
 # with a token for the one fork that carries only `actions: write`; a rerun
 # that already landed is read back instead of being requested again.

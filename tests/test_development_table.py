@@ -805,6 +805,21 @@ class TestInterruptedRerun(unittest.TestCase):
         out = tick(record(), ci=interrupted_ci(conclusion="failure"))
         self.assertEqual(kinds(out)[:1], ["record_ci_failure"])
 
+    def test_a_lost_runner_on_a_job_that_is_not_required_is_rerun_not_nominated(self):
+        """The gate reads CI unclassified and calls a job that lost its
+        runner failed, so development never nominates such a head: the job
+        is interrupted and rerun within `interrupted_reruns`."""
+        snapshot = ci_snapshot(SHA_A, "passed")
+        snapshot.jobs_by_run[777].append(dict(snapshot.jobs_by_run[777][0], id=2,
+                                              name="Lint", conclusion="failure"))
+        out = tick(record(), ci=snapshot, lost=[2])
+        self.assertEqual(kinds(out), ["rerun_interrupted_ci"])
+        [op] = [o for kind, o in out.staged if kind == "operations" and o["status"] == "planned"]
+        self.assertEqual(op["proposed"]["marker"], "ci-rerun:777@1")
+        # Without the runner-loss annotation the same CI is a failure.
+        out = tick(record(), ci=snapshot)
+        self.assertEqual(kinds(out)[:1], ["record_ci_failure"])
+
     def test_a_confirmed_rerun_releases_the_operation_and_is_awaited(self):
         _out, rec, op = self.planned()
         ops = {op["operation_id"]: op}
@@ -905,13 +920,64 @@ class TestInterruptedRerun(unittest.TestCase):
         out = tick(rec, ci=interrupted_ci())
         self.assertEqual(kinds(out), [])
         self.assertIn("paused", out.report["observation"][0]["note"])
-        # A planned rerun is not launched while paused.
+
+    def test_a_pause_closes_the_planned_rerun_so_park_and_a_late_resume_apply(self):
+        """The workflow refuses a paused record, so a planned rerun cannot
+        get a receipt while paused: it is closed as failed and released
+        instead of fencing `park` and a stale `resume` forever."""
         _out, planned, op = self.planned()
-        paused = dict(planned, paused=True, paused_reason="maintenance", paused_by="human",
-                      paused_at=NOW)
-        out = tick(paused, ci=interrupted_ci(), operations={op["operation_id"]: op},
-                   now=T + timedelta(minutes=10))
+        ops = {op["operation_id"]: op}
+        # While the operation is open, the pause holds it and park is refused.
+        paused = apply_command(planned, commands.parse("/upstreaming pause reason=maintenance"),
+                               policy_=POLICY, operations=ops).record
+        self.assertTrue(paused["paused"])
+        refused = apply_command(paused, commands.parse(
+            f"/upstreaming park revision={paused['revision']} reason=later"),
+            policy_=POLICY, operations=ops)
+        self.assertIsNone(refused.event)
+        self.assertIn("is open", refused.reason)
+        out = tick(paused, ci=interrupted_ci(), operations=ops, now=T + timedelta(minutes=10))
         self.assertEqual(out.report["dev_pr_requests"], [])
+        self.assertEqual(kinds(out), [])
+        self.assertEqual(out.report["controller"]["ci_rerun_closures"][0]["closed"],
+                         "the contribution is paused")
+        [closed] = [o for kind, o in out.staged if kind == "operations"]
+        self.assertEqual(closed["status"], "failed")
+        after = final(out, paused)
+        self.assertIsNone(after["active_operation_id"])
+        self.assertTrue(after["paused"])
+        self.assertEqual(engine.state_key(after), "development.waiting_ci")
+        self.assertEqual(after["revision"], paused["revision"])
+        schemas.validate("contribution", after)
+        ops = {closed["operation_id"]: closed}
+        # Nothing is planned again while paused.
+        again = tick(after, ci=interrupted_ci(), operations=ops, now=T + timedelta(minutes=20))
+        self.assertEqual((kinds(again), [o for kind, o in again.staged if kind == "operations"]),
+                         ([], []))
+        # Park is accepted.
+        parked = apply_command(after, commands.parse(
+            f"/upstreaming park revision={after['revision']} reason=later"),
+            policy_=POLICY, operations=ops, now=NOW)
+        self.assertIsNotNone(parked.event, parked)
+        self.assertEqual(engine.state_key(parked.record).split(".")[0], "parked")
+        # Resume after more than refresh.stale_after_days is accepted (the
+        # stale stop restarts from planning).
+        late = (datetime.fromisoformat(NOW) + timedelta(days=8)).isoformat()
+        resumed = apply_command(after, commands.parse(
+            f"/upstreaming resume revision={after['revision']} reason=back"),
+            policy_=POLICY, operations=ops, now=late)
+        self.assertEqual(resumed.event["kind"], "resume_stale")
+        self.assertFalse(resumed.record.get("paused"))
+        # A resume within it keeps the state, and the first observation after
+        # it reruns within the budget.
+        resumed = apply_command(after, commands.parse(
+            f"/upstreaming resume revision={after['revision']} reason=back"),
+            policy_=POLICY, operations=ops, now=NOW)
+        self.assertEqual(resumed.event["kind"], "resume_pause")
+        out = tick(resumed.record, ci=interrupted_ci(), operations=ops,
+                   now=T + timedelta(minutes=30))
+        self.assertEqual(kinds(out), ["rerun_interrupted_ci"])
+        self.assertEqual(final(out, resumed.record)["budget"]["reruns"]["interrupted"], 2)
 
     def test_a_moved_head_closes_the_operation(self):
         _out, rec, op = self.planned()

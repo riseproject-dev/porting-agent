@@ -68,6 +68,20 @@ class InterruptedJobs(unittest.TestCase):
                       _job(2, "test riscv64", "failure", runner_lost=False)])
         self.assertEqual(v.state, "failed")
 
+    def test_a_blocking_job_that_lost_its_runner_never_passes(self):
+        """A job no required pattern names that failed after it lost its
+        runner is interrupted: the head is not passed, so it is never
+        nominated while the gate, reading the same CI unclassified, calls it
+        failed. A publishing job the fork has no credentials for stays out."""
+        lost = _job(2, "lint", "failure", runner_lost=True)
+        v = _verdict([_job(1, "build riscv64", "success"), lost])
+        self.assertEqual((v.state, [j["id"] for j in v.interrupted_jobs]), ("not_executed", [2]))
+        self.assertEqual(_verdict([_job(1, "build riscv64", "success"),
+                                   dict(lost, runner_lost=False)]).state, "failed")
+        v = _verdict([_job(1, "build riscv64", "success"),
+                      _job(2, "upload to pypi", "failure", runner_lost=True)])
+        self.assertEqual(v.state, "passed")
+
     def test_without_classification_the_verdict_and_evidence_are_unchanged(self):
         """The gate, CI on the clean head, and upstream review read CI
         without classification: their verdicts and evidence are exactly

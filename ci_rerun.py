@@ -12,8 +12,8 @@ confirmed, never requested again, and a rerun operation is never left
 
 Two paths use it, and no workflow of its own:
 
-* the flaky path: the repair worker reports ``no_change`` (a failure not
-  caused by the patch); the trusted publication job of the worker run, or
+* the flaky path: a development worker reports ``no_change`` (a failure
+  not caused by the patch); the trusted publication job of the worker run, or
   of its publish-only retry, checks the Result (``preflight``, no token),
   then requests ``rerun-failed-jobs`` with a token for the one fork that
   carries only ``actions: write`` and reads the new attempt back
@@ -32,8 +32,9 @@ Two paths use it, and no workflow of its own:
 
 The fork token comes from ``UPSTREAMING_FORK_TOKEN`` (``publish`` and
 ``operation``) and is used for the rerun request only; the fork is read with
-the job's own token (``GH_TOKEN``). Annotation text and every other worker or GitHub string is
-only compared against constants, never stored or rendered.
+the job's own token (``GH_TOKEN``). Annotation text and every other worker
+or GitHub string is only compared against constants, never stored or
+rendered.
 """
 from __future__ import annotations
 
@@ -420,15 +421,20 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
     newer = answered is not None and any(
         r["id"] == answered[0] and r["head_sha"] == head and r["run_attempt"] > answered[1]
         for r in snap.runs)
-    # CI is already running again only when the run the record answered has
-    # a newer attempt, or a run on the head is in progress on a later attempt
-    # (a rerun of a run that held a failed job). Another run still in
+    # CI is already running again when the run the record answered has a
+    # newer attempt (that run is not rerun again), or a run on the head is
+    # in progress on a later attempt (a rerun of a run that held a failed
+    # job), and no other completed run on the head still holds a failed job:
+    # an earlier attempt of this publication that reran only some of the
+    # runs is completed by rerunning the others. Another run still in
     # progress (a fresh or unrelated workflow) does not hold the failed jobs
     # back: the completed failed runs are rerun.
+    if newer:
+        runs = [r for r in runs if r["run_id"] != answered[0]]
     rerunning = any(r.get("head_sha") == head and r.get("status") != "completed"
                     and int(r.get("run_attempt") or 1) > 1
                     for r in ci_evidence.latest_attempts(snap.runs))
-    if newer or rerunning:
+    if (newer or rerunning) and not runs:
         return _outcome("no_change", "CI on the head is already running again",
                         rerun={"status": "superseded", "runs": []})
     if not runs:

@@ -583,8 +583,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                         {"operation_id": closed["operation_id"], "contribution_id": cid,
                          "closed": why})
                     continue
-                if c.get("paused"):
-                    continue
             due = attempts == 0 or (
                 waited and attempts < lifecycle.budget_limit("operation_launch", policy))
             if due:
@@ -1140,9 +1138,13 @@ DEVELOPMENT_PR_KINDS = frozenset({"dev_pr_create", "dev_pr_update", "ci_rerun"})
 
 
 def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict) -> str | None:
-    """Why a planned ``ci_rerun`` operation is closed as failed: its
-    launches are spent without a receipt, or it no longer matches the record
-    (another head, revision, or state)."""
+    """Why a planned ``ci_rerun`` operation is closed as failed: the
+    contribution is paused (the workflow refuses a paused record, so the
+    operation would otherwise stay open through the pause and fence `park`
+    and a stale `resume`), its launches are spent without a receipt, or it
+    no longer matches the record (another head, revision, or state)."""
+    if record.get("paused"):
+        return "the contribution is paused"
     if op["target"].get("expected_head") != (record.get("fork") or {}).get("head_sha") \
             or op["revision"] != record["revision"] \
             or engine.state_key(record) != "development.waiting_ci":

@@ -385,7 +385,7 @@ jobs:
                   ../in/preflight.json > ../in/outcome.json
               fi
               if [ "$(jq -r .status ../in/preflight.json)" = no_change ]; then
-                # A failure the repair worker found not caused by the patch:
+                # A failure the development worker found not caused by the patch:
                 # trusted code reruns the failed jobs on the exact head when
                 # `request_ci_rerun` applies, with a token of its own.
                 uv run --locked python -m ci_rerun preflight \
