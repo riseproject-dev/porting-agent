@@ -151,7 +151,7 @@ flowchart TB
     closed_idle --> end_3(( ))
 ```
 
-On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and surfaced on the tracking issue, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
+On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and linked from the event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
 
 ## Investigation and provisioning failure cases
 

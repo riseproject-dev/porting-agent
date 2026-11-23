@@ -986,8 +986,8 @@ LIFECYCLE: dict[str, State] = {
             ("record_explanation", SELF): Transition(
                 _O, None, ("authorized explanation-only inquiry",),
                 _E(sets=_PROCESSED_IDS),
-                description="The comment is recorded and surfaced on the tracking issue. No "
-                            "Work is requested and nothing is answered automatically; the "
+                description="The comment is recorded and linked from the event log of the "
+                            "website. No Work is requested and nothing is answered automatically; the "
                             "revision, the candidate head, and the CI evidence are kept."),
             ("record_head_change", "development.waiting_ci"): Transition(
                 _O, None,
@@ -1269,8 +1269,8 @@ LIFECYCLE: dict[str, State] = {
                 _O, None, ("authorized explanation-only inquiry",),
                 _E(sets=("processed_review_ids", "processed_review_comment_ids",
                         "processed_pr_conversation_comment_ids")),
-                description="Recorded and surfaced on the tracking issue; nothing is posted on the "
-                            "upstream PR. Revision and CI evidence are kept."),
+                description="Recorded and linked from the event log of the website; "
+                            "nothing is posted on the upstream PR. Revision and CI evidence are kept."),
             ("record_head_change", "upstream_review.waiting_human"): Transition(
                 _O, None,
                 ("the upstream PR head changed and the pipeline did not publish the change",),
@@ -1902,8 +1902,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "contribution in its phase while a bounded repair is prepared and tested, and "
                      "an actionable review comment is included in the next repair. An "
                      "explanation-only comment is answered on the development PR; at the "
-                     "submission gate and on the upstream PR it is recorded and surfaced on the "
-                     "tracking issue, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, "
+                     "submission gate and on the upstream PR it is recorded and linked from the "
+                     "event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, "
                      "`resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, "
                      "under the rules below."),
         ),

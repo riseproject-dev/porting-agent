@@ -417,8 +417,10 @@ def render(states: list[dict], state_root: Path | None = None) -> str:
         [
             "</table>",
             "",
-            "Status changes are recorded by the automated porting pipeline. "
-            "Use the tracking issue for the available actions.",
+            "Status changes are recorded by the automated porting pipeline. The tracking issue "
+            "receives an entry when a step needs a human (a gate, a human wait, a pause, a park, "
+            "and their reminders) and when a contribution ends; every other event is shown only "
+            "in the event log above.",
             "",
         ]
     )

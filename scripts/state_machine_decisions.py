@@ -539,8 +539,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
         "Explanations in upstream review",
         "Replies to reviewers are only safe on the development PR.",
-        "In `upstream_review`, `record_explanation` records the comment and surfaces it on the "
-        "tracking issue; nothing is posted on the upstream PR.",
+        "In `upstream_review`, `record_explanation` records the comment and links it from the "
+        "event log of the website; nothing is posted on the upstream PR.",
         ("upstream_review.waiting_ci",),
         edges=(("upstream_review.waiting_ci", "record_explanation"),),
         highlighted=(("upstream_review.waiting_ci", "record_explanation"),),
@@ -1069,7 +1069,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "What an explanation-only comment on the development PR does while the contribution "
         "waits for `submit-upstream`.",
         "`record_explanation` is a row of `handoff.awaiting_submission` that keeps the state: "
-        "the comment is recorded and surfaced on the tracking issue. No Work is requested and "
+        "the comment is recorded and linked from the event log of the website. No Work is requested and "
         "nothing is answered automatically; the revision, the candidate head, and the CI "
         "evidence are kept, so the pending `submit-upstream` request stays valid.",
         ("handoff.awaiting_submission", "handoff.review_due"),

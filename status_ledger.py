@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Append concise App-authored lifecycle entries to tracking issues."""
+"""Append concise App-authored lifecycle entries to tracking issues, for the
+events that need a human."""
 from __future__ import annotations
 
 import json
@@ -507,6 +508,82 @@ def render(event: dict, record: dict, run_url: str) -> str:
     return visible + details + "\n\n" + marker
 
 
+# --------------------------------------------------------------------------
+# Which events reach the tracking issue
+#
+# The tracking issue receives an entry only when a human is needed: when an
+# event leaves the contribution waiting on a human, and when it ends the
+# contribution. Everything else is shown in the event log of the status page
+# only. The lifecycle table decides it:
+#
+# - a destination state of a kind that waits for a human step
+#   (`lifecycle.REMINDER_KINDS`: `gate`, `human_wait`, `locked`), entered by
+#   the event or kept at a new revision (the commands a human posts name the
+#   revision, as after the first `resume` of a paused human wait);
+# - the stop flag set by the event (`paused` in the event's `to`), whichever
+#   verb of `lifecycle.FLAGS` set it, `pause_on_processing_error` included;
+# - a destination state of kind `generation_end` (park) or `terminal`
+#   (closed, abandoned, released), entered by the event;
+# - a reminder of a pending human step: a rule that applies in exactly the
+#   states of those kinds and keeps the state (`record_reminder`).
+#
+# Replies to commands are posted by `command_feedback` and `command_reactions`.
+
+HUMAN_KINDS = frozenset(lifecycle.REMINDER_KINDS)
+END_KINDS = frozenset({"generation_end", "terminal"})
+REMINDER_VERBS = frozenset(
+    verb for verb, rule in lifecycle.RULES.items()
+    if rule.target == lifecycle.SELF and frozenset(rule.kinds) == HUMAN_KINDS)
+
+
+def state_kind(state: str | None) -> str | None:
+    """The table kind of ``state``. A state the table does not have (a legacy
+    activity) takes the kind of its phase when every state of that phase has
+    the same kind, as `parked`, `closed`, and `released` do."""
+    if not state:
+        return None
+    if state in lifecycle.LIFECYCLE:
+        return lifecycle.LIFECYCLE[state].kind
+    phase = lifecycle.state_phase(state)
+    kinds = {s.kind for key, s in lifecycle.LIFECYCLE.items() if lifecycle.state_phase(key) == phase}
+    return kinds.pop() if len(kinds) == 1 else None
+
+
+def event_states(events: list[dict]) -> list[tuple[str | None, str | None]]:
+    """The source and destination state of each event of one contribution,
+    in sequence order. An event of the table names both in its `details`; an
+    older event records only the fields it changed (`from`, `to`), which are
+    folded over the events before it."""
+    phase, activity = None, "idle"
+    states = []
+    for event in sorted(events, key=lambda e: e["sequence"]):
+        details = event.get("details") or {}
+        before, to = event.get("from") or {}, event.get("to") or {}
+        source = details.get("from_state")
+        if not source and (before.get("phase") or phase):
+            source = f"{before.get('phase') or phase}.{before.get('activity') or activity}"
+        target = details.get("to_state")
+        if not target:
+            new_phase, new_activity = to.get("phase") or phase, to.get("activity") or activity
+            target = f"{new_phase}.{new_activity}" if new_phase else None
+        if target:
+            phase, activity = target.split(".", 1)
+        states.append((source, target))
+    return states
+
+
+def notifies(event: dict, source: str | None, target: str | None) -> bool:
+    """Whether ``event`` is posted on the tracking issue (see above)."""
+    if event["kind"] in REMINDER_VERBS or (event.get("details") or {}).get("verb") in REMINDER_VERBS:
+        return True
+    if (event.get("to") or {}).get("paused") is True:
+        return True
+    kind = state_kind(target)
+    if kind in HUMAN_KINDS:
+        return target != source or event.get("revision_bumped") is True
+    return kind in END_KINDS and target != source
+
+
 class Api:
     def __init__(self, token: str):
         if not token:
@@ -558,15 +635,31 @@ def publish(root: Path, report: dict, token: str, run_url: str) -> list[dict]:
         if path.is_file() and not path.is_symlink()
     }
     paths = sorted(reported | durable)
+    events = {path: json.loads((root / path).read_text()) for path in paths}
+    # Whether an event is posted depends on the events before it, so each
+    # contribution's events are read in sequence order.
+    posted: dict[Path, bool] = {}
+    for cid_file in sorted({path.parent.name for path in paths}):
+        own = sorted((p for p in paths if p.parent.name == cid_file),
+                     key=lambda p: events[p]["sequence"])
+        for path, (source, target) in zip(own, event_states([events[p] for p in own])):
+            posted[path] = notifies(events[path], source, target)
     receipts = []
     comment_cache: dict[int, list[dict]] = {}
-    for path in sorted(paths):
-        event = json.loads((root / path).read_text())
+    for path in paths:
+        if not posted[path]:
+            # Shown in the event log of the status page only. Not a failure,
+            # and never posted later.
+            receipts.append({"event": str(path), "status": "status_page_only"})
+            continue
+        event = events[path]
         cid_file = path.parent.name
         record = json.loads((root / ".state/contributions" / f"{cid_file}.json").read_text())
         number = record["tracking_issue"]["number"]
         marker = f"<!-- upstreaming-ledger:{record['contribution_id']}:{event['sequence']} -->"
-        comments = comment_cache.setdefault(number, issue_comments(api, number))
+        if number not in comment_cache:
+            comment_cache[number] = issue_comments(api, number)
+        comments = comment_cache[number]
         existing = next((comment for comment in comments if marker in (comment.get("body") or "")), None)
         if existing:
             if (existing.get("user") or {}).get("login") != "riseproject-dev[bot]":
@@ -581,7 +674,6 @@ def publish(root: Path, report: dict, token: str, run_url: str) -> list[dict]:
         comments.append(observed)
         receipts.append({"event": str(path), "comment_id": observed["id"], "status": "created"})
     return receipts
-
 
 if __name__ == "__main__":
     import argparse

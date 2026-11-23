@@ -227,3 +227,148 @@ class TestStatusLedger(unittest.TestCase):
                 )
         self.assertEqual(receipts[0]["status"], "created")
         self.assertIn("run-2", api.comment["body"])
+
+
+class PostedApi(FakeApi):
+    """An issue that already carries ``comments``."""
+
+    def __init__(self, comments):
+        super().__init__()
+        self.posted = comments
+
+    def request(self, method, path, body=None):
+        if path.endswith("?per_page=100"):
+            self.calls.append((method, path, body))
+            return list(self.posted)
+        return super().request(method, path, body)
+
+
+def table_event(verb, source, target, *, sequence=1, bumped=False, to=None):
+    return {"schema_version": 1, "contribution_id": "example--proj/12", "sequence": sequence,
+            "at": NOW, "kind": verb, "from": {}, "to": dict(to or {}),
+            "cause": {"type": "tick", "id": None}, "revision_bumped": bumped,
+            "details": {"verb": verb, "from_state": source, "to_state": target}}
+
+
+class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
+    """The tracking issue receives the events that need a human; the
+    lifecycle table decides which."""
+
+    def notifies(self, event):
+        (source, target), = status_ledger.event_states([event])
+        return status_ledger.notifies(event, source, target)
+
+    def test_every_table_edge_posts_by_the_kind_of_its_destination(self):
+        human = set(lifecycle.REMINDER_KINDS)
+        for edge in lifecycle.table_edges():
+            with self.subTest(edge=edge[:3]):
+                kind = lifecycle.LIFECYCLE[edge.target].kind
+                bumped = edge.transition.effects.revision == "bump"
+                event = table_event(edge.verb, edge.source, edge.target, bumped=bumped)
+                entered = edge.source != edge.target
+                expected = (edge.verb in status_ledger.REMINDER_VERBS
+                            or (kind in human and (entered or bumped))
+                            or (kind in ("generation_end", "terminal") and entered))
+                self.assertEqual(self.notifies(event), expected)
+
+    def test_reminders_are_the_rule_of_the_human_kinds(self):
+        self.assertEqual(status_ledger.REMINDER_VERBS, {"record_reminder"})
+        self.assertEqual(set(lifecycle.rule_states("record_reminder")),
+                         {k for k, s in lifecycle.LIFECYCLE.items()
+                          if s.kind in status_ledger.HUMAN_KINDS})
+
+    def test_every_pause_setter_posts(self):
+        for verb in lifecycle.FLAGS["paused"].set_by:
+            with self.subTest(verb=verb):
+                event = table_event(verb, "development.waiting_ci", "development.waiting_ci",
+                                    to={"paused": True})
+                self.assertTrue(self.notifies(event))
+
+    def test_routine_events_stay_off_the_issue(self):
+        for verb, source, target in (
+                ("record_late_effect", "handoff.awaiting_submission", "handoff.awaiting_submission"),
+                ("record_explanation", "handoff.awaiting_submission", "handoff.awaiting_submission"),
+                ("request_patch", "development.fix_needed", "development.agent_running"),
+                ("record_publish_success", "development.agent_running", "development.waiting_ci"),
+                ("request_ci_rerun", "development.agent_running", "development.waiting_ci")):
+            with self.subTest(verb=verb):
+                self.assertFalse(self.notifies(table_event(verb, source, target)))
+
+    def test_closure_park_and_gate_post(self):
+        for verb, source, target in (
+                ("abandon", "parked.idle", "closed.idle"),
+                ("park_contribution", "development.waiting_ci", "parked.idle"),
+                ("nominate_for_handoff", "development.waiting_ci", "handoff.awaiting_submission"),
+                ("exhaust_work_total", "development.fix_needed", "development.waiting_human")):
+            with self.subTest(verb=verb):
+                self.assertTrue(self.notifies(table_event(verb, source, target)))
+
+    def test_resume_of_a_paused_human_wait_posts_its_new_revision(self):
+        event = table_event("resume_pause", "development.waiting_human",
+                            "development.waiting_human", bumped=True, to={"paused": False})
+        self.assertTrue(self.notifies(event))
+
+    def test_older_events_are_placed_by_folding_their_changed_fields(self):
+        events = [
+            {"sequence": 0, "kind": "intake:accepted", "from": {}, "to": {"phase": "queued"}},
+            {"sequence": 1, "kind": "fork_provisioned", "from": {"phase": "provisioning"},
+             "to": {"phase": "development"}},
+            {"sequence": 2, "kind": "activity", "from": {"activity": "waiting_capacity"},
+             "to": {"activity": "waiting_human"}},
+            {"sequence": 3, "kind": "dossier_parked", "from": {}, "to": {"phase": "parked"}},
+        ]
+        states = status_ledger.event_states(events)
+        self.assertEqual(states[2], ("development.waiting_capacity", "development.waiting_human"))
+        self.assertEqual([status_ledger.notifies(e, *s) for e, s in zip(events, states)],
+                         [False, False, True, True])
+
+    def write(self, root, record, events):
+        cid = record["contribution_id"].replace("/", "--")
+        (root / ".state/contributions").mkdir(parents=True, exist_ok=True)
+        (root / ".state/contributions" / f"{cid}.json").write_text(json.dumps(record))
+        directory = root / ".state/events" / cid
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for event in events:
+            path = directory / f"{event['sequence']:08d}.json"
+            path.write_text(json.dumps(event))
+            paths.append(str(path.relative_to(root)))
+        return paths
+
+    def test_publish_reports_status_page_only_events_without_any_request(self):
+        record = contribution(phase="development", activity="agent_running", revision=3)
+        event = table_event("request_patch", "development.fix_needed", "development.agent_running")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = self.write(root, record, [event])
+            api = FakeApi()
+            with patch("status_ledger.Api", return_value=api):
+                for _tick in range(2):
+                    receipts = status_ledger.publish(root, {"written": paths}, "token", "run")
+                    self.assertEqual(receipts, [{"event": paths[0], "status": "status_page_only"}])
+        self.assertEqual(api.calls, [])
+
+    def test_an_already_posted_event_is_not_posted_again_and_a_reminder_is(self):
+        import engine
+        from tests.helpers import awaiting_submission, policy
+        record = awaiting_submission(revision=6)
+        gate = table_event("nominate_for_handoff", "development.waiting_ci",
+                           "handoff.awaiting_submission", sequence=0, bumped=True)
+        late = table_event("record_late_effect", "handoff.awaiting_submission",
+                           "handoff.awaiting_submission", sequence=1)
+        reminder = engine.apply_transition(record, "record_reminder", policy=policy(),
+                                           now="2026-11-30T12:00:00+00:00", cause_id="reminder-6")
+        self.assertTrue(reminder.accepted)
+        reminder_event = dict(reminder.event, sequence=2)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = self.write(root, reminder.record, [gate, late, reminder_event])
+            posted = {"id": 1, "user": {"login": "riseproject-dev[bot]"},
+                      "body": "x <!-- upstreaming-ledger:example--proj/12:0 -->"}
+            api = PostedApi([posted])
+            with patch("status_ledger.Api", return_value=api):
+                receipts = status_ledger.publish(root, {"written": paths}, "token", "run")
+        self.assertEqual([r["status"] for r in receipts], ["existing", "status_page_only", "created"])
+        self.assertEqual([c[0] for c in api.calls], ["GET", "POST", "GET"])
+        self.assertIn("<!-- upstreaming-ledger:example--proj/12:2 -->", api.comment["body"])
+        self.assertIn("Reminder", api.comment["body"])
