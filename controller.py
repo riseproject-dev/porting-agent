@@ -62,10 +62,6 @@ class Inputs:
     resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
-    # The fork head observed this tick for a contribution in
-    # `development.fix_needed` whose recorded head differs; no Work is
-    # allocated on the recorded head while they differ.
-    stale_heads: dict[str, str] = field(default_factory=dict)
     # The queue graphs (``work.graph_id``) of Work that already returned a
     # Result or that the queue holds as terminal. A terminal graph is never
     # submitted again, so no allocation may name one.
@@ -690,11 +686,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if spent:
                 _exhaust(c, due, spent, ci, by_id, res, policy, now)
                 continue
-            stale = inputs.stale_heads.get(c["contribution_id"])
             verb, why = _allocation_verb(due, ci, ops, policy, now, facts)
-            if verb is not None and stale:
-                verb, why = None, (f"the fork head moved to {stale} while Work is due; no Work is "
-                                   "requested for the recorded head")
             if verb is None:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                 continue

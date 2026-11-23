@@ -559,20 +559,33 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual(evidence["kind"], "human_inquiry")
         self.assertNotIn("review_feedback", observed.report[0])
 
-    def test_nothing_is_observed_while_development_work_is_due(self):
-        """`development.fix_needed` has no observation row: no review, CI,
-        or head change is recorded there."""
+    def test_only_a_head_change_is_observed_while_development_work_is_due(self):
+        """`development.fix_needed` has one observation row: a moved head
+        takes `record_head_change` to `development.waiting_ci`. An unchanged
+        head reads no review or CI there."""
         import observe_ci
         rec = contribution(phase="development", activity="fix_needed", revision=8)
-        with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_B}), \
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": rec["fork"]["head_sha"]}), \
              mock.patch("observe_ci.collect.development_review_feedback") as feedback, \
              mock.patch("observe_ci.collect.ci_snapshot") as snapshot:
             observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
                                           contracts={}, policy=policy(), now=NOW)
         self.assertEqual(observed.staged, [])
-        self.assertEqual(observed.report[0]["stale_head"], SHA_B)
         feedback.assert_not_called()
         snapshot.assert_not_called()
+        moved = SHA_B if rec["fork"]["head_sha"] != SHA_B else SHA_A
+        pending_ci = collect.CiSnapshot(repository={"id": 2, "full_name": "riseproject-upstreaming/proj"},
+                                        head_sha=moved, runs=[], jobs_by_run={})
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": moved}), \
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
+             mock.patch("observe_ci.collect.ci_snapshot", return_value=pending_ci):
+            observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
+                                          contracts={}, policy=policy(), now=NOW)
+        events = [item["kind"] for kind, item in observed.staged if kind == "events"]
+        final = [item for kind, item in observed.staged if kind == "contributions"][-1]
+        self.assertEqual(events, ["record_head_change"])
+        self.assertEqual((final["activity"], final["revision"], final["fork"]["head_sha"]),
+                         ("waiting_ci", 9, moved))
 
     def test_explanation_only_comments_are_separated_from_repairs(self):
         self.assertEqual(collect.review_comment_intent(

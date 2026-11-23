@@ -10,7 +10,8 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   reported and changes nothing; resolve uncertain branch operations by
   discovery;
 * in ``development.fix_needed``, take ``record_head_change`` for a fork head
-  that moved while Work is due (back to ``development.waiting_ci``);
+  that moved while Work is due (to ``development.waiting_ci``, which is then
+  observed);
 * in ``development.waiting_ci``, take the table's rows for what is observed:
   ``record_head_change``, ``record_pr_mismatch``, ``record_explanation``,
   ``record_actionable_review``, then for CI on the exact head
@@ -457,12 +458,12 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                          *, contracts: dict, policy: dict, now: str) -> None:
     """Observe a contribution in development by the table's rows.
 
-    Only ``development.waiting_ci`` has observation rows. There, in order:
+    ``development.waiting_ci`` is observed by its rows, in order:
     ``record_head_change`` for a new fork head; ``record_pr_mismatch`` for a
     development PR that does not match the record; ``record_explanation``
     for an explanation-only comment; ``record_actionable_review`` for an
     actionable review (the observation then ends in
-    ``development.fix_needed``, which has no observation row); and, for CI
+    ``development.fix_needed``, which reads no CI); and, for CI
     on the exact head, ``record_ci_failure`` for an executed blocking
     failure of a run and attempt other than the one ``request_ci_rerun``
     answered (``budget.reruns.answered_ci_evidence_id``), or
@@ -472,18 +473,17 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     a CI run that waits for approval is collector health, not a state.
 
     ``development.agent_running`` (requested Work, or a Result held for
-    publication) and ``development.fix_needed`` (Work is due) are not
-    observed; a fork head that moved while Work is due is reported in
-    ``stale_head``, and no Work is allocated for it while it differs."""
+    publication) is not observed. ``development.fix_needed`` (Work is due)
+    has one observation row: a fork head that moved there (a human push)
+    takes ``record_head_change`` to ``development.waiting_ci``, which is
+    then observed in the same tick; an unchanged head there is not read
+    further."""
     state = engine.state_key(rec)
     recorded = rec["fork"].get("head_sha")
-    if state != "development.waiting_ci":
-        if head != recorded and state == "development.fix_needed":
-            entry["stale_head"] = head
-            entry["note"] = ("the fork head differs from the recorded head while Work is due; no "
-                             "row of development.fix_needed records it")
-        else:
-            entry["note"] = f"{state} has no observation row"
+    if state not in ("development.waiting_ci", "development.fix_needed") \
+            or (state == "development.fix_needed" and head == recorded):
+        entry["note"] = (f"{state} has no observation row" if state != "development.fix_needed"
+                         else "development Work is due on the recorded head")
         return
     cur = rec
     if head != recorded:

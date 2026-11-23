@@ -360,10 +360,11 @@ flowchart TB
     development_waiting_ci -->|exhaust_interrupted_reruns| development_waiting_human
     development_waiting_human -->|resume_ci<br/>/upstreaming resume| development_waiting_ci
     development_waiting_ci -->|record_head_change| development_waiting_ci
+    development_fix_needed -->|record_head_change| development_waiting_ci
     development_waiting_ci -->|record_pr_mismatch| development_waiting_human
 ```
 
-Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, which reruns the jobs. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair.
+Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, which reruns the jobs. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair. A push to the development branch while CI is awaited or Work is due records the new head and waits for its CI.
 
 ### Failure case 4: a repair budget is exhausted
 

@@ -1457,3 +1457,19 @@ flowchart TB
     handoff_waiting_ci ==>|require_clean_head_ci| handoff_waiting_human
     handoff_waiting_human ==>|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
 ```
+
+### Head change while development Work is due
+
+`development.fix_needed` had no row for a fork head that moved while Work was due, so no Work could be requested for the recorded head and nothing recorded the new one.
+
+**Change.** A head change in `development.fix_needed` takes `record_head_change` to `development.waiting_ci`: the new head is recorded, the revision is bumped, the rerun counts start again, and CI is awaited for the new head.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+
+    development_fix_needed ==>|record_head_change| development_waiting_ci
+```

@@ -928,6 +928,14 @@ LIFECYCLE: dict[str, State] = {
                 description="The reply states the number of Work allocations spent in this "
                             "generation and names both `/upstreaming resume`, which starts "
                             "`work_total` again, and `/upstreaming park`."),
+            ("record_head_change", "development.waiting_ci"): Transition(
+                _O, None,
+                ("the observed fork head differs from the recorded head",),
+                _E(revision="bump", sets=("fork.head_sha", RERUNS),
+                  clears=("last_ci_evidence_id",)),
+                description="A push to the development branch while Work is due (a human "
+                            "push): the new head is recorded and CI is awaited for it, so no "
+                            "Work is requested for the head the record names any more."),
             ("refresh_investigation", "queued.idle"): _REFRESH,
         }),
     "development.waiting_human": State(
@@ -2035,6 +2043,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_ci", "exhaust_interrupted_reruns"),
                  ("development.waiting_human", "resume_ci"),
                  ("development.waiting_ci", "record_head_change"),
+                 ("development.fix_needed", "record_head_change"),
                  ("development.waiting_ci", "record_pr_mismatch")),
                 start="development.waiting_ci",
                 text="Build and test failures and actionable comments request repair automatically. "
@@ -2047,7 +2056,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "carries the pending feedback present at allocation, and "
                      "`record_publish_success` clears exactly that feedback. Work that carries "
                      "feedback never takes `request_ci_rerun`. Explanation-only comments do not "
-                     "bump the revision, invalidate CI, or request repair."),
+                     "bump the revision, invalidate CI, or request repair. A push to the "
+                     "development branch while CI is awaited or Work is due records the new head "
+                     "and waits for its CI."),
             Diagram(
                 "Failure case 4: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",

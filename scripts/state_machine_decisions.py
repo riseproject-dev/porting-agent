@@ -696,6 +696,17 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("handoff.waiting_ci", "require_clean_head_ci"),
                      ("handoff.waiting_human", "resume_clean_head_ci")),
     ),
+    Item(
+        "Head change while development Work is due",
+        "`development.fix_needed` had no row for a fork head that moved while Work was due, so "
+        "no Work could be requested for the recorded head and nothing recorded the new one.",
+        "A head change in `development.fix_needed` takes `record_head_change` to "
+        "`development.waiting_ci`: the new head is recorded, the revision is bumped, the rerun "
+        "counts start again, and CI is awaited for the new head.",
+        ("development.fix_needed", "development.waiting_ci"),
+        edges=(("development.fix_needed", "record_head_change"),),
+        highlighted=(("development.fix_needed", "record_head_change"),),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (

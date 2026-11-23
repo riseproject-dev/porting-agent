@@ -1673,8 +1673,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 contributions[by_cid[r["contribution_id"]]] = r
         out.staged.extend(obs.staged)
         out.report["observation"] = obs.report
-        stale_heads = {entry["contribution"]: entry["stale_head"] for entry in obs.report
-                       if entry.get("stale_head")}
         # Recovery is evaluated before live CI. If CI accepts the current head
         # in this same tick, do not launch a dispatcher for the now-obsolete
         # retry request.
@@ -1682,8 +1680,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             item for item in out.report["dispatch_relaunch"]
             if (contributions[by_cid[item["contribution_id"]]].get("active_work") is not None
                 and contributions[by_cid[item["contribution_id"]]]["phase"] != "handoff")]
-    else:
-        stale_heads = {}
 
     # 3. Commands, intake and work selection (controller). The failing CI job
     # of a head is decided from the evidence the record names, including the
@@ -1708,7 +1704,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {},
-                                                   stale_heads=stale_heads,
                                                    spent_graphs=spent_graphs,
                                                    resolution_evidence={
                                                        e["evidence_id"]: e for e in evidence.values()

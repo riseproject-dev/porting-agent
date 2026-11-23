@@ -422,13 +422,34 @@ class TestObservation(unittest.TestCase):
         self.assertIsNotNone(after[-1]["next_poll_at"])
         self.assertEqual([kind for kind, _ in observed.staged], ["contributions"])
 
-    def test_a_head_that_moved_while_work_is_due_requests_no_work(self):
-        rec = record("fix_needed")
+    def test_a_head_that_moved_while_work_is_due_waits_for_its_ci(self):
+        """A push while Work is due takes `record_head_change` from
+        `development.fix_needed` to `development.waiting_ci`: the new head
+        is recorded at a new revision, the CI evidence of the old head is
+        cleared, the rerun counts start again, and no Work is requested in
+        the tick. The CI of the new head is then read."""
+        rec = record("fix_needed", last_ci_evidence_id="ci-old",
+                     budget=dict(record()["budget"],
+                                 reruns={"head_sha": SHA_A, "flaky": 1,
+                                         "interrupted": 0}))
         out = tick(rec, head=SHA_B)
-        self.assertEqual((out.report["requested_effects"], kinds(out)), ([], []))
-        self.assertIn("the fork head moved", " ".join(
-            d["why"] for d in out.report["controller"]["deferred"]))
-        out = tick(rec, head=SHA_A)
+        after = final(out, rec)
+        self.assertEqual(kinds(out), ["record_head_change"])
+        self.assertEqual(out.report["requested_effects"], [])
+        self.assertEqual((engine.state_key(after), after["revision"], after["fork"]["head_sha"],
+                          after["last_ci_evidence_id"]),
+                         ("development.waiting_ci", rec["revision"] + 1, SHA_B, None))
+        self.assertEqual(after["budget"]["reruns"],
+                         {"head_sha": SHA_B, "flaky": 0, "interrupted": 0})
+        self.assertIsNotNone(after["next_poll_at"])
+        # A failure on the new head is recorded in the same tick, and the
+        # repair is requested for the new head.
+        failed = tick(rec, head=SHA_B, verdict="failed")
+        self.assertEqual(kinds(failed), ["record_head_change", "record_ci_failure", "request_repair"])
+        self.assertEqual(final(failed, rec)["fork"]["head_sha"], SHA_B)
+        self.assertEqual(failed.report["requested_effects"][0]["expected_head"], SHA_B)
+        # An unchanged head is not read: Work is requested for it.
+        out = tick(dict(rec, last_ci_evidence_id=None), head=SHA_A)
         self.assertEqual(kinds(out), ["request_patch"])
 
     def test_green_ci_at_the_gate_changes_nothing(self):
