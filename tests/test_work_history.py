@@ -9,6 +9,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -63,6 +64,11 @@ def steer(cid, body, *, at, authority=True, source="tracking_issue_comment"):
 
 def record():
     return contribution(phase="development", activity="agent_running")
+
+
+def steering_module():
+    import steering
+    return steering
 
 
 class TestBuild(unittest.TestCase):
@@ -623,12 +629,12 @@ class TestTick(unittest.TestCase):
         self.assertNotIn("Please keep", json.dumps(rec))
 
     def test_many_steering_items_are_recorded_in_the_same_tick(self):
-        many = [steer(i, "z" * 3900, at=f"2026-11-{1 + i // 24:02d}T{i % 24:02d}:00:00Z")
+        many = [steer(i, "z" * 150, at=f"2026-11-{1 + i // 24:02d}T{i % 24:02d}:00:00Z")
                 for i in range(1, 450)]
         with mock.patch("collect.steering", return_value={"items": many, "omitted": {}}):
             out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
         records = [e for k, e in out.staged if k == "evidence" and e["kind"] == "human_steering"]
-        self.assertGreater(len(records), 2)
+        self.assertGreater(len(records), 1)
         self.assertEqual(sum(len(r["data"]["items"]) for r in records), len(many))
         self.assertEqual(records[-1]["data"]["deferred"], 0)
         [history] = [e for k, e in out.staged if k == "evidence" and e["kind"] == "work_history"]
@@ -640,6 +646,69 @@ class TestTick(unittest.TestCase):
         self.assertNotIn("steering_deferred", history["data"]["omitted"])
         self.assertEqual(out.report["work_history"][0]["steering_evidence_ids"],
                          [r["evidence_id"] for r in records])
+
+    def test_the_steering_of_one_tick_is_bounded_in_bytes_newest_first(self):
+        """However much was written, what one tick records fits the state
+        commit: the newest steering is recorded, the rest is counted and
+        recorded by later ticks."""
+        import reconcile
+
+        many = [steer(i, "\u6f22" * 3900, at=f"2026-11-{1 + i // 24:02d}T{i % 24:02d}:00:00Z")
+                for i in range(1, 450)]
+        with mock.patch("collect.steering", return_value={"items": many, "omitted": {}}):
+            out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
+        self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
+        records = [e for k, e in out.staged if k == "evidence" and e["kind"] == "human_steering"]
+        size = sum(len(canonical_json(r).encode()) for r in records)
+        self.assertLessEqual(size, reconcile.STEERING_BYTES_PER_CONTRIBUTION)
+        recorded = [i["id"] for r in records for i in r["data"]["items"]]
+        self.assertIn(many[-1]["id"], recorded)
+        self.assertNotIn(many[0]["id"], recorded)
+        [history] = [e for k, e in out.staged if k == "evidence" and e["kind"] == "work_history"]
+        deferred = len(many) - len(recorded)
+        self.assertEqual(history["data"]["omitted"]["steering_deferred"], deferred)
+        self.assertEqual(out.report["work_history"][0]["steering_deferred"], deferred)
+        # The next history records the rest.
+        evidence = dict(self.evidence(), **{e["evidence_id"]: e for e in records})
+        rest = steering_module().pending(dev.final(out, None), {"items": many}, evidence)
+        self.assertEqual(rest, deferred)
+
+    def test_the_histories_of_one_tick_are_bounded_in_bytes(self):
+        import reconcile
+
+        with mock.patch("reconcile.HISTORY_BYTES_PER_TICK", reconcile.HISTORY_RECORD_BYTES - 1):
+            out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
+        self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
+        self.assertFalse([e for k, e in out.staged if k == "evidence"
+                          and e["kind"] == "work_history"])
+        self.assertIn("byte bound", out.report["work_history"][0]["deferred"])
+        # The next tick builds it.
+        again = dev.tick(dev.final(out, None), evidence=self.evidence())
+        self.assertTrue([e for k, e in again.staged if k == "evidence"
+                         and e["kind"] == "work_history"])
+
+    def test_a_steering_list_that_keeps_failing_stops_holding_the_work(self):
+        rec = dev.final(dev.tick(dev.record("waiting_ci"), verdict="failed",
+                                 evidence=self.evidence()), None)
+        failing = [collect.CollectError("GET x: HTTP 403", status=403)]
+
+        def read(api, record, authority, *, issue, degrade=False):
+            if not degrade:
+                raise failing[0]
+            return {"items": [], "omitted": {}, "unreadable": ["development_pr_review"],
+                    "failed": {"development_pr_review": 403}}
+        with mock.patch("collect.steering", side_effect=read):
+            # Within the grace, the contribution is skipped for the tick.
+            early = dev.tick(rec, evidence=self.evidence())
+            self.assertEqual(early.report["skipped_contributions"][0]["step"], "work_history")
+            late = dev.tick(rec, evidence=self.evidence(), now=dev.T + timedelta(hours=2))
+        [history] = [e for k, e in late.staged if k == "evidence" and e["kind"] == "work_history"]
+        self.assertEqual(history["data"]["steering_unreadable"], ["development_pr_review"])
+        self.assertEqual(late.report["work_history"][0]["steering_failed"],
+                         {"development_pr_review": 403})
+        self.assertTrue(any("development_pr_review (HTTP 403)" in a["alert"]
+                            for a in late.report["controller"]["alerts"]))
+
 
     def test_an_unreadable_steering_list_does_not_hold_the_work(self):
         collected = {"items": [], "omitted": {}, "unreadable": ["development_pr_review"]}

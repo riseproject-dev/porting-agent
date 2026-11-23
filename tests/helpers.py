@@ -17,7 +17,7 @@ from common import load_policy
 # The list reads of ``collect.steering``: the comments of the tracking issue
 # and the reviews and comments of the development and upstream PRs.
 STEERING_LIST = re.compile(r"^/repos/[^/]+/[^/]+/(?:issues|pulls)/[0-9]+/(?:comments|reviews)"
-                           r"\?per_page=100$")
+                           r"\?per_page=100(?:&sort=created&direction=desc)?$")
 
 
 def steering_list(path: str) -> list | None:

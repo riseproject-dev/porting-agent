@@ -141,17 +141,27 @@ class Api:
             raise CollectError("download exceeds size limit")
         return data
 
-    def paginate(self, path: str, *, key: str | None = None, max_pages: int = 10) -> list:
+    def paginate(self, path: str, *, key: str | None = None, max_pages: int = 10,
+                 newest: bool = False) -> list:
         """Follow Link: rel=next up to ``max_pages``. ``key`` selects the list
-        inside an object response (e.g. ``check_runs``)."""
+        inside an object response (e.g. ``check_runs``). With ``newest``, a
+        list longer than ``max_pages`` is read from its last page backwards
+        (Link: rel=last, then rel=prev), so the newest items are the ones
+        read; the result is in the order of the list either way."""
         if not _PATH_RE.match(path) or ".." in path:
             raise CollectError(f"refusing unexpected API path {path!r}")
         url = self.base + path
         out: list = []
-        for _ in range(max_pages):
+        for index in range(max_pages):
             data, headers = self._request(url)
+            link = headers.get("Link") or headers.get("link") or ""
+            if newest and index == 0:
+                last = _link(link, "last")
+                pages = re.search(r"[?&]page=([0-9]+)", last or "")
+                if last and pages and int(pages.group(1)) > max_pages:
+                    return self._backwards(last, key=key, max_pages=max_pages)
             out.extend(data[key] if key else data)
-            nxt = _next_link(headers.get("Link") or headers.get("link") or "")
+            nxt = _link(link, "next")
             if not nxt:
                 break
             if not nxt.startswith(self.base + "/"):
@@ -159,11 +169,25 @@ class Api:
             url = nxt
         return out
 
+    def _backwards(self, url: str, *, key: str | None, max_pages: int) -> list:
+        """``max_pages`` pages read from ``url`` (the last page) backwards,
+        in the order of the list."""
+        pages: list[list] = []
+        for _ in range(max_pages):
+            if not url.startswith(self.base + "/"):
+                raise CollectError("pagination left the API host")
+            data, headers = self._request(url)
+            pages.append(list(data[key] if key else data))
+            url = _link(headers.get("Link") or headers.get("link") or "", "prev")
+            if not url:
+                break
+        return [item for page in reversed(pages) for item in page]
 
-def _next_link(link: str) -> str | None:
+
+def _link(link: str, rel: str) -> str | None:
     for part in link.split(","):
-        m = re.match(r'\s*<([^>]+)>;\s*rel="next"', part)
-        if m:
+        m = re.match(r'\s*<([^>]+)>;\s*rel="([^"]+)"', part)
+        if m and rel in m.group(2).split():
             return m.group(1)
     return None
 
@@ -414,10 +438,11 @@ def base_contained(api: Api, record: dict, ref: str) -> bool:
     return _branch_contains(api, upstream["full_name"], ref, upstream["base_sha"])
 
 
-# The bound of every list read for steering: pages of 100.
+# The bound of every list read for steering: pages of 100, the newest.
 STEERING_PAGES = 5
 # The ``omitted`` key suffix of a steering list read in full: the list may
-# hold newer items than were read.
+# hold older items than were read (an earlier collection read them while the
+# list was shorter, unless it grew past the bound between two collections).
 STEERING_CAP_SUFFIX = "_list_cap_reached"
 # The HTTP statuses of a steering list that no retry will read: the
 # repository or pull request is gone, private to the App, or unavailable for
@@ -444,10 +469,13 @@ def _steering_item(source: str, item: dict, *, authority: bool, body_key: str = 
             "body": item.get(body_key) or ""}
 
 
-def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | None) -> dict:
+def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | None,
+             degrade: bool = False) -> dict:
     """The human text a worker is steered by, read for one contribution.
 
-    Read, each list bounded to ``STEERING_PAGES`` pages of 100: the current
+    Read, each list bounded to its newest ``STEERING_PAGES`` pages of 100
+    (review comments sorted newest first, every other list read from its
+    last page backwards): the current
     tracking issue description (``issue``, the collected issue; only when
     it differs from the description frozen at intake and the issue author is
     in the command authority), the tracking issue comments, and the reviews,
@@ -458,22 +486,31 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     ``authority`` true, on every source. On the upstream PR only, accounts
     whose association is OWNER, MEMBER or COLLABORATOR are kept with
     ``authority`` false: maintainer review feedback, never steering.
+    A comment of an authority account that was edited after it was written
+    (``updated_at`` differs from ``created_at``) is kept with ``authority``
+    false and ``edit_unverified`` true: GitHub lets other accounts with
+    write access edit it and does not say who edited it last, so it is
+    shown as data and never steers.
     A review with an empty body is kept when its state is a verdict
     (``STEERING_REVIEW_STATES``); its version is its submission time and the
     digest of its state and body, since GitHub gives an edited review no new
     time. Everything else (other accounts, bots, empty bodies) is counted
     per source in ``omitted``; a list that filled every page is flagged
-    there with ``STEERING_CAP_SUFFIX``, since newer items may be unread.
-    Returns ``{"items": [...], "omitted": {...}, "unreadable": [...]}``; the
-    text is untrusted and is bounded where it is stored. A list GitHub
-    answers with a status of ``STEERING_GONE`` is named in ``unreadable``;
-    any other failed read raises ``CollectError``."""
+    there with ``STEERING_CAP_SUFFIX``, since older items may be unread.
+    Returns ``{"items": [...], "omitted": {...}, "unreadable": [...],
+    "failed": {...}}``; the text is untrusted and is bounded where it is
+    stored. A list GitHub answers with a status of ``STEERING_GONE`` is
+    named in ``unreadable``; any other failed read raises ``CollectError``,
+    unless ``degrade`` is true (the Work has waited for its history too
+    long): then the list is named in ``unreadable`` too, and its HTTP status
+    in ``failed``."""
     from common import sha256_text
 
     allowed = {int(value) for value in authority}
     items: list[dict] = []
     omitted: dict[str, int] = {}
     unreadable: list[str] = []
+    failed: dict[str, int | None] = {}
 
     def keep(source: str, raw: dict, *, maintainers: bool, review: bool = False,
              **keys) -> None:
@@ -487,21 +524,29 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
                 or not (trusted or maintainer):
             omitted[source] = omitted.get(source, 0) + 1
             return
-        item = _steering_item(source, raw, authority=trusted, **keys)
+        edited = trusted and not review and raw.get("updated_at") \
+            and raw.get("updated_at") != raw.get("created_at")
+        item = _steering_item(source, raw, authority=trusted and not edited, **keys)
+        if edited:
+            item["edit_unverified"] = True
         if review:
             digest = sha256_text(f"{raw.get('state')}\n{body}")[:16]
             item["version"] = f"{raw.get('submitted_at')}#{digest}"
         items.append(item)
 
-    def read(source: str, path: str) -> list:
-        # Each list is read oldest first; one that fills every page may hold
-        # newer items than were read, which is recorded, never silent.
+    def read(source: str, path: str, *, newest: bool = True) -> list:
+        # The newest pages of each list are read; one that fills every page
+        # may hold older items than were read, which is recorded, never
+        # silent.
         try:
-            raws = api.paginate(path, max_pages=STEERING_PAGES)
+            raws = api.paginate(path, max_pages=STEERING_PAGES, newest=newest)
         except CollectError as error:
-            if getattr(error, "status", None) not in STEERING_GONE:
+            status = getattr(error, "status", None)
+            if status not in STEERING_GONE and not degrade:
                 raise
             unreadable.append(source)
+            if status not in STEERING_GONE:
+                failed[source] = status
             return []
         if len(raws) >= STEERING_PAGES * 100:
             omitted[source + STEERING_CAP_SUFFIX] = 1
@@ -535,12 +580,13 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
             keep(f"{prefix}_review", raw, maintainers=maintainers, review=True,
                  created_key="submitted_at", updated_key="submitted_at")
         for raw in read(f"{prefix}_review_comment",
-                        f"/repos/{repository}/pulls/{number}/comments?per_page=100"):
+                        f"/repos/{repository}/pulls/{number}/comments?per_page=100"
+                        "&sort=created&direction=desc", newest=False):
             keep(f"{prefix}_review_comment", raw, maintainers=maintainers)
         for raw in read(f"{prefix}_comment",
                         f"/repos/{repository}/issues/{number}/comments?per_page=100"):
             keep(f"{prefix}_comment", raw, maintainers=maintainers)
-    return {"items": items, "omitted": omitted, "unreadable": unreadable}
+    return {"items": items, "omitted": omitted, "unreadable": unreadable, "failed": failed}
 
 
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,

@@ -100,6 +100,12 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** the six rows store the report of the Work as `worker_report` evidence; no row folds a success Result without its report.
 - **Required:** a table decision on an accepted Result whose report is lost after the gate (for example a row that folds it with a recorded loss, or a retry of the publication artifact).
 
+## Steering edits whose last editor is unknown
+
+- **Where:** `collect.steering` and `steering.new_evidence`.
+- **Today:** the REST API does not name who last edited a comment, a review or an issue description, and the collector reads no GraphQL (whose `userContentEdits` would name the editor). An authority account's comment or review comment edited after it was written, and a new version of its review, is therefore recorded with `authority` false (`edit_unverified`) and never steers, even when the owner edited it: the owner steers again by writing a new comment, and the version recorded before the edit still steers. A review edited before it was first collected looks unedited and is trusted. The edited tracking issue description is trusted by the authority of the issue author, whoever edited it: any account with triage or write access to the control repository can edit it.
+- **Required:** a read of the last editor (GraphQL `userContentEdits` with the workflow token) so that an edit by the author steers and an edit by anyone else does not, for comments, reviews and the description alike.
+
 ## Work requested before the Work identity carried the generation
 
 A Work payload written before the Work identity carried `generation` and `dedupe_key` names neither: the reconciler and the publisher read it as generation 0 and recognize its Work by its revision (`work.task_identity`), and requested Work recorded without `active_work.generation` is generation 0 (`work.work_generation`) and is dispatched with the payload it was first submitted with. Remove both fallbacks once no such Work or worker is in flight.

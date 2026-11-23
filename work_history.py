@@ -594,8 +594,8 @@ def build(record: dict, work: dict, evidence: dict[str, dict], *, policy: dict,
                     f"{len(doc['timeline'])} timeline entries ({reports} worker reports, "
                     f"{ci} CI runs); condensed {doc['condensed']}"),
         "limitations": [NOTICE] + ([
-            "Steering unreadable: GitHub answered that these lists are gone or not "
-            "accessible, so their newer text is missing: "
+            "Steering unreadable: these lists are gone, not accessible, or kept failing "
+            "while the Work waited, so their newer text is missing: "
             + ", ".join(doc["steering_unreadable"])] if doc.get("steering_unreadable") else [])
         + ([f"Steering deferred: {deferred} collected items are not recorded yet."]
            if deferred else []),

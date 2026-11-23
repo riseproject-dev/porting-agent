@@ -52,7 +52,15 @@ import submission
 import work
 import work_history
 import worker_report
-from common import DEV_REF, INTAKE_LABEL, UPSTREAM_REF, load_policy, repository_root, safe_id
+from common import (
+    DEV_REF,
+    INTAKE_LABEL,
+    UPSTREAM_REF,
+    canonical_json,
+    load_policy,
+    repository_root,
+    safe_id,
+)
 
 
 @dataclass
@@ -2069,10 +2077,35 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     return out
 
 
+# The bounds of what the histories of one tick stage, in bytes of canonical
+# JSON, so that the state commit always fits ``storage.max_commit_bytes``
+# (2 MiB) with the rest of the tick: the new ``human_steering`` records of
+# one contribution, and the steering and histories of the whole tick. The
+# history of a Work that does not fit is built by a later tick; steering
+# beyond the bound of one contribution is recorded by later ticks and
+# counted as ``steering_deferred`` meanwhile.
+STEERING_BYTES_PER_CONTRIBUTION = 256 * 1024
+HISTORY_BYTES_PER_TICK = 1024 * 1024
+# The bytes a ``work_history`` record takes at most (the document and the
+# fields around it).
+HISTORY_RECORD_BYTES = work_history.HISTORY_MAX_BYTES + 8 * 1024
 # The bound of the ``human_steering`` records one contribution stages in one
-# tick: well above what the bounded steering lists can fill
-# (``collect.STEERING_PAGES`` pages of each list over ``steering.MAX_ITEMS``).
+# tick (the byte bounds above are reached first).
 STEERING_RECORDS_PER_TICK = 64
+# How long a Work waits for its history while a steering list fails with an
+# error that is not final (a 403, a 5xx, a rate limit): after that, the list
+# is recorded as unreadable and the Work proceeds without it.
+STEERING_FAILURE_GRACE = timedelta(hours=1)
+
+
+def _waited(record: dict, now: str) -> timedelta:
+    """How long the record's requested Work has waited since it was
+    requested."""
+    try:
+        requested = datetime.fromisoformat(str(record["active_work"]["requested_at"]))
+        return datetime.fromisoformat(now) - requested
+    except (KeyError, TypeError, ValueError):
+        return timedelta(0)
 
 
 def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOutput,
@@ -2082,7 +2115,11 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     none yet (``work_history.evidence_id`` of its Work id), with the
     ``human_steering`` evidence of the text collected for it first. The
     record as this tick leaves it is used, so Work allocated in this tick is
-    covered."""
+    covered. What is staged is bounded in bytes per contribution and per
+    tick; a Work left out by the bound of the tick gets its history in a
+    later tick. A steering list that keeps failing with an error that is
+    not final is read without for Work that has waited
+    ``STEERING_FAILURE_GRACE``, so one failing list never holds the Work."""
     latest = {c["contribution_id"]: c for c in contributions.values()}
     for kind, record in out.staged:
         if kind == "contributions":
@@ -2091,6 +2128,7 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
     authority = policy["command_authority"]["actor_ids"]
     report = []
+    budget = HISTORY_BYTES_PER_TICK
     for cid in sorted(latest):
         if cid in skip:
             continue
@@ -2103,37 +2141,60 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
         eid = work_history.evidence_id(request["dedupe_key"])
         if eid in evidence:
             continue
+        if budget < HISTORY_RECORD_BYTES:
+            report.append({"contribution": cid, "work": request["dedupe_key"],
+                           "deferred": "the histories of this tick reached their byte bound"})
+            continue
         with isolation.contribution(cid, "work_history"):
+            degrade = _waited(record, now) >= STEERING_FAILURE_GRACE
             collected = collect.steering(
                 api, record, authority,
-                issue=tracking_issues.get(record["tracking_issue"]["number"]))
+                issue=tracking_issues.get(record["tracking_issue"]["number"]), degrade=degrade)
             # One record holds at most ``steering.MAX_ITEMS`` items; the
-            # rest are recorded in further records of the same tick, so the
-            # history holds the newest steering too.
-            recorded, deferred = [], 0
+            # rest are recorded in further records of the same tick, within
+            # the byte bounds, so the history holds the newest steering too.
+            room = min(STEERING_BYTES_PER_CONTRIBUTION, budget - HISTORY_RECORD_BYTES)
+            recorded, staged = [], []
             for _ in range(STEERING_RECORDS_PER_TICK):
-                new = steering.new_evidence(record, collected, evidence, policy=policy, now=now)
+                if room < steering.MAX_RECORD_ITEM_BYTES:
+                    break
+                new = steering.new_evidence(record, collected, evidence, policy=policy,
+                                            now=now, max_bytes=room - 4096, newest=True)
                 if new is None:
-                    deferred = 0
                     break
+                size = len(canonical_json(new).encode())
+                room -= size
                 evidence[new["evidence_id"]] = new
-                out.staged.append(("evidence", new))
+                staged.append((("evidence", new), size))
                 recorded.append(new["evidence_id"])
-                deferred = new["data"]["deferred"]
-                if not deferred:
+                if not new["data"]["deferred"]:
                     break
+            deferred = steering.pending(record, collected, evidence)
             history = work_history.build(record, record["active_work"], evidence,
                                          policy=policy, now=now, deferred=deferred,
                                          unreadable=collected.get("unreadable") or [])
             evidence[eid] = history
+            out.staged.extend(item for item, _size in staged)
             out.staged.append(("evidence", history))
+            budget -= sum(size for _item, size in staged) + len(canonical_json(history).encode())
             data = history["data"]
-            report.append({"contribution": cid, "work": request["dedupe_key"],
-                           "evidence_id": eid, "steering": len(data["steering"]),
-                           "timeline": len(data["timeline"]),
-                           "condensed": data["condensed"],
-                           "steering_evidence_ids": recorded,
-                           "steering_unreadable": list(collected.get("unreadable") or [])})
+            entry = {"contribution": cid, "work": request["dedupe_key"],
+                     "evidence_id": eid, "steering": len(data["steering"]),
+                     "timeline": len(data["timeline"]),
+                     "condensed": data["condensed"],
+                     "steering_evidence_ids": recorded,
+                     "steering_unreadable": list(collected.get("unreadable") or [])}
+            if deferred:
+                entry["steering_deferred"] = deferred
+            if collected.get("failed"):
+                entry["steering_failed"] = dict(collected["failed"])
+                out.report["controller"]["alerts"].append({
+                    "contribution": cid,
+                    "alert": "steering lists failing for longer than "
+                             f"{STEERING_FAILURE_GRACE}, read without them: "
+                             + ", ".join(f"{k} (HTTP {v})"
+                                         for k, v in sorted(collected["failed"].items()))})
+            report.append(entry)
     return report
 
 
