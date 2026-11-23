@@ -194,6 +194,51 @@ class TestLifecycleTable(unittest.TestCase):
             self.assertFalse({"pending_feedback_evidence_ids", lc.CARRIED_FEEDBACK} & set(clears))
         self.assertEqual(lc.FEEDBACK_ANSWERED_BY, ("resume_upstream_review",))
 
+    def test_the_check_holds_the_settled_rows(self):
+        gate = "handoff.awaiting_submission"
+        review = lc.find_edge(gate, "record_actionable_review").transition
+        dev_review = lc.find_edge("development.waiting_ci", "record_actionable_review").transition
+        repair = lc.find_edge(gate, "return_for_repair").transition
+        explain = lc.find_edge(gate, "record_explanation").transition
+        revision = lc.find_edge("upstream_review.fix_needed", "request_review_revision").transition
+        patch = lc.find_edge("development.fix_needed", "request_patch").transition
+        resume = lc.find_edge("development.waiting_human", "resume_development").transition
+        cases = (
+            (gate, "record_actionable_review",
+             {"sets": self.without(review.effects.sets, "pending_feedback_evidence_ids")},
+             "recorded as pending_feedback_evidence_ids"),
+            (gate, "record_actionable_review",
+             {"clears": self.without(review.effects.clears, "handoff_request")},
+             "leaving the gate clears"),
+            (gate, "record_actionable_review",
+             {"sets": (*review.effects.sets, "last_ci_evidence_id")}, "never CI evidence"),
+            ("development.waiting_ci", "record_actionable_review",
+             {"clears": (*dev_review.effects.clears, "last_ci_evidence_id")}, "never CI evidence"),
+            (gate, "return_for_repair",
+             {"sets": self.without(repair.effects.sets, "last_ci_evidence_id")},
+             "records its evidence"),
+            (gate, "return_for_repair",
+             {"sets": (*repair.effects.sets, "pending_feedback_evidence_ids")},
+             "records no pending feedback"),
+            (gate, "record_explanation",
+             {"clears": (*explain.effects.clears, "last_ci_evidence_id")},
+             "keeps last_ci_evidence_id"),
+            ("upstream_review.fix_needed", "request_review_revision",
+             {"charges": (*revision.charges, "no_progress")}, "charges no no_progress"),
+            ("upstream_review.fix_needed", "request_review_revision",
+             {"guard": self.without(revision.guard, lc.CONTROLLED_REF)}, "controlled fork ref"),
+            ("development.fix_needed", "request_patch",
+             {"guard": (*patch.guard, "a proposal is admitted")}, "write admission only"),
+            ("development.waiting_human", "resume_development",
+             {"clears": self.without(resume.effects.clears, lc.HELD_RESULT)},
+             f"clears {lc.HELD_RESULT}"),
+        )
+        for state, verb, change, expected in cases:
+            with self.subTest(verb=verb, expected=expected):
+                problems = self.mutated(state, verb, **change)
+                self.assertTrue(any(p.startswith(f"{state} --{verb}-->") and expected in p
+                                    for p in problems), problems)
+
     def test_the_check_holds_the_rerun_counts_and_the_cluster_charge(self):
         head = lc.find_edge("development.waiting_ci", "record_head_change").transition
         review = lc.find_edge("upstream_review.fix_needed", "request_review_revision").transition

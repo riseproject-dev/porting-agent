@@ -55,3 +55,4 @@ One bullet per commit, oldest first: what changed and how.
 - The expiry of a submission rewrite follows the effective retention of the worker's publication artifact, which the controller's workflow now passes to the tick from the repository variable `GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS` (30 days when unset), and the readings record the repository retention limit the tick cannot see.
 - CI evidence lists the jobs of a run sorted by job id, so observing the same run again no longer rewrites the evidence file on every tick.
 - The underscore is no longer folded to a hyphen when attribution trailers are matched, so a body line such as `order_by: x` is not refused as a trailer.
+- `lifecycle check` now reports a table mutation that breaks the settled review, repair, first-patch and resume decisions, and the known gap listing those missed violations is removed.

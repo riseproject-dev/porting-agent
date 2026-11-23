@@ -2741,6 +2741,78 @@ def _check_feedback(problems: list[str]) -> None:
             problems.append(f"qualified clear {entry!r}: no transition uses it")
 
 
+# The guards of `request_patch`: write admission and the guards every Work
+# allocation of development shares; no proposal or scope admission.
+REQUEST_PATCH_GUARDS = frozenset({NO_FAILING_JOB, "write admission", "worker slot free",
+                                  "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS,
+                                  NOT_PAUSED})
+CONTROLLED_REF = "the upstream PR head is the controlled fork ref"
+
+
+def _check_settled_rows(problems: list[str]) -> None:
+    """Rows whose shape a settled decision fixes beyond the general rules:
+    review feedback is recorded as pending feedback and never as CI
+    evidence; a CI failure at the gate records its evidence and no feedback;
+    an explanation keeps the CI evidence; a feedback-only upstream revision
+    charges no `no_progress` and keeps the controlled-ref guard; the first
+    patch is admitted by write admission only; the resume of development
+    does not reuse a held publication."""
+    def row(state: str, verb: str) -> Transition | None:
+        try:
+            return find_edge(state, verb).transition
+        except KeyError:
+            problems.append(f"{state}: the settled row {verb} is missing")
+            return None
+
+    def touched(t: Transition) -> set[str]:
+        return {_field_name(x) for x in t.effects.sets} | set(t.effects.clears)
+
+    gate = "handoff.awaiting_submission"
+    for state in (gate, "development.waiting_ci"):
+        t = row(state, "record_actionable_review")
+        where = f"{state} --record_actionable_review-->"
+        if t is None:
+            continue
+        if "pending_feedback_evidence_ids" not in {_field_name(x) for x in t.effects.sets}:
+            problems.append(f"{where}: an actionable review is recorded as "
+                            "pending_feedback_evidence_ids")
+        if "last_ci_evidence_id" in touched(t):
+            problems.append(f"{where}: review feedback is never CI evidence; the row keeps "
+                            "last_ci_evidence_id")
+        if state == gate and not set(_LEAVE_HANDOFF) <= set(t.effects.clears):
+            problems.append(f"{where}: leaving the gate clears {', '.join(_LEAVE_HANDOFF)}")
+    t = row(gate, "return_for_repair")
+    if t is not None:
+        sets = {_field_name(x) for x in t.effects.sets}
+        if "last_ci_evidence_id" not in sets:
+            problems.append(f"{gate} --return_for_repair-->: a CI failure at the gate records "
+                            "its evidence in last_ci_evidence_id")
+        if "pending_feedback_evidence_ids" in sets:
+            problems.append(f"{gate} --return_for_repair-->: a CI failure records no pending "
+                            "feedback")
+    t = row(gate, "record_explanation")
+    if t is not None and "last_ci_evidence_id" in touched(t):
+        problems.append(f"{gate} --record_explanation-->: an explanation keeps "
+                        "last_ci_evidence_id")
+    t = row("upstream_review.fix_needed", "request_review_revision")
+    if t is not None:
+        where = "upstream_review.fix_needed --request_review_revision-->"
+        if "no_progress" in t.charges:
+            problems.append(f"{where}: a revision driven by review feedback charges no "
+                            "no_progress")
+        if CONTROLLED_REF not in t.guard:
+            problems.append(f"{where}: requires {CONTROLLED_REF!r}")
+    t = row("development.fix_needed", "request_patch")
+    if t is not None and set(t.guard) - REQUEST_PATCH_GUARDS:
+        extra = ", ".join(sorted(set(t.guard) - REQUEST_PATCH_GUARDS))
+        problems.append(f"development.fix_needed --request_patch-->: patch Work is admitted by "
+                        f"write admission only, not by {extra}")
+    t = row("development.waiting_human", "resume_development")
+    if t is not None and HELD_RESULT not in t.effects.clears:
+        problems.append(f"development.waiting_human --resume_development-->: fresh Work is "
+                        f"requested; the row clears {HELD_RESULT}")
+
+
 def _check_reruns(problems: list[str]) -> None:
     """Rerun counts are kept for the current head: exactly the rows that
     record a new head start them again, and both rerun budgets count there."""
@@ -3381,6 +3453,7 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_stops(problems)
     _check_feedback(problems)
     _check_reruns(problems)
+    _check_settled_rows(problems)
     _check_patch_work(problems)
     _check_exclusive_observations(problems)
     _check_submission(problems)

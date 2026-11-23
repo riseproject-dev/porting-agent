@@ -246,6 +246,12 @@ def render_index() -> str:
         "head, and the rows that apply when Work is due exclude each other;",
         "- exactly the rows that record a new head start the rerun counts of `budget.reruns` "
         "again, and a CI failure and a review at the submission gate exclude each other;",
+        "- review feedback is recorded as pending feedback and never as CI evidence, a CI "
+        "failure at the submission gate records its evidence and no feedback, an explanation "
+        "keeps the CI evidence, a revision driven only by review feedback charges no "
+        "`no_progress` and requires the controlled fork ref, the first patch is admitted by "
+        "write admission only, and the resume of development does not reuse a held "
+        "publication;",
         "- the operation table has the same structure, and every state, transition, rule, and "
         "flag is drawn below and every decision slice uses table entries.", "",
         "A state is `phase.activity`. Each arrow is a transition verb of the table, labelled with "

@@ -36,19 +36,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** the review is recorded once CI is observed again.
 - **Required:** record the review evidence when the failure wins, so the repair Work carries it.
 
-## `lifecycle check` misses some decision violations
-
-These table mutations break a settled decision but still pass the check:
-
-- `record_actionable_review` at the gate not setting `pending_feedback_evidence_ids`, not clearing `clean_head_sha`, `handoff_request` or `pending_human_action`, or touching `last_ci_evidence_id`.
-- `return_for_repair` at the gate not setting `last_ci_evidence_id`, or setting pending feedback.
-- `record_explanation` at the gate clearing `last_ci_evidence_id`.
-- `request_review_revision` charging `no_progress`, or losing the controlled-ref guard.
-- `request_patch` gaining guards beyond write admission.
-- `resume_development` keeping a pending publication.
-
-**Required:** add a check for each.
-
 ## The stop flag in states the table does not have
 
 - **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (the development and upstream review states the table does not have, for example `development.idle`, `development.waiting_capacity`, `upstream_review.idle`).

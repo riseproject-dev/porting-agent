@@ -26,6 +26,7 @@ The contribution lifecycle is defined by one table in `lifecycle.py`. That table
 - every row that allocates patch or revision Work carries the pending feedback, only a published Result clears the feedback its Work carried, and Work that carries feedback takes no CI rerun;
 - patch Work is requested only from a `fix_needed` state under write admission, `repair_attempts_cluster` is charged exactly when a failing CI job is recorded for the head, and the rows that apply when Work is due exclude each other;
 - exactly the rows that record a new head start the rerun counts of `budget.reruns` again, and a CI failure and a review at the submission gate exclude each other;
+- review feedback is recorded as pending feedback and never as CI evidence, a CI failure at the submission gate records its evidence and no feedback, an explanation keeps the CI evidence, a revision driven only by review feedback charges no `no_progress` and requires the controlled fork ref, the first patch is admitted by write admission only, and the resume of development does not reuse a held publication;
 - the operation table has the same structure, and every state, transition, rule, and flag is drawn below and every decision slice uses table entries.
 
 A state is `phase.activity`. Each arrow is a transition verb of the table, labelled with its `/upstreaming` command when a command triggers it; the other transitions are taken on a Result, an observation, an operation receipt, or a controller tick, as the table records.
