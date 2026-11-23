@@ -274,7 +274,7 @@ _AT_ENTITY = re.compile(r"&(?:#0*(64|65312|65131)(?![0-9])|#[xX]0*(40|[fF][fF]20
                         r"|(commat)(?![A-Za-z0-9]));?")
 # An at sign followed by a login or team character and not preceded by an
 # ASCII letter or digit (an e-mail address keeps its at sign).
-_AT_MENTION = re.compile(rf"(?<![A-Za-z0-9])([{_AT_SIGNS}])(?=[A-Za-z0-9_-])")
+_AT_MENTION = re.compile(rf"(?<![A-Za-z0-9])([{_AT_SIGNS}])(?=[^\s\u2060])")
 # The invisible character that keeps an at sign from starting a mention.
 WORD_JOINER = "\u2060"
 
@@ -292,7 +292,9 @@ def neutralize_mentions(text: str) -> tuple[str, int]:
     it notifies nobody; and the number of changes.
 
     An HTML entity of an at sign is decoded first; then every at sign that is
-    followed by a login or team character and not preceded by an ASCII letter
+    followed by any character other than white space or the word joiner (a
+    character reference such as ``&#117;`` can decode to a login character)
+    and not preceded by an ASCII letter
     or digit gets a word joiner (U+2060) after it. Code spans, fences,
     emphasis, and escapes are not parsed, so none of them can hide one."""
     decoded, entities = _AT_ENTITY.subn(_at_entity, text)
