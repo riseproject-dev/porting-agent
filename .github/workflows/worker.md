@@ -321,7 +321,10 @@ jobs:
             # series and pull request text, and the review of them, are
             # checked here without any token, and only the trusted handoff
             # workflow builds riscv64 from the series. A Result that cannot
-            # be read is Work without a usable Result, never a verdict.
+            # be read is Work without a usable Result, never a verdict. The
+            # step's token was only for reading the Result; the checks run
+            # without it.
+            unset GH_TOKEN
             echo "publish=false" >> "$GITHUB_OUTPUT"
             check_rc=0
             uv run --locked python -m artifact extract ../in/proposal.zip ../in || check_rc=$?

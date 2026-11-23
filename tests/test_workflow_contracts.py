@@ -288,6 +288,8 @@ class TestWorkflowContracts(unittest.TestCase):
         run = step["run"]
         start = run.index("submission_rewrite")
         self.assertIn('echo "publish=false"', run[start:run.index("python -m submission check")])
+        # The step's token reads the Result only; the checks run without it.
+        self.assertIn("unset GH_TOKEN", run[start:run.index("python -m submission check")])
         self.assertIn("python -m submission check-rewrite", run[start:])
         self.assertIn("python -m submission check-review", run[start:])
         # An artifact that cannot be read is Work without a usable Result.
