@@ -9,67 +9,27 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137611825473,
-        "name": "Test - Python 3.15",
+        "job_id": 137163439467,
+        "name": "lint-rst",
         "runner_labels": [
-          "ubuntu-24.04"
+          "ubuntu-latest"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137611825842,
-        "name": "Test - Python 3.9",
+        "job_id": 137163439841,
+        "name": "clang-format",
         "runner_labels": [
-          "ubuntu-24.04"
+          "ubuntu-latest"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137611825904,
-        "name": "Test - Python 3.14",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137611825933,
-        "name": "Test - Python 3.11",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137611825944,
-        "name": "Test - Python 3.12",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137611826000,
-        "name": "Test - Python 3.10",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137611826070,
+        "job_id": 137163705606,
         "name": "Test - Python 3.8",
         "runner_labels": [
           "ubuntu-24.04"
@@ -79,7 +39,17 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137611826080,
+        "job_id": 137163705625,
+        "name": "lint-rst",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137163705760,
         "name": "Test - Python 3.13",
         "runner_labels": [
           "ubuntu-24.04"
@@ -89,67 +59,77 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070565,
-        "name": "Build - macos-26-intel (x86_64)",
+        "job_id": 137163705785,
+        "name": "Test - Python 3.9",
         "runner_labels": [
-          "macos-26-intel"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070583,
-        "name": "Build - macos-26 (arm64)",
+        "job_id": 137163705794,
+        "name": "clang-format",
         "runner_labels": [
-          "macos-26"
+          "ubuntu-latest"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070606,
-        "name": "Build - windows-2025 (AMD64)",
+        "job_id": 137163705798,
+        "name": "Test - Python 3.10",
         "runner_labels": [
-          "windows-2025"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070608,
-        "name": "Build - ubuntu-24.04-arm (aarch64)",
+        "job_id": 137163705801,
+        "name": "Test - Python 3.15",
         "runner_labels": [
-          "ubuntu-24.04-arm"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070611,
-        "name": "Build - windows-11-arm (ARM64)",
+        "job_id": 137163705841,
+        "name": "Test - Python 3.12",
         "runner_labels": [
-          "windows-11-arm"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070624,
-        "name": "Build - macos-26 (universal2)",
+        "job_id": 137163705879,
+        "name": "Test - Python 3.14",
         "runner_labels": [
-          "macos-26"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070641,
+        "job_id": 137163706072,
+        "name": "Test - Python 3.11",
+        "runner_labels": [
+          "ubuntu-24.04"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137163854073,
         "name": "Build - Source",
         "runner_labels": [
           "ubuntu-24.04"
@@ -159,7 +139,17 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070656,
+        "job_id": 137163854082,
+        "name": "Build - windows-11-arm (ARM64)",
+        "runner_labels": [
+          "windows-11-arm"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137163854101,
         "name": "Build - ubuntu-24.04-riscv (riscv64)",
         "runner_labels": [
           "ubuntu-24.04-riscv"
@@ -169,7 +159,37 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137612070821,
+        "job_id": 137163854104,
+        "name": "Build - macos-26 (arm64)",
+        "runner_labels": [
+          "macos-26"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137163854136,
+        "name": "Build - ubuntu-24.04-arm (aarch64)",
+        "runner_labels": [
+          "ubuntu-24.04-arm"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137163854140,
+        "name": "Build - windows-2025 (AMD64)",
+        "runner_labels": [
+          "windows-2025"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137163854162,
         "name": "Build - ubuntu-24.04 (x86_64)",
         "runner_labels": [
           "ubuntu-24.04"
@@ -179,38 +199,28 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137611826376,
-        "name": "lint-rst",
+        "job_id": 137163854216,
+        "name": "Build - macos-26-intel (x86_64)",
         "runner_labels": [
-          "ubuntu-latest"
+          "macos-26-intel"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137611826879,
+        "job_id": 137163854228,
+        "name": "Build - macos-26 (universal2)",
+        "runner_labels": [
+          "macos-26"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137164080131,
         "name": "clang-format",
-        "runner_labels": [
-          "ubuntu-latest"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137592478759,
-        "name": "clang-format",
-        "runner_labels": [
-          "ubuntu-latest"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137592479106,
-        "name": "lint-rst",
         "runner_labels": [
           "ubuntu-latest"
         ],
@@ -223,6 +233,16 @@
         "name": "Test - Python 3.10",
         "runner_labels": [
           "ubuntu-24.04"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137164080331,
+        "name": "lint-rst",
+        "runner_labels": [
+          "ubuntu-latest"
         ],
         "status": "completed"
       },
@@ -389,7 +409,7 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137164080131,
+        "job_id": 137592478759,
         "name": "clang-format",
         "runner_labels": [
           "ubuntu-latest"
@@ -399,7 +419,7 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137164080331,
+        "job_id": 137592479106,
         "name": "lint-rst",
         "runner_labels": [
           "ubuntu-latest"
@@ -409,47 +429,7 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163705606,
-        "name": "Test - Python 3.8",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163705760,
-        "name": "Test - Python 3.13",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163705785,
-        "name": "Test - Python 3.9",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163705798,
-        "name": "Test - Python 3.10",
-        "runner_labels": [
-          "ubuntu-24.04"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163705801,
+        "job_id": 137611825473,
         "name": "Test - Python 3.15",
         "runner_labels": [
           "ubuntu-24.04"
@@ -459,8 +439,8 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163705841,
-        "name": "Test - Python 3.12",
+        "job_id": 137611825842,
+        "name": "Test - Python 3.9",
         "runner_labels": [
           "ubuntu-24.04"
         ],
@@ -469,7 +449,7 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163705879,
+        "job_id": 137611825904,
         "name": "Test - Python 3.14",
         "runner_labels": [
           "ubuntu-24.04"
@@ -479,7 +459,7 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163706072,
+        "job_id": 137611825933,
         "name": "Test - Python 3.11",
         "runner_labels": [
           "ubuntu-24.04"
@@ -489,8 +469,8 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163854073,
-        "name": "Build - Source",
+        "job_id": 137611825944,
+        "name": "Test - Python 3.12",
         "runner_labels": [
           "ubuntu-24.04"
         ],
@@ -499,58 +479,8 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163854082,
-        "name": "Build - windows-11-arm (ARM64)",
-        "runner_labels": [
-          "windows-11-arm"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163854101,
-        "name": "Build - ubuntu-24.04-riscv (riscv64)",
-        "runner_labels": [
-          "ubuntu-24.04-riscv"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163854104,
-        "name": "Build - macos-26 (arm64)",
-        "runner_labels": [
-          "macos-26"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163854136,
-        "name": "Build - ubuntu-24.04-arm (aarch64)",
-        "runner_labels": [
-          "ubuntu-24.04-arm"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163854140,
-        "name": "Build - windows-2025 (AMD64)",
-        "runner_labels": [
-          "windows-2025"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163854162,
-        "name": "Build - ubuntu-24.04 (x86_64)",
+        "job_id": 137611826000,
+        "name": "Test - Python 3.10",
         "runner_labels": [
           "ubuntu-24.04"
         ],
@@ -559,7 +489,47 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163854216,
+        "job_id": 137611826070,
+        "name": "Test - Python 3.8",
+        "runner_labels": [
+          "ubuntu-24.04"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137611826080,
+        "name": "Test - Python 3.13",
+        "runner_labels": [
+          "ubuntu-24.04"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137611826376,
+        "name": "lint-rst",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137611826879,
+        "name": "clang-format",
+        "runner_labels": [
+          "ubuntu-latest"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137612070565,
         "name": "Build - macos-26-intel (x86_64)",
         "runner_labels": [
           "macos-26-intel"
@@ -569,7 +539,47 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163854228,
+        "job_id": 137612070583,
+        "name": "Build - macos-26 (arm64)",
+        "runner_labels": [
+          "macos-26"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137612070606,
+        "name": "Build - windows-2025 (AMD64)",
+        "runner_labels": [
+          "windows-2025"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137612070608,
+        "name": "Build - ubuntu-24.04-arm (aarch64)",
+        "runner_labels": [
+          "ubuntu-24.04-arm"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137612070611,
+        "name": "Build - windows-11-arm (ARM64)",
+        "runner_labels": [
+          "windows-11-arm"
+        ],
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "executed": true,
+        "job_id": 137612070624,
         "name": "Build - macos-26 (universal2)",
         "runner_labels": [
           "macos-26"
@@ -579,40 +589,30 @@
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163705625,
-        "name": "lint-rst",
+        "job_id": 137612070641,
+        "name": "Build - Source",
         "runner_labels": [
-          "ubuntu-latest"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163705794,
-        "name": "clang-format",
+        "job_id": 137612070656,
+        "name": "Build - ubuntu-24.04-riscv (riscv64)",
         "runner_labels": [
-          "ubuntu-latest"
+          "ubuntu-24.04-riscv"
         ],
         "status": "completed"
       },
       {
         "conclusion": "success",
         "executed": true,
-        "job_id": 137163439467,
-        "name": "lint-rst",
+        "job_id": 137612070821,
+        "name": "Build - ubuntu-24.04 (x86_64)",
         "runner_labels": [
-          "ubuntu-latest"
-        ],
-        "status": "completed"
-      },
-      {
-        "conclusion": "success",
-        "executed": true,
-        "job_id": 137163439841,
-        "name": "clang-format",
-        "runner_labels": [
-          "ubuntu-latest"
+          "ubuntu-24.04"
         ],
         "status": "completed"
       }
@@ -626,7 +626,7 @@
     "workflow_path": ".github/workflows/build-wheels.yml",
     "workflow_sha": null
   },
-  "collected_at": "2026-11-23T10:57:30.195107+00:00",
+  "collected_at": "2026-11-23T11:03:19.257311+00:00",
   "contribution_id": "closeio--ciso8601/1",
   "debug_present": false,
   "evidence_id": "ci-1467208233-45150934812-1",
