@@ -851,7 +851,7 @@
     "artifact": "sha256:4f4b86c0ce0c3ef37921c74ca5267d4e2b89898b254f2170fc47a5c7006dc789"
   },
   "evidence_id": "dossier-closeio--ciso8601--1-r2",
-  "kind": "dossier",
+  "kind": "plan",
   "limitations": [],
   "policy_version": "2026-11-18.1-proposed",
   "schema_version": 1,

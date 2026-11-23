@@ -4,9 +4,9 @@
     "luhenry--d2vm/3"
   ],
   "distributions": [],
-  "dossier_evidence_id": null,
   "parked": false,
   "parked_reason": null,
+  "plan_evidence_id": null,
   "prerequisites": [],
   "project_id": "luhenry--d2vm",
   "release_observation": null,

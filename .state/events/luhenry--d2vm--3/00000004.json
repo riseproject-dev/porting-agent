@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-23T16:45:41.056396+00:00",
+  "cause": {
+    "id": "plan-rename",
+    "type": "migration"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "evidence": [
+      "dossier-luhenry--d2vm--3-r0"
+    ],
+    "from_state": "parked.idle",
+    "projects": [
+      "luhenry--d2vm"
+    ],
+    "renamed": [
+      "dossier_evidence_id",
+      "budget.investigation_attempts",
+      "previous_phase=investigation"
+    ],
+    "to_state": "parked.idle"
+  },
+  "from": {},
+  "kind": "record_names_migrated",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 4,
+  "to": {}
+}

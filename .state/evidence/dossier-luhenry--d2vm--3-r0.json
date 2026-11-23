@@ -544,7 +544,7 @@
     "artifact": "sha256:2ecf9287b3618404d1ee4275d10270edc9335ae1726c22108bc35288bef68dd0"
   },
   "evidence_id": "dossier-luhenry--d2vm--3-r0",
-  "kind": "dossier",
+  "kind": "plan",
   "limitations": [],
   "policy_version": "2026-11-18.1-proposed",
   "schema_version": 1,

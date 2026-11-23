@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-23T16:45:41.056396+00:00",
+  "cause": {
+    "id": "plan-rename",
+    "type": "migration"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "evidence": [
+      "dossier-closeio--ciso8601--1-r2"
+    ],
+    "from_state": "handoff.awaiting_submission",
+    "projects": [
+      "closeio--ciso8601"
+    ],
+    "renamed": [
+      "dossier_evidence_id",
+      "budget.investigation_attempts"
+    ],
+    "to_state": "handoff.awaiting_submission"
+  },
+  "from": {},
+  "kind": "record_names_migrated",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 28,
+  "to": {}
+}

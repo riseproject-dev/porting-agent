@@ -10,8 +10,8 @@
     "clusters": {
       "reproduction-image-infrastructure-docker-unavailable": 1
     },
-    "investigation_attempts": 0,
     "no_progress_streak": 1,
+    "planning_attempts": 0,
     "policy_id": "2026-11-18.1-proposed",
     "reruns": {
       "flaky": 0,
@@ -28,7 +28,6 @@
   "distributions": [
     "ciso8601"
   ],
-  "dossier_evidence_id": "dossier-closeio--ciso8601--1-r2",
   "follows": null,
   "fork": {
     "head_ref": "riscv64-dev",
@@ -68,6 +67,7 @@
   },
   "pending_publication": null,
   "phase": "handoff",
+  "plan_evidence_id": "dossier-closeio--ciso8601--1-r2",
   "prerequisite_ids": [],
   "previous_phase": null,
   "processed_pr_conversation_comment_ids": [],

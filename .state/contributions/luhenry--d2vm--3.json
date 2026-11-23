@@ -8,8 +8,8 @@
   "budget": {
     "attempts_used": 1,
     "clusters": {},
-    "investigation_attempts": 0,
     "no_progress_streak": 0,
+    "planning_attempts": 0,
     "policy_id": "2026-11-18.1-proposed",
     "reruns": {
       "flaky": 0,
@@ -24,7 +24,6 @@
   "created_at": "2026-11-23T16:09:42.818921+00:00",
   "debug_commits": [],
   "distributions": [],
-  "dossier_evidence_id": null,
   "follows": null,
   "fork": null,
   "generation": 0,
@@ -48,8 +47,9 @@
   "pending_human_action": null,
   "pending_publication": null,
   "phase": "parked",
+  "plan_evidence_id": null,
   "prerequisite_ids": [],
-  "previous_phase": "investigation",
+  "previous_phase": "planning",
   "processed_pr_conversation_comment_ids": [],
   "processed_publications": [
     14837588488

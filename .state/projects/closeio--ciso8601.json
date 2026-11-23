@@ -6,9 +6,9 @@
   "distributions": [
     "ciso8601"
   ],
-  "dossier_evidence_id": null,
   "parked": false,
   "parked_reason": null,
+  "plan_evidence_id": null,
   "prerequisites": [],
   "project_id": "closeio--ciso8601",
   "release_observation": null,
