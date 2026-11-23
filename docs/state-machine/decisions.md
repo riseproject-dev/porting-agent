@@ -1240,6 +1240,27 @@ flowchart TB
     development_agent_running -->|record_publish_success| development_waiting_ci
 ```
 
+### O28. An uncertain publication in development
+
+What a Result whose push was not read back (`uncertain`) takes in `development.agent_running`.
+
+**Decision.** In development, an uncertain Result is a failed publication, exactly as in upstream review: it takes `schedule_publish_retry` (or `exhaust_publish_recovery`), which clears the Work and holds the Result, so no Work recovery takes its completed graph. `record_publish_success` is taken only when the publication is confirmed: by a `published` Result (its own operation confirmed), by the publish-only retry reading back the head the lost push left (it confirms the open operation of the earlier attempt when its Result is folded), or by the operation of an earlier attempt of the held Result being confirmed in the operation store, including a retry rejected as stale behind it. The row then names the confirmed operation, which the development PR request requires. The retry is bounded by `publish_recovery`, then `exhaust_publish_recovery` leads to `development.waiting_human` with the pending action `publication_infrastructure_failure` and the reminders of every human wait. No new state, verb, budget, flag, or record field.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_agent_running -->|schedule_publish_retry| development_agent_running
+    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running ==>|record_publish_success| development_waiting_ci
+    development_agent_running -->|replan_development| development_fix_needed
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

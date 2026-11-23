@@ -1264,6 +1264,31 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                ("development.agent_running", "record_publish_success")),
         highlighted=(("development.waiting_ci", "return_for_feedback"),),
     ),
+    Item(
+        "An uncertain publication in development",
+        "What a Result whose push was not read back (`uncertain`) takes in "
+        "`development.agent_running`.",
+        "In development, an uncertain Result is a failed publication, exactly as in upstream "
+        "review: it takes `schedule_publish_retry` (or `exhaust_publish_recovery`), which clears "
+        "the Work and holds the Result, so no Work recovery takes its completed graph. "
+        "`record_publish_success` is taken only when the publication is confirmed: by a "
+        "`published` Result (its own operation confirmed), by the publish-only retry reading "
+        "back the head the lost push left (it confirms the open operation of the earlier "
+        "attempt when its Result is folded), or by the operation of an earlier attempt of the "
+        "held Result being confirmed in the operation store, including a retry rejected as "
+        "stale behind it. The row then names the confirmed operation, which the development PR "
+        "request requires. The retry is bounded by `publish_recovery`, then "
+        "`exhaust_publish_recovery` leads to `development.waiting_human` with the pending action "
+        "`publication_infrastructure_failure` and the reminders of every human wait. No new "
+        "state, verb, budget, flag, or record field.",
+        ("development.agent_running", "development.waiting_ci", "development.waiting_human",
+         "development.fix_needed"),
+        edges=(("development.agent_running", "schedule_publish_retry"),
+               ("development.agent_running", "exhaust_publish_recovery"),
+               ("development.agent_running", "record_publish_success"),
+               ("development.agent_running", "replan_development")),
+        highlighted=(("development.agent_running", "record_publish_success"),),
+    ),
 )
 
 OPEN_ITEMS: tuple[Item, ...] = ()

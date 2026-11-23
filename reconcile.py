@@ -853,7 +853,8 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
 
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None, evidence: dict | None = None,
-                      pypi=None) -> tuple[dict, list[tuple[str, dict]]]:
+                      pypi=None, operations: dict[str, dict] | None = None
+                      ) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one Result (from fork_publish / queue_result) into the record.
 
     * planning Work: the plan decides, by the table (``fold_plan``);
@@ -863,7 +864,9 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
       table's rows (``fold_patch_result``).
 
     ``pypi`` reads a PyPI document for the confirmation of a decision close
-    (``collect.pypi_project`` by default).
+    (``collect.pypi_project`` by default). ``operations`` is the tick's
+    operation store, read to find the branch operation of an earlier attempt
+    of a held Result (``held_publication_operation``).
     """
     if outcome.get("status") == "planning":
         return fold_plan(rec, outcome, now=now, policy=policy or {},
@@ -875,7 +878,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         return fold_submission_review(rec, outcome, now=now, policy=policy or {},
                                       worker_run_id=worker_run_id, evidence=evidence)
     return fold_patch_result(rec, outcome, now=now, policy=policy or {},
-                             worker_run_id=worker_run_id)
+                             worker_run_id=worker_run_id, operations=operations)
 
 
 _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")
@@ -947,13 +950,14 @@ def _charged_launch(held: dict, outcome: dict) -> bool:
 # The states whose Results ``fold_patch_result`` folds, and the rows that
 # differ between them: the success row, the Result statuses it folds, what a
 # `no_change` report and a stale proposal take, and the statuses that are a
-# failed publication. In upstream review the success row records the head
-# read back on `riscv64`, so a publication whose push was not read back
-# (`uncertain`) is a failed publication there.
+# failed publication. The success row is taken only for a publication that
+# was read back, so in both states a publication whose push was not read back
+# (`uncertain`) is a failed publication: the Result stays held, and the
+# publish-only retry reads back the head a lost push left.
 WORK_RESULT_STATES = {
     "development.agent_running": {"published": "record_publish_success",
-                                  "success": ("published", "uncertain"),
-                                  "failed": ("infra_error",),
+                                  "success": ("published",),
+                                  "failed": ("infra_error", "uncertain"),
                                   "stale": "replan_development"},
     "upstream_review.agent_running": {"published": "record_revision_publish_success",
                                       "success": ("published",),
@@ -987,26 +991,87 @@ def published_head(outcome: dict) -> str:
     return head
 
 
+_BRANCH_KINDS = ("branch_update", "branch_rewrite")
+
+
+def held_publication_operation(rec: dict, outcome: dict,
+                               operations: dict[str, dict] | None) -> dict | None:
+    """The branch operation an earlier attempt of the held Result recorded:
+    of the contribution and its revision, on the branch of the phase
+    (``lifecycle.work_ref``) with the recorded head as its lease, carrying the
+    marker of the Result's artifact when the outcome carries one, and
+    proposing the outcome's candidate when it names one. A ``confirmed``
+    operation is preferred to an open one (``applying``, ``uncertain``); the
+    newest wins. None without the operation store, without a held Result, or
+    when none matches."""
+    if not operations or not rec.get("pending_publication"):
+        return None
+    artifact_id = (outcome.get("artifact") or {}).get("artifact_id")
+    candidate = outcome.get("candidate")
+    ref, head = lifecycle.work_ref(rec), lifecycle.recorded_head(rec)
+    found = []
+    for op in operations.values():
+        target, proposed = op.get("target") or {}, op.get("proposed") or {}
+        if op.get("contribution_id") != rec["contribution_id"] \
+                or op.get("kind") not in _BRANCH_KINDS or op.get("revision") != rec["revision"] \
+                or target.get("ref") != ref or target.get("expected_head") != head \
+                or op.get("status") not in ("confirmed", "applying", "uncertain"):
+            continue
+        if artifact_id and proposed.get("marker") != f"artifact:{artifact_id}":
+            continue
+        if candidate and proposed.get("commit") != candidate:
+            continue
+        found.append(op)
+    if not found:
+        return None
+    return max(found, key=lambda op: (op["status"] == "confirmed", str(op.get("created_at") or "")))
+
+
+def _confirm_read_back(op: dict, candidate: str, attempt: Any, *, now: str) -> dict:
+    """Close the open branch operation of an earlier attempt that a
+    publish-only retry read back on the branch, by the rule the branch
+    observation uses (``recovery.discover_branch``): an ``applying``
+    operation lost the response of its push and takes ``record_response``
+    first. The operation is returned unchanged when the head read back is
+    not its commit."""
+    if op["status"] == "applying":
+        op = recovery.mark_result(op, response_ok=None, external_ids=None, now=now)
+    if recovery.discover_branch(op, {"head": candidate}) != "confirmed":
+        return op
+    return recovery.record_discovery(
+        op, "confirmed",
+        f"{op['target']['ref']} at {candidate}, read back by publish attempt {attempt}", now)
+
+
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
-                      worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+                      worker_run_id: str | None, operations: dict[str, dict] | None = None
+                      ) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold the Result of patch Work through the rows of
     ``development.agent_running``, or of revision Work through the rows of
     ``upstream_review.agent_running``.
 
-    In upstream review the rows are the same but four: a published Result
+    In both states the success row is taken only for a confirmed
+    publication: a published Result (its own branch operation confirmed),
+    a publish-only retry that read the push of an earlier attempt back on the
+    branch (it confirms the open operation of that attempt, found in
+    ``operations`` by ``held_publication_operation``, and the row names it),
+    and, in development, a retry rejected as stale while the operation of an
+    earlier attempt of the held Result is confirmed. A Result whose push was
+    not read back (``uncertain``) is a failed publication like an
+    infrastructure error.
+
+    In upstream review the rows are the same but three: a published Result
     takes ``record_revision_publish_success`` (which also clears exactly the
     carried feedback, records the head read back on `riscv64` in
-    ``upstream_pr.head_sha``, and bumps the revision), an uncertain Result
-    (its push was not read back) is a failed publication like an
-    infrastructure error, a ``no_change`` report takes
+    ``upstream_pr.head_sha``, and bumps the revision), a ``no_change`` report takes
     ``require_reviewer_answer`` (a human answers the reviewer; nothing is
     posted on the upstream PR), and a proposal rejected as stale takes
     ``reject_patch_proposal`` like any other rejection, as no row replans
     there. Upstream CI is never rerun.
 
-    * published or uncertain: ``record_publish_success`` (clears exactly the
-      feedback the Work carried); the published files join ``scope_paths``
-      and ``no_progress`` starts again beside the row;
+    * published (confirmed, as above): ``record_publish_success`` (clears
+      exactly the feedback the Work carried); the published files join
+      ``scope_paths`` and ``no_progress`` starts again beside the row;
     * rejected in trusted validation, blocked, or a ``proposal`` (no
       publisher produces one any more): ``reject_patch_proposal``; a blocked
       Result's rehearsal evidence is recorded and named in the event;
@@ -1015,9 +1080,12 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
       and ``flaky_reruns`` remains and the outcome carries the receipt of
       the trusted rerun (``ci_rerun.receipt_problem``), a failed publication
       when it carries none, ``reject_patch_proposal`` otherwise;
-    * rejected as stale (the fork head moved): ``replan_development``;
-    * an infrastructure error of the publication (in upstream review also an
-      uncertain Result): ``schedule_publish_retry`` holds the same Result for
+    * rejected as stale (the fork head moved): ``replan_development``,
+      unless the Result is held and the operation of an earlier attempt is
+      confirmed (the patch landed and the head moved after it): then
+      ``record_publish_success``;
+    * an infrastructure error of the publication, or an uncertain Result:
+      ``schedule_publish_retry`` holds the same Result for
       a publish-only retry within ``publish_recovery``,
       ``exhaust_publish_recovery`` once it is spent.
 
@@ -1041,6 +1109,21 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     op = outcome.get("operation")
     if op:
         staged.append(("operations", op))
+    earlier = None
+    if held and not op and status in ("published", "rejected"):
+        earlier = held_publication_operation(rec, outcome, operations)
+    candidate = outcome.get("candidate")
+    if earlier and status == "published" and isinstance(candidate, str) \
+            and _SHA.fullmatch(candidate):
+        # The publish-only retry read the push of an earlier attempt back on
+        # the branch: the open operation of that attempt is confirmed, and
+        # the row names it.
+        if earlier["status"] != "confirmed":
+            earlier = _confirm_read_back(earlier, candidate, outcome.get("attempt"), now=now)
+            if earlier["status"] == "confirmed":
+                staged.append(("operations", earlier))
+        if earlier["status"] == "confirmed":
+            op = earlier
     details: dict[str, Any] = {"result_status": status}
     if fclass:
         details["failure_class"] = fclass
@@ -1081,6 +1164,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         if status in rows["success"]:
             verb = rows["published"]
             facts = {"result_published" if verb == "record_publish_success" else "revision_published"}
+        elif status == "rejected" and fclass == "stale" and "stale" in rows \
+                and earlier and earlier["status"] == "confirmed":
+            # The publication of the held Result landed (an earlier attempt's
+            # operation is confirmed) and the head moved after it: the patch
+            # is published, not replanned; the later head is recorded by
+            # `record_head_change`.
+            verb, facts, op = rows["published"], {"result_published"}, earlier
+            details["confirmed_by"] = earlier["operation_id"]
         elif status == "rejected" and fclass == "stale" and "stale" in rows:
             verb, facts = rows["stale"], {"proposal_stale"}
         elif status == "no_change" and "no_change" in rows:
@@ -1112,7 +1203,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             artifact = rec.get("proposal_artifact")
             if all(k in art for k in _ARTIFACT_KEYS):
                 artifact = {k: art[k] for k in _ARTIFACT_KEYS} | {
-                    "result_commit": art.get("result_commit"), "outcome": status}
+                    "result_commit": art.get("result_commit"), "outcome": "published"}
             values = {"proposal_artifact": artifact,
                       "publication_operation_id": (op or {}).get("operation_id")
                       or rec.get("publication_operation_id")}
@@ -1723,7 +1814,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 continue
             rec, staged = apply_publication(rec, pub, now=iso, policy=policy,
                                             worker_run_id=pub.get("worker_run_id"),
-                                            evidence=snap.evidence, pypi=pypi)
+                                            evidence=snap.evidence, pypi=pypi,
+                                            operations=snap.operations)
             contributions[key] = rec
             out.staged.extend(staged)
             for kind, r in staged:

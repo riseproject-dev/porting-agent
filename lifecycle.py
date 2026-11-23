@@ -734,7 +734,9 @@ _SCHEDULE_PUBLISH_RETRY = Transition(
     ("publication failed with an infrastructure error", "publish_recovery remains"),
     _E(work="clear", sets=("pending_publication",)), ("publish_recovery",),
     "The same verified Result is published again; no new Work is requested. The pending "
-    "publication carries the feedback ids of its Work.")
+    "publication carries the feedback ids of its Work. A publication whose push was not read "
+    "back (`uncertain`) is such a failure; the retry reads the branch first and never pushes "
+    "over a push that landed.")
 _EXHAUST_PUBLISH_RECOVERY = Transition(
     _R, None,
     ("publish_recovery exhausted",),
@@ -930,7 +932,13 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
                   clears=(CARRIED_FEEDBACK,)),
                 description="The published patch answers exactly the feedback its Work "
-                            "carried; feedback recorded while the Work ran stays pending."),
+                            "carried; feedback recorded while the Work ran stays pending. A "
+                            "publication whose push was not read back (`uncertain`) does not "
+                            "take this row when its Result is folded: it is a failed "
+                            "publication (`schedule_publish_retry`), and the row is taken once "
+                            "the publication is confirmed, by the publish-only retry reading "
+                            "back the head the lost push left (or publishing the same commit), "
+                            "or by the confirmed branch operation of an earlier attempt."),
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
                 (DEVELOPMENT_PROPOSAL_REJECTED, "no_progress remains"),

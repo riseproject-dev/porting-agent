@@ -128,7 +128,8 @@ class TestPatchResults(unittest.TestCase):
     def test_each_publisher_result_takes_its_row(self):
         expected = {
             "published": ("record_publish_success", "development.waiting_ci", False),
-            "uncertain": ("record_publish_success", "development.waiting_ci", False),
+            # A push that was not read back is a failed publication.
+            "uncertain": ("schedule_publish_retry", "development.agent_running", False),
             "proposal": ("reject_patch_proposal", "development.fix_needed", True),
             # A `no_change` report without the receipt of the trusted rerun
             # is a failed publication; with it, see the next test.
@@ -385,6 +386,176 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual((out.report["publication_retries"], out.report["requested_effects"],
                           out.report["dispatch_relaunch"]), ([], [], []))
 
+
+
+ARTIFACT = {"work_id": "w-1", "claim_id": "c-1", "artifact_id": 4242, "name": "result",
+            "digest": "sha256:" + "1" * 64, "run_id": "555", "result_commit": "9" * 40}
+
+
+def branch_operation(rec, *, confirmed=False, attempt=1):
+    """The branch operation a publication of the Result with ``ARTIFACT``
+    recorded on `riscv64-dev`, pushing ``SHA_B`` over the recorded head:
+    uncertain (its push was not read back) or confirmed."""
+    import fork_publish
+    op = recovery.plan(contribution_id=rec["contribution_id"], revision=rec["revision"],
+                       kind="branch_update", policy_version=POLICY["policy_version"],
+                       reason_ids=[f"artifact:{ARTIFACT['artifact_id']}"]
+                       + fork_publish.publish_attempt_reasons(attempt),
+                       target={"repository_id": 2, "repository": rec["fork"]["name"],
+                               "ref": lifecycle.DEV_REF, "expected_head": SHA_A,
+                               "base_sha": rec["upstream"]["base_sha"]},
+                       proposed={"commit": SHA_B, "tree": "d" * 40, "parents": [SHA_A],
+                                 "marker": f"artifact:{ARTIFACT['artifact_id']}",
+                                 "content_digest": "0" * 64, "changed_files": ["b"]}, now=NOW)
+    op = recovery.mark_applying(op, NOW, facts=fork_publish.PUSH_FACTS)
+    op = recovery.mark_result(op, response_ok=None, external_ids={}, now=NOW)
+    if confirmed:
+        op = recovery.record_discovery(op, "confirmed", f"riscv64-dev at {SHA_B}", NOW)
+    return op
+
+
+def uncertain(rec, op):
+    """The Result of patch Work whose push was not read back."""
+    return dict(publication(rec, "uncertain"), candidate=SHA_B, operation=op,
+                artifact=dict(ARTIFACT), reason="push outcome not yet observable")
+
+
+def retried(rec, status="published", attempt=2, artifact_id=1000, **fields):
+    """The Result of the publish-only retry of the held Result: ``published``
+    when it read the earlier push back on the branch (no operation of its
+    own), or as given."""
+    out = dict(publication(rec, status, artifact_id=artifact_id), attempt=attempt,
+               artifact=dict(ARTIFACT), **fields)
+    if status == "published" and "candidate" not in fields:
+        out["candidate"] = SHA_B
+    return out
+
+
+class TestUncertainPublication(unittest.TestCase):
+    """In development a Result whose push was not read back (`uncertain`) is
+    a failed publication: it is held in `development.agent_running`
+    (`schedule_publish_retry`) and `record_publish_success` is taken once
+    the publication is confirmed."""
+
+    def setUp(self):
+        self.rec = running(fork=dict(record()["fork"], pr_number=None))
+
+    def staged_ops(self, output):
+        return [o for kind, o in output.staged if kind == "operations"]
+
+    def hold(self):
+        op = branch_operation(self.rec)
+        out = tick(self.rec, [uncertain(self.rec, op)], observe=False)
+        self.assertEqual(kinds(out), ["schedule_publish_retry"])
+        return final(out, self.rec), {op["operation_id"]: op}, op
+
+    def test_an_uncertain_publication_is_held_until_it_is_confirmed(self):
+        import work
+        rec = self.rec
+        key = rec["active_work"]["dedupe_key"]
+        held, ops, op = self.hold()
+        self.assertEqual((engine.state_key(held), held["active_work"],
+                          held["pending_publication"]["attempts"], held["proposal_artifact"],
+                          held["fork"]["head_sha"], held["revision"]),
+                         ("development.agent_running", None, 1, rec["proposal_artifact"],
+                          SHA_A, rec["revision"]))
+        self.assertIsNone(engine.state_problem(held))
+        # No Work recovery takes the completed graph of the Work whose
+        # Result is held.
+        out = tick(held, observe=False, operations=ops, queue={work.graph_id(key): "completed"})
+        self.assertNotIn("allocate_work_retry", kinds(out))
+        self.assertNotIn("exhaust_work_recovery", kinds(out))
+        self.assertEqual(final(out, held), held)
+        # The branch observation confirms the operation; the state is kept.
+        out = tick(held, head=SHA_B, operations=ops)
+        self.assertEqual([(o["operation_id"], o["status"]) for o in self.staged_ops(out)],
+                         [(op["operation_id"], "confirmed")])
+        self.assertEqual(kinds(out), [])
+        self.assertEqual(engine.state_key(final(out, held)), "development.agent_running")
+        ops = {op["operation_id"]: self.staged_ops(out)[0]}
+        # The retry reads the push back: the publication is confirmed, the
+        # head the push left is recorded by the observation of the same tick,
+        # and the development PR is requested.
+        out = tick(held, [retried(held)], head=SHA_B, operations=ops)
+        self.assertEqual(kinds(out), ["record_publish_success", "record_head_change"])
+        after = final(out, held)
+        self.assertEqual((engine.state_key(after), after["publication_operation_id"],
+                          after["proposal_artifact"]["outcome"], after["pending_publication"],
+                          after["fork"]["head_sha"]),
+                         ("development.waiting_ci", op["operation_id"], "published", None, SHA_B))
+        self.assertEqual(after["scope_paths"], ["a", "b"])
+        self.assertEqual([o["kind"] for o in self.staged_ops(out)], ["dev_pr_create"])
+        self.assertEqual([r["contribution_id"] for r in out.report["dev_pr_requests"]],
+                         [rec["contribution_id"]])
+
+    def test_a_retry_that_reads_the_lost_push_back_confirms_the_open_operation(self):
+        held, ops, op = self.hold()
+        for status in ("uncertain", "applying"):
+            with self.subTest(open=status):
+                if status == "applying":
+                    lost = recovery.mark_applying(
+                        recovery.plan(**{k: op[k] for k in (
+                            "contribution_id", "revision", "kind", "policy_version",
+                            "reason_ids", "target", "proposed")}, now=NOW),
+                        NOW, facts=__import__("fork_publish").PUSH_FACTS)
+                    ops = {lost["operation_id"]: lost}
+                out = tick(held, [retried(held)], observe=False, operations=ops)
+                self.assertEqual(kinds(out), ["record_publish_success"])
+                self.assertEqual(out.failures, [])
+                [confirmed] = [o for o in self.staged_ops(out) if o["kind"] == "branch_update"]
+                self.assertEqual((confirmed["operation_id"], confirmed["status"]),
+                                 (op["operation_id"], "confirmed"))
+                reconcile.check_staged_operations(out.staged, ops)
+                after = final(out, held)
+                self.assertEqual((after["publication_operation_id"],
+                                  after["proposal_artifact"]["outcome"]),
+                                 (op["operation_id"], "published"))
+                self.assertEqual(after["scope_paths"], ["a", "b"])
+
+    def test_a_retry_that_publishes_the_same_commit_names_its_own_operation(self):
+        held, ops, op = self.hold()
+        own = branch_operation(held, confirmed=True, attempt=2)
+        out = tick(held, [retried(held, operation=own)], observe=False, operations=ops)
+        self.assertEqual(kinds(out), ["record_publish_success"])
+        self.assertEqual(final(out, held)["publication_operation_id"], own["operation_id"])
+        # The earlier operation is confirmed by the next branch observation.
+        after = final(out, held)
+        ops[own["operation_id"]] = own
+        out = tick(after, head=SHA_B, operations=ops)
+        self.assertEqual([(o["operation_id"], o["status"]) for o in self.staged_ops(out)],
+                         [(op["operation_id"], "confirmed")])
+
+    def test_a_stale_retry_behind_a_confirmed_operation_is_a_published_result(self):
+        held, ops, op = self.hold()
+        stale = retried(held, "rejected_stale")
+        out = tick(held, [stale], observe=False, operations=ops)
+        self.assertEqual(kinds(out), ["replan_development"])
+        confirmed = {op["operation_id"]: branch_operation(self.rec, confirmed=True)}
+        out = tick(held, [stale], observe=False, operations=confirmed)
+        self.assertEqual(kinds(out), ["record_publish_success"])
+        [event] = [e for kind, e in out.staged if kind == "events"]
+        self.assertEqual(event["details"]["confirmed_by"], op["operation_id"])
+        after = final(out, held)
+        self.assertEqual((engine.state_key(after), after["publication_operation_id"],
+                          after["proposal_artifact"]["outcome"], after["pending_publication"],
+                          after["revision"]),
+                         ("development.waiting_ci", op["operation_id"], "published", None,
+                          held["revision"]))
+
+    def test_an_uncertain_publication_that_never_lands_waits_for_a_human(self):
+        current, ops, _op = self.hold()
+        now = T
+        for _ in range(200):
+            now += timedelta(minutes=10)
+            out = tick(current, observe=False, now=now, operations=ops)
+            current = final(out, current)
+            if engine.state_key(current) != "development.agent_running":
+                break
+        self.assertEqual(kinds(out), ["exhaust_publish_recovery"])
+        self.assertEqual((engine.state_key(current), current["pending_human_action"]["kind"],
+                          current["pending_human_action"]["counter"]),
+                         ("development.waiting_human", "publication_infrastructure_failure",
+                          "publish_recovery"))
 
 class TestObservation(unittest.TestCase):
     """`development.waiting_ci` is observed by its rows; `development.fix_needed`
@@ -1095,25 +1266,22 @@ class TestSpentWork(unittest.TestCase):
                              staged)
         self.assertEqual(output.report.get("failures") or [], [])
 
-    def uncertain_publication(self):
-        """Repair Work whose uncertain publication is recorded at the same
-        revision, and the graph of that Work, completed in the queue."""
+    def spent_repair(self):
+        """A record waiting for CI at a revision whose repair Work already
+        ran: the graph of the repair Work failing CI requests at the kept
+        revision is completed in the queue."""
         import work
-        due = record("fix_needed", last_ci_evidence_id=observed_ci_id())
-        out = tick(due, observe=False, evidence=self.evidence)
-        running_ = final(out, due)
-        key = running_["active_work"]["dedupe_key"]
-        out = tick(running_, [publication(running_, "uncertain")], observe=False,
-                   evidence=self.evidence)
-        self.assertEqual(kinds(out), ["record_publish_success"])
-        waiting = final(out, running_)
-        self.assertEqual(waiting["revision"], running_["revision"])
+        waiting = record(last_ci_evidence_id=None)
+        out = tick(waiting, verdict="failed", evidence=self.evidence)
+        self.assertEqual(kinds(out), ["record_ci_failure", "request_repair"])
+        key = final(out, waiting)["active_work"]["dedupe_key"]
+        self.assertIn(f".r{waiting['revision']}:", key)
         return waiting, key, {work.graph_id(key): "completed"}
 
-    def test_an_uncertain_publication_that_never_landed_is_repaired_on_a_fresh_graph(self):
-        waiting, key, queue = self.uncertain_publication()
-        # The push never landed: the same head fails again, and the repair
-        # Work at the kept revision names the spent graph.
+    def test_spent_work_at_a_kept_revision_is_repaired_on_a_fresh_graph(self):
+        waiting, key, queue = self.spent_repair()
+        # The same head fails again, and the repair Work at the kept
+        # revision names the spent graph.
         out = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue)
         self.check(out)
         self.assertEqual(kinds(out), ["record_ci_failure", "request_repair", "allocate_work_retry"])
@@ -1126,7 +1294,7 @@ class TestSpentWork(unittest.TestCase):
         self.assertEqual(out.report["controller"]["spent_work"][0]["work"], key)
 
     def test_spent_work_without_work_recovery_waits_for_a_human(self):
-        waiting, key, queue = self.uncertain_publication()
+        waiting, key, queue = self.spent_repair()
         limit = lifecycle.budget_limit("work_total", POLICY)
         waiting = dict(waiting, budget=dict(waiting["budget"], attempts_used=limit - 1))
         out = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue)

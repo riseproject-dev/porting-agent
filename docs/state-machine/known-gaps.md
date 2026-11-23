@@ -15,13 +15,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 {:toc}
 </details>
 
-## An uncertain publication is recorded before it is confirmed
-
-- **Where:** `record_publish_success` in `reconcile.fold_patch_result`.
-- **Today:** a publication whose push response was lost (`uncertain`) takes `record_publish_success` when its Result is folded; the branch operation is discovered afterwards by the branch observation, and the head it pushed is recorded by `record_head_change`. In upstream review an uncertain Result is a failed publication instead (`schedule_publish_retry`), whose publish-only retry reads back the head a lost push left.
-- **Table:** the guard is "the Result is published, or uncertain and later confirmed".
-- **Required:** keep the Result in `development.agent_running` until discovery confirms the branch operation, without the Work recovery taking the completed Work graph for a lost Result.
-
 ## CI on the clean head is not rerun
 
 - **Where:** `handoff.waiting_ci`, rows `rerun_interrupted_ci` and `exhaust_interrupted_reruns`, and `resume_ci` in `handoff.waiting_human`; the CI observation in `observe_ci.py` (`_observe_clean_head_ci`).
@@ -139,7 +132,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
 - `begin_planning` is taken in the tick that allocates the planning Work (or exhausts its budget), not as soon as a request is in `queued.idle`: a request waiting for a worker slot stays in `queued.idle`, where removing the intake label still withdraws it.
 - The task that `request_patch` asks for is a patch, or a repair when feedback is pending for the Work to answer; `request_repair` always asks for a repair. A refreshed plan that returns to the fork without a failing CI job or pending feedback is therefore answered by a patch.
-- Every rejected or blocked outcome charges `no_progress`, whatever progress the worker reports, because `reject_patch_proposal` charges it unconditionally; a published Result (in development also an uncertain one) starts it again, as `BUDGETS` states, although no row lists that restart.
+- Every rejected or blocked outcome charges `no_progress`, whatever progress the worker reports, because `reject_patch_proposal` charges it unconditionally; a published Result starts it again, as `BUDGETS` states, although no row lists that restart.
 - The failing CI job of the head is the first executed blocking job of the evidence at `last_ci_evidence_id` that did not succeed, else the first job the evidence names as failing the runner-label check. Its name is the key of `budget.clusters`; existing keys are kept.
 - A Work payload without `generation` and `dedupe_key` is generation 0, also when the record is in a later generation: its Result is then late. A payload that names only one of them matches no Work.
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.

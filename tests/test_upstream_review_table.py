@@ -377,17 +377,24 @@ class TestRevisionResults(unittest.TestCase):
     def test_a_head_that_was_not_read_back_is_not_recorded(self):
         rec = self.running()
         # The push was not read back: a failed publication, the head is kept.
-        out = tick(rec, [publication(rec, "uncertain")])
+        lost = branch_operation(rec, SHA_B, confirmed=False)
+        out = tick(rec, [dict(publication(rec, "uncertain"), candidate=SHA_B, operation=lost)])
         self.assertEqual(kinds(out), ["schedule_publish_retry"])
         held = final(out, rec)
         self.assertEqual((held["upstream_pr"]["head_sha"], held["revision"]),
                          (SHA_A, rec["revision"]))
-        # The publish-only retry reads the earlier push back on the branch.
+        # The publish-only retry reads the earlier push back on the branch,
+        # and confirms the operation of the earlier attempt, which the row
+        # names.
+        ops = {lost["operation_id"]: lost}
         out = tick(held, [dict(publication(held, "published", artifact_id=1000), candidate=SHA_B,
-                                attempt=2)], pr=pull(head=SHA_B), branch=SHA_B)
+                                attempt=2)], pr=pull(head=SHA_B), branch=SHA_B, operations=ops)
         self.assertEqual(kinds(out), ["record_revision_publish_success"])
+        self.assertEqual([(o["operation_id"], o["status"]) for o in staged(out, "operations")],
+                         [(lost["operation_id"], "confirmed")])
         after = final(out, held)
         self.assertEqual(after["upstream_pr"]["head_sha"], SHA_B)
+        self.assertEqual(after["publication_operation_id"], lost["operation_id"])
         self.assertIsNone(after["pending_publication"])
         # A published Result whose operation is not confirmed, or that names
         # no head, is refused and changes nothing.
