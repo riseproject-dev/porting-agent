@@ -129,18 +129,6 @@ class TestCommandsByTheTable(unittest.TestCase):
         self.assertIn("restart_generation", reached)
         self.assertIn("resume_stale", reached)
 
-    def test_legacy_states_keep_the_compatibility_path(self):
-        for state in sorted(compat.LEGACY_STATES - {"abandoned.idle"}):
-            phase, activity = state.split(".")
-            record = contribution(phase=phase, activity=activity)
-            with self.subTest(state=state):
-                self.assertFalse(engine.takes_command(record, "pause"))
-                out = apply_command(record, commands.parse("/upstreaming pause"))
-                self.assertTrue(out.accepted, out.reason)
-                self.assertEqual(out.event["kind"], "pause")
-                self.assertEqual((out.record["paused_by"], out.record["paused_at"]), ("human", NOW))
-                self.assertIsNone(compat.state_problem(out.record))
-
     def test_pause_from_agent_running_leads_to_the_state_where_work_is_due(self):
         for phase, target in (("investigation", "investigation.idle"),
                               ("development", "development.fix_needed"),
@@ -404,8 +392,8 @@ class TestControllerStops(unittest.TestCase):
         # Already paused: nothing again.
         self.assertEqual(self.identity_tick(paused).staged, [])
 
-    def test_identity_change_in_a_legacy_state(self):
-        record = contribution(phase="upstream_review", activity="waiting_capacity",
+    def test_identity_change_in_upstream_review(self):
+        record = contribution(phase="upstream_review", activity="agent_running",
                               upstream_pr={"id": 9, "number": 9,
                                            "url": "https://github.com/example/proj/pull/9",
                                            "head_repository_id": 2, "head_ref": "riscv64",
@@ -418,7 +406,7 @@ class TestControllerStops(unittest.TestCase):
         recs = [r for k, r in self.identity_tick(record).staged if k == "contributions"]
         self.assertEqual([e["kind"] for e in evs], ["pause_on_identity_change"])
         self.assertEqual((engine.state_key(recs[-1]), recs[-1]["pending_publication"],
-                          recs[-1]["paused_by"]), ("upstream_review.idle", None, "controller"))
+                          recs[-1]["paused_by"]), ("upstream_review.fix_needed", None, "controller"))
 
 
 class TestFlagMigration(unittest.TestCase):

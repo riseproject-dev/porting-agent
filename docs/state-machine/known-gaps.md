@@ -22,13 +22,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** the review is recorded once CI is observed again.
 - **Required:** record the review evidence when the failure wins, so the repair Work carries it.
 
-## The stop flag in states the table does not have
-
-- **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (`upstream_review.idle`, `upstream_review.waiting_capacity`).
-- **Today:** such a state has no row, so the engine cannot take `pause`, `pause_on_identity_change`, or `pause_on_processing_error` there. `compat.legacy_pause` records the same fields and clears the same things, but the activity that held the Work or a publication becomes `idle` instead of the table's state in which the Work is due. `resume` and `park` on such a record are applied by the legacy command code. Its park is refused while an operation is open, as the table's. `refresh` and `abandon`, which no row of such a state takes, are refused there.
-- **Table:** the flag verbs apply in every non-terminal state, with `set_moves`; `park_contribution` requires no open operation.
-- **Required:** take the upstream review rows, then remove the legacy branches.
-
 ## No dossier decides close
 
 - **Where:** `close_investigation` from `investigation.agent_running`; the dossier contract (`schemas/dossier.schema.json`, `dossier_gate.py`, the investigator's instructions).
@@ -52,10 +45,10 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 
 ## An uncertain publication is recorded before it is confirmed
 
-- **Where:** `record_publish_success` in `reconcile.fold_patch_result`.
-- **Today:** a publication whose push response was lost (`uncertain`) takes `record_publish_success` when its Result is folded; the branch operation is discovered afterwards by the branch observation, and the head it pushed is recorded by `record_head_change`.
+- **Where:** `record_publish_success` and `record_revision_publish_success` in `reconcile.fold_patch_result`.
+- **Today:** a publication whose push response was lost (`uncertain`) takes `record_publish_success` (in upstream review `record_revision_publish_success`) when its Result is folded; the branch operation is discovered afterwards by the branch observation, and the head it pushed is recorded by `record_head_change` (in upstream review beside the observation, see "The head the pipeline published in upstream review has no row").
 - **Table:** the guard is "the Result is published, or uncertain and later confirmed".
-- **Required:** keep the Result in `development.agent_running` until discovery confirms the branch operation, without the Work recovery taking the completed Work graph for a lost Result.
+- **Required:** keep the Result in `development.agent_running` (or `upstream_review.agent_running`) until discovery confirms the branch operation, without the Work recovery taking the completed Work graph for a lost Result.
 
 ## CI on the clean head is not rerun
 
@@ -99,18 +92,26 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `operation_launch` counts launches; it states no interval tied to the run timeout or the queueing of the workflow.
 - **Required:** an interval at least as long as the workflow's timeout plus its queueing, or a check of the run's status before an attempt is closed as spent.
 
-## Worker outcomes in upstream review are folded by legacy code
+## The head the pipeline published in upstream review has no row
 
-- **Where:** `reconcile._fold_revision_outcome` and the publish-only retry in `reconcile.py`, for Results of upstream revision Work (from `upstream_review.agent_running`).
-- **Today:**
-  - published or uncertain: `upstream_review.waiting_ci`, `no_progress` started again, the carried feedback kept (table: `record_revision_publish_success`, which clears exactly the carried feedback);
-  - `no_change`: the legacy `upstream_review.idle`, which the next CI observation moves to `upstream_review.waiting_ci` with no pending action (table: `require_reviewer_answer` to `upstream_review.waiting_human` with the pending action `answer_reviewer`);
-  - `proposal`, which no publisher produces any more: rejected in trusted validation, as below;
-  - `infra_error` within the retry limit: the legacy `upstream_review.waiting_capacity` with the pending publication, which the next CI observation moves to `upstream_review.waiting_ci` while the publish-only retry is still scheduled (table: `schedule_publish_retry`, which keeps `upstream_review.agent_running`); beyond the limit, `upstream_review.waiting_human` with the pending action `publication_infrastructure_failure` and no `counter` (table: `exhaust_publish_recovery`, whose pending action names `publish_recovery`);
-  - rejected for validation, or blocked: `upstream_review.fix_needed` with a revision bump and `no_progress` charged, as `reject_patch_proposal` does; a blocked outcome also records its rehearsal evidence as pending feedback;
-  - rejected as stale: the legacy `upstream_review.idle` without a revision bump, then `upstream_review.waiting_ci` (the table has no row for it).
-- **Table:** in upstream review `record_revision_publish_success`, `reject_patch_proposal`, `require_reviewer_answer`, `schedule_publish_retry`, `exhaust_publish_recovery`.
-- **Required:** take the publication outcome through the table's rows.
+- **Where:** `upstream_review.waiting_ci`; the upstream review observation in `observe_ci.py`.
+- **Today:** after `record_revision_publish_success` the upstream PR head is the head the pipeline pushed to `riscv64`, but `upstream_pr.head_sha` still names the head before it. When the record's publication operation (`publication_operation_id`) is confirmed and `riscv64` is its effect at the observed PR head, the observation records that head in `upstream_pr.head_sha` beside the observation, without a row, an event, or a revision bump, and then reads review and CI on it. Any other head takes `record_head_change` to the human wait. The revision is not bumped, so the next revision Work can name a Work graph that already returned a Result and is allocated afresh by `allocate_work_retry`.
+- **Table:** `record_revision_publish_success` sets the published Result and clears the carried feedback; `record_head_change` in `upstream_review.waiting_ci` applies only to a head the pipeline did not publish. No row records the head the pipeline published.
+- **Required:** a table decision on how the published head is recorded (for example `record_revision_publish_success` records it, or a row of `upstream_review.waiting_ci` for the head of the pipeline's own publication), then take it.
+
+## Release acceptance has no recorded contract
+
+- **Where:** `release_wait.idle`; `release.acceptance_contract` and the release observation in `observe_ci.py`.
+- **Today:** the acceptance contract is read from the target contract the record names (`target_contract_id`, its `distributions` and `release_rows`), but nothing records a target contract, so every contribution that reaches `release_wait.idle` takes `require_release_intervention` with the pending action `release_contract_missing`. Its resume (`resume_release_observation`) returns to `release_wait.idle`, which asks again at the next observation. The wait has reminders; `park` does not apply in `release_wait.*`, so the contribution stays there until a contract exists.
+- **Table:** `verify_release` requires verified release coverage that satisfies the acceptance contract; `release_wait.*` has no other exit.
+- **Required:** a producer of the frozen release matrix (the target contract's distributions and rows) before a contribution reaches `release_wait`, and a table decision on how a contribution leaves `release_wait` when the release can never be verified.
+
+## Release verification does not run the install probe
+
+- **Where:** `verify_release` in the release observation; `probe.py`.
+- **Today:** release coverage is verified from the official PyPI metadata (non-yanked wheels with a digest, uploaded after the merge, whose tags cover every row) and the provenance of the release tag (it contains the merge commit). The wheels are not downloaded, inspected, installed, or imported; the evidence record says so in its limitations.
+- **Table:** `verify_release` requires "verified release coverage satisfies the acceptance contract".
+- **Required:** a decision on whether release acceptance requires the install-and-import probe in a clean target environment, then a trusted probe run before `verify_release`.
 
 ## A completed Work graph whose Result is not collected yet is retried
 
@@ -164,7 +165,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - `resume_stale` from a `provisioning` state, which has no fork, records a refresh with the phase `provisioning` and no head or development PR. The refreshed dossier returns to development on the recorded fork only when the refresh began with the fork and development PR the record still holds; otherwise development is admitted afresh.
 - The flag migration turns a block's human wait without a pending action into the `idle` activity of its phase, as the old `resume` did (for `development` the state the development migration names: `development.waiting_ci` or `development.fix_needed`), records `paused_at` as the record's `updated_at`, and records the controller's identity block with `paused_reason` `upstream_identity_changed`, the reason the table names.
 - `pause_on_identity_change` is guarded by `not paused`: an identity change observed while a contribution is paused sets nothing; the controller still selects no Work for it while the identity differs.
-- The reminder interval is counted in whole days from the exact time of the request or of the last reminder; a day counts when it ends on a weekday (UTC). Any pending action in a human wait of the table gets reminders, including the pending actions that only the legacy paths of upstream review write.
+- The reminder interval is counted in whole days from the exact time of the request or of the last reminder; a day counts when it ends on a weekday (UTC). Any pending action in a human wait of the table gets reminders.
 - A reminder is suppressed while paused and counted from the request, so after a long pause the resume and an overdue reminder can be posted in the same tick.
 - `/upstreaming resume` on a contribution that is neither paused nor in a human wait or in `parked.idle` is answered with `not paused`.
 - `/upstreaming resume` from `parked.idle` records `admission_override` only when it names both `class` and `paths`; the override's reason is the resume's reason. A resume that names only one of them is refused when it is posted and changes nothing, because such an override could never admit development. Every other resume refuses `class` and `paths`.
@@ -180,7 +181,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.
 - `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
 - In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
-- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table, is still handled by the legacy paths in upstream review; in provisioning and development it is rewritten by the record migrations.
+- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table, is rewritten by the record migrations in provisioning and development; in upstream review no code writes it, no resume applies to it, and `park` leaves it.
 - A planned operation that a trusted workflow runs stays `planned` across its launches; `begin_effect`, `record_response`, and `confirm_by_discovery` are taken together when its verified receipt is folded with the exact readback. The receipt establishes the facts of `begin_effect` (capacity available, the contribution not paused, the final check passed): the workflow's own final check read them before the effect. A push establishes "capacity available" without a runner reservation.
 - A branch operation that the store holds as `applying` lost the response of its push: the branch observation takes `record_response` ("its response was lost") before discovering it, as the publisher hands an operation over only after it recorded the response.
 - When the publisher's final check before a push does not pass (the head re-read fails or moved), no intent is recorded and the outcome carries no operation, instead of a `failed` operation, because `planned` has no row to `failed` other than a resolution.
@@ -221,7 +222,12 @@ These follow the literal reading of a decision and are kept until a decision say
 - "The same final tree and no content the approved series does not have" is read as: the tree of every reviewed commit is the tree of a commit of the approved series without its debug commits, later in that series than the tree of the reviewed commit before it. Squashing and rewording are admitted; reordering and content the approved series removed are refused. A split is therefore refused unless every tree it produces is a tree of that series, so a split the project requires sends the submission back to development, where the split commits can be made and approved first.
 - The revision is bumped when the rewrite is accepted (`accept_submission_rewrite`), since the review is new Work of the next revision and the revision rule requires a bump on a Result that leads to a state where Work is due; the package names the approval's revision, and the `retract-pr` command it carries names the current one.
 - The required CI workflow the build of `riscv64` dispatches on the clean head is the workflow of the latest required CI run on the candidate head (`workflow_path` of its evidence), read at the clean head as data: dispatchable when its triggers include `workflow_dispatch` and none of its inputs is required without a default. A project whose required jobs span several workflows gets that one dispatched; the others run only if a push triggers them, and the bounded wait of 12 hours then asks a human (`require_clean_head_ci`).
-- In upstream review the recorded head is `upstream_pr.head_sha` (`lifecycle.recorded_head`), the field the table's `record_head_change` there updates; `fork.head_sha` keeps the approved head of `riscv64-dev`. A head change in upstream review is still recorded by the legacy head observation, which updates both.
+- In upstream review the recorded head is `upstream_pr.head_sha` (`lifecycle.recorded_head`), the field the table's `record_head_change` there updates; `fork.head_sha` keeps the approved head of `riscv64-dev`. The head the observation compares is the head of the upstream PR as GitHub reports it.
+- Review feedback on the upstream PR is "authorized" when its author is in the command authority, as on the development PR; feedback from other accounts is not recorded, so an upstream maintainer's review reaches the pipeline only through an authorized human.
+- "Not yet recorded for this head and CI run" (`record_upstream_ci_failure`) holds when the evidence of the failing run and attempt is not `last_ci_evidence_id`; no row clears that field in upstream review except `record_head_change`.
+- In upstream review a proposal rejected as stale takes `reject_patch_proposal` ("the proposal is rejected for the current revision"), since no row replans there; a `no_change` report takes `require_reviewer_answer` also when the revision Work answered a CI failure.
+- The upstream PR is read without any change for `upstream_review.waiting_human` with the pending action `pr_closed_unmerged` and for `parked.idle` with an upstream PR: the facts "the upstream PR is observed open again" and "no open upstream PR" of the resume are established from that read of the same tick (a merged PR is not open).
+- A release is a candidate only when every file of it was uploaded at or after the merge time and its tag `v<version>` or `<version>` contains the merge commit; for several distributions every one must be covered. A distribution PyPI does not know needs an operator; a failed read is retried by the next tick.
 - A rewrite is expired once its evidence is one day short of the retention of the publication artifact that holds the series (`handoff.rewrite_expired`), 29 days by default: the artifact is kept 30 days, or the days of the repository variable `GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS` when it is set (1 to 400; 0 or another value counts as 30), which the controller's workflow passes to the tick; for a retention of one day the margin is half a day. The day of margin covers a review or build that starts just before the expiry. The trusted workflow also refuses an artifact GitHub reports as expired; that attempt fails as an infrastructure failure, and the next plan finds the rewrite expired by its age. A repository or organization retention limit below that value shortens the artifact's life without the tick knowing: the build attempts then fail as infrastructure failures until the rewrite is old enough or the attempts are exhausted and a human is asked.
 - A dossier of schema version 1 records no measurable rules and no template sections: the submission check then applies the rules and sections the review reports having found in the project. They are untrusted but can only refuse a submission, never admit one.
 - A required template section is present when the description has a Markdown heading with the same words (case and emphasis ignored). Whether every checklist item is answered honestly is the review's judgment; the check does not parse checklists.

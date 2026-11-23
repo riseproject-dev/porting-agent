@@ -95,6 +95,9 @@ class FakeGitHub:
         self.calls.append(("GET", path))
         if path.startswith(f"/repos/{CONTROL_REPO}/issues/comments/"):
             return copy.deepcopy(self.comments[int(path.rsplit("/", 1)[1])])
+        for pr in self.upstream:
+            if path == f"/repos/closeio/ciso8601/pulls/{pr['number']}":
+                return copy.deepcopy(pr)
         raise collect.CollectError(f"GET {path}: HTTP 404")
 
     def branch_head(self, _api, full_name, ref):
@@ -182,7 +185,8 @@ class World:
                 mock.patch("collect.compare_commits", gh.compare_commits), \
                 mock.patch("collect.ci_snapshot", gh.ci_snapshot), \
                 mock.patch("collect.upstream_pull_requests", gh.upstream_pull_requests), \
-                mock.patch("collect.development_review_feedback", return_value=None):
+                mock.patch("collect.development_review_feedback", return_value=None), \
+                mock.patch("collect.upstream_review_feedback", return_value=None):
             out = reconcile.tick(gh, snap, policy=self.policy, now=now,
                                  publications=list(publications),
                                  comments=list(comments), handoffs=list(receipts),

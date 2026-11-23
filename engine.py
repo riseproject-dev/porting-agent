@@ -854,6 +854,19 @@ PIPELINE_VERBS: dict[str, str] = {
     "require_clean_head_ci": "observe_ci",
     "verify_upstream_pr": "observe_ci",
     "record_audit_observation": "observe_ci",
+    # Upstream review, by observation of the upstream PR: a CI failure on its
+    # head once per head and run, its merge, and its closure without merge
+    # (its head change and review comments are the verbs above); the Result
+    # of revision Work.
+    "record_upstream_ci_failure": "observe_ci",
+    "record_merge": "observe_ci",
+    "record_pr_closed_unmerged": "observe_ci",
+    "record_revision_publish_success": "reconcile",
+    "require_reviewer_answer": "reconcile",
+    # The official release, by observation (`release.decide` decides the row).
+    "record_release_incomplete": "observe_ci",
+    "require_release_intervention": "observe_ci",
+    "verify_release": "observe_ci",
 }
 
 def table_commands() -> frozenset[str]:

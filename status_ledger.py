@@ -216,9 +216,54 @@ MESSAGES = {
         "provisioning again."),
     "confirm_provisioning": ("Provisioned and verified the contribution fork and exact `riscv64-dev` "
                              "base. Development Work is due."),
+    "record_upstream_ci_failure": ("A blocking CI job failed on the upstream PR head. Revision "
+                                   "Work is due for the failing job; the pipeline never reruns "
+                                   "upstream CI."),
+    "record_pr_closed_unmerged": (
+        "The upstream PR was closed without merge. The contribution waits for a human: once the "
+        "upstream PR is open again, `/upstreaming resume` at the current revision observes the "
+        "upstream review again; `/upstreaming park` ends the generation."),
+    "record_merge": "The upstream PR was merged. The official release is observed next.",
+    "record_revision_publish_success": (
+        "Published the revision to the upstream PR head (`riscv64`). The feedback its Work "
+        "carried is answered; upstream CI and review are observed next."),
+    "require_reviewer_answer": (
+        "The revision Work reports that no change is needed. A human answers the reviewer on "
+        "the upstream PR; the pipeline posts nothing there. Then `/upstreaming resume` at the "
+        "current revision clears the pending feedback and observes the upstream review again."),
+    "record_release_incomplete": ("The official release does not yet satisfy the acceptance "
+                                  "contract; release evidence is observed again."),
+    "require_release_intervention": (
+        "Release evidence needs operator action. Correct the cause, then `/upstreaming resume` "
+        "at the current revision observes the release again."),
+    "verify_release": ("Verified official release coverage that satisfies the acceptance "
+                       "contract. The contribution is released."),
     "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "
                                   "Correct the recorded cause, then `resume` at the current revision starts a "
                                   "clean generation at `queued:idle`."),
+}
+
+
+# The messages of the upstream review rows whose verb development shares,
+# for an event from a state of `upstream_review`.
+UPSTREAM_MESSAGES = {
+    "record_actionable_review": (
+        "Recorded authorized change feedback on the upstream PR. Revision Work is due; the "
+        "feedback stays pending until a revision that carries it is published."),
+    "record_explanation": (
+        "Recorded an authorized explanation-only comment on the upstream PR. No Work was "
+        "requested and nothing is posted on the upstream PR; a human answers it there. The "
+        "revision and the CI evidence are unchanged."),
+    "record_head_change": (
+        "The upstream PR head changed and the pipeline did not publish the change. The "
+        "contribution waits for a human: check the new head, then `/upstreaming resume` at the "
+        "current revision observes the upstream review again."),
+    "reject_patch_proposal": ("Rejected the worker's revision in trusted validation. Revision "
+                              "Work is due again at a new revision."),
+    "exhaust_repair_attempts": (
+        "The revision budgets are exhausted. The contribution waits for a human: correct the "
+        "cause, then `/upstreaming resume` at the current revision requests revision Work "
+        "again."),
 }
 
 
@@ -366,12 +411,17 @@ def _override_text(override: dict) -> str:
 
 
 def _quoted_comments(event: dict) -> str:
-    """The comments an explanation event recorded, for the tracking issue."""
+    """The comments an explanation event recorded, for the tracking issue.
+    A comment from the upstream PR is shown as a code span, so nothing in it
+    renders: no mention, no link, no image."""
+    details = event.get("details") or {}
+    upstream = str(details.get("from_state", "")).startswith("upstream_review.")
     lines = []
-    for item in (event.get("details") or {}).get("comments") or []:
+    for item in details.get("comments") or []:
         body = _quotable(item.get("body"))
-        url = item.get("url")
-        lines.append(f"\n> {body}" + (f" ([comment]({url}))" if url else ""))
+        url = _link(item.get("url")) if upstream else item.get("url")
+        quoted = f"`{body}`" if upstream else body
+        lines.append(f"\n> {quoted}" + (f" ([comment]({url}))" if url else ""))
     return ("\n" + "".join(lines) + "\n\n") if lines else ""
 
 
@@ -460,8 +510,20 @@ def render(event: dict, record: dict, run_url: str) -> str:
     elif kind == "command:pause":
         pending = underlying_activity.replace("_", " ")
         message = f"Paused automatic work. Pending lifecycle activity `{pending}` is retained until resume."
+    details = event.get("details") or {}
+    if kind in UPSTREAM_MESSAGES and str(details.get("from_state", "")).startswith("upstream_review."):
+        message = UPSTREAM_MESSAGES[kind]
     if kind == "record_explanation":
         message += _quoted_comments(event)
+    if kind == "record_release_incomplete" and details.get("incomplete"):
+        message += f" Observed: {_quotable(details['incomplete'], 600)}."
+    if kind == "require_release_intervention" and details.get("why"):
+        message += f" Observed: {_quotable(details['why'], 300)}."
+    if kind == "verify_release" and isinstance(details.get("releases"), dict):
+        message += " Releases: " + ", ".join(
+            f"{_quotable(n, 80)} {_quotable(v, 40)}" for n, v in sorted(details["releases"].items())) + "."
+    if kind == "record_merge" and details.get("merge_sha"):
+        message += f" Merge commit: `{_quotable(details['merge_sha'], 40)}`."
     pending = (event.get("details") or {}).get("pending_human_action")
     if kind == "record_reminder" and pending:
         message = (f"Reminder: this contribution still waits for a human: pending action "

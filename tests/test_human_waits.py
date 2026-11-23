@@ -179,13 +179,11 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
     def test_a_legacy_write_cannot_leave_a_wait_of_the_table(self):
         record = self.record()
         for site in ("observe_ci.ci_passed", "reconcile.publication_outcome",
-                     "reconcile.publish_retry_exhausted", "controller.plan_provisioning"):
+                     "reconcile.publish_retry_exhausted", "canary.repair_mismatch"):
             with self.subTest(site=site), self.assertRaises(lifecycle.TransitionError):
                 compat.legacy_update(record, site, activity="waiting_ci")
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.observe_status(record, activity="fix_needed", now=record["updated_at"])
         # The same write in the wait's own state, and every non-state field, is kept.
-        self.assertEqual(compat.legacy_update(record, "reconcile.publication_outcome",
+        self.assertEqual(compat.legacy_update(record, "canary.repair_mismatch",
                                               activity="waiting_human")["activity"],
                          "waiting_human")
 

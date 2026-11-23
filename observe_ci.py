@@ -28,8 +28,16 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 * in the locked ``handoff.waiting_upstream_pr``, discover the upstream PR
   read-only and take ``verify_upstream_pr`` for exactly one that matches, or
   record what does not match once (``record_audit_observation``);
-* in upstream review, record a head change and set the activity from CI as
-  the code before the table did (``compat``).
+* in ``upstream_review.waiting_ci``, take the table's rows for the upstream
+  PR: ``record_merge``, ``record_pr_closed_unmerged``, ``record_head_change``
+  for a head the pipeline did not publish, ``record_explanation``,
+  ``record_actionable_review``, and ``record_upstream_ci_failure`` once per
+  head and CI run; upstream CI is never rerun;
+* in ``release_wait.idle``, read the official release evidence and take
+  ``verify_release``, ``require_release_intervention``, or
+  ``record_release_incomplete`` (``release.decide``);
+* read, without changing anything, the upstream PR of a record whose resume
+  depends on whether it is open (``reads_upstream_pr_state``).
 
 A contribution that waits for a human in a state of the table without an
 observation row (``compat.waits_for_human``) is not observed: only the rows
@@ -52,6 +60,7 @@ import handoff
 import isolation
 import lifecycle
 import recovery
+import release
 import schemas
 from common import DEV_REF, UPSTREAM_REF, safe_id
 
@@ -106,13 +115,6 @@ def human_wait_without_observation(record: dict) -> bool:
         return False
     return not any(edge.transition.trigger == lifecycle.Trigger.OBSERVATION
                    for edge in lifecycle.state_edges(engine.state_key(record)))
-
-
-def holds_requested_work(record: dict) -> bool:
-    """Whether the record holds requested Work, or a Result held for a
-    publish retry that is not exhausted."""
-    pending = record.get("pending_publication") or {}
-    return bool(record.get("active_work")) or bool(pending and not pending.get("exhausted"))
 
 
 def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
@@ -225,20 +227,35 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             contracts: dict[str, dict], policy: dict, now: str,
             evidence: dict[str, dict] | None = None,
             skip: frozenset[str] = frozenset(),
-            audited: dict[str, set[str]] | None = None) -> Observation:
+            audited: dict[str, set[str]] | None = None, pypi=None) -> Observation:
     """Observe every watched contribution that is not in ``skip``.
 
     Each contribution is observed in its own ``isolation.contribution``
     block: a failed GitHub read, or any other exception, is attributed to
-    the contribution that was being observed."""
+    the contribution that was being observed. ``pypi`` reads the PyPI
+    document of a distribution (``collect.pypi_project`` by default)."""
     obs = Observation()
     evidence = dict(evidence or {})
     audited = {cid: set(keys) for cid, keys in (audited or {}).items()}
     for rec in contributions.values():
-        if rec["phase"] not in WATCH_PHASES or not rec.get("fork"):
-            continue
         cid = rec["contribution_id"]
         if cid in skip:
+            continue
+        if engine.state_key(rec) == "release_wait.idle":
+            with isolation.contribution(cid, "observation"):
+                entry = {"contribution": cid}
+                _observe_release(api, obs, entry, rec, contracts=contracts, policy=policy,
+                                 now=now, audited=audited, pypi=pypi or collect.pypi_project)
+                obs.report.append(entry)
+            continue
+        if reads_upstream_pr_state(rec):
+            with isolation.contribution(cid, "observation"):
+                entry = {"contribution": cid,
+                         "note": f"{engine.state_key(rec)}: the upstream PR is read for a resume only"}
+                _observe_upstream_pr_state(api, entry, rec)
+                obs.report.append(entry)
+            continue
+        if rec["phase"] not in WATCH_PHASES or not rec.get("fork"):
             continue
         with isolation.contribution(cid, "observation"):
             fork = rec["fork"]["name"]
@@ -262,6 +279,15 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                     obs.staged.append(("operations", new))
                     operations[op["operation_id"]] = new
                     entry["operation"] = {"id": op["operation_id"], "discovery": result}
+            if rec["phase"] == "upstream_review" and not human_wait_without_observation(rec):
+                # The upstream PR, not the branch, is what upstream review
+                # observes: a merged PR whose branch was deleted is still
+                # recorded. The branch is read to recognize a head the
+                # pipeline published.
+                _observe_upstream_review(api, obs, entry, rec, head, contracts=contracts,
+                                         policy=policy, now=now, operations=operations)
+                obs.report.append(entry)
+                continue
             if head is None:
                 # Nothing is decided from a missing branch: it is reported,
                 # and the next tick reads it again.
@@ -296,12 +322,9 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             if rec["phase"] == "development":
                 _observe_development(api, obs, entry, rec, head["head"], contracts=contracts,
                                      policy=policy, now=now)
-            elif rec["phase"] == "handoff":
+            else:
                 _observe_gate(api, obs, entry, rec, head["head"], contracts=contracts,
                               policy=policy, now=now)
-            else:
-                _observe_upstream_review(api, obs, entry, rec, head["head"], contracts=contracts,
-                                         policy=policy, now=now)
             obs.report.append(entry)
     return obs
 
@@ -370,12 +393,26 @@ def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: s
         return None, None, str(feedback["pr_mismatch"])
     if not feedback:
         return None, None, None
-    cid, fork = record["contribution_id"], record["fork"]
+    fork = record["fork"]
+    review, inquiry = _feedback_evidence(record, feedback, policy=policy, now=now,
+                                         repository_id=fork["repository_id"],
+                                         number=fork["pr_number"], head=head)
+    return review, inquiry, None
+
+
+def _feedback_evidence(record: dict, feedback: dict, *, policy: dict, now: str,
+                       repository_id: Any, number: int, head: str
+                       ) -> tuple[tuple[str, dict, dict] | None, tuple[str, dict, dict, list] | None]:
+    """The evidence of new authorized feedback on pull request ``number`` of
+    the repository ``repository_id``: the actionable review (evidence id,
+    evidence, feedback) and the explanation-only inquiry (evidence id,
+    evidence, the replay fences with its ids added, the comments)."""
+    cid = record["contribution_id"]
     inquiry = None
     inquiry_ids = feedback["inquiry_comment_ids"] + feedback["inquiry_conversation_comment_ids"]
     if inquiry_ids:
         items = feedback["inquiry_comments"] + feedback["inquiry_conversation_comments"]
-        iid = safe_id(f"inquiry-{fork['repository_id']}-{fork['pr_number']}-{max(inquiry_ids)}")
+        iid = safe_id(f"inquiry-{repository_id}-{number}-{max(inquiry_ids)}")
         iev = {"schema_version": 1, "evidence_id": iid, "contribution_id": cid,
                "kind": "human_inquiry", "policy_version": policy["policy_version"],
                "collected_at": now,
@@ -396,7 +433,7 @@ def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: s
     review = None
     ids = feedback["review_ids"] + feedback["comment_ids"] + feedback["conversation_comment_ids"]
     if ids:
-        eid = safe_id(f"review-{fork['repository_id']}-{fork['pr_number']}-{max(ids)}")
+        eid = safe_id(f"review-{repository_id}-{number}-{max(ids)}")
         summaries = [item["body"] for item in
                      feedback["reviews"] + feedback["comments"] + feedback["conversation_comments"]]
         ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": cid,
@@ -405,7 +442,7 @@ def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: s
               "limitations": [], "data": feedback, "digests": {"head": head}}
         schemas.validate("evidence", ev)
         review = (eid, ev, feedback)
-    return review, inquiry, None
+    return review, inquiry
 
 
 def _record_explanation(obs: Observation, entry: dict, record: dict,
@@ -603,58 +640,232 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
     # Otherwise repeated observation of the candidate head keeps the gate.
 
 
+def _pipeline_published(rec: dict, branch: dict | None, pr_head: str,
+                        operations: dict[str, dict]) -> bool:
+    """Whether the pipeline published ``pr_head``: the publication operation
+    the record names (``publication_operation_id``, recorded by
+    ``record_revision_publish_success``) is confirmed and discovers as its
+    effect on `riscv64`, whose head is the upstream PR head."""
+    op = operations.get(rec.get("publication_operation_id") or "")
+    if not op or op.get("status") != "confirmed" or branch is None or branch.get("head") != pr_head:
+        return False
+    if op.get("kind") not in ("branch_update", "branch_rewrite") \
+            or (op.get("target") or {}).get("ref") != UPSTREAM_REF:
+        return False
+    return recovery.discover_branch(op, branch) == "confirmed"
+
+
+def _upstream_feedback(api: collect.Api, record: dict, *, policy: dict, now: str
+                       ) -> tuple[tuple[str, dict, dict] | None, tuple[str, dict, dict, list] | None]:
+    """New authorized feedback on the upstream PR for its recorded head: the
+    actionable review and the explanation-only inquiry, each or both
+    ``None``. The evidence ids name the upstream repository and PR."""
+    feedback = collect.upstream_review_feedback(api, record, policy["command_authority"]["actor_ids"])
+    if not feedback:
+        return None, None
+    return _feedback_evidence(record, feedback, policy=policy, now=now,
+                              repository_id=record["upstream"].get("repository_id"),
+                              number=record["upstream_pr"]["number"],
+                              head=record["upstream_pr"]["head_sha"])
+
+
 def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, rec: dict,
-                             head: str, *, contracts: dict, policy: dict, now: str) -> None:
-    """Observe upstream review as the code before the table did: a new fork
-    head bumps the revision (``compat.observe_head``), and CI on the head
-    sets the activity (``compat.observe_status``)."""
+                             branch: dict | None, *, contracts: dict, policy: dict, now: str,
+                             operations: dict[str, dict]) -> None:
+    """Observe ``upstream_review.waiting_ci`` by its rows, in order:
+    ``record_merge`` for a merged upstream PR, ``record_pr_closed_unmerged``
+    for one closed without merge, ``record_head_change`` for a head the
+    pipeline did not publish (a head it published is recorded beside the
+    observation), ``record_explanation`` for an explanation-only comment,
+    ``record_actionable_review`` for an actionable review (the observation
+    then ends in ``upstream_review.fix_needed``), and
+    ``record_upstream_ci_failure`` for an executed blocking failure of a CI
+    run on the upstream PR head that is not recorded yet. Passing CI keeps
+    the state; upstream CI is never rerun.
+
+    ``upstream_review.fix_needed`` (revision Work is due) and
+    ``upstream_review.agent_running`` (Work requested, or a Result held for
+    publication) have no observation row and are not read."""
+    state = engine.state_key(rec)
+    if state != "upstream_review.waiting_ci":
+        entry["note"] = f"{state} has no observation row"
+        return
+    pr = collect.upstream_pull(api, rec)
+    entry["upstream_pr"] = {"number": pr["number"], "state": pr["state"], "merged": pr["merged"],
+                            "head": pr["head_sha"]}
+    cause = f"upstream-pr-{pr['id']}"
+    if pr["merged"]:
+        merge_sha, merged_at = pr.get("merge_commit_sha"), pr.get("merged_at")
+        if not (isinstance(merge_sha, str) and len(merge_sha) == 40 and merged_at):
+            raise collect.CollectError(f"upstream PR #{pr['number']} is merged without a merge "
+                                       "commit or time")
+        eid = safe_id(f"merge-{rec['upstream'].get('repository_id')}-{pr['number']}-{merge_sha[:12]}")
+        ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": rec["contribution_id"],
+              "kind": "merge", "policy_version": policy["policy_version"], "collected_at": now,
+              "summary": f"upstream PR #{pr['number']} merged into {pr['base_ref']} as {merge_sha}",
+              "limitations": [], "data": {"pr_number": pr["number"], "merge_sha": merge_sha,
+                                          "merged_at": merged_at, "base_ref": pr["base_ref"],
+                                          "head_sha": pr["head_sha"]},
+              "digests": {"head": pr["head_sha"]}}
+        schemas.validate("evidence", ev)
+        obs.staged.append(("evidence", ev))
+        _take(obs, rec, "record_merge", policy=policy, now=now, cause_id=eid,
+              facts={"upstream_pr_merged"},
+              values={"merge": {"merge_sha": merge_sha, "merged_at": merged_at,
+                                "target_ref": pr["base_ref"], "evidence_id": eid}},
+              details={"evidence_id": eid, "merge_sha": merge_sha})
+        entry["merged"] = merge_sha
+        return
+    if pr["state"] != "open":
+        _take(obs, rec, "record_pr_closed_unmerged", policy=policy, now=now, cause_id=cause,
+              facts={"upstream_pr_closed_unmerged"},
+              values={"pending_human_action": "pr_closed_unmerged"},
+              details={"pr_number": pr["number"]})
+        entry["activity"] = "waiting_human"
+        return
     cur = rec
-    if head != lifecycle.recorded_head(rec) and holds_requested_work(rec):
-        # The table records no head change while Work is requested or its
-        # Result is held for publication: the Result is folded at the
-        # revision it was requested for, and the head it published is
-        # recorded by the observation after it.
-        entry["note"] = "head change is recorded once the requested Work ends"
-        return
-    if head != lifecycle.recorded_head(rec):
-        out = compat.observe_head(rec, head, now=now, cause_id=f"branch:{head[:12]}")
-        cur = out.record
-        obs.staged.append(("contributions", cur))
-        if out.event:
-            obs.staged.append(("events", out.event))
-        entry["head_changed"] = True
-    if cur["activity"] == "fix_needed":
-        entry["note"] = "repair remains required"
-        return
-    snap_repo = cur["upstream"]["full_name"]
+    head = pr["head_sha"]
+    if head != lifecycle.recorded_head(cur):
+        if _pipeline_published(cur, branch, head, operations):
+            # The head of the revision the pipeline published: no row of the
+            # table records it, so it is recorded beside the observation, and
+            # the head's CI and review are read below.
+            cur = dict(cur, upstream_pr=dict(cur["upstream_pr"], head_sha=head),
+                       next_poll_at=None, updated_at=now)
+            schemas.validate("contribution", cur)
+            obs.staged.append(("contributions", cur))
+            entry["published_head"] = head
+        else:
+            _take(obs, cur, "record_head_change", policy=policy, now=now,
+                  cause_id=f"upstream-head:{head[:12]}",
+                  facts={"upstream_head_changed_externally"},
+                  values={"upstream_pr.head_sha": head},
+                  details={"head": head, "previous_head": lifecycle.recorded_head(cur)})
+            entry.update(head_changed=True, activity="waiting_human")
+            return
+    review, inquiry = _upstream_feedback(api, cur, policy=policy, now=now)
+    if inquiry:
+        cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
+    if review:
+        if _record_review(obs, entry, cur, review, policy=policy, now=now,
+                          facts=frozenset({"actionable_review"})) is not None:
+            entry["activity"] = "fix_needed"
+            return
+    repository = cur["upstream"]["full_name"]
     verdict, ev, next_poll_at = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
-                                    repository=snap_repo)
-    entry["ci"] = {"repository": snap_repo, "state": verdict.state, "problems": verdict.problems[:10]}
+                                    repository=repository)
+    entry["ci"] = {"repository": repository, "state": verdict.state,
+                   "problems": verdict.problems[:10]}
     if ev is not None:
         obs.staged.append(("evidence", ev))
         entry["evidence"] = ev["evidence_id"]
-        if verdict.state in {"passed", "failed"} and cur.get("last_ci_evidence_id") != ev["evidence_id"]:
-            cur = dict(cur, last_ci_evidence_id=ev["evidence_id"], next_poll_at=None, updated_at=now)
-            obs.staged.append(("contributions", cur))
-    if verdict.state in ("pending", "missing", "not_executed"):
-        next_poll_at = _next_ci_observation(now, policy)
-    else:
-        next_poll_at = None
-    new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
-                    "missing": "waiting_ci", "not_executed": "waiting_ci",
-                    "access_wait": "waiting_human"}[verdict.state]
-    if cur["activity"] != new_activity and cur["activity"] != "agent_running":
-        out = compat.observe_status(cur, activity=new_activity, next_poll_at=next_poll_at, now=now)
-        if next_poll_at is None and out.record.get("next_poll_at") is not None:
-            out.record["next_poll_at"] = None
-        obs.staged.append(("contributions", out.record))
-        if out.event:
+    if verdict.state == "failed" and ev is not None:
+        if ev["evidence_id"] == cur.get("last_ci_evidence_id"):
+            # Recorded once per head and CI run: a failure already recorded
+            # does not request a revision again (after a resume, for
+            # example). Upstream CI is never rerun by the pipeline.
+            entry["note"] = f"{ev['evidence_id']} is already recorded for this head"
+            _poll(obs, cur, None)
+            return
+        cur = _take(obs, cur, "record_upstream_ci_failure", policy=policy, now=now,
+                    cause_id=ev["evidence_id"],
+                    facts={"upstream_ci_failed", "upstream_failure_not_recorded"},
+                    values={"last_ci_evidence_id": ev["evidence_id"]},
+                    details={"evidence_id": ev["evidence_id"]})
+        _poll(obs, cur, None)
+        entry["activity"] = "fix_needed"
+        return
+    if verdict.state == "access_wait":
+        entry["note"] = "a CI run waits for approval; CI is read again"
+    _poll(obs, cur, next_poll_at)
+
+
+def _observe_upstream_pr_state(api: collect.Api, entry: dict, rec: dict) -> None:
+    """Read the upstream PR of a record whose resume depends on it, without
+    changing anything: ``resume_upstream_review`` after
+    ``pr_closed_unmerged`` requires the PR open again, and
+    ``restart_generation`` requires no open upstream PR. The controller
+    establishes those facts from ``entry["upstream_pr"]``. A failed read
+    establishes nothing, so the resume is refused, and keeps every other
+    command of the tick (``park``, ``abandon``) from being held back."""
+    try:
+        pr = collect.upstream_pull(api, rec)
+    except collect.CollectError as error:
+        entry["upstream_pr_unavailable"] = str(error)[:300]
+        return
+    entry["upstream_pr"] = {"number": pr["number"], "state": pr["state"], "merged": pr["merged"],
+                            "head": pr["head_sha"]}
+
+
+def reads_upstream_pr_state(record: dict) -> bool:
+    """Whether a record's upstream PR is read for a resume only
+    (``_observe_upstream_pr_state``)."""
+    if not record.get("upstream_pr"):
+        return False
+    state = engine.state_key(record)
+    if state == "parked.idle":
+        return True
+    return state == "upstream_review.waiting_human" \
+        and (record.get("pending_human_action") or {}).get("kind") == "pr_closed_unmerged"
+
+
+# The rows of `release_wait.idle`, one of which ``release.decide`` names.
+RELEASE_ROWS = ("record_release_incomplete", "require_release_intervention", "verify_release")
+
+
+def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict, *,
+                     contracts: dict, policy: dict, now: str, audited: dict[str, set[str]],
+                     pypi) -> None:
+    """Observe ``release_wait.idle``, at most every
+    ``release.RELEASE_POLL_MINUTES`` minutes: the official release evidence
+    decides ``verify_release``, ``require_release_intervention``, or
+    ``record_release_incomplete``, which is recorded once per distinct
+    observation (``release.decide``)."""
+    if rec.get("next_poll_at") and rec["next_poll_at"] > now:
+        entry["note"] = f"release evidence is read again at {rec['next_poll_at']}"
+        return
+    contract = release.acceptance_contract(contracts.get(rec.get("target_contract_id") or ""))
+    found = {name: pypi(name) for name in (contract.distributions if contract else ())}
+    merge = rec["merge"]
+    decision = release.decide(
+        contract, merge=merge, pypi=found,
+        contains=lambda version: collect.release_contains(
+            api, rec["upstream"]["full_name"], version, merge["merge_sha"]))
+    if decision.verb not in RELEASE_ROWS:
+        raise lifecycle.TransitionError(f"{decision.verb} is not a row of release_wait.idle")
+    entry["release"] = {"verb": decision.verb, **decision.details}
+    cause = f"release-{merge['merge_sha'][:12]}"
+    if decision.verb == "record_release_incomplete":
+        cid = rec["contribution_id"]
+        if decision.key not in audited.get(cid, set()):
+            out = engine.apply_transition(rec, decision.verb, policy=policy, now=now,
+                                          cause_id=f"{cause}-{decision.key}",
+                                          facts=decision.facts, details=decision.details)
+            if not out.accepted:
+                raise lifecycle.TransitionError(f"{decision.verb} refused: {out.reason}")
             obs.staged.append(("events", out.event))
-        entry.update(activity=new_activity)
-    elif next_poll_at is not None and cur.get("next_poll_at") != next_poll_at \
-            and cur["activity"] != "agent_running":
-        out = compat.observe_status(cur, next_poll_at=next_poll_at, now=now)
-        obs.staged.append(("contributions", out.record))
+            audited.setdefault(cid, set()).add(decision.key)
+        _poll(obs, rec, (datetime.fromisoformat(now)
+                         + timedelta(minutes=release.RELEASE_POLL_MINUTES)).isoformat())
+        return
+    values = dict(decision.values)
+    if decision.verb == "verify_release":
+        eid = safe_id(f"release-{rec['contribution_id'].replace('/', '--')}-{merge['merge_sha'][:12]}"
+                      f"-{'-'.join(sorted(decision.details['releases'].values()))}")
+        ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": rec["contribution_id"],
+              "kind": "release_acceptance", "policy_version": policy["policy_version"],
+              "collected_at": now,
+              "summary": "official release coverage satisfies the acceptance contract: "
+                         + ", ".join(f"{n} {v}" for n, v in sorted(decision.details["releases"].items())),
+              "limitations": ["Metadata coverage and tag provenance; the wheels are not installed."],
+              "data": decision.details, "digests": {"merge": merge["merge_sha"]}}
+        schemas.validate("evidence", ev)
+        obs.staged.append(("evidence", ev))
+        values["release_acceptance"] = {"evidence_id": eid, "as_of": now, "complete": True}
+        cause = eid
+    cur = _take(obs, rec, decision.verb, policy=policy, now=now, cause_id=cause,
+                facts=decision.facts, values=values, details=decision.details)
+    _poll(obs, cur, None)
 
 
 def dedupe(staged: list[tuple[str, dict]]) -> list[tuple[str, dict]]:

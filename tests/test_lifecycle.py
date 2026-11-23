@@ -9,7 +9,7 @@ import compat
 import engine
 import lifecycle
 import schemas
-from tests.helpers import NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution, policy
+from tests.helpers import NOW, OWNER, SHA_A, SHA_B, apply_command, contribution, policy
 
 
 def cmd(text):
@@ -24,28 +24,21 @@ CID = "example--proj/12"
 
 
 class TestRevision(unittest.TestCase):
-    def test_status_observation_does_not_bump(self):
-        rec = contribution()
-        out = compat.observe_status(rec, activity="waiting_ci", next_poll_at=NOW, now=NOW)
-        self.assertEqual(out.record["revision"], rec["revision"])
-        out2 = compat.observe_status(out.record, next_poll_at="2026-11-18T13:00:00+00:00", now=NOW)
-        self.assertIsNone(out2.event)
-
     def test_head_change_bumps_and_invalidates(self):
         rec = contribution(last_ci_evidence_id="ev-1")
-        out = compat.observe_head(rec, SHA_B, now=NOW)
+        out = engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
+                                      facts={"fork_head_changed"}, values={"fork.head_sha": SHA_B})
         self.assertEqual(out.record["revision"], rec["revision"] + 1)
         self.assertIsNone(out.record["last_ci_evidence_id"])
-        self.assertIsNone(compat.observe_head(out.record, SHA_B, now=NOW).event)
 
-    def test_status_change_does_not_stale_proposal_but_head_does(self):
+    def test_a_moved_head_stales_a_proposal(self):
         rec = contribution()
-        polled = compat.observe_status(rec, activity="waiting_ci", now=NOW).record
-        polled["activity"] = "idle"
-        self.assertIsNone(lifecycle.publication_check(polled, expected_revision=rec["revision"],
+        self.assertIsNone(lifecycle.publication_check(rec, expected_revision=rec["revision"],
                                                       expected_head=SHA_A, observed_head=SHA_A,
                                                       ref="riscv64-dev", repository="riseproject-upstreaming/proj"))
-        moved = compat.observe_head(rec, SHA_B, now=NOW).record
+        moved = engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
+                                        facts={"fork_head_changed"},
+                                        values={"fork.head_sha": SHA_B}).record
         self.assertEqual(lifecycle.publication_check(moved, expected_revision=rec["revision"],
                                                      expected_head=SHA_A, observed_head=SHA_B,
                                                      ref="riscv64-dev", repository="riseproject-upstreaming/proj"),
@@ -243,9 +236,7 @@ class TestRestartGeneration(unittest.TestCase):
                                                      "reminded_at": None, "escalated_at": None,
                                                      "counter": None})
         paused = contribution(activity="waiting_ci", paused=True, paused_at=NOW, paused_by="human")
-        legacy = contribution(phase="upstream_review", activity="idle", paused=True,
-                              paused_at=NOW, paused_by="human")
-        for rec in (waiting, paused, legacy):
+        for rec in (waiting, paused):
             with self.subTest(state=f"{rec['phase']}.{rec['activity']}"):
                 out = apply(rec, f"/upstreaming resume contribution={CID} revision={rec['revision']} "
                                  "class=optimized_backend reason=r")
@@ -314,32 +305,25 @@ class TestHandoff(unittest.TestCase):
             compat.apply_command(rec, cmd(f"/upstreaming pause contribution={CID} revision=0"),
                                  command_id="c", actor=OWNER, now=NOW)
         with self.assertRaises(lifecycle.TransitionError):
-            compat.observe_head(rec, SHA_C, now=NOW)
+            compat.legacy_update(rec, "canary.repair_mismatch", activity="waiting_human")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.observe_status(rec, activity="waiting_human", now=NOW)
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.park(dict(rec), "reason")
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(rec, "reconcile.publication_outcome", activity="waiting_human")
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(contribution(phase="upstream_review"),
-                                 "reconcile.publication_outcome", phase="handoff",
+            compat.legacy_update(contribution(), "canary.repair_mismatch", phase="handoff",
                                  activity="waiting_human")
 
     def test_legacy_write_needs_a_registered_site_and_an_admitted_state(self):
-        review = contribution(phase="upstream_review", activity="agent_running")
+        rec = contribution(activity="agent_running")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(review, "somewhere.else", activity="waiting_ci")
+            compat.legacy_update(rec, "somewhere.else", phase="queued", activity="idle")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(review, "reconcile.publication_outcome",
-                                 activity="waiting_upstream_pr")
-        # Development has no legacy state any more.
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(contribution(activity="agent_running"),
-                                 "reconcile.publication_outcome", activity="idle")
-        moved = compat.legacy_update(review, "reconcile.publication_outcome",
-                                     activity="waiting_capacity")
-        self.assertEqual(moved["activity"], "waiting_capacity")
+            compat.legacy_update(rec, "reconcile.publication_outcome", activity="waiting_ci")
+        # No state outside the table is admitted any more.
+        for state in ("development.idle", "upstream_review.idle",
+                      "upstream_review.waiting_capacity"):
+            with self.subTest(state=state), self.assertRaises(lifecycle.TransitionError):
+                phase, activity = state.split(".")
+                compat.legacy_update(rec, "canary.repair_mismatch", phase=phase, activity=activity)
+        moved = compat.legacy_update(rec, "canary.repair_mismatch", phase="queued", activity="idle")
+        self.assertEqual(engine.state_key(moved), "queued.idle")
 
 
 class TestMergeAndRelease(unittest.TestCase):

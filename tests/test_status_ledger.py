@@ -132,7 +132,8 @@ class TestStatusLedger(unittest.TestCase):
 
     def test_repair_exhaustion_park_renders_and_offers_resume(self):
         before = contribution(phase="development", activity="fix_needed", revision=7)
-        record = compat.park(dict(before, revision=8), "repair-attempt budget exhausted")
+        record = dict(before, revision=8, phase="parked", activity="idle",
+                      parked_reason="repair-attempt budget exhausted", previous_phase="development")
         event = lifecycle._event(before, record, "repair_attempts_exhausted", "result", "1", NOW, True)
         event["sequence"] = 9
         body = status_ledger.render(event, record, "https://github.com/run")

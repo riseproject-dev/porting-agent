@@ -59,6 +59,10 @@ class Inputs:
     # What the observation of the locked upstream-PR wait found this tick, by
     # contribution: the reminder states a mismatch.
     handoff_observations: dict[str, dict] = field(default_factory=dict)
+    # The upstream PR as the observation of this tick read it, by contribution
+    # (``observe_ci.reads_upstream_pr_state``): whether it is open decides the
+    # resumes that depend on it.
+    upstream_pr_observations: dict[str, dict] = field(default_factory=dict)
     resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
@@ -357,14 +361,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 # what is held for publication, and keeps the state (from an
                 # `agent_running` state, the state in which the Work is due).
                 cause = f"upstream-identity-{snapshot['repository_id']}"
-                if compat.is_legacy_state(c):
-                    out = compat.legacy_pause(c, "pause_on_identity_change",
-                                              reason=compat.IDENTITY_REASON, now=now,
-                                              cause_id=cause)
-                else:
-                    out = engine.apply_transition(
-                        c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
-                        facts={"upstream_identity_changed"})
+                out = engine.apply_transition(
+                    c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
+                    facts={"upstream_identity_changed"})
                 if out.accepted:
                     by_id[cid] = out.record
                     res.stage("contributions", out.record)
@@ -1237,24 +1236,34 @@ PROVISIONING_WAITS = frozenset({(LAUNCH_EXHAUSTED, "operation_launch"),
                                 (PROVISIONING_FAILED, None)})
 
 
-def _command_facts(rec: dict, cmd: Command) -> frozenset[str]:
-    """The facts a command establishes by itself. A human `/upstreaming
-    resume` of a provisioning wait the controller entered is the human's
-    assertion that the prerequisite is corrected."""
+def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> frozenset[str]:
+    """The facts a command establishes by itself, or with the upstream PR the
+    observation of this tick read. A human `/upstreaming resume` of a
+    provisioning wait the controller entered is the human's assertion that
+    the prerequisite is corrected. A resume after `pr_closed_unmerged` needs
+    the upstream PR observed open again, and a resume from `parked.idle` of
+    a record that names an upstream PR needs it observed closed or merged."""
     pending = rec.get("pending_human_action") or {}
-    if cmd.verb == "resume" and engine.state_key(rec) == "provisioning.waiting_human" \
+    state = engine.state_key(rec)
+    if cmd.verb == "resume" and state == "provisioning.waiting_human" \
             and (pending.get("kind"), pending.get("counter")) in PROVISIONING_WAITS:
         return frozenset({"prerequisite_corrected"})
+    if cmd.verb == "resume" and upstream_pr is not None:
+        is_open = upstream_pr.get("state") == "open" and not upstream_pr.get("merged")
+        if state == "upstream_review.waiting_human" and is_open:
+            return frozenset({"upstream_pr_reopened"})
+        if state == "parked.idle" and not is_open:
+            return frozenset({"upstream_pr_not_open"})
     return frozenset()
 
 
 def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,
-                         policy: dict, now: str) -> engine.Outcome:
+                         policy: dict, now: str, upstream_pr: dict | None = None) -> engine.Outcome:
     """Apply a command to a record in a table state, as the table defines it."""
     open_ops = _open_operations(rec, operations)
     counts = {**recovery.launch_count(operations.get(rec.get("active_operation_id"))),
               **handoff.counts(rec, operations)}
-    facts = _command_facts(rec, cmd)
+    facts = _command_facts(rec, cmd, upstream_pr)
     verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now, counts=counts,
                                        open_operations=open_ops, facts=facts)
     if verb is None:
@@ -1287,12 +1296,13 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
 
 
 def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, policy: dict,
-                  now: str) -> engine.Outcome:
+                  now: str, upstream_pr: dict | None = None) -> engine.Outcome:
     """Apply an authenticated command to the record it concerns: through the
     transition engine where the table defines it (``engine.takes_command``),
-    through the compatibility layer otherwise."""
+    through the compatibility layer otherwise. ``upstream_pr`` is the
+    upstream PR as the observation of this tick read it, if it did."""
     if engine.takes_command(rec, cmd.verb):
-        return _apply_table_command(rec, cmd, receipt, operations, policy, now)
+        return _apply_table_command(rec, cmd, receipt, operations, policy, now, upstream_pr)
     open_ops = _open_operations(rec, operations)
     if cmd.verb == "park" and open_ops:
         # `park_contribution` requires no open operation, in every state.
@@ -1366,7 +1376,8 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
     receipt = dict(receipt, contribution_id=rec["contribution_id"],
                    revision=cmd.revision if cmd.revision is not None else rec["revision"])
     try:
-        out = apply_command(rec, cmd, receipt, operations=operations, policy=policy, now=now)
+        out = apply_command(rec, cmd, receipt, operations=operations, policy=policy, now=now,
+                            upstream_pr=inputs.upstream_pr_observations.get(rec["contribution_id"]))
     except lifecycle.TransitionError as e:
         return dict(receipt, result="rejected", reason=str(e))
     if not out.accepted:

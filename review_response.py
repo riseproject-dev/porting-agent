@@ -4,6 +4,8 @@
 
 This runs only in the trusted post-publication job with a one-fork App token.
 The worker supplies bounded response text but never receives the token.
+Nothing is answered for a contribution in upstream review: a human answers
+the reviewers on the upstream PR.
 """
 
 from __future__ import annotations
@@ -105,6 +107,10 @@ def review_threads(api: Api, owner: str, name: str, number: int) -> list[dict]:
 
 def apply(api: Api, *, record: dict, task: dict, proposal: dict, outcome: dict) -> list[dict]:
     if outcome.get("status") != "published" or not outcome.get("candidate"):
+        return []
+    if record.get("upstream_pr") is not None or record.get("phase") == "upstream_review":
+        # In upstream review a human answers the reviewer: nothing is posted
+        # on the upstream PR, and the development PR is closed.
         return []
     fork = record.get("fork") or {}
     repository = fork.get("name")

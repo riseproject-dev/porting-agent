@@ -229,16 +229,34 @@ def development_review_feedback(api: Api, record: dict, authority: Iterable[int]
     mismatch = development_pull_problem(api, record) if check_pull else None
     if mismatch:
         return {"pr_mismatch": mismatch}
+    return _review_feedback(api, record, fork["name"], int(number), head, authority)
+
+
+def upstream_review_feedback(api: Api, record: dict, authority: Iterable[int]) -> dict | None:
+    """New authorized review feedback or inquiries on the upstream PR, bound
+    to its recorded head (``upstream_pr.head_sha``). Authorized means written
+    by an account in the command authority, as on the development PR."""
+    pr = record.get("upstream_pr") or {}
+    if record.get("phase") != "upstream_review" or not pr.get("number") or not pr.get("head_sha"):
+        return None
+    return _review_feedback(api, record, record["upstream"]["full_name"], int(pr["number"]),
+                            pr["head_sha"], authority)
+
+
+def _review_feedback(api: Api, record: dict, repository: str, number: int, head: str,
+                     authority: Iterable[int]) -> dict | None:
+    """The new authorized review feedback and inquiries on the pull request
+    ``number`` of ``repository`` bound to ``head``, or ``None``."""
     allowed = {int(value) for value in authority}
     seen_reviews = set(record.get("processed_review_ids") or [])
     seen_comments = set(record.get("processed_review_comment_ids") or [])
     seen_conversation = set(record.get("processed_pr_conversation_comment_ids") or [])
-    reviews = api.paginate(f"/repos/{fork['name']}/pulls/{number}/reviews?per_page=100", max_pages=3)
-    comments = api.paginate(f"/repos/{fork['name']}/pulls/{number}/comments?per_page=100", max_pages=5)
-    conversation = api.paginate(f"/repos/{fork['name']}/issues/{number}/comments?per_page=100", max_pages=5)
+    reviews = api.paginate(f"/repos/{repository}/pulls/{number}/reviews?per_page=100", max_pages=3)
+    comments = api.paginate(f"/repos/{repository}/pulls/{number}/comments?per_page=100", max_pages=5)
+    conversation = api.paginate(f"/repos/{repository}/issues/{number}/comments?per_page=100", max_pages=5)
     head_at = None
     if conversation:
-        commit = api.get(f"/repos/{fork['name']}/commits/{head}")
+        commit = api.get(f"/repos/{repository}/commits/{head}")
         head_at = datetime.fromisoformat(
             ((commit.get("commit") or {}).get("committer") or {})["date"].replace("Z", "+00:00"))
     review_items = []
@@ -375,6 +393,50 @@ def pull_request(api: Api, url: str) -> dict:
         "head_ref": pr["head"]["ref"], "head_sha": pr["head"]["sha"],
         "merged": pr.get("merged", False), "merge_commit_sha": pr.get("merge_commit_sha"),
     }
+
+
+def upstream_pull(api: Api, record: dict) -> dict:
+    """The upstream PR the record names, as GitHub reports it now: its state,
+    whether it is merged (with the merge commit and time), its base, and its
+    head. A pull request whose id is not the recorded one is refused."""
+    pr = record.get("upstream_pr") or {}
+    if not pr.get("number"):
+        raise CollectError("the record names no upstream PR")
+    data = api.get(f"/repos/{record['upstream']['full_name']}/pulls/{int(pr['number'])}")
+    if not isinstance(data, dict) or data.get("id") != pr.get("id"):
+        raise CollectError(f"upstream PR #{pr['number']} is not the recorded pull request")
+    head, base = data.get("head") or {}, data.get("base") or {}
+    merged_at = data.get("merged_at")
+    return {"id": data["id"], "number": data.get("number"), "state": data.get("state"),
+            "merged": bool(data.get("merged") or merged_at), "merged_at": merged_at,
+            "merge_commit_sha": data.get("merge_commit_sha"),
+            "base_ref": base.get("ref"), "base_repository_id": (base.get("repo") or {}).get("id"),
+            "head_ref": head.get("ref"), "head_sha": head.get("sha"),
+            "head_repository_id": (head.get("repo") or {}).get("id")}
+
+
+def release_contains(api: Api, full_name: str, version: str, commit: str) -> bool | None:
+    """Whether the release tag of ``version`` in ``full_name`` (``v<version>``
+    or ``<version>``) contains ``commit``: ``True`` or ``False`` for the first
+    tag that exists, ``None`` when neither exists."""
+    if not _REPO_RE.match(full_name) or not _FULL_SHA.match(commit) \
+            or not re.fullmatch(r"[A-Za-z0-9._+!-]{1,64}", version):
+        raise CollectError("refusing an unexpected release provenance check")
+    for tag in (f"v{version}", version):
+        try:
+            data = api.get(f"/repos/{full_name}/commits/{urllib.parse.quote('refs/tags/' + tag, safe='')}")
+        except CollectError as e:
+            if "HTTP 404" in str(e) or "HTTP 422" in str(e):
+                continue
+            raise
+        sha = (data or {}).get("sha") if isinstance(data, dict) else None
+        if not isinstance(sha, str) or not _FULL_SHA.match(sha):
+            raise CollectError(f"tag {tag!r} resolves to no commit")
+        if sha == commit:
+            return True
+        status = compare_commits(api, full_name, commit, sha).get("status")
+        return status in ("ahead", "identical")
+    return None
 
 
 def repository(api: Api, full_name: str) -> dict:
@@ -570,6 +632,19 @@ def pypi_release(distribution: str, opener=None) -> dict:
         raise CollectError("invalid distribution name")
     with (opener or urllib.request.urlopen)(f"https://pypi.org/pypi/{distribution}/json", timeout=30) as r:
         return json.load(r)
+
+
+def pypi_project(distribution: str, opener=None) -> dict | None:
+    """The PyPI JSON document of ``distribution``, or ``None`` when PyPI has
+    no such project. Any other failure is a collector failure."""
+    try:
+        return pypi_release(distribution, opener=opener)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise CollectError(f"PyPI {distribution}: HTTP {e.code}") from e
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        raise CollectError(f"PyPI {distribution}: {e}") from e
 
 
 def usage(url: str, opener=None) -> tuple[Any, datetime]:

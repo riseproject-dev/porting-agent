@@ -72,6 +72,8 @@ WORK = {"dedupe_key": "example--proj/12@0:development_repair", "task": "developm
 UPSTREAM_PR = {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
                "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
                "base_ref": "main", "registered_by": OWNER}
+MERGE = {"merge_sha": "c" * 40, "merged_at": "2026-11-20T09:00:00+00:00", "target_ref": "main",
+         "evidence_id": "merge-1"}
 FEEDBACK = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [],
             "reviews": [{"id": 77, "body": "x"}], "comments": [], "conversation_comments": [],
             "inquiry_comment_ids": [], "inquiry_conversation_comment_ids": [],
@@ -102,8 +104,15 @@ def ci_snapshot(head, verdict):
 def tick(record, publications=(), *, observe=False, verdict="pending", head=SHA_A, feedback=None,
          capacity_ok=True, policy=POLICY, now=T, comments=()):
     snapshot = reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, {})
+    upstream = {"id": UPSTREAM_PR["id"], "number": UPSTREAM_PR["number"], "state": "open",
+                "merged": False, "merged_at": None, "merge_commit_sha": None, "base_ref": "main",
+                "base_repository_id": 1, "head_ref": "riscv64", "head_sha": head,
+                "head_repository_id": 2}
     with mock.patch("observe_ci.collect.branch_head", return_value={"head": head}), \
             mock.patch("observe_ci.collect.development_review_feedback", return_value=feedback), \
+            mock.patch("observe_ci.collect.upstream_review_feedback", return_value=feedback), \
+            mock.patch("observe_ci.collect.upstream_pull", return_value=upstream), \
+            mock.patch("observe_ci.collect.pypi_project", return_value=None), \
             mock.patch("observe_ci.collect.ci_snapshot", return_value=ci_snapshot(head, verdict)), \
             contextlib.redirect_stderr(io.StringIO()):
         return reconcile.tick(object() if observe else None, snapshot, policy=policy, now=now,
@@ -399,8 +408,10 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                                     proposal_artifact=dict(published)),
                        '/upstreaming pause reason="stop"').record
         self.assertEqual(kept["proposal_artifact"], published)
-        parked = compat.park(contribution(phase="development", activity="waiting_ci",
-                                          proposal_artifact=dict(published)), "stop")
+        parked = command(contribution(phase="development", activity="waiting_ci",
+                                      proposal_artifact=dict(published)),
+                         '/upstreaming park reason="stop"').record
+        self.assertEqual(engine.state_key(parked), "parked.idle")
         self.assertEqual(parked["proposal_artifact"], published)
 
     def test_no_publish_retry_while_paused(self):
@@ -417,19 +428,6 @@ class TestStopWithAPendingPublication(unittest.TestCase):
         pending, first = self.pending("retry")
         _record, outputs = self.ticks(pending, [first], 6)
         self.assertTrue(any(o.report["publication_retries"] for o in outputs))
-
-    def test_legacy_stop_paths_outside_commands(self):
-        record = contribution(phase="upstream_review", pending_publication=dict(PENDING),
-                              upstream_pr=copy.deepcopy(UPSTREAM_PR))
-        self.assertIsNone(compat.park(copy.deepcopy(record), "x")["pending_publication"])
-        for body in ('/upstreaming park reason="x"', "/upstreaming pause"):
-            # The upstream review states the table does not have.
-            for activity in ("waiting_capacity", "idle"):
-                with self.subTest(command=body, activity=activity):
-                    out = command(dict(record, activity=activity), body)
-                    self.assertIsNone(out.record["pending_publication"])
-                    self.assertNotIn(out.record["activity"], ("agent_running", "waiting_capacity"))
-                    self.assertIsNone(compat.state_problem(out.record))
 
     def test_recovered_worker_blocker_is_recorded_once(self):
         # The rejected proposal of run 555 is recorded; its blocker report for
@@ -483,6 +481,8 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                 record["fork"] = None
             if phase in ("upstream_review", "release_wait", "released"):
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
+            if phase in ("release_wait", "released"):
+                record["merge"] = dict(MERGE)
             if flag == "paused":
                 record.update(paused=True, paused_at=NOW, paused_by="human")
             if work:

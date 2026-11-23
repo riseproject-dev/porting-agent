@@ -382,19 +382,6 @@ def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
     return str(run) if run else None
 
 
-def _charge_no_progress(record: dict) -> None:
-    """Charge ``no_progress`` for a rejected or blocked outcome, as
-    ``reject_patch_proposal`` does. Its exhaustion is taken where the next
-    Work is due (``refresh_on_exhaustion``, ``exhaust_repair_attempts``)."""
-    budget = record["budget"]
-    record["budget"] = dict(budget, no_progress_streak=int(budget.get("no_progress_streak", 0)) + 1)
-
-
-def _restart_no_progress(record: dict) -> None:
-    """A published patch starts ``no_progress`` again (``BUDGETS``)."""
-    record["budget"] = dict(record["budget"], no_progress_streak=0)
-
-
 # The decisions of a verified dossier. A Result without a dossier, or with a
 # decision that is none of these, has no usable dossier.
 DOSSIER_DECISIONS = ("develop", "park", "close")
@@ -763,9 +750,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     * investigation Work: the dossier decides, by the table (``fold_dossier``);
     * the submission rewrite and review Work: their trusted checks decide
       (``fold_submission_rewrite``, ``fold_submission_review``);
-    * patch Work in development: the table's rows (``fold_patch_result``);
-    * revision Work in upstream review: the outcome code that predates the
-      table (``_fold_revision_outcome``).
+    * patch Work in development and revision Work in upstream review: the
+      table's rows (``fold_patch_result``).
     """
     if outcome.get("status") == "investigation":
         return fold_dossier(rec, outcome, now=now, policy=policy or {},
@@ -776,11 +762,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if engine.state_key(rec) == SUBMISSION_REVIEW_STATE:
         return fold_submission_review(rec, outcome, now=now, policy=policy or {},
                                       worker_run_id=worker_run_id, evidence=evidence)
-    if rec["phase"] == "development":
-        return fold_patch_result(rec, outcome, now=now, policy=policy or {},
-                                 worker_run_id=worker_run_id)
-    return _fold_revision_outcome(rec, outcome, now=now, policy=policy,
-                                  worker_run_id=worker_run_id)
+    return fold_patch_result(rec, outcome, now=now, policy=policy or {},
+                             worker_run_id=worker_run_id)
 
 
 _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")
@@ -849,10 +832,30 @@ def _charged_launch(held: dict, outcome: dict) -> bool:
     return not held.get("launched_at")
 
 
+# The states whose Results ``fold_patch_result`` folds, and the rows that
+# differ between them: the success row, and what a `no_change` report and a
+# stale proposal take.
+WORK_RESULT_STATES = {
+    "development.agent_running": {"published": "record_publish_success",
+                                  "stale": "replan_development"},
+    "upstream_review.agent_running": {"published": "record_revision_publish_success",
+                                      "no_change": "require_reviewer_answer"},
+}
+
+
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                       worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold the Result of patch Work through the rows of
-    ``development.agent_running``.
+    ``development.agent_running``, or of revision Work through the rows of
+    ``upstream_review.agent_running``.
+
+    In upstream review the rows are the same but three: a published or
+    uncertain Result takes ``record_revision_publish_success`` (which also
+    clears exactly the carried feedback), a ``no_change`` report takes
+    ``require_reviewer_answer`` (a human answers the reviewer; nothing is
+    posted on the upstream PR), and a proposal rejected as stale takes
+    ``reject_patch_proposal`` like any other rejection, as no row replans
+    there. Upstream CI is never rerun.
 
     * published or uncertain: ``record_publish_success`` (clears exactly the
       feedback the Work carried); the published files join ``scope_paths``
@@ -872,10 +875,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     that folds it is taken with ``pending_publication`` cleared beside it.
     A refused row raises ``TransitionError``.
     """
-    if engine.state_key(rec) != "development.agent_running":
+    rows = WORK_RESULT_STATES.get(engine.state_key(rec))
+    if rows is None:
         raise lifecycle.TransitionError(
-            f"the Result of patch Work is folded in development.agent_running only, not in "
-            f"{engine.state_key(rec)}")
+            f"the Result of patch or revision Work is folded in "
+            f"{' or '.join(WORK_RESULT_STATES)} only, not in {engine.state_key(rec)}")
     status, fclass = outcome.get("status"), outcome.get("failure_class")
     if status == "proposal":
         status, fclass = "rejected", "validation"
@@ -911,9 +915,12 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                                 policy=policy, cause=cause, details=details)
     else:
         if status in ("published", "uncertain"):
-            verb, facts = "record_publish_success", {"result_published"}
-        elif status == "rejected" and fclass == "stale":
-            verb, facts = "replan_development", {"proposal_stale"}
+            verb = rows["published"]
+            facts = {"result_published" if verb == "record_publish_success" else "revision_published"}
+        elif status == "rejected" and fclass == "stale" and "stale" in rows:
+            verb, facts = rows["stale"], {"proposal_stale"}
+        elif status == "no_change" and "no_change" in rows:
+            verb, facts = rows["no_change"], {"no_change_needed"}
         elif status == "no_change":
             # The repair worker reports a failure not caused by the patch:
             # `request_ci_rerun` when the Work carries no feedback and
@@ -928,7 +935,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         else:
             raise lifecycle.TransitionError(f"no row folds a patch Result with status {status!r}")
         values: dict[str, Any] = {}
-        if verb == "record_publish_success":
+        if verb in ("record_publish_success", "record_revision_publish_success"):
             art = outcome.get("artifact") or {}
             artifact = rec.get("proposal_artifact")
             if all(k in art for k in _ARTIFACT_KEYS):
@@ -947,7 +954,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         raise lifecycle.TransitionError(f"no row folds the patch Result ({status}) in "
                                         f"{engine.state_key(rec)}: {out.reason}")
     new = out.record
-    if out.verb == "record_publish_success":
+    if out.verb in ("record_publish_success", "record_revision_publish_success"):
         # Beside the row: the published files join the admitted scope (a
         # repair backed by review feedback may change a path the dossier
         # missed), and a published patch starts `no_progress` again.
@@ -969,143 +976,6 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         new = dict(new, pending_publication=None)
     schemas.validate("contribution", new)
     staged.extend([("contributions", new), ("events", out.event)])
-    return new, staged
-
-
-def _fold_revision_outcome(rec: dict, outcome: dict, *, now: str, policy: dict | None,
-                           worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold the Result of upstream revision Work, as the code before the
-    table did:
-
-    * published / uncertain -> waiting_ci (observation confirms the head)
-    * no_change             -> idle (preserved; no revision bump, no repair)
-    * rejected, validation  -> fix_needed at a new revision, charging
-                               ``no_progress``
-    * rejected, stale       -> idle (the world moved; the next tick re-plans)
-    * infra_error           -> keep the proposal, schedule a publish-only retry
-                               of the same worker run with backoff; after
-                               ``retries.infrastructure_per_head_failure``
-                               attempts, wait for a human (no model call ever)
-    """
-    from datetime import datetime as _dt
-    from datetime import timedelta
-    staged: list[tuple[str, dict]] = []
-    new = copy.deepcopy(rec)
-    new["active_work"] = None          # any outcome ends the requested task
-    status = outcome.get("status")
-    fclass = outcome.get("failure_class")
-    if status == "proposal":
-        status, fclass = "rejected", "validation"
-    pending = new.get("pending_publication")
-    if status == "infra_error":
-        attempts = (pending or {}).get("attempts", 0) + 1 if (pending or {}).get("worker_run_id") == worker_run_id \
-            else max(outcome.get("attempt", 1), 1)
-        limit = ((policy or {}).get("retries") or {}).get("infrastructure_per_head_failure", 2)
-        exhausted = attempts > limit
-        delay = RETRY_BACKOFF_MINUTES[min(attempts - 1, len(RETRY_BACKOFF_MINUTES) - 1)]
-        new["pending_publication"] = {
-            "worker_run_id": str(worker_run_id or (pending or {}).get("worker_run_id") or "0"),
-            "attempts": attempts, "last_reason": (outcome.get("reason") or "")[:2000],
-            "next_attempt_at": (_dt.fromisoformat(now) + timedelta(minutes=delay)).isoformat(),
-            "exhausted": exhausted}
-        compat.legacy_assign(new, "reconcile.publication_outcome",
-                             activity="waiting_human" if exhausted else "waiting_capacity")
-        if exhausted:
-            new["pending_human_action"] = {"kind": "publication_infrastructure_failure", "requested_at": now,
-                                           "reminded_at": None, "escalated_at": None}
-        op = outcome.get("operation")
-        if op:
-            staged.append(("operations", op))
-            new["publication_operation_id"] = op["operation_id"]
-        new["updated_at"] = now
-        staged.append(("contributions", new))
-        return new, staged
-    new["pending_publication"] = None
-    art = outcome.get("artifact")
-    if status != "worker_blocked" and art \
-            and all(k in art for k in ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")):
-        new["proposal_artifact"] = {k: art[k] for k in ("work_id", "claim_id", "artifact_id", "name",
-                                                        "digest", "run_id")} | {
-            "result_commit": art.get("result_commit"), "outcome": status}
-    op = outcome.get("operation")
-    if op:
-        staged.append(("operations", op))
-        new["publication_operation_id"] = op["operation_id"]
-    if status in ("published", "uncertain") and op:
-        changed_files = (op.get("proposed") or {}).get("changed_files") or []
-        if changed_files:
-            new["scope_paths"] = list(dict.fromkeys((new.get("scope_paths") or []) + changed_files))
-    if status == "published":
-        # The branch head itself is recorded by the next observation (head
-        # change bumps revision); here we only leave agent_running.
-        compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_ci")
-        _restart_no_progress(new)
-    elif status == "uncertain":
-        compat.legacy_assign(new, "reconcile.publication_outcome", activity="waiting_ci")   # discovery happens in observe_ci
-        _restart_no_progress(new)
-    elif status == "worker_blocked":
-        proposal = outcome.get("proposal") or {}
-        run = str(worker_run_id or (outcome.get("artifact") or {}).get("run_id") or "0")
-        evidence_id = safe_id(
-            f"rehearsal-{new['contribution_id'].replace('/', '--')}-r{new['revision']}-{run}"
-        )
-        evidence = {
-            "schema_version": 1,
-            "evidence_id": evidence_id,
-            "contribution_id": new["contribution_id"],
-            "kind": "rehearsal",
-            "policy_version": (policy or {}).get("policy_version", "unknown"),
-            "collected_at": now,
-            "summary": str(outcome.get("reason") or "worker reproduction infrastructure blocked")[:8000],
-            "limitations": list(proposal.get("validation_not_performed") or [])[:16],
-            "data": {
-                "worker_run_id": run,
-                "failure_class": outcome.get("failure_class"),
-                "failure_cluster": proposal.get("failure_cluster"),
-                "reproduction": proposal.get("reproduction"),
-            },
-            "digests": {"artifact": (outcome.get("artifact") or {}).get("digest") or ""},
-        }
-        schemas.validate("evidence", evidence)
-        staged.append(("evidence", evidence))
-        new["proposal_artifact"] = None
-        new["pending_publication"] = None
-        compat.legacy_assign(new, "reconcile.publication_outcome", revision=new["revision"] + 1)
-        pending = list(new.get("pending_feedback_evidence_ids") or [])
-        if evidence_id not in pending:
-            pending.append(evidence_id)
-        new["pending_feedback_evidence_ids"] = pending[-64:]
-        _charge_no_progress(new)
-        compat.legacy_assign(new, "reconcile.publication_outcome", activity="fix_needed")
-        new["pending_human_action"] = None
-        staged.append(("events", lifecycle._event(
-            rec, new, "worker_reproduction_blocked", "result", run, now, True)))
-    elif status == "no_change":
-        # Plan 8.6: a valid exact-task no_change Result is preserved. It ends
-        # the requested Work without a revision bump or new repair Work; the
-        # unchanged exact head is then judged by ordinary CI observation.
-        compat.legacy_assign(new, "reconcile.publication_outcome", activity="idle")
-        new["pending_human_action"] = None
-        staged.append(("events", lifecycle._event(
-            rec, new, "worker_no_change", "result", _result_cause(outcome, worker_run_id), now, False
-        )))
-    elif status == "rejected":
-        compat.legacy_assign(new, "reconcile.publication_outcome",
-                             activity="idle" if fclass == "stale" else "fix_needed")
-        if fclass != "stale":
-            # A failed immutable Work graph cannot be submitted again. A new
-            # repair attempt gets a new revision and therefore a new graph ID.
-            # The rejected outcome charges `no_progress`; the next Work charges
-            # `work_total` (and the cluster of a failing CI job) when allocated.
-            compat.legacy_assign(new, "reconcile.publication_outcome", revision=new["revision"] + 1)
-            new["clean_head_sha"] = None
-            _charge_no_progress(new)
-        staged.append(("events", lifecycle._event(
-            rec, new, "worker_proposal_rejected",
-            "result", _result_cause(outcome, worker_run_id), now, fclass != "stale",
-        )))
-    new["updated_at"] = now
-    staged.append(("contributions", new))
     return new, staged
 
 
@@ -1252,18 +1122,12 @@ def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
     It sets ``paused`` with the error as ``paused_reason``, ``paused_by``
     ``controller`` and ``paused_at``, and clears the requested Work and the
     pending publication; from an ``agent_running`` state
-    it leads to the state in which the Work is due. The engine takes it for a
-    record in a state of the table, ``compat.legacy_pause`` for one in a
-    legacy state. The outcome is not accepted, and nothing changes, when the
+    it leads to the state in which the Work is due. The outcome is not
+    accepted, and nothing changes, when the
     contribution is already paused or terminal.
     """
     reason = isolation.pause_reason(description)
     details = {k: description[k] for k in ("step", "error_class", "message", "run_id")}
-    if compat.is_legacy_state(record):
-        out = compat.legacy_pause(record, PROCESSING_ERROR_VERB, reason=reason, now=now,
-                                  cause_id=description["run_id"], details=details)
-        return engine.Outcome(out.record, out.accepted, out.reason, out.event,
-                              PROCESSING_ERROR_VERB)
     return engine.apply_transition(record, PROCESSING_ERROR_VERB, policy=policy, now=now,
                                    cause_id=description["run_id"], facts={"processing_error"},
                                    values={"paused_reason": reason}, details=details)
@@ -1671,6 +1535,9 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     handoff_observations = {item["contribution"]: item["handoff"]
                             for item in out.report.get("observation") or []
                             if isinstance(item.get("handoff"), dict)}
+    upstream_pr_observations = {item["contribution"]: item["upstream_pr"]
+                                for item in out.report.get("observation") or []
+                                if isinstance(item.get("upstream_pr"), dict)}
     # Work that returned a Result in this tick, or whose graph the queue
     # holds as terminal, is never allocated again under the same id.
     spent_graphs = frozenset(
@@ -1683,6 +1550,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                           inputs=controller.Inputs(now=now, issues=issues or [], comments=comments or [],
                                                    pressure=pressure,
                                                    handoff_observations=handoff_observations,
+                                                   upstream_pr_observations=upstream_pr_observations,
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {},
@@ -1699,14 +1567,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["handoff_requests"] = res.report["handoff_requests"]
     # 4. Publish-only retries due now (infrastructure failures; no model call).
     retries = []
-    max_launches = 1 + policy["retries"]["infrastructure_per_head_failure"]
     for key, c in list(contributions.items()):
         if c["contribution_id"] in skip:
             continue
         with isolation.contribution(c["contribution_id"], "publication_retry"):
             pp = c.get("pending_publication")
             if pp and not pp.get("exhausted") and not compat.stopped(c) \
-                    and engine.state_key(c) == "development.agent_running" \
+                    and engine.state_key(c) in WORK_RESULT_STATES \
                     and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
                 # `schedule_publish_retry` held the Result and charged
                 # `publish_recovery` when its publication failed; the retry
@@ -1742,39 +1609,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 out.staged.append(("contributions", changed))
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
                                 "worker_run_id": pp["worker_run_id"], "attempt": attempt})
-            elif pp and not pp.get("exhausted") and not compat.stopped(c) \
-                    and c["phase"] == "upstream_review" \
-                    and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
-                # Upstream revision Work: the retry code before the table.
-                if pp["attempts"] >= max_launches:
-                    pending = dict(pp, exhausted=True)
-                    changed = compat.legacy_update(
-                        c, "reconcile.publish_retry_exhausted",
-                        pending_publication=pending,
-                        activity="waiting_human",
-                        pending_human_action={
-                            "kind": "publication_infrastructure_failure",
-                            "requested_at": now.isoformat(),
-                            "reminded_at": None,
-                            "escalated_at": None,
-                        },
-                        updated_at=now.isoformat(),
-                    )
-                    contributions[key] = changed
-                    out.staged.append(("contributions", changed))
-                    continue
-                attempt = pp["attempts"] + 1
-                delay = RETRY_BACKOFF_MINUTES[min(attempt - 1, len(RETRY_BACKOFF_MINUTES) - 1)]
-                pending = dict(
-                    pp,
-                    attempts=attempt,
-                    next_attempt_at=(now + timedelta(minutes=delay)).isoformat(),
-                )
-                changed = dict(c, pending_publication=pending, updated_at=now.isoformat())
-                contributions[key] = changed
-                out.staged.append(("contributions", changed))
-                retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
-                                "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
     out.staged = observe_ci.dedupe(out.staged)
     return out
@@ -1802,19 +1636,26 @@ def load_snapshot(root: Path, policy: dict):
     )
 
 
+# The states whose observation records each distinct observation once, and
+# the verb that records it.
+AUDITED_OBSERVATIONS = {"handoff.waiting_upstream_pr": "record_audit_observation",
+                        "release_wait.idle": "record_release_incomplete"}
+
+
 def audited_observations(store, contributions: dict[str, dict]) -> dict[str, set[str]]:
-    """The observation keys the locked upstream-PR wait already recorded, by
-    contribution: from the `record_audit_observation` events of the
-    contributions in that state. No event is read when none is in it."""
-    waiting = {record["contribution_id"] for record in contributions.values()
-               if engine.state_key(record) == "handoff.waiting_upstream_pr"}
+    """The observation keys already recorded, by contribution: from the
+    `record_audit_observation` events of the contributions in the locked
+    upstream-PR wait, and the `record_release_incomplete` events of those in
+    `release_wait.idle`. No event is read when none is in such a state."""
+    waiting = {record["contribution_id"]: AUDITED_OBSERVATIONS[engine.state_key(record)]
+               for record in contributions.values()
+               if engine.state_key(record) in AUDITED_OBSERVATIONS}
     audited: dict[str, set[str]] = {}
     if not waiting:
         return audited
     for event in store.load_all("events").values():
         key = (event.get("details") or {}).get("observation_key")
-        if event.get("kind") == "record_audit_observation" and key \
-                and event.get("contribution_id") in waiting:
+        if key and event.get("kind") == waiting.get(event.get("contribution_id")):
             audited.setdefault(event["contribution_id"], set()).add(key)
     return audited
 

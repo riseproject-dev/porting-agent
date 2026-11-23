@@ -57,14 +57,11 @@ FORK_B = "riseproject-upstreaming/lib"
 VERB = "pause_on_processing_error"
 REAL = {name: getattr(module, name) for module, name in (
     (reconcile, "apply_publication"), (controller, "_actionable"), (controller, "apply_command"),
-    (compat, "observe_status"), (observe_ci, "_take"))}
+    (observe_ci, "_take"),)}
 
 
 def expected_pause(before, reason):
-    """``pause_on_processing_error`` on ``before``: through the engine in a
-    state of the table, through ``compat.legacy_pause`` in a legacy state."""
-    if compat.is_legacy_state(before):
-        return compat.legacy_pause(before, VERB, reason=reason, now=ISO, cause_id="4242").record
+    """``pause_on_processing_error`` on ``before``, through the engine."""
     return engine.apply_transition(before, VERB, policy=POLICY, now=ISO, cause_id="4242",
                                    facts={"processing_error"},
                                    values={"paused_reason": reason}).record
@@ -452,14 +449,10 @@ class TestPipelineFailures(unittest.TestCase):
         strange = waiting(phase="handoff", activity="waiting_capacity")
         with self.assertRaises(lifecycle.TransitionError):
             reconcile.pause_on_processing_error(strange, description, policy=POLICY, now=ISO)
-        # The controller always states the reason, in a legacy state and in the table.
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_pause(waiting(activity="idle"), VERB, reason=" ", now=ISO, cause_id=None)
+        # The controller always states the reason.
         with self.assertRaises(lifecycle.TransitionError):
             engine.apply_transition(waiting(), VERB, policy=POLICY, now=ISO,
                                     facts={"processing_error"}, values={"paused_reason": " "})
-        with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_pause(waiting(), VERB, reason="r", now=ISO, cause_id=None)
 
 
 class TestExpectedRejections(unittest.TestCase):

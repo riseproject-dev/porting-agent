@@ -9,16 +9,12 @@ verb, it writes the fenced fields (``phase``, ``activity``, ``paused``,
 ``revision``, ``generation``) only through ``legacy_update`` or the legacy
 transition functions of this module. No other module assigns those fields.
 
-A legacy write can leave a record in a state of the table or in one of
-``LEGACY_STATES``, the states the table removed that these paths still
-produce. It can never enter the ``handoff`` phase or change a record that is
-in it: every handoff state is written by the engine.
+A legacy write must leave a record in a state of the table
+(``LEGACY_STATES`` is empty). It can never enter the ``handoff`` phase or
+change a record that is in it: every handoff state is written by the engine.
 
-For a record in a state of ``LEGACY_STATES`` the verbs that set ``paused``
-are written by ``legacy_pause``, and ``pause``, ``resume``, and ``park`` by
-``apply_command``; in a state of the table the engine takes them. Every
-other command of the table applies in states of the table only.
-``apply_command`` also applies the intake command ``authorize-followup``.
+Every command of the table is taken by the engine; ``apply_command``
+applies the intake command ``authorize-followup`` only.
 The reviewed record migrations (``migrate_handoff_wait``, ``migrate_flags``,
 ``migrate_terminal``, ``migrate_provisioning``, ``migrate_development``) bring
 records written before the table to the shapes it describes.
@@ -33,12 +29,10 @@ import copy
 from typing import Any
 
 import engine
-import lifecycle
 import schemas
 from commands import URGENT, Command
 from common import INTAKE_LABEL
 from lifecycle import (
-    ACTIVITIES,
     FLAGS,
     LIFECYCLE,
     REMINDER_KINDS,
@@ -49,18 +43,9 @@ from lifecycle import (
 )
 
 # States that are not in the lifecycle table and that legacy paths still
-# write. Each is removed together with the paths that write it. Every state
-# of the investigation, provisioning, and development phases is a state of
-# the table.
-_LEGACY_PHASES = ("upstream_review",)
-_LEGACY_ACTIVITIES = ("idle", "agent_running", "waiting_ci", "fix_needed", "waiting_capacity",
-                      "waiting_human")
-LEGACY_STATES = frozenset(
-    # The legacy paths combine a working phase with any of the activities
-    # they know: `idle` where Work is due or CI passed, `waiting_capacity`
-    # where the table keeps the state whose guard does not hold yet.
-    {f"{phase}.{activity}" for phase in _LEGACY_PHASES for activity in _LEGACY_ACTIVITIES}
-) - frozenset(LIFECYCLE)
+# write. Every state the pipeline writes is a state of the table; the set
+# stays until this module is deleted.
+LEGACY_STATES: frozenset[str] = frozenset()
 
 # The states of the table that wait for a human (kinds `human_wait`, `gate`,
 # and `locked`). Only the rows the table lists for one leave it, so a legacy
@@ -85,9 +70,6 @@ def waits_for_human(record: dict) -> bool:
 # identifier each passes to ``legacy_update``.
 LEGACY_SITES = frozenset({
     "canary.repair_mismatch",
-    # The Result of upstream revision Work, and its publish-only retries.
-    "reconcile.publication_outcome",
-    "reconcile.publish_retry_exhausted",
 })
 
 
@@ -833,51 +815,6 @@ def holds_unpublished_proposal(record: dict) -> bool:
     return (record.get("proposal_artifact") or {}).get("outcome") == "proposal"
 
 
-def _bump(rec: dict) -> None:
-    rec["revision"] += 1
-
-
-def observe_head(record: dict, new_head: str, *, now: str, cause_id: str | None = None) -> Outcome:
-    """Record an observed fork head. A changed head is changed requested work:
-    bump the revision and invalidate head-bound readiness and approval."""
-    if lifecycle.recorded_head(record) == new_head:
-        return Outcome(record, True, "unchanged", None)
-    if record["phase"] == "handoff":
-        raise TransitionError("handoff states are written by the transition engine only")
-    rec = copy.deepcopy(record)
-    rec["fork"]["head_sha"] = new_head
-    if record["phase"] == "upstream_review" and rec.get("upstream_pr"):
-        # The head of the upstream PR from `riscv64` changed.
-        rec["upstream_pr"]["head_sha"] = new_head
-    rec["last_ci_evidence_id"] = None
-    if rec.get("upstream_pr") is None:
-        rec["handoff_approval"] = None
-    rec["updated_at"] = now
-    _bump(rec)
-    schemas.validate("contribution", rec)
-    return Outcome(rec, True, None, _event(record, rec, "head_changed", "observation",
-                                           cause_id, now, True))
-
-
-def observe_status(record: dict, *, activity: str | None = None, next_poll_at: str | None = None,
-                   now: str) -> Outcome:
-    """Routine observation; never bumps revision, never invalidates work."""
-    rec = copy.deepcopy(record)
-    if activity is not None:
-        if activity not in ACTIVITIES:
-            raise TransitionError(f"unknown activity {activity!r}")
-        rec["activity"] = activity
-        _check_legacy_write(record, rec, "observe_status")
-    if next_poll_at is not None:
-        rec["next_poll_at"] = next_poll_at
-    semantic = rec.get("activity") != record.get("activity")
-    if semantic:
-        rec["updated_at"] = now
-    schemas.validate("contribution", rec)
-    ev = _event(record, rec, "activity", "observation", None, now, False) if semantic else None
-    return Outcome(rec, True, None, ev)
-
-
 # --------------------------------------------------------------------------
 # Commands
 
@@ -886,111 +823,17 @@ def _reject(record: dict, reason: str) -> Outcome:
     return Outcome(record, False, reason, None)
 
 
-def park(rec: dict, reason: str) -> dict:
-    """End the current generation in place.
-
-    The completed generation is retained for audit and late-effect
-    reconciliation; only exact-revision ``resume`` restarts it. A pending
-    publication ends with the generation. Callers own revision bumps and the
-    event."""
-    if rec["phase"] == "handoff":
-        raise TransitionError("handoff states are written by the transition engine only")
-    rec["previous_phase"] = rec["phase"]
-    rec["phase"] = "parked"
-    rec["parked_reason"] = reason[:2000]
-    rec["activity"] = "idle"
-    rec["pending_publication"] = None
-    return rec
-
-
-def _end_requested(record: dict, rec: dict) -> None:
-    """What a stop, or a move to a new revision, ends in ``rec``, the changed
-    copy of ``record``."""
-    # Stopping a contribution or moving it to a new revision ends any
-    # requested task: a late worker outcome is then ignored as stale, and
-    # dispatch recovery must not launch it again.
-    if rec.get("active_work") and (rec["paused"] or rec["phase"] in TERMINAL | {"parked"}
-                                   or rec["revision"] != record["revision"]):
-        rec["active_work"] = None
-        if rec["activity"] == "agent_running":
-            rec["activity"] = "idle"
-    # A stop also clears the pending publication, as the table's stop rows
-    # do: what is held is invalidated and its publication Result takes
-    # ``record_late_effect``. A branch the worker run already pushed is
-    # recorded by head observation. The command that ends a stop clears it
-    # too, so nothing held is published after a stop that began before this
-    # rule.
-    if stopped(rec) or stopped(record):
-        waited_on_held = bool(rec.get("pending_publication"))
-        rec["pending_publication"] = None
-        if waited_on_held and rec["activity"] in ("agent_running", "waiting_capacity"):
-            rec["activity"] = "idle"
-
-
-def is_legacy_state(record: dict) -> bool:
-    """Whether a record is in a state that only the legacy paths write."""
-    return engine.state_key(record) not in LIFECYCLE
-
-
-# The verbs that set ``paused``. In a state of the table they are taken
-# through the engine; ``legacy_pause`` writes them for a record in a state
-# of ``LEGACY_STATES``.
-PAUSE_VERBS = {"pause": ("human", "command"),
-               "pause_on_identity_change": ("controller", "observation"),
-               "pause_on_processing_error": ("controller", "tick")}
-
-
-def legacy_pause(record: dict, verb: str, *, reason: str | None, now: str,
-                 cause_id: str | None, details: dict[str, Any] | None = None) -> Outcome:
-    """Set ``paused`` on a record in a legacy state, as the table's ``verb``
-    does in a state of the table.
-
-    The flag records ``paused_at``, ``paused_by`` and ``paused_reason``; the
-    requested Work and the pending publication are cleared. A legacy state has no row to move to, so the activity that held
-    the Work or the publication (``agent_running``, ``waiting_capacity``)
-    becomes ``idle``, as the legacy paths always did. The outcome is not
-    accepted, and nothing changes, when the record is already paused or is
-    terminal. A record in a state of the table raises: the engine takes it.
-    """
-    if verb not in PAUSE_VERBS:
-        raise TransitionError(f"{verb} does not set paused")
-    if not is_legacy_state(record):
-        raise TransitionError(f"{engine.state_key(record)} is a state of the table; "
-                              f"{verb} is taken by the transition engine")
-    by, cause = PAUSE_VERBS[verb]
-    if by == "controller" and not (reason or "").strip():
-        raise TransitionError(f"{verb} sets paused_reason; the caller states it")
-    if record.get("paused"):
-        return Outcome(record, False, "contribution is paused", None)
-    if record["phase"] in TERMINAL:
-        return Outcome(record, False, f"contribution is terminal ({record['phase']})", None)
-    rec = copy.deepcopy(record)
-    rec.update(paused=True, paused_at=now, paused_by=by,
-               paused_reason=reason[:2000] if reason else None, updated_at=now)
-    _end_requested(record, rec)
-    _check_legacy_write(record, rec, verb)
-    schemas.validate("contribution", rec)
-    event = _event(record, rec, verb, cause, cause_id, now, False)
-    event["details"] = {"verb": verb, "from_state": engine.state_key(record),
-                        "to_state": engine.state_key(rec), **(details or {})}
-    schemas.validate("event", event)
-    return Outcome(rec, True, None, event)
-
-
-# The commands ``apply_command`` applies itself: the stop and resume commands
-# on a record in a state of ``LEGACY_STATES``, and the intake command
-# ``authorize-followup``. Every other command of the table applies in states
-# of the table only.
-LEGACY_COMMANDS = frozenset({"pause", "resume", "park", "authorize-followup"})
+# The command ``apply_command`` applies itself: the intake command
+# ``authorize-followup``. Every command of the table is taken by the engine.
+LEGACY_COMMANDS = frozenset({"authorize-followup"})
 
 
 def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict,
                   now: str) -> Outcome:
     """Apply an already authenticated, not-yet-consumed command that the
-    engine does not take (``engine.takes_command``): ``pause``, ``resume``,
-    or ``park`` on a record in a legacy state, and ``authorize-followup``. Any other command of the
-    table on a record in a legacy state is rejected with the states it
-    applies in.
+    engine does not take (``engine.takes_command``): ``authorize-followup``
+    on a merged contribution. Any other command is rejected with the states
+    it applies in.
 
     Actor authority, replay and digest checks happen in ``intake.accept_command``
     before this is called.
@@ -1004,61 +847,19 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict,
         return _reject(record, "command names another contribution than this issue's")
     if cmd.verb not in LEGACY_COMMANDS:
         return _reject(record, engine.not_applicable(cmd.verb, engine.state_key(record)))
-    rev = cmd.revision
-    cur = record["revision"]
-    phase = record["phase"]
-    if rev is None:
-        # Only stop commands may omit it (enforced by the grammar).
-        rev = cur
-    if rev > cur:
+    rev = cmd.revision if cmd.revision is not None else record["revision"]
+    if rev > record["revision"]:
         return _reject(record, "revision is not a known revision")
-    # Stopping is always safe, so a stale pause/park is honoured.
-    # Everything that (re)activates or approves work must name the current revision.
-    if cmd.verb not in ("pause", "park") and rev != cur:
-        return _reject(record, f"stale revision {rev}, current is {cur}")
-    if phase in TERMINAL and cmd.verb != "authorize-followup":
-        return _reject(record, f"contribution is terminal ({phase})")
-
-    rec = copy.deepcopy(record)
-    rec["updated_at"] = now
-    bumped = False
-    v = cmd.verb
-    a = cmd.args
-
-    if v == "pause":
-        out = legacy_pause(record, "pause", reason=a.get("reason"), now=now, cause_id=command_id,
-                           details={"actor": {"id": actor["id"], "login": actor["login"]}})
-        if not out.accepted:
-            return _reject(record, "already paused" if record.get("paused") else out.reason)
-        return out
-    elif v == "resume":
-        if not rec["paused"]:
-            return _reject(record, "nothing to resume")
-        if "class" in a or "paths" in a:
-            return _reject(record, "`class` and `paths` apply only to a resume from `parked.idle` "
-                                   "that starts a new generation")
-        rec.update(paused=False, paused_at=None, paused_by=None, paused_reason=None)
-        _bump(rec)
-        bumped = True
-    elif v == "park":
-        if phase == "parked":
-            return _reject(record, "already parked")
-        park(rec, a["reason"])
-    elif v == "authorize-followup":
-        if phase not in ("release_wait", "released"):
-            return _reject(record, "follow-ups need a merged contribution")
-        # The completed record is left intact; intake.new_followup creates
-        # the new identity. Here we only record the event.
-    else:  # pragma: no cover - LEGACY_COMMANDS and this function must agree
-        raise TransitionError(f"unhandled verb {v}")
-
-    _end_requested(record, rec)
-
-    _check_legacy_write(record, rec, "apply_command")
-    if rec != record or v == "authorize-followup":
-        schemas.validate("contribution", rec)
-    kind = f"command:{v}"
-    return Outcome(rec, True, None, _event(record, rec, kind, "command", command_id, now, bumped))
+    if rev != record["revision"]:
+        return _reject(record, f"stale revision {rev}, current is {record['revision']}")
+    if record["phase"] not in ("release_wait", "released"):
+        return _reject(record, "follow-ups need a merged contribution")
+    # The completed record is left intact; intake.new_followup creates the
+    # new identity. Here only the event is recorded.
+    rec = dict(record, updated_at=now)
+    schemas.validate("contribution", rec)
+    return Outcome(rec, True, None, _event(record, rec, "command:authorize-followup", "command",
+                                           command_id, now, False))
 
 
 def command_priority(cmd: Command) -> int:

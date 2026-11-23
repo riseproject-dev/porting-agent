@@ -1064,14 +1064,13 @@ class TestSingleWritePath(unittest.TestCase):
         self.assertEqual(used, set(compat.LEGACY_SITES))
 
     def test_legacy_states_are_exactly_the_states_outside_the_table(self):
-        self.assertEqual(compat.LEGACY_STATES & set(lc.LIFECYCLE), set())
-        self.assertFalse(any(key.startswith("handoff.") for key in compat.LEGACY_STATES))
-        for key in ("upstream_review.idle", "upstream_review.waiting_capacity"):
-            self.assertIn(key, compat.LEGACY_STATES)
-        # Every development state is a state of the table.
-        self.assertFalse(any(key.startswith("development.") for key in compat.LEGACY_STATES))
+        # Every state the pipeline writes is a state of the table.
+        self.assertEqual(compat.LEGACY_STATES, frozenset())
         for key in ("development.idle", "development.waiting_capacity"):
             self.assertIsNotNone(compat.state_problem(contribution(activity=key.split(".")[1])))
+        for key in ("upstream_review.idle", "upstream_review.waiting_capacity"):
+            self.assertIsNotNone(compat.state_problem(contribution(
+                phase="upstream_review", activity=key.split(".")[1])))
         for phase in compat.LEGACY_TERMINAL_PHASES:
             self.assertFalse(any(key.startswith(f"{phase}.") for key in compat.LEGACY_STATES))
         for key in ("handoff.idle", "handoff.waiting_capacity", "closed.waiting_human"):
