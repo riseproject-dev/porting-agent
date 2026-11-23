@@ -26,10 +26,10 @@
   "dossier_evidence_id": "dossier-closeio--ciso8601--1-r2",
   "follows": null,
   "fork": {
-    "head_ref": "riscv64",
+    "head_ref": "riscv64-dev",
     "head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
     "name": "riseproject-upstreaming/ciso8601",
-    "pr_number": 1,
+    "pr_number": 2,
     "repository_id": 1467208233
   },
   "generation": 0,
@@ -113,7 +113,7 @@
     "number": 1,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
   },
-  "updated_at": "2026-11-22T22:54:12.110885+00:00",
+  "updated_at": "2026-11-23T10:00:00+00:00",
   "upstream": {
     "base_ref": "master",
     "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
