@@ -2940,16 +2940,10 @@ def _check_budgets(policy: dict, problems: list[str]) -> None:
 
 
 def _check_operations(problems: list[str]) -> None:
-    import recovery
-
     name = "operation"
     if not _check_graph(name, OPERATIONS, OPERATION_INITIAL_STATE,
                         lambda k: not OPERATIONS[k].open, problems):
         return
-    if set(OPERATIONS) != set(recovery.STATUSES):
-        problems.append(f"operation table states differ from {sorted(recovery.STATUSES)}")
-    if {k for k, s in OPERATIONS.items() if s.open} != set(recovery.OPEN):
-        problems.append(f"open operation states differ from {sorted(recovery.OPEN)}")
     lifecycle_verbs = {e.verb for e in table_edges()} | {
         v for f in FLAGS.values() for v in (*f.set_by, *f.cleared_by)}
     for e in table_edges(OPERATIONS):

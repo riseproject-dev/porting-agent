@@ -69,6 +69,11 @@ class PublishInfraError(RuntimeError):
 #   infrastructure - retry the publish only, same artifact, no model call
 FAILURE_CLASSES = ("validation", "stale", "infrastructure")
 
+# What the final check before a push establishes for ``begin_effect``: a push
+# reserves no runner capacity, the publication check read the contribution
+# not paused, and the head re-read right before the push matched the lease.
+PUSH_FACTS = frozenset({"capacity_available", "contribution_not_paused", "final_check_passed"})
+
 
 @dataclass
 class Outcome:
@@ -288,6 +293,22 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
             return Outcome("rejected", "; ".join(rep.problems[:5]), candidate=cand, tree=rep.final_tree, report=report,
                            failure_class="validation")
         parents = _git(work, "rev-list", "--parents", "-n1", cand).stdout.decode().split()[1:]
+        if policy.get("read_only", True):
+            return Outcome("rejected", "policy is read-only; validated but not pushed", candidate=cand,
+                           tree=rep.final_tree, report=report, failure_class="stale")
+        if not policy.get("destination_writes", False):
+            return Outcome("rejected", "destination writes are disabled by policy", candidate=cand,
+                           tree=rep.final_tree, report=report, failure_class="stale")
+        # Last re-read immediately before the effect: the final check. When it
+        # does not pass, no effect is begun and no intent is recorded.
+        try:
+            head_now = observe_head()
+        except Exception as e:
+            return Outcome("infra_error", f"could not re-read the fork head: {e}", candidate=cand,
+                           report=report, failure_class="infrastructure")
+        if head_now != expected:
+            return Outcome("rejected", "fork head moved before push", candidate=cand, report=report,
+                           failure_class="stale")
         op = recovery.plan(contribution_id=record["contribution_id"], revision=task["revision"],
                            kind="branch_update" if proposal["operation"] == "append" else "branch_rewrite",
                            policy_version=policy["policy_version"], reason_ids=list(task.get("reason_ids") or []) +
@@ -300,26 +321,9 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
                                      "content_digest": hashlib.sha256(mbox).hexdigest(),
                                      "changed_files": delta}, now=now)
         save_operation(op)                     # intent persisted before the effect
-        if policy.get("read_only", True):
-            return Outcome("rejected", "policy is read-only; validated but not pushed", candidate=cand,
-                           tree=rep.final_tree, operation=op, report=report, failure_class="stale")
-        if not policy.get("destination_writes", False):
-            return Outcome("rejected", "destination writes are disabled by policy", candidate=cand,
-                           tree=rep.final_tree, operation=op, report=report, failure_class="stale")
-        # Last re-read immediately before the effect.
-        try:
-            head_now = observe_head()
-        except Exception as e:
-            op = recovery._set(op, "failed", now)
-            save_operation(op)
-            return Outcome("infra_error", f"could not re-read the fork head: {e}", candidate=cand, operation=op,
-                           report=report, failure_class="infrastructure")
-        if head_now != expected:
-            op = recovery._set(op, "failed", now)
-            save_operation(op)
-            return Outcome("rejected", "fork head moved before push", candidate=cand, operation=op, report=report,
-                           failure_class="stale")
-        op = recovery.mark_applying(op, now)
+        # A push reserves no runner capacity; the publication check read the
+        # contribution not paused, and the head re-read matched the lease.
+        op = recovery.mark_applying(op, now, facts=PUSH_FACTS)
         save_operation(op)
         args = publisher.lease_refspec(cand, expected)
         runner = push or (lambda w, a, cfg: _git(w, "push", "--porcelain", _url(fork), *a, check=False,

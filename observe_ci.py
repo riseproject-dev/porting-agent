@@ -187,10 +187,17 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
             head = collect.branch_head(api, fork, DEV_REF)
             entry: dict[str, Any] = {"contribution": cid, "fork": fork,
                                      "observed_head": head and head["head"]}
-            # Uncertain branch operations are resolved by discovery first.
+            # Uncertain branch operations are resolved by discovery first
+            # (`confirm_by_discovery` or `record_discovery` of the operation
+            # table). An operation the store holds as `applying` lost the
+            # response of its push (the publisher records the response before
+            # it hands the operation over): `record_response` makes it
+            # uncertain, then it is discovered.
             for op in operations.values():
-                if op["contribution_id"] == cid and op["status"] in recovery.OPEN and \
+                if op["contribution_id"] == cid and op["status"] in ("applying", "uncertain") and \
                         op["kind"] in ("branch_update", "branch_rewrite"):
+                    if op["status"] == "applying":
+                        op = recovery.mark_result(op, response_ok=None, external_ids=None, now=now)
                     result = recovery.discover_branch(op, head)
                     new = recovery.record_discovery(op, result, f"{DEV_REF} at {head and head['head']}", now)
                     obs.staged.append(("operations", new))

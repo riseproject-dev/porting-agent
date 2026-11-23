@@ -26,7 +26,8 @@ unless every guard is established. The engine never performs remote effects.
 engine: the handoff states and the moves into them, the stop flag and the
 stop, resume, and refresh commands in every state of the table, the
 reminders of a pending human step, the allocation of Work and the exhaustion
-of its budgets, and late Results. Every other verb of the table is in
+of its budgets, late Results, and the rows of the fork provisioning operation
+(the operation table itself has its engine in ``recovery``). Every other verb of the table is in
 ``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it yet
 and the corresponding behavior still runs through ``compat``. The two sets
 partition the table, so the share of the table the pipeline obeys is
@@ -764,6 +765,13 @@ PIPELINE_VERBS: dict[str, str] = {
     "pause_on_processing_error": "reconcile",
     # The intake label removed from a request that has not started.
     "withdraw_request": "controller",
+    # The fork provisioning operation: its launches within `operation_launch`,
+    # the wait once that budget is exhausted or the operation failed, and its
+    # confirmation by the receipt and readback (rows the operation fires
+    # through ``recovery.fire``).
+    "start_operation": "controller",
+    "require_provisioning_intervention": "controller",
+    "confirm_provisioning": "recovery",
 }
 
 def table_commands() -> frozenset[str]:
@@ -1263,6 +1271,7 @@ def state_problem(record: dict, legacy_states=frozenset()) -> str | None:
 def coverage() -> dict[str, Any]:
     """How much of the table the pipeline takes through the engine."""
     import compat
+    import recovery
 
     kinds = [p.kind for g, p in PREDICATES.items() if g in table_guards()]
     return {
@@ -1274,6 +1283,15 @@ def coverage() -> dict[str, Any]:
         "held_commands": sorted(HELD_COMMANDS),
         "legacy_write_sites": sorted(compat.LEGACY_SITES),
         "legacy_states": sorted(compat.LEGACY_STATES),
+        # The operation table: every verb is taken through ``recovery``.
+        "operation_rows": sum(1 for _ in lc.table_edges(lc.OPERATIONS)),
+        "operation_verbs": sorted(recovery.table_verbs()),
+        "operation_guards": {kind: sum(1 for g, p in recovery.PREDICATES.items()
+                                       if p.kind == kind and g in recovery.table_guards())
+                             for kind in ("record", "fact")},
+        "fired_lifecycle_verbs": sorted({v for fires in recovery.FIRES.values()
+                                         for verbs in fires.values() for v in verbs}),
+        "legacy_operation_sites": sorted(recovery.LEGACY_SITES),
     }
 
 
@@ -1284,6 +1302,9 @@ def main() -> int:
     print(json.dumps(report, indent=2))
     print(f"{len(report['pipeline_verbs'])} of {report['table_verbs']} verbs are taken by the "
           f"pipeline; {len(report['legacy_write_sites'])} legacy write sites remain")
+    print(f"operation table: {report['operation_rows']} rows, "
+          f"{len(report['operation_verbs'])} verbs taken through recovery; "
+          f"{len(report['legacy_operation_sites'])} legacy operation status sites remain")
     return 0
 
 

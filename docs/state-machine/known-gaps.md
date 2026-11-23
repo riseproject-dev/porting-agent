@@ -71,13 +71,13 @@ These table mutations break a settled decision but still pass the check:
 ## The stop flag in states the table does not have
 
 - **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (for example `development.idle`, `development.waiting_capacity`, `upstream_review.idle`).
-- **Today:** such a state has no row, so the engine cannot take `pause`, `pause_on_identity_change`, or `pause_on_processing_error` there. `compat.legacy_pause` records the same fields and clears the same things, but the activity that held the Work or a publication becomes `idle` instead of the table's state in which the Work is due. `resume` and `park` on such a record are applied by the legacy command code: its resume has no `resume_stale` (a long stop is not followed by a refresh), and its park has no open-operation guard. `refresh` and `abandon`, which no row of such a state takes, are refused there.
+- **Today:** such a state has no row, so the engine cannot take `pause`, `pause_on_identity_change`, or `pause_on_processing_error` there. `compat.legacy_pause` records the same fields and clears the same things, but the activity that held the Work or a publication becomes `idle` instead of the table's state in which the Work is due. `resume` and `park` on such a record are applied by the legacy command code: its resume has no `resume_stale` (a long stop is not followed by a refresh). Its park is refused while an operation is open, as the table's. `refresh` and `abandon`, which no row of such a state takes, are refused there.
 - **Table:** the flag verbs apply in every non-terminal state, with `set_moves`; `resume_stale` applies after a long stop in provisioning and development; `park_contribution` requires no open operation.
 - **Required:** migrate the legacy states to table states (investigation, provisioning, and development rows), then remove the legacy branches.
 
 ## Some resumes lead where nothing continues yet
 
-- **`resume_provisioning`** requires the fact that the prerequisite is corrected, which no caller establishes yet: `/upstreaming resume` in `provisioning.waiting_human` is refused unless the wait is long enough for `resume_stale`. The retired `provision` command no longer leaves the wait; `park` and a resume from `parked.idle` do.
+- **`resume_provisioning`** requires the fact that the prerequisite is corrected, which no caller establishes yet: `/upstreaming resume` in `provisioning.waiting_human` is refused unless the wait is long enough for `resume_stale`. The retired `provision` command no longer leaves the wait; `park` and a resume from `parked.idle` do. After `require_provisioning_intervention` for exhausted launches the planned operation is still open, so `park` and `resume_stale` are refused (naming the operation) until `/upstreaming resolve-operation` closes it; the reply of the retired `provision` does not say so.
 - **`resume_ci`** in `development.waiting_human` and `handoff.waiting_human` leads to the CI wait, but the rerun of the interrupted jobs that the row states is not launched. No record enters a wait with the pending action `ci_interrupted` yet.
 - **Required:** the provisioning prerequisite check and collector reruns.
 
@@ -137,6 +137,34 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** `allocate_work_retry` applies to terminal Work without a usable Result.
 - **Required:** establish the fact only once the Result of a completed graph is known to be missing (its worker run finished without a publication artifact).
 
+## Provisioning planned before the operation table drove it
+
+- **Where:** `controller.py` (the provisioning plan and launches) and `reconcile.py` (the provisioning receipt), legacy sites `controller.plan_provisioning` and `reconcile.confirm_provisioning`.
+- **Today:** from `provisioning.idle` the table's rows run provisioning. A record in a shape the table does not have, `provisioning.waiting_human` without a pending action (written before the table), is still planned by the legacy code into `provisioning.waiting_capacity`; such a record is launched again without `start_operation`, within the same launch limit, has no exhaustion wait, and its receipt moves it to the legacy `development.idle` with a revision bump instead of `confirm_provisioning`.
+- **Table:** provisioning is planned and launched from `provisioning.idle` only (`start_operation`, `require_provisioning_intervention`, `confirm_provisioning` to `development.fix_needed` without a revision bump).
+- **Required:** migrate the legacy provisioning shapes to `provisioning.idle`, then remove the legacy branches.
+
+## Operation status changes without a row
+
+- **Where:** `controller.defer_destination_operation` and `controller.rearm_provisioning` (`recovery.LEGACY_SITES`).
+- **Today:** while destination writes are disabled, the controller retires a planned fork provisioning intent as `not_launched` by itself, and rearms it as `planned` when destination writes are enabled again. The state publisher admits exactly these two transitions (`recovery.LEGACY_TRANSITIONS`).
+- **Table:** a planned operation becomes `not_launched` only by `resolve_not_launched`, and a closed operation never changes status.
+- **Required:** remove the path that defers destination writes, with the pre-fork proposal.
+
+## Development PR operations have no row
+
+- **Where:** the development PR and CI bootstrap plans in `controller.py` and the development PR receipt in `reconcile.py` (legacy sites `controller.plan_development_pr`, `controller.plan_ci_bootstrap`, `reconcile.confirm_development_pr`).
+- **Today:** the operations `dev_pr_create` and `dev_pr_update` follow the operation table, but no lifecycle row starts them or is fired by them: the plan moves the record to the legacy `development.waiting_capacity`, the confirmed operation moves it to `development.waiting_ci`, and launches that never return a receipt stop at the launch limit with the operation open and no human wait.
+- **Table:** `record_publish_success` leads to `development.waiting_ci`; no row of the table creates the development PR.
+- **Required:** decide where the development PR operation sits in the table, then take it through rows.
+
+## Resolution evidence has no producer
+
+- **Where:** `/upstreaming resolve-operation`, guard "a resolution evidence record states the disposition".
+- **Today:** the command takes the table's `resolve_*` rows with a record of kind `resolution` from the state store, but nothing writes such a record, so every resolution is refused with "resolution evidence record not found".
+- **Table:** `resolve-operation` closes an open operation with a resolution evidence record.
+- **Required:** a trusted way to record resolution evidence.
+
 ## Work requested before the Work identity carried the generation
 
 A Work payload written before the Work identity carried `generation` and `dedupe_key` names neither: the reconciler and the publisher read it as generation 0 and recognize its Work by its revision (`work.task_identity`), and requested Work recorded without `active_work.generation` is generation 0 (`work.work_generation`) and is dispatched with the payload it was first submitted with. Remove both fallbacks once no such Work or worker is in flight.
@@ -180,8 +208,15 @@ These follow the literal reading of a decision and are kept until a decision say
 - `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
 - In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
 - A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table (the legacy provisioning wait), is still handled by the legacy paths: the legacy provisioning plan starts from `provisioning.waiting_human` only without a pending action.
+- A planned operation that a trusted workflow runs stays `planned` across its launches; `begin_effect`, `record_response`, and `confirm_by_discovery` are taken together when its verified receipt is folded with the exact readback. The receipt establishes the facts of `begin_effect` (capacity available, the contribution not paused, the final check passed): the workflow's own final check read them before the effect. A push establishes "capacity available" without a runner reservation.
+- A branch operation that the store holds as `applying` lost the response of its push: the branch observation takes `record_response` ("its response was lost") before discovering it, as the publisher hands an operation over only after it recorded the response.
+- When the publisher's final check before a push does not pass (the head re-read fails or moved), no intent is recorded and the outcome carries no operation, instead of a `failed` operation, because `planned` has no row to `failed` other than a resolution.
+- `active_operation_id` names an open operation only: the reference is released in the write that closes the operation, although no row of the table lists that clear (`record_merge` clears it explicitly).
+- The counter of `operation_launch` is `external_ids.launch_attempts` of the operation, where launches were counted before the table. A launch is repeated only 300 seconds after the last one, and the relaunch requires available capacity, like the first launch. The launches of a development PR operation have the same limit.
+- `require_provisioning_intervention` for exhausted launches is taken once the last allowed launch is 300 seconds old without a receipt, and not while the contribution is paused. Its pending action is `provisioning_launch_exhausted` with the counter `operation_launch`; after a human resolves the provisioning operation `failed`, it is `provisioning_operation_failed` without a counter.
+- A provisioning operation resolved `confirmed` by a human fires no row: `confirm_provisioning` needs the receipt and the readback. A receipt that arrives while the contribution waits for a human closes the operation and keeps the state.
 - A record whose `last_ci_evidence_id` names evidence that the store does not hold, in a state where Work is allocated, is an unexpected error of that contribution and takes `pause_on_processing_error`; the pause names the missing evidence id.
 
 ## Code still outside the engine
 
-Transitions not yet taken through `engine.py` are written by the compatibility layer in `compat.py`, which keeps a registry of every remaining write site and every legacy state still admitted. `python -m engine` prints how many table verbs the pipeline takes through the engine and how many legacy write sites remain.
+Transitions not yet taken through `engine.py` are written by the compatibility layer in `compat.py`, which keeps a registry of every remaining write site and every legacy state still admitted. Operation status changes without a row are listed in `recovery.LEGACY_SITES`. `python -m engine` prints how many table verbs the pipeline takes through the engine, how many legacy write sites remain, and the operation verbs taken through `recovery.py` with its remaining legacy sites.

@@ -109,6 +109,13 @@ MESSAGES = {
         "Rejected the investigation Result: it has no usable dossier, and the investigation "
         "attempts are exhausted. The contribution waits for a human: `/upstreaming resume` at "
         "the current revision starts a new investigation."),
+    "start_operation": "Launched the trusted fork provisioning workflow.",
+    "require_provisioning_intervention": (
+        "Provisioning cannot continue safely: the fork provisioning operation failed, or its "
+        "launches (`operation_launch`) are spent without a receipt. The contribution waits for "
+        "a human."),
+    "confirm_provisioning": ("Provisioned and verified the contribution fork and exact `riscv64` "
+                             "base. Development Work is due."),
     "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "
                                   "Correct the recorded cause, then `resume` at the current revision starts a "
                                   "clean generation at `queued:idle`."),

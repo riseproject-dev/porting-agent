@@ -292,20 +292,19 @@ def finalize(record: dict, operation: dict, now: str) -> tuple[dict, dict, dict]
         phase="queued", activity="idle", updated_at=now)
     schemas.validate("contribution", repaired)
 
-    confirmed = copy.deepcopy(operation)
-    confirmed["status"] = "confirmed"
-    confirmed["external_ids"] = {
-        "issue_id": ISSUE_ID,
-        "issue_number": ISSUE_NUMBER,
-        "body_digest": EXPECTED_DIGEST,
-    }
-    confirmed["discovery"] = list(confirmed.get("discovery") or []) + [{
-        "at": now,
-        "result": "confirmed",
-        "detail": "canonical issue body matched exact reviewed bytes after readback",
-    }]
-    confirmed["updated_at"] = now
-    schemas.validate("operation", confirmed)
+    # The rows of the operation table: the final check above passed and the
+    # edit (or a lost earlier edit) was made, then the exact readback
+    # confirmed the body. An issue edit reserves no runner capacity.
+    confirmed = recovery.fold_receipt(
+        operation,
+        external_ids={
+            "issue_id": ISSUE_ID,
+            "issue_number": ISSUE_NUMBER,
+            "body_digest": EXPECTED_DIGEST,
+        },
+        detail="canonical issue body matched exact reviewed bytes after readback",
+        now=now,
+    )
 
     event = {
         "schema_version": 1,

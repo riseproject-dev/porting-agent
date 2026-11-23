@@ -788,9 +788,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     or (pr.get("base") or {}).get("ref") != c["upstream"]["base_ref"]:
                 dev_pr_report.append({"contribution": cid, "status": "PR readback mismatch"})
                 continue
-            new_op = recovery.record_discovery(op, "confirmed", f"development PR {pr['number']} verified", iso)
-            new_op["external_ids"].update({"pr_id": int(pr["id"]), "pr_number": int(pr["number"]),
-                                           "development_pr_run_id": str(receipt["development_pr_run_id"])})
+            new_op = recovery.fold_receipt(
+                op, external_ids={"pr_id": int(pr["id"]), "pr_number": int(pr["number"]),
+                                  "development_pr_run_id": str(receipt["development_pr_run_id"])},
+                detail=f"development PR {pr['number']} verified", now=iso)
             fork = dict(c["fork"], pr_number=int(pr["number"]))
             new = compat.legacy_update(c, "reconcile.confirm_development_pr", fork=fork,
                                        active_operation_id=None, activity="waiting_ci",
@@ -834,34 +835,54 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     or repo["id"] != receipt.get("fork_id") or repo.get("parent_id") != c["upstream"]["repository_id"]:
                 provision_report.append({"contribution": cid, "status": "fork identity/ref mismatch"})
                 continue
-            new_op = recovery.record_discovery(op, "confirmed", "fork/source identity, branch and trusted setup receipt verified", iso)
+            external_ids = {}
             if receipt.get("provision_run_id"):
-                new_op["external_ids"]["provision_run_id"] = str(receipt["provision_run_id"])
+                external_ids["provision_run_id"] = str(receipt["provision_run_id"])
             if receipt.get("provision_artifact_id"):
-                new_op["external_ids"]["provision_artifact_id"] = int(receipt["provision_artifact_id"])
-            has_pre_fork_proposal = (c.get("proposal_artifact") or {}).get("outcome") == "proposal"
-            new = compat.legacy_update(
-                c, "reconcile.confirm_provisioning",
-                fork={"repository_id": repo["id"], "name": repo["full_name"], "head_ref": "riscv64",
-                      "head_sha": head["head"], "pr_number": None},
-                phase="development",
-                activity="waiting_capacity" if has_pre_fork_proposal else "idle",
-                active_operation_id=None,
-                pending_human_action=None,
-                revision=c["revision"] if has_pre_fork_proposal else c["revision"] + 1,
-                updated_at=iso,
-            )
+                external_ids["provision_artifact_id"] = int(receipt["provision_artifact_id"])
+            new_op = recovery.fold_receipt(
+                op, external_ids=external_ids,
+                detail="fork/source identity, branch and trusted setup receipt verified", now=iso)
+            fork = {"repository_id": repo["id"], "name": repo["full_name"], "head_ref": "riscv64",
+                    "head_sha": head["head"], "pr_number": None}
+            if recovery.fired_verbs(c, new_op):
+                # The receipt matches the operation and the fork and ref were
+                # read back: the operation fires `confirm_provisioning`.
+                fired = recovery.fire(
+                    c, new_op, policy=policy, now=iso,
+                    facts={"receipt_matches_operation", "fork_and_ref_read_back"},
+                    values={"fork": fork,
+                            "upstream.repository_id": c["upstream"]["repository_id"],
+                            "upstream.base_ref": c["upstream"]["base_ref"],
+                            "upstream.base_sha": c["upstream"]["base_sha"]})
+                if not fired.accepted:
+                    raise lifecycle.TransitionError(
+                        f"confirm_provisioning refused in {engine.state_key(c)}: {fired.reason}")
+                new, event = fired.record, fired.event
+            elif compat.waits_for_human(c):
+                # A wait of the table has no row for the operation: the state
+                # is kept and the closed operation is released.
+                new, event = recovery.release(c, new_op, iso), None
+            else:
+                has_pre_fork_proposal = (c.get("proposal_artifact") or {}).get("outcome") == "proposal"
+                new = compat.legacy_update(
+                    c, "reconcile.confirm_provisioning",
+                    fork=fork,
+                    phase="development",
+                    activity="waiting_capacity" if has_pre_fork_proposal else "idle",
+                    active_operation_id=None,
+                    pending_human_action=None,
+                    revision=c["revision"] if has_pre_fork_proposal else c["revision"] + 1,
+                    updated_at=iso,
+                )
+                event = lifecycle._event(c, new, "fork_provisioned", "observation", op["operation_id"],
+                                         iso, not has_pre_fork_proposal)
             schemas.validate("contribution", new)
             contributions[key] = new
             snap.operations[op["operation_id"]] = new_op
-            out.staged.extend([
-                ("operations", new_op),
-                ("contributions", new),
-                ("events", lifecycle._event(
-                    c, new, "fork_provisioned", "observation", op["operation_id"], iso,
-                    not has_pre_fork_proposal,
-                )),
-            ])
+            out.staged.extend([("operations", new_op), ("contributions", new)])
+            if event is not None:
+                out.staged.append(("events", event))
             provision_report.append({"contribution": cid, "status": "provisioned"})
     out.report["provisions"] = provision_report
 
@@ -1019,7 +1040,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    pressure=pressure, verified_prs=verified_prs or {},
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
-                                                   acceptances=acceptances or {}),
+                                                   acceptances=acceptances or {},
+                                                   resolution_evidence={
+                                                       e["evidence_id"]: e for e in evidence.values()
+                                                       if e.get("kind") == "resolution"}),
                           skip=skip, evidence=evidence)
     out.staged.extend(res.staged)
     out.report["controller"] = res.report

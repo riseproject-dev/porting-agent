@@ -463,11 +463,11 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual(self.op()["operation_id"], self.op()["operation_id"])
 
     def test_lost_receipt_discovered_not_repeated(self):
-        op = recovery.mark_applying(self.op(), NOW)
+        op = recovery.mark_applying(self.op(), NOW, facts=recovery.RECEIPT_FACTS)
         op = recovery.mark_result(op, response_ok=None, external_ids=None, now=NOW)
         self.assertEqual(op["status"], "uncertain")
         with self.assertRaises(recovery.RecoveryError):
-            recovery.mark_applying(op, NOW)  # no second effect
+            recovery.mark_applying(op, NOW, facts=recovery.RECEIPT_FACTS)  # no second effect
         r = recovery.discover_branch(op, {"head": SHA_B})
         self.assertEqual(r, "confirmed")
         r2 = recovery.discover_branch(op, {"head": "9" * 40, "tree": "1" * 40, "parents": [SHA_A]})
@@ -477,7 +477,7 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual(op["status"], "confirmed")
 
     def test_absence_is_not_nonlaunch(self):
-        op = recovery.mark_result(recovery.mark_applying(self.op("ci_dispatch"), NOW),
+        op = recovery.mark_result(recovery.mark_applying(self.op("ci_dispatch"), NOW, facts=recovery.RECEIPT_FACTS),
                                   response_ok=None, external_ids=None, now=NOW)
         for _ in range(6):
             op = recovery.record_discovery(op, "absent", "none", NOW)
@@ -487,7 +487,7 @@ class TestRecovery(unittest.TestCase):
         self.assertIn("owner_review_required", recovery.alerts(op, later))
 
     def test_schedule(self):
-        op = recovery.mark_result(recovery.mark_applying(self.op(), NOW), response_ok=None,
+        op = recovery.mark_result(recovery.mark_applying(self.op(), NOW, facts=recovery.RECEIPT_FACTS), response_ok=None,
                                   external_ids=None, now=NOW)
         p = policy()
         self.assertEqual(recovery.next_discovery_at(op, p), T + timedelta(minutes=1))
@@ -495,7 +495,7 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual(recovery.next_discovery_at(op, p), T + timedelta(minutes=5))
 
     def test_resolve_requires_evidence(self):
-        op = recovery.mark_result(recovery.mark_applying(self.op("ci_dispatch"), NOW),
+        op = recovery.mark_result(recovery.mark_applying(self.op("ci_dispatch"), NOW, facts=recovery.RECEIPT_FACTS),
                                   response_ok=None, external_ids=None, now=NOW)
         c = commands.parse(f"/upstreaming resolve-operation operation={op['operation_id']} "
                            "disposition=not-launched evidence=ev-9")

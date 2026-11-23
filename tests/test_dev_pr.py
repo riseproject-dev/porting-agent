@@ -99,7 +99,7 @@ class TestDevelopmentPR(unittest.TestCase):
                                policy_version="test", reason_ids=["result"],
                                target={"repository": FORK, "repository_id": 9, "ref": "riscv64",
                                        "expected_head": SHA_A, "base_sha": SHA_A}, now=NOW)
-        branch = recovery.record_discovery(branch, "confirmed", "head verified", NOW)
+        branch = recovery.fold_receipt(branch, external_ids=None, detail="head verified", now=NOW)
         rec["publication_operation_id"] = branch["operation_id"]
         tick = controller.tick(contributions={"c": rec}, operations={branch["operation_id"]: branch},
                                consumed={}, projects={}, policy={"policy_version": "test", "read_only": False,

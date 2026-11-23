@@ -147,7 +147,10 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
         heads = iter([self.base, "f" * 40])
         out = self.run_publish(observe=lambda: next(heads))
         self.assertIn("moved before push", out.reason)
-        self.assertEqual(self.ops[-1]["status"], "failed")
+        # The final check did not pass: no effect is begun and no intent is
+        # recorded.
+        self.assertEqual(self.ops, [])
+        self.assertIsNone(out.operation)
         self.assertEqual(self.fork_head(), self.base)
 
     def test_lease_rejects_concurrent_push(self):

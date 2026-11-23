@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import compat
+import recovery
 import schemas
 from common import (
     STATE_KINDS,
@@ -233,7 +234,7 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
         meta = fields[i].decode()
         path = fields[i + 1].decode("utf-8", "surrogateescape")
         i += 2
-        old_mode, new_mode, _old, new_sha, status = meta.lstrip(":").split()
+        old_mode, new_mode, old_sha, new_sha, status = meta.lstrip(":").split()
         rep.changed.append(path)
         if not path.startswith(STATE_ROOT + "/"):
             rep.problems.append(f"{path}: outside {STATE_ROOT}/")
@@ -255,6 +256,13 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
         if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
                 and compat.needs_migration(json.loads(data)):
             rep.problems.append(f"{path}: written in a handoff shape that awaits record migration")
+        if not blob_problems and path.startswith(f"{STATE_ROOT}/operations/"):
+            # An operation's status changes only by rows of the operation
+            # table: a closed operation never changes status.
+            before = json.loads(_git(repo, "cat-file", "blob", old_sha)) if status == "M" else None
+            why = recovery.transition_problem(before, json.loads(data))
+            if why:
+                rep.problems.append(f"{path}: {why}")
         if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
                 and compat.needs_terminal_migration(json.loads(data)):
             rep.problems.append(f"{path}: written in a terminal phase the lifecycle replaced")

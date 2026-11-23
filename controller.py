@@ -306,8 +306,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                         "alert": "destination operation exists but is not provably unlaunched",
                     })
                     continue
-                retired = dict(operation, status="not_launched", updated_at=now)
-                schemas.validate("operation", retired)
+                retired = recovery.legacy_status(operation, "not_launched",
+                                                 site="controller.defer_destination_operation",
+                                                 now=now)
                 changed = compat.legacy_update(
                     record, "controller.defer_destination_operation",
                     phase="development",
@@ -478,6 +479,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # Provisioning is a trusted administrative workflow, not a model task.
     # Persist its normal operation intent before dispatch, with no second queue.
+    # In `provisioning.idle` the table's rows launch it: `start_operation`
+    # within `operation_launch` (counted on the operation), and
+    # `require_provisioning_intervention` once that budget is exhausted.
     res.report["provision_requests"] = []
     if policy.get("destination_writes", False):
         for cid, c in list(by_id.items()):
@@ -487,16 +491,24 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 operation = operations.get(c.get("active_operation_id"))
                 if operation and operation.get("kind") == "fork_provision" \
                         and operation.get("status") == "planned":
-                    attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
+                    attempts = recovery.launch_attempts(operation)
                     due = attempts == 0 or (
-                        (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
-                        and attempts < 3
-                    )
-                    if due:
-                        launched = dict(operation, status="planned", updated_at=now,
-                                        external_ids=dict(operation.get("external_ids") or {},
-                                                          launch_attempts=attempts + 1))
-                        schemas.validate("operation", launched)
+                        (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds()
+                        >= LAUNCH_INTERVAL_SECONDS)
+                    if not due:
+                        continue
+                    if engine.state_key(c) == "provisioning.idle":
+                        if _launch_provisioning(c, operation, by_id, operations, inputs, res, now,
+                                                policy):
+                            break
+                        continue
+                    if compat.waits_for_human(c):
+                        continue  # a wait of the table is left only by its own rows
+                    if attempts < lifecycle.budget_limit("operation_launch", policy):
+                        # A record planned in a shape the table does not have
+                        # (`provisioning.waiting_capacity`, or the provisioning
+                        # wait without a pending action).
+                        launched = recovery.charge_launch(operation, now)
                         operations[launched["operation_id"]] = launched
                         res.stage("operations", launched)
                         res.report["provision_requests"].append({
@@ -510,15 +522,14 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     prior = [op for op in operations.values()
                              if op.get("contribution_id") == cid and op.get("kind") == "fork_provision"]
                     if len(prior) == 1 and prior[0]["status"] == "not_launched":
-                        operation = dict(
-                            prior[0], status="planned", updated_at=now,
-                            external_ids=dict(prior[0].get("external_ids") or {}, launch_attempts=1),
-                        )
+                        operation = recovery.legacy_status(
+                            prior[0], "planned", site="controller.rearm_provisioning", now=now,
+                            external_ids=dict(prior[0].get("external_ids") or {},
+                                              **{recovery.LAUNCH_COUNTER: 1}))
                         changed = compat.legacy_update(
                             c, "controller.rearm_provisioning", phase="provisioning",
                             activity="waiting_capacity",
                             active_operation_id=operation["operation_id"], updated_at=now)
-                        schemas.validate("operation", operation)
                         schemas.validate("contribution", changed)
                         operations[operation["operation_id"]] = operation
                         by_id[cid] = changed
@@ -538,13 +549,13 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             break
         if res.report["provision_requests"]:
             break
-        if len(res.report["provision_requests"]) >= 1:
-            break
         if cid in skip:
             continue
         with isolation.contribution(cid, "provisioning"):
             if c["phase"] != "provisioning" or c.get("paused") \
-                    or c.get("active_operation_id") or cid in source_blocked:
+                    or recovery.is_open(operations.get(c.get("active_operation_id"))) \
+                    or (c.get("active_operation_id") and c["active_operation_id"] not in operations) \
+                    or cid in source_blocked:
                 continue
             if c.get("pending_human_action"):
                 # A human wait of the table is left only by its own rows.
@@ -571,8 +582,16 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if op["operation_id"] in operations:
                 rep["deferred"].append({"contribution": cid, "why": "existing provisioning operation requires reconciliation"})
                 continue
-            op = dict(op, status="planned", external_ids={"launch_attempts": 1})
-            schemas.validate("operation", op)
+            if engine.state_key(c) == "provisioning.idle":
+                # The intent is recorded and launched in the same tick.
+                planned = dict(c, active_operation_id=op["operation_id"], updated_at=now)
+                schemas.validate("contribution", planned)
+                if not _launch_provisioning(planned, op, by_id, operations, inputs, res, now, policy,
+                                            capacity_checked=True):
+                    raise lifecycle.TransitionError(
+                        f"start_operation refused for a new provisioning intent of {cid}")
+                continue
+            op = recovery.charge_launch(op, now)
             res.stage("operations", op)
             planned = compat.legacy_update(c, "controller.plan_provisioning",
                                            active_operation_id=op["operation_id"],
@@ -596,16 +615,16 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 if not operation or operation.get("kind") not in {"dev_pr_create", "dev_pr_update"} \
                         or operation.get("status") != "planned":
                     continue
-                attempts = int((operation.get("external_ids") or {}).get("launch_attempts", 0))
+                # No row of the table launches a development PR operation; its
+                # launches are counted like `operation_launch`, on the operation.
+                attempts = recovery.launch_attempts(operation)
                 due = attempts == 0 or (
-                    (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() >= 300
-                    and attempts < 3
+                    (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds()
+                    >= LAUNCH_INTERVAL_SECONDS
+                    and attempts < lifecycle.budget_limit("operation_launch", policy)
                 )
                 if due:
-                    launched = dict(operation, updated_at=now,
-                                    external_ids=dict(operation.get("external_ids") or {},
-                                                      launch_attempts=attempts + 1))
-                    schemas.validate("operation", launched)
+                    launched = recovery.charge_launch(operation, now)
                     operations[launched["operation_id"]] = launched
                     res.stage("operations", launched)
                     res.report["dev_pr_requests"].append({
@@ -644,8 +663,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                proposed={"marker": marker, "content_digest": artifact["digest"]}, now=now)
             if op["operation_id"] in operations:
                 continue
-            op = dict(op, external_ids={"launch_attempts": 1})
-            schemas.validate("operation", op)
+            op = recovery.charge_launch(op, now)
             res.stage("operations", op)
             changed = compat.legacy_update(c, "controller.plan_development_pr",
                                            active_operation_id=op["operation_id"],
@@ -691,8 +709,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                        "base_sha": c["upstream"]["base_sha"]},
                                proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
                                          "content_digest": artifact["digest"]}, now=now)
-            op = dict(op, external_ids={"launch_attempts": 1})
-            schemas.validate("operation", op)
+            op = recovery.charge_launch(op, now)
             res.stage("operations", op)
             changed = compat.legacy_update(c, "controller.plan_ci_bootstrap",
                                            active_operation_id=op["operation_id"],
@@ -1027,12 +1044,74 @@ def reminder_details(record: dict) -> dict:
 def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
     """The open operations of a record: those of the store, and the one the
     record names as active, also when the store does not hold it."""
-    ops = {op["operation_id"] for op in operations.values()
-           if op["contribution_id"] == record["contribution_id"] and op["status"] in recovery.OPEN}
-    active = record.get("active_operation_id")
-    if active and (active not in operations or operations[active]["status"] in recovery.OPEN):
-        ops.add(active)
-    return tuple(sorted(ops))
+    return recovery.open_operations(record["contribution_id"], operations,
+                                    record.get("active_operation_id"))
+
+
+# A planned operation is launched again once this long has passed since its
+# last launch without a receipt, within `operation_launch`.
+LAUNCH_INTERVAL_SECONDS = 300
+# The pending human action of `require_provisioning_intervention` when
+# `operation_launch` is exhausted.
+LAUNCH_EXHAUSTED = "provisioning_launch_exhausted"
+
+
+def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict, inputs: Inputs,
+                         res: TickResult, now: str, policy: dict, *,
+                         capacity_checked: bool = False) -> bool:
+    """Launch the planned fork provisioning operation of a record in
+    `provisioning.idle` by the table: `start_operation`, which charges
+    `operation_launch` (counted on the operation), or, once that budget is
+    exhausted, `require_provisioning_intervention`. Returns whether a launch
+    was requested."""
+    cid, oid = c["contribution_id"], operation["operation_id"]
+    if engine.state_key(c) != "provisioning.idle":
+        return False  # no other state has a row that launches it
+    counts = recovery.launch_count(operation)
+    attempts = recovery.launch_attempts(operation)
+    open_ops = recovery.open_operations(cid, {**operations, oid: operation}, oid)
+    facts = {"fork_provision_planned"}
+    if capacity_checked:
+        facts.add("capacity_available")
+    else:
+        others = [op for op in operations.values() if op["operation_id"] != oid]
+        ok, _why = capacity.admit_expensive(
+            inputs.pressure or capacity.Pressure(ok=False, reason="no usage data"),
+            reserved=capacity.reserved_jobs(others), estimated_jobs=1, policy=policy)
+        if ok:
+            facts.add("capacity_available")
+    why = engine.refusal(c, "start_operation", policy=policy, now=now, facts=facts, counts=counts,
+                         open_operations=open_ops)
+    if why is None:
+        out = engine.apply_transition(c, "start_operation", policy=policy, now=now, cause_id=oid,
+                                      facts=facts, counts=counts, open_operations=open_ops,
+                                      details={"operation": oid, "attempt": attempts + 1})
+        if out.charged != ("operation_launch",):
+            raise lifecycle.TransitionError(f"start_operation charged {out.charged}")
+        launched = recovery.charge_launch(operation, now)
+        operations[oid] = launched
+        by_id[cid] = out.record
+        res.stage("operations", launched)
+        res.stage("contributions", out.record)
+        res.stage("events", out.event)
+        res.report["provision_requests"].append({
+            "operation_id": oid, "contribution_id": cid, "attempt": attempts + 1})
+        return True
+    if not c.get("paused") and attempts >= lifecycle.budget_limit("operation_launch", policy):
+        out = engine.apply_transition(
+            c, "require_provisioning_intervention", policy=policy, now=now, cause_id=oid,
+            counts=counts, open_operations=open_ops,
+            values={"pending_human_action": LAUNCH_EXHAUSTED,
+                    lifecycle.PENDING_COUNTER: "operation_launch"},
+            details={"operation": oid, "launches": attempts})
+        if not out.accepted:
+            raise lifecycle.TransitionError(f"require_provisioning_intervention refused: {out.reason}")
+        by_id[cid] = out.record
+        res.stage("contributions", out.record)
+        res.stage("events", out.event)
+        return False
+    res.report.setdefault("deferred", []).append({"contribution": cid, "why": why})
+    return False
 
 
 def _command_target(decision, by_id: dict, operations: dict) -> str | None:
@@ -1106,7 +1185,8 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
                          policy: dict, now: str) -> engine.Outcome:
     """Apply a command to a record in a table state, as the table defines it."""
     open_ops = _open_operations(rec, operations)
-    verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now,
+    counts = recovery.launch_count(operations.get(rec.get("active_operation_id")))
+    verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now, counts=counts,
                                        open_operations=open_ops)
     if verb is None:
         return engine.Outcome(rec, False, _refusal(rec, cmd, why), None)
@@ -1132,7 +1212,7 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
         details["admission_override"] = values["admission_override"]
     return engine.apply_transition(rec, verb, policy=policy, now=now,
                                    cause_id=receipt["command_id"], command=cmd,
-                                   values=values,
+                                   values=values, counts=counts,
                                    open_operations=open_ops, actor=receipt["actor"],
                                    details=details)
 
@@ -1144,26 +1224,68 @@ def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, p
     through the compatibility layer otherwise."""
     if engine.takes_command(rec, cmd.verb):
         return _apply_table_command(rec, cmd, receipt, operations, policy, now)
+    open_ops = _open_operations(rec, operations)
+    if cmd.verb == "park" and open_ops:
+        # `park_contribution` requires no open operation, in every state.
+        return engine.Outcome(rec, False, f"operation {open_ops[0]} is open", None)
     out = compat.apply_command(rec, cmd, command_id=receipt["command_id"],
                                actor=receipt["actor"], now=now)
     return engine.Outcome(out.record, out.accepted, out.reason, out.event)
 
 
+# What a human resolution establishes for the lifecycle row an operation
+# fires, by operation kind and resolved status: the facts and the values of
+# the fields the row sets. A row whose guards a resolution does not establish
+# (`confirm_provisioning` needs the receipt and its readback) is not taken.
+RESOLUTION_FIRES: dict[tuple[str, str], tuple[frozenset[str], dict]] = {
+    ("fork_provision", "failed"): (frozenset({"provisioning_blocked"}),
+                                   {"pending_human_action": "provisioning_operation_failed"}),
+}
+
+
+def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dict,
+                       inputs: Inputs, res: TickResult, now: str, policy: dict) -> dict:
+    """`/upstreaming resolve-operation` by the operation table: the one
+    `resolve_*` row whose guards hold. The authority of the actor was checked
+    at intake. An operation that reaches `confirmed` or `failed` fires its
+    lifecycle row when the resolution establishes the row's guards; the
+    record's reference to the closed operation is released."""
+    op = operations.get(cmd.args["operation"])
+    if op is None:
+        return dict(receipt, result="rejected", reason="unknown operation")
+    evidence = inputs.resolution_evidence.get(cmd.args["evidence"])
+    try:
+        new = recovery.resolve(op, cmd, actor=receipt["actor"], command_id=receipt["command_id"],
+                               evidence=evidence, now=now)
+    except recovery.RecoveryError as e:
+        return dict(receipt, result="rejected", reason=str(e))
+    operations[op["operation_id"]] = new
+    res.stage("operations", new)
+    rec = by_id.get(new["contribution_id"])
+    if rec is None:
+        return receipt
+    facts, values = RESOLUTION_FIRES.get((new["kind"], new["status"]), (frozenset(), {}))
+    fired = None
+    if engine.state_key(rec) in lifecycle.LIFECYCLE and recovery.fired_verbs(rec, new) \
+            and (facts or values):
+        fired = recovery.fire(rec, new, policy=policy, now=now, facts=facts, values=values,
+                              cause_id=receipt["command_id"],
+                              open_operations=_open_operations(rec, operations))
+    changed = fired.record if fired is not None and fired.accepted else recovery.release(rec, new, now)
+    if changed is not rec:
+        by_id[rec["contribution_id"]] = changed
+        res.stage("contributions", changed)
+    if fired is not None and fired.accepted:
+        res.stage("events", fired.event)
+    elif fired is not None:
+        return dict(receipt, reason=f"the lifecycle row is not taken: {fired.reason}")
+    return receipt
+
+
 def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: Inputs,
            res: TickResult, now: str, policy: dict) -> dict:
-    actor = receipt["actor"]
     if cmd.verb == "resolve-operation":
-        op = operations.get(cmd.args["operation"])
-        if op is None:
-            return dict(receipt, result="rejected", reason="unknown operation")
-        try:
-            new = recovery.resolve(op, cmd, actor=actor, command_id=receipt["command_id"],
-                                   evidence=inputs.resolution_evidence.get(cmd.args["evidence"]), now=now)
-        except recovery.RecoveryError as e:
-            return dict(receipt, result="rejected", reason=str(e))
-        operations[op["operation_id"]] = new
-        res.stage("operations", new)
-        return receipt
+        return _resolve_operation(cmd, receipt, by_id, operations, inputs, res, now, policy)
     # The contribution is the one tracked by the issue the comment was posted on.
     rec = intake.contribution_for_issue(by_id.values(), receipt["issue_number"])
     if rec is None:
@@ -1183,7 +1305,19 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
     res.stage("contributions", out.record)
     if out.event:
         res.stage("events", out.event)
+    _restart_launches(out, operations, res, now)
     return receipt
+
+
+def _restart_launches(out: engine.Outcome, operations: dict, res: TickResult, now: str) -> None:
+    """A resume that starts `operation_launch` again starts the launches of
+    the record's planned operation again: that is where the counter lives."""
+    op = operations.get(out.record.get("active_operation_id"))
+    if (out.restarted or {}).get("counter") == "operation_launch" and op \
+            and op["status"] == "planned":
+        op = recovery.restart_launches(op, now)
+        operations[op["operation_id"]] = op
+        res.stage("operations", op)
 
 
 def cmd_observe(args: argparse.Namespace) -> int:
