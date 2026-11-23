@@ -34,6 +34,7 @@ import isolation
 import lifecycle
 import recovery
 import schemas
+import work as work_queue
 from commands import URGENT, Command
 from common import (
     CONTROL_REPO,
@@ -103,11 +104,45 @@ PRIORITY = {"upstream_revision": 0, "development_repair": 1, "development_patch"
             "investigation": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
+# The rows of the table that allocate due Work, by the state it is due in, in
+# the order they are tried; their guards are exclusive. A request in
+# `queued.idle` first takes `begin_investigation`, in the tick that allocates
+# the investigation Work.
+ALLOCATIONS = {
+    "investigation.idle": ("dispatch_investigation",),
+    "development.fix_needed": ("request_repair", "request_patch"),
+    "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
+}
+# The rows taken instead when a budget of that Work is exhausted. They need no
+# worker slot and are taken as soon as their guard holds.
+EXHAUSTIONS = {
+    "investigation.idle": ("exhaust_work_total",),
+    "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
+                               "exhaust_repair_attempts"),
+    "upstream_review.fix_needed": ("exhaust_repair_attempts",),
+}
+# The facts the controller establishes for an allocation it is about to take.
+ALLOCATION_FACTS = frozenset({"worker_slot_free", "capacity_available"})
+
+
+def task_for(verb: str, record: dict) -> str:
+    """The task an allocation row asks a worker for. ``request_patch`` asks
+    for a repair when the record holds pending feedback for it to answer."""
+    if verb == "dispatch_investigation":
+        return "investigation"
+    if verb in ("request_upstream_revision", "request_review_revision"):
+        return "upstream_revision"
+    if verb == "request_repair" or record.get("pending_feedback_evidence_ids"):
+        return "development_repair"
+    return "development_patch"
+
 
 def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consumed: dict[int, dict],
          projects: dict[str, dict], policy: dict, inputs: Inputs,
-         skip: frozenset[str] = frozenset()) -> TickResult:
-    """``skip`` names the contributions this tick does not process: nothing
+         skip: frozenset[str] = frozenset(), evidence: dict[str, dict] | None = None) -> TickResult:
+    """``evidence`` is the store's evidence by id, from which the failing CI
+    job of a head is decided when Work is due. ``skip`` names the
+    contributions this tick does not process: nothing
     is staged or requested for them, and a command on their tracking issue
     is left unconsumed for the next tick. They still count as existing
     contributions (worker slots, one active contribution per upstream).
@@ -703,7 +738,10 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             })
             break
 
-    # 8-10. Select bounded work, honouring capacity and one worker.
+    # 8-10. Select bounded work, honouring capacity and one worker. In a
+    # state of the table, Work is allocated by the row the table names for
+    # it, and an exhausted budget takes its exhaustion row instead.
+    evidence = evidence or {}
     candidates = []
     for c in by_id.values():
         if c["contribution_id"] in skip:
@@ -717,21 +755,37 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if c["contribution_id"] in blocked_by_op:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
                 continue
-            if kind in WRITE_KINDS:
-                why = (
-                    lifecycle.proposal_admission(c)
-                    if kind == "development_patch" and not c.get("fork")
-                    else lifecycle.write_admission(c)
-                )
+            if engine.state_key(c) not in lifecycle.LIFECYCLE:
+                # `development.idle`, a state the table does not have: the
+                # legacy selection requests the first patch.
+                why = _legacy_patch_refusal(c, policy, now)
                 if why:
                     rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                     continue
-            candidates.append((PRIORITY[kind], c["updated_at"], kind, c))
+                candidates.append((PRIORITY[kind], c["updated_at"], kind, c, None))
+                continue
+            due = _begun(c, policy, now)
+            if due is None:
+                continue
+            ci = evidence.get(due.get("last_ci_evidence_id") or "")
+            ops = _open_operations(due, operations)
+            spent = next((verb for verb in EXHAUSTIONS.get(engine.state_key(due), ())
+                          if engine.refusal(due, verb, policy=policy, now=now, ci_evidence=ci,
+                                            open_operations=ops) is None), None)
+            if spent:
+                _exhaust(c, due, spent, ci, by_id, res, policy, now)
+                continue
+            verb, why = _allocation_verb(due, ci, ops, policy, now)
+            if verb is None:
+                rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
+                continue
+            kind = task_for(verb, due)
+            candidates.append((PRIORITY[kind], c["updated_at"], kind, c, verb))
     candidates.sort(key=lambda x: (x[0], x[1]))
     slots = policy["concurrency"]["coding_workers"] - sum(
         1 for c in by_id.values() if c["activity"] == "agent_running" or c.get("active_work"))
     pressure = inputs.pressure
-    for _p, _t, kind, c in candidates:
+    for _p, _t, kind, c, verb in candidates:
         if c["contribution_id"] in skip:
             continue
         with isolation.contribution(c["contribution_id"], "work_selection"):
@@ -746,71 +800,191 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                     continue
             slots -= 1
-            reason_ids = []
-            if kind in ("development_repair", "upstream_revision"):
-                reason_ids = list(dict.fromkeys(
-                    (c.get("pending_feedback_evidence_ids") or [])
-                    + ([c["last_ci_evidence_id"]] if c.get("last_ci_evidence_id") else [])
-                    + ([c["dossier_evidence_id"]] if c.get("dossier_evidence_id") else [])))
-            if not reason_ids and c.get("dossier_evidence_id"):
-                reason_ids = [c["dossier_evidence_id"]]
+            if verb is None:
+                claimed = _legacy_patch(c, kind, inputs, now)
+                res.stage("contributions", claimed)
+            else:
+                claimed = c
+                if engine.state_key(c) == "queued.idle":
+                    claimed = _take(c, "begin_investigation", res, policy, now,
+                                    cause_id=f"tick-r{c['revision']}")
+                ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
+                cluster = engine.recorded_failing_job(claimed, ci)[1]
+                request = _work_request(claimed, kind, inputs, now)
+                claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
+                                facts=ALLOCATION_FACTS, values={"active_work": request},
+                                ci_evidence=ci,
+                                open_operations=_open_operations(claimed, operations),
+                                details={"task": kind, "work": request["dedupe_key"],
+                                         **({"cluster": cluster} if cluster else {})})
+                carried = claimed["active_work"].get("feedback_evidence_ids") or []
+                if carried != list(c.get("pending_feedback_evidence_ids") or []):
+                    raise lifecycle.TransitionError(
+                        f"{verb}: the Work carries {carried}, not the pending feedback")
+            by_id[c["contribution_id"]] = claimed
+            aw = claimed["active_work"]
             work = {
                 "type": "submit_work",
-                "dedupe_key": f"{c['contribution_id']}@{c['revision']}:{kind}",
+                "dedupe_key": aw["dedupe_key"],
                 "contribution_id": c["contribution_id"],
-                "revision": c["revision"],
-                "expected_head": (c.get("fork") or {}).get("head_sha"),
+                "generation": aw["generation"],
+                "revision": aw["revision"],
+                "expected_head": (claimed.get("fork") or {}).get("head_sha"),
                 "task": kind,
-                "reason_ids": reason_ids,
+                "reason_ids": aw["reason_ids"],
+                "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or []),
                 "effect_contract": (
                     {"kind": "none"}
                     if kind == "investigation"
                     else {"kind": "proposal_artifact"}
-                    if kind == "development_patch" and not c.get("fork")
+                    if kind == "development_patch" and not claimed.get("fork")
                     else {
                         "kind": "fork_branch",
-                        "repository": (c.get("fork") or {}).get("name"),
+                        "repository": (claimed.get("fork") or {}).get("name"),
                         "ref": "riscv64",
                     }
                 ),
             }
             res.requested_effects.append(work)
             rep["selected"].append({"contribution": c["contribution_id"], "task": kind})
-            # Record the request in the same state commit, so the next tick does
-            # not request it again. Cleared by the task's outcome or by timeout.
-            from datetime import timedelta
-            claimed = compat.legacy_update(
-                c, "controller.select_work", activity="agent_running", updated_at=now,
-                phase="investigation" if kind == "investigation" and c["phase"] == "queued"
-                else c["phase"],
-                active_work={
-                "dedupe_key": work["dedupe_key"], "task": kind, "revision": c["revision"], "attempt": 1,
-                "requested_at": now,
-                "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
-                "dispatched_run_id": None, "reason_ids": reason_ids})
-            frozen_issue = c["tracking_issue"]
-            if all(
-                key in frozen_issue
-                for key in ("id", "number", "url", "description", "description_digest")
-            ):
-                claimed["active_work"]["tracking_issue"] = {
-                    key: frozen_issue[key]
-                    for key in ("id", "number", "url", "description", "description_digest")
-                }
-            else:
-                # Compatibility for records created before intake-level freezing.
-                issue = inputs.tracking_issues.get(c["tracking_issue"]["number"]) or next(
-                    (i for i in inputs.issues if i["number"] == c["tracking_issue"]["number"]), None)
-                if issue is not None:
-                    claimed["active_work"]["tracking_issue"] = collect.tracking_issue_context(
-                        issue, c["tracking_issue"]
-                    )
-            by_id[c["contribution_id"]] = claimed
-            res.stage("contributions", claimed)
 
     if policy["read_only"]:
         rep["note"] = "read-only: requested effects are reported, not executed"
     return res
+
+
+def _take(record: dict, verb: str, res: TickResult, policy: dict, now: str, **kwargs) -> dict:
+    """Take a table row the caller established, and stage the record and the
+    event. A refusal here is a bug of the caller."""
+    out = engine.apply_transition(record, verb, policy=policy, now=now, **kwargs)
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"{verb} refused in {engine.state_key(record)}: {out.reason}")
+    res.stage("contributions", out.record)
+    res.stage("events", out.event)
+    return out.record
+
+
+def _begun(record: dict, policy: dict, now: str) -> dict | None:
+    """The record as it is once its investigation has begun: a request in
+    `queued.idle` takes `begin_investigation` in the tick that allocates its
+    Work or exhausts its budget. ``None`` when it cannot begin."""
+    if engine.state_key(record) != "queued.idle":
+        return record
+    out = engine.apply_transition(record, "begin_investigation", policy=policy, now=now)
+    return out.record if out.accepted else None
+
+
+def _allocation_verb(record: dict, ci: dict | None, ops: tuple[str, ...], policy: dict,
+                     now: str) -> tuple[str | None, str | None]:
+    """The row that allocates the Work due in this state, once a worker slot
+    and capacity are free, or the reason none applies."""
+    reasons = []
+    for verb in ALLOCATIONS.get(engine.state_key(record), ()):
+        why = engine.refusal(record, verb, policy=policy, now=now, facts=ALLOCATION_FACTS,
+                             ci_evidence=ci, open_operations=ops)
+        if why is None:
+            return verb, None
+        reasons.append(why)
+    if not reasons:
+        return None, f"no Work is allocated in {engine.state_key(record)}"
+    return None, "; ".join(dict.fromkeys(reasons))
+
+
+def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
+                       now: str) -> tuple[dict, dict]:
+    """The values an exhaustion row sets that the engine cannot derive, and
+    the event details that state the spent counters."""
+    if verb == "exhaust_work_total":
+        return {}, {"counter": "work_total",
+                    "count": int(record["budget"].get("attempts_used", 0)),
+                    "limit": lifecycle.budget_limit("work_total", policy)}
+    if engine.state_key(record) == "upstream_review.fix_needed":
+        spent = engine.exhausted(record, ("no_progress", "work_total", "repair_attempts_cluster"),
+                                 policy=policy, now=now, ci_evidence=ci)
+        return {lifecycle.PENDING_COUNTER: spent[0]}, {"exhausted": spent}
+    spent = engine.exhausted(record, ("repair_attempts_cluster", "no_progress"), policy=policy,
+                             now=now, ci_evidence=ci)
+    cluster = engine.recorded_failing_job(record, ci)[1]
+    details = {"exhausted": spent, **({"cluster": cluster} if cluster else {})}
+    text = f"repair budgets exhausted: {', '.join(spent)}"
+    if verb == "refresh_on_exhaustion":
+        fork = record.get("fork") or {}
+        return {"refresh": {"command_id": f"refresh_on_exhaustion:r{record['revision']}",
+                            "reason": text, "from_phase": record["phase"],
+                            "head_sha": fork.get("head_sha"),
+                            "pr_number": fork.get("pr_number")}}, details
+    return {"parked_reason": f"{text}, after the automatic refresh"}, details
+
+
+def _exhaust(record: dict, due: dict, verb: str, ci: dict | None, by_id: dict, res: TickResult,
+             policy: dict, now: str) -> None:
+    """Take the exhaustion row ``verb`` from ``due`` (``record`` once its
+    investigation has begun)."""
+    if due is not record:
+        due = _take(record, "begin_investigation", res, policy, now,
+                    cause_id=f"tick-r{record['revision']}")
+    values, details = _exhaustion_values(due, verb, ci, policy, now)
+    changed = _take(due, verb, res, policy, now, cause_id=f"tick-r{due['revision']}",
+                    values=values, ci_evidence=ci, details=details)
+    by_id[record["contribution_id"]] = changed
+    res.report.setdefault("exhausted", []).append(
+        {"contribution": record["contribution_id"], "verb": verb, **details})
+
+
+def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
+    """The requested Work (``active_work``) for ``kind`` at the record's
+    generation and revision. Its reason ids are the pending feedback it
+    carries, then the CI evidence and the dossier."""
+    from datetime import timedelta
+
+    generation, revision = int(record.get("generation", 0)), record["revision"]
+    reason_ids: list[str] = []
+    if kind in ("development_repair", "upstream_revision"):
+        reason_ids = list(dict.fromkeys(
+            list(record.get("pending_feedback_evidence_ids") or [])
+            + ([record["last_ci_evidence_id"]] if record.get("last_ci_evidence_id") else [])
+            + ([record["dossier_evidence_id"]] if record.get("dossier_evidence_id") else [])))
+    if not reason_ids and record.get("dossier_evidence_id"):
+        reason_ids = [record["dossier_evidence_id"]]
+    request = {
+        "dedupe_key": work_queue.work_key(record["contribution_id"], generation, revision, kind),
+        "task": kind, "generation": generation, "revision": revision, "attempt": 1,
+        "requested_at": now,
+        "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
+        "dispatched_run_id": None, "reason_ids": reason_ids}
+    frozen_issue = record["tracking_issue"]
+    keys = ("id", "number", "url", "description", "description_digest")
+    if all(key in frozen_issue for key in keys):
+        request["tracking_issue"] = {key: frozen_issue[key] for key in keys}
+    else:
+        # Compatibility for records created before intake-level freezing.
+        issue = inputs.tracking_issues.get(record["tracking_issue"]["number"]) or next(
+            (i for i in inputs.issues if i["number"] == record["tracking_issue"]["number"]), None)
+        if issue is not None:
+            request["tracking_issue"] = collect.tracking_issue_context(issue, frozen_issue)
+    return request
+
+
+def _legacy_patch_refusal(record: dict, policy: dict, now: str) -> str | None:
+    """Why the legacy selection in `development.idle` requests no first
+    patch: the admission of ``request_patch``, and its budgets."""
+    why = (lifecycle.proposal_admission(record) if not record.get("fork")
+           else lifecycle.write_admission(record))
+    if why:
+        return why
+    spent = engine.exhausted(record, ("work_total", "no_progress"), policy=policy, now=now)
+    return f"{' and '.join(spent)} exhausted" if spent else None
+
+
+def _legacy_patch(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
+    """Request the first patch from `development.idle`, a state the table
+    does not have. Like ``request_patch``, the Work carries the pending
+    feedback and the allocation charges ``work_total``."""
+    request = dict(_work_request(record, kind, inputs, now),
+                   feedback_evidence_ids=list(record.get("pending_feedback_evidence_ids") or []))
+    budget = dict(record["budget"], attempts_used=int(record["budget"].get("attempts_used", 0)) + 1)
+    return compat.legacy_update(record, "controller.select_work", activity="agent_running",
+                                updated_at=now, active_work=request, budget=budget)
 
 
 def reminder_details(record: dict) -> dict:
@@ -1024,6 +1198,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
         value["comment_id"]: value for value in store.load_all("commands").values()
     }
     projects = {value["project_id"]: value for value in store.load_all("projects").values()}
+    evidence = {value["evidence_id"]: value for value in store.load_all("evidence").values()}
     now = datetime.now(timezone.utc)
     if args.offline:
         observed_pressure = capacity.Pressure(ok=False, reason="offline")
@@ -1067,6 +1242,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
             upstream_snapshots=upstream_snapshots,
             tracking_issues=tracking_issues,
         ),
+        evidence=evidence,
     )
     result.report["would_stage"] = [
         state.record_path(kind, record)

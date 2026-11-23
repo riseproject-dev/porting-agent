@@ -10,6 +10,7 @@ identity; duplicate check names are kept apart by job ID.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -153,3 +154,30 @@ def evidence_record(*, evidence_id: str, contribution_id: str, policy_version: s
             "artifacts": artifacts,
         },
     }
+
+
+_RUNNER_LABEL_PROBLEM = re.compile(r"^job '(.+)' failed runner-label check ")
+
+
+def failing_job(evidence: dict | None, head_sha: str | None) -> str | None:
+    """The failing CI job recorded for ``head_sha``: the first executed
+    blocking job of that head in ``evidence`` that did not succeed, else the
+    first job the evidence names as failing the runner-label check. ``None``
+    for evidence of another head, for passing evidence, and for evidence that
+    is not CI evidence (review feedback, a rehearsal). This name is the
+    cluster that ``repair_attempts_cluster`` counts."""
+    if not evidence or evidence.get("kind") != "ci" or not head_sha:
+        return None
+    ci = evidence.get("ci") or {}
+    if ci.get("head_sha") != head_sha:
+        return None
+    for job in ci.get("jobs") or []:
+        name = str(job.get("name") or "")
+        if job.get("executed") and job.get("conclusion") != SUCCESS \
+                and not any(marker in name.lower() for marker in CREDENTIALLESS_JOB_MARKERS):
+            return name or "unnamed job"
+    for problem in evidence.get("limitations") or []:
+        match = _RUNNER_LABEL_PROBLEM.match(str(problem))
+        if match:
+            return match.group(1)
+    return None

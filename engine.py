@@ -24,8 +24,9 @@ unless every guard is established. The engine never performs remote effects.
 
 ``PIPELINE_VERBS`` lists the verbs that pipeline code takes through this
 engine: the handoff states and the moves into them, the stop flag and the
-stop, resume, and refresh commands in every state of the table, and the
-reminders of a pending human step. Every other verb of the table is in
+stop, resume, and refresh commands in every state of the table, the
+reminders of a pending human step, the allocation of Work and the exhaustion
+of its budgets, and late Results. Every other verb of the table is in
 ``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it yet
 and the corresponding behavior still runs through ``compat``. The two sets
 partition the table, so the share of the table the pipeline obeys is
@@ -39,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
+import ci_evidence
 import lifecycle as lc
 import schemas
 from commands import Command
@@ -79,7 +81,14 @@ class Context:
     facts: frozenset[str] = frozenset()
     counts: dict[str, int] = field(default_factory=dict)
     open_operations: tuple[str, ...] | None = None
-    cluster: str | None = None
+    # The evidence record ``last_ci_evidence_id`` names, supplied by the
+    # caller from the store: the failing CI job of the head is decided from it.
+    ci_evidence: dict[str, Any] | None = None
+
+    @property
+    def cluster(self) -> str | None:
+        """The failing CI job recorded for the head, or ``None``."""
+        return recorded_failing_job(self.record, self.ci_evidence)[1]
 
 
 def state_key(record: dict) -> str:
@@ -288,21 +297,46 @@ def _reminder_due(ctx: Context) -> str | None:
     return "the reminder is not due"
 
 
-def failing_job(ctx: Context) -> str | None:
-    """The failing CI job recorded for the head: the caller names it in
-    ``cluster``, from the CI evidence the record points at. Without recorded
-    CI evidence there is none."""
-    return ctx.cluster if ctx.cluster and ctx.record.get("last_ci_evidence_id") else None
+UNKNOWN_EVIDENCE = "the CI evidence named by last_ci_evidence_id is not supplied"
+
+
+def evidence_head(record: dict) -> str | None:
+    """The head the recorded CI evidence must be for: the upstream PR head in
+    upstream review, the fork head otherwise."""
+    if record.get("upstream_pr"):
+        return record["upstream_pr"].get("head_sha")
+    return (record.get("fork") or {}).get("head_sha")
+
+
+def recorded_failing_job(record: dict, evidence: dict | None) -> tuple[bool, str | None]:
+    """Whether the failing CI job of the head is known, and its name.
+
+    It is decided from the evidence at ``last_ci_evidence_id`` alone
+    (``ci_evidence.failing_job``): none without recorded evidence; unknown
+    when the caller does not supply that evidence, so a guard that reads it
+    fails closed."""
+    evidence_id = record.get("last_ci_evidence_id")
+    if not evidence_id:
+        return True, None
+    if not evidence or evidence.get("evidence_id") != evidence_id:
+        return False, None
+    return True, ci_evidence.failing_job(evidence, evidence_head(record))
 
 
 @_record(lc.FAILING_JOB, "failing_job_recorded")
 def _failing_job(ctx: Context) -> str | None:
-    return None if failing_job(ctx) else "no failing CI job is recorded for the head"
+    known, job = recorded_failing_job(ctx.record, ctx.ci_evidence)
+    if not known:
+        return UNKNOWN_EVIDENCE
+    return None if job else "no failing CI job is recorded for the head"
 
 
 @_record(lc.NO_FAILING_JOB, "no_failing_job_recorded")
 def _no_failing_job(ctx: Context) -> str | None:
-    return "a failing CI job is recorded for the head" if failing_job(ctx) else None
+    known, job = recorded_failing_job(ctx.record, ctx.ci_evidence)
+    if not known:
+        return UNKNOWN_EVIDENCE
+    return "a failing CI job is recorded for the head" if job else None
 
 
 def carried_feedback(record: dict) -> list[str]:
@@ -464,6 +498,17 @@ def remains(name: str, ctx: Context) -> bool | None:
     return count < lc.budget_limit(name, ctx.policy)
 
 
+def exhausted(record: dict, names: tuple[str, ...], *, policy: dict, now: str,
+              ci_evidence: dict | None = None) -> list[str]:
+    """The budgets among ``names`` whose count has reached its limit, in that
+    order. ``repair_attempts_cluster`` counts only for the failing CI job
+    recorded for the head."""
+    ctx = Context(record, state_key(record), policy, now, ci_evidence=ci_evidence)
+    return [name for name in names
+            if (name != "repair_attempts_cluster" or ctx.cluster)
+            and remains(name, ctx) is False]
+
+
 def _remain(*names: str) -> Callable[[Context], str | None]:
     def check(ctx: Context) -> str | None:
         for name in names:
@@ -507,24 +552,33 @@ _register(lc.REVIEW_REVISION_BUDGETS_REMAIN, "review_revision_budgets_remain", "
           _remain("no_progress", "work_total"))
 
 
-def _cluster_exhausted(ctx: Context) -> bool:
-    """``repair_attempts_cluster`` counts only for a recorded failing CI job."""
-    return bool(failing_job(ctx)) and remains("repair_attempts_cluster", ctx) is False
+def _cluster_exhausted(ctx: Context) -> bool | None:
+    """``repair_attempts_cluster`` counts only for a recorded failing CI job;
+    ``None`` when that job is not known."""
+    known, job = recorded_failing_job(ctx.record, ctx.ci_evidence)
+    if not known:
+        return None
+    return bool(job) and remains("repair_attempts_cluster", ctx) is False
 
 
 @_record(lc.REVISION_BUDGET_EXHAUSTED, "revision_budget_exhausted")
 def _revision_budget_exhausted(ctx: Context) -> str | None:
-    if remains("no_progress", ctx) is False or remains("work_total", ctx) is False \
-            or _cluster_exhausted(ctx):
+    if remains("no_progress", ctx) is False or remains("work_total", ctx) is False:
         return None
-    return "no_progress, work_total, and repair_attempts_cluster remain"
+    cluster = _cluster_exhausted(ctx)
+    if cluster is None:
+        return UNKNOWN_EVIDENCE
+    return None if cluster else "no_progress, work_total, and repair_attempts_cluster remain"
 
 
 @_record(lc.REPAIR_BUDGET_EXHAUSTED, "repair_budget_exhausted")
 def _repair_budget_exhausted(ctx: Context) -> str | None:
-    if remains("no_progress", ctx) is False or _cluster_exhausted(ctx):
+    if remains("no_progress", ctx) is False:
         return None
-    return "no_progress and repair_attempts_cluster remain"
+    cluster = _cluster_exhausted(ctx)
+    if cluster is None:
+        return UNKNOWN_EVIDENCE
+    return None if cluster else "no_progress and repair_attempts_cluster remain"
 
 
 @_record("a prerequisite cannot be satisfied, an uncertain operation has no discovery, or "
@@ -664,6 +718,23 @@ PIPELINE_VERBS: dict[str, str] = {
     "record_head_change": "observe_ci",
     # A worker Result that matches no request of the record, in any state.
     "record_late_effect": "compat",
+    # Work allocation, by the table's rows, and the exhaustion of its budgets
+    # where Work is due.
+    "begin_investigation": "controller",
+    "dispatch_investigation": "controller",
+    "request_patch": "controller",
+    "request_repair": "controller",
+    "request_upstream_revision": "controller",
+    "request_review_revision": "controller",
+    "exhaust_work_total": "controller",
+    "refresh_on_exhaustion": "controller",
+    "exhaust_repair_attempts": "controller",
+    # A terminal Work graph without a usable Result, and an investigation
+    # Result without a usable dossier.
+    "allocate_work_retry": "reconcile",
+    "exhaust_work_recovery": "reconcile",
+    "reject_dossier": "reconcile",
+    "exhaust_investigation_recovery": "reconcile",
     # The submission command, the stop and resume commands, and refresh, on a
     # record in a state of the table, and the controller's own stops.
     "submit_upstream": "controller",
@@ -779,12 +850,13 @@ def _mask(ctx: Context, verb: str, t: lc.Transition) -> str | None:
 
 def refusal(record: dict, verb: str, *, policy: dict, now: str, command: Command | None = None,
             facts=(), counts: dict[str, int] | None = None,
-            open_operations: tuple[str, ...] | None = None, cluster: str | None = None) -> str | None:
+            open_operations: tuple[str, ...] | None = None,
+            ci_evidence: dict | None = None) -> str | None:
     """Why ``verb`` cannot be taken now, or ``None`` when every guard holds."""
     state = state_key(record)
     t, _target = resolve(state, verb)
     ctx = Context(record, state, policy, now, command, frozenset(facts), dict(counts or {}),
-                  open_operations, cluster)
+                  open_operations, ci_evidence)
     unknown = set(facts) - FACT_NAMES
     if unknown:
         raise TransitionError(f"unknown facts: {', '.join(sorted(unknown))}")
@@ -1050,13 +1122,15 @@ def apply_transition(record: dict, verb: str, *, policy: dict, now: str,
                      facts=(), values: dict[str, Any] | None = None,
                      counts: dict[str, int] | None = None,
                      open_operations: tuple[str, ...] | None = None,
-                     cluster: str | None = None, actor: dict | None = None,
+                     ci_evidence: dict | None = None, actor: dict | None = None,
                      details: dict[str, Any] | None = None) -> Outcome:
     """Take the table transition ``verb`` from the state ``record`` is in.
 
     ``facts`` names the observations the caller established; ``values`` gives
     the value of each field the row sets that the engine cannot derive;
-    ``counts`` supplies the counts of budgets that live outside the record.
+    ``counts`` supplies the counts of budgets that live outside the record;
+    ``ci_evidence`` is the evidence record ``last_ci_evidence_id`` names, from
+    which the failing CI job of the head is decided.
     A guard that does not hold refuses the transition and leaves the record
     unchanged. A call the table does not allow (an unknown verb, a value for
     a field the row does not set, a missing value) raises ``TransitionError``.
@@ -1064,11 +1138,11 @@ def apply_transition(record: dict, verb: str, *, policy: dict, now: str,
     state = state_key(record)
     t, target = resolve(state, verb)
     why = refusal(record, verb, policy=policy, now=now, command=command, facts=facts,
-                  counts=counts, open_operations=open_operations, cluster=cluster)
+                  counts=counts, open_operations=open_operations, ci_evidence=ci_evidence)
     if why:
         return Outcome(record, False, why, None, verb)
     ctx = Context(record, state, policy, now, command, frozenset(facts), dict(counts or {}),
-                  open_operations, cluster)
+                  open_operations, ci_evidence)
     rec, charged, restarted = _apply_effects(ctx, verb, t, target, dict(values or {}))
     if rec != record:
         rec["updated_at"] = now

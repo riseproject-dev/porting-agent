@@ -165,59 +165,52 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         project = json.loads((FIXTURE / "project.json").read_text())
         return record, operations, project
 
-    def test_exact_blocker_is_reprocessed_despite_prior_artifact_receipt(self):
+    def test_a_blocker_without_requested_work_is_a_late_result(self):
+        """The record names the blocked run as its proposal, but holds no Work
+        for it and is at a later revision: the Result matches nothing and
+        takes `record_late_effect`, once."""
         with tempfile.TemporaryDirectory() as temporary:
             publication = self.publication(temporary)
         record, operations, project = self.state()
-        # The failed trusted publication may already have advanced the current
-        # revision after rejecting operation:none; exact blocker recovery is
-        # still bound by worker run and stored proposal identity.
         record["revision"] += 1
-        output = reconcile.tick(
-            None,
-            reconcile.Snapshot(
-                {"c": record}, operations, {}, {project["project_id"]: project}, {}
-            ),
-            policy=policy(read_only=False, destination_writes=True),
-            now=datetime.fromisoformat("2026-11-22T05:30:00+00:00"),
-            publications=[publication],
-            pressure=capacity.Pressure(ok=True),
-            issues=[],
-            comments=[],
-            observe=False,
-        )
-        evidence = [
-            item for kind, item in output.staged
-            if kind == "evidence" and item["kind"] == "rehearsal"
-        ]
-        self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0]["data"]["worker_run_id"], RUN_ID)
+
+        def tick(record, now):
+            return reconcile.tick(
+                None,
+                reconcile.Snapshot(
+                    {"c": record}, operations, {}, {project["project_id"]: project}, {}
+                ),
+                policy=policy(read_only=False, destination_writes=True),
+                now=datetime.fromisoformat(now),
+                publications=[publication],
+                pressure=capacity.Pressure(ok=True),
+                issues=[],
+                comments=[],
+                observe=False,
+            )
+
+        # Its artifact was received before: nothing is folded or recorded again.
+        self.assertIn(ARTIFACT_ID, record["processed_publications"])
+        output = tick(record, "2026-11-22T05:30:00+00:00")
+        self.assertFalse(any(kind in ("evidence", "events") for kind, _item in output.staged))
+        # A first receipt of the same Result is recorded as late, once.
+        fresh = dict(record, processed_publications=[
+            pid for pid in record["processed_publications"] if pid != ARTIFACT_ID])
+        output = tick(fresh, "2026-11-22T05:31:00+00:00")
+        self.assertFalse(any(kind == "evidence" for kind, _item in output.staged))
+        self.assertEqual([item["kind"] for kind, item in output.staged if kind == "events"],
+                         ["record_late_effect"])
         final = [item for kind, item in output.staged if kind == "contributions"][-1]
-        self.assertEqual(final["revision"], 5)
-        self.assertEqual(final["budget"]["attempts_used"], 1)
-        self.assertIsNone(final["proposal_artifact"])
-        self.assertEqual(final["active_work"]["task"], "development_repair")
-        self.assertIn(evidence[0]["evidence_id"], final["active_work"]["reason_ids"])
+        self.assertEqual((final["revision"], final["budget"]), (fresh["revision"], fresh["budget"]))
+        repeated = tick(final, "2026-11-22T05:32:00+00:00")
+        self.assertFalse(any(kind == "events" for kind, _item in repeated.staged))
 
-        repeated = reconcile.tick(
-            None,
-            reconcile.Snapshot(
-                {"c": final}, operations, {}, {project["project_id"]: project},
-                {evidence[0]["evidence_id"]: evidence[0]},
-            ),
-            policy=policy(read_only=False, destination_writes=True),
-            now=datetime.fromisoformat("2026-11-22T05:31:00+00:00"),
-            publications=[publication],
-            pressure=capacity.Pressure(ok=True),
-            issues=[],
-            comments=[],
-            observe=False,
-        )
-        self.assertFalse(any(kind == "evidence" for kind, _item in repeated.staged))
+    def test_blocked_outcomes_charge_no_progress_and_its_exhaustion_refreshes_then_parks(self):
+        import controller
 
-    def test_no_progress_and_cluster_retry_are_bounded(self):
-        record, _operations, _project = self.state()
+        record = contribution(phase="development", activity="agent_running")
         proposal = json.loads((FIXTURE / "proposal.json").read_text())
+        before = copy.deepcopy(record["budget"])
         for attempt in (1, 2):
             outcome = {
                 "status": "worker_blocked",
@@ -236,51 +229,35 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                 policy=policy(read_only=False, destination_writes=True),
                 worker_run_id=str(100 + attempt),
             )
-        self.assertEqual(record["budget"]["attempts_used"], 2)
-        self.assertEqual(
-            record["budget"]["clusters"]["reproduction-image-infrastructure-docker-unavailable"],
-            2,
-        )
-        # Plan 3.3.3 development failure case 1: exhaustion enters parked.
-        self.assertEqual((record["phase"], record["activity"]), ("parked", "idle"))
-        self.assertEqual(record["previous_phase"], "development")
-        self.assertIn("repair-attempt budget exhausted", record["parked_reason"])
-        self.assertIn("worker reproduction blocked", record["parked_reason"])
-        self.assertIsNone(record["pending_human_action"])
-        self.assertIsNone(record["active_work"])
-        self.assertEqual(
-            [item["kind"] for kind, item in _staged if kind == "events"],
-            ["repair_attempts_exhausted"],
-        )
-        # Parked contributions allocate no Work.
-        _record, operations, project = self.state()
-        output = reconcile.tick(
-            None,
-            reconcile.Snapshot({"c": record}, operations, {}, {project["project_id"]: project}, {}),
-            policy=policy(read_only=False, destination_writes=True),
-            now=datetime.fromisoformat("2026-11-22T05:40:00+00:00"),
-            publications=[],
-            pressure=capacity.Pressure(ok=True),
-            issues=[],
-            comments=[],
-            observe=False,
-        )
-        final = ([item for kind, item in output.staged if kind == "contributions"] or [record])[-1]
-        self.assertEqual(final["phase"], "parked")
-        self.assertIsNone(final["active_work"])
-        self.assertEqual(output.report.get("requested_effects", []), [])
+        # Each blocked outcome charges `no_progress` only; `work_total` and
+        # the clusters are charged when Work is allocated.
+        self.assertEqual(record["budget"]["no_progress_streak"],
+                         before["no_progress_streak"] + 2)
+        self.assertEqual(record["budget"]["attempts_used"], before["attempts_used"])
+        self.assertEqual(record["budget"]["clusters"], before["clusters"])
+        self.assertEqual((record["phase"], record["activity"]), ("development", "fix_needed"))
 
-    def test_other_blocked_or_mutated_proposals_are_not_reclassified(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary) / RUN_ID
-            shutil.copytree(FIXTURE, directory)
-            proposal_path = directory / "proposal.json"
-            proposal = json.loads(proposal_path.read_text())
-            proposal["failure_cluster"] = "dependency-missing"
-            proposal_path.write_text(json.dumps(proposal))
-            outcome = worker_recovery.normalize(directory, RUN_ID)
-        self.assertEqual(outcome["status"], "proposal")
+        def select(record):
+            res = controller.tick(contributions={"c": record}, operations={}, consumed={},
+                                  projects={}, policy=policy(),
+                                  inputs=controller.Inputs(now=datetime.fromisoformat(
+                                      "2026-11-22T06:00:00+00:00"),
+                                      pressure=capacity.Pressure(ok=True)))
+            return res, [item for kind, item in res.staged if kind == "contributions"][-1]
 
-
-if __name__ == "__main__":
-    unittest.main()
+        # `no_progress` is exhausted where the next Work is due: the one
+        # automatic refresh of the generation runs a complete investigation.
+        res, refreshed = select(record)
+        self.assertEqual([e["kind"] for k, e in res.staged if k == "events"][:1],
+                         ["refresh_on_exhaustion"])
+        self.assertTrue(refreshed["automatic_refresh_used"])
+        self.assertEqual(refreshed["budget"]["no_progress_streak"], 0)
+        # After it, the same exhaustion parks.
+        again = dict(record, automatic_refresh_used=True)
+        res, parked = select(again)
+        self.assertEqual([e["kind"] for k, e in res.staged if k == "events"],
+                         ["exhaust_repair_attempts"])
+        self.assertEqual((parked["phase"], parked["activity"]), ("parked", "idle"))
+        self.assertEqual(parked["previous_phase"], "development")
+        self.assertIn("no_progress", parked["parked_reason"])
+        self.assertIsNone(parked["active_work"])

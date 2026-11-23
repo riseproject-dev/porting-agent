@@ -26,6 +26,7 @@ from unittest import mock
 
 import capacity
 import commands
+import controller
 import reconcile
 import work
 import worker_gate
@@ -286,7 +287,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertEqual(output.report["requested_effects"], [])
         self.assertEqual(output.report["dispatch_relaunch"], [])
 
-    def test_genuine_r6_rejection_is_bounded_by_the_attempt_budget(self):
+    def test_genuine_r6_rejection_charges_no_progress_only(self):
         record = load("contribution-r6.json")
         self.assertEqual(record["budget"]["no_progress_streak"], 1)
         rejected = {"status": "rejected", "failure_class": "validation", "reason": "patch digest mismatch",
@@ -295,30 +296,49 @@ class TestLiveR6SelfHeals(unittest.TestCase):
             record, rejected, now="2026-11-22T11:20:00+00:00",
             policy=policy(read_only=False, destination_writes=True), worker_run_id=R6_RUN)
         self.assertEqual(new["revision"], 7)
-        self.assertEqual(new["budget"]["attempts_used"], 2)
-        # Plan 3.3.3 development failure case 1: exhaustion enters parked.
-        self.assertEqual((new["phase"], new["activity"]), ("parked", "idle"))
-        self.assertEqual(new["previous_phase"], "development")
-        self.assertIn("repair-attempt budget exhausted", new["parked_reason"])
-        self.assertIn("rejected in trusted validation", new["parked_reason"])
-        self.assertIsNone(new["pending_human_action"])
+        # `work_total` was charged when the Work was allocated; the rejected
+        # outcome charges `no_progress`, now exhausted. Its exhaustion is
+        # taken where the next Work is due.
+        self.assertEqual(new["budget"]["attempts_used"], 1)
+        self.assertEqual(new["budget"]["no_progress_streak"], 2)
+        self.assertEqual(new["budget"]["clusters"], record["budget"]["clusters"])
+        self.assertEqual((new["phase"], new["activity"]), ("development", "fix_needed"))
         self.assertIsNone(new["active_work"])
         self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
-                         ["repair_attempts_exhausted"])
+                         ["worker_proposal_rejected"])
 
-    def test_parked_rejection_exhaustion_allocates_no_work_and_resumes_clean(self):
+    def test_rejection_exhaustion_refreshes_then_parks_and_resumes_clean(self):
         record = load("contribution-r6.json")
         rejected = {"status": "rejected", "failure_class": "validation", "reason": "patch digest mismatch",
                     "stage": "worker_gate", "proposal": dict(load("proposal.json"), outcome="patch")}
-        parked, _staged = reconcile.apply_publication(
+        fix_needed, _staged = reconcile.apply_publication(
             record, rejected, now="2026-11-22T11:20:00+00:00",
             policy=policy(read_only=False, destination_writes=True), worker_run_id=R6_RUN)
+
+        def select(rec):
+            # Outside the canary's own recovery, which holds this record.
+            rec = dict(rec, contribution_id="example--proj/12")
+            res = controller.tick(contributions={"c": rec}, operations={}, consumed={},
+                                  projects={}, policy=policy(), inputs=controller.Inputs(
+                                      now=datetime.fromisoformat("2026-11-22T11:30:00+00:00"),
+                                      pressure=capacity.Pressure(ok=True)))
+            return res, [item for kind, item in res.staged if kind == "contributions"][-1]
+
+        res, refreshed = select(fix_needed)
+        self.assertEqual(res.requested_effects, [])
+        self.assertEqual([e["kind"] for k, e in res.staged if k == "events"],
+                         ["refresh_on_exhaustion"])
+        self.assertEqual((refreshed["phase"], refreshed["activity"]), ("queued", "idle"))
+        self.assertEqual(refreshed["refresh"]["from_phase"], "development")
+        res, parked = select(dict(fix_needed, automatic_refresh_used=True))
+        self.assertEqual(res.requested_effects, [])
+        self.assertEqual((parked["phase"], parked["activity"]), ("parked", "idle"))
+        self.assertIsNone(parked["active_work"])
+        parked = dict(parked, contribution_id=record["contribution_id"])
         output = tick(parked, queue_works={}, runs=self.RUNS, now="2026-11-22T11:30:00+00:00")
         result = final(output, parked)
         self.assertEqual((result["phase"], result["activity"]), ("parked", "idle"))
-        self.assertIsNone(result["active_work"])
         self.assertEqual(output.report["requested_effects"], [])
-        self.assertEqual(output.report["dispatch_relaunch"], [])
         # Plan 3.3.4 failure case 2 and 3.5: exact-revision resume starts a
         # clean generation at queued:idle with a fresh retry budget.
         resumed = apply_command(

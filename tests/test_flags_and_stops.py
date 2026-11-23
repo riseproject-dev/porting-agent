@@ -224,8 +224,10 @@ class TestPauseMask(unittest.TestCase):
         resumed = apply_command(paused, commands.parse(
             f"/upstreaming resume revision={paused['revision']} reason=go")).record
         output = tick(resumed, capacity_ok=True)
+        # No failing CI job and no feedback is recorded: the Work the pause
+        # stopped is requested again as the patch it was (`request_patch`).
         self.assertEqual([w["task"] for w in output.report["requested_effects"]],
-                         ["development_repair"])
+                         ["development_patch"])
 
 
 class TestStaleResume(unittest.TestCase):

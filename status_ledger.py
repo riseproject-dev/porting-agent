@@ -84,6 +84,31 @@ MESSAGES = {
                               "fork and development PR are kept."),
     "worker_no_change": "Verified a no-change worker Result for the exact head. No new repair Work was requested.",
     "worker_proposal_rejected": "Rejected the worker proposal in trusted validation.",
+    "begin_investigation": "Began the investigation of the request.",
+    "dispatch_investigation": "Requested investigation Work.",
+    "request_patch": "Requested patch Work.",
+    "request_repair": "Requested repair Work for the failing CI job of the head.",
+    "request_upstream_revision": "Requested revision Work for the failing CI job of the upstream PR head.",
+    "request_review_revision": "Requested revision Work for the review feedback on the upstream PR.",
+    "exhaust_work_total": ("The Work budget of this generation (`work_total`) is spent. The "
+                           "contribution waits for a human: `/upstreaming resume` at the current "
+                           "revision starts `work_total` again, `/upstreaming park` stops it."),
+    "refresh_on_exhaustion": ("The repair budgets of this generation are exhausted: the one "
+                              "automatic refresh runs a complete investigation again while the "
+                              "fork and development PR are kept."),
+    "exhaust_repair_attempts": "The repair budgets are exhausted.",
+    "allocate_work_retry": ("The requested Work ended in the queue without a usable Result: fresh "
+                            "Work is requested at a new revision."),
+    "exhaust_work_recovery": ("The requested Work ended in the queue without a usable Result and "
+                              "its automatic recovery is exhausted. The contribution waits for a "
+                              "human: `/upstreaming resume` at the current revision requests "
+                              "fresh Work."),
+    "reject_dossier": ("Rejected the investigation Result: it has no usable dossier. A new "
+                       "investigation is due."),
+    "exhaust_investigation_recovery": (
+        "Rejected the investigation Result: it has no usable dossier, and the investigation "
+        "attempts are exhausted. The contribution waits for a human: `/upstreaming resume` at "
+        "the current revision starts a new investigation."),
     "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "
                                   "Correct the recorded cause, then `resume` at the current revision starts a "
                                   "clean generation at `queued:idle`."),
@@ -144,6 +169,26 @@ def _processing_error(event: dict) -> str:
     return (f"\n\n> {error}\n\nStep: {step}. Run: {run}. Once the cause is corrected, "
             "`resume` at the current revision continues; the full error is in the log of that "
             "workflow run.\n\n")
+
+
+def _budget_note(event: dict) -> str:
+    """What an exhaustion states: the spent count, or the exhausted counters
+    and the state it leads to."""
+    details = event.get("details") or {}
+    kind = event["kind"]
+    if kind == "exhaust_work_total" and isinstance(details.get("count"), int):
+        return f" {details['count']} of {details.get('limit')} Work allocations are spent."
+    if kind in ("refresh_on_exhaustion", "exhaust_repair_attempts") and details.get("exhausted"):
+        spent = ", ".join(f"`{_quotable(name, 40)}`" for name in details["exhausted"])
+        note = f" Exhausted: {spent}."
+        if kind == "exhaust_repair_attempts":
+            note += (" The contribution waits for a human; `/upstreaming resume` at the current "
+                     "revision starts the counter again."
+                     if details.get("to_state", "").endswith("waiting_human") else
+                     " The contribution is parked; `/upstreaming resume` at the current revision "
+                     "starts a clean generation.")
+        return note
+    return ""
 
 
 def _quoted_comments(event: dict) -> str:
@@ -253,6 +298,7 @@ def render(event: dict, record: dict, run_url: str) -> str:
                     "leaves the wait.")
     if kind == "pause_on_processing_error":
         message += _processing_error(event)
+    message += _budget_note(event)
     override = (event.get("details") or {}).get("admission_override")
     if kind == "restart_generation" and override:
         message += (f" The admission override is recorded (class "

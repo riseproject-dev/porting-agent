@@ -1053,6 +1053,10 @@
               "type": "string",
               "maxLength": 64
             },
+            "generation": {
+              "type": "integer",
+              "minimum": 0
+            },
             "revision": {
               "type": "integer",
               "minimum": 0

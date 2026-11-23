@@ -72,11 +72,17 @@ def _event(before: dict, after: dict, kind: str, cause_type: str, cause_id: str 
 
 
 def publication_check(record: dict, *, expected_revision: int, expected_head: str | None,
-                      observed_head: str | None, ref: str, repository: str) -> str | None:
+                      observed_head: str | None, ref: str, repository: str,
+                      expected_generation: int = 0, work_key: str | None = None) -> str | None:
     """Re-read immediately before a fork write. Returns None when the write
     may proceed, otherwise the reason it must not. An effect that already
     passed this check may still finish after a later pause (best-effort
-    pause, plan section 2); it is reconciled as a normal effect."""
+    pause, plan section 2); it is reconciled as a normal effect.
+
+    The Result must match the Work identity: the generation and revision of
+    the record, and the Work id of the requested Work (``work_key``), or a
+    pending publication of a held Result. A payload written before the Work
+    identity carried the Work id passes ``work_key=None`` and generation 0."""
     if record["phase"] not in WRITE_PHASES:
         return f"phase {record['phase']} does not permit fork writes"
     state = LIFECYCLE.get(f"{record['phase']}.{record['activity']}")
@@ -91,8 +97,16 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
     fork = record.get("fork") or {}
     if repository != fork.get("name"):
         return "repository is not the recorded contribution fork"
+    if int(record.get("generation", 0)) != expected_generation:
+        return "work generation changed"
     if record["revision"] != expected_revision:
         return "work revision changed"
+    if work_key is not None:
+        work = record.get("active_work")
+        if work is not None and work.get("dedupe_key") != work_key:
+            return "the requested Work is other Work"
+        if work is None and not record.get("pending_publication"):
+            return "no requested Work or pending publication"
     if observed_head != expected_head:
         return "fork head changed since the proposal was made"
     if record.get("active_operation_id"):

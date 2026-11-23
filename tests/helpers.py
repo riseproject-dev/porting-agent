@@ -104,3 +104,21 @@ def apply_command(record, cmd, *, command_id="c", actor=OWNER, now=NOW, policy_=
     receipt = {"command_id": command_id, "actor": dict(actor)}
     return controller.apply_command(record, cmd, receipt, operations=operations or {},
                                     policy=policy_ or policy(), now=now)
+
+
+def ci_record(evidence_id: str, head: str, *, failing: str | None = None,
+                contribution_id: str = "example--proj/12") -> dict:
+    """CI evidence of ``head``: one job, failing when ``failing`` names it."""
+    name = failing or "build riscv64"
+    return {"schema_version": 1, "evidence_id": evidence_id, "contribution_id": contribution_id,
+            "kind": "ci", "policy_version": "test", "collected_at": NOW,
+            "summary": f".github/workflows/ci.yml run 7 attempt 1: {'failed' if failing else 'passed'}",
+            "limitations": [], "debug_present": False,
+            "ci": {"repository_id": 2, "repository": "riseproject-upstreaming/proj",
+                   "head_sha": head, "base_sha": None, "test_merge_sha": None,
+                   "workflow_id": 1, "workflow_path": ".github/workflows/ci.yml",
+                   "workflow_sha": None, "event": "pull_request", "run_id": 7, "run_attempt": 1,
+                   "jobs": [{"job_id": 1, "name": name, "status": "completed",
+                             "conclusion": "failure" if failing else "success",
+                             "executed": True, "runner_labels": ["ubuntu-24.04-riscv"]}],
+                   "expected_wheels": [], "artifacts": []}}

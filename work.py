@@ -112,7 +112,21 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
             {"host": "github.com", "repository": CONTROL_REPO, "repository_id": str(control_repo_id)}]},
         "effect_contract": effect_contract(task),
     }
+    p.update(_identity(request))
     return p
+
+
+def _identity(request: dict) -> dict:
+    """The Work identity a payload carries: a Result is folded only when the
+    generation, the revision, and the Work id it carries back match the
+    requested Work. The Work also carries the pending feedback ids recorded
+    when it was allocated, which the published patch answers. A request
+    without a generation was first submitted before these fields existed; its
+    payload stays the one the queue already holds."""
+    if "generation" not in request:
+        return {}
+    return {"generation": request["generation"], "dedupe_key": request["dedupe_key"],
+            "feedback_evidence_ids": list(request.get("feedback_evidence_ids") or [])}
 
 
 def profile_for(task: str) -> str:
@@ -127,16 +141,58 @@ def graph_id(dedupe_key: str) -> str:
     return "porting:" + hashlib.sha256(dedupe_key.encode()).hexdigest()[:32]
 
 
+def work_key(contribution_id: str, generation: int, revision: int, task: str) -> str:
+    """The Work id of one allocation: the contribution, the generation, the
+    revision, and the task. The queue graph is derived from it
+    (``graph_id``), so Work of another generation or revision is another
+    graph, and a terminal graph is never submitted again."""
+    return f"{contribution_id}@g{generation}.r{revision}:{task}"
+
+
+def work_generation(work: dict) -> int:
+    """The generation requested Work was allocated in. Work allocated before
+    the Work identity carried the generation has none; it is generation 0
+    (a fallback for Work in flight across that deployment)."""
+    return int(work.get("generation", 0))
+
+
+def task_identity(task: dict) -> tuple[int | None, str | None]:
+    """The generation and Work id a Work payload (``task.json``) names.
+
+    A payload written before the Work identity carried them names neither:
+    it is generation 0 with no Work id, and its Work is recognized by its
+    revision (the fallback for a worker in flight across that deployment).
+    A payload that names only one of them names no identity: ``(None, None)``,
+    which matches no requested Work."""
+    has_generation, has_key = "generation" in task, "dedupe_key" in task
+    if not has_generation and not has_key:
+        return 0, None
+    generation, key = task.get("generation"), task.get("dedupe_key")
+    if not has_generation or not has_key or not isinstance(generation, int) \
+            or isinstance(generation, bool) or not isinstance(key, str):
+        return None, None
+    return generation, key
+
+
 def request_from_active(rec: dict) -> dict | None:
     """The controller's committed request (``active_work``) as a work request,
-    or None if there is nothing to dispatch for this record."""
+    or None if there is nothing to dispatch for this record: no Work, a
+    pause, or Work of another generation or revision."""
     aw = rec.get("active_work")
-    if not aw or rec.get("paused") or aw.get("revision") != rec["revision"]:
+    if not aw or rec.get("paused") or aw.get("revision") != rec["revision"] \
+            or work_generation(aw) != int(rec.get("generation", 0)):
         return None
     fork = rec.get("fork") or {}
-    return {"type": "submit_work", "dedupe_key": aw["dedupe_key"], "contribution_id": rec["contribution_id"],
-            "revision": rec["revision"], "expected_head": fork.get("head_sha"), "task": aw["task"],
-            "reason_ids": aw.get("reason_ids") or []}
+    request = {"type": "submit_work", "dedupe_key": aw["dedupe_key"],
+               "contribution_id": rec["contribution_id"], "revision": rec["revision"],
+               "expected_head": fork.get("head_sha"), "task": aw["task"],
+               "reason_ids": aw.get("reason_ids") or []}
+    if "generation" in aw:
+        # Work requested before the identity carried the generation keeps the
+        # payload it was first submitted with, so a replay is the same Work.
+        request.update(generation=aw["generation"],
+                       feedback_evidence_ids=list(aw.get("feedback_evidence_ids") or []))
+    return request
 
 
 def node(request: dict, record: dict, **kw) -> dict:

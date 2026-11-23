@@ -172,9 +172,12 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                          ({}, {}, False))
         self.assertEqual(late[0]["cause"], {"type": "result", "id": "555"})
         state = engine.state_key(record)
-        self.assertEqual(late[0]["details"],
+        details = dict(late[0]["details"])
+        self.assertTrue(details.pop("why").startswith("late Result"))
+        self.assertEqual(details,
                          {"verb": "record_late_effect", "from_state": state, "to_state": state,
-                          "result_status": pub["status"], "task_revision": record["revision"]})
+                          "result_status": pub["status"], "task_revision": record["revision"],
+                          "task_generation": 0, "task_work": None})
         self.assertEqual([k for k, _ in output.staged if k in ("operations", "evidence")], [])
         self.assertEqual(output.report["requested_effects"], [])
         self.assertTrue(output.report["publications"][0]["ignored"].startswith("late Result"))
@@ -265,7 +268,8 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
             (after["dossier_evidence_id"], after["proposal_artifact"],
              after["pending_publication"], after["publication_operation_id"],
              after["pending_human_action"], after["budget"], after["processed_publications"]),
-            (None, None, None, None, None, record["budget"], [999]))
+            (None, None, None, None, None,
+             dict(record["budget"], attempts_used=record["budget"]["attempts_used"] + 1), [999]))
         self.assertEqual([k for k, _ in output.staged if k in ("operations", "evidence")], [])
 
     def test_requested_work_and_trusted_publication_still_fold(self):
@@ -471,24 +475,22 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                           record["processed_publications"]),
                          ("development.fix_needed", 3, [999]))
 
-    def test_work_state_without_recorded_work_folds_its_own_revision_only(self):
+    def test_work_state_without_recorded_work_folds_nothing(self):
+        """Without requested Work no Result matches, at any revision."""
         for phase in ("development", "upstream_review"):
             record = contribution(phase=phase, activity="agent_running", revision=3,
                                   dossier_evidence_id="dossier-1")
             if phase == "upstream_review":
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
-            for name in RESULTS:
-                with self.subTest(phase=phase, result=name):
-                    older = dict(publication(record, name),
-                                 task={"contribution_id": record["contribution_id"],
-                                       "revision": 2})
-                    output = tick(record, [older], capacity_ok=False)
+            for name, revision in itertools.product(RESULTS, (2, 3)):
+                with self.subTest(phase=phase, result=name, revision=revision):
+                    result = dict(publication(record, name),
+                                  task={"contribution_id": record["contribution_id"],
+                                        "revision": revision})
+                    output = tick(record, [result], capacity_ok=False)
                     self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
                     self.assertEqual(dict(final(output, record), processed_publications=[]),
                                      dict(record, processed_publications=[]))
-            output = tick(record, [publication(record, "published")], capacity_ok=False)
-            self.assertEqual([e["kind"] for e in events(output)], [])
-            self.assertEqual(final(output, record)["activity"], "waiting_ci")
 
 
 class TestNoReachableRecordStopsTheTick(unittest.TestCase):

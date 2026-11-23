@@ -25,7 +25,15 @@ import queue_result
 import reconcile
 import schemas
 import work
-from tests.helpers import awaiting_submission, commit_files, contribution, git, init_repo, policy
+from tests.helpers import (
+    NOW,
+    awaiting_submission,
+    commit_files,
+    contribution,
+    git,
+    init_repo,
+    policy,
+)
 
 WF = ".github/workflows/worker.lock.yml"
 
@@ -97,7 +105,13 @@ class TestPipeline(unittest.TestCase):
         res = controller.tick(contributions={"c": self.rec}, operations={}, consumed={}, projects={}, policy=pol,
                               inputs=controller.Inputs(now=self.now, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(len(res.requested_effects), 1)
-        node = work.node(res.requested_effects[0], self.rec, control_repo_id="123",
+        # The committed request: the record the publish job and the
+        # reconciler read holds the requested Work.
+        claimed = [r for k, r in res.staged if k == "contributions"][-1]
+        self.assertEqual(claimed["active_work"]["dedupe_key"],
+                         res.requested_effects[0]["dedupe_key"])
+        self.assertEqual(claimed["budget"]["attempts_used"], 1)
+        node = work.node(work.request_from_active(claimed), claimed, control_repo_id="123",
                          allowed_paths=[".github/workflows/*"])
         plan = work.plan([node])
         self.assertEqual(plan["dispatch"], {"pool": "default", "max_claims": 1, "max_dispatches": 1})
@@ -141,12 +155,14 @@ class TestPipeline(unittest.TestCase):
         artifact.extract(zpath, out)
 
         # 4. Publish job: preflight, then rebuild + validate + leased push.
-        pf = fork_publish.preflight(record=self.rec, task=task, proposal=proposal,
+        self.assertEqual((task["generation"], task["dedupe_key"]),
+                         (0, claimed["active_work"]["dedupe_key"]))
+        pf = fork_publish.preflight(record=claimed, task=task, proposal=proposal,
                                     fork_lookup=lambda n: {"id": 2, "full_name": n, "archived": False})
         self.assertEqual(pf["fork_name"], "proj")
         ops = []
         outcome = fork_publish.publish(
-            record=self.rec, task=task, proposal=json.loads((out / "proposal.json").read_text()),
+            record=claimed, task=task, proposal=json.loads((out / "proposal.json").read_text()),
             mbox=(out / "patches.mbox").read_bytes(), token=None, observe_head=self.fork_head,
             scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=pol,
             now=self.now.isoformat(), save_operation=ops.append, workdir=self.root / "pub",
@@ -157,7 +173,7 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("artifact:900", outcome.operation["reason_ids"])
 
         # 5. Reconcile: fold the publication, observe the new head and its CI.
-        rec = dict(self.rec, activity="agent_running")
+        rec = claimed
         runs = {"all": [{"id": 7, "head_sha": new_head, "run_attempt": 1, "status": "completed",
                          "conclusion": "success", "workflow_id": 1, "event": "push", "path": ".github/workflows/wheels.yml"}]}
         jobs = {7: [{"id": 70, "run_id": 7, "name": "build riscv64", "status": "completed",
@@ -203,9 +219,14 @@ if __name__ == "__main__":
 
 class TestPublicationRetry(unittest.TestCase):
     def setUp(self):
-        self.rec = contribution(activity="agent_running")
+        self.rec = contribution(activity="agent_running", active_work={
+            "dedupe_key": "example--proj/12@g0.r0:development_patch", "task": "development_patch",
+            "generation": 0, "revision": 0, "attempt": 1, "requested_at": NOW,
+            "deadline_at": "2026-11-19T12:00:00+00:00", "dispatched_run_id": None,
+            "reason_ids": []})
         self.now = datetime(2026, 11, 18, 12, tzinfo=timezone.utc)
-        self.task = {"contribution_id": self.rec["contribution_id"], "revision": self.rec["revision"]}
+        self.task = {"contribution_id": self.rec["contribution_id"], "revision": self.rec["revision"],
+                     "generation": 0, "dedupe_key": self.rec["active_work"]["dedupe_key"]}
 
     def tick(self, rec, pubs, now=None):
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})
@@ -240,9 +261,12 @@ class TestPublicationRetry(unittest.TestCase):
         rej = {"status": "rejected", "failure_class": "validation", "reason": "outside scope", "task": self.task,
                "worker_run_id": "1", "publication_artifact_id": 9}
         t = self.tick(self.rec, [rej])
-        # The rejection makes it fix_needed and the same tick requests one repair.
-        self.assertEqual([e["task"] for e in t.report["requested_effects"]], ["development_repair"])
-        self.assertEqual(self.final(t)["active_work"]["task"], "development_repair")
+        # The rejection makes it fix_needed and the same tick requests the
+        # patch again: no failing CI job and no feedback is recorded, so
+        # `request_patch` applies.
+        self.assertEqual([e["task"] for e in t.report["requested_effects"]], ["development_patch"])
+        self.assertEqual(self.final(t)["active_work"]["task"], "development_patch")
+        self.assertEqual(self.final(t)["budget"]["no_progress_streak"], 1)
         self.assertEqual(self.final(t)["revision"], self.rec["revision"] + 1)
         # Stale: no repair is requested (the next tick re-plans from the new head).
         stale = dict(rej, failure_class="stale", publication_artifact_id=10)

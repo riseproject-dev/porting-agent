@@ -63,12 +63,6 @@ These table mutations break a settled decision but still pass the check:
 
 **Required:** add a check for each.
 
-## The failing-job guard is half asserted by the caller
-
-- **Where:** `engine.py`, guard "a failing CI job is recorded for the head" used by `request_repair`, `request_upstream_revision`, and the cluster exhaustion guards.
-- **Today:** the guard needs both a recorded `last_ci_evidence_id` and a job name supplied by the caller. With evidence recorded but no job named, `request_patch` is taken and no cluster is charged.
-- **Required:** decide the guard from the recorded evidence before the development rows move to the engine.
-
 ## Legacy stop paths do not clear everything the table clears
 
 - **Dossier park** (`park_investigation`, legacy site in `reconcile.py`) does not clear a held proposal or pending publication. It is inert today because nothing is retried while stopped and resume from park starts a new generation.
@@ -97,16 +91,9 @@ These table mutations break a settled decision but still pass the check:
 ## A dossier decision close does not close the contribution
 
 - **Where:** the dossier fold in `reconcile.py`, verb `close_investigation`.
-- **Today:** a dossier whose decision is neither develop nor park is treated as a stale contract: investigation is due again at a new revision.
+- **Today:** a dossier whose decision is close is treated as a stale contract: investigation is due again at a new revision, and no budget is charged. (A Result without a dossier, or with a decision that is none of develop, park, and close, takes `reject_dossier` or `exhaust_investigation_recovery`.)
 - **Table:** a verified dossier decision close leads to `closed.idle` and sets `terminal_reason`.
 - **Required:** take the dossier fold through the table's verbs.
-
-## A pause during the first development patch makes the next Work a repair
-
-- **Where:** `pause` (and `pause_on_processing_error`) in `development.agent_running`; `controller._actionable` in `development.fix_needed`.
-- **Today:** the pause moves the record to `development.fix_needed`, as the table says. The legacy selection there always requests `development_repair`, so after the resume the first patch is requested as a repair, with only the dossier as its reason.
-- **Table:** in `development.fix_needed`, `request_patch` applies when no failing CI job is recorded for the head, and `request_repair` when one is.
-- **Required:** select development Work through `request_patch` and `request_repair`.
 
 ## A leftover pending action can turn a short pause into a refresh
 
@@ -128,6 +115,31 @@ These table mutations break a settled decision but still pass the check:
 - **Today:** no resume row's guard admits that pending action, and `restart_generation` is refused while the upstream PR is open, so the only exit is `park` then `abandon`. Nothing reaches the state while `submit-upstream` is held.
 - **Table:** Work that ends without a Result takes `allocate_work_retry` within its budget and `exhaust_work_recovery` into the human wait with a pending action that `resume_upstream_revision` admits.
 - **Required:** replace the legacy Work deadline by the table's Work recovery verbs before upstream review becomes reachable.
+
+## The first patch in `development.idle` is selected outside the table
+
+- **Where:** `controller._legacy_patch`, for a record in `development.idle` without CI evidence (the legacy provisioning confirmation, the dossier fold without destination writes, and the legacy `no_change` and stale outcomes leave records there).
+- **Today:** the controller requests `development_patch` itself. Like `request_patch`, the Work carries the pending feedback and the allocation charges `work_total`, and no Work is requested while `work_total` or `no_progress` is exhausted; but the record then stays in `development.idle`, deferred, with no exhaustion row and no human wait.
+- **Table:** patch Work is requested only from `development.fix_needed`, where an exhausted budget takes `exhaust_work_total`, `refresh_on_exhaustion`, or `exhaust_repair_attempts`.
+- **Required:** migrate `development.idle` to the table's development states.
+
+## Worker outcomes in development are folded by legacy code
+
+- **Where:** `reconcile.apply_publication`, for Results of development and upstream revision Work.
+- **Today:** a rejected or blocked outcome charges `no_progress` and nothing else, bumps the revision, and leads to `fix_needed`, as `reject_patch_proposal` does, but it is written by the legacy outcome: a blocked outcome also records its rehearsal evidence as pending feedback and clears `proposal_artifact`, a rejected one records its artifact in `proposal_artifact`. A stale rejection leads to the legacy `development.idle` without a revision bump; `no_change` leads to `development.idle`; a published or uncertain Result leads to `waiting_ci` and starts `no_progress` again, without clearing the feedback its Work carried.
+- **Table:** `reject_patch_proposal`, `replan_development` (to `development.fix_needed` with a revision bump), `request_ci_rerun`, `record_publish_success` (clears exactly the carried feedback), `schedule_publish_retry`, `exhaust_publish_recovery`.
+- **Required:** take the publication outcome through the table's rows.
+
+## A completed Work graph whose Result is not collected yet is retried
+
+- **Where:** `reconcile.dispatch_recovery`, `allocate_work_retry` and `exhaust_work_recovery`.
+- **Today:** the reconciler establishes the fact "the Work graph is terminal without a usable Result" for a graph the queue reports `completed` or `cancelled` while the record still holds its Work. A graph completed by a worker whose publication artifact the tick has not collected yet is therefore retried at a new revision, and the Result that arrives later takes `record_late_effect`.
+- **Table:** `allocate_work_retry` applies to terminal Work without a usable Result.
+- **Required:** establish the fact only once the Result of a completed graph is known to be missing (its worker run finished without a publication artifact).
+
+## Work requested before the Work identity carried the generation
+
+A Work payload written before the Work identity carried `generation` and `dedupe_key` names neither: the reconciler and the publisher read it as generation 0 and recognize its Work by its revision (`work.task_identity`), and requested Work recorded without `active_work.generation` is generation 0 (`work.work_generation`) and is dispatched with the payload it was first submitted with. Remove both fallbacks once no such Work or worker is in flight.
 
 ## Records written before `budget.reruns` existed
 
@@ -159,6 +171,14 @@ These follow the literal reading of a decision and are kept until a decision say
 - `retract-pr` is held like `submit-upstream`: checked against the table, then refused without change.
 - The tracking-issue entries offer the deprecated `force-develop` in `parked.idle`, beside `resume` and `abandon`, while it is the override that takes effect.
 - A contribution skipped by a tick, after a collector failure or an unexpected error, leaves every command on its tracking issue, `resume` included, unconsumed and without a reply until a tick processes it. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`) and the workflow annotation only, with no event and no post on the tracking issue.
+- `begin_investigation` is taken in the tick that allocates the investigation Work (or exhausts its budget), not as soon as a request is in `queued.idle`: a request waiting for a worker slot stays in `queued.idle`, where removing the intake label still withdraws it.
+- The task that `request_patch` asks for is a patch, or a repair when feedback is pending for the Work to answer; `request_repair` always asks for a repair. A refreshed dossier that returns to the fork without a failing CI job or pending feedback is therefore answered by a patch.
+- Every rejected or blocked outcome charges `no_progress`, whatever progress the worker reports, because `reject_patch_proposal` charges it unconditionally; a published or uncertain Result starts it again, as `BUDGETS` states, although no row lists that restart.
+- The failing CI job of the head is the first executed blocking job of the evidence at `last_ci_evidence_id` that did not succeed, else the first job the evidence names as failing the runner-label check. Its name is the key of `budget.clusters`; existing keys are kept.
+- A Work payload without `generation` and `dedupe_key` is generation 0, also when the record is in a later generation: its Result is then late. A payload that names only one of them matches no Work.
+- While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.
+- `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
+- In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
 
 ## Code still outside the engine
 

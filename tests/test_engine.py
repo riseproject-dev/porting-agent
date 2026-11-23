@@ -14,7 +14,17 @@ import compat
 import engine
 import lifecycle as lc
 import schemas
-from tests.helpers import NOW, OWNER, SHA_A, SHA_B, SHA_C, awaiting_submission, contribution, policy
+from tests.helpers import (
+    NOW,
+    OWNER,
+    SHA_A,
+    SHA_B,
+    SHA_C,
+    awaiting_submission,
+    ci_record,
+    contribution,
+    policy,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = policy()
@@ -151,8 +161,13 @@ def scenario(state, verb, t):
     schemas.validate("contribution", rec)
     kwargs = dict(policy=POLICY, now=NOW, command=command, facts=facts, counts=counts,
                   values=values, cause_id="cause-1",
-                  cluster="build riscv64" if lc.FAILING_JOB in guards else None)
+                  ci_evidence=failing_evidence(rec) if lc.FAILING_JOB in guards else None)
     return rec, kwargs
+
+
+def failing_evidence(rec, evidence_id="ci-2-7-1"):
+    """The evidence ``last_ci_evidence_id`` names, with a failing job on the head."""
+    return ci_record(evidence_id, engine.evidence_head(rec), failing="build riscv64")
 
 
 def get(record, name):
@@ -565,29 +580,37 @@ class TestTableDecisions(unittest.TestCase):
         review_only = self.fix_needed(pending_feedback_evidence_ids=["review-1"],
                                       last_ci_evidence_id="ci-2-7-1")
         review_only["budget"]["clusters"] = {"build riscv64": 99}
-        # No failing job is named: the passing evidence of the head is no cluster.
+        passing = ci_record("ci-2-7-1", SHA_A)
+        # Without the evidence the record names, neither row is decided.
+        self.assertEqual(self.request(review_only, "request_patch").reason,
+                         engine.UNKNOWN_EVIDENCE)
         self.assertEqual(self.request(review_only, "request_repair").reason,
+                         engine.UNKNOWN_EVIDENCE)
+        # Passing evidence of the head names no failing job: no cluster.
+        self.assertEqual(self.request(review_only, "request_repair", ci_evidence=passing).reason,
                          "no failing CI job is recorded for the head")
-        patch = self.request(review_only, "request_patch")
+        patch = self.request(review_only, "request_patch", ci_evidence=passing)
         self.assertTrue(patch.accepted, patch.reason)
         self.assertEqual(patch.record["budget"]["clusters"], {"build riscv64": 99})
         self.assertEqual(patch.record["budget"]["attempts_used"], 1)
         failing = self.fix_needed(last_ci_evidence_id="ci-2-7-1")
-        self.assertEqual(self.request(failing, "request_patch", cluster="build riscv64").reason,
+        bad = failing_evidence(failing)
+        self.assertEqual(self.request(failing, "request_patch", ci_evidence=bad).reason,
                          "a failing CI job is recorded for the head")
-        repair = self.request(failing, "request_repair", cluster="build riscv64")
+        repair = self.request(failing, "request_repair", ci_evidence=bad)
         self.assertEqual(repair.record["budget"]["clusters"], {"build riscv64": 1})
         self.assertEqual(repair.event["details"]["charged"],
                          ["repair_attempts_cluster", "work_total"])
         # Both need that no_progress remains.
         stuck = dict(review_only, budget=dict(review_only["budget"], no_progress_streak=lc.budget_limit(
             "no_progress", POLICY)))
-        self.assertEqual(self.request(stuck, "request_patch").reason, "no_progress is exhausted")
+        self.assertEqual(self.request(stuck, "request_patch", ci_evidence=passing).reason,
+                         "no_progress is exhausted")
         # Exactly one of the rows of the state applies in each case.
-        for rec, cluster in ((review_only, None), (failing, "build riscv64"), (stuck, None)):
+        for rec, evidence in ((review_only, passing), (failing, bad), (stuck, passing)):
             applying = [e.verb for e in lc.due_work_edges("development.fix_needed")
                         if engine.refusal(rec, e.verb, policy=POLICY, now=NOW, facts=self.FACTS,
-                                          cluster=cluster) is None]
+                                          ci_evidence=evidence) is None]
             self.assertEqual(len(applying), 1, applying)
 
     def test_a_review_only_upstream_revision_charges_work_total_only(self):
@@ -605,16 +628,17 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(out.record["active_work"]["feedback_evidence_ids"], ["review-1"])
         self.assertEqual(engine.state_key(out.record), "upstream_review.agent_running")
         failing = dict(rec, last_ci_evidence_id="ci-1-7-1", budget=dict(rec["budget"], clusters={}))
+        bad = failing_evidence(failing, "ci-1-7-1")
         self.assertFalse(engine.apply_transition(failing, "request_review_revision",
-                                                 cluster="build riscv64", **args).accepted)
+                                                 ci_evidence=bad, **args).accepted)
         revision = engine.apply_transition(failing, "request_upstream_revision",
-                                           cluster="build riscv64", **args)
+                                           ci_evidence=bad, **args)
         self.assertEqual(revision.event["details"]["charged"],
                          ["repair_attempts_cluster", "work_total"])
-        for record, cluster in ((rec, None), (failing, "build riscv64")):
+        for record, evidence in ((rec, None), (failing, bad)):
             applying = [e.verb for e in lc.due_work_edges("upstream_review.fix_needed")
                         if engine.refusal(record, e.verb, policy=POLICY, now=NOW, facts=facts,
-                                          cluster=cluster) is None]
+                                          ci_evidence=evidence) is None]
             self.assertEqual(len(applying), 1, applying)
 
     def test_patch_work_needs_the_fork_and_admission_checks_the_scope(self):
@@ -961,7 +985,7 @@ FENCED = set(engine.FENCED_FIELDS)
 WRITERS = {"engine.py", "compat.py"}
 # Names that hold a tick report, a command receipt, or a Work request, never
 # a contribution record.
-REPORT_NAMES = {"entry", "receipt", "aw"}
+REPORT_NAMES = {"entry", "receipt", "aw", "request"}
 
 
 def fenced_writes(path: Path) -> list[str]:

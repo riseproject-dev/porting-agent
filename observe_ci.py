@@ -86,6 +86,10 @@ def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdic
                                      unadmitted_work: set[str] | None = None) -> bool:
     """Recognize a repair request that could only have come from incomplete CI.
 
+    The request is development Work for the published head: a repair, or a
+    patch (``request_patch`` asks for one when no failing CI job and no
+    feedback is recorded).
+
     This is deliberately narrow: the old request must still be undispatched,
     the published head must be unchanged, green required jobs must now have
     executed, and no human or terminal CI reason may support the repair.
@@ -98,7 +102,7 @@ def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdic
     artifact = record.get("proposal_artifact") or {}
     if active.get("dedupe_key") not in (unadmitted_work or set()):
         return False
-    if active.get("task") != "development_repair" \
+    if active.get("task") not in ("development_repair", "development_patch") \
             or record.get("phase") != "development" or artifact.get("outcome") != "published" \
             or (record.get("fork") or {}).get("head_sha") != head_sha \
             or verdict.state not in {"passed", "missing"} or not verdict.executed_jobs:
@@ -106,6 +110,13 @@ def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdic
     reasons = [evidence.get(reason_id) for reason_id in active.get("reason_ids") or []]
     return not any((reason or {}).get("kind") == "human_relay"
                    or _terminal_blocking_ci(reason, head_sha) for reason in reasons)
+
+
+def holds_requested_work(record: dict) -> bool:
+    """Whether the record holds requested Work, or a Result held for a
+    publish retry that is not exhausted."""
+    pending = record.get("pending_publication") or {}
+    return bool(record.get("active_work")) or bool(pending and not pending.get("exhausted"))
 
 
 def _record_gate_review(obs: Observation, entry: dict, cur: dict, eid: str, ev: dict,
@@ -181,6 +192,15 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 # The other handoff states belong to the handoff operations; this
                 # observation has no table row for them and changes nothing.
                 entry["note"] = f"{engine.state_key(rec)} is not observed here"
+                obs.report.append(entry)
+                continue
+            if head["head"] != (rec["fork"].get("head_sha")) and rec["phase"] != "handoff" \
+                    and holds_requested_work(rec):
+                # The table records no head change while Work is requested or
+                # its Result is held for publication: the Result is folded at
+                # the revision it was requested for, and the head it published
+                # is recorded by the observation after it.
+                entry["note"] = "head change is recorded once the requested Work ends"
                 obs.report.append(entry)
                 continue
             if head["head"] != (rec["fork"].get("head_sha")):

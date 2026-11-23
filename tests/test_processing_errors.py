@@ -744,7 +744,8 @@ class TestReconcileCommand(unittest.TestCase):
         self.assertEqual(sorted(report["written"]), [
             ".state/contributions/example--proj--12.json",
             ".state/contributions/other--lib--13.json",
-            ".state/events/example--proj--12/00000000.json"])
+            ".state/events/example--proj--12/00000000.json",
+            ".state/events/other--lib--13/00000000.json"])
         after = self.files()
         a = json.loads(after[".state/contributions/example--proj--12.json"])
         self.assertEqual(a, dict(self.a, paused=True, paused_by="controller",
@@ -761,7 +762,8 @@ class TestReconcileCommand(unittest.TestCase):
         self.assertIn("contribution not processed in this tick", stderr)
         self.assertNotIn("Traceback", json.dumps(report) + "".join(after.values()))
         self.assertEqual(set(after) - set(before),
-                         {".state/events/example--proj--12/00000000.json"})
+                         {".state/events/example--proj--12/00000000.json",
+                          ".state/events/other--lib--13/00000000.json"})
         # The run succeeds, and the error is on the workflow run as an
         # annotation.
         self.assertEqual(self.stdout.getvalue().splitlines(), [

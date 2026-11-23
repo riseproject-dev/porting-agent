@@ -46,6 +46,7 @@ import publisher
 import recovery
 import schemas
 from common import DEV_REF, FORK_ORG, validate_scope_paths
+from work import task_identity as work_identity
 
 MAX_MBOX_BYTES = 4 * 1024 * 1024
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -221,8 +222,13 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         observed_before = observe_head()
     except Exception as e:  # API failure reading the branch
         return Outcome("infra_error", f"could not read the fork head: {e}", failure_class="infrastructure")
+    generation, work_key = work_identity(task)
+    if generation is None:
+        return Outcome("rejected", "publication check: the task names no Work identity",
+                       failure_class="stale")
     why = lifecycle.publication_check(record, expected_revision=task["revision"], expected_head=expected,
-                                      observed_head=observed_before, ref=DEV_REF, repository=fork)
+                                      observed_head=observed_before, ref=DEV_REF, repository=fork,
+                                      expected_generation=generation, work_key=work_key)
     if why and observed_before != expected and previous_candidate and observed_before == previous_candidate:
         # A previous attempt of this same publication already landed (its
         # receipt was lost). Confirm it; never push again.

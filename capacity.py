@@ -112,31 +112,6 @@ def admit_expensive(p: Pressure, *, reserved: int, estimated_jobs: int, policy: 
     return True, "within thresholds"
 
 
-# --------------------------------------------------------------------------
-# Budgets (plan section 16.2)
-
-
-def charge_attempt(budget: dict, *, cluster: str | None, progress: str, policy: dict) -> tuple[dict, list[str]]:
-    """Charge one attempt (model call, queue retry, killed build, local repro
-    or new Work all count). Returns the new budget and any stop reasons.
-    Changed error text does not reset a cluster; new fingerprints do not
-    reset totals."""
-    r = policy["retries"]
-    b = {**budget, "clusters": dict(budget.get("clusters", {}))}
-    b["attempts_used"] = b.get("attempts_used", 0) + 1
-    if cluster:
-        b["clusters"][cluster] = b["clusters"].get(cluster, 0) + 1
-    b["no_progress_streak"] = 0 if progress != "none" else b.get("no_progress_streak", 0) + 1
-    stops = []
-    if cluster and b["clusters"][cluster] >= r["patch_attempts_per_cluster"]:
-        stops.append(f"patch attempts for cluster {cluster} exhausted")
-    if b["attempts_used"] >= r["max_attempts_per_contribution"]:
-        stops.append("contribution attempt ceiling reached")
-    if b["no_progress_streak"] >= r["no_progress_review_after"]:
-        stops.append("no progress in successive attempts: owner review")
-    return b, stops
-
-
 def classify_failure(text: str) -> str:
     """Coarse failure class from a sanitized log excerpt. Unknown stays
     unknown and goes to bounded evidence collection or a human."""

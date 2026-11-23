@@ -76,8 +76,6 @@ LEGACY_SITES = frozenset({
     "reconcile.confirm_provisioning",
     "reconcile.publication_outcome",
     "reconcile.work_timeout",
-    "reconcile.terminal_work_retry",
-    "reconcile.park_terminal_work",
     "reconcile.dispatch_exhausted",
     "reconcile.publish_retry_exhausted",
 })

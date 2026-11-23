@@ -13,11 +13,22 @@ import ci_evidence
 import collect
 import commands
 import controller
+import engine
 import observe_ci
 import recovery
 import release
 import triggers
-from tests.helpers import NOW, OWNER, SHA_A, SHA_B, apply_command, comment, contribution, policy
+from tests.helpers import (
+    NOW,
+    OWNER,
+    SHA_A,
+    SHA_B,
+    apply_command,
+    ci_record,
+    comment,
+    contribution,
+    policy,
+)
 
 T = datetime.fromisoformat(NOW)
 
@@ -390,11 +401,23 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         final = self.final(observation, rec)
         self.assertEqual(final["activity"], "fix_needed")
         self.assertIsNotNone(final["last_ci_evidence_id"])
+        evidence = {e["evidence_id"]: e for kind, e in observation.staged if kind == "evidence"}
         selected = controller.tick(
             contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
-            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)),
+            evidence=evidence)
         self.assertEqual(selected.requested_effects[0]["task"], "development_repair")
         self.assertIn(final["last_ci_evidence_id"], selected.requested_effects[0]["reason_ids"])
+        # The failing job of the head is the cluster the repair charges.
+        claimed = [r for kind, r in selected.staged if kind == "contributions"][-1]
+        self.assertEqual(claimed["budget"]["clusters"],
+                         {"Build - ubuntu-24.04-riscv (riscv64)": 1})
+        # Without the evidence the record names, no Work is requested.
+        unknown = controller.tick(
+            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
+        self.assertEqual(unknown.requested_effects, [])
+        self.assertIn(engine.UNKNOWN_EVIDENCE, unknown.report["deferred"][0]["why"])
 
 
 class TestCapacityBudgets(unittest.TestCase):
@@ -426,19 +449,6 @@ class TestCapacityBudgets(unittest.TestCase):
         pr = capacity.observe(raw["response"], fetched_at=t, now=t, max_age_seconds=900)
         self.assertEqual(pr.per_entity["riseproject-dev"], {"running": 22, "pending": 113})
         self.assertFalse(capacity.admit_expensive(pr, reserved=0, estimated_jobs=1, policy=policy())[0])
-
-    def test_budget_does_not_reset(self):
-        p = policy()
-        b = {"policy_id": "x", "attempts_used": 0}
-        stops = []
-        for _ in range(3):
-            b, stops = capacity.charge_attempt(b, cluster="link-error", progress="new_causal_evidence", policy=p)
-        self.assertTrue(any("cluster" in s for s in stops))
-        b2, stops2 = capacity.charge_attempt({"policy_id": "x", "attempts_used": 0}, cluster="a",
-                                             progress="none", policy=p)
-        b2, stops2 = capacity.charge_attempt(b2, cluster="b", progress="none", policy=p)
-        self.assertTrue(any("no progress" in s for s in stops2))
-        self.assertEqual(b2["attempts_used"], 2)
 
 
 class TestRecovery(unittest.TestCase):
@@ -718,8 +728,11 @@ class TestTick(unittest.TestCase):
         rec["last_ci_evidence_id"] = "ci-3"
         res = controller.tick(contributions={"a": rec}, operations={}, consumed={}, projects={},
                               policy=policy(), inputs=controller.Inputs(
-                                  now=T, pressure=capacity.Pressure(ok=True)))
+                                  now=T, pressure=capacity.Pressure(ok=True)),
+                              evidence={"ci-3": ci_record("ci-3", SHA_A, failing="build")})
         self.assertEqual(res.requested_effects[0]["reason_ids"], ["review-1", "review-2", "ci-3"])
+        self.assertEqual(res.requested_effects[0]["feedback_evidence_ids"],
+                         ["review-1", "review-2"])
 
     def test_uncertain_operation_holds_work(self):
         rec = contribution(activity="fix_needed")
@@ -829,7 +842,9 @@ class TestTick(unittest.TestCase):
         self.assertEqual(final["scope_paths"], [".github/workflows/*", "README.rst"])
         self.assertIsNone(final["refresh"])
         self.assertEqual(final["dossier_evidence_id"], evidence["evidence_id"])
-        self.assertEqual(out.report["controller"]["selected"][0]["task"], "development_repair")
+        # The refresh cleared the CI evidence and no feedback is pending:
+        # `request_patch` asks for a patch against the refreshed dossier.
+        self.assertEqual(out.report["controller"]["selected"][0]["task"], "development_patch")
         self.assertIn(evidence["evidence_id"], out.report["requested_effects"][0]["reason_ids"])
         self.assertEqual(out.report["provision_requests"], [])
 
