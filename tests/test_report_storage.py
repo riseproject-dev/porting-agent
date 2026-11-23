@@ -168,13 +168,37 @@ class TestDevelopment(unittest.TestCase):
         self.assertEqual(stored(staged), [])
         self.assertEqual(events(staged)[0]["details"]["report"], "absent")
 
-    def test_an_invalid_report_never_fails_the_fold(self):
-        rec = dev.running()
-        outcome = with_report(rec, publication(rec, "published"))
-        outcome["worker_report"]["expected_revision"] += 1
-        new, staged = fold(rec, outcome)
-        self.assertEqual(engine.state_key(new), "development.waiting_ci")
-        self.assertEqual(stored(staged), [])
+    def test_an_accepted_result_without_a_storable_report_fails_loudly(self):
+        """The gate accepts a Result of Work that carries a history only with
+        a valid report, so a success fold never drops it: the fold raises,
+        and the tick pauses the contribution instead of folding the Result
+        without its report."""
+        def invalid(outcome):
+            outcome["worker_report"]["expected_revision"] += 1
+        def missing(outcome):
+            del outcome["worker_report"]
+        def unreadable(outcome):
+            del outcome["worker_report"]
+            outcome["worker_report_error"] = "report.json cannot be read: not a regular file"
+        for name, spoil in (("invalid", invalid), ("missing", missing),
+                            ("unreadable", unreadable)):
+            with self.subTest(report=name):
+                rec = dev.running()
+                outcome = with_report(rec, publication(rec, "published"))
+                spoil(outcome)
+                with self.assertRaisesRegex(worker_report.ReportError,
+                                            "record_publish_success Result"):
+                    fold(rec, outcome)
+                out = dev.tick(rec, [outcome], observe=False)
+                self.assertEqual(dev.kinds(out), ["pause_on_processing_error"])
+                self.assertEqual(stored(out.staged), [])
+                paused = dev.final(out, rec)
+                self.assertIn("carries no report that can be stored",
+                              paused["paused_reason"])
+                self.assertIn(rec["active_work"]["dedupe_key"], paused["paused_reason"])
+                # The Result is never folded without its report.
+                self.assertEqual(engine.state_key(paused), "development.fix_needed")
+                self.assertTrue(paused["paused"])
 
 
 class TestUpstreamReview(unittest.TestCase):
@@ -315,6 +339,76 @@ class TestLargeReport(unittest.TestCase):
                            worker_report.MAX_REPORT_BYTES)
         with self.assertRaises(worker_report.ReportError):
             worker_report.check(outcome["task"], outcome["worker_report"])
+
+
+class TestFoldFromArtifact(unittest.TestCase):
+    """End to end: the publication artifact as the controller unpacks it,
+    read by ``reconcile._publication_outcomes`` and folded by the tick. The
+    fold checks the bytes of the file, exactly as the gate did."""
+
+    def tick_with(self, files: dict[str, bytes | None], *, link: bool = False):
+        rec = dev.running()
+        outcome = with_report(rec, publication(rec, "published"))
+        body = outcome.pop("worker_report")
+        task = outcome.pop("task")
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "555"
+            directory.mkdir()
+            (directory / "outcome.json").write_text(json.dumps(outcome))
+            (directory / "task.json").write_text(json.dumps(task))
+            (directory / "artifact-id").write_text("999")
+            data = files.get("report.json", compact(body))
+            if link:
+                (directory / "real.json").write_bytes(data)
+                (directory / "report.json").symlink_to(directory / "real.json")
+            elif data is not None:
+                (directory / "report.json").write_bytes(data)
+            gate = worker_report.check_path(task, directory / "report.json") \
+                if data is not None and not link else None
+            [loaded] = reconcile._publication_outcomes(root)
+        return rec, gate, dev.tick(rec, [loaded], observe=False)
+
+    def test_a_report_the_gate_accepted_is_stored(self):
+        rec = dev.running()
+        base = with_report(rec, publication(rec, "published"))["worker_report"]
+        big = with_report(rec, publication(rec, "published"), **large())["worker_report"]
+        cases = {
+            "compact": compact(base),
+            "indented": json.dumps(base, indent=4).encode(),
+            # Escapes and number forms that grow when the parsed document is
+            # serialized again, and a lone surrogate that cannot be encoded.
+            "escapes": compact(dict(base, summary="caf\u00e9 \ud800 done")).replace(
+                b'"schema_version":1', b'"schema_version":1e0'),
+            "just under the cap": compact(big),
+        }
+        self.assertIn(b'"schema_version":1e0', cases["escapes"])
+        self.assertIn(b"\\ud800", cases["escapes"])
+        for name, data in cases.items():
+            with self.subTest(report=name):
+                self.assertLessEqual(len(data), worker_report.MAX_REPORT_BYTES)
+                _rec, gate, out = self.tick_with({"report.json": data})
+                self.assertIsNotNone(gate)
+                self.assertEqual(dev.kinds(out)[0], "record_publish_success")
+                [evidence] = stored(out.staged)
+                self.assertEqual(dev.kinds(out).count("pause_on_processing_error"), 0)
+                event = next(e for k, e in out.staged if k == "events")
+                self.assertEqual(event["details"]["report_evidence_id"], evidence["evidence_id"])
+                # The staged record can be written by the store.
+                blob = canonical_json(evidence).encode()
+                self.assertEqual(state.check_blob(state.record_path("evidence", evidence),
+                                                  blob, POLICY), [])
+
+    def test_a_missing_or_linked_report_pauses_the_contribution(self):
+        for name, files, link in (("missing", {"report.json": None}, False),
+                                  ("link", {}, True)):
+            with self.subTest(report=name):
+                rec, _gate, out = self.tick_with(files, link=link)
+                self.assertEqual(dev.kinds(out), ["pause_on_processing_error"])
+                self.assertEqual(stored(out.staged), [])
+                reason = dev.final(out, rec)["paused_reason"]
+                self.assertIn("carries no report that can be stored", reason)
+                if link:
+                    self.assertIn("not a regular file", reason)
 
 
 if __name__ == "__main__":

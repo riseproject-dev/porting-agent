@@ -196,6 +196,46 @@ class TestBuild(unittest.TestCase):
         [entry] = work_history.document(record(), WORK, evidence)["timeline"]
         self.assertEqual(entry["items"][0]["body"], "(in the steering section)")
 
+    def test_heavy_steering_never_takes_the_place_of_the_newest_report(self):
+        """The report of the worker whose head failed CI reaches the repair
+        whole, with its CI run linked, however much the owner wrote: the
+        oldest steering items are folded first."""
+        for count in (100, 400):
+            with self.subTest(steering=count):
+                evidence = {"report-1": report_evidence(
+                    "report-1", at="2026-11-20T00:00:00+00:00",
+                    summary="Pinned the toolchain " + "x" * 900),
+                    "ci-1": ci_evidence("ci-1", SHA_B, at="2026-11-20T01:00:00+00:00")}
+                for i in range(count):
+                    eid = f"steering-{i:04d}"
+                    evidence[eid] = steering_evidence(eid, [steer(
+                        i, f"steer {i} " + "s" * 400, at=f"2026-11-19T{i // 60 % 24:02d}:"
+                        f"{i % 60:02d}:00Z", source="development_pr_review_comment")],
+                        at="2026-11-19T00:00:00+00:00")
+                doc = work_history.document(record(), WORK, evidence)
+                kinds = [t["kind"] for t in doc["timeline"]]
+                self.assertEqual(kinds, ["worker_report", "ci"])
+                [full, ci] = doc["timeline"]
+                self.assertNotIn("condensed", full)
+                self.assertTrue(full["report"]["summary"].startswith("Pinned the toolchain"))
+                self.assertEqual(ci["after_report"], "report-1")
+                self.assertGreater(doc["steering_earlier"]["items"], 0)
+                self.assertEqual(doc["steering_earlier"]["items"] + len(doc["steering"]), count)
+                self.assertEqual(doc["steering"][-1]["id"], count - 1)
+
+    def test_review_feedback_beyond_the_bound_is_counted(self):
+        relay = {"schema_version": 1, "evidence_id": "relay-1", "contribution_id": CID,
+                 "kind": "human_relay", "policy_version": "p",
+                 "collected_at": "2026-11-21T00:00:00+00:00", "summary": "s", "data": {
+                     "reviews": [], "conversation_comments": [],
+                     "comments": [{"id": i, "reviewer": "owner", "url": "u",
+                                   "body": f"comment {i}"} for i in range(70)]}}
+        [entry] = work_history.document(record(), WORK, {"relay-1": relay})["timeline"]
+        self.assertEqual(len(entry["items"]), 60)
+        self.assertEqual(entry["items_not_listed"], 10)
+        self.assertEqual(entry["items"][-1]["body"], "comment 69")
+        self.assertEqual(work_history._short(entry)["items_not_listed"], 10)
+
     def test_omitted_counts_are_those_of_the_newest_collection(self):
         evidence = {"steering-1": steering_evidence("steering-1", [], at="2026-11-20T00:00:00Z"),
                     "steering-2": steering_evidence("steering-2", [], at="2026-11-21T00:00:00Z")}

@@ -907,9 +907,12 @@ REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_suc
 def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: dict,
                     run: str | None, details: dict) -> list[tuple[str, dict]]:
     """The report of a Result folded by ``verb``, staged as ``worker_report``
-    evidence when ``verb`` is a success row and the Result carries a usable
-    report; its id, or that it is absent, is named in ``details``. Nothing
-    is staged for any other row."""
+    evidence when ``verb`` is a success row; its id is named in
+    ``details``, or that it is absent when the Work carries no history and
+    returned no usable report. A success row of Work that carries a history
+    never drops its report: ``worker_report.evidence`` raises when it cannot
+    be stored, so the contribution pauses and the Result stays unfolded.
+    Nothing is staged for any other row."""
     if verb not in REPORT_VERBS:
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
@@ -2149,13 +2152,22 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
         outcome["publication_artifact_id"] = (
             int(artifact_id.read_text().strip()) if artifact_id.exists() else None
         )
+        # The worker's report (untrusted): the bytes of the file, read as the
+        # gate read them, checked again and stored only when a success row
+        # folds the Result. A file that cannot be read is named, so that a
+        # success fold of Work that carries a history fails loudly.
+        outcome.pop("worker_report", None)
+        try:
+            report = worker_report.read(path.parent / "report.json")
+        except (worker_report.ReportError, OSError) as error:
+            outcome["worker_report_error"] = f"report.json cannot be read: {error}"
+        else:
+            if report is not None:
+                outcome["worker_report"] = report
         for name, key in (
             ("plan.json", "plan"),
             ("proposal.json", "proposal"),
             ("result.json", "artifact"),
-            # The worker's report (untrusted): checked again, and stored only
-            # when a success row folds the Result.
-            ("report.json", "worker_report"),
         ):
             candidate = path.parent / name
             if candidate.exists() and key not in outcome:

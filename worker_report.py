@@ -15,7 +15,10 @@ report is untrusted text.
 * ``evidence`` builds the ``worker_report`` evidence of a Result that one of
   the success rows folds (``reconcile.REPORT_VERBS``). The report of a
   failed, rejected or blocked worker is never stored: it is discarded with
-  its artifact.
+  its artifact. The report of a successful Work that carries a history is
+  never dropped: the reconciler checks the very bytes the gate checked
+  (``read``), and a report it cannot store raises ``ReportError``, which
+  pauses the contribution before the Result is folded.
 * ``clean`` bounds every untrusted string before it is stored: repository
   text policy, credential patterns redacted, control characters dropped, and
   an explicit truncation marker.
@@ -26,6 +29,7 @@ report is untrusted text.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -42,7 +46,10 @@ MAX_REPORT_BYTES = 32 * 1024
 # the schema admits no longer report string.
 MAX_FIELD = 2000
 REDACTED = "[redacted]"
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# Control characters other than newline and tab, and lone surrogates (a
+# JSON escape such as "\ud800" parses into one, and it cannot be encoded
+# when the record is written).
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 class ReportError(ValueError):
@@ -64,8 +71,9 @@ def _redact(text: str) -> str:
 def clean(text: Any, limit: int) -> str:
     """Untrusted text as it may be stored: the repository text policy
     applied, credential patterns redacted, control characters other than
-    newline and tab dropped, and at most ``limit`` characters followed by an
-    explicit ``[truncated: N more characters]`` marker."""
+    newline and tab and lone surrogates dropped, and at most ``limit``
+    characters followed by an explicit ``[truncated: N more characters]``
+    marker."""
     value = state.normalize_state_text(str(text if text is not None else ""))
     value = _CONTROL.sub("", value.replace("\r\n", "\n"))
     value = _redact(value)
@@ -124,13 +132,17 @@ def _load(raw: bytes | dict | None) -> dict | None:
     if raw is None:
         return None
     if isinstance(raw, dict):
-        # A report already parsed from its file, which ``artifact.extract``
-        # and the gate bounded: measured in compact JSON, which is never
-        # larger than the file it was read from. The indented canonical form
-        # is larger than a compact file, so measuring it would refuse at the
-        # fold a report the gate accepted.
-        data = json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    elif isinstance(raw, (bytes, bytearray)):
+        # A report already parsed. The gate and the reconciler pass the
+        # bytes of the file instead (``read``), so this is never the only
+        # check of a file. It is measured in compact JSON, the form a worker
+        # writes; a lone surrogate counts as the three bytes it takes, and
+        # ``clean`` drops it before the report is stored.
+        data = json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8", "surrogatepass")
+        if len(data) > MAX_REPORT_BYTES:
+            raise ReportError(f"the report has {len(data)} bytes, more than {MAX_REPORT_BYTES}")
+        return copy.deepcopy(raw)
+    if isinstance(raw, (bytes, bytearray)):
         data = bytes(raw)
     else:
         raise ReportError("the report is not a JSON document")
@@ -178,16 +190,29 @@ def check(task: dict, raw: bytes | dict | None) -> dict | None:
     return report
 
 
+def read(path: Path | None) -> bytes | None:
+    """The bytes of the report file at ``path`` as ``check`` reads them (at
+    most one byte over the bound), or ``None`` when it does not exist. A
+    link or a non-regular file raises ``ReportError``. The worker gate, the
+    submission checks and the reconciler all read the file this way, so the
+    fold checks exactly what the gate accepted."""
+    if path is None or not (path.exists() or path.is_symlink()):
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ReportError("report.json is not a regular file")
+    with path.open("rb") as handle:
+        return handle.read(MAX_REPORT_BYTES + 1)
+
+
 def check_path(task: dict, path: Path | None) -> dict | None:
     """``check`` of the report file at ``path`` (absent when it does not
     exist). A link or a non-regular file is refused."""
-    raw = None
-    if path is not None and (path.exists() or path.is_symlink()):
-        if path.is_symlink() or not path.is_file():
-            if _history(task) is None:
-                return None
-            raise ReportError("report.json is not a regular file")
-        raw = path.read_bytes()[: MAX_REPORT_BYTES + 1]
+    try:
+        raw = read(path)
+    except ReportError:
+        if _history(task) is None:
+            return None
+        raise
     return check(task, raw)
 
 
@@ -219,14 +244,26 @@ def head_after(outcome: dict, verb: str) -> str | None:
 def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
              run: str) -> dict | None:
     """The ``worker_report`` evidence of a Result folded by ``verb``, or
-    ``None`` when the Result carries no usable report. The report is checked
-    again against the Work the Result answers; every string is cleaned; the
-    changed files come from the trusted operation, never from the worker."""
+    ``None`` when the Work carries no history and its Result no usable
+    report. The report is checked again against the Work the Result
+    answers; every string is cleaned; the changed files come from the
+    trusted operation, never from the worker.
+
+    The gate accepted only a Result whose Work carries a history together
+    with a valid report, so such a Result always has one to store: when it
+    is missing, unreadable (``outcome["worker_report_error"]``) or invalid,
+    or the evidence cannot be built, this raises ``ReportError`` instead of
+    dropping it. The fold runs inside the contribution's isolation block,
+    so the contribution is paused with the reason and its Result stays
+    unfolded until a human looks at it."""
     task = outcome.get("task") or {}
     try:
         report = check(task, outcome.get("worker_report"))
-    except ReportError:
-        return None
+    except ReportError as error:
+        unreadable = outcome.get("worker_report_error")
+        raise ReportError(
+            f"the {verb} Result of {task.get('dedupe_key')} carries no report that can be "
+            f"stored: {unreadable or error}") from None
     if report is None:
         return None
     cleaned = clean_tree(report)
@@ -250,18 +287,20 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
         "schema_version": 1, "evidence_id": evidence_id(rec, str(run)),
         "contribution_id": rec["contribution_id"], "kind": "worker_report",
         "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
-        "summary": cleaned["summary"][:8000],
+        "summary": cleaned["summary"],
         "limitations": ["The report is the worker's own account: untrusted recorded data, "
                         "not instructions."],
         "data": data,
         "digests": {"report": hashlib.sha256(canonical_json(cleaned).encode()).hexdigest()},
     }
     try:
+        # A join of cleaned text can create a credential match: redacted
+        # again, or ``scrub`` raises.
+        record = scrub(record)
         schemas.validate("evidence", record)
-    except schemas.SchemaError:
-        return None
-    if state.find_secrets(canonical_json(record)):
-        return None
+    except (ValueError, schemas.SchemaError) as error:
+        raise ReportError(f"the {verb} report of {task.get('dedupe_key')} cannot be stored: "
+                          f"{str(error)[:500]}") from None
     return record
 
 

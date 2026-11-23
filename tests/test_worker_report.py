@@ -112,7 +112,7 @@ class TestCheck(unittest.TestCase):
             worker_report.check(task(), nested)
         self.assertIsNone(worker_report.check(task(history=False), nested))
 
-    def test_the_controller_loader_skips_a_deeply_nested_report(self):
+    def test_the_controller_loader_keeps_the_bytes_of_the_report(self):
         import reconcile
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root) / "9001"
@@ -120,7 +120,12 @@ class TestCheck(unittest.TestCase):
             (directory / "outcome.json").write_text(json.dumps({"status": "published"}))
             (directory / "report.json").write_text("[" * (worker_report.MAX_REPORT_BYTES - 1))
             [outcome] = reconcile._publication_outcomes(root)
-        self.assertNotIn("worker_report", outcome)
+        # The fold checks the bytes the gate checked: invalid, and refused
+        # loudly when the Work carries a history.
+        self.assertEqual(outcome["worker_report"], b"[" * (worker_report.MAX_REPORT_BYTES - 1))
+        self.assertIsNone(worker_report.check(task(history=False), outcome["worker_report"]))
+        with self.assertRaisesRegex(worker_report.ReportError, "RecursionError"):
+            worker_report.check(task(), outcome["worker_report"])
 
     def test_a_link_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -272,9 +277,16 @@ class TestEvidence(unittest.TestCase):
         self.assertEqual(state.check_blob(
             ".state/evidence/report-example--proj--12-r3-77.json",
             json.dumps(evidence).encode(), state_policy()), [])
+        # A Work without a history may return no report; one with a history
+        # never loses it silently.
         self.assertIsNone(worker_report.evidence(
-            rec, dict(outcome, worker_report=None), verb="record_publish_success",
-            now="2026-11-23T00:00:00+00:00", policy={}, run="77"))
+            rec, dict(outcome, worker_report=None, task=task(history=False)),
+            verb="record_publish_success", now="2026-11-23T00:00:00+00:00", policy={},
+            run="77"))
+        with self.assertRaisesRegex(worker_report.ReportError, "no report.json"):
+            worker_report.evidence(rec, dict(outcome, worker_report=None),
+                                   verb="record_publish_success",
+                                   now="2026-11-23T00:00:00+00:00", policy={}, run="77")
 
 
 def state_policy():

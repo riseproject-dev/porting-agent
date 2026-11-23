@@ -840,7 +840,8 @@ class TestHistoryAndReports(unittest.TestCase):
                 upload = next(s for s in jobs["publish"]["steps"]
                               if s.get("with", {}).get("name") == "porting-publication")
                 self.assertIn("in/report.json", upload["with"]["path"].split())
-        self.assertIn('("report.json", "worker_report")', (ROOT / "reconcile.py").read_text())
+        self.assertIn('worker_report.read(path.parent / "report.json")',
+                      (ROOT / "reconcile.py").read_text())
 
     def test_the_locks_carry_the_history_step(self):
         for name in ("worker", "planner"):

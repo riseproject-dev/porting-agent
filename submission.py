@@ -411,9 +411,12 @@ def main(argv: list[str] | None = None) -> int:
     task = json.loads(args.task.read_text())
     try:
         result_value = json.loads(args.result.read_text())
-        report = (args.report.read_bytes()[: worker_report.MAX_REPORT_BYTES + 1]
-                  if args.report and args.report.is_file() and not args.report.is_symlink()
-                  else None)
+        try:
+            report = worker_report.read(args.report)
+        except worker_report.ReportError:
+            # A link or a non-regular file is no report: refused below when
+            # the Work carries a history.
+            report = None
         if args.command == "check-review":
             result = check_review(task, result_value, report=report)
         else:

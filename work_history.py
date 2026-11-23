@@ -20,8 +20,9 @@ bounded to ``HISTORY_MAX_BYTES`` by condensing deterministically, never by
 dropping: the oldest timeline entries become a short form first (the
 worker's own summary and each approach's title, outcome and lesson), then
 the oldest steering items, then the oldest condensed entries are folded into
-one counted ``earlier`` entry. The newest report and every entry after it are condensed
-last. A condensed entry names the evidence file that holds it in full.
+one counted ``earlier`` entry, then the oldest steering items into one counted
+``steering_earlier`` entry. The newest report and every entry after it are
+condensed last, only when they do not fit on their own. A condensed entry names the evidence file that holds it in full.
 
 The Work payload names the record by pinned commit and SHA-256
 (``work.cmd_plan``); a trusted pre-agent step fetches and verifies it.
@@ -122,8 +123,10 @@ def _feedback_entry(ev: dict, steered: set[tuple[str, int]]) -> dict:
             else:
                 entry["body"] = _text(item.get("body") or "", worker_report.MAX_FIELD)
             items.append(entry)
-    return {"kind": "review_feedback" if ev.get("kind") == "human_relay" else "review_inquiry",
-            "evidence_id": ev["evidence_id"], "at": ev.get("collected_at"), "items": items[:60]}
+    entry = {"kind": "review_feedback" if ev.get("kind") == "human_relay" else "review_inquiry",
+             "evidence_id": ev["evidence_id"], "at": ev.get("collected_at"), "items": items}
+    _cap_list(entry, "items", 60)
+    return entry
 
 
 def _submission_entry(ev: dict) -> dict:
@@ -165,6 +168,8 @@ def _short(full: dict) -> dict:
         entry["items"] = [{"id": i.get("id"), "url": i.get("url"),
                            "body": _text(i.get("body") or "", SHORT)}
                           for i in full.get("items") or []]
+        if full.get("items_not_listed"):
+            entry["items_not_listed"] = full["items_not_listed"]
     elif kind in ("submission_rewrite", "submission_review"):
         entry.update(verdict=full.get("verdict"),
                      reasons=[_text(r, SHORT) for r in (full.get("reasons") or [])[:5]])
@@ -373,14 +378,9 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
     fold(protected)
     if fits():
         return doc
-    # Last resorts, only when the newest report and what follows it do not
-    # fit on their own: they are condensed and folded too, then the oldest
-    # steering items are folded into a counted entry.
-    for index in range(len(timeline)):
-        condense(index)
-        if fits():
-            return doc
-    fold(0)
+    # 4. The oldest steering items, already short, folded into one counted
+    # entry: the newest report and what follows it are kept whole while
+    # they fit on their own.
     folded_ids: set[str] = set()
     while not fits() and steer:
         item = steer.pop(0)
@@ -398,6 +398,15 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
             _cap_list(folded, "evidence_ids", 100)
         estimate += _key_size("steering_earlier", folded) - before
         doc["condensed"]["folded"] += 1
+    if fits():
+        return doc
+    # Last resorts, only when the newest report and what follows it do not
+    # fit on their own: they are condensed and folded too.
+    for index in range(len(timeline)):
+        condense(index)
+        if fits():
+            return doc
+    fold(0)
     if not fits():
         raise ValueError(f"the history of {work['dedupe_key']} cannot be condensed to "
                          f"{HISTORY_MAX_BYTES} bytes")
