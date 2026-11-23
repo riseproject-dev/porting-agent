@@ -16,11 +16,13 @@ import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import artifact
 import capacity
 import controller
 import fork_publish
+import observe_ci
 import publisher
 import queue_result
 import reconcile
@@ -458,6 +460,37 @@ class TestDispatchRecovery(unittest.TestCase):
         t = self.tick([self.drun(1)], {self.gid: "completed"}, rec=rec)
         self.assertEqual(t.report["dispatch_relaunch"], [])
         self.assertIsNone(self.final(t)["active_work"])
+
+    def test_submission_work_is_relaunched_in_an_observing_tick(self):
+        # The rewrite and the review Work of the handoff phase are relaunched
+        # like development Work, also when the tick observes CI, and wait for
+        # a human once `dispatch_recovery` is spent.
+        for activity, task in (("agent_running", "submission_rewrite"),
+                               ("reviewing", "submission_review")):
+            with self.subTest(activity):
+                rec = awaiting_submission(revision=6, activity=activity, pending_human_action=None)
+                rec["active_work"] = dict(self.rec["active_work"], revision=6, task=task,
+                                          dedupe_key=f"example--proj/12@g0.r6:{task}")
+                runs = []
+                for count in (1, 2, 3):
+                    runs.insert(0, self.drun(count))
+                    snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
+                                              projects={}, evidence={})
+                    with mock.patch.object(observe_ci, "observe", return_value=observe_ci.Observation()):
+                        t = reconcile.tick(object(), snap, policy=policy(read_only=False), now=self.now,
+                                           publications=[], pressure=capacity.Pressure(ok=True),
+                                           observe=True, dispatcher_runs=list(runs), queue_works={})
+                    rec = self.final(t) if [r for k, r in t.staged if k == "contributions"] else rec
+                    if count < 3:
+                        self.assertEqual(t.report["dispatch_relaunch"],
+                                         [{"type": "relaunch_dispatcher",
+                                           "contribution_id": rec["contribution_id"]}])
+                        self.assertEqual(rec["active_work"]["dispatched_run_id"], str(count))
+                        self.assertEqual(rec["activity"], activity)
+                self.assertEqual(t.report["dispatch_relaunch"], [])
+                self.assertEqual((rec["activity"], rec["active_work"],
+                                  rec["pending_human_action"]["counter"]),
+                                 ("waiting_human", None, "dispatch_recovery"))
 
     def test_lost_launch_after_grace_and_unknown_queue(self):
         t = self.tick([], {}, now=datetime(2026, 11, 18, 19, 30, tzinfo=timezone.utc))

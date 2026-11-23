@@ -307,6 +307,14 @@ def _may_hold_work(rec: dict) -> bool:
         and not rec.get("paused")
 
 
+def _holds_dispatched_work(rec: dict) -> bool:
+    """Whether a relaunch decided by dispatch recovery still applies once the
+    record is observed: it holds requested Work, in a working phase or in a
+    submission Work state of the handoff phase."""
+    return rec.get("active_work") is not None and (
+        rec["phase"] != "handoff" or engine.state_key(rec) in SUBMISSION_WORK_STATES)
+
+
 # The phase in which the table requests Work of each task.
 WORK_PHASE = {"investigation": "investigation", "development_patch": "development",
               "development_repair": "development", "upstream_revision": "upstream_review",
@@ -1673,13 +1681,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 contributions[by_cid[r["contribution_id"]]] = r
         out.staged.extend(obs.staged)
         out.report["observation"] = obs.report
-        # Recovery is evaluated before live CI. If CI accepts the current head
-        # in this same tick, do not launch a dispatcher for the now-obsolete
-        # retry request.
+        # Recovery is evaluated before live CI. A record that no longer holds
+        # its Work once observed (CI accepted the head, or the head moved) is
+        # not launched again; the submission rewrite and review Work of the
+        # handoff phase are relaunched like development Work.
         out.report["dispatch_relaunch"] = [
             item for item in out.report["dispatch_relaunch"]
-            if (contributions[by_cid[item["contribution_id"]]].get("active_work") is not None
-                and contributions[by_cid[item["contribution_id"]]]["phase"] != "handoff")]
+            if _holds_dispatched_work(contributions[by_cid[item["contribution_id"]]])]
 
     # 3. Commands, intake and work selection (controller). The failing CI job
     # of a head is decided from the evidence the record names, including the
