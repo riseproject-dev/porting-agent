@@ -13,6 +13,7 @@ import ci_evidence
 import collect
 import commands
 import controller
+import engine
 import isolation
 import observe_ci
 import recovery
@@ -166,16 +167,16 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             "run_id": "45006566517", "result_commit": "result", "outcome": "published",
         }
         rec["dossier_evidence_id"] = "dossier-closeio--ciso8601--1-r2"
-        rec["pending_feedback_evidence_ids"] = ["rehearsal-closeio--ciso8601--1-r3-44982902579"]
+        rec["pending_feedback_evidence_ids"] = []
         return rec
 
-    def observe(self, rec, snapshot, evidence=None, contracts=None, unadmitted_work=None):
+    def observe(self, rec, snapshot, evidence=None, contracts=None):
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": self.HEAD}), \
              mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
              mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot):
             return observe_ci.observe(object(), contributions={"c": rec}, operations={},
                                       contracts=contracts or {}, policy=policy(), now=NOW,
-                                      evidence=evidence or {}, unadmitted_work=unadmitted_work)
+                                      evidence=evidence or {})
 
     @staticmethod
     def final(observation, original):
@@ -213,44 +214,29 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         }
         return rec
 
-    def test_missing_evidence_withdraws_only_unfounded_undispatched_repair(self):
-        rec = dict(self.undispatched_repair(), target_contract_id="contract-1")
-        contracts = {"contract-1": {"data": {
-            "expected_wheels": ["ciso8601-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"]}}}
-        observation = self.observe(rec, self.snapshot(pending=False),
-                                   evidence=self.OBSOLETE_REASONS, contracts=contracts,
-                                   unadmitted_work={rec["active_work"]["dedupe_key"]})
-        final = self.final(observation, rec)
-        self.assertEqual(final["fork"]["head_sha"], self.HEAD)
-        self.assertEqual(final["revision"], 5)
-        self.assertEqual(final["phase"], "development")
-        self.assertEqual(final["activity"], "waiting_ci")
-        self.assertIsNone(final["active_work"])
-        self.assertIsNone(final["last_ci_evidence_id"])
-        self.assertIsNotNone(final["next_poll_at"])
-        self.assertTrue(observation.report[0]["obsolete_repair_withdrawn"])
-        self.assertEqual([event["kind"] for kind, event in observation.staged if kind == "events"],
-                         ["obsolete_ci_repair_withdrawn"])
-        selected = controller.tick(
-            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
-            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
-        self.assertEqual(selected.requested_effects, [])
+    def test_requested_work_is_not_observed_or_withdrawn(self):
+        """`development.agent_running` has no observation row: green CI on
+        the published head neither withdraws the requested Work nor
+        nominates; the Work's Result is folded by the table's rows."""
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                rec = self.undispatched_repair()
+                observation = self.observe(rec, self.snapshot(pending=pending),
+                                           evidence=self.OBSOLETE_REASONS)
+                self.assertEqual(observation.staged, [])
+                self.assertEqual(observation.report[0]["note"],
+                                 "development.agent_running has no observation row")
+                self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
 
-    def test_green_duplicate_registrations_clear_unfounded_repair_and_enter_handoff(self):
-        rec = self.undispatched_repair()
-        observation = self.observe(rec, self.snapshot(pending=False), evidence=self.OBSOLETE_REASONS,
-                                   unadmitted_work={rec["active_work"]["dedupe_key"]})
+    def test_pending_feedback_keeps_green_ci_in_waiting_ci(self):
+        """Nomination requires that no actionable feedback is pending."""
+        rec = dict(self.record(), pending_feedback_evidence_ids=["review-1"])
+        observation = self.observe(rec, self.snapshot(pending=False))
         final = self.final(observation, rec)
-        self.assertEqual(final["revision"], 5)
-        self.assertEqual((final["phase"], final["activity"]), ("handoff", "awaiting_submission"))
-        self.assertIsNone(final["active_work"])
-        self.assertEqual(final["last_ci_evidence_id"], "ci-1467208233-45008094068-1")
-        self.assertEqual([event["kind"] for kind, event in observation.staged if kind == "events"],
-                         ["obsolete_ci_repair_withdrawn", "nominate_for_handoff"])
-        selected = controller.tick(
-            contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
-            inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
-        self.assertEqual(selected.requested_effects, [])
+        self.assertEqual(engine.state_key(final), "development.waiting_ci")
+        self.assertIsNone(final["last_ci_evidence_id"])
+        self.assertIn("actionable feedback is pending", observation.report[0]["handoff_deferred"])
+        self.assertEqual([kind for kind, _ in observation.staged if kind == "events"], [])
 
     def test_new_head_in_handoff_clears_readiness_while_ci_pending(self):
         """A new head leaves the gate by the table's record_head_change."""
@@ -369,28 +355,6 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         self.assertTrue(body.startswith("**Upstreaming r5 · handoff/awaiting_submission**"))
         self.assertNotIn("approve-handoff", body)
         self.assertEqual(api.comment["user"]["login"], "riseproject-dev[bot]")
-
-    def test_human_requested_or_dispatched_repairs_are_not_withdrawn(self):
-        for dispatched_run_id, reason_kind in ((None, "human_relay"), ("450101", "rehearsal")):
-            with self.subTest(dispatched_run_id=dispatched_run_id, reason_kind=reason_kind):
-                rec = self.record(activity="agent_running")
-                rec["active_work"] = {
-                    "dedupe_key": "closeio--ciso8601/1@5:development_repair",
-                    "task": "development_repair", "revision": 5, "attempt": 1,
-                    "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
-                    "dispatched_run_id": dispatched_run_id, "reason_ids": ["reason-1"],
-                }
-                # A human reason keeps even queue-proven unadmitted Work; a
-                # dispatched repair has no queue proof (its Work is claimed).
-                observation = self.observe(
-                    rec, self.snapshot(pending=False),
-                    evidence={"reason-1": {"kind": reason_kind, "evidence_id": "reason-1"}},
-                    unadmitted_work=({rec["active_work"]["dedupe_key"]}
-                                     if reason_kind == "human_relay" else set()))
-                final = self.final(observation, rec)
-                self.assertEqual(final["activity"], "agent_running")
-                self.assertIsNotNone(final["active_work"])
-                self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
 
     def test_terminal_executed_failure_records_reason_and_requests_repair(self):
         rec = self.record()
@@ -567,26 +531,48 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
 
     def test_explanation_only_observation_does_not_bump_or_request_repair(self):
         import observe_ci
-        rec = contribution(phase="development", activity="fix_needed", revision=8, paused=True)
+        rec = contribution(phase="development", activity="waiting_ci", revision=8, paused=True,
+                           paused_at=NOW, paused_by="human")
         inquiry = {"reviews": [], "comments": [], "conversation_comments": [],
                    "review_ids": [], "comment_ids": [], "conversation_comment_ids": [],
                    "inquiry_comments": [],
                    "inquiry_conversation_comments": [{"id": 32, "body": "Explain why it failed. Do not change anything."}],
                    "inquiry_comment_ids": [], "inquiry_conversation_comment_ids": [32]}
+        pending_ci = collect.CiSnapshot(
+            repository={"id": 2, "full_name": "riseproject-upstreaming/proj"}, head_sha=SHA_A,
+            runs=[run(1, status="in_progress", conclusion=None)],
+            jobs_by_run={1: [job(1, "wheels riscv64", status="in_progress", conclusion=None)]})
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_A}), \
-             mock.patch("observe_ci.collect.development_review_feedback", return_value=inquiry):
+             mock.patch("observe_ci.collect.development_review_feedback", return_value=inquiry), \
+             mock.patch("observe_ci.collect.ci_snapshot", return_value=pending_ci):
             observed = observe_ci.observe(object(), contributions={"c": rec}, operations={}, contracts={},
                                           policy=policy(), now=NOW)
         final = [item for kind, item in observed.staged if kind == "contributions"][-1]
         event = [item for kind, item in observed.staged if kind == "events"][-1]
         evidence = [item for kind, item in observed.staged if kind == "evidence"][-1]
         self.assertEqual((final["revision"], final["activity"], final["paused"]),
-                         (8, "fix_needed", True))
+                         (8, "waiting_ci", True))
         self.assertEqual(final.get("pending_feedback_evidence_ids"), rec.get("pending_feedback_evidence_ids"))
-        self.assertEqual(event["kind"], "development_review_inquiry")
+        self.assertEqual(final["processed_pr_conversation_comment_ids"], [32])
+        self.assertEqual(event["kind"], "record_explanation")
         self.assertFalse(event["revision_bumped"])
         self.assertEqual(evidence["kind"], "human_inquiry")
         self.assertNotIn("review_feedback", observed.report[0])
+
+    def test_nothing_is_observed_while_development_work_is_due(self):
+        """`development.fix_needed` has no observation row: no review, CI,
+        or head change is recorded there."""
+        import observe_ci
+        rec = contribution(phase="development", activity="fix_needed", revision=8)
+        with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_B}), \
+             mock.patch("observe_ci.collect.development_review_feedback") as feedback, \
+             mock.patch("observe_ci.collect.ci_snapshot") as snapshot:
+            observed = observe_ci.observe(object(), contributions={"c": rec}, operations={},
+                                          contracts={}, policy=policy(), now=NOW)
+        self.assertEqual(observed.staged, [])
+        self.assertEqual(observed.report[0]["stale_head"], SHA_B)
+        feedback.assert_not_called()
+        snapshot.assert_not_called()
 
     def test_explanation_only_comments_are_separated_from_repairs(self):
         self.assertEqual(collect.review_comment_intent(
@@ -745,7 +731,7 @@ class TestTick(unittest.TestCase):
                               inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(res.requested_effects, [])
 
-    def test_dispatch_once_per_task_then_timeout(self):
+    def test_dispatch_once_per_task_and_no_deadline(self):
         from datetime import timedelta
 
         import reconcile
@@ -763,14 +749,15 @@ class TestTick(unittest.TestCase):
         self.assertEqual(dispatched, ["investigation"])
         self.assertEqual(contribs["c"]["phase"], "investigation")
         self.assertEqual(contribs["c"]["activity"], "agent_running")
-        # No outcome for longer than the deadline: wait for a human, never re-dispatch.
+        # No outcome past the recorded deadline: no row reads the deadline,
+        # so nothing changes and nothing is dispatched again; a terminal
+        # graph is recovered by the table's Work recovery rows.
         snap = reconcile.Snapshot(contributions=contribs, operations={}, consumed={}, projects={}, evidence={})
         out = reconcile.tick(None, snap, policy=policy(read_only=False), now=T + timedelta(hours=7),
                              publications=[], pressure=capacity.Pressure(ok=True), observe=False)
         self.assertEqual(out.report["requested_effects"], [])
-        self.assertEqual(len(out.report["timed_out_work"]), 1)
-        final = [r for k, r in out.staged if k == "contributions"][-1]
-        self.assertEqual((final["activity"], final["active_work"]), ("waiting_human", None))
+        self.assertNotIn("timed_out_work", out.report)
+        self.assertEqual([r for k, r in out.staged if k == "contributions"], [])
 
     def test_investigation_outcome_auto_admits_development(self):
         import reconcile

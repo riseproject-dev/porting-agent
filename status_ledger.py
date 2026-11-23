@@ -174,6 +174,39 @@ MESSAGES = {
         "Rejected the investigation Result: it has no usable dossier, and the investigation "
         "attempts are exhausted. The contribution waits for a human: `/upstreaming resume` at "
         "the current revision starts a new investigation."),
+    "record_publish_success": ("Published the patch to the development branch. CI on the "
+                               "published head is observed next."),
+    "reject_patch_proposal": ("Rejected the worker's proposal in trusted validation. "
+                              "Development Work is due again at a new revision."),
+    "replan_development": ("The proposal no longer applies to the fork head. Development Work "
+                           "is due again at a new revision."),
+    "schedule_publish_retry": ("Publishing the verified patch failed with an infrastructure "
+                               "error. The same patch is published again later; no new Work is "
+                               "requested."),
+    "exhaust_publish_recovery": (
+        "Publishing the verified patch failed with an infrastructure error, and the publish "
+        "retries (`publish_recovery`) are spent. The contribution waits for a human: correct "
+        "the cause, then `/upstreaming resume` at the current revision requests fresh Work."),
+    "retry_dispatch": ("A dispatcher run ended without the requested Work being claimed. The "
+                       "dispatcher is launched again for the same Work."),
+    "exhaust_dispatch_recovery": (
+        "Dispatcher runs ended without the requested Work being claimed, and the dispatch "
+        "retries (`dispatch_recovery`) are spent. The contribution waits for a human: correct "
+        "the cause, then `/upstreaming resume` at the current revision requests fresh Work."),
+    "request_ci_rerun": (
+        "The repair worker reports that the CI failure is not caused by the patch. No CI rerun "
+        "is launched automatically: the contribution waits for CI of another run or attempt "
+        "on the same head. Rerun the failed jobs or push to the development branch; "
+        "`/upstreaming refresh` or `/upstreaming park` also leave the wait."),
+    "record_ci_failure": ("A blocking CI job failed on the published head. Repair Work is due "
+                          "for the failing job."),
+    "record_pr_mismatch": (
+        "The development PR no longer matches the recorded fork, branch, or PR. The "
+        "contribution waits for a human: correct the development PR, then `/upstreaming "
+        "resume` at the current revision continues development."),
+    compat.DEVELOPMENT_MIGRATED: ("Moved this contribution to the lifecycle state of the table "
+                                  "its development state stands for. Its fork, head, revision, "
+                                  "and evidence are unchanged."),
     "start_operation": "Launched the trusted fork provisioning workflow.",
     "require_provisioning_intervention": (
         "Provisioning cannot continue safely: the fork provisioning operation failed, or its "
@@ -439,6 +472,8 @@ def render(event: dict, record: dict, run_url: str) -> str:
                     "leaves the wait.")
     if kind == "pause_on_processing_error":
         message += _processing_error(event)
+    if kind == "record_pr_mismatch" and (event.get("details") or {}).get("mismatch"):
+        message += f" Observed: {_quotable(event['details']['mismatch'], 300)}."
     message += _budget_note(event)
     details = event.get("details") or {}
     override = details.get("admission_override")

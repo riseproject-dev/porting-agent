@@ -8,7 +8,8 @@ planned fork intent (the canary record of that time), the provisioning wait
 without a pending action or with the retired ``provision_fork``,
 development without a fork (a fork intent retired while destination writes
 were disabled, a patch proposed before the fork), and a proposal held on the
-provisioned fork without having been published; and records the migration
+provisioned fork without having been published, in the capacity wait or in
+the development wait without a pending action; and records the migration
 refuses. The migration is evented, exact-shape, idempotent, and fail-closed,
 and runs in its own commit before the ordinary tick.
 """
@@ -45,8 +46,13 @@ MIGRATED = {
     "waiting-human-provision-fork": ("provisioning.idle", False, ["pending_human_action"]),
     "development-without-fork": ("provisioning.idle", True, []),
     "development-pre-fork-proposal": ("provisioning.idle", True, ["proposal_artifact"]),
-    "development-held-proposal": ("development.idle", True,
+    "development-held-proposal": ("development.fix_needed", True,
                                   ["proposal_artifact", "pending_publication"]),
+    # The live record at e0c4a3d6 (and, one retry later, 08f9bf57): the code
+    # before the table moved the held proposal's capacity wait to a wait
+    # without a pending action.
+    "development-waiting-human-held-proposal": ("development.fix_needed", True,
+                                                ["proposal_artifact", "pending_publication"]),
 }
 # fixture -> the operation the store holds for it
 OPERATIONS = {"waiting-capacity": PLANNED, "waiting-capacity-paused": PLANNED,
@@ -67,8 +73,7 @@ class TestProvisioningMigration(unittest.TestCase):
                 new, event = compat.migrate_provisioning(record, operation=OPERATIONS.get(name),
                                                          now=NOW)
                 self.assertEqual(engine.state_key(new), target)
-                self.assertIn(target, lifecycle.LIFECYCLE if target.startswith("provisioning")
-                              else compat.LEGACY_STATES)
+                self.assertIn(target, lifecycle.LIFECYCLE)
                 self.assertEqual(new["revision"], record["revision"] + (1 if bump else 0))
                 self.assertIsNone(compat.state_problem(new))
                 schemas.validate("contribution", new)
@@ -101,6 +106,17 @@ class TestProvisioningMigration(unittest.TestCase):
                 self.assertTrue(compat.needs_provisioning_migration(record))
                 with self.assertRaises(lifecycle.TransitionError):
                     compat.migrate_provisioning(record, operation=OPERATIONS.get(name), now=NOW)
+
+    def test_the_held_proposal_wait_with_a_pending_action_or_without_a_fork_is_refused(self):
+        record = load("development-waiting-human-held-proposal")
+        waiting = dict(record, pending_human_action={
+            "kind": "publication_infrastructure_failure", "requested_at": NOW,
+            "reminded_at": None, "escalated_at": None, "counter": "publish_recovery"})
+        for refused in (waiting, dict(record, fork=None)):
+            with self.subTest(refused=refused["fork"] is None):
+                self.assertTrue(compat.needs_provisioning_migration(refused))
+                with self.assertRaises(lifecycle.TransitionError):
+                    compat.migrate_provisioning(refused, operation=None, now=NOW)
 
     def test_no_legacy_investigation_or_provisioning_state_is_admitted(self):
         self.assertFalse({s for s in compat.LEGACY_STATES

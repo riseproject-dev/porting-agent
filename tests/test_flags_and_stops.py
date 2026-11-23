@@ -405,7 +405,12 @@ class TestControllerStops(unittest.TestCase):
         self.assertEqual(self.identity_tick(paused).staged, [])
 
     def test_identity_change_in_a_legacy_state(self):
-        record = contribution(phase="development", activity="waiting_capacity",
+        record = contribution(phase="upstream_review", activity="waiting_capacity",
+                              upstream_pr={"id": 9, "number": 9,
+                                           "url": "https://github.com/example/proj/pull/9",
+                                           "head_repository_id": 2, "head_ref": "riscv64",
+                                           "head_sha": "a" * 40, "base_ref": "main",
+                                           "registered_by": OWNER},
                               pending_publication={"worker_run_id": "5", "attempts": 1,
                                                    "last_reason": "x", "next_attempt_at": NOW,
                                                    "exhausted": False})
@@ -413,7 +418,7 @@ class TestControllerStops(unittest.TestCase):
         recs = [r for k, r in self.identity_tick(record).staged if k == "contributions"]
         self.assertEqual([e["kind"] for e in evs], ["pause_on_identity_change"])
         self.assertEqual((engine.state_key(recs[-1]), recs[-1]["pending_publication"],
-                          recs[-1]["paused_by"]), ("development.idle", None, "controller"))
+                          recs[-1]["paused_by"]), ("upstream_review.idle", None, "controller"))
 
 
 class TestFlagMigration(unittest.TestCase):
@@ -425,9 +430,11 @@ class TestFlagMigration(unittest.TestCase):
                               updated_at="2026-11-19T00:00:00+00:00")
         self.assertTrue(compat.needs_flag_migration(record))
         new, event = self.migrate(record)
+        # The block's wait ends in the development state of the table: the
+        # head differs from the provisioned base, so CI is observed.
         self.assertEqual((new["paused"], new["paused_by"], new["paused_reason"], new["paused_at"],
                           new["blocked_reason"], new["activity"]),
-                         (True, "human", "hold", "2026-11-19T00:00:00+00:00", None, "idle"))
+                         (True, "human", "hold", "2026-11-19T00:00:00+00:00", None, "waiting_ci"))
         self.assertEqual(event["kind"], compat.FLAG_MIGRATED)
         self.assertEqual(event["cause"], {"type": "migration", "id": compat.FLAG_MIGRATION})
         self.assertEqual(event["details"]["changed"], ["blocked_reason", "paused_at"])

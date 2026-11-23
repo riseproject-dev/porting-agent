@@ -179,9 +179,11 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
         result = final(output, record)
         self.assertEqual((result["phase"], result["activity"]), ("development", "agent_running"))
         self.assertEqual(result["active_work"]["dedupe_key"], R5_KEY)
-        self.assertEqual(output.report["observation"][0]["handoff_deferred"],
-                         "requested Work is still active")
-        self.assertNotIn("obsolete_ci_repair_withdrawn", events(output))
+        # `development.agent_running` has no observation row: green CI on the
+        # head neither withdraws the Work nor nominates it.
+        self.assertEqual(output.report["observation"][0]["note"],
+                         "development.agent_running has no observation row")
+        self.assertEqual(events(output), [])
         self.assertEqual(output.report["requested_effects"], [])
 
     def test_unknown_queue_or_running_dispatcher_is_not_proof(self):
@@ -189,23 +191,28 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
         running = DISPATCHERS[:1] + [dict(DISPATCHERS[0], id=1, status="in_progress")]
         for queue_works, runs in ((None, DISPATCHERS), ({}, None), ({}, running)):
             with self.subTest(queue=queue_works, runs=runs):
-                self.assertIn(reconcile.provably_unadmitted_work(
-                    {"c": record}, runs=runs, queue_works=queue_works), (None, set()))
                 output = tick(record, queue_works=queue_works, runs=runs,
                               now="2026-11-22T10:21:30+00:00")
                 self.assertEqual(final(output, record)["active_work"]["dedupe_key"], R5_KEY)
+                self.assertEqual(events(output), [])
 
-    def test_work_absent_from_queue_is_cleared_at_handoff(self):
+    def test_work_absent_from_queue_is_dispatched_again_by_the_table(self):
+        """A dispatcher run that ended with the Work absent from the queue
+        takes `retry_dispatch`: the same Work is dispatched again."""
         record = self.r5_requested()
-        self.assertEqual(reconcile.provably_unadmitted_work(
-            {"c": record}, runs=DISPATCHERS[:1], queue_works={}), {R5_KEY})
         output = tick(record, queue_works={}, runs=DISPATCHERS[:1],
                       now="2026-11-22T10:21:30+00:00")
         result = final(output, record)
-        self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))
-        self.assertIsNone(result["active_work"])
-        self.assertEqual(events(output), ["obsolete_ci_repair_withdrawn", "nominate_for_handoff"])
-        self.assertEqual(output.report["dispatch_relaunch"], [])
+        self.assertEqual((result["phase"], result["activity"]), ("development", "agent_running"))
+        self.assertEqual(result["active_work"]["dedupe_key"], R5_KEY)
+        self.assertEqual(result["active_work"]["dispatched_run_id"], str(DISPATCHERS[0]["id"]))
+        self.assertEqual(events(output), ["retry_dispatch"])
+        self.assertEqual(output.report["dispatch_relaunch"],
+                         [{"type": "relaunch_dispatcher", "contribution_id": record["contribution_id"]}])
+        # The decided run is not decided again in a later tick.
+        again = tick(result, queue_works={}, runs=DISPATCHERS[:1],
+                     now="2026-11-22T10:22:30+00:00")
+        self.assertEqual(events(again), [])
 
 
 class TestLateResultOfWithdrawnWork(unittest.TestCase):
@@ -223,12 +230,18 @@ class TestLateResultOfWithdrawnWork(unittest.TestCase):
         output = tick(record, publications=publications, queue_works={}, runs=DISPATCHERS)
         result = final(output, record)
         self.assertEqual(output.report["publications"],
-                         [{"contribution": "closeio--ciso8601/1", "ignored": "late Result without matching requested Work"}])
+                         [{"contribution": "closeio--ciso8601/1",
+                           "ignored": "late Result: development.waiting_ci has no row that folds a Result"}])
         self.assertEqual([e["kind"] for k, e in output.staged if k == "events"][:1],
                          ["record_late_effect"])
         self.assertIn(R5_ARTIFACT, result["processed_publications"])
         self.assertEqual(result["revision"], 5)
-        self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))
+        # Green CI does not nominate while actionable feedback is pending: the
+        # rehearsal evidence the code before the table recorded as pending
+        # feedback keeps the contribution in `development.waiting_ci`.
+        self.assertEqual((result["phase"], result["activity"]), ("development", "waiting_ci"))
+        self.assertIn("actionable feedback is pending",
+                      output.report["observation"][0]["handoff_deferred"])
         self.assertEqual(output.report["requested_effects"], [])
 
 
@@ -238,13 +251,13 @@ class TestLiveR6SelfHeals(unittest.TestCase):
     QUEUE = {work.graph_id(R5_KEY): "completed", work.graph_id(R6_KEY): "claimed"}
     RUNS = DISPATCHERS
 
-    def test_while_r6_runs_green_ci_is_recorded_and_handoff_waits(self):
+    def test_while_r6_runs_nothing_is_observed(self):
         record = load("contribution-r6.json")
         output = tick(record, queue_works=self.QUEUE, runs=self.RUNS)
         result = final(output, record)
         self.assertEqual((result["revision"], result["activity"]), (6, "agent_running"))
         self.assertEqual(result["active_work"], record["active_work"])
-        self.assertEqual(result["last_ci_evidence_id"], CI_EVIDENCE)
+        self.assertEqual(result["last_ci_evidence_id"], record["last_ci_evidence_id"])
         self.assertEqual(output.report["requested_effects"], [])
         self.assertEqual(output.report["dispatch_relaunch"], [])
         self.assertEqual(events(output), [])
@@ -260,7 +273,14 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         result = final(output, record)
         self.assertEqual((result["revision"], result["active_work"]), (6, record["active_work"]))
 
-    def test_r6_no_change_result_enters_handoff_without_new_work(self):
+    def test_r6_no_change_result_reruns_ci_and_green_ci_nominates_without_new_work(self):
+        """The repair worker reports a failure not caused by the patch, and
+        the r6 Work carries no feedback (`active_work.feedback_evidence_ids`
+        is unset; its `reason_ids` are not feedback), so the Result takes
+        `request_ci_rerun` within `flaky_reruns`: `development.waiting_ci`
+        at the same revision, nothing charged but `flaky_reruns`. CI on the
+        head is read again there; it passed, so the contribution is
+        nominated without new Work once no actionable feedback is pending."""
         record = load("contribution-r6.json")
         with tempfile.TemporaryDirectory() as temporary:
             directory = publication_dir(temporary, R6_RUN, as_r6_result)
@@ -269,28 +289,47 @@ class TestLiveR6SelfHeals(unittest.TestCase):
             self.assertEqual(json.loads((directory / "outcome.json").read_text())["status"], "rejected")
             worker_recovery.normalize(directory, R6_RUN)
             publications = collected(temporary, {R6_RUN: 14760000000})
-        output = tick(record, publications=publications,
-                      queue_works=dict(self.QUEUE, **{work.graph_id(R6_KEY): "completed"}),
+        queue = dict(self.QUEUE, **{work.graph_id(R6_KEY): "completed"})
+        output = tick(record, publications=publications, queue_works=queue,
                       runs=self.RUNS, now="2026-11-22T11:20:00+00:00")
+        rerun = next(item for kind, item in output.staged
+                     if kind == "events" and item["kind"] == "request_ci_rerun")
+        self.assertEqual(rerun["cause"], {"type": "result", "id": R6_RUN})
+        self.assertFalse(rerun["revision_bumped"])
+        self.assertEqual(rerun["details"]["result_status"], "no_change")
+        self.assertEqual(rerun["details"]["charged"], ["flaky_reruns"])
+        self.assertEqual(rerun["to"]["activity"], "waiting_ci")
+        self.assertEqual(events(output), ["request_ci_rerun"])
         result = final(output, record)
-        self.assertEqual(result["revision"], 6)
-        self.assertEqual((result["phase"], result["activity"]), ("handoff", "awaiting_submission"))
+        self.assertEqual((result["phase"], result["activity"], result["revision"]),
+                         ("development", "waiting_ci", 6))
         self.assertIsNone(result["active_work"])
-        self.assertIsNone(result["clean_head_sha"])
         self.assertEqual(result["fork"]["head_sha"], HEAD)
-        self.assertEqual(result["pending_human_action"]["kind"], "submit_upstream")
-        self.assertEqual(result["last_ci_evidence_id"], CI_EVIDENCE)
-        self.assertEqual(result["handoff_request"],
-                         {"command_id": f"observation-{CI_EVIDENCE}", "head": HEAD, "revision": 6})
-        self.assertEqual(result["proposal_artifact"]["outcome"], "no_change")
-        self.assertEqual(result["budget"], record["budget"])
-        self.assertEqual(events(output), ["worker_no_change", "nominate_for_handoff"])
-        no_change = next(item for kind, item in output.staged
-                         if kind == "events" and item["kind"] == "worker_no_change")
-        self.assertEqual(no_change["cause"], {"type": "result", "id": R6_RUN})
-        self.assertFalse(no_change["revision_bumped"])
+        self.assertEqual({k: v for k, v in result["budget"].items() if k != "reruns"},
+                         record["budget"])
+        self.assertEqual(result["budget"]["reruns"], {"head_sha": HEAD, "flaky": 1, "interrupted": 0,
+                                                      "answered_ci_evidence_id": None})
         self.assertEqual(output.report["requested_effects"], [])
         self.assertEqual(output.report["dispatch_relaunch"], [])
+        # Green CI on the head is read again in the same tick. The rehearsal
+        # evidence that the code before the table recorded as pending
+        # feedback still holds the nomination, as for the late r5 Result.
+        self.assertEqual(output.report["observation"][0]["ci"]["state"], "passed")
+        self.assertIn("actionable feedback is pending",
+                      output.report["observation"][0]["handoff_deferred"])
+        # With no actionable feedback pending, green CI nominates the head:
+        # no new Work is requested.
+        clear = dict(record, pending_feedback_evidence_ids=[])
+        output = tick(clear, publications=publications, queue_works=queue,
+                      runs=self.RUNS, now="2026-11-22T11:20:00+00:00")
+        self.assertEqual(events(output), ["request_ci_rerun", "nominate_for_handoff"])
+        result = final(output, clear)
+        self.assertEqual((result["phase"], result["activity"], result["revision"]),
+                         ("handoff", "awaiting_submission", 6))
+        self.assertEqual(result["last_ci_evidence_id"], CI_EVIDENCE)
+        self.assertEqual(result["pending_human_action"]["kind"], "submit_upstream")
+        self.assertIsNone(result["active_work"])
+        self.assertEqual(output.report["requested_effects"], [])
 
     def test_genuine_r6_rejection_charges_no_progress_only(self):
         record = load("contribution-r6.json")
@@ -310,7 +349,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertEqual((new["phase"], new["activity"]), ("development", "fix_needed"))
         self.assertIsNone(new["active_work"])
         self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
-                         ["worker_proposal_rejected"])
+                         ["reject_patch_proposal"])
 
     def test_rejection_exhaustion_refreshes_then_parks_and_resumes_clean(self):
         record = load("contribution-r6.json")

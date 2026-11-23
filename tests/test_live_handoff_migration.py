@@ -139,13 +139,11 @@ class TestRecordMigration(unittest.TestCase):
         """The same CI on a record that was never in the old wait gives the
         same state, so the migrated record is not a special case."""
         before = live()
-        waiting_ci = compat.legacy_update(
-            dict(before, phase="development", activity="idle"), "observe_ci.ci_passed",
-            activity="waiting_ci", handoff_request=None, pending_human_action=None,
-            clean_head_sha=None)
+        waiting_ci = dict(before, phase="development", activity="waiting_ci",
+                          handoff_request=None, pending_human_action=None, clean_head_sha=None)
         out = engine.apply_transition(
             waiting_ci, "nominate_for_handoff", policy=policy(), now=NOW, cause_id=CI_EVIDENCE,
-            facts={"ci_passed_on_head", "no_pending_actionable_feedback"},
+            facts={"ci_passed_on_head"},
             values={"last_ci_evidence_id": CI_EVIDENCE,
                     "handoff_request": dict(before["handoff_request"])})
         after, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),

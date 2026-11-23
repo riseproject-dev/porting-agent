@@ -153,12 +153,18 @@ def graph_id(dedupe_key: str) -> str:
     return "porting:" + hashlib.sha256(dedupe_key.encode()).hexdigest()[:32]
 
 
-def work_key(contribution_id: str, generation: int, revision: int, task: str) -> str:
+def work_key(contribution_id: str, generation: int, revision: int, task: str,
+             reruns: int = 0) -> str:
     """The Work id of one allocation: the contribution, the generation, the
-    revision, and the task. The queue graph is derived from it
-    (``graph_id``), so Work of another generation or revision is another
-    graph, and a terminal graph is never submitted again."""
-    return f"{contribution_id}@g{generation}.r{revision}:{task}"
+    revision, the flaky CI reruns requested for the head so far
+    (``budget.reruns.flaky``, from the first one on), and the task. The
+    queue graph is derived from it (``graph_id``), so Work of another
+    generation or revision is another graph, and a terminal graph is never
+    submitted again. ``request_ci_rerun`` keeps the revision, so the rerun
+    count tells apart the repair Work requested after a rerun from the Work
+    whose Result requested it."""
+    rerun = f".rerun{reruns}" if reruns else ""
+    return f"{contribution_id}@g{generation}.r{revision}{rerun}:{task}"
 
 
 def work_generation(work: dict) -> int:

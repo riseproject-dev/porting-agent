@@ -81,7 +81,7 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
                                      handoff_request=None, pending_human_action=None)
         out = engine.apply_transition(
             before, "nominate_for_handoff", policy=policy(), now=NOW, cause_id="ci-2-7-1",
-            facts={"ci_passed_on_head", "no_pending_actionable_feedback"},
+            facts={"ci_passed_on_head"},
             values={"last_ci_evidence_id": "ci-2-7-1",
                     "handoff_request": {"command_id": "observation-ci-2-7-1", "head": SHA_A,
                                         "revision": 5}},

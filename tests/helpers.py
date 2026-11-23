@@ -36,6 +36,9 @@ def contribution(phase="development", **over):
         base_ref="main", policy_id="test", now=NOW)
     rec.update({
         "phase": phase,
+        # A development record defaults to the state of the table that
+        # observes its published head.
+        **({"activity": "waiting_ci"} if phase == "development" else {}),
         "owners": {"primary": OWNER, "backup": BACKUP, "submitter": None, "handoff_reviewer": None},
         "admission_class": "configuration_integration",
         "upstream": {"repository_id": 1, "full_name": "example/proj", "base_ref": "main",

@@ -169,7 +169,7 @@ class TestDurableProvisioningLaunch(unittest.TestCase):
         migrated, _event = compat.migrate_provisioning(record, operation=None, now=NOW)
         self.assertEqual((engine.state_key(migrated), migrated["revision"],
                           migrated["proposal_artifact"], migrated["pending_publication"]),
-                         ("development.idle", record["revision"] + 1, None, None))
+                         ("development.fix_needed", record["revision"] + 1, None, None))
         result = self.tick(migrated, operation, recovery, project)
         # A fresh patch is requested on the fork; nothing held is published.
         self.assertEqual(result.report["selected"][0]["task"], "development_patch")

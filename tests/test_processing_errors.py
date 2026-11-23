@@ -57,7 +57,7 @@ FORK_B = "riseproject-upstreaming/lib"
 VERB = "pause_on_processing_error"
 REAL = {name: getattr(module, name) for module, name in (
     (reconcile, "apply_publication"), (controller, "_actionable"), (controller, "apply_command"),
-    (compat, "observe_status"))}
+    (compat, "observe_status"), (observe_ci, "_take"))}
 
 
 def expected_pause(before, reason):
@@ -267,13 +267,16 @@ class TestOneContributionErrors(unittest.TestCase):
     def test_observation_error_after_evidence_was_staged(self):
         """All or nothing: the CI evidence the observation had already staged
         for the errored contribution is discarded with the rest."""
-        a = waiting(activity="idle", last_ci_evidence_id="ci-0")
+        a = waiting(last_ci_evidence_id=None)
         # Paused, so it competes for no worker slot in either tick.
         b = other_waiting(paused=True, paused_by="human", paused_at=NOW)
         baseline = tick([a, b], verdict="failed")
         self.assertIn("evidence", [kind for kind, _r in staged_for(baseline, A)])
+        real_take = only_for(A, lambda record, obs, *args, **kwargs:
+                             REAL["_take"](obs, record, *args, **kwargs))
         output = tick([a, b], verdict="failed", patches=[
-            ("observe_ci.compat.observe_status", only_for(A, REAL["observe_status"]))])
+            ("observe_ci._take", lambda obs, record, *args, **kwargs:
+             real_take(record, obs, *args, **kwargs))])
         self.assert_isolated(output, a, baseline, "observation")
 
     def test_work_selection(self):
@@ -384,7 +387,7 @@ class TestOneContributionErrors(unittest.TestCase):
         artifact = {"work_id": "w", "claim_id": "c", "artifact_id": 5, "name": "n",
                     "digest": "sha256:" + "0" * 64, "run_id": "555", "result_commit": "d" * 40,
                     "outcome": "published"}
-        a = waiting(activity="waiting_capacity", pending_publication=held,
+        a = waiting(activity="agent_running", pending_publication=held,
                     proposal_artifact=artifact)
         output = tick([a, other_waiting()], head=branch_head(FORK_A))
         paused = record_of(output, A)

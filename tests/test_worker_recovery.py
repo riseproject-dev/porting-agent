@@ -63,7 +63,8 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
             "attempt": 1,
             "requested_at": "2026-11-22T08:55:56.948866+00:00",
             "deadline_at": "2026-11-22T14:55:56.948866+00:00",
-            "dispatched_run_id": "45005112315",
+            # No dispatcher run is decided yet for this request.
+            "dispatched_run_id": None,
             "reason_ids": [
                 "rehearsal-closeio--ciso8601--1-r3-44982902579",
                 "dossier-closeio--ciso8601--1-r2",
@@ -121,7 +122,22 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
         final = [item for kind, item in staged if kind == "contributions"][-1]
         self.assertEqual((final["activity"], final["active_work"]), ("waiting_human", None))
         self.assertEqual(final["pending_human_action"]["kind"], "dispatch_failed")
+        self.assertEqual(final["pending_human_action"]["counter"], "dispatch_recovery")
+        self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
+                         ["exhaust_dispatch_recovery"])
         self.assertEqual(report[-1]["decision"], "dispatch failed; waiting for a human")
+
+    def test_each_ended_dispatcher_run_is_decided_once(self):
+        relaunch, staged, _report = self.recover(1)
+        decided = [item for kind, item in staged if kind == "contributions"][-1]
+        self.assertEqual(decided["active_work"]["dispatched_run_id"], "45005112315")
+        self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
+                         ["retry_dispatch"])
+        # The relaunched run has not shown up yet: no row is taken again.
+        self.record = decided
+        relaunch, staged, report = self.recover(1)
+        self.assertEqual((relaunch, staged), ([], []))
+        self.assertEqual(report[0]["decision"], "waiting for the relaunched dispatcher")
 
 
 class TestWorkerBlockedRecovery(unittest.TestCase):
@@ -222,6 +238,8 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                     "run_id": str(100 + attempt),
                 },
             }
+            # Each blocked Result answers Work requested in agent_running.
+            record = dict(record, activity="agent_running")
             record, _staged = reconcile.apply_publication(
                 record,
                 outcome,

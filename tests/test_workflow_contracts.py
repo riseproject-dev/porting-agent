@@ -2,8 +2,14 @@
 # SPDX-License-Identifier: MIT
 """Cumulative controller, native queue, and workflow security contracts."""
 
+import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import yaml
@@ -386,6 +392,72 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn('if length == 1 then .[0].id elif length == 0 then empty else '
                       'error("expected one publication artifact") end', text)
         self.assertNotIn("\"porting-publication\" and (.expired | not))][0]", text)
+
+    def test_controller_collects_the_result_of_a_publish_only_retry(self):
+        """A publish-only retry uploads its Result as `porting-publication`
+        with the task of the worker run it publishes and that run's id; the
+        controller collects it from completed runs on main that it
+        dispatched, and its trusted recovery reads the worker run."""
+        text = (WORKFLOWS / "controller.yml").read_text()
+        self.assertIn(
+            "for workflow in investigator.lock.yml worker.lock.yml publish-retry.yml", text)
+        self.assertIn("filter='&status=completed&branch=main&event=workflow_dispatch'", text)
+        self.assertIn('runs?per_page=20$filter"', text)
+        self.assertIn('worker_run=$(cat "publications/$run/worker-run-id"', text)
+        self.assertIn('--run-id "$worker_run"', text)
+        self.assertNotIn('--run-id "$run"', text)
+        retry = workflow("publish-retry.yml")
+        self.assertIn("workflow_dispatch", retry.get("on", retry.get(True)))
+        upload = next(step for step in retry["jobs"]["publish"]["steps"]
+                      if str(step.get("uses", "")).startswith("actions/upload-artifact"))
+        self.assertEqual(upload["if"], "always()")
+        self.assertEqual(upload["with"]["name"], "porting-publication")
+        for name in ("in/task.json", "in/outcome.json", "in/result.json", "in/proposal.json",
+                     "in/worker-run-id"):
+            self.assertIn(name, upload["with"]["path"].split())
+        launch = workflow("controller.yml")
+        self.assertIn("gh workflow run publish-retry.yml --repo \"$GITHUB_REPOSITORY\" --ref main",
+                      str(launch))
+
+    @unittest.skipUnless(shutil.which("unzip") and shutil.which("jq"), "unzip and jq needed")
+    def test_collector_drops_a_worker_run_id_from_investigator_and_worker_artifacts(self):
+        """Only a publish-only retry names the worker run it publishes: a
+        `worker-run-id` file in an investigator or worker artifact is
+        deleted, so the Result is the Result of the run that uploaded it."""
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        script = next(step["run"] for step in steps if str(step.get("name", "")).startswith(
+            "Collect verified investigator, worker, and publish-only retry outcomes"))
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bundle = tmp / "artifact.zip"
+            with zipfile.ZipFile(bundle, "w") as archive:
+                archive.writestr("outcome.json", json.dumps({"status": "published"}))
+                archive.writestr("task.json", json.dumps({"task": "development_repair"}))
+                archive.writestr("proposal.json", "{}")
+                archive.writestr("result.json", "{}")
+                archive.writestr("worker-run-id", "4242")
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "gh").write_text(
+                "#!/bin/bash\n"
+                'case "$*" in\n'
+                '  *worker.lock.yml/runs*) echo 11 ;;\n'
+                '  *workflows/*/runs*) ;;\n'
+                '  *runs/11/artifacts*) echo 99 ;;\n'
+                f'  *artifacts/99/zip*) cat "{bundle}" ;;\n'
+                "  *) exit 1 ;;\n"
+                "esac\n")
+            (bin_dir / "uv").write_text("#!/bin/bash\nexit 0\n")
+            for name in ("gh", "uv"):
+                (bin_dir / name).chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+                       GITHUB_REPOSITORY="o/r", GH_TOKEN="x")
+            subprocess.run(["bash", "-c", script], cwd=tmp, env=env, check=True,
+                           capture_output=True)
+            self.assertTrue((tmp / "publications/11/outcome.json").exists())
+            self.assertFalse((tmp / "publications/11/worker-run-id").exists())
+            [outcome] = reconcile._publication_outcomes(str(tmp / "publications"))
+            self.assertEqual(outcome["worker_run_id"], "11")
 
     def test_controller_chains_every_pipeline_completion_and_has_schedule_fallback(self):
         controller = workflow("controller.yml")

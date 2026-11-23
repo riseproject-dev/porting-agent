@@ -33,7 +33,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import canary
 import capacity
 import collect
 import compat
@@ -73,7 +72,20 @@ class TickOutput:
     failures: list[isolation.ContributionFailure] = field(default_factory=list)
 
 
+# The wait before the next publish-only retry, by the publications that
+# failed so far (`pending_publication.attempts`): 15 minutes after the first,
+# 60 after the second, 240 after every later one.
 RETRY_BACKOFF_MINUTES = (15, 60, 240)
+# A launched publish-only retry whose Result is not folded by then counts as a
+# failed publication. The retry workflow's jobs time out after 30 minutes.
+PUBLISH_RESULT_WAIT_MINUTES = 60
+
+
+def publish_retry_delay(attempts: int) -> int:
+    """Minutes before the next publish-only retry once ``attempts``
+    publications of the held Result have failed."""
+    return RETRY_BACKOFF_MINUTES[min(max(attempts, 1), len(RETRY_BACKOFF_MINUTES)) - 1]
+
 
 # A dispatcher launch that has not shown up as a run by then is launched again.
 DISPATCH_LAUNCH_GRACE_MINUTES = 15
@@ -123,24 +135,29 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
 
     * a dispatcher run created after the request is still queued/running: wait;
     * no dispatcher run after the request, past a short grace: launch again
-      (the launch itself was lost);
-    * otherwise every such run finished without its Work being claimed. If
-      fewer than ``1 + retries.infrastructure_per_head_failure`` runs did,
-      launch the dispatcher again (it replays the same committed request, so
-      the queue sees the identical Work); else give up and wait for a human.
+      (the launch itself was lost; no run ended, so no row is taken);
+    * otherwise a dispatcher run ended without its Work being claimed. The
+      table's ``retry_dispatch`` launches the dispatcher again within
+      ``dispatch_recovery`` (it replays the same committed request, so the
+      queue sees the identical Work), and ``exhaust_dispatch_recovery`` waits
+      for a human once that budget is spent. Its count is the number of
+      dispatcher runs that ended since the request. Each
+      ended run is decided once: the record names the last one it decided
+      in ``active_work.dispatched_run_id``.
+
+    A graph the queue reports completed or cancelled takes
+    ``allocate_work_retry`` or ``exhaust_work_recovery``. A record in a state
+    the table does not have is left unchanged and reported.
 
     Returns (relaunch requests, staged records, report). No model is involved
     in deciding; a relaunch is an ordinary dispatcher run.
     """
-    from datetime import timedelta
-
     import work
     relaunch: list[dict] = []
     staged: list[tuple[str, dict]] = []
     report: list[dict] = []
     if runs is None or queue_works is None:
         return relaunch, staged, report
-    limit = 1 + ((policy.get("retries") or {}).get("infrastructure_per_head_failure", 2))
     iso = now.isoformat()
     pending = sorted(((k, c) for k, c in contributions.items() if c.get("active_work")),
                      key=lambda kc: kc[1]["active_work"]["requested_at"])
@@ -159,7 +176,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 continue
             state = queue_works.get(work.graph_id(aw["dedupe_key"]))
             if state not in (None, "available", "completed", "cancelled"):
-                continue      # a live Claim is resolved by the worker outcome or deadline
+                continue      # a live Claim is resolved by the worker outcome
             requested = datetime.fromisoformat(aw["requested_at"])
             after = [r for r in runs if datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) >= requested]
             entry = {"contribution": c["contribution_id"], "task": aw["task"], "queue_state": state,
@@ -184,11 +201,6 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             if any(r.get("status") != "completed" for r in after):
                 report.append(entry | {"decision": "dispatcher running"})
                 continue
-            latest = max(after, key=lambda r: r["created_at"], default=None)
-            if latest is not None and str(latest["id"]) != str(aw.get("dispatched_run_id")):
-                c = dict(c, active_work=dict(aw, dispatched_run_id=str(latest["id"])))
-                contributions[key] = c
-                staged.append(("contributions", c))
             if not after:
                 if now - requested < timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
                     report.append(entry | {"decision": "waiting for the dispatcher to start"})
@@ -196,31 +208,62 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
                 report.append(entry | {"decision": "relaunch: no dispatcher run"})
                 continue
-            # Every finished dispatcher run since the request left the Work unclaimed.
-            if len(after) < limit:
-                relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
-                report.append(entry | {"decision": f"relaunch: dispatch attempt {len(after) + 1} of {limit}"})
+            latest = max(after, key=lambda r: r["created_at"])
+            if str(latest["id"]) == str(aw.get("dispatched_run_id")):
+                # This run was decided in an earlier tick; the relaunch it
+                # led to has not shown up as a run yet.
+                ended = datetime.fromisoformat(
+                    str(latest.get("updated_at") or latest["created_at"]).replace("Z", "+00:00"))
+                if now - ended >= timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
+                    relaunch.append({"type": "relaunch_dispatcher",
+                                     "contribution_id": c["contribution_id"]})
+                    report.append(entry | {"decision": "relaunch: the requested run did not start"})
+                else:
+                    report.append(entry | {"decision": "waiting for the relaunched dispatcher"})
                 continue
-            if engine.state_key(c) in SUBMISSION_WORK_STATES:
-                # The handoff phase is written by the table's rows only.
-                out = engine.apply_transition(
-                    c, "exhaust_dispatch_recovery", policy=policy, now=iso,
-                    cause_id=f"dispatch-{len(after)}", counts={"dispatch_recovery": len(after)},
-                    details={"dispatcher_runs": [r["id"] for r in after][:10]})
-                if not out.accepted:
-                    raise lifecycle.TransitionError(f"exhaust_dispatch_recovery refused: {out.reason}")
-                new = out.record
-                staged.append(("events", out.event))
-            else:
-                new = compat.legacy_update(
-                    c, "reconcile.dispatch_exhausted", active_work=None, activity="waiting_human",
-                    updated_at=iso,
-                    pending_human_action={"kind": "dispatch_failed", "requested_at": iso,
-                                          "reminded_at": None, "escalated_at": None})
+            # A dispatcher run ended since the request with the Work unclaimed.
+            new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
+                                                  policy=policy)
+            if new is None:
+                report.append(entry | {"decision": decision})
+                continue
             contributions[key] = new
-            staged.append(("contributions", new))
-            report.append(entry | {"decision": "dispatch failed; waiting for a human"})
+            staged.extend([("contributions", new), ("events", event)])
+            if new.get("active_work"):
+                relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
+            report.append(entry | {"decision": decision})
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
+
+
+def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
+                   policy: dict) -> tuple[dict | None, dict | None, str]:
+    """The table's row for requested Work that a dispatcher run left absent
+    or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
+    relaunches spent) remains, ``exhaust_dispatch_recovery`` once it is
+    spent. ``count`` is the number of dispatcher runs since the request,
+    all ended. The record names the decided run in ``dispatched_run_id``."""
+    iso = now.isoformat()
+    if engine.state_key(c) not in lifecycle.LIFECYCLE:
+        return None, None, (f"dispatch lost in {engine.state_key(c)}, a state the table does "
+                            "not have")
+    counts = {"dispatch_recovery": count}
+    details = {"dispatcher_run": str(run["id"]), "work": aw["dedupe_key"]}
+    limit = lifecycle.budget_limit("dispatch_recovery", policy)
+    out = engine.apply_transition(c, "retry_dispatch", policy=policy, now=iso,
+                                  cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
+                                  counts=counts, details=details | {"attempt": count + 1,
+                                                                    "limit": limit})
+    if out.accepted:
+        new = dict(out.record, active_work=dict(aw, dispatched_run_id=str(run["id"])),
+                   updated_at=iso)
+        schemas.validate("contribution", new)
+        return new, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
+    out = engine.apply_transition(c, "exhaust_dispatch_recovery", policy=policy, now=iso,
+                                  cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
+                                  counts=counts, details=details | {"count": count, "limit": limit})
+    if not out.accepted:
+        return None, None, f"dispatch lost: {out.reason}"
+    return out.record, out.event, "dispatch failed; waiting for a human"
 
 
 def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
@@ -234,7 +277,8 @@ def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
     facts = {"work_terminal_without_result"}
     details = {"queue_state": queue_state, "work": aw["dedupe_key"]}
     generation, revision = int(c.get("generation", 0)), c["revision"] + 1
-    fresh = dict(aw, dedupe_key=work.work_key(c["contribution_id"], generation, revision, aw["task"]),
+    fresh = dict(aw, dedupe_key=work.work_key(c["contribution_id"], generation, revision, aw["task"],
+                                              engine.head_reruns(c)["flaky"]),
                  generation=generation, revision=revision, requested_at=iso,
                  deadline_at=(now + timedelta(hours=controller.WORK_DEADLINE_HOURS)).isoformat(),
                  dispatched_run_id=None)
@@ -296,6 +340,13 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if compat.waits_for_human(rec):
         # A wait for a human has no Result row; only its own rows leave it.
         return "late Result while the contribution waits for a human"
+    state = engine.state_key(rec)
+    if state in lifecycle.LIFECYCLE and not any(
+            edge.transition.trigger == lifecycle.Trigger.RESULT
+            and edge.verb != "record_late_effect" for edge in lifecycle.state_edges(state)):
+        # Only the `agent_running` states fold a Result; Work that a record
+        # holds in another state has none of their rows.
+        return f"late Result: {state} has no row that folds a Result"
     task = pub.get("task") or {}
     generation, key = work.task_identity(task)
     if generation is None:
@@ -342,37 +393,6 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str) -> d
         rec, policy=policy, now=now, cause_id=_result_cause(pub, pub.get("worker_run_id")),
         details={"result_status": pub.get("status"), "task_revision": task.get("revision"),
                  "task_generation": generation, "task_work": key, "why": why})
-
-
-def provably_unadmitted_work(contributions: dict[str, dict], *, runs: list[dict] | None,
-                             queue_works: dict[str, str] | None,
-                             skip: frozenset[str] = frozenset()) -> set[str] | None:
-    """Dedupe keys of requested Work that no worker can be running for.
-
-    Plan 12.3: if queue or run state cannot be read, nothing is inferred.
-    Work counts only when its graph is absent from the native queue replay
-    and no dispatcher run started since the request is still in flight.
-    ``active_work.dispatched_run_id`` is not proof: it is not recorded while a
-    Claim is live, and it names finished dispatcher runs that admitted nothing.
-    """
-    import work
-    if runs is None or queue_works is None:
-        return None
-    keys = set()
-    for c in contributions.values():
-        if c["contribution_id"] in skip:
-            continue
-        with isolation.contribution(c["contribution_id"], "dispatch_recovery"):
-            aw = c.get("active_work")
-            if not aw or work.graph_id(aw["dedupe_key"]) in queue_works:
-                continue
-            requested = datetime.fromisoformat(aw["requested_at"])
-            if any(r.get("status") != "completed"
-                   and datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")) >= requested
-                   for r in runs):
-                continue
-            keys.add(aw["dedupe_key"])
-    return keys
 
 
 def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
@@ -756,26 +776,15 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None,
                       evidence: dict | None = None) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold one publication outcome (from fork_publish / queue_result) into the record.
+    """Fold one Result (from fork_publish / queue_result) into the record.
 
-    * investigation         -> the dossier decides, by the table (``fold_dossier``)
-    * published / uncertain -> waiting_ci (observation confirms the head)
-    * no_change             -> idle (preserved; no revision bump, no repair)
-    * rejected, validation  -> fix_needed (a new agent task at a new revision),
-                               charged to the attempt budget; exhaustion parks
-                               (plan 3.3.3 development failure case 1)
-    * rejected, stale       -> idle (the world moved; the next tick re-plans)
-    * infra_error           -> keep the proposal, schedule a publish-only retry
-                               of the same worker run with backoff; after
-                               ``retries.infrastructure_per_head_failure``
-                               attempts, wait for a human (no model call ever)
-
-    An outcome ``proposal`` (a patch held without a destination write) is
-    not produced by the publish job, whose every patch Work writes the
-    provisioned fork; one that arrives is rejected in trusted validation.
+    * investigation Work: the dossier decides, by the table (``fold_dossier``);
+    * the submission rewrite and review Work: their trusted checks decide
+      (``fold_submission_rewrite``, ``fold_submission_review``);
+    * patch Work in development: the table's rows (``fold_patch_result``);
+    * revision Work in upstream review: the outcome code that predates the
+      table (``_fold_revision_outcome``).
     """
-    from datetime import datetime as _dt
-    from datetime import timedelta
     if outcome.get("status") == "investigation":
         return fold_dossier(rec, outcome, now=now, policy=policy or {},
                             worker_run_id=worker_run_id)
@@ -785,6 +794,219 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if engine.state_key(rec) == SUBMISSION_REVIEW_STATE:
         return fold_submission_review(rec, outcome, now=now, policy=policy or {},
                                       worker_run_id=worker_run_id, evidence=evidence)
+    if rec["phase"] == "development":
+        return fold_patch_result(rec, outcome, now=now, policy=policy or {},
+                                 worker_run_id=worker_run_id)
+    return _fold_revision_outcome(rec, outcome, now=now, policy=policy,
+                                  worker_run_id=worker_run_id)
+
+
+_ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")
+
+
+def _rehearsal_evidence(rec: dict, outcome: dict, run: str, policy: dict, now: str) -> dict:
+    """The evidence a worker reports when its reproduction infrastructure
+    was blocked."""
+    proposal = outcome.get("proposal") or {}
+    evidence = {
+        "schema_version": 1,
+        "evidence_id": safe_id(
+            f"rehearsal-{rec['contribution_id'].replace('/', '--')}-r{rec['revision']}-{run}"),
+        "contribution_id": rec["contribution_id"],
+        "kind": "rehearsal",
+        "policy_version": policy.get("policy_version", "unknown"),
+        "collected_at": now,
+        "summary": str(outcome.get("reason") or "worker reproduction infrastructure blocked")[:8000],
+        "limitations": list(proposal.get("validation_not_performed") or [])[:16],
+        "data": {
+            "worker_run_id": run,
+            "failure_class": outcome.get("failure_class"),
+            "failure_cluster": proposal.get("failure_cluster"),
+            "reproduction": proposal.get("reproduction"),
+        },
+        "digests": {"artifact": (outcome.get("artifact") or {}).get("digest") or ""},
+    }
+    schemas.validate("evidence", evidence)
+    return evidence
+
+
+def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dict,
+                      cause: str | None, details: dict) -> engine.Outcome:
+    """A publication of the Result of ``run`` failed: ``schedule_publish_retry``
+    holds the Result for a publish-only retry and charges ``publish_recovery``;
+    ``exhaust_publish_recovery`` once it is spent."""
+    before = int((rec.get("pending_publication") or {}).get("attempts", 0))
+    pending = {"worker_run_id": run, "attempts": before + 1, "last_reason": reason[:2000],
+               "next_attempt_at": (datetime.fromisoformat(now) + timedelta(
+                   minutes=publish_retry_delay(before + 1))).isoformat()}
+    out = engine.apply_transition(
+        rec, "schedule_publish_retry", policy=policy, now=now, cause_id=cause,
+        facts={"publication_infrastructure_error"}, values={"pending_publication": pending},
+        details=details | {"next_attempt_at": pending["next_attempt_at"]})
+    if not out.accepted:
+        out = engine.apply_transition(
+            rec, "exhaust_publish_recovery", policy=policy, now=now, cause_id=cause,
+            facts={"publication_infrastructure_error"}, details=details | {"attempts": before})
+    return out
+
+
+def _charged_launch(held: dict, outcome: dict) -> bool:
+    """Whether the publication failure an ``infra_error`` Result reports is
+    already charged to the held publication.
+
+    Every failed publication is charged once (``schedule_publish_retry``):
+    the worker's own as attempt 1, and each launched publish-only retry,
+    dispatched with attempt ``pending_publication.attempts + 1``, either by
+    its Result or, when none is folded within the wait, by the wait. So a
+    Result of an attempt not above ``attempts`` is charged already, and so
+    is any Result while no retry is launched (``launched_at`` absent): the
+    launches before were all charged."""
+    attempt = outcome.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt > 1:
+        return attempt <= int(held.get("attempts", 0))
+    return not held.get("launched_at")
+
+
+def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
+                      worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+    """Fold the Result of patch Work through the rows of
+    ``development.agent_running``.
+
+    * published or uncertain: ``record_publish_success`` (clears exactly the
+      feedback the Work carried); the published files join ``scope_paths``
+      and ``no_progress`` starts again beside the row;
+    * rejected in trusted validation, blocked, or a ``proposal`` (no
+      publisher produces one any more): ``reject_patch_proposal``; a blocked
+      Result's rehearsal evidence is recorded and named in the event;
+    * a ``no_change`` report (the repair worker found a failure not caused
+      by the patch): ``request_ci_rerun`` when the Work carries no feedback
+      and ``flaky_reruns`` remains, ``reject_patch_proposal`` otherwise;
+    * rejected as stale (the fork head moved): ``replan_development``;
+    * an infrastructure error of the publication: ``schedule_publish_retry``
+      holds the same Result for a publish-only retry within
+      ``publish_recovery``, ``exhaust_publish_recovery`` once it is spent.
+
+    The Result of a publish-only retry ends the held publication: every row
+    that folds it is taken with ``pending_publication`` cleared beside it.
+    A refused row raises ``TransitionError``.
+    """
+    if engine.state_key(rec) != "development.agent_running":
+        raise lifecycle.TransitionError(
+            f"the Result of patch Work is folded in development.agent_running only, not in "
+            f"{engine.state_key(rec)}")
+    status, fclass = outcome.get("status"), outcome.get("failure_class")
+    if status == "proposal":
+        status, fclass = "rejected", "validation"
+    held = rec.get("pending_publication")
+    run = str(worker_run_id or (held or {}).get("worker_run_id")
+              or (outcome.get("artifact") or {}).get("run_id") or "0")
+    cause = _result_cause(outcome, worker_run_id)
+    staged: list[tuple[str, dict]] = []
+    op = outcome.get("operation")
+    if op:
+        staged.append(("operations", op))
+    details: dict[str, Any] = {"result_status": status}
+    if fclass:
+        details["failure_class"] = fclass
+    if outcome.get("reason"):
+        details["reason"] = str(outcome["reason"])[:500]
+    if status == "infra_error" and held and not rec.get("active_work") \
+            and _charged_launch(held, outcome):
+        # The failed publication of this launch is already charged, by the
+        # wait for its Result: the late Result is recorded once, for audit,
+        # and charges nothing again.
+        event = compat.record_late_effect(
+            rec, policy=policy, now=now, cause_id=cause,
+            details={"result_status": status, "task_revision": rec["revision"],
+                     "task_generation": int(rec.get("generation", 0)),
+                     "task_work": (outcome.get("task") or {}).get("dedupe_key"),
+                     "why": "the failed publication of this publish-only retry was already "
+                            "charged when its Result did not arrive within "
+                            f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"})
+        return rec, staged + [("contributions", rec), ("events", event)]
+    if status == "infra_error":
+        out = _fail_publication(rec, run, str(outcome.get("reason") or ""), now=now,
+                                policy=policy, cause=cause, details=details)
+    else:
+        if status in ("published", "uncertain"):
+            verb, facts = "record_publish_success", {"result_published"}
+        elif status == "rejected" and fclass == "stale":
+            verb, facts = "replan_development", {"proposal_stale"}
+        elif status == "no_change":
+            # The repair worker reports a failure not caused by the patch:
+            # `request_ci_rerun` when the Work carries no feedback and
+            # `flaky_reruns` remains, else the outcome counts as
+            # `reject_patch_proposal`, as both rows state.
+            facts = {"failure_not_caused_by_patch"}
+            verb = ("reject_patch_proposal" if engine.refusal(
+                rec, "request_ci_rerun", policy=policy, now=now, facts=facts)
+                else "request_ci_rerun")
+        elif status in ("rejected", "worker_blocked"):
+            verb, facts = "reject_patch_proposal", {"proposal_rejected_or_blocked"}
+        else:
+            raise lifecycle.TransitionError(f"no row folds a patch Result with status {status!r}")
+        values: dict[str, Any] = {}
+        if verb == "record_publish_success":
+            art = outcome.get("artifact") or {}
+            artifact = rec.get("proposal_artifact")
+            if all(k in art for k in _ARTIFACT_KEYS):
+                artifact = {k: art[k] for k in _ARTIFACT_KEYS} | {
+                    "result_commit": art.get("result_commit"), "outcome": status}
+            values = {"proposal_artifact": artifact,
+                      "publication_operation_id": (op or {}).get("operation_id")
+                      or rec.get("publication_operation_id")}
+        if status == "worker_blocked":
+            evidence = _rehearsal_evidence(rec, outcome, run, policy, now)
+            staged.append(("evidence", evidence))
+            details["evidence_id"] = evidence["evidence_id"]
+        out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
+                                      facts=facts, values=values, details=details)
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"no row folds the patch Result ({status}) in "
+                                        f"{engine.state_key(rec)}: {out.reason}")
+    new = out.record
+    if out.verb == "record_publish_success":
+        # Beside the row: the published files join the admitted scope (a
+        # repair backed by review feedback may change a path the dossier
+        # missed), and a published patch starts `no_progress` again.
+        changed_files = ((op or {}).get("proposed") or {}).get("changed_files") or []
+        if changed_files:
+            new = dict(new, scope_paths=list(dict.fromkeys(
+                (new.get("scope_paths") or []) + changed_files)))
+        new = dict(new, budget=dict(new["budget"], no_progress_streak=0))
+    if out.verb == "request_ci_rerun":
+        # Beside the row: the CI run and attempt the classified Result
+        # answered (the evidence the row clears from `last_ci_evidence_id`)
+        # is kept with the rerun counts of the head. While no trusted rerun
+        # exists, `development.waiting_ci` acts only on CI evidence of
+        # another run or attempt.
+        new = dict(new, budget=dict(new["budget"], reruns=dict(
+            new["budget"]["reruns"], answered_ci_evidence_id=rec.get("last_ci_evidence_id"))))
+    if held and out.verb not in ("schedule_publish_retry", "exhaust_publish_recovery"):
+        # The held Result is answered: the publication is no longer pending.
+        new = dict(new, pending_publication=None)
+    schemas.validate("contribution", new)
+    staged.extend([("contributions", new), ("events", out.event)])
+    return new, staged
+
+
+def _fold_revision_outcome(rec: dict, outcome: dict, *, now: str, policy: dict | None,
+                           worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+    """Fold the Result of upstream revision Work, as the code before the
+    table did:
+
+    * published / uncertain -> waiting_ci (observation confirms the head)
+    * no_change             -> idle (preserved; no revision bump, no repair)
+    * rejected, validation  -> fix_needed at a new revision, charging
+                               ``no_progress``
+    * rejected, stale       -> idle (the world moved; the next tick re-plans)
+    * infra_error           -> keep the proposal, schedule a publish-only retry
+                               of the same worker run with backoff; after
+                               ``retries.infrastructure_per_head_failure``
+                               attempts, wait for a human (no model call ever)
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta
     staged: list[tuple[str, dict]] = []
     new = copy.deepcopy(rec)
     new["active_work"] = None          # any outcome ends the requested task
@@ -1224,10 +1446,11 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 op, external_ids={"pr_id": int(pr["id"]), "pr_number": int(pr["number"]),
                                   "development_pr_run_id": str(receipt["development_pr_run_id"])},
                 detail=f"development PR {pr['number']} verified", now=iso)
+            # No row of the table is fired by the development PR operation:
+            # the PR number is recorded and the closed operation released,
+            # and the state is kept.
             fork = dict(c["fork"], pr_number=int(pr["number"]))
-            new = compat.legacy_update(c, "reconcile.confirm_development_pr", fork=fork,
-                                       active_operation_id=None, activity="waiting_ci",
-                                       updated_at=iso)
+            new = dict(c, fork=fork, active_operation_id=None, updated_at=iso)
             schemas.validate("contribution", new)
             contributions[key] = new
             snap.operations[op["operation_id"]] = new_op
@@ -1413,31 +1636,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             pubs_report.append({"contribution": cid, "status": pub.get("status"), "reason": pub.get("reason")})
     out.report["publications"] = pubs_report
 
-    # 1b. Requested tasks that never produced an outcome: give up, ask a human.
-    timed_out = []
-    for key, c in list(contributions.items()):
-        if c["contribution_id"] in skip:
-            continue
-        with isolation.contribution(c["contribution_id"], "work_timeout"):
-            aw = c.get("active_work")
-            tracking = c.get("tracking_issue") or {}
-            if (canary.is_target(c)
-                    and tracking.get("description_digest") == canary.INCOMPLETE_DIGEST):
-                # The exact pre-dispatch canary defect is owned by its durable
-                # recovery operation, never by generic timeout/hand-unblock logic.
-                continue
-            if aw and c["phase"] != "handoff" and datetime.fromisoformat(aw["deadline_at"]) <= now:
-                new = compat.legacy_update(
-                    c, "reconcile.work_timeout", active_work=None, activity="waiting_human",
-                    updated_at=iso,
-                    pending_human_action={"kind": "task_without_outcome", "requested_at": iso,
-                                          "reminded_at": None, "escalated_at": None})
-                contributions[key] = new
-                out.staged.append(("contributions", new))
-                timed_out.append({"contribution": c["contribution_id"], "task": aw["task"],
-                                  "requested_at": aw["requested_at"]})
-    out.report["timed_out_work"] = timed_out
-
+    # 1b. Requested Work whose graph is terminal without a usable Result is
+    # recovered by the table's rows in dispatch recovery; no deadline applies.
     # 1c. Requested tasks whose dispatch never reached the queue: relaunch the
     # dispatcher (bounded), then wait for a human.
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
@@ -1467,16 +1667,14 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         contracts = {e["evidence_id"]: e for e in snap.evidence.values() if e.get("kind") == "target_contract"}
         obs = observe_ci.observe(api, contributions=contributions, operations=snap.operations,
                                  contracts=contracts, policy=policy, now=iso,
-                                 evidence=snap.evidence,
-                                 unadmitted_work=provably_unadmitted_work(
-                                     contributions, runs=dispatcher_runs, queue_works=queue_works,
-                                     skip=skip),
-                                 skip=skip, audited=snap.audited)
+                                 evidence=snap.evidence, skip=skip, audited=snap.audited)
         for kind, r in obs.staged:
             if kind == "contributions":
                 contributions[by_cid[r["contribution_id"]]] = r
         out.staged.extend(obs.staged)
         out.report["observation"] = obs.report
+        stale_heads = {entry["contribution"]: entry["stale_head"] for entry in obs.report
+                       if entry.get("stale_head")}
         # Recovery is evaluated before live CI. If CI accepts the current head
         # in this same tick, do not launch a dispatcher for the now-obsolete
         # retry request.
@@ -1484,6 +1682,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             item for item in out.report["dispatch_relaunch"]
             if (contributions[by_cid[item["contribution_id"]]].get("active_work") is not None
                 and contributions[by_cid[item["contribution_id"]]]["phase"] != "handoff")]
+    else:
+        stale_heads = {}
 
     # 3. Commands, intake and work selection (controller). The failing CI job
     # of a head is decided from the evidence the record names, including the
@@ -1493,6 +1693,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     handoff_observations = {item["contribution"]: item["handoff"]
                             for item in out.report.get("observation") or []
                             if isinstance(item.get("handoff"), dict)}
+    # Work that returned a Result in this tick, or whose graph the queue
+    # holds as terminal, is never allocated again under the same id.
+    spent_graphs = frozenset(
+        [work.graph_id(key) for key in ((pub.get("task") or {}).get("dedupe_key")
+                                        for pub in publications) if isinstance(key, str)]
+        + [graph for graph, state in (queue_works or {}).items()
+           if state in ("completed", "cancelled")])
     res = controller.tick(contributions=contributions, operations=snap.operations, consumed=snap.consumed,
                           projects=snap.projects, policy=policy,
                           inputs=controller.Inputs(now=now, issues=issues or [], comments=comments or [],
@@ -1501,6 +1708,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {},
+                                                   stale_heads=stale_heads,
+                                                   spent_graphs=spent_graphs,
                                                    resolution_evidence={
                                                        e["evidence_id"]: e for e in evidence.values()
                                                        if e.get("kind") == "resolution"}),
@@ -1520,8 +1729,46 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         with isolation.contribution(c["contribution_id"], "publication_retry"):
             pp = c.get("pending_publication")
             if pp and not pp.get("exhausted") and not compat.stopped(c) \
-                    and c["phase"] in (lifecycle.WRITE_PHASES - {"handoff"}) | {"investigation"} \
+                    and engine.state_key(c) == "development.agent_running" \
                     and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
+                # `schedule_publish_retry` held the Result and charged
+                # `publish_recovery` when its publication failed; the retry
+                # is launched once it is due, and the launch time is
+                # recorded. The retry's own Result is folded by the table's
+                # rows. A launched retry whose Result is not folded within
+                # PUBLISH_RESULT_WAIT_MINUTES is a failed publication, like
+                # a Result that reports one: `schedule_publish_retry` charges
+                # `publish_recovery` again, or `exhaust_publish_recovery`
+                # waits for a human once it is spent.
+                if pp.get("launched_at"):
+                    fired = _fail_publication(
+                        c, pp["worker_run_id"],
+                        f"the publish-only retry launched at {pp['launched_at']} returned no "
+                        f"Result within {PUBLISH_RESULT_WAIT_MINUTES} minutes",
+                        now=now.isoformat(), policy=policy, cause=pp["worker_run_id"],
+                        details={"result_status": "no_result", "launched_at": pp["launched_at"]})
+                    if not fired.accepted:
+                        raise lifecycle.TransitionError(
+                            f"no row records the lost publish-only retry: {fired.reason}")
+                    schemas.validate("contribution", fired.record)
+                    contributions[key] = fired.record
+                    out.staged.extend([("contributions", fired.record), ("events", fired.event)])
+                    continue
+                attempt = pp["attempts"] + 1
+                changed = dict(c, pending_publication=dict(
+                    pp, launched_at=now.isoformat(),
+                    next_attempt_at=(now + timedelta(
+                        minutes=PUBLISH_RESULT_WAIT_MINUTES)).isoformat()),
+                    updated_at=now.isoformat())
+                schemas.validate("contribution", changed)
+                contributions[key] = changed
+                out.staged.append(("contributions", changed))
+                retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
+                                "worker_run_id": pp["worker_run_id"], "attempt": attempt})
+            elif pp and not pp.get("exhausted") and not compat.stopped(c) \
+                    and c["phase"] == "upstream_review" \
+                    and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
+                # Upstream revision Work: the retry code before the table.
                 if pp["attempts"] >= max_launches:
                     pending = dict(pp, exhausted=True)
                     changed = compat.legacy_update(
@@ -1554,12 +1801,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     out.report["publication_retries"] = retries
     out.staged = observe_ci.dedupe(out.staged)
     return out
-
-
-def mark_dispatched(rec: dict, *, now: str) -> dict:
-    """The dispatcher staged Work for this contribution: an agent is running."""
-    out = compat.observe_status(rec, activity="agent_running", now=now)
-    return out.record
 
 
 def load_snapshot(root: Path, policy: dict):

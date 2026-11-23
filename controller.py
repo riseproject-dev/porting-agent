@@ -62,6 +62,14 @@ class Inputs:
     resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
+    # The fork head observed this tick for a contribution in
+    # `development.fix_needed` whose recorded head differs; no Work is
+    # allocated on the recorded head while they differ.
+    stale_heads: dict[str, str] = field(default_factory=dict)
+    # The queue graphs (``work.graph_id``) of Work that already returned a
+    # Result or that the queue holds as terminal. A terminal graph is never
+    # submitted again, so no allocation may name one.
+    spent_graphs: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -99,13 +107,12 @@ def _actionable(c: dict) -> str | None:
         return "development_repair"
     if c["phase"] in ("queued", "investigation") and c["activity"] == "idle":
         return "investigation"
-    if c["phase"] == "development" and c["activity"] == "idle" and not c.get("last_ci_evidence_id"):
-        return "development_patch"
     return None
 
 
-# A requested task that produced no outcome by then is given up on: the
-# contribution waits for a human instead of being retried blindly.
+# The deadline recorded with requested Work (`active_work.deadline_at`). No
+# row reads it: Work whose graph ends without a usable Result is recovered by
+# `allocate_work_retry` and `exhaust_work_recovery`.
 WORK_DEADLINE_HOURS = 6
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
@@ -523,6 +530,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # A published development head gets a same-fork development PR before CI
     # observation. Persist intent first; the trusted workflow creates/discovers
     # exactly riscv64-dev -> the frozen upstream base ref and returns a receipt.
+    # No row of the table creates the development PR: the operation is
+    # planned in `development.waiting_ci`, which it leaves unchanged, and it
+    # fences nomination and Work until its receipt closes it.
     res.report["dev_pr_requests"] = []
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -560,7 +570,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             fork = c.get("fork") or {}
             artifact = c.get("proposal_artifact") or {}
             pubop = operations.get(c.get("publication_operation_id"))
-            if c["phase"] != "development" or c.get("paused") or compat.waits_for_human(c) \
+            if engine.state_key(c) != "development.waiting_ci" or c.get("paused") \
                     or c.get("active_operation_id") or fork.get("pr_number") is not None \
                     or not fork.get("repository_id") or not fork.get("head_sha") \
                     or fork.get("head_sha") == c["upstream"].get("base_sha") \
@@ -580,9 +590,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             op = recovery.charge_launch(op, now)
             res.stage("operations", op)
-            changed = compat.legacy_update(c, "controller.plan_development_pr",
-                                           active_operation_id=op["operation_id"],
-                                           activity="waiting_capacity", updated_at=now)
+            changed = dict(c, active_operation_id=op["operation_id"], updated_at=now)
             by_id[cid] = changed
             res.stage("contributions", changed)
             res.report["dev_pr_requests"].append({
@@ -599,7 +607,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         with isolation.contribution(cid, "development_pr"):
             fork = c.get("fork") or {}
             artifact = c.get("proposal_artifact") or {}
-            if c["phase"] != "development" or c.get("paused") or compat.waits_for_human(c) \
+            if engine.state_key(c) != "development.waiting_ci" or c.get("paused") \
                     or c.get("active_operation_id") or fork.get("pr_number") is None \
                     or c.get("last_ci_evidence_id") or artifact.get("outcome") != "published":
                 continue
@@ -629,9 +637,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             op = recovery.charge_launch(op, now)
             res.stage("operations", op)
-            changed = compat.legacy_update(c, "controller.plan_ci_bootstrap",
-                                           active_operation_id=op["operation_id"],
-                                           activity="waiting_capacity", updated_at=now)
+            changed = dict(c, active_operation_id=op["operation_id"], updated_at=now)
             by_id[cid] = changed
             res.stage("contributions", changed)
             res.report["dev_pr_requests"].append({
@@ -656,14 +662,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
                 continue
             if engine.state_key(c) not in lifecycle.LIFECYCLE:
-                # `development.idle`, a state the table does not have: the
-                # legacy selection requests the first patch.
-                why = _legacy_patch_refusal(c, policy, now)
-                if why:
-                    rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
-                    continue
-                candidates.append((PRIORITY[kind], c["updated_at"], kind, c, None))
-                continue
+                continue  # a state the table does not have requests no Work
             due = _begun(c, policy, now)
             if due is None:
                 continue
@@ -691,15 +690,22 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if spent:
                 _exhaust(c, due, spent, ci, by_id, res, policy, now)
                 continue
+            stale = inputs.stale_heads.get(c["contribution_id"])
             verb, why = _allocation_verb(due, ci, ops, policy, now, facts)
+            if verb is not None and stale:
+                verb, why = None, (f"the fork head moved to {stale} while Work is due; no Work is "
+                                   "requested for the recorded head")
             if verb is None:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                 continue
             kind = task_for(verb, due)
             candidates.append((PRIORITY[kind], c["updated_at"], kind, c, verb))
     candidates.sort(key=lambda x: (x[0], x[1]))
+    # A Result held for a publish-only retry holds no worker.
     slots = policy["concurrency"]["coding_workers"] - sum(
-        1 for c in by_id.values() if c["activity"] == "agent_running" or c.get("active_work"))
+        1 for c in by_id.values()
+        if c.get("active_work")
+        or (c["activity"] == "agent_running" and not c.get("pending_publication")))
     pressure = inputs.pressure
     for _p, _t, kind, c, verb in candidates:
         if c["contribution_id"] in skip:
@@ -716,31 +722,37 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                     continue
             slots -= 1
-            if verb is None:
-                claimed = _legacy_patch(c, kind, inputs, now)
-                res.stage("contributions", claimed)
-            else:
-                claimed = c
-                if engine.state_key(c) == "queued.idle":
-                    claimed = _take(c, "begin_investigation", res, policy, now,
-                                    cause_id=f"tick-r{c['revision']}")
-                ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
-                cluster = engine.recorded_failing_job(claimed, ci)[1]
-                request = _work_request(claimed, kind, inputs, now)
-                claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
-                                facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
-                                                          if verb == "request_submission_review"
-                                                          else set()),
-                                values={"active_work": request},
-                                ci_evidence=ci,
-                                open_operations=_open_operations(claimed, operations),
-                                details={"task": kind, "work": request["dedupe_key"],
-                                         **({"cluster": cluster} if cluster else {})})
-                carried = claimed["active_work"].get("feedback_evidence_ids") or []
-                if kind not in work_queue.SUBMISSION_TASKS \
-                        and carried != list(c.get("pending_feedback_evidence_ids") or []):
-                    raise lifecycle.TransitionError(
-                        f"{verb}: the Work carries {carried}, not the pending feedback")
+            claimed = c
+            if engine.state_key(c) == "queued.idle":
+                claimed = _take(c, "begin_investigation", res, policy, now,
+                                cause_id=f"tick-r{c['revision']}")
+            ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
+            cluster = engine.recorded_failing_job(claimed, ci)[1]
+            request = _work_request(claimed, kind, inputs, now)
+            if work_queue.graph_id(request["dedupe_key"]) in inputs.spent_graphs:
+                raise SpentWork(f"{verb}: Work {request['dedupe_key']} already returned a Result "
+                                "or its queue graph is terminal; it is never submitted again")
+            source = engine.state_key(claimed)
+            claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
+                            facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
+                                                      if verb == "request_submission_review"
+                                                      else set()),
+                            values={"active_work": request},
+                            ci_evidence=ci,
+                            open_operations=_open_operations(claimed, operations),
+                            details={"task": kind, "work": request["dedupe_key"],
+                                     **({"cluster": cluster} if cluster else {})})
+            # Only the rows that request patch or revision Work carry the
+            # pending feedback (`active_work.feedback_evidence_ids`); an
+            # investigation carries none and keeps it pending. The submission
+            # rewrite and review Work name what they answer in their context.
+            carried = claimed["active_work"].get("feedback_evidence_ids") or []
+            expected = (list(c.get("pending_feedback_evidence_ids") or [])
+                        if _carries_feedback(source, verb)
+                        else [])
+            if kind not in work_queue.SUBMISSION_TASKS and carried != expected:
+                raise lifecycle.TransitionError(
+                    f"{verb}: the Work carries {carried}, not {expected}")
             by_id[c["contribution_id"]] = claimed
             aw = claimed["active_work"]
             work = {
@@ -769,6 +781,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     if policy["read_only"]:
         rep["note"] = "read-only: requested effects are reported, not executed"
     return res
+
+
+class SpentWork(RuntimeError):
+    """An allocation would name a Work graph that already returned a Result
+    or that the queue holds as terminal."""
+
+
+def _carries_feedback(state: str, verb: str) -> bool:
+    """Whether the allocation row ``verb`` of ``state`` sets the pending
+    feedback its Work carries (``active_work.feedback_evidence_ids``)."""
+    return lifecycle.WORK_FEEDBACK in lifecycle.find_edge(state, verb).transition.effects.sets
 
 
 class MissingEvidence(LookupError):
@@ -889,7 +912,8 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
     if not reason_ids and record.get("dossier_evidence_id"):
         reason_ids = [record["dossier_evidence_id"]]
     request = {
-        "dedupe_key": work_queue.work_key(record["contribution_id"], generation, revision, kind),
+        "dedupe_key": work_queue.work_key(record["contribution_id"], generation, revision, kind,
+                                          engine.head_reruns(record)["flaky"]),
         "task": kind, "generation": generation, "revision": revision, "attempt": 1,
         "requested_at": now,
         "deadline_at": (inputs.now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
@@ -905,27 +929,6 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
         if issue is not None:
             request["tracking_issue"] = collect.tracking_issue_context(issue, frozen_issue)
     return request
-
-
-def _legacy_patch_refusal(record: dict, policy: dict, now: str) -> str | None:
-    """Why the legacy selection in `development.idle` requests no first
-    patch: the admission of ``request_patch``, and its budgets."""
-    why = lifecycle.write_admission(record)
-    if why:
-        return why
-    spent = engine.exhausted(record, ("work_total", "no_progress"), policy=policy, now=now)
-    return f"{' and '.join(spent)} exhausted" if spent else None
-
-
-def _legacy_patch(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
-    """Request the first patch from `development.idle`, a state the table
-    does not have. Like ``request_patch``, the Work carries the pending
-    feedback and the allocation charges ``work_total``."""
-    request = dict(_work_request(record, kind, inputs, now),
-                   feedback_evidence_ids=list(record.get("pending_feedback_evidence_ids") or []))
-    budget = dict(record["budget"], attempts_used=int(record["budget"].get("attempts_used", 0)) + 1)
-    return compat.legacy_update(record, "controller.select_work", activity="agent_running",
-                                updated_at=now, active_work=request, budget=budget)
 
 
 def reminder_details(record: dict, operations: dict | None = None,

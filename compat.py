@@ -20,8 +20,8 @@ are written by ``legacy_pause``, and ``pause``, ``resume``, and ``park`` by
 other command of the table applies in states of the table only.
 ``apply_command`` also applies the intake command ``authorize-followup``.
 The reviewed record migrations (``migrate_handoff_wait``, ``migrate_flags``,
-``migrate_terminal``, ``migrate_provisioning``) bring records written before
-the table to the shapes it describes.
+``migrate_terminal``, ``migrate_provisioning``, ``migrate_development``) bring
+records written before the table to the shapes it describes.
 
 ``LEGACY_SITES`` and ``LEGACY_STATES`` shrink as call sites are converted;
 when both are empty this module is deleted.
@@ -50,8 +50,9 @@ from lifecycle import (
 
 # States that are not in the lifecycle table and that legacy paths still
 # write. Each is removed together with the paths that write it. Every state
-# of the investigation and provisioning phases is a state of the table.
-_LEGACY_PHASES = ("development", "upstream_review")
+# of the investigation, provisioning, and development phases is a state of
+# the table.
+_LEGACY_PHASES = ("upstream_review",)
 _LEGACY_ACTIVITIES = ("idle", "agent_running", "waiting_ci", "fix_needed", "waiting_capacity",
                       "waiting_human")
 LEGACY_STATES = frozenset(
@@ -84,16 +85,8 @@ def waits_for_human(record: dict) -> bool:
 # identifier each passes to ``legacy_update``.
 LEGACY_SITES = frozenset({
     "canary.repair_mismatch",
-    "controller.select_work",
-    "controller.plan_development_pr",
-    "controller.plan_ci_bootstrap",
-    "observe_ci.review_feedback",
-    "observe_ci.ci_passed",
-    "observe_ci.withdraw_obsolete_repair",
-    "reconcile.confirm_development_pr",
+    # The Result of upstream revision Work, and its publish-only retries.
     "reconcile.publication_outcome",
-    "reconcile.work_timeout",
-    "reconcile.dispatch_exhausted",
     "reconcile.publish_retry_exhausted",
 })
 
@@ -189,7 +182,7 @@ def migrate_handoff_wait(record: dict, *, evidence: dict | None, policy: dict,
     out = engine.apply_transition(
         before, "nominate_for_handoff", policy=policy, now=now,
         cause_id=record["last_ci_evidence_id"],
-        facts={"ci_passed_on_head", "no_pending_actionable_feedback"},
+        facts={"ci_passed_on_head"},
         values={"last_ci_evidence_id": record["last_ci_evidence_id"],
                 "handoff_request": dict(record["handoff_request"])})
     if not out.accepted:
@@ -257,8 +250,11 @@ def _flags_migrated(record: dict) -> tuple[dict, list[str]]:
         rec["blocked_reason"] = None
         changed.append("blocked_reason")
         if record["activity"] == "waiting_human" and not record.get("pending_human_action"):
-            # A block recorded a human wait in place; a resume ended it.
-            rec["activity"] = "idle"
+            # A block recorded a human wait in place; a resume ended it. In
+            # development the wait ends in the state of the table that
+            # ``development_activity`` names.
+            rec["activity"] = (development_activity(rec) if record["phase"] == "development"
+                               else "idle")
         elif record["activity"] == "waiting_human" \
                 and f"{record['phase']}.waiting_human" not in LIFECYCLE:
             raise TransitionError(f"{record['phase']}.waiting_human with a pending human action "
@@ -282,6 +278,11 @@ def _flags_migrated(record: dict) -> tuple[dict, list[str]]:
         if holds_unpublished_proposal(rec):
             rec["proposal_artifact"] = None
             changed.append("proposal_artifact")
+    if changed and engine.state_key(rec) in DEVELOPMENT_LEGACY_STATES \
+            and not holds_unpublished_proposal(rec) and rec.get("fork"):
+        # A development state the table removed, without Work or a held
+        # publication once stopped: the state of the table it stands for.
+        rec["activity"] = development_activity(rec)
     return rec, changed
 
 
@@ -334,7 +335,9 @@ def migrate_flags(record: dict, *, now: str) -> tuple[dict, dict]:
         raise TransitionError("the record needs no flag migration")
     new["updated_at"] = now
     problem = state_problem(new)
-    if problem:
+    if problem and not needs_provisioning_migration(new):
+        # A development record without a fork is rewritten by the
+        # provisioning migration in a later run.
         raise TransitionError(f"no reviewed flag migration for this record: {problem}")
     schemas.validate("contribution", new)
     event = _event(record, new, FLAG_MIGRATED, "migration", FLAG_MIGRATION, now, False)
@@ -443,8 +446,11 @@ def migrate_terminal(record: dict, *, now: str) -> tuple[dict, dict]:
 #   provisioned fork (a deferred fork intent, or a patch proposed before the
 #   fork) becomes `provisioning.idle` at a new revision;
 # * `development.idle` or `development.waiting_capacity` holding a proposal
-#   that was never published on the provisioned fork becomes
-#   `development.idle` at a new revision, so fresh patch Work is requested.
+#   that was never published on the provisioned fork, and
+#   `development.waiting_human` without a pending action holding one, become
+#   the development state of the table that ``development_activity`` names,
+#   at a new revision, so no Work or publication of the earlier revision is
+#   reused.
 #
 # A proposal held without having been published is cleared, together with
 # the publication pending for it. Any other record in an investigation or
@@ -457,6 +463,10 @@ PROVISIONING_MIGRATED = "provisioning_state_migrated"
 # asked to provision the fork with the retired `/upstreaming provision`.
 RETIRED_PROVISIONING_WAIT = "provision_fork"
 _PRE_FORK_STATES = ("development.idle", "development.waiting_capacity")
+# The wait without a pending action that the code before the table entered
+# from `development.waiting_capacity` while it held such a proposal for a
+# publish-only retry.
+HELD_PROPOSAL_WAIT = "development.waiting_human"
 
 
 def needs_provisioning_migration(record: dict) -> bool:
@@ -512,6 +522,12 @@ def provisioning_shape_problem(record: dict, operation: dict | None, *,
         if waits_for_human(record):
             return "the record waits for a human"
         return None
+    if state == HELD_PROPOSAL_WAIT and held:
+        if record.get("pending_human_action") is not None:
+            return f"{state} holds the pending human action"
+        if not (record.get("fork") or {}).get("repository_id"):
+            return "no fork is recorded"
+        return None
     if held:
         return f"a proposal is held without having been published in {state}"
     return f"{state} is not a state of the table"
@@ -520,10 +536,13 @@ def provisioning_shape_problem(record: dict, operation: dict | None, *,
 def _provisioning_target(record: dict) -> tuple[str, bool]:
     """The state a migrated record is in, and whether the revision moves."""
     state = engine.state_key(record)
-    if state in _PRE_FORK_STATES:
+    if state in _PRE_FORK_STATES or state == HELD_PROPOSAL_WAIT:
         if not (record.get("fork") or {}).get("repository_id"):
             return "provisioning.idle", True
-        return "development.idle", True
+        # The held proposal is discarded: development continues in the state
+        # of the table the development migration names for the record
+        # without it.
+        return f"development.{development_activity(record)}", True
     return "provisioning.idle", False
 
 
@@ -584,6 +603,151 @@ def migrate_provisioning(record: dict, *, operation: dict | None, now: str,
                         "changed": changed,
                         "pending_human_action": (record.get("pending_human_action") or {}).get(
                             "kind"),
+                        "active_operation_id": new.get("active_operation_id")}
+    schemas.validate("event", event)
+    return new, event
+
+
+# The development states the table does not have, and the pending action
+# the removed Work deadline wrote. ``migrate_development`` rewrites exactly
+# these shapes:
+#
+# * `development.idle` (Work due, CI passed, a `no_change` or stale Result),
+#   `development.waiting_capacity` without a held publication (a planned
+#   development PR operation), and `development.waiting_human` without a
+#   pending action (the CI access wait) become `development.waiting_ci` when
+#   CI evidence is recorded for the head or the head is a published one (it
+#   differs from the provisioned base), and `development.fix_needed`
+#   otherwise (``development_activity``);
+# * `development.waiting_capacity` holding a Result for a publish-only retry
+#   becomes `development.agent_running`, where `schedule_publish_retry` keeps
+#   it;
+# * a human wait (`investigation`, `development`, or `upstream_review`) with
+#   the pending action `task_without_outcome` keeps its state with the
+#   pending action `work_failed`, which `exhaust_work_recovery` writes and the
+#   resume of the wait admits.
+#
+# The revision, the fork, the evidence, the budgets, the flag, the operation,
+# and the replay fences are kept. Any other record in one of these states
+# (requested Work, a held publication that is exhausted or of a stopped
+# record, a pending action in the removed states) fails closed.
+
+DEVELOPMENT_MIGRATION = "development-table-states"
+DEVELOPMENT_MIGRATED = "development_state_migrated"
+DEVELOPMENT_LEGACY_STATES = ("development.idle", "development.waiting_capacity")
+# The pending action of the removed Work deadline, and the one of the table.
+TASK_WITHOUT_OUTCOME = "task_without_outcome"
+WORK_FAILED = "work_failed"
+_DEADLINE_WAITS = ("investigation.waiting_human", "development.waiting_human",
+                   "upstream_review.waiting_human")
+
+
+def development_activity(record: dict) -> str:
+    """The development activity of the table for a record that holds no Work
+    and no publication: ``waiting_ci`` when CI evidence is recorded for the
+    head or the head differs from the provisioned base (a published head),
+    ``fix_needed`` otherwise (development Work is due)."""
+    head = (record.get("fork") or {}).get("head_sha")
+    base = (record.get("upstream") or {}).get("base_sha")
+    if record.get("last_ci_evidence_id") or (head and head != base):
+        return "waiting_ci"
+    return "fix_needed"
+
+
+def needs_development_migration(record: dict) -> bool:
+    """Whether a record is in a shape ``migrate_development`` rewrites or
+    refuses. A shape the provisioning migration rewrites (development
+    without a fork, a held proposal) is left to it."""
+    if not isinstance(record, dict) or not isinstance(record.get("phase"), str) \
+            or needs_provisioning_migration(record):
+        return False
+    state = engine.state_key(record)
+    pending = (record.get("pending_human_action") or {}).get("kind")
+    if state in DEVELOPMENT_LEGACY_STATES:
+        return True
+    if state == "development.waiting_human" and pending is None:
+        return True
+    return state in _DEADLINE_WAITS and pending == TASK_WITHOUT_OUTCOME
+
+
+def development_shape_problem(record: dict) -> str | None:
+    """Why a record that ``needs_development_migration`` is not exactly a
+    shape the migration rewrites."""
+    state = engine.state_key(record)
+    pending = record.get("pending_human_action")
+    publication = record.get("pending_publication")
+    if record.get("active_work") is not None:
+        return "Work is requested"
+    if state in _DEADLINE_WAITS and pending:
+        return "a publication is pending" if publication is not None else None
+    if pending is not None:
+        return f"{state} holds the pending human action {pending.get('kind')}"
+    if publication is not None:
+        if state != "development.waiting_capacity":
+            return f"a publication is pending in {state}"
+        if publication.get("exhausted"):
+            return "the held publication is exhausted outside a human wait"
+        if stopped(record):
+            return "a stopped record holds a publication"
+    if not (record.get("fork") or {}).get("repository_id"):
+        return "no fork is recorded"
+    return None
+
+
+def _development_target(record: dict) -> str:
+    """The state of the table a development shape stands for."""
+    state = engine.state_key(record)
+    if (record.get("pending_human_action") or {}).get("kind") == TASK_WITHOUT_OUTCOME:
+        return state
+    if state == "development.waiting_capacity" and record.get("pending_publication"):
+        return "development.agent_running"
+    return f"development.{development_activity(record)}"
+
+
+def awaits_development_migration(record: dict) -> bool:
+    """Whether the development migration rewrites this record without
+    refusing it."""
+    if not needs_development_migration(record):
+        return False
+    try:
+        migrate_development(record, now=record["updated_at"])
+    except (TransitionError, schemas.SchemaError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def migrate_development(record: dict, *, now: str) -> tuple[dict, dict]:
+    """The record in the state of the table its shape stands for, with its
+    event (see the shapes above). Nothing but the activity and, for the
+    removed Work deadline's wait, the kind of the pending action changes.
+    Raises ``TransitionError`` for any other shape."""
+    if not needs_development_migration(record):
+        raise TransitionError("the record needs no development migration")
+    problem = development_shape_problem(record)
+    if problem:
+        raise TransitionError(f"no reviewed development migration for this record: {problem}")
+    target = _development_target(record)
+    new = copy.deepcopy(record)
+    changed: list[str] = []
+    pending = record.get("pending_human_action")
+    if (pending or {}).get("kind") == TASK_WITHOUT_OUTCOME:
+        new["pending_human_action"] = dict(pending, kind=WORK_FAILED, counter=None)
+        changed.append("pending_human_action")
+    new["phase"], new["activity"] = target.split(".", 1)
+    if target != engine.state_key(record):
+        changed.append("activity")
+    new["updated_at"] = now
+    problem = engine.state_problem(new)
+    if problem:
+        raise TransitionError(f"no reviewed development migration for this record: {problem}")
+    schemas.validate("contribution", new)
+    event = _event(record, new, DEVELOPMENT_MIGRATED, "migration", DEVELOPMENT_MIGRATION, now,
+                   False)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": target,
+                        "changed": changed,
+                        "pending_human_action": {
+                            "from": (pending or {}).get("kind"),
+                            "to": (new.get("pending_human_action") or {}).get("kind")},
                         "active_operation_id": new.get("active_operation_id")}
     schemas.validate("event", event)
     return new, event

@@ -57,3 +57,4 @@ One bullet per commit, oldest first: what changed and how.
 - The underscore is no longer folded to a hyphen when attribution trailers are matched, so a body line such as `order_by: x` is not refused as a trailer.
 - `lifecycle check` now reports a table mutation that breaks the settled review, repair, first-patch and resume decisions, and the known gap listing those missed violations is removed.
 - A resume from `parked.idle` that names only `class` or only `paths` is refused when it is posted and changes nothing, since such an override could never admit development.
+- Development follows the lifecycle table: patch Results, publish-only retries (a lost retry included), dispatch and Work recovery, and the observation of `development.waiting_ci` take the table's rows, a worker `no_change` takes `request_ci_rerun` and waits for newer CI, the Work deadline is removed, and a record migration rewrites the development states the table does not have.

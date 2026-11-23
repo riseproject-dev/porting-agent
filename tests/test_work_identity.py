@@ -180,8 +180,9 @@ class TestLateResultMatrix(unittest.TestCase):
         output = tick(record, observe=True, head=SHA_B)
         after = final(output, record)
         self.assertEqual((after["revision"], after["fork"]["head_sha"]), (5, SHA_A))
+        # `development.agent_running` has no observation row.
         self.assertEqual(output.report["observation"][0]["note"],
-                         "head change is recorded once the requested Work ends")
+                         "development.agent_running has no observation row")
         # The Result of that Work is then folded at its revision.
         folded = final(tick(record, [result(record, "published")], capacity_ok=False), record)
         self.assertEqual(folded["activity"], "waiting_ci")

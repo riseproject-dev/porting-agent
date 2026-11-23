@@ -364,10 +364,12 @@ class TestProposalOnlyReconciliation(unittest.TestCase):
         )
         self.assertIsNone(updated["active_work"])
         self.assertEqual((updated["activity"], updated["revision"]), ("fix_needed", 4))
-        self.assertEqual(updated["proposal_artifact"]["outcome"], "rejected")
+        # `reject_patch_proposal` sets no proposal artifact: only a published
+        # Result is recorded there.
+        self.assertIsNone(updated["proposal_artifact"])
         self.assertIsNone(updated["pending_publication"])
         self.assertEqual([r["kind"] for kind, r in staged if kind == "events"],
-                         ["worker_proposal_rejected"])
+                         ["reject_patch_proposal"])
         self.assertFalse(any(kind == "operations" for kind, _record in staged))
 
 

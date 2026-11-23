@@ -280,13 +280,13 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
     def test_requested_work_and_trusted_publication_still_fold(self):
         record = running("development")
         output = tick(record, [publication(record, "published")])
-        self.assertEqual(events(output), [])
+        self.assertEqual([e["kind"] for e in events(output)], ["record_publish_success"])
         self.assertEqual((final(output, record)["activity"], final(output, record)["active_work"]),
                          ("waiting_ci", None))
         # A publish-only retry of the same worker run answers the pending publication.
         pending = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
                    "next_attempt_at": "2026-11-24T09:00:00+00:00", "exhausted": False}
-        retry = contribution(activity="waiting_capacity", pending_publication=pending)
+        retry = contribution(activity="agent_running", pending_publication=pending)
         after = final(tick(retry, [publication(retry, "published")]), retry)
         self.assertEqual((after["activity"], after["pending_publication"]), ("waiting_ci", None))
         # Another worker run does not.
@@ -299,7 +299,8 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         details = {"result_status": "published", "task_revision": 0}
         for record in (contribution(phase="parked", activity="idle", parked_reason="x",
                                     previous_phase="development"),
-                       contribution(phase="development", activity="idle")):
+                       contribution(phase="upstream_review", activity="idle",
+                                    upstream_pr=copy.deepcopy(UPSTREAM_PR))):
             state = engine.state_key(record)
             self.assertEqual(state in lifecycle.LIFECYCLE, state == "parked.idle")
             event = compat.record_late_effect(record, policy=POLICY, now=NOW, cause_id="555",
@@ -418,10 +419,12 @@ class TestStopWithAPendingPublication(unittest.TestCase):
         self.assertTrue(any(o.report["publication_retries"] for o in outputs))
 
     def test_legacy_stop_paths_outside_commands(self):
-        record = contribution(pending_publication=dict(PENDING))
+        record = contribution(phase="upstream_review", pending_publication=dict(PENDING),
+                              upstream_pr=copy.deepcopy(UPSTREAM_PR))
         self.assertIsNone(compat.park(copy.deepcopy(record), "x")["pending_publication"])
         for body in ('/upstreaming park reason="x"', "/upstreaming pause"):
-            for activity in ("agent_running", "waiting_capacity", "waiting_ci", "waiting_human"):
+            # The upstream review states the table does not have.
+            for activity in ("waiting_capacity", "idle"):
                 with self.subTest(command=body, activity=activity):
                     out = command(dict(record, activity=activity), body)
                     self.assertIsNone(out.record["pending_publication"])
@@ -486,7 +489,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                 record["active_work"] = copy.deepcopy(WORK)
             if activity == "waiting_human" and not flag:
                 record["pending_human_action"] = {
-                    "kind": "task_without_outcome", "requested_at": NOW, "reminded_at": None,
+                    "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
                     "escalated_at": None}
             if phase == "parked":
                 record.update(parked_reason="x", previous_phase="development")
@@ -511,7 +514,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     if compat.stopped(after):
                         self.assertIsNone(after["pending_publication"])
                     count += 1
-        self.assertGreater(count, 2500)
+        self.assertGreater(count, 2300)
 
     # One function of every step of the tick that works on one contribution.
     INJECTIONS = {
@@ -560,7 +563,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     self.assertEqual((after["paused_by"], after["active_work"],
                                       after["pending_publication"], after["revision"]),
                                      ("controller", None, None, record["revision"]))
-        self.assertGreater(count, 800)
+        self.assertGreater(count, 750)
         self.assertGreater(errored, 350)
 
     def test_no_stopped_state_retains_a_pending_publication(self):
@@ -599,7 +602,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                         self.assertIsNone(after["pending_publication"])
                         self.assertEqual(output.report["publication_retries"], [])
                         count += 1
-        self.assertGreater(count, 500)
+        self.assertGreater(count, 450)
 
 
 if __name__ == "__main__":

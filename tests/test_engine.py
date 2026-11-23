@@ -667,7 +667,8 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         with self.assertRaises(lc.TransitionError):
             engine.apply_transition(rec, "request_patch", policy=POLICY, now=NOW)
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(contribution(), "nominate_for_handoff", policy=POLICY, now=NOW)
+            engine.apply_transition(contribution(activity="idle"), "nominate_for_handoff",
+                                    policy=POLICY, now=NOW)
         with self.assertRaises(lc.TransitionError):
             engine.apply_transition(rec, "return_for_repair", policy=POLICY, now=NOW,
                                     facts={"made_up"})
@@ -1065,8 +1066,12 @@ class TestSingleWritePath(unittest.TestCase):
     def test_legacy_states_are_exactly_the_states_outside_the_table(self):
         self.assertEqual(compat.LEGACY_STATES & set(lc.LIFECYCLE), set())
         self.assertFalse(any(key.startswith("handoff.") for key in compat.LEGACY_STATES))
-        for key in ("development.idle", "development.waiting_capacity"):
+        for key in ("upstream_review.idle", "upstream_review.waiting_capacity"):
             self.assertIn(key, compat.LEGACY_STATES)
+        # Every development state is a state of the table.
+        self.assertFalse(any(key.startswith("development.") for key in compat.LEGACY_STATES))
+        for key in ("development.idle", "development.waiting_capacity"):
+            self.assertIsNotNone(compat.state_problem(contribution(activity=key.split(".")[1])))
         for phase in compat.LEGACY_TERMINAL_PHASES:
             self.assertFalse(any(key.startswith(f"{phase}.") for key in compat.LEGACY_STATES))
         for key in ("handoff.idle", "handoff.waiting_capacity", "closed.waiting_human"):

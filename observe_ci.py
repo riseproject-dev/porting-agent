@@ -6,26 +6,29 @@ Deterministic, no model. For each contribution in a phase that watches CI:
 
 * read the fork's current head of the branch the state watches: the
   development branch ``riscv64-dev`` in development and at the submission
-  gate, and ``riscv64`` from CI on the clean head on (a manual or pipeline
-  push shows up as a head change, which bumps the revision); a missing
-  branch is reported and changes nothing;
-* resolve uncertain branch operations by discovery;
-* read the CI snapshot for the exact head and evaluate it against the
-  dossier's required jobs and expected wheels;
-* record an evidence record and move ``activity`` to ``waiting_ci``,
-  ``fix_needed`` (failed) or ``waiting_human`` (approval/access), and
-  take ``nominate_for_handoff`` to ``handoff.awaiting_submission`` with
-  ``last_ci_evidence_id`` set (passed, plan 14.1);
-* at ``handoff.awaiting_submission``, take the table's rows for what is
-  observed on the candidate head: ``record_explanation`` for an
-  explanation-only comment, then ``return_for_repair`` for a CI failure, or
-  else ``record_actionable_review`` for an actionable review;
+  gate, and ``riscv64`` from CI on the clean head on; a missing branch is
+  reported and changes nothing; resolve uncertain branch operations by
+  discovery;
+* in ``development.fix_needed``, take ``record_head_change`` for a fork head
+  that moved while Work is due (back to ``development.waiting_ci``);
+* in ``development.waiting_ci``, take the table's rows for what is observed:
+  ``record_head_change``, ``record_pr_mismatch``, ``record_explanation``,
+  ``record_actionable_review``, then for CI on the exact head
+  ``record_ci_failure`` or ``nominate_for_handoff`` (passing CI that does not
+  satisfy nomination keeps the state);
+* at ``handoff.awaiting_submission``, take the gate's rows for what is
+  observed on the candidate head: ``record_head_change``,
+  ``record_explanation`` for an explanation-only comment, then
+  ``return_for_repair`` for a CI failure, or else
+  ``record_actionable_review`` for an actionable review;
 * in ``handoff.waiting_ci``, take ``accept_clean_head_ci`` or
   ``return_for_repair`` for CI on the clean head of ``riscv64`` (CI of the
   candidate head when the clean head has its tree);
 * in the locked ``handoff.waiting_upstream_pr``, discover the upstream PR
   read-only and take ``verify_upstream_pr`` for exactly one that matches, or
-  record what does not match once (``record_audit_observation``).
+  record what does not match once (``record_audit_observation``);
+* in upstream review, record a head change and set the activity from CI as
+  the code before the table did (``compat``).
 
 A contribution that waits for a human in a state of the table without an
 observation row (``compat.waits_for_human``) is not observed: only the rows
@@ -95,48 +98,6 @@ def _next_ci_observation(now: str, policy: dict) -> str:
     return (datetime.fromisoformat(now) + timedelta(minutes=minutes)).isoformat()
 
 
-def _terminal_blocking_ci(evidence: dict | None, head_sha: str) -> bool:
-    if not evidence or evidence.get("kind") != "ci" or (evidence.get("ci") or {}).get("head_sha") != head_sha:
-        return False
-    for job in (evidence.get("ci") or {}).get("jobs") or []:
-        if job.get("executed") and job.get("conclusion") != ci_evidence.SUCCESS \
-                and not any(marker in job.get("name", "").lower()
-                            for marker in ci_evidence.CREDENTIALLESS_JOB_MARKERS):
-            return True
-    return any("failed runner-label check" in problem for problem in evidence.get("limitations") or [])
-
-
-def _obsolete_undispatched_ci_repair(record: dict, verdict: ci_evidence.CiVerdict,
-                                     evidence: dict[str, dict], head_sha: str,
-                                     unadmitted_work: set[str] | None = None) -> bool:
-    """Recognize a repair request that could only have come from incomplete CI.
-
-    The request is development Work for the published head: a repair, or a
-    patch (``request_patch`` asks for one when no failing CI job and no
-    feedback is recorded).
-
-    This is deliberately narrow: the old request must still be undispatched,
-    the published head must be unchanged, green required jobs must now have
-    executed, and no human or terminal CI reason may support the repair.
-    Undispatched means proven by the native queue replay and dispatcher runs
-    (``unadmitted_work``). ``dispatched_run_id`` is not proof either way: it
-    stays null while the Work is claimed and its worker runs, and it names a
-    finished dispatcher run even when that run admitted nothing.
-    """
-    active = record.get("active_work") or {}
-    artifact = record.get("proposal_artifact") or {}
-    if active.get("dedupe_key") not in (unadmitted_work or set()):
-        return False
-    if active.get("task") not in ("development_repair", "development_patch") \
-            or record.get("phase") != "development" or artifact.get("outcome") != "published" \
-            or (record.get("fork") or {}).get("head_sha") != head_sha \
-            or verdict.state not in {"passed", "missing"} or not verdict.executed_jobs:
-        return False
-    reasons = [evidence.get(reason_id) for reason_id in active.get("reason_ids") or []]
-    return not any((reason or {}).get("kind") == "human_relay"
-                   or _terminal_blocking_ci(reason, head_sha) for reason in reasons)
-
-
 def human_wait_without_observation(record: dict) -> bool:
     """Whether ``record`` waits for a human (``compat.waits_for_human``) in a
     state that has no observation row. Observation changes nothing there."""
@@ -151,38 +112,6 @@ def holds_requested_work(record: dict) -> bool:
     publish retry that is not exhausted."""
     pending = record.get("pending_publication") or {}
     return bool(record.get("active_work")) or bool(pending and not pending.get("exhausted"))
-
-
-def _record_gate_review(obs: Observation, entry: dict, cur: dict, eid: str, ev: dict,
-                        feedback: dict, *, policy: dict, now: str) -> dict:
-    """Take ``record_actionable_review`` at the submission gate.
-
-    The row records the review as pending feedback and returns the
-    contribution to ``development.fix_needed``; the CI evidence of the
-    candidate head is kept. The ids of the comments are added to the replay
-    fences of the same record, so the same comments are not read again."""
-    recorded = engine.apply_transition(
-        cur, "record_actionable_review", policy=policy, now=now, cause_id=eid,
-        facts={"actionable_review", "candidate_head_not_failed"},
-        values={"pending_feedback_evidence_ids": list(dict.fromkeys(
-            (cur.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:]},
-        details={"evidence_id": eid})
-    if not recorded.accepted:
-        entry["review_feedback_deferred"] = recorded.reason
-        return cur
-    new = dict(
-        recorded.record,
-        processed_review_ids=((cur.get("processed_review_ids") or [])
-                              + feedback["review_ids"])[-256:],
-        processed_review_comment_ids=((cur.get("processed_review_comment_ids") or [])
-                                      + feedback["comment_ids"])[-512:],
-        processed_pr_conversation_comment_ids=(
-            (cur.get("processed_pr_conversation_comment_ids") or [])
-            + feedback["conversation_comment_ids"])[-512:])
-    schemas.validate("contribution", new)
-    obs.staged.extend([("evidence", ev), ("contributions", new), ("events", recorded.event)])
-    entry.update(review_feedback=eid, returned_to_development=True)
-    return new
 
 
 def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
@@ -294,7 +223,6 @@ def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: d
 def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dict[str, dict],
             contracts: dict[str, dict], policy: dict, now: str,
             evidence: dict[str, dict] | None = None,
-            unadmitted_work: set[str] | None = None,
             skip: frozenset[str] = frozenset(),
             audited: dict[str, set[str]] | None = None) -> Observation:
     """Observe every watched contribution that is not in ``skip``.
@@ -339,7 +267,6 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 entry["note"] = f"{ref} branch missing"
                 obs.report.append(entry)
                 continue
-            cur = rec
             if human_wait_without_observation(rec):
                 # A human wait is left only by the rows the table lists for it
                 # (a resume, `park_contribution`, `refresh_investigation`,
@@ -365,260 +292,369 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 entry["note"] = f"{engine.state_key(rec)} is not observed here"
                 obs.report.append(entry)
                 continue
-            if head["head"] != lifecycle.recorded_head(rec) and rec["phase"] != "handoff" \
-                    and holds_requested_work(rec):
-                # The table records no head change while Work is requested or
-                # its Result is held for publication: the Result is folded at
-                # the revision it was requested for, and the head it published
-                # is recorded by the observation after it.
-                entry["note"] = "head change is recorded once the requested Work ends"
-                obs.report.append(entry)
-                continue
-            if head["head"] != lifecycle.recorded_head(rec):
-                if rec["phase"] == "handoff":
-                    out = engine.apply_transition(
-                        rec, "record_head_change", policy=policy, now=now,
-                        cause_id=f"branch:{head['head'][:12]}", facts={"candidate_head_changed"},
-                        values={"fork.head_sha": head["head"]},
-                        details={"head": head["head"]})
-                else:
-                    out = compat.observe_head(rec, head["head"], now=now,
-                                              cause_id=f"branch:{head['head'][:12]}")
-                cur = out.record
-                obs.staged.append(("contributions", cur))
-                if out.event:
-                    obs.staged.append(("events", out.event))
-                entry["head_changed"] = True
-            if cur["phase"] == "development" and cur["activity"] == "idle" \
-                    and not cur.get("proposal_artifact") and not cur.get("publication_operation_id") \
-                    and not cur.get("last_ci_evidence_id") and head["head"] == cur["upstream"].get("base_sha"):
-                # The provisioned base is not a delivered contribution. Missing or
-                # fork-guarded base CI must not suppress the initial patch task.
-                entry["note"] = "awaiting initial development patch"
-                obs.report.append(entry)
-                continue
-            at_gate = engine.state_key(cur) == "handoff.awaiting_submission"
-            gate_review: tuple[str, dict, dict] | None = None
-            if not cur.get("active_work") and cur["activity"] != "agent_running":
-                feedback = collect.development_review_feedback(
-                    api, cur, policy["command_authority"]["actor_ids"])
-                if feedback:
-                    inquiry_ids = (feedback["inquiry_comment_ids"]
-                                   + feedback["inquiry_conversation_comment_ids"])
-                    if inquiry_ids:
-                        inquiry_items = (feedback["inquiry_comments"]
-                                         + feedback["inquiry_conversation_comments"])
-                        inquiry_id = safe_id(
-                            f"inquiry-{cur['fork']['repository_id']}-{cur['fork']['pr_number']}-{max(inquiry_ids)}")
-                        inquiry_data = {"comments": feedback["inquiry_comments"],
-                                        "conversation_comments": feedback["inquiry_conversation_comments"]}
-                        inquiry_ev = {"schema_version": 1, "evidence_id": inquiry_id,
-                                      "contribution_id": cid, "kind": "human_inquiry",
-                                      "policy_version": policy["policy_version"], "collected_at": now,
-                                      "summary": "\n\n".join(item["body"] for item in inquiry_items)[:8000],
-                                      "limitations": ["Explanation-only; no repair or mutation requested."],
-                                      "data": inquiry_data, "digests": {"head": head["head"]}}
-                        schemas.validate("evidence", inquiry_ev)
-                        before_inquiry = cur
-                        processed = {
-                            "processed_review_ids": list(cur.get("processed_review_ids") or []),
-                            "processed_review_comment_ids": (
-                                (cur.get("processed_review_comment_ids") or [])
-                                + feedback["inquiry_comment_ids"])[-512:],
-                            "processed_pr_conversation_comment_ids": (
-                                (cur.get("processed_pr_conversation_comment_ids") or [])
-                                + feedback["inquiry_conversation_comment_ids"])[-512:]}
-                        if at_gate:
-                            # The gate's own row: the comment is recorded and the
-                            # gate, the candidate head, and the CI evidence are kept.
-                            explained = engine.apply_transition(
-                                cur, "record_explanation", policy=policy, now=now,
-                                cause_id=inquiry_id, facts={"explanation_inquiry"}, values=processed,
-                                details={"evidence_id": inquiry_id,
-                                         # Shown on the tracking issue by the ledger.
-                                         "comments": [{"url": item.get("url"),
-                                                       "body": item["body"][:500]}
-                                                      for item in inquiry_items[:8]]})
-                            if not explained.accepted:
-                                raise lifecycle.TransitionError(
-                                    f"record_explanation refused at the gate: {explained.reason}")
-                            cur = explained.record
-                            obs.staged.extend([("evidence", inquiry_ev), ("contributions", cur),
-                                               ("events", explained.event)])
-                        else:
-                            cur = dict(cur, **processed, updated_at=now)
-                            schemas.validate("contribution", cur)
-                            obs.staged.extend([("evidence", inquiry_ev), ("contributions", cur),
-                                               ("events", lifecycle._event(
-                                                   before_inquiry, cur, "development_review_inquiry",
-                                                   "observation", inquiry_id, now, False))])
-                        entry["review_inquiry"] = inquiry_id
-                    ids = feedback["review_ids"] + feedback["comment_ids"] + feedback["conversation_comment_ids"]
-                    if ids:
-                        eid = safe_id(f"review-{cur['fork']['repository_id']}-{cur['fork']['pr_number']}-{max(ids)}")
-                        summaries = [item["body"] for item in
-                                     feedback["reviews"] + feedback["comments"] + feedback["conversation_comments"]]
-                        ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": cid,
-                              "kind": "human_relay", "policy_version": policy["policy_version"],
-                              "collected_at": now, "summary": "\n\n".join(summaries)[:8000],
-                              "limitations": [], "data": feedback, "digests": {"head": head["head"]}}
-                        schemas.validate("evidence", ev)
-                        if at_gate:
-                            # At the gate the review is recorded by the table's
-                            # row, once CI on the candidate head is read: a CI
-                            # failure there takes `return_for_repair` instead.
-                            gate_review = (eid, ev, feedback)
-                        else:
-                            before = cur
-                            cur = compat.legacy_update(
-                                       cur, "observe_ci.review_feedback",
-                                       revision=cur["revision"] + 1, phase="development", activity="fix_needed",
-                                       active_work=None, active_operation_id=None, clean_head_sha=None,
-                                       handoff_request=None, handoff_approval=None, pending_human_action=None,
-                                       last_ci_evidence_id=eid,
-                                       processed_review_ids=((cur.get("processed_review_ids") or []) + feedback["review_ids"])[-256:],
-                                       processed_review_comment_ids=((cur.get("processed_review_comment_ids") or [])
-                                                                     + feedback["comment_ids"])[-512:],
-                                       processed_pr_conversation_comment_ids=(
-                                           (cur.get("processed_pr_conversation_comment_ids") or [])
-                                           + feedback["conversation_comment_ids"])[-512:],
-                                       pending_feedback_evidence_ids=list(dict.fromkeys(
-                                           (cur.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:],
-                                       updated_at=now)
-                            schemas.validate("contribution", cur)
-                            obs.staged.extend([("evidence", ev), ("contributions", cur),
-                                               ("events", lifecycle._event(before, cur, "development_review_feedback",
-                                                                           "observation", eid, now, True))])
-                            entry["review_feedback"] = eid
-                    if not at_gate:
-                        obs.report.append(entry)
-                        continue
-            # A requested repair must reach the controller before another CI poll
-            # can reclassify the same unchanged head as waiting for a human.
-            if cur["activity"] == "fix_needed":
-                entry["note"] = "repair remains required"
-                obs.report.append(entry)
-                continue
-            upstream_facing = cur.get("upstream_pr") is not None
-            repo_for_ci = cur["upstream"]["full_name"] if upstream_facing else fork
-            snap = collect.ci_snapshot(api, repo_for_ci, head["head"])
-            ctr = contract_for(cur, contracts)
-            verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
-                                                expected_wheels=ctr["expected_wheels"],
-                                                required_runner_label=ctr["required_runner_label"])
-            entry["ci"] = {"repository": repo_for_ci, "state": verdict.state, "problems": verdict.problems[:10]}
-            latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == head["head"]])
-            next_poll_at = (_next_ci_observation(now, policy)
-                            if verdict.state in {"pending", "missing", "not_executed"} else None)
-            new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
-                            "missing": "waiting_ci", "not_executed": "waiting_ci",
-                            "access_wait": "waiting_human"}[verdict.state]
-            if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
-                run = max(latest, key=lambda r: r["id"])
-                eid = _evidence_id(snap.repository["id"], run)
-                ev = ci_evidence.evidence_record(
-                    evidence_id=eid, contribution_id=cid, policy_version=policy["policy_version"],
-                    collected_at=now, repository=snap.repository, run=run,
-                    jobs=[j for r in latest for j in snap.jobs_by_run.get(r["id"], [])],
-                    base_sha=cur["upstream"].get("base_sha"), test_merge_sha=None,
-                    expected_wheels=ctr["expected_wheels"],
-                    artifacts=[], verdict=verdict,
-                    debug_present=bool(cur.get("debug_commits")) and not upstream_facing,
-                    limitations=[] if verdict.state == "passed" else ["see problems"])
-                obs.staged.append(("evidence", ev))
-                evidence[eid] = ev
-                if verdict.state in {"passed", "failed"} and cur.get("last_ci_evidence_id") != eid:
-                    cur = dict(cur, last_ci_evidence_id=eid, next_poll_at=None, updated_at=now)
-                    obs.staged.append(("contributions", cur))
-                if verdict.state == "failed" and cur["phase"] == "handoff":
-                    # Only an executed failure on the candidate head leaves the gate.
-                    returned = engine.apply_transition(
-                        cur, "return_for_repair", policy=policy, now=now, cause_id=eid,
-                        facts={"candidate_head_failed"}, values={"last_ci_evidence_id": eid},
-                        details={"evidence_id": eid})
-                    cur = returned.record
-                    obs.staged.extend([("contributions", cur), ("events", returned.event)])
-                    entry.update(activity="fix_needed", returned_to_development=True)
-                    obs.report.append(entry)
-                    continue
-                # Plan 14.1 clears only obsolete active Work. A dispatched or
-                # human-requested repair is still requested work on this head.
-                work_active = bool(cur.get("active_work")) or cur["activity"] == "agent_running"
-                if work_active and verdict.state == "passed" and cur["phase"] == "development" \
-                        and not _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"],
-                                                            unadmitted_work):
-                    entry["handoff_deferred"] = "requested Work is still active"
-                elif verdict.state == "passed" and cur["phase"] == "development" \
-                        and not cur.get("pending_publication") and not cur.get("active_operation_id"):
-                    entry["evidence"] = eid
-                    if cur.get("active_work"):
-                        # Proven never admitted to the queue: withdrawn before the
-                        # head it was requested for is nominated.
-                        before = cur
-                        cur = compat.legacy_update(cur, "observe_ci.withdraw_obsolete_repair",
-                                                   active_work=None, activity="waiting_ci",
-                                                   next_poll_at=None, updated_at=now)
-                        obs.staged.append(("events", lifecycle._event(
-                            before, cur, "obsolete_ci_repair_withdrawn", "observation", eid, now,
-                            False)))
-                        entry["obsolete_repair_withdrawn"] = True
-                    elif engine.state_key(cur) != "development.waiting_ci":
-                        # The table nominates from `development.waiting_ci`, where
-                        # passing CI keeps a contribution; older paths leave it idle.
-                        cur = compat.legacy_update(cur, "observe_ci.ci_passed", activity="waiting_ci")
-                    nominated = engine.apply_transition(
-                        cur, "nominate_for_handoff", policy=policy, now=now, cause_id=eid,
-                        # Unprocessed actionable feedback on the development PR is
-                        # folded above and ends this observation before CI is read.
-                        facts={"ci_passed_on_head", "no_pending_actionable_feedback"},
-                        values={"last_ci_evidence_id": eid,
-                                "handoff_request": {"command_id": f"observation-{eid}",
-                                                    "head": head["head"],
-                                                    "revision": cur["revision"]}},
-                        details={"head": head["head"], "revision": cur["revision"]})
-                    if nominated.accepted:
-                        cur = nominated.record
-                        obs.staged.extend([("contributions", cur), ("events", nominated.event)])
-                        entry["handoff_ready"] = True
-                        obs.report.append(entry)
-                        continue
-                    entry["handoff_deferred"] = nominated.reason
-                    new_activity = cur["activity"]
-                    obs.staged.append(("contributions", cur))
-                entry["evidence"] = eid
-            if cur["phase"] == "handoff":
-                if gate_review and verdict.state != "failed":
-                    cur = _record_gate_review(obs, entry, cur, *gate_review, policy=policy, now=now)
-                # Otherwise repeated observation of the candidate head keeps the gate.
-                obs.report.append(entry)
-                continue
-            if _obsolete_undispatched_ci_repair(cur, verdict, evidence, head["head"], unadmitted_work):
-                before = cur
-                cur = compat.legacy_update(cur, "observe_ci.withdraw_obsolete_repair",
-                                           active_work=None, activity="waiting_ci",
-                                           next_poll_at=next_poll_at, updated_at=now)
-                schemas.validate("contribution", cur)
-                obs.staged.extend([
-                    ("contributions", cur),
-                    ("events", lifecycle._event(before, cur, "obsolete_ci_repair_withdrawn",
-                                                "observation", entry.get("evidence"), now, False)),
-                ])
-                entry["obsolete_repair_withdrawn"] = True
-            if cur["activity"] != new_activity and cur["activity"] != "agent_running":
-                out = compat.observe_status(cur, activity=new_activity,
-                                               next_poll_at=next_poll_at, now=now)
-                if next_poll_at is None and out.record.get("next_poll_at") is not None:
-                    out.record["next_poll_at"] = None
-                obs.staged.append(("contributions", out.record))
-                if out.event:
-                    obs.staged.append(("events", out.event))
-                entry.update(activity=new_activity)
-            elif next_poll_at is not None and cur.get("next_poll_at") != next_poll_at \
-                    and cur["activity"] != "agent_running":
-                out = compat.observe_status(cur, next_poll_at=next_poll_at, now=now)
-                obs.staged.append(("contributions", out.record))
+            if rec["phase"] == "development":
+                _observe_development(api, obs, entry, rec, head["head"], contracts=contracts,
+                                     policy=policy, now=now)
+            elif rec["phase"] == "handoff":
+                _observe_gate(api, obs, entry, rec, head["head"], contracts=contracts,
+                              policy=policy, now=now)
+            else:
+                _observe_upstream_review(api, obs, entry, rec, head["head"], contracts=contracts,
+                                         policy=policy, now=now)
             obs.report.append(entry)
     return obs
+
+
+def _ci(api: collect.Api, record: dict, head: str, *, contracts: dict, policy: dict, now: str,
+        repository: str) -> tuple[ci_evidence.CiVerdict, dict | None, str | None]:
+    """CI on the exact ``head``: the verdict, the evidence record of its
+    newest run (for a verdict that names one), and the next poll time while
+    CI is incomplete."""
+    snap = collect.ci_snapshot(api, repository, head)
+    ctr = contract_for(record, contracts)
+    verdict = collect.evaluate_snapshot(snap, required_job_patterns=ctr["required_job_patterns"],
+                                        expected_wheels=ctr["expected_wheels"],
+                                        required_runner_label=ctr["required_runner_label"])
+    latest = ci_evidence.latest_attempts([r for r in snap.runs if r["head_sha"] == head])
+    next_poll_at = (_next_ci_observation(now, policy)
+                    if verdict.state in {"pending", "missing", "not_executed", "access_wait"}
+                    else None)
+    ev = None
+    if verdict.state in ("passed", "failed", "missing", "not_executed") and latest:
+        run = max(latest, key=lambda r: r["id"])
+        ev = ci_evidence.evidence_record(
+            evidence_id=_evidence_id(snap.repository["id"], run), contribution_id=record["contribution_id"],
+            policy_version=policy["policy_version"], collected_at=now, repository=snap.repository,
+            run=run, jobs=[j for r in latest for j in snap.jobs_by_run.get(r["id"], [])],
+            base_sha=record["upstream"].get("base_sha"), test_merge_sha=None,
+            expected_wheels=ctr["expected_wheels"], artifacts=[], verdict=verdict,
+            debug_present=bool(record.get("debug_commits")) and record.get("upstream_pr") is None,
+            limitations=[] if verdict.state == "passed" else ["see problems"])
+    return verdict, ev, next_poll_at
+
+
+def _take(obs: Observation, record: dict, verb: str, *, policy: dict, now: str,
+          **kwargs: Any) -> dict:
+    """Take a table row the observation established and stage the record
+    and the event. A refusal here is a bug of the caller."""
+    out = engine.apply_transition(record, verb, policy=policy, now=now, **kwargs)
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"{verb} refused in {engine.state_key(record)}: {out.reason}")
+    obs.staged.extend([("contributions", out.record), ("events", out.event)])
+    return out.record
+
+
+def _poll(obs: Observation, record: dict, next_poll_at: str | None) -> dict:
+    """Record when CI is read again (bookkeeping; no state change)."""
+    if record.get("next_poll_at") == next_poll_at:
+        return record
+    changed = dict(record, next_poll_at=next_poll_at)
+    schemas.validate("contribution", changed)
+    obs.staged.append(("contributions", changed))
+    return changed
+
+
+def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: str,
+              check_pull: bool = False) -> tuple[tuple[str, dict, dict] | None, tuple[str, dict, dict, list] | None,
+                             str | None]:
+    """New authorized feedback on the development PR for the head: the
+    actionable review (evidence id, evidence, feedback), the
+    explanation-only inquiry (evidence id, evidence, the replay fences with
+    its ids added, the comments), each or both ``None``, and why the
+    development PR does not match the record (no feedback is read then)."""
+    authority = policy["command_authority"]["actor_ids"]
+    feedback = (collect.development_review_feedback(api, record, authority, check_pull=True)
+                if check_pull else collect.development_review_feedback(api, record, authority))
+    if feedback and feedback.get("pr_mismatch"):
+        return None, None, str(feedback["pr_mismatch"])
+    if not feedback:
+        return None, None, None
+    cid, fork = record["contribution_id"], record["fork"]
+    inquiry = None
+    inquiry_ids = feedback["inquiry_comment_ids"] + feedback["inquiry_conversation_comment_ids"]
+    if inquiry_ids:
+        items = feedback["inquiry_comments"] + feedback["inquiry_conversation_comments"]
+        iid = safe_id(f"inquiry-{fork['repository_id']}-{fork['pr_number']}-{max(inquiry_ids)}")
+        iev = {"schema_version": 1, "evidence_id": iid, "contribution_id": cid,
+               "kind": "human_inquiry", "policy_version": policy["policy_version"],
+               "collected_at": now,
+               "summary": "\n\n".join(item["body"] for item in items)[:8000],
+               "limitations": ["Explanation-only; no repair or mutation requested."],
+               "data": {"comments": feedback["inquiry_comments"],
+                        "conversation_comments": feedback["inquiry_conversation_comments"]},
+               "digests": {"head": head}}
+        schemas.validate("evidence", iev)
+        processed = {
+            "processed_review_ids": list(record.get("processed_review_ids") or []),
+            "processed_review_comment_ids": ((record.get("processed_review_comment_ids") or [])
+                                             + feedback["inquiry_comment_ids"])[-512:],
+            "processed_pr_conversation_comment_ids": (
+                (record.get("processed_pr_conversation_comment_ids") or [])
+                + feedback["inquiry_conversation_comment_ids"])[-512:]}
+        inquiry = (iid, iev, processed, items)
+    review = None
+    ids = feedback["review_ids"] + feedback["comment_ids"] + feedback["conversation_comment_ids"]
+    if ids:
+        eid = safe_id(f"review-{fork['repository_id']}-{fork['pr_number']}-{max(ids)}")
+        summaries = [item["body"] for item in
+                     feedback["reviews"] + feedback["comments"] + feedback["conversation_comments"]]
+        ev = {"schema_version": 1, "evidence_id": eid, "contribution_id": cid,
+              "kind": "human_relay", "policy_version": policy["policy_version"],
+              "collected_at": now, "summary": "\n\n".join(summaries)[:8000],
+              "limitations": [], "data": feedback, "digests": {"head": head}}
+        schemas.validate("evidence", ev)
+        review = (eid, ev, feedback)
+    return review, inquiry, None
+
+
+def _record_explanation(obs: Observation, entry: dict, record: dict,
+                        inquiry: tuple[str, dict, dict, list], *, policy: dict, now: str) -> dict:
+    """Take ``record_explanation``: the comment is recorded and its ids are
+    added to the replay fences; revision and CI evidence are kept."""
+    iid, iev, processed, items = inquiry
+    obs.staged.append(("evidence", iev))
+    entry["review_inquiry"] = iid
+    return _take(obs, record, "record_explanation", policy=policy, now=now, cause_id=iid,
+                 facts={"explanation_inquiry"}, values=processed,
+                 details={"evidence_id": iid,
+                          # Shown on the tracking issue by the ledger.
+                          "comments": [{"url": item.get("url"), "body": item["body"][:500]}
+                                       for item in items[:8]]})
+
+
+def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[str, dict, dict],
+                   *, policy: dict, now: str, facts: frozenset[str]) -> dict | None:
+    """Take ``record_actionable_review``: the review is recorded as pending
+    feedback; the CI evidence is kept. The ids of the comments are added to
+    the replay fences beside the row, so the same comments are not read
+    again. ``None`` when the row does not apply."""
+    eid, ev, feedback = review
+    recorded = engine.apply_transition(
+        record, "record_actionable_review", policy=policy, now=now, cause_id=eid,
+        facts=facts,
+        values={"pending_feedback_evidence_ids": list(dict.fromkeys(
+            (record.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:]},
+        details={"evidence_id": eid})
+    if not recorded.accepted:
+        entry["review_feedback_deferred"] = recorded.reason
+        return None
+    new = dict(
+        recorded.record,
+        processed_review_ids=((record.get("processed_review_ids") or [])
+                              + feedback["review_ids"])[-256:],
+        processed_review_comment_ids=((record.get("processed_review_comment_ids") or [])
+                                      + feedback["comment_ids"])[-512:],
+        processed_pr_conversation_comment_ids=(
+            (record.get("processed_pr_conversation_comment_ids") or [])
+            + feedback["conversation_comment_ids"])[-512:])
+    schemas.validate("contribution", new)
+    obs.staged.extend([("evidence", ev), ("contributions", new), ("events", recorded.event)])
+    entry.update(review_feedback=eid)
+    return new
+
+
+def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
+                         *, contracts: dict, policy: dict, now: str) -> None:
+    """Observe a contribution in development by the table's rows.
+
+    Only ``development.waiting_ci`` has observation rows. There, in order:
+    ``record_head_change`` for a new fork head; ``record_pr_mismatch`` for a
+    development PR that does not match the record; ``record_explanation``
+    for an explanation-only comment; ``record_actionable_review`` for an
+    actionable review (the observation then ends in
+    ``development.fix_needed``, which has no observation row); and, for CI
+    on the exact head, ``record_ci_failure`` for an executed blocking
+    failure of a run and attempt other than the one ``request_ci_rerun``
+    answered (``budget.reruns.answered_ci_evidence_id``), or
+    ``nominate_for_handoff`` when every required job passed and
+    no actionable feedback is pending. Passing CI that does not satisfy
+    nomination keeps the contribution in ``development.waiting_ci``, and
+    a CI run that waits for approval is collector health, not a state.
+
+    ``development.agent_running`` (requested Work, or a Result held for
+    publication) and ``development.fix_needed`` (Work is due) are not
+    observed; a fork head that moved while Work is due is reported in
+    ``stale_head``, and no Work is allocated for it while it differs."""
+    state = engine.state_key(rec)
+    recorded = rec["fork"].get("head_sha")
+    if state != "development.waiting_ci":
+        if head != recorded and state == "development.fix_needed":
+            entry["stale_head"] = head
+            entry["note"] = ("the fork head differs from the recorded head while Work is due; no "
+                             "row of development.fix_needed records it")
+        else:
+            entry["note"] = f"{state} has no observation row"
+        return
+    cur = rec
+    if head != recorded:
+        cur = _take(obs, cur, "record_head_change", policy=policy, now=now,
+                    cause_id=f"branch:{head[:12]}", facts={"fork_head_changed"},
+                    values={"fork.head_sha": head}, details={"head": head})
+        entry["head_changed"] = True
+    if cur["fork"].get("pr_number"):
+        review, inquiry, mismatch = _feedback(api, cur, head, policy=policy, now=now,
+                                              check_pull=True)
+        if mismatch:
+            _take(obs, cur, "record_pr_mismatch", policy=policy, now=now,
+                  cause_id=f"pr-{cur['fork']['pr_number']}", facts={"development_pr_mismatch"},
+                  details={"mismatch": mismatch[:500]})
+            entry.update(activity="waiting_human", pr_mismatch=mismatch)
+            return
+        if inquiry:
+            cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
+        if review:
+            # Recorded before CI is read: a CI failure observed with it has
+            # no row in development.fix_needed, and the review would be
+            # filtered out once the next head is published.
+            if _record_review(obs, entry, cur, review, policy=policy, now=now,
+                              facts=frozenset({"actionable_review"})) is not None:
+                entry["activity"] = "fix_needed"
+                return
+    verdict, ev, next_poll_at = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
+                                    repository=cur["fork"]["name"])
+    entry["ci"] = {"repository": cur["fork"]["name"], "state": verdict.state,
+                   "problems": verdict.problems[:10]}
+    if ev is not None:
+        obs.staged.append(("evidence", ev))
+        entry["evidence"] = ev["evidence_id"]
+    answered = engine.head_reruns(cur).get("answered_ci_evidence_id")
+    if verdict.state == "failed" and ev is not None and ev["evidence_id"] == answered:
+        # `request_ci_rerun` answered this run and attempt, and no trusted
+        # rerun exists: only CI evidence of another run or attempt on the
+        # head is acted on. Without a rerun, nothing produces it unless a
+        # human reruns the CI or pushes.
+        entry["note"] = (f"{ev['evidence_id']} is the CI run request_ci_rerun answered; CI "
+                         "evidence of another run or attempt is awaited")
+        _poll(obs, cur, _next_ci_observation(now, policy))
+        return
+    if verdict.state == "failed" and ev is not None:
+        cur = _take(obs, cur, "record_ci_failure", policy=policy, now=now,
+                    cause_id=ev["evidence_id"], facts={"ci_failed_on_head"},
+                    values={"last_ci_evidence_id": ev["evidence_id"]},
+                    details={"evidence_id": ev["evidence_id"]})
+        _poll(obs, cur, None)
+        entry["activity"] = "fix_needed"
+        return
+    if verdict.state == "passed" and ev is not None:
+        if cur.get("active_operation_id"):
+            entry["handoff_deferred"] = f"operation {cur['active_operation_id']} is open"
+        else:
+            nominated = engine.apply_transition(
+                cur, "nominate_for_handoff", policy=policy, now=now, cause_id=ev["evidence_id"],
+                facts={"ci_passed_on_head"},
+                values={"last_ci_evidence_id": ev["evidence_id"],
+                        "handoff_request": {"command_id": f"observation-{ev['evidence_id']}",
+                                            "head": head, "revision": cur["revision"]}},
+                details={"head": head, "revision": cur["revision"]})
+            if nominated.accepted:
+                cur = _poll(obs, nominated.record, None)
+                obs.staged.append(("events", nominated.event))
+                obs.staged.append(("contributions", cur))
+                entry["handoff_ready"] = True
+                return
+            entry["handoff_deferred"] = nominated.reason
+    if verdict.state == "access_wait":
+        entry["note"] = "a CI run waits for approval; CI is read again"
+    _poll(obs, cur, next_poll_at)
+
+
+def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str, *,
+                  contracts: dict, policy: dict, now: str) -> None:
+    """Observe ``handoff.awaiting_submission`` by the gate's rows:
+    ``record_head_change`` for a new fork head (to ``development.waiting_ci``,
+    which is then observed), ``record_explanation`` for an explanation-only
+    comment, then ``return_for_repair`` for a CI failure on the candidate
+    head, or else ``record_actionable_review`` for an actionable review.
+    Passing CI keeps the gate and its recorded evidence."""
+    cur = rec
+    if head != rec["fork"].get("head_sha"):
+        cur = _take(obs, cur, "record_head_change", policy=policy, now=now,
+                    cause_id=f"branch:{head[:12]}", facts={"candidate_head_changed"},
+                    values={"fork.head_sha": head}, details={"head": head})
+        entry["head_changed"] = True
+        _observe_development(api, obs, entry, cur, head, contracts=contracts, policy=policy,
+                             now=now)
+        return
+    # The gate has no row for a development PR that does not match; it is
+    # not read here.
+    review, inquiry, _mismatch = _feedback(api, cur, head, policy=policy, now=now)
+    if inquiry:
+        # The gate's own row: the comment is recorded and the gate, the
+        # candidate head, and the CI evidence are kept.
+        cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
+    verdict, ev, _next = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
+                             repository=cur["fork"]["name"])
+    entry["ci"] = {"repository": cur["fork"]["name"], "state": verdict.state,
+                   "problems": verdict.problems[:10]}
+    if ev is not None:
+        obs.staged.append(("evidence", ev))
+        entry["evidence"] = ev["evidence_id"]
+    if verdict.state == "failed" and ev is not None:
+        # Only an executed failure on the candidate head leaves the gate.
+        _take(obs, cur, "return_for_repair", policy=policy, now=now, cause_id=ev["evidence_id"],
+              facts={"candidate_head_failed"}, values={"last_ci_evidence_id": ev["evidence_id"]},
+              details={"evidence_id": ev["evidence_id"]})
+        entry.update(activity="fix_needed", returned_to_development=True)
+        return
+    if review:
+        if _record_review(obs, entry, cur, review, policy=policy, now=now,
+                          facts=frozenset({"actionable_review", "candidate_head_not_failed"})):
+            entry["returned_to_development"] = True
+    # Otherwise repeated observation of the candidate head keeps the gate.
+
+
+def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, rec: dict,
+                             head: str, *, contracts: dict, policy: dict, now: str) -> None:
+    """Observe upstream review as the code before the table did: a new fork
+    head bumps the revision (``compat.observe_head``), and CI on the head
+    sets the activity (``compat.observe_status``)."""
+    cur = rec
+    if head != lifecycle.recorded_head(rec) and holds_requested_work(rec):
+        # The table records no head change while Work is requested or its
+        # Result is held for publication: the Result is folded at the
+        # revision it was requested for, and the head it published is
+        # recorded by the observation after it.
+        entry["note"] = "head change is recorded once the requested Work ends"
+        return
+    if head != lifecycle.recorded_head(rec):
+        out = compat.observe_head(rec, head, now=now, cause_id=f"branch:{head[:12]}")
+        cur = out.record
+        obs.staged.append(("contributions", cur))
+        if out.event:
+            obs.staged.append(("events", out.event))
+        entry["head_changed"] = True
+    if cur["activity"] == "fix_needed":
+        entry["note"] = "repair remains required"
+        return
+    snap_repo = cur["upstream"]["full_name"]
+    verdict, ev, next_poll_at = _ci(api, cur, head, contracts=contracts, policy=policy, now=now,
+                                    repository=snap_repo)
+    entry["ci"] = {"repository": snap_repo, "state": verdict.state, "problems": verdict.problems[:10]}
+    if ev is not None:
+        obs.staged.append(("evidence", ev))
+        entry["evidence"] = ev["evidence_id"]
+        if verdict.state in {"passed", "failed"} and cur.get("last_ci_evidence_id") != ev["evidence_id"]:
+            cur = dict(cur, last_ci_evidence_id=ev["evidence_id"], next_poll_at=None, updated_at=now)
+            obs.staged.append(("contributions", cur))
+    if verdict.state in ("pending", "missing", "not_executed"):
+        next_poll_at = _next_ci_observation(now, policy)
+    else:
+        next_poll_at = None
+    new_activity = {"passed": "idle", "failed": "fix_needed", "pending": "waiting_ci",
+                    "missing": "waiting_ci", "not_executed": "waiting_ci",
+                    "access_wait": "waiting_human"}[verdict.state]
+    if cur["activity"] != new_activity and cur["activity"] != "agent_running":
+        out = compat.observe_status(cur, activity=new_activity, next_poll_at=next_poll_at, now=now)
+        if next_poll_at is None and out.record.get("next_poll_at") is not None:
+            out.record["next_poll_at"] = None
+        obs.staged.append(("contributions", out.record))
+        if out.event:
+            obs.staged.append(("events", out.event))
+        entry.update(activity=new_activity)
+    elif next_poll_at is not None and cur.get("next_poll_at") != next_poll_at \
+            and cur["activity"] != "agent_running":
+        out = compat.observe_status(cur, next_poll_at=next_poll_at, now=now)
+        obs.staged.append(("contributions", out.record))
 
 
 def dedupe(staged: list[tuple[str, dict]]) -> list[tuple[str, dict]]:

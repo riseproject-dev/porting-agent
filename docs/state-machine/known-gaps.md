@@ -15,33 +15,19 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 {:toc}
 </details>
 
-## A publication held in a legacy state is not stopped by the table
-
-- **Where:** a Result held for a publish retry; the legacy publication outcome in `reconcile.py` and `compat.legacy_pause`.
-- **Today:** a pause in a state of the table follows the table: from `development.agent_running` it leads to `development.fix_needed` and clears the pending publication. But the legacy publication outcome holds a Result for a publish retry in `development.waiting_capacity`, a state the table does not have, and a stop there leaves the record in `development.idle`. With CI evidence recorded for the head, `development.idle` requests no Work, so after the resume it waits for CI with nothing held and no pending human action. `nominate_for_handoff` is also taken with `no_pending_actionable_feedback` asserted unconditionally, while nothing in development clears `pending_feedback_evidence_ids` yet.
-- **Table:** a held publication exists only in `development.agent_running` (`schedule_publish_retry`), a pause there leads to `development.fix_needed`, and nomination requires no pending actionable feedback.
-- **Required:** take the publication outcome through the table's rows, then assert `no_pending_actionable_feedback` from the record.
-
-## A green CI rerun at the gate changes the record without a row
-
-- **Where:** `handoff.awaiting_submission`, CI observation in `observe_ci.py`.
-- **Today:** a new run or attempt replaces `last_ci_evidence_id` with no event and no revision bump. `handoff_request.command_id` still names the old evidence.
-- **Table:** no row at the gate sets `last_ci_evidence_id` on a passing run.
-- **Required:** either declare the row in the table or keep the evidence id unchanged at the gate.
-
 ## CI failure and an actionable review in the same observation can drop the review
 
 - **Where:** `handoff.awaiting_submission`, rows `return_for_repair` and `record_actionable_review`.
-- **Today:** `return_for_repair` wins and repair Work is allocated in the same tick, so the review is not read. After the repair publishes, the review no longer matches the head and is filtered out. It is recorded only if no Work was allocated in between, and then through the legacy path, which overwrites `last_ci_evidence_id` with the review evidence id.
+- **Today:** `return_for_repair` wins and repair Work is allocated in the same tick, so the review is not read. After the repair publishes, the review is bound to an earlier head and the collector filters it out, so no row records it.
 - **Table:** the review is recorded once CI is observed again.
 - **Required:** record the review evidence when the failure wins, so the repair Work carries it.
 
 ## The stop flag in states the table does not have
 
-- **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (the development and upstream review states the table does not have, for example `development.idle`, `development.waiting_capacity`, `upstream_review.idle`).
-- **Today:** such a state has no row, so the engine cannot take `pause`, `pause_on_identity_change`, or `pause_on_processing_error` there. `compat.legacy_pause` records the same fields and clears the same things, but the activity that held the Work or a publication becomes `idle` instead of the table's state in which the Work is due. `resume` and `park` on such a record are applied by the legacy command code: its resume has no `resume_stale` (a long stop is not followed by a refresh). Its park is refused while an operation is open, as the table's. `refresh` and `abandon`, which no row of such a state takes, are refused there.
-- **Table:** the flag verbs apply in every non-terminal state, with `set_moves`; `resume_stale` applies after a long stop in provisioning and development; `park_contribution` requires no open operation.
-- **Required:** migrate the legacy states to table states (development and upstream review rows), then remove the legacy branches.
+- **Where:** `compat.legacy_pause` and `compat.apply_command`, for a record in a state of `compat.LEGACY_STATES` (`upstream_review.idle`, `upstream_review.waiting_capacity`).
+- **Today:** such a state has no row, so the engine cannot take `pause`, `pause_on_identity_change`, or `pause_on_processing_error` there. `compat.legacy_pause` records the same fields and clears the same things, but the activity that held the Work or a publication becomes `idle` instead of the table's state in which the Work is due. `resume` and `park` on such a record are applied by the legacy command code. Its park is refused while an operation is open, as the table's. `refresh` and `abandon`, which no row of such a state takes, are refused there.
+- **Table:** the flag verbs apply in every non-terminal state, with `set_moves`; `park_contribution` requires no open operation.
+- **Required:** take the upstream review rows, then remove the legacy branches.
 
 ## No dossier decides close
 
@@ -50,10 +36,26 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** a verified dossier decision close leads to `closed.idle` and sets `terminal_reason`.
 - **Required:** a decision on when an investigation decides close (for example riscv64 wheels already published for the latest release), then the decision in the dossier contract and the investigator's instructions.
 
-## Some resumes lead where nothing continues yet
+## CI is never rerun
 
-- **`resume_ci`** in `development.waiting_human` and `handoff.waiting_human` leads to the CI wait, but the rerun of the interrupted jobs that the row states is not launched. No record enters a wait with the pending action `ci_interrupted` yet.
-- **Required:** collector reruns.
+- **Where:** `development.agent_running` (`request_ci_rerun`), `development.waiting_ci` (`rerun_interrupted_ci`, `exhaust_interrupted_reruns`), and `resume_ci` in `development.waiting_human` and `handoff.waiting_human` (CI on the clean head in `handoff.waiting_ci` is a separate entry below).
+- **Today:** no trusted workflow reruns the failed or interrupted jobs of a run on the exact head and attempt. The repair worker's `no_change` report takes `request_ci_rerun` when the Work carries no feedback and `flaky_reruns` remains, and charges `flaky_reruns`, but nothing is rerun. `development.waiting_ci` acts only on CI evidence of a run or attempt other than the one the classified Result answered (`budget.reruns.answered_ci_evidence_id`): a failure of another run or attempt takes `record_ci_failure`, and a passing run is nominated once `nominate_for_handoff` holds. Without a trusted rerun, nothing produces newer evidence unless a human reruns the CI or pushes to the development branch, so the contribution waits in `development.waiting_ci`. That state is of kind `auto_wait`, not a human wait: it records no pending action, so no reminder or escalation runs. The status comment of `request_ci_rerun` on the tracking issue states the wait and its exits (a CI rerun, a push, `/upstreaming refresh`, `/upstreaming park`); the tick report names the answered run on every tick. A required job that was cancelled or lost its runner leaves CI on the head not executed: the contribution stays in `development.waiting_ci` and CI is read again, with no rerun and no exhaustion, so no record enters a wait with the pending action `ci_interrupted`, and `resume_ci` leads to the CI wait without launching the rerun the row states.
+- **Table:** `request_ci_rerun` reruns the failed jobs and leads to `development.waiting_ci`, charging `flaky_reruns`; the collector reruns only cancelled or runner-lost jobs within `interrupted_reruns`, and `exhaust_interrupted_reruns` waits for a human; `resume_ci` reruns them.
+- **Required:** a trusted rerun of the jobs of the exact run and attempt (an operation with a receipt and readback of the new attempt), then take the rows. Until then, a table decision on whether the wait after `request_ci_rerun` needs a pending action and its reminder.
+
+## A head change while development Work is due has no row
+
+- **Where:** `development.fix_needed`, branch observation in `observe_ci.py`, Work selection in `controller.py`.
+- **Today:** `development.fix_needed` has no observation row, so a fork head that moved there (a human push) is not recorded. The controller requests no Work on the recorded head while the observed head differs and reports the contribution as deferred, in the tick report only: nothing notifies a human, and no budget or reminder runs. A pause and its resume do not help: `resume_pause` leaves the contribution in `development.fix_needed` with the same recorded head (a resume after more than `refresh.stale_after_days` is `resume_stale`, a refresh). It stays until the head is restored on the fork, or a human refreshes (`/upstreaming refresh`) or parks it.
+- **Table:** no row of `development.fix_needed` reads the fork head.
+- **Required:** a table decision on a head change while Work is due.
+
+## An uncertain publication is recorded before it is confirmed
+
+- **Where:** `record_publish_success` in `reconcile.fold_patch_result`.
+- **Today:** a publication whose push response was lost (`uncertain`) takes `record_publish_success` when its Result is folded; the branch operation is discovered afterwards by the branch observation, and the head it pushed is recorded by `record_head_change`.
+- **Table:** the guard is "the Result is published, or uncertain and later confirmed".
+- **Required:** keep the Result in `development.agent_running` until discovery confirms the branch operation, without the Work recovery taking the completed Work graph for a lost Result.
 
 ## CI on the clean head is not rerun
 
@@ -97,32 +99,17 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `operation_launch` counts launches; it states no interval tied to the run timeout or the queueing of the workflow.
 - **Required:** an interval at least as long as the workflow's timeout plus its queueing, or a check of the run's status before an attempt is closed as spent.
 
-## A legacy pending action in upstream review has no resume
+## Worker outcomes in upstream review are folded by legacy code
 
-- **Where:** `upstream_review.waiting_human` with `pending_human_action` `task_without_outcome`, written by the legacy Work deadline in `reconcile.py`.
-- **Today:** no resume row's guard admits that pending action, and `restart_generation` is refused while the upstream PR is open, so the only exit is `park` then `abandon`.
-- **Table:** Work that ends without a Result takes `allocate_work_retry` within its budget and `exhaust_work_recovery` into the human wait with a pending action that `resume_upstream_revision` admits.
-- **Required:** replace the legacy Work deadline by the table's Work recovery verbs before upstream review becomes reachable.
-
-## The first patch in `development.idle` is selected outside the table
-
-- **Where:** `controller._legacy_patch`, for a record in `development.idle` without CI evidence (the legacy `no_change` and stale outcomes, and the provisioning migration of a proposal held on the fork, leave records there).
-- **Today:** the controller requests `development_patch` itself. Like `request_patch`, the Work carries the pending feedback and the allocation charges `work_total`, and no Work is requested while `work_total` or `no_progress` is exhausted; but the record then stays in `development.idle`, deferred, with no exhaustion row and no human wait.
-- **Table:** patch Work is requested only from `development.fix_needed`, where an exhausted budget takes `exhaust_work_total`, `refresh_on_exhaustion`, or `exhaust_repair_attempts`.
-- **Required:** migrate `development.idle` to the table's development states.
-
-## Worker outcomes in development and upstream review are folded by legacy code
-
-- **Where:** `reconcile.apply_publication`, for Results of development and upstream revision Work.
-- **Today, development:** a rejected or blocked outcome charges `no_progress` and nothing else, bumps the revision, and leads to `fix_needed`, as `reject_patch_proposal` does, but it is written by the legacy outcome: a blocked outcome also records its rehearsal evidence as pending feedback and clears `proposal_artifact`, a rejected one records its artifact in `proposal_artifact`. A stale rejection leads to the legacy `development.idle` without a revision bump; `no_change` leads to `development.idle`; a published or uncertain Result leads to `waiting_ci` and starts `no_progress` again, without clearing the feedback its Work carried.
-- **Today, upstream review** (from `upstream_review.agent_running`):
+- **Where:** `reconcile._fold_revision_outcome` and the publish-only retry in `reconcile.py`, for Results of upstream revision Work (from `upstream_review.agent_running`).
+- **Today:**
   - published or uncertain: `upstream_review.waiting_ci`, `no_progress` started again, the carried feedback kept (table: `record_revision_publish_success`, which clears exactly the carried feedback);
   - `no_change`: the legacy `upstream_review.idle`, which the next CI observation moves to `upstream_review.waiting_ci` with no pending action (table: `require_reviewer_answer` to `upstream_review.waiting_human` with the pending action `answer_reviewer`);
   - `proposal`, which no publisher produces any more: rejected in trusted validation, as below;
   - `infra_error` within the retry limit: the legacy `upstream_review.waiting_capacity` with the pending publication, which the next CI observation moves to `upstream_review.waiting_ci` while the publish-only retry is still scheduled (table: `schedule_publish_retry`, which keeps `upstream_review.agent_running`); beyond the limit, `upstream_review.waiting_human` with the pending action `publication_infrastructure_failure` and no `counter` (table: `exhaust_publish_recovery`, whose pending action names `publish_recovery`);
   - rejected for validation, or blocked: `upstream_review.fix_needed` with a revision bump and `no_progress` charged, as `reject_patch_proposal` does; a blocked outcome also records its rehearsal evidence as pending feedback;
   - rejected as stale: the legacy `upstream_review.idle` without a revision bump, then `upstream_review.waiting_ci` (the table has no row for it).
-- **Table:** in development `reject_patch_proposal`, `replan_development` (to `development.fix_needed` with a revision bump), `request_ci_rerun`, `record_publish_success` (clears exactly the carried feedback), `schedule_publish_retry`, `exhaust_publish_recovery`; in upstream review `record_revision_publish_success`, `reject_patch_proposal`, `require_reviewer_answer`, `schedule_publish_retry`, `exhaust_publish_recovery`.
+- **Table:** in upstream review `record_revision_publish_success`, `reject_patch_proposal`, `require_reviewer_answer`, `schedule_publish_retry`, `exhaust_publish_recovery`.
 - **Required:** take the publication outcome through the table's rows.
 
 ## A completed Work graph whose Result is not collected yet is retried
@@ -134,8 +121,8 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 
 ## Development PR operations have no row
 
-- **Where:** the development PR and CI bootstrap plans in `controller.py` and the development PR receipt in `reconcile.py` (legacy sites `controller.plan_development_pr`, `controller.plan_ci_bootstrap`, `reconcile.confirm_development_pr`).
-- **Today:** the operations `dev_pr_create` and `dev_pr_update` follow the operation table, but no lifecycle row starts them or is fired by them: the plan moves the record to the legacy `development.waiting_capacity`, the confirmed operation moves it to `development.waiting_ci`, and launches that never return a receipt stop at the launch limit with the operation open and no human wait.
+- **Where:** the development PR and CI bootstrap plans in `controller.py` and the development PR receipt in `reconcile.py`.
+- **Today:** the operations `dev_pr_create` and `dev_pr_update` follow the operation table, but no lifecycle row starts them or is fired by them. They are planned in `development.waiting_ci`, which they leave unchanged; while one is open, nomination is deferred and no Work is allocated. Its verified receipt records `fork.pr_number` and releases the operation, without a row. Launches that never return a receipt stop at the launch limit with the operation open and no human wait.
 - **Table:** `record_publish_success` leads to `development.waiting_ci`; no row of the table creates the development PR.
 - **Required:** decide where the development PR operation sits in the table, then take it through rows.
 
@@ -175,9 +162,9 @@ These follow the literal reading of a decision and are kept until a decision say
 - `record_actionable_review` does not list the processed comment and review ids; the collector records them beside the row.
 - The admission scope guard is on `admit_development` only, not on `readmit_development`.
 - `resume_stale` from a `provisioning` state, which has no fork, records a refresh with the phase `provisioning` and no head or development PR. The refreshed dossier returns to development on the recorded fork only when the refresh began with the fork and development PR the record still holds; otherwise development is admitted afresh.
-- The flag migration turns a block's human wait without a pending action into the `idle` activity of its phase, as the old `resume` did (for `development` that is the legacy `development.idle`), records `paused_at` as the record's `updated_at`, and records the controller's identity block with `paused_reason` `upstream_identity_changed`, the reason the table names.
+- The flag migration turns a block's human wait without a pending action into the `idle` activity of its phase, as the old `resume` did (for `development` the state the development migration names: `development.waiting_ci` or `development.fix_needed`), records `paused_at` as the record's `updated_at`, and records the controller's identity block with `paused_reason` `upstream_identity_changed`, the reason the table names.
 - `pause_on_identity_change` is guarded by `not paused`: an identity change observed while a contribution is paused sets nothing; the controller still selects no Work for it while the identity differs.
-- The reminder interval is counted in whole days from the exact time of the request or of the last reminder; a day counts when it ends on a weekday (UTC). Any pending action in a human wait of the table gets reminders, including the pending actions that only the legacy paths write (for example `task_without_outcome`).
+- The reminder interval is counted in whole days from the exact time of the request or of the last reminder; a day counts when it ends on a weekday (UTC). Any pending action in a human wait of the table gets reminders, including the pending actions that only the legacy paths of upstream review write.
 - A reminder is suppressed while paused and counted from the request, so after a long pause the resume and an overdue reminder can be posted in the same tick.
 - `/upstreaming resume` on a contribution that is neither paused nor in a human wait or in `parked.idle` is answered with `not paused`.
 - `/upstreaming resume` from `parked.idle` records `admission_override` only when it names both `class` and `paths`; the override's reason is the resume's reason. A resume that names only one of them is refused when it is posted and changes nothing, because such an override could never admit development. Every other resume refuses `class` and `paths`.
@@ -193,7 +180,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.
 - `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
 - In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
-- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table, is still handled by the legacy paths in development and upstream review; in provisioning it is rewritten by the provisioning migration.
+- A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`compat.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, a legacy write cannot change its phase or activity, and a Result that arrives there takes `record_late_effect`. A `waiting_human` activity without a pending action, a shape written before the table, is still handled by the legacy paths in upstream review; in provisioning and development it is rewritten by the record migrations.
 - A planned operation that a trusted workflow runs stays `planned` across its launches; `begin_effect`, `record_response`, and `confirm_by_discovery` are taken together when its verified receipt is folded with the exact readback. The receipt establishes the facts of `begin_effect` (capacity available, the contribution not paused, the final check passed): the workflow's own final check read them before the effect. A push establishes "capacity available" without a runner reservation.
 - A branch operation that the store holds as `applying` lost the response of its push: the branch observation takes `record_response` ("its response was lost") before discovering it, as the publisher hands an operation over only after it recorded the response.
 - When the publisher's final check before a push does not pass (the head re-read fails or moved), no intent is recorded and the outcome carries no operation, instead of a `failed` operation, because `planned` has no row to `failed` other than a resolution.
@@ -213,7 +200,21 @@ These follow the literal reading of a decision and are kept until a decision say
 - "The verified dossier names `scope_paths`, and `scope_coverage_complete` holds" is established when the admitted scope has an admission class, names 1 to 32 safe scope paths, and matches every path of the dossier's `path_coverage`; a dossier without `path_coverage` has an incomplete scope. `admit_development` and `readmit_development` do not list `scope_coverage_complete`; the reconciler records it beside the row, as repair Work reads it.
 - A worker outcome `proposal`, which no publisher produces any more, is folded as an outcome rejected in trusted validation.
 - A Result of Work that the record holds but that its phase does not request (investigation Work outside `investigation`, patch Work outside `development`, revision Work outside `upstream_review`) is late, and so are a dossier outside `investigation`, any other Result in `investigation`, and the Result of a held publication outside `development` and `upstream_review`.
-- The provisioning migration treats the retired `provision_fork` wait like the provisioning wait without a pending action: the fork is provisioned automatically from `provisioning.idle`. Development without a fork returns to `provisioning.idle`, and a proposal held on the provisioned fork is discarded for fresh patch Work in `development.idle`; both at a new revision.
+- The provisioning migration treats the retired `provision_fork` wait like the provisioning wait without a pending action: the fork is provisioned automatically from `provisioning.idle`. Development without a fork returns to `provisioning.idle`, and a proposal held on the provisioned fork is discarded, and development continues in the state the development migration names; both at a new revision.
+- The development migration names `development.waiting_ci` for a record without Work or a held publication when `last_ci_evidence_id` is set or the fork head differs from the provisioned base ("evidence or a published head"), and `development.fix_needed` otherwise; the evidence a legacy record names is not read (a legacy review evidence id there counts as evidence). The Work deadline's `task_without_outcome` becomes `work_failed` with no counter, so the resume starts no counter again.
+- A held publication whose `publish_recovery` is exhausted (`pending_publication.exhausted`) launches nothing more and is not a pending publication for the quiescence guard ("no pending publication"), so `resume_development` and `resume_stale` apply to the wait `exhaust_publish_recovery` entered, and clear it.
+- The Result of a publish-only retry ends the held publication: `pending_publication` is cleared beside the row that folds it (`record_publish_success`, `reject_patch_proposal`, `replan_development`, `request_ci_rerun`), although none of those rows lists that clear.
+- `record_publish_success` adds the published files to `scope_paths` beside the row, as a repair backed by review feedback may change a path the dossier missed.
+- The worker's `no_change` report is "a failure not caused by the patch" for `request_ci_rerun`: it takes the row when the Work carries no feedback (`active_work.feedback_evidence_ids`; the Work's `reason_ids` are not feedback) and `flaky_reruns` remains for the head, and counts as `reject_patch_proposal` otherwise. While no trusted rerun exists, `request_ci_rerun` leads to `development.waiting_ci`, where only CI evidence of another run or attempt than the one the Result answered is acted on: beside the row, the evidence the row clears from `last_ci_evidence_id` is kept in `budget.reruns.answered_ci_evidence_id` (none when the Work was allocated without CI evidence), and a new head starts the rerun counts, and this field, again. The row keeps the revision, so the Work id names the head's `flaky_reruns` count from the first rerun on, and the repair Work requested after a rerun is never the Work whose Result requested it. A blocked Result's rehearsal evidence is stored and named in the event, and is not recorded as pending feedback, since no row sets it; a rehearsal id that the code before the table recorded as pending feedback still holds `nominate_for_handoff`.
+- `publish_recovery` counts the failed publications of the held Result (`pending_publication.attempts`), each charged by `schedule_publish_retry`, so a Result is published at most `retries.infrastructure_per_head_failure` plus two times before `exhaust_publish_recovery`; the launch of a scheduled retry charges nothing.
+- A launched publish-only retry whose Result is not folded within 60 minutes of the launch (`pending_publication.launched_at`) is "publication failed with an infrastructure error": `schedule_publish_retry` charges `publish_recovery`, or `exhaust_publish_recovery` waits for a human, as for a lost dispatch. A Result of that retry that arrives later, while the Result is still held and the contribution does not wait for a human, matches the held publication and is folded by its row; in the wait it takes `record_late_effect`. An infrastructure error such a Result reports was already charged by the wait: it takes `record_late_effect` and charges nothing again. A launch is charged once its Result or its wait charges it, so a held Result's `infra_error` is charged already when its attempt (`UPSTREAMING_PUBLISH_ATTEMPT`) is not above `pending_publication.attempts`, or, without an attempt, when no retry is launched.
+- The provisioning migration treats `development.waiting_human` without a pending action that holds a proposal never published, with the publication pending for it, like `development.waiting_capacity` holding one: the proposal and the publication are cleared, and the record continues at a new revision in the state the development migration names (`development.waiting_ci` with evidence or a published head, `development.fix_needed` otherwise).
+- `dispatch_recovery` counts the dispatcher runs that ended since the Work was requested; each ended run is decided once (`retry_dispatch` or `exhaust_dispatch_recovery`), and `active_work.dispatched_run_id` names the last decided run. A dispatcher launch that never shows up as a run is launched again after 15 minutes without a row, since no run ended.
+- In `development.waiting_ci` an actionable review observed with a CI failure in the same tick is recorded (`record_actionable_review`); the failure is not, since `development.fix_needed` has no observation row, and the review would be filtered out once the repair publishes a new head. The repair Work carries the review but no failing CI job.
+- "An executed blocking failure on the exact head" (`record_ci_failure`, `return_for_repair`) is established by a CI verdict `failed`, which also covers a required job that ran on a runner without the contract's runner label.
+- "The observed development PR does not match the recorded fork, ref, or PR" holds when GitHub has no such PR, or its number, head repository, head ref, or base ref differs from the record's; a closed development PR still matches.
+- `nominate_for_handoff` and Work allocation wait while a development PR or CI bootstrap operation is open, although the nomination row has no operation guard.
+- A Result of Work the record holds in a state of the table without a row that folds a Result (for example Work held in `development.fix_needed`) is late.
 - `submit_upstream` records `handoff_approval` with the CI evidence and the dossier the approval saw (`evidence_ids`); it records no operation. The review Work is allocated in `handoff.review_due` by `request_submission_review`, in the same tick when a worker slot is free.
 - The submission rewrite reshapes the commits of the approved series "only if CONTRIBUTING or reviewers require it" for a squash or a split; that requirement is the model's judgment, checked by the separate review Work, and trusted code checks that every commit is valid upstream and holds only content of the base or of the approved series, that the final tree is unchanged, and that the measurable rules, including `max_commits`, hold.
 - "The same final tree and no content the approved series does not have" is read as: the tree of every reviewed commit is the tree of a commit of the approved series without its debug commits, later in that series than the tree of the reviewed commit before it. Squashing and rewording are admitted; reordering and content the approved series removed are refused. A split is therefore refused unless every tree it produces is a tree of that series, so a split the project requires sends the submission back to development, where the split commits can be made and approved first.

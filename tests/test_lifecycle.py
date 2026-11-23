@@ -6,9 +6,10 @@ import unittest
 
 import commands
 import compat
+import engine
 import lifecycle
 import schemas
-from tests.helpers import NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution
+from tests.helpers import NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution, policy
 
 
 def cmd(text):
@@ -77,12 +78,18 @@ class TestPublicationCheck(unittest.TestCase):
 
 
 class TestPauseParkResume(unittest.TestCase):
+    @staticmethod
+    def head_changed(rec):
+        return engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
+                                       facts={"fork_head_changed"},
+                                       values={"fork.head_sha": SHA_B}).record
+
     def test_pause_then_stale_resume_rejected(self):
-        rec = contribution()
+        rec = contribution(activity="waiting_ci")
         p = apply(rec, f"/upstreaming pause contribution={CID} revision=0 reason=r")
         self.assertTrue(p.accepted)
         self.assertTrue(p.record["paused"])
-        bumped = compat.observe_head(p.record, SHA_B, now=NOW).record
+        bumped = self.head_changed(p.record)
         stale = apply(bumped, f"/upstreaming resume contribution={CID} revision=0 reason=r")
         self.assertFalse(stale.accepted)
         ok = apply(bumped, f"/upstreaming resume contribution={CID} revision=1 reason=r")
@@ -91,7 +98,7 @@ class TestPauseParkResume(unittest.TestCase):
         self.assertEqual(ok.record["revision"], 2)
 
     def test_stale_pause_still_honoured(self):
-        rec = compat.observe_head(contribution(), SHA_B, now=NOW).record
+        rec = self.head_changed(contribution(activity="waiting_ci"))
         self.assertTrue(apply(rec, f"/upstreaming pause contribution={CID} revision=0 reason=r").accepted)
 
     def test_park_only_explicit_resume(self):
@@ -236,7 +243,8 @@ class TestRestartGeneration(unittest.TestCase):
                                                      "reminded_at": None, "escalated_at": None,
                                                      "counter": None})
         paused = contribution(activity="waiting_ci", paused=True, paused_at=NOW, paused_by="human")
-        legacy = contribution(activity="idle", paused=True, paused_at=NOW, paused_by="human")
+        legacy = contribution(phase="upstream_review", activity="idle", paused=True,
+                              paused_at=NOW, paused_by="human")
         for rec in (waiting, paused, legacy):
             with self.subTest(state=f"{rec['phase']}.{rec['activity']}"):
                 out = apply(rec, f"/upstreaming resume contribution={CID} revision={rec['revision']} "
@@ -312,19 +320,26 @@ class TestHandoff(unittest.TestCase):
         with self.assertRaises(lifecycle.TransitionError):
             compat.park(dict(rec), "reason")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(rec, "reconcile.work_timeout", activity="waiting_human")
+            compat.legacy_update(rec, "reconcile.publication_outcome", activity="waiting_human")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(contribution(), "observe_ci.ci_passed", phase="handoff",
+            compat.legacy_update(contribution(phase="upstream_review"),
+                                 "reconcile.publication_outcome", phase="handoff",
                                  activity="waiting_human")
 
     def test_legacy_write_needs_a_registered_site_and_an_admitted_state(self):
+        review = contribution(phase="upstream_review", activity="agent_running")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(contribution(), "somewhere.else", activity="waiting_ci")
+            compat.legacy_update(review, "somewhere.else", activity="waiting_ci")
         with self.assertRaises(lifecycle.TransitionError):
-            compat.legacy_update(contribution(), "observe_ci.ci_passed",
+            compat.legacy_update(review, "reconcile.publication_outcome",
                                  activity="waiting_upstream_pr")
-        moved = compat.legacy_update(contribution(), "observe_ci.ci_passed", activity="waiting_ci")
-        self.assertEqual(moved["activity"], "waiting_ci")
+        # Development has no legacy state any more.
+        with self.assertRaises(lifecycle.TransitionError):
+            compat.legacy_update(contribution(activity="agent_running"),
+                                 "reconcile.publication_outcome", activity="idle")
+        moved = compat.legacy_update(review, "reconcile.publication_outcome",
+                                     activity="waiting_capacity")
+        self.assertEqual(moved["activity"], "waiting_capacity")
 
 
 class TestMergeAndRelease(unittest.TestCase):

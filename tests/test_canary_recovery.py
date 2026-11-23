@@ -171,7 +171,7 @@ class TestCanaryRecovery(unittest.TestCase):
             observe=False,
             tracking_issues={1: issue()},
         )
-        self.assertEqual(result.report["timed_out_work"], [])
+        self.assertNotIn("timed_out_work", result.report)
         self.assertEqual(len(result.report["controller"]["canary_recovery_requests"]), 1)
         final = [record for kind, record in result.staged if kind == "contributions"][-1]
         self.assertIsNotNone(final["active_work"])

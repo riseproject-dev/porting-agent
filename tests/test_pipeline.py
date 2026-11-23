@@ -56,6 +56,10 @@ class FakeApi:
         if path.startswith("/repos/") and path.count("/") == 3:
             name = path[len("/repos/"):]
             return {"id": 2, "full_name": name, "default_branch": "main"}
+        if "/pulls/" in path:
+            number = int(path.rsplit("/", 1)[1])
+            return {"number": number, "head": {"ref": "riscv64-dev", "repo": {"id": 2}},
+                    "base": {"ref": "main"}}
         raise AssertionError(path)
 
     def paginate(self, path, key=None, max_pages=10):
@@ -87,7 +91,7 @@ class TestPipeline(unittest.TestCase):
         self._saved = (fork_publish.URL_TEMPLATE, list(fork_publish.TEST_EXTRA_CONFIG))
         fork_publish.URL_TEMPLATE = f"file://{root}/{{}}.git"
         fork_publish.TEST_EXTRA_CONFIG[:] = ["-c", "protocol.file.allow=always"]
-        self.rec = contribution(activity="idle", last_ci_evidence_id=None)
+        self.rec = contribution(activity="fix_needed", last_ci_evidence_id=None)
         self.rec["upstream"]["base_sha"] = self.base
         self.rec["fork"]["head_sha"] = self.base
         self.now = datetime(2026, 11, 18, 12, tzinfo=timezone.utc)
@@ -188,6 +192,8 @@ class TestPipeline(unittest.TestCase):
         final = [r for k, r in tick.staged if k == "contributions"][-1]
         self.assertEqual(final["fork"]["head_sha"], new_head)
         self.assertEqual(final["revision"], self.rec["revision"] + 1)     # head change = new work revision
+        self.assertEqual([e["kind"] for k, e in tick.staged if k == "events"],
+                         ["record_publish_success", "record_head_change", "nominate_for_handoff"])
         self.assertEqual(final["proposal_artifact"]["artifact_id"], 900)
         self.assertEqual(final["publication_operation_id"], ops[-1]["operation_id"])
         self.assertTrue(final["last_ci_evidence_id"].startswith("ci-2-7-1"))
@@ -243,7 +249,12 @@ class TestPublicationRetry(unittest.TestCase):
         t = self.tick(self.rec, [pub])
         rec = self.final(t)
         self.assertEqual(rec["pending_publication"]["attempts"], 1)
-        self.assertEqual(rec["activity"], "waiting_capacity")
+        # `schedule_publish_retry` keeps `development.agent_running` and
+        # charges `publish_recovery`; the Work is cleared.
+        self.assertEqual(rec["activity"], "agent_running")
+        self.assertIsNone(rec["active_work"])
+        self.assertEqual([e["kind"] for k, e in t.staged if k == "events"],
+                         ["schedule_publish_retry"])
         self.assertEqual(t.report["publication_retries"], [])          # backoff not elapsed
         self.assertEqual(t.report["requested_effects"], [])            # never a new agent task
         later = self.now.replace(hour=13)
@@ -251,11 +262,22 @@ class TestPublicationRetry(unittest.TestCase):
         self.assertEqual(t2.report["publication_retries"],
                          [{"type": "retry_publication", "contribution_id": rec["contribution_id"],
                            "worker_run_id": "4242", "attempt": 2}])
+        self.assertEqual(self.final(t2)["pending_publication"]["attempts"], 1)
         rec2 = rec
         for n, aid in ((2, 2), (3, 3)):
             rec2 = self.final(self.tick(rec2, [dict(pub, publication_artifact_id=aid, attempt=n)], now=later))
+            self.assertEqual((rec2["activity"], rec2["pending_publication"]["attempts"]),
+                             ("agent_running", n))
+        # `publish_recovery` allows three publish-only retries; the next
+        # infrastructure error exhausts it.
+        t3 = self.tick(rec2, [dict(pub, publication_artifact_id=4, attempt=4)], now=later)
+        rec2 = self.final(t3)
+        self.assertEqual([e["kind"] for k, e in t3.staged if k == "events"],
+                         ["exhaust_publish_recovery"])
         self.assertTrue(rec2["pending_publication"]["exhausted"])
         self.assertEqual(rec2["activity"], "waiting_human")
+        self.assertEqual(rec2["pending_human_action"]["kind"], "publication_infrastructure_failure")
+        self.assertEqual(rec2["pending_human_action"]["counter"], "publish_recovery")
         self.assertEqual(self.tick(rec2, [], now=later.replace(hour=20)).report["publication_retries"], [])
 
     def test_validation_rejection_asks_agent_stale_does_not(self):
@@ -269,11 +291,16 @@ class TestPublicationRetry(unittest.TestCase):
         self.assertEqual(self.final(t)["active_work"]["task"], "development_patch")
         self.assertEqual(self.final(t)["budget"]["no_progress_streak"], 1)
         self.assertEqual(self.final(t)["revision"], self.rec["revision"] + 1)
-        # Stale: no repair is requested (the next tick re-plans from the new head).
+        # Stale: `replan_development` returns to `development.fix_needed` at
+        # a new revision without charging `no_progress`; the next Work is
+        # requested for the new revision.
         stale = dict(rej, failure_class="stale", publication_artifact_id=10)
-        t = self.tick(dict(self.rec, last_ci_evidence_id="ev-1"), [stale])
-        self.assertEqual(t.report["requested_effects"], [])
-        self.assertEqual(self.final(t)["activity"], "idle")
+        t = self.tick(self.rec, [stale])
+        events = [e for k, e in t.staged if k == "events"]
+        self.assertEqual([e["kind"] for e in events], ["replan_development", "request_patch"])
+        self.assertEqual(events[0]["to"]["activity"], "fix_needed")
+        self.assertEqual(self.final(t)["budget"]["no_progress_streak"], 0)
+        self.assertEqual(self.final(t)["revision"], self.rec["revision"] + 1)
 
     def test_late_no_change_cannot_regress_exact_head_handoff(self):
         rec = awaiting_submission(revision=self.rec["revision"])

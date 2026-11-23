@@ -213,13 +213,22 @@ def review_comment_intent(body: str) -> str:
     return "repair"
 
 
-def development_review_feedback(api: Api, record: dict, authority: Iterable[int]) -> dict | None:
-    """Return new authorized review feedback or inquiries bound to the current fork head."""
+def development_review_feedback(api: Api, record: dict, authority: Iterable[int], *,
+                                check_pull: bool = False) -> dict | None:
+    """Return new authorized review feedback or inquiries bound to the current fork head.
+
+    With ``check_pull`` the development PR is read first: when it does not
+    match the fork, the ref, and the PR the record names
+    (``development_pull_problem``), only ``{"pr_mismatch": <why>}`` is
+    returned and no feedback is read."""
     fork = record.get("fork") or {}
     number = fork.get("pr_number")
     head = fork.get("head_sha")
     if record.get("phase") not in ("development", "handoff") or not fork.get("name") or not number or not head:
         return None
+    mismatch = development_pull_problem(api, record) if check_pull else None
+    if mismatch:
+        return {"pr_mismatch": mismatch}
     allowed = {int(value) for value in authority}
     seen_reviews = set(record.get("processed_review_ids") or [])
     seen_comments = set(record.get("processed_review_comment_ids") or [])
@@ -442,6 +451,31 @@ def dev_pull_request(api: Api, fork: str, ref: str = DEV_REF) -> dict | None:
     owner = fork.split("/")[0]
     prs = api.get(f"/repos/{fork}/pulls?state=open&head={owner}:{ref}&per_page=10")
     return prs[0] if prs else None
+
+
+def development_pull_problem(api: Api, record: dict) -> str | None:
+    """Why the development PR on GitHub does not match the fork, the ref,
+    and the PR the record names, or ``None`` when it matches. A PR that
+    GitHub does not have does not match."""
+    fork = record.get("fork") or {}
+    number = fork.get("pr_number")
+    try:
+        pr = api.get(f"/repos/{fork['name']}/pulls/{int(number)}")
+    except CollectError as e:
+        if "HTTP 404" in str(e):
+            return f"development PR {number} does not exist"
+        raise
+    head = pr.get("head") or {}
+    if pr.get("number") != number:
+        return f"development PR {number} reads back as PR {pr.get('number')}"
+    if (head.get("repo") or {}).get("id") != fork.get("repository_id"):
+        return f"development PR {number} has its head in another repository"
+    if head.get("ref") != DEV_REF:
+        return f"development PR {number} has the head ref {head.get('ref')!r}"
+    base = (record.get("upstream") or {}).get("base_ref")
+    if base and (pr.get("base") or {}).get("ref") != base:
+        return f"development PR {number} targets {(pr.get('base') or {}).get('ref')!r}, not {base!r}"
+    return None
 
 
 # --------------------------------------------------------------------------

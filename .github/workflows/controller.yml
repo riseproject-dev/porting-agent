@@ -138,14 +138,19 @@ jobs:
       - name: Is the policy read-only?
         id: policy
         run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
-      - name: Collect verified investigator and worker outcomes
+      - name: Collect verified investigator, worker, and publish-only retry outcomes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p publications
-          for workflow in investigator.lock.yml worker.lock.yml; do
-            runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?per_page=20" \
+          for workflow in investigator.lock.yml worker.lock.yml publish-retry.yml; do
+            filter=
+            if [ "$workflow" = publish-retry.yml ]; then
+              # A retry the controller launched on main, once it completed.
+              filter='&status=completed&branch=main&event=workflow_dispatch'
+            fi
+            runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?per_page=20$filter" \
               --jq '.workflow_runs[].id') \
               || { echo "$workflow run inventory unavailable this tick" >&2; runs=; }
             printf '%s\n' "$runs" | while read -r run; do
@@ -161,11 +166,22 @@ jobs:
                 || { rm -rf "publications/$run"; continue; }
               printf '%s' "$id" > "publications/$run/artifact-id"
               task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
+              # A retry's Result is the Result of the worker run it publishes.
+              # Only a publish-only retry names another run: an investigator or
+              # worker artifact is the Result of its own run, whatever it holds.
+              worker_run=$run
+              if [ "$workflow" = publish-retry.yml ]; then
+                worker_run=$(cat "publications/$run/worker-run-id" 2>/dev/null || true)
+                [[ "$worker_run" =~ ^[1-9][0-9]{0,19}$ ]] \
+                  || { echo "publish-only retry $run names no worker run" >&2; rm -rf "publications/$run"; continue; }
+              else
+                rm -f "publications/$run/worker-run-id"
+              fi
               if [ ! -f "publications/$run/outcome.json" ]; then
                 if [ "$task" = investigation ] && [ -f "publications/$run/result.json" ] \
                     && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/dossier.json" ]; then
                   uv run --locked python -m investigation_recovery \
-                    --directory "publications/$run" --run-id "$run" \
+                    --directory "publications/$run" --run-id "$worker_run" \
                     || { echo "trusted investigation recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
                 else
                   echo "incomplete publication for $run" >&2
@@ -176,7 +192,7 @@ jobs:
               if [ "$task" != investigation ] && [ -f "publications/$run/outcome.json" ] \
                   && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/result.json" ]; then
                 uv run --locked python -m worker_recovery \
-                  --directory "publications/$run" --run-id "$run" \
+                  --directory "publications/$run" --run-id "$worker_run" \
                   || { echo "trusted worker recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
               fi
             done

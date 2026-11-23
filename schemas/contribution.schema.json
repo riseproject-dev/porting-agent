@@ -844,7 +844,8 @@
           "properties": {
             "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
             "flaky": {"type": "integer", "minimum": 0},
-            "interrupted": {"type": "integer", "minimum": 0}
+            "interrupted": {"type": "integer", "minimum": 0},
+            "answered_ci_evidence_id": {"type": ["string", "null"], "maxLength": 200}
           }
         }
       }
@@ -1023,6 +1024,10 @@
               "maxLength": 2000
             },
             "next_attempt_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "launched_at": {
               "type": "string",
               "format": "date-time"
             },

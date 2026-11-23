@@ -26,9 +26,10 @@ unless every guard is established. The engine never performs remote effects.
 engine: the handoff states and the moves into them, the stop flag and the
 stop, resume, and refresh commands in every state of the table, the
 reminders of a pending human step, the allocation of Work and the exhaustion
-of its budgets, late Results, and the rows of the fork provisioning and
-handoff operations (the operation table itself has its engine in
-``recovery``). Every other verb of the table is in
+of its budgets, the dispatch and Work recovery, the Results of patch Work and
+their publication, the observation of the development head, late Results,
+and the rows of the fork provisioning and handoff operations (the operation
+table itself has its engine in ``recovery``). Every other verb of the table is in
 ``UNWIRED_VERBS``: the engine applies it, but no pipeline code takes it yet
 and the corresponding behavior still runs through ``compat``. The two sets
 partition the table, so the share of the table the pipeline obeys is
@@ -221,10 +222,19 @@ def _no_open_operation(ctx: Context) -> str | None:
 _record("no open operation", "no_open_operation")(_no_open_operation)
 
 
+def publication_pending(record: dict) -> bool:
+    """Whether a Result is held for publication and may still be published.
+    A held publication whose ``publish_recovery`` is exhausted
+    (``pending_publication.exhausted``) launches nothing more: it is kept for
+    the human wait it caused and is not pending."""
+    pending = record.get("pending_publication")
+    return bool(pending) and not pending.get("exhausted")
+
+
 @_record(lc.QUIESCENT, "quiescent")
 def _quiescent(ctx: Context) -> str | None:
     return _no_open_operation(ctx) or (
-        "a publication is pending" if ctx.record.get("pending_publication") else None)
+        "a publication is pending" if publication_pending(ctx.record) else None)
 
 
 def _no_work(ctx: Context) -> str | None:
@@ -348,6 +358,12 @@ def carried_feedback(record: dict) -> list[str]:
         if holder and holder.get("feedback_evidence_ids"):
             return list(holder["feedback_evidence_ids"])
     return []
+
+
+@_record("no pending actionable feedback", "no_pending_actionable_feedback")
+def _no_pending_feedback(ctx: Context) -> str | None:
+    pending = ctx.record.get("pending_feedback_evidence_ids") or []
+    return f"actionable feedback is pending: {', '.join(pending[:4])}" if pending else None
 
 
 @_record(lc.WORK_WITHOUT_FEEDBACK, "work_without_feedback")
@@ -635,7 +651,6 @@ for _guard, _name in (
     ("the observed development PR does not match the recorded fork, ref, or PR",
      "development_pr_mismatch"),
     ("every required CI job executed and passed on the exact head", "ci_passed_on_head"),
-    ("no pending actionable feedback", "no_pending_actionable_feedback"),
     (lc.CANDIDATE_FAILED, "candidate_head_failed"),
     (lc.CANDIDATE_NOT_FAILED, "candidate_head_not_failed"),
     ("the observed fork head differs from the candidate head", "candidate_head_changed"),
@@ -732,6 +747,22 @@ PIPELINE_VERBS: dict[str, str] = {
     "record_actionable_review": "observe_ci",
     "record_explanation": "observe_ci",
     "record_head_change": "observe_ci",
+    # Observation of the published development head: a CI failure, and a
+    # development PR that does not match the record.
+    "record_ci_failure": "observe_ci",
+    "record_pr_mismatch": "observe_ci",
+    # The Result of patch Work: published, rejected, no longer applicable to
+    # the fork head, or held for a publish-only retry within
+    # `publish_recovery`, and the wait once that budget is exhausted.
+    "record_publish_success": "reconcile",
+    "reject_patch_proposal": "reconcile",
+    "replan_development": "reconcile",
+    "schedule_publish_retry": "reconcile",
+    "exhaust_publish_recovery": "reconcile",
+    # A dispatcher run that ended with the requested Work absent or
+    # unclaimed, within `dispatch_recovery`.
+    "retry_dispatch": "reconcile",
+    "exhaust_dispatch_recovery": "reconcile",
     # A worker Result that matches no request of the record, in any state.
     "record_late_effect": "compat",
     # Work allocation, by the table's rows, and the exhaustion of its budgets
@@ -749,9 +780,6 @@ PIPELINE_VERBS: dict[str, str] = {
     # Result without a usable dossier.
     "allocate_work_retry": "reconcile",
     "exhaust_work_recovery": "reconcile",
-    # Dispatch recovery spent for the submission review (elsewhere the
-    # legacy dispatch exhaustion writes the wait).
-    "exhaust_dispatch_recovery": "reconcile",
     "reject_dossier": "reconcile",
     "exhaust_investigation_recovery": "reconcile",
     # The verified dossier decides: development on a new fork or on the
