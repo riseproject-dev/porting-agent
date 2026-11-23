@@ -1,38 +1,39 @@
 # Session log
 
-One bullet per commit, oldest first: what changed and how, in one or two sentences.
+One bullet per commit, oldest first: what changed and how.
 
-- **Accept exact-head development CI without uploaded artifacts** (2026-11-22): development CI no longer requires an uploaded riscv64 wheel artifact; green required jobs on the exact head are enough, as the CI policy says.
-- **Observe a new head in handoff instead of preserving readiness** (2026-11-22): a new fork head during handoff is observed again instead of keeping the old waiting state, because a new head clears old readiness.
-- **Preserve no-change repair Results and fence withdrawn Work** (2026-11-22): a worker's valid no-change answer is accepted instead of being counted as a validation failure, and a Result of Work that was withdrawn or already answered is recorded as late instead of folded.
-- **Park on repair-attempt exhaustion and resume as a clean generation** (2026-11-22): running out of repair attempts parks the contribution, and resume from parked starts a new generation, both following the table.
-- **website: just-the-docs theme, docs rendering, PR previews** (2026-11-22): the site uses the Just the Docs theme and renders `docs/`, and the Website workflow builds previews of same-repository pull requests under `/pr/<N>/`.
-- **Move the status page to /porting-agent/status** (2026-11-22): the generated status page moves to its own `/status/` page so the site home describes the project.
-- **Add AGENTS.md with the repository process** (2026-11-22): adds the mandatory repository rules for every change (docs in sync, no milestone wording, no AI mention in commits, no U+2014, fix the pipeline not the resources).
-- **Drop the Porting prefix from workflow display names** (2026-11-22): renames every workflow to a title-cased name without the prefix and updates the controller's workflow_run triggers and the dossier comment check that match on those names.
-- **Gate Pages deploys on the lookup deploy-pages actually uses** (2026-11-22): the Pages artifact wait now queries the same artifact store `deploy-pages` reads and retries the deploy with backoff, fixing preview deploys that failed on a race.
-- **Define the contribution lifecycle table, check it, and generate its pages** (2026-11-22): adds the lifecycle table in `lifecycle.py` as the single source of truth, a `lifecycle check` consistency check run in CI, and docs pages generated from it.
-- **Apply the settled lifecycle decisions to the table** (2026-11-22): applies the operator's decisions on the open state-machine questions to the table, its budgets, its checks and the generated decisions page.
-- **Apply the lifecycle table through one transition engine** (2026-11-22): adds `engine.py`, the single write path that applies table rows, a compatibility layer for unconverted code, and an evented migration that moved the live record to `handoff.awaiting_submission`.
-- **Ask for submit-upstream on the tracking issue at the submission gate** (2026-11-22): the tracking-issue ledger asks for the exact `submit-upstream` command when a contribution reaches the submission gate.
-- **Record a Result that matches no request instead of folding it** (2026-11-22): a worker Result for a stopped contribution or for Work no longer requested takes `record_late_effect` instead of crashing the tick.
-- **Clear the pending publication when a contribution is stopped** (2026-11-22): park, abandon and pause clear a pending publication so resume and restart are never blocked forever, and publish retries stop while paused.
-- **Settle pending feedback, gate reviews, rerun counts and patch admission in the table** (2026-11-22): applies six operator decisions to the table and engine: Work carries its feedback, the gate records reviews and explanations, per-head rerun counts, and patch versus repair admission.
-- **Record the known gaps between the code and the lifecycle table** (2026-11-22): adds a Known gaps page listing where code does not yet follow the table, and an AGENTS.md rule to keep it current.
-- **Isolate an error in one contribution's processing from the rest of the tick** (2026-11-22): an unexpected error in one contribution discards only its staged changes and pauses it, while transient GitHub read failures just skip it for the tick.
-- **Take the stop flag and its commands through the lifecycle table in every phase** (2026-11-23): pause, resume, park and refresh go through the engine in every table state, `block` is merged into `paused`, and existing records are migrated.
-- **Post reminders of a pending human step by the lifecycle table** (2026-11-23): the controller posts `record_reminder` at gate and human-wait states on the policy's business-day interval.
-- **Record the stop and reminder gaps found in review** (2026-11-23): adds the stop and reminder gaps found in review to the Known gaps page.
-- **Take the command grammar and the terminal phase from the lifecycle table** (2026-11-23): retires the commands the table removed with replies naming their replacement, and replaces the old terminal phases with `closed.idle` plus `terminal_reason`.
-- **Point retired provisioning commands at park and resume** (2026-11-23): the replies for retired `provision` and `clarify` name park then resume, which actually works in a provisioning wait.
-- **Carry the generation in the Work identity and charge Work budgets by the table** (2026-11-23): Work ids include the generation, Results fold only when generation, revision and Work match, and budgets are charged once at allocation.
-- **Leave a wait for a human only by the rows the table lists for it** (2026-11-23): observation and legacy writers can no longer move a record out of a human wait, which ended a comment loop on budget exhaustion.
-- **Take remote operations through the operation table** (2026-11-23): remote operation statuses change only through the operation table's rows, with lifecycle rows fired on confirmed or failed operations.
-- **Give every provisioning wait a human exit and never reuse a closed operation id** (2026-11-23): a human resume relaunches exhausted provisioning, and publish retries and re-plans get fresh operation ids so the store never refuses a commit.
-- **Record the paused variant of the stale provisioning wait** (2026-11-23): documents that a paused, stale, exhausted provisioning wait is stuck until a table decision.
-- **Decide the dossier and provision the fork by the lifecycle table** (2026-11-23): dossier decisions and provisioning run on table verbs, the `destination_writes` flag and pre-fork proposals are removed, and `force-develop` is retired.
-- **Run the handoff operations and accept submit-upstream and retract-pr** (2026-11-23): adds the trusted `handoff.yml` workflow for debug cleanup, internal PR closure and the submission package, and accepts `submit-upstream` and `retract-pr`.
-- **Keep untrusted text out of the package and fail handoff attempts that never report** (2026-11-23): renders model-written text in the package as code, treats handoff launches without a receipt as failed attempts, and hardens the workflow checks and token handling.
-- **Break every mention in the package and withdraw instead of editing the series** (2026-11-23): neutralizes mentions regardless of Markdown context, tells the human to withdraw rather than edit the series, and hardens package discovery.
-- **Break an at sign whatever character follows it** (2026-11-23): inserts a word joiner after every at sign not preceded by a letter or digit, closing the character-reference mention bypass.
-- **Log every commit in SESSIONLOG.md** (2026-11-23): adds this log with one entry per commit of the current work and an AGENTS.md rule that every commit adds its own entry.
+- Development CI no longer requires an uploaded riscv64 wheel artifact; green required jobs on the exact head are enough, as the CI policy says.
+- A new fork head during handoff is observed again instead of keeping the old waiting state, because a new head clears old readiness.
+- A worker's valid no-change answer is accepted instead of being counted as a validation failure, and a Result of Work that was withdrawn or already answered is recorded as late instead of folded.
+- Running out of repair attempts parks the contribution, and resume from parked starts a new generation, both following the table.
+- The site uses the Just the Docs theme and renders `docs/`, and the Website workflow builds previews of same-repository pull requests under `/pr/<N>/`.
+- The generated status page moves to its own `/status/` page so the site home describes the project.
+- Adds the mandatory repository rules for every change (docs in sync, no milestone wording, no AI mention in commits, no U+2014, fix the pipeline not the resources).
+- Renames every workflow to a title-cased name without the prefix and updates the controller's workflow_run triggers and the dossier comment check that match on those names.
+- The Pages artifact wait now queries the same artifact store `deploy-pages` reads and retries the deploy with backoff, fixing preview deploys that failed on a race.
+- Adds the lifecycle table in `lifecycle.py` as the single source of truth, a `lifecycle check` consistency check run in CI, and docs pages generated from it.
+- Applies the operator's decisions on the open state-machine questions to the table, its budgets, its checks and the generated decisions page.
+- Adds `engine.py`, the single write path that applies table rows, a compatibility layer for unconverted code, and an evented migration that moved the live record to `handoff.awaiting_submission`.
+- The tracking-issue ledger asks for the exact `submit-upstream` command when a contribution reaches the submission gate.
+- A worker Result for a stopped contribution or for Work no longer requested takes `record_late_effect` instead of crashing the tick.
+- Park, abandon and pause clear a pending publication so resume and restart are never blocked forever, and publish retries stop while paused.
+- Applies six operator decisions to the table and engine: Work carries its feedback, the gate records reviews and explanations, per-head rerun counts, and patch versus repair admission.
+- Adds a Known gaps page listing where code does not yet follow the table, and an AGENTS.md rule to keep it current.
+- An unexpected error in one contribution discards only its staged changes and pauses it, while transient GitHub read failures just skip it for the tick.
+- Pause, resume, park and refresh go through the engine in every table state, `block` is merged into `paused`, and existing records are migrated.
+- The controller posts `record_reminder` at gate and human-wait states on the policy's business-day interval.
+- Adds the stop and reminder gaps found in review to the Known gaps page.
+- Retires the commands the table removed with replies naming their replacement, and replaces the old terminal phases with `closed.idle` plus `terminal_reason`.
+- The replies for retired `provision` and `clarify` name park then resume, which actually works in a provisioning wait.
+- Work ids include the generation, Results fold only when generation, revision and Work match, and budgets are charged once at allocation.
+- Observation and legacy writers can no longer move a record out of a human wait, which ended a comment loop on budget exhaustion.
+- Remote operation statuses change only through the operation table's rows, with lifecycle rows fired on confirmed or failed operations.
+- A human resume relaunches exhausted provisioning, and publish retries and re-plans get fresh operation ids so the store never refuses a commit.
+- Documents that a paused, stale, exhausted provisioning wait is stuck until a table decision.
+- Dossier decisions and provisioning run on table verbs, the `destination_writes` flag and pre-fork proposals are removed, and `force-develop` is retired.
+- Adds the trusted `handoff.yml` workflow for debug cleanup, internal PR closure and the submission package, and accepts `submit-upstream` and `retract-pr`.
+- Renders model-written text in the package as code, treats handoff launches without a receipt as failed attempts, and hardens the workflow checks and token handling.
+- Neutralizes mentions regardless of Markdown context, tells the human to withdraw rather than edit the series, and hardens package discovery.
+- Inserts a word joiner after every at sign not preceded by a letter or digit, closing the character-reference mention bypass.
+- Adds this log with one entry per commit of the current work and an AGENTS.md rule that every commit adds its own entry.
+- Reduces every entry of this log to what changed and how, without subject or date, and updates the AGENTS.md rule to match.

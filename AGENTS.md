@@ -7,5 +7,5 @@ These rules are mandatory for every change to this repository.
 - Keep the website free of milestones and other temporary implementation-plan details. Describe current behavior.
 - Never mention AI, assistants, or tools in commit messages, and never add Co-Authored-By or session trailers.
 - Never use the U+2014 character.
-- Every commit adds one bullet to `SESSIONLOG.md`, in the same commit: its subject, its date, and one or two sentences on what changed and how.
+- Every commit adds one bullet to `SESSIONLOG.md`, in the same commit: one or two sentences on what changed and how, and nothing else.
 - Fix the pipeline, never the resources it manages by hand.
