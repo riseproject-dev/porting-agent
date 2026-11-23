@@ -702,13 +702,18 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                      and op["target"].get("expected_head") == fork.get("head_sha")]
             if any(op["status"] in recovery.OPEN | {"confirmed"} for op in prior):
                 continue
+            # A re-plan after a failed or never-launched operation is a new
+            # operation: an operation id is never reused once it closed.
             op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_update",
-                               policy_version=policy["policy_version"], reason_ids=[reason],
+                               policy_version=policy["policy_version"],
+                               reason_ids=[reason] + ([f"replan:{len(prior)}"] if prior else []),
                                target={"repository": fork["name"], "repository_id": fork["repository_id"],
                                        "ref": "riscv64", "expected_head": fork["head_sha"],
                                        "base_sha": c["upstream"]["base_sha"]},
                                proposed={"marker": f"ci-bootstrap:{cid}:r{c['revision']}",
                                          "content_digest": artifact["digest"]}, now=now)
+            if op["operation_id"] in operations:
+                continue
             op = recovery.charge_launch(op, now)
             res.stage("operations", op)
             changed = compat.legacy_update(c, "controller.plan_ci_bootstrap",
@@ -1054,6 +1059,9 @@ LAUNCH_INTERVAL_SECONDS = 300
 # The pending human action of `require_provisioning_intervention` when
 # `operation_launch` is exhausted.
 LAUNCH_EXHAUSTED = "provisioning_launch_exhausted"
+# The pending human action of `require_provisioning_intervention` when the
+# provisioning operation failed.
+PROVISIONING_FAILED = "provisioning_operation_failed"
 
 
 def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict, inputs: Inputs,
@@ -1181,13 +1189,32 @@ def _unread_field(cmd: Command, verb: str, state: str) -> str | None:
     return None
 
 
+# The pending actions with which the controller leaves a record in
+# `provisioning.waiting_human`, each with the counter it names: exhausted
+# launches of the planned operation, and a provisioning operation that failed.
+PROVISIONING_WAITS = frozenset({(LAUNCH_EXHAUSTED, "operation_launch"),
+                                (PROVISIONING_FAILED, None)})
+
+
+def _command_facts(rec: dict, cmd: Command) -> frozenset[str]:
+    """The facts a command establishes by itself. A human `/upstreaming
+    resume` of a provisioning wait the controller entered is the human's
+    assertion that the prerequisite is corrected."""
+    pending = rec.get("pending_human_action") or {}
+    if cmd.verb == "resume" and engine.state_key(rec) == "provisioning.waiting_human" \
+            and (pending.get("kind"), pending.get("counter")) in PROVISIONING_WAITS:
+        return frozenset({"prerequisite_corrected"})
+    return frozenset()
+
+
 def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,
                          policy: dict, now: str) -> engine.Outcome:
     """Apply a command to a record in a table state, as the table defines it."""
     open_ops = _open_operations(rec, operations)
     counts = recovery.launch_count(operations.get(rec.get("active_operation_id")))
+    facts = _command_facts(rec, cmd)
     verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now, counts=counts,
-                                       open_operations=open_ops)
+                                       open_operations=open_ops, facts=facts)
     if verb is None:
         return engine.Outcome(rec, False, _refusal(rec, cmd, why), None)
     unread = _unread_field(cmd, verb, engine.state_key(rec))
@@ -1212,7 +1239,7 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
         details["admission_override"] = values["admission_override"]
     return engine.apply_transition(rec, verb, policy=policy, now=now,
                                    cause_id=receipt["command_id"], command=cmd,
-                                   values=values, counts=counts,
+                                   facts=facts, values=values, counts=counts,
                                    open_operations=open_ops, actor=receipt["actor"],
                                    details=details)
 
@@ -1233,13 +1260,14 @@ def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, p
     return engine.Outcome(out.record, out.accepted, out.reason, out.event)
 
 
-# What a human resolution establishes for the lifecycle row an operation
-# fires, by operation kind and resolved status: the facts and the values of
-# the fields the row sets. A row whose guards a resolution does not establish
-# (`confirm_provisioning` needs the receipt and its readback) is not taken.
+# What a human resolution, or a trusted receipt of a definite failure,
+# establishes for the lifecycle row an operation fires, by operation kind and
+# closed status: the facts and the values of the fields the row sets. A row
+# whose guards a resolution does not establish (`confirm_provisioning` needs
+# the receipt and its readback) is not taken.
 RESOLUTION_FIRES: dict[tuple[str, str], tuple[frozenset[str], dict]] = {
     ("fork_provision", "failed"): (frozenset({"provisioning_blocked"}),
-                                   {"pending_human_action": "provisioning_operation_failed"}),
+                                   {"pending_human_action": PROVISIONING_FAILED}),
 }
 
 

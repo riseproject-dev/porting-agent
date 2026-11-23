@@ -113,7 +113,8 @@ MESSAGES = {
     "require_provisioning_intervention": (
         "Provisioning cannot continue safely: the fork provisioning operation failed, or its "
         "launches (`operation_launch`) are spent without a receipt. The contribution waits for "
-        "a human."),
+        "a human: correct the cause, then `/upstreaming resume` at the current revision starts "
+        "provisioning again."),
     "confirm_provisioning": ("Provisioned and verified the contribution fork and exact `riscv64` "
                              "base. Development Work is due."),
     "repair_attempts_exhausted": ("Exhausted the bounded repair-attempt budget and parked the contribution. "

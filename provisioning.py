@@ -66,8 +66,11 @@ def validate_request(record: dict, operation: dict, policy: dict) -> None:
         raise ProvisionError("reviewed dossier and approved scope required")
     if not record["upstream"].get("repository_id") or not record["upstream"].get("base_sha"):
         raise ProvisionError("upstream identity and immutable base must be verified first")
+    # The record names the operation it authorizes. A resume of the wait for
+    # exhausted launches bumps the record's revision and keeps the planned
+    # operation, so the operation may be of an earlier revision.
     if operation["kind"] != "fork_provision" or operation["status"] != "planned" \
-            or operation["contribution_id"] != record["contribution_id"] or operation["revision"] != record["revision"] \
+            or operation["contribution_id"] != record["contribution_id"] or operation["revision"] > record["revision"] \
             or record.get("active_operation_id") != operation["operation_id"]:
         raise ProvisionError("operation is not the current authorized provisioning intent")
     expected = f"{FORK_ORG}/{record['upstream']['full_name'].split('/', 1)[1]}"

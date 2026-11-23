@@ -214,9 +214,14 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
             observe_head: Callable[[], str | None], scope: publisher.Scope, policy: dict, now: str,
             save_operation: Callable[[dict], None], workdir: Path | None = None,
             artifact: dict | None = None, previous_candidate: str | None = None,
-            push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess] | None = None) -> Outcome:
+            push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess] | None = None,
+            attempt: int = 1) -> Outcome:
     """Validate and publish one proposal. ``observe_head()`` reads the fork's
-    current ``riscv64`` head via the API (fresh, right before the push)."""
+    current ``riscv64`` head via the API (fresh, right before the push).
+    ``attempt`` is the publish attempt of the same Result: a publish-only
+    retry records a new operation, never one an earlier attempt closed."""
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        raise ValueError(f"invalid publish attempt {attempt!r}")
     try:
         check_proposal(proposal, record, task)
     except (PublishRejected, schemas.SchemaError) as e:
@@ -312,7 +317,8 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         op = recovery.plan(contribution_id=record["contribution_id"], revision=task["revision"],
                            kind="branch_update" if proposal["operation"] == "append" else "branch_rewrite",
                            policy_version=policy["policy_version"], reason_ids=list(task.get("reason_ids") or []) +
-                           ([f"artifact:{artifact['artifact_id']}"] if artifact else []),
+                           ([f"artifact:{artifact['artifact_id']}"] if artifact else []) +
+                           publish_attempt_reasons(attempt),
                            target={"repository_id": record["fork"]["repository_id"], "repository": fork,
                                    "ref": DEV_REF, "expected_head": expected,
                                    "base_sha": record["upstream"]["base_sha"]},
@@ -358,6 +364,12 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
     finally:
         if tmp:
             tmp.cleanup()
+
+
+def publish_attempt_reasons(attempt: int) -> list[str]:
+    """The reason id that makes the operation of a publish-only retry its
+    own: the first attempt keeps the identity of the Result alone."""
+    return [f"publish-attempt:{attempt}"] if attempt > 1 else []
 
 
 def bind_provisioned_task(record: dict, task: dict) -> dict:
@@ -468,15 +480,16 @@ def main(argv=None) -> int:
     artifact = json.loads(a.result.read_text()) if a.result else None
     ops: list[dict] = []
     mbox = a.mbox.read_bytes() if a.mbox and a.mbox.exists() else b""
+    attempt = max(int(os.environ.get("UPSTREAMING_PUBLISH_ATTEMPT", "1")), 1)
     out = publish(record=record, task=task, proposal=proposal, mbox=mbox, token=token,
                   observe_head=lambda: (branch_head(api, task["fork"], DEV_REF) or {}).get("head"),
                   scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=policy,
                   now=datetime.now(timezone.utc).isoformat(), save_operation=ops.append, artifact=artifact,
-                  previous_candidate=a.previous_candidate)
+                  previous_candidate=a.previous_candidate, attempt=attempt)
     result = {"status": out.status, "reason": out.reason, "failure_class": out.failure_class,
               "candidate": out.candidate, "tree": out.tree,
               "operation": ops[-1] if ops else None, "report": out.report, "artifact": artifact,
-              "attempt": int(os.environ.get("UPSTREAMING_PUBLISH_ATTEMPT", "1"))}
+              "attempt": attempt}
     text = json.dumps(result, indent=2)
     (a.out.write_text(text) if a.out else print(text))
     # 0 published/no_change, 1 rejected, 2 uncertain, 3 infrastructure (retry publish only)

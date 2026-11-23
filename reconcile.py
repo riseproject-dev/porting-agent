@@ -638,6 +638,7 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         work = copy.deepcopy(snap)
         try:
             out = _tick(api, work, policy=policy, now=now, skip=frozenset(failures), **inputs)
+            check_staged_operations(out.staged, snap.operations)
             break
         except isolation.ContributionFailure as failure:
             if failure.contribution_id in failures:
@@ -704,6 +705,22 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     if errored:
         out.report["processing_errors"] = errored
     return out
+
+
+def check_staged_operations(staged: list[tuple[str, dict]], committed: dict[str, dict]) -> None:
+    """Refuse, as a processing error of its contribution, an operation the
+    tick stages over a committed one along no sequence of rows of the
+    operation table (``recovery.transition_problem``), before the state
+    publisher refuses the whole commit for it. The publisher keeps the same
+    check as the final guard."""
+    for kind, op in staged:
+        if kind != "operations":
+            continue
+        problem = recovery.transition_problem(committed.get(op["operation_id"]), op)
+        if problem:
+            raise isolation.ProcessingError(
+                op["contribution_id"], "operation_check",
+                recovery.RecoveryError(f"{op['operation_id']}: {problem}"))
 
 
 PROCESSING_ERROR_VERB = "pause_on_processing_error"
@@ -820,7 +837,46 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             op = snap.operations.get(receipt.get("operation_id"))
             if not op or op["kind"] != "fork_provision" or op["status"] not in recovery.OPEN \
                     or c["phase"] != "provisioning" or c.get("active_operation_id") != op["operation_id"] \
-                    or c["revision"] != receipt.get("revision") or receipt.get("status") != "provisioned":
+                    or c["revision"] != receipt.get("revision") or not isinstance(receipt.get("status"), str):
+                continue
+            external_ids = {}
+            if receipt.get("provision_run_id"):
+                external_ids["provision_run_id"] = str(receipt["provision_run_id"])
+            if receipt.get("provision_artifact_id"):
+                external_ids["provision_artifact_id"] = int(receipt["provision_artifact_id"])
+            if receipt["status"] != "provisioned":
+                # The trusted workflow reports a definite failure: the
+                # operation takes `record_failure` and, from
+                # `provisioning.idle`, fires `require_provisioning_intervention`.
+                fired = None
+                if op["status"] not in ("planned", "applying") or (
+                        not recovery.fired_verbs(c, op, "failed")
+                        and not compat.waits_for_human(c)):
+                    # Only a launched operation fails by a receipt, and a
+                    # provisioning shape the table does not have keeps its
+                    # legacy launches.
+                    provision_report.append({"contribution": cid, "status": "failure not folded"})
+                    continue
+                new_op = recovery.fold_failure_receipt(op, external_ids=external_ids, now=iso)
+                if recovery.fired_verbs(c, new_op):
+                    facts, values = controller.RESOLUTION_FIRES[(new_op["kind"], new_op["status"])]
+                    fired = recovery.fire(c, new_op, policy=policy, now=iso, facts=facts,
+                                          values=values,
+                                          details={"receipt_status": receipt["status"][:200]})
+                    if not fired.accepted:
+                        raise lifecycle.TransitionError(
+                            f"require_provisioning_intervention refused in {engine.state_key(c)}: "
+                            f"{fired.reason}")
+                    new = fired.record
+                else:
+                    new = recovery.release(c, new_op, iso)
+                schemas.validate("contribution", new)
+                contributions[key] = new
+                snap.operations[op["operation_id"]] = new_op
+                out.staged.extend([("operations", new_op), ("contributions", new)])
+                if fired is not None:
+                    out.staged.append(("events", fired.event))
+                provision_report.append({"contribution": cid, "status": "failed"})
                 continue
             if receipt.get("fork") != op["target"]["repository"] \
                     or receipt.get("upstream_id") != c["upstream"]["repository_id"] \
@@ -835,11 +891,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     or repo["id"] != receipt.get("fork_id") or repo.get("parent_id") != c["upstream"]["repository_id"]:
                 provision_report.append({"contribution": cid, "status": "fork identity/ref mismatch"})
                 continue
-            external_ids = {}
-            if receipt.get("provision_run_id"):
-                external_ids["provision_run_id"] = str(receipt["provision_run_id"])
-            if receipt.get("provision_artifact_id"):
-                external_ids["provision_artifact_id"] = int(receipt["provision_artifact_id"])
             new_op = recovery.fold_receipt(
                 op, external_ids=external_ids,
                 detail="fork/source identity, branch and trusted setup receipt verified", now=iso)

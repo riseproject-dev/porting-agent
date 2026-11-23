@@ -77,9 +77,8 @@ These table mutations break a settled decision but still pass the check:
 
 ## Some resumes lead where nothing continues yet
 
-- **`resume_provisioning`** requires the fact that the prerequisite is corrected, which no caller establishes yet: `/upstreaming resume` in `provisioning.waiting_human` is refused unless the wait is long enough for `resume_stale`. The retired `provision` command no longer leaves the wait; `park` and a resume from `parked.idle` do. After `require_provisioning_intervention` for exhausted launches the planned operation is still open, so `park` and `resume_stale` are refused (naming the operation) until `/upstreaming resolve-operation` closes it; the reply of the retired `provision` does not say so.
 - **`resume_ci`** in `development.waiting_human` and `handoff.waiting_human` leads to the CI wait, but the rerun of the interrupted jobs that the row states is not launched. No record enters a wait with the pending action `ci_interrupted` yet.
-- **Required:** the provisioning prerequisite check and collector reruns.
+- **Required:** collector reruns.
 
 ## The admission override is recorded but not applied
 
@@ -158,11 +157,19 @@ These table mutations break a settled decision but still pass the check:
 - **Table:** `record_publish_success` leads to `development.waiting_ci`; no row of the table creates the development PR.
 - **Required:** decide where the development PR operation sits in the table, then take it through rows.
 
+## A failed provisioning run writes no receipt
+
+- **Where:** `provision.yml` and `provisioning.py`; the provisioning receipt in `reconcile.py`.
+- **Today:** the workflow writes `outcome.json` only when provisioning succeeds. A run that fails definitely (a refused API write, a readback mismatch) leaves no receipt, so the controller sees a launch without a receipt: it launches the operation again within `operation_launch` and then waits for a human with `provisioning_launch_exhausted`. The reconciler already folds a verified receipt whose status is not `provisioned` as a definite failure (`record_failure`, then `require_provisioning_intervention` with `provisioning_operation_failed`).
+- **Table:** a remote call that returns a definite failure takes `record_failure`.
+- **Required:** write a failure receipt from the workflow for a definite failure of the effect.
+
 ## Resolution evidence has no producer
 
 - **Where:** `/upstreaming resolve-operation`, guard "a resolution evidence record states the disposition".
 - **Today:** the command takes the table's `resolve_*` rows with a record of kind `resolution` from the state store, but nothing writes such a record, so every resolution is refused with "resolution evidence record not found".
 - **Table:** `resolve-operation` closes an open operation with a resolution evidence record.
+- **Consequence:** after `require_provisioning_intervention` for exhausted launches the planned provisioning operation is still open. Within `refresh.stale_after_days` the resume leaves the wait (`resume_provisioning`). Once the wait is older, `resume_stale` and `park` are refused while the operation is open (both require no open operation), and only a resolution or a late receipt that closes the operation lets the contribution leave the wait.
 - **Required:** a trusted way to record resolution evidence.
 
 ## Work requested before the Work identity carried the generation
@@ -213,7 +220,12 @@ These follow the literal reading of a decision and are kept until a decision say
 - When the publisher's final check before a push does not pass (the head re-read fails or moved), no intent is recorded and the outcome carries no operation, instead of a `failed` operation, because `planned` has no row to `failed` other than a resolution.
 - `active_operation_id` names an open operation only: the reference is released in the write that closes the operation, although no row of the table lists that clear (`record_merge` clears it explicitly).
 - The counter of `operation_launch` is `external_ids.launch_attempts` of the operation, where launches were counted before the table. A launch is repeated only 300 seconds after the last one, and the relaunch requires available capacity, like the first launch. The launches of a development PR operation have the same limit.
-- `require_provisioning_intervention` for exhausted launches is taken once the last allowed launch is 300 seconds old without a receipt, and not while the contribution is paused. Its pending action is `provisioning_launch_exhausted` with the counter `operation_launch`; after a human resolves the provisioning operation `failed`, it is `provisioning_operation_failed` without a counter.
+- `require_provisioning_intervention` for exhausted launches is taken once the last allowed launch is 300 seconds old without a receipt, and not while the contribution is paused. Its pending action is `provisioning_launch_exhausted` with the counter `operation_launch`; after the provisioning operation failed (a human resolves it `failed`, or a verified receipt reports a definite failure), it is `provisioning_operation_failed` without a counter.
+- A human `/upstreaming resume` in `provisioning.waiting_human` whose pending action is one the controller writes there (`provisioning_launch_exhausted` with the counter `operation_launch`, or `provisioning_operation_failed`) is the human's assertion that the prerequisite is corrected: the controller establishes "the prerequisite is corrected" for that command. Another pending action in that wait establishes nothing.
+- After the resume of exhausted launches the same planned operation is launched again, from a launch count of zero, although the resume bumped the revision; the provisioning workflow accepts an operation of an earlier revision when the record names it as its active operation, and the receipt carries the record's revision.
+- A verified provisioning receipt whose status is a string other than `provisioned` reports a definite failure of the effect; it is folded only for a `planned` or `applying` operation of a record in `provisioning.idle` (which fires `require_provisioning_intervention`) or in a human wait of the table (which keeps the wait). In a provisioning shape the table does not have it is not folded.
+- The attempt that makes the operation of a publish-only retry its own is the attempt the retry was dispatched with (`UPSTREAMING_PUBLISH_ATTEMPT`); the first attempt adds nothing, so its id is unchanged. A CI bootstrap `dev_pr_update` planned again counts the earlier ones for the same head that the store holds.
+- An operation the tick stages that the state publisher's check would refuse is an unexpected error of its contribution (step `operation_check`): the contribution is paused by the controller and the commit goes ahead for the others.
 - A provisioning operation resolved `confirmed` by a human fires no row: `confirm_provisioning` needs the receipt and the readback. A receipt that arrives while the contribution waits for a human closes the operation and keeps the state.
 - A record whose `last_ci_evidence_id` names evidence that the store does not hold, in a state where Work is allocated, is an unexpected error of that contribution and takes `pause_on_processing_error`; the pause names the missing evidence id.
 

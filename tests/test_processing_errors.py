@@ -126,10 +126,10 @@ def ci(repository, head, verdict):
 
 
 def tick(records, *, publications=(), comments=(), issues=(), observe=True, verdict="pending",
-         head=None, queue_works=None, patches=(), policy=POLICY, run_id="4242"):
+         head=None, queue_works=None, patches=(), policy=POLICY, run_id="4242", operations=None):
     """One tick over ``records``; ``patches`` are (target, replacement)."""
     snapshot = reconcile.Snapshot({r["contribution_id"]: copy.deepcopy(r) for r in records},
-                                  {}, {}, {}, {})
+                                  copy.deepcopy(operations or {}), {}, {}, {})
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch("observe_ci.collect.branch_head",
                                        side_effect=head or branch_head()))
@@ -209,6 +209,35 @@ class TestOneContributionErrors(unittest.TestCase):
         # The artifact is not marked as processed: the next tick reads it again.
         self.assertEqual(record_of(output, A)["processed_publications"],
                          a.get("processed_publications") or [])
+
+    def test_an_operation_staged_over_a_closed_one_pauses_only_its_contribution(self):
+        import recovery
+        a = contribution(activity="agent_running", active_work=dict(WORK))
+        b = other_waiting()
+        failed = recovery.plan(contribution_id=A, revision=0, kind="branch_update",
+                               policy_version="p", reason_ids=["r"],
+                               target={"repository": FORK_A, "ref": "riscv64",
+                                       "expected_head": SHA_A}, now=NOW)
+        failed["status"] = "failed"
+        ops = {failed["operation_id"]: failed}
+        reused = dict(failed, status="confirmed")
+        baseline = tick([a, b], publications=[publication(a, "published")], operations=ops)
+        output = tick([a, b], publications=[dict(publication(a, "published"), operation=reused)],
+                      operations=ops)
+        self.assertEqual([(f.contribution_id, f.step, type(f)) for f in output.failures],
+                         [(A, "operation_check", isolation.ProcessingError)])
+        staged = staged_for(output, A)
+        self.assertEqual([kind for kind, _r in staged], ["contributions", "events"], staged)
+        paused = staged[0][1]
+        self.assertEqual((paused["paused"], paused["paused_by"]), (True, "controller"))
+        self.assertIn("failed cannot become confirmed", paused["paused_reason"])
+        self.assertIn("step operation_check", paused["paused_reason"])
+        self.assertEqual(staged_for(output, B), staged_for(baseline, B))
+        self.assertNotIn("operations", [kind for kind, _r in output.staged])
+        # What remains to commit passes the store's own check.
+        for kind, r in output.staged:
+            if kind == "operations":
+                self.assertIsNone(recovery.transition_problem(ops.get(r["operation_id"]), r))
 
     def test_dispatch_recovery(self):
         a = contribution(activity="agent_running", active_work=dict(WORK))

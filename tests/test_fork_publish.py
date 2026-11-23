@@ -312,3 +312,75 @@ class TestFailureClasses(_ForkFixture, unittest.TestCase):
         self.assertEqual(out.status, "published")
         self.assertIn("previous attempt", out.reason)
         self.assertEqual(pushes, [])
+
+
+class TestPublishRetryIdentity(_ForkFixture, unittest.TestCase):
+    """A publish-only retry of the same Result records its own operation:
+    the operation an earlier attempt closed is never written again."""
+
+    def attempt(self, n, push=None):
+        ops = []
+        out = fork_publish.publish(
+            record=self.record, task=self.task, proposal=self.proposal(), mbox=self.mbox,
+            token=None, observe_head=self.fork_head,
+            scope=publisher.Scope(allowed_globs=[".github/workflows/*"]),
+            policy=policy(read_only=False, destination_writes=True), now=NOW,
+            save_operation=ops.append, workdir=self.root / f"attempt-{n}-{len(self.ops)}",
+            push=push, attempt=n)
+        self.ops.append(ops[-1])
+        return out, ops[-1]
+
+    def commit_all(self):
+        """Commit the operations one after the other, as the state publisher
+        does, and return the problems of each diff."""
+        import json
+        import subprocess
+
+        import state
+        repo = self.root / "store"
+        git(self.root, "init", "-q", "-b", "main", str(repo))
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "t")
+        (repo / "README").write_text("store\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "base")
+        pol = json.loads((Path(__file__).resolve().parents[1] / "policy.json").read_text())
+        problems = []
+        for op in self.ops:
+            base = git(repo, "rev-parse", "HEAD").strip()
+            path = repo / state.record_path("operations", op)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(op, indent=2, sort_keys=True) + "\n")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", op["status"]], check=True)
+            problems += state.validate_state_diff(repo, base, "HEAD", pol).problems
+        return problems
+
+    @staticmethod
+    def http500(w, a, c):
+        import subprocess
+        return subprocess.CompletedProcess(a, 128, b"", b"error: RPC failed; HTTP 500")
+
+    def test_a_retry_after_a_definite_failure_publishes_a_new_operation(self):
+        out1, failed = self.attempt(1, push=self.http500)
+        self.assertEqual((out1.status, failed["status"]), ("infra_error", "failed"))
+        out2, confirmed = self.attempt(2)
+        self.assertEqual((out2.status, confirmed["status"]), ("published", "confirmed"))
+        self.assertNotEqual(failed["operation_id"], confirmed["operation_id"])
+        self.assertIn("publish-attempt:2", confirmed["reason_ids"])
+        self.assertNotIn("publish-attempt:1", failed["reason_ids"])
+        self.assertEqual(self.commit_all(), [])
+
+    def test_an_uncertain_retry_after_a_definite_failure_commits_cleanly(self):
+        import subprocess
+        _out, failed = self.attempt(1, push=self.http500)
+        out, uncertain = self.attempt(
+            3, push=lambda w, a, c: subprocess.CompletedProcess(a, 0, b"", b""))
+        self.assertEqual((out.status, uncertain["status"]), ("uncertain", "uncertain"))
+        self.assertEqual(len({failed["operation_id"], uncertain["operation_id"]}), 2)
+        self.assertEqual(self.commit_all(), [])
+
+    def test_the_attempt_is_a_positive_number(self):
+        for bad in (0, -1, True, "2"):
+            with self.subTest(attempt=bad), self.assertRaises(ValueError):
+                self.attempt(bad)

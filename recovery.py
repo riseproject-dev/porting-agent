@@ -359,6 +359,17 @@ def fold_receipt(op: dict, *, external_ids: dict | None, detail: str, now: str) 
     return record_discovery(op, "confirmed", detail, now)
 
 
+def fold_failure_receipt(op: dict, *, external_ids: dict | None, now: str) -> dict:
+    """A verified receipt of a trusted workflow that reports a definite
+    failure of the effect: ``begin_effect`` (when the operation is still
+    ``planned``), then ``record_failure``."""
+    if op["status"] == "planned":
+        op = mark_applying(op, now, facts=RECEIPT_FACTS)
+    if op["status"] != "applying":
+        raise RecoveryError(f"a failure receipt for an operation in status {op['status']}")
+    return mark_result(op, response_ok=False, external_ids=external_ids, now=now)
+
+
 def resolution_verbs(op: dict) -> list[str]:
     return [e.verb for e in lc.state_edges(op["status"], lc.OPERATIONS)
             if e.transition.command == lc.RESOLVE]
@@ -434,8 +445,10 @@ FIRES: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
 }
 
 
-def fired_verbs(record: dict, op: dict) -> tuple[str, ...]:
-    return FIRES.get((engine.state_key(record), op["kind"]), {}).get(op["status"], ())
+def fired_verbs(record: dict, op: dict, status: str | None = None) -> tuple[str, ...]:
+    """The verbs ``op`` fires in the record's state on reaching ``status``
+    (its own status by default)."""
+    return FIRES.get((engine.state_key(record), op["kind"]), {}).get(status or op["status"], ())
 
 
 def release(record: dict, op: dict, now: str) -> dict:
