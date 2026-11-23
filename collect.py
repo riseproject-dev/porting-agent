@@ -353,34 +353,75 @@ def _refresh_branch(c: dict, command: commands.Command) -> str | None | bool:
         return False
 
 
+def _renamed_base_in_pr(api: Api, c: dict | None, repo: dict, ref: str, renamed_to: str) -> dict | None:
+    """The verified base of the open upstream PR of ``c`` after the upstream
+    renamed its base branch ``ref`` to ``renamed_to``: ``None`` when ``c``
+    is not in upstream review on that branch, or the PR it names is not open,
+    does not target ``renamed_to`` of the same repository, or the new name's
+    history does not contain the recorded base commit. A read that fails
+    raises ``CollectError``: whether the PR followed the rename is unknown."""
+    if c is None or c["phase"] != "upstream_review" or c["upstream"].get("base_ref") != ref \
+            or not (c.get("upstream_pr") or {}).get("number") or not c["upstream"].get("base_sha"):
+        return None
+    pr = upstream_pull(api, c)
+    if pr["state"] != "open" or pr["merged"] or pr["base_ref"] != renamed_to \
+            or pr["base_repository_id"] != repo["id"]:
+        return None
+    head = branch_head(api, c["upstream"]["full_name"], renamed_to)
+    if head is None:
+        raise CollectError(f"GET branch {renamed_to!r}: HTTP 404 after the rename")
+    base_sha = c["upstream"]["base_sha"]
+    if head["head"] != base_sha and compare_commits(
+            api, c["upstream"]["full_name"], base_sha, head["head"]).get("status") != "ahead":
+        return None
+    return {"pr_id": pr["id"], "pr_number": pr["number"], "base_ref": renamed_to,
+            "base_sha": base_sha}
+
+
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
                        comments: Iterable[dict] = (),
                        consumed: Iterable[int] = ()) -> dict[str, dict]:
     """Verify source IDs and initial immutable bases before task admission.
     Errors are data: urgent commands must still run when an upstream is absent.
 
-    A snapshot that could not be read is ``{"error": ...}``. When the
-    upstream answered definitively that the base branch is not there (it does
-    not exist, or GitHub redirects it to the branch it was renamed to), the
-    snapshot also carries ``base_ref``, ``missing: True``, and for a rename
-    ``renamed_to``; the controller then takes ``require_base_branch`` at once.
+    A snapshot that could not be read is ``{"error": ..., "ref": ...,
+    "scope": ...}``: ``ref`` is the branch asked for (``None`` for the
+    default branch), so the controller never applies the answer for one
+    branch to a record of another, and ``scope`` is ``repository`` when the
+    repository itself could not be read (also when GitHub now names it
+    otherwise: renamed or transferred, with ``renamed_repository``) and
+    ``branch`` otherwise. When the upstream answered definitively that the
+    base branch is not there (it does not exist, or GitHub redirects it to
+    the branch it was renamed to), the snapshot also carries ``base_ref``,
+    ``missing: True``, and for a rename ``renamed_to``; the controller then
+    takes ``require_base_branch`` at once. For a rename of the base branch of
+    a contribution in upstream review, the upstream PR is read too:
+    ``pr_base`` is its verified base when it follows the rename
+    (``_renamed_base_in_pr``), and a failed read of it makes the snapshot an
+    ordinary failed read, never a definitive answer.
 
-    A contribution waiting for a human because its base branch is
-    unavailable (``pending_human_action`` ``base_branch_unavailable``) is not
-    read, unless its tracking issue carries a resume in ``comments``. A
-    parked contribution is read only when its tracking issue carries a
-    refresh: a restart clears the identity and base, and the controller binds
-    them again in the tick that restarts it. A command is counted only when
-    ``commands.parse`` accepts it, it is by an actor of
-    ``command_authority``, and its comment id is not in ``consumed`` (the
-    command ledger); whether its row then applies is decided by the
-    controller. A parked upstream is read at the ``branch`` of the refresh,
-    else at the target branch the request asked for at intake, else at its
-    default branch."""
+    A contribution waiting for a human because its upstream is unavailable
+    (``pending_human_action`` ``base_branch_unavailable`` or
+    ``upstream_unavailable``) is not read, unless its tracking issue carries
+    a resume in ``comments``, or it waits in upstream review for a base
+    branch renamed while the upstream PR is open (the controller ends that
+    wait once the PR follows the rename). A parked contribution is read only
+    when its tracking issue carries a refresh: a restart clears the identity
+    and base, and the controller binds them again in the tick that restarts
+    it. A command is counted only when ``commands.parse`` accepts it, it is
+    by an actor of ``command_authority``, and its comment id is not in
+    ``consumed`` (the command ledger); whether its row then applies is
+    decided by the controller. A parked upstream is read at the ``branch``
+    of the refresh, else at the target branch the request asked for at
+    intake, else at its default branch. An intake request for an upstream
+    that already has a contribution that is not terminal reads nothing: the
+    controller refuses the duplicate without it."""
     contributions = list(contributions)
     posted = _commands_by_issue(comments, policy, consumed)
-    parked = {c["upstream"]["full_name"] for c in contributions if c["phase"] == "parked"}
+    owned = {c["upstream"]["full_name"] for c in contributions
+             if c["phase"] not in lifecycle.TERMINAL}
     refs: dict[str, str | None] = {}
+    active: dict[str, dict] = {}
     for c in contributions:
         if c["phase"] in lifecycle.TERMINAL:
             continue
@@ -392,11 +433,14 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
                 if branch is not False:
                     refs.setdefault(name, branch)
             continue
-        waiting = (c.get("pending_human_action") or {}).get("kind") \
-            == lifecycle.BASE_BRANCH_UNAVAILABLE
-        if waiting and "resume" not in verbs:
+        pending = (c.get("pending_human_action") or {}).get("kind")
+        renamed_wait = pending == lifecycle.BASE_BRANCH_UNAVAILABLE \
+            and c["phase"] == "upstream_review" and bool(c.get("upstream_pr"))
+        if pending in (lifecycle.BASE_BRANCH_UNAVAILABLE, lifecycle.UPSTREAM_UNAVAILABLE) \
+                and "resume" not in verbs and not renamed_wait:
             continue
         refs[name] = c["upstream"].get("base_ref")
+        active[name] = c
     known = {c["tracking_issue"]["id"] for c in contributions}
     for issue in issues:
         if issue["id"] in known:
@@ -405,29 +449,46 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
             req = intake.parse_request(issue, policy)
         except intake.IntakeError:
             continue
-        if req.upstream not in parked:
+        if req.upstream not in owned:
             refs.setdefault(req.upstream, req.target_branch)
     snapshots = {}
     for name, ref in refs.items():
+        scope = "repository"
         try:
             repo = repository(api, name)
             if repo["full_name"].lower() != name.lower():
-                raise CollectError("upstream repository name changed")
+                snapshots[name] = {"error": f"GitHub names the upstream repository "
+                                            f"{repo['full_name'][:200]!r} now",
+                                   "ref": ref, "scope": "repository",
+                                   "renamed_repository": repo["full_name"][:200]}
+                continue
+            scope = "branch"
             base_ref = ref or repo["default_branch"]
             try:
                 base = branch_head(api, name, base_ref)
             except BranchRenamed as e:
-                snapshots[name] = {"error": f"upstream base branch {base_ref!r} was renamed",
-                                   "base_ref": base_ref, "missing": True,
-                                   "renamed_to": e.name[:255]}
+                snapshot = {"error": f"upstream base branch {base_ref!r} was renamed",
+                            "ref": ref, "base_ref": base_ref, "missing": True,
+                            "renamed_to": e.name[:255]}
+                try:
+                    pr_base = _renamed_base_in_pr(api, active.get(name), repo, base_ref,
+                                                  e.name[:255])
+                except CollectError as error:
+                    snapshots[name] = {"error": f"upstream base branch {base_ref!r} was renamed, "
+                                                f"and its upstream PR could not be read: {error}",
+                                       "ref": ref, "scope": "branch"}
+                    continue
+                if pr_base:
+                    snapshot["pr_base"] = pr_base
+                snapshots[name] = snapshot
                 continue
             if base is None:
                 snapshots[name] = {"error": f"upstream base branch {base_ref!r} does not exist",
-                                   "base_ref": base_ref, "missing": True}
+                                   "ref": ref, "base_ref": base_ref, "missing": True}
                 continue
             snapshots[name] = {"repository_id": repo["id"], "base_ref": base_ref, "base_sha": base["head"]}
         except CollectError as e:
-            snapshots[name] = {"error": str(e)}
+            snapshots[name] = {"error": str(e), "ref": ref, "scope": scope}
     return snapshots
 
 

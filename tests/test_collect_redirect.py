@@ -51,3 +51,57 @@ class TestRenamedBranch(unittest.TestCase):
     def test_the_branch_asked_for_is_read(self):
         self.assertEqual(collect.branch_head(self.Api("riscv64"), "riseproject-upstreaming/proj",
                                              "riscv64")["head"], "a" * 40)
+
+
+class TestRenamedBranchOverHttp(unittest.TestCase):
+    """The real ``Api`` follows GitHub's 301 for a renamed branch, and the
+    branch it lands on is reported as the rename, never read as the branch
+    asked for."""
+
+    def setUp(self):
+        import http.server
+        import json
+        import os
+        import threading
+        from unittest import mock
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/repos/o/r/branches/master":
+                    self.send_response(301)
+                    self.send_header("Location", "/repositories/1/branches/main")
+                    self.end_headers()
+                    return
+                if self.path == "/repositories/1/branches/main":
+                    body = json.dumps({"name": "main", "commit": {
+                        "sha": "a" * 40, "commit": {"tree": {"sha": "b" * 40}},
+                        "parents": []}}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        # The loopback server is reached directly, not through a proxy.
+        env = mock.patch.dict(os.environ, {"no_proxy": "127.0.0.1", "NO_PROXY": "127.0.0.1"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.api = collect.Api(token="t", base=f"http://127.0.0.1:{self.server.server_port}")
+
+    def test_the_redirect_of_a_renamed_branch_is_followed_and_reported(self):
+        with self.assertRaises(collect.BranchRenamed) as raised:
+            collect.branch_head(self.api, "o/r", "master")
+        self.assertEqual(raised.exception.name, "main")
+
+    def test_a_missing_branch_is_none(self):
+        self.assertIsNone(collect.branch_head(self.api, "o/r", "gone"))

@@ -497,16 +497,32 @@ NO_WORK = "no requested Work"
 # `upstream.base_sha`). Every row that allocates Work requires them; a
 # restart clears them, and the tick that restarts binds them again.
 UPSTREAM_BOUND = "upstream identity and base bound"
-# The upstream base branch, read by the collector in the states that need it
-# (`BASE_BRANCH_WAITS`). A definitive answer (the branch does not exist, or
-# GitHub redirects it to the branch it was renamed to) leads to the human
-# wait at once; any other failed read is charged to `source_reads`, and its
-# exhaustion leads to the same wait.
-BASE_BRANCH_UNREAD = ("the upstream base branch could not be read, and the upstream did not "
-                      "answer that it is missing")
-BASE_BRANCH_GONE = ("the upstream answers that the base branch does not exist or was renamed, "
-                    "or source_reads is exhausted")
+# The upstream repository and base branch, read by the collector in the
+# states that need them (`BASE_BRANCH_WAITS`). A definitive answer about the
+# branch (it does not exist, or GitHub redirects it to the branch it was
+# renamed to) leads to the human wait at once; any other failed read is
+# charged to `source_reads`, and its exhaustion leads to the same wait, with
+# the pending action of the cause: the base branch, or the repository itself
+# (renamed, transferred, or no longer readable with the token).
+BASE_BRANCH_UNREAD = ("the upstream repository or its base branch could not be read, and the "
+                      "upstream did not say that the branch is missing")
+BASE_BRANCH_GONE = "the upstream says that the base branch does not exist or was renamed"
+BASE_BRANCH_UNREADABLE = "reading the base branch kept failing (source_reads exhausted)"
+UPSTREAM_GONE = ("reading the upstream repository itself kept failing (source_reads "
+                 "exhausted): it was renamed, transferred, or can no longer be read")
 BASE_BRANCH_UNAVAILABLE = "base_branch_unavailable"
+# `source_reads` is exhausted only once its count is reached and this many
+# minutes have passed since the first failed read of the run: the controller
+# ticks on issue, comment, and push events too, so a count of ticks alone can
+# be spent in minutes.
+SOURCE_READS_MINUTES_KEY = "retries.source_unavailable_minutes"
+UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+# The upstream renamed the base branch while the upstream PR is open: GitHub
+# retargets the PR to the new name. The record follows the rename once the
+# verified PR targets the new name and the history of the new name contains
+# the recorded base commit.
+BASE_RENAMED_IN_PR = ("the upstream renamed the base branch, the open upstream PR now targets "
+                      "the new name, and the new name's history contains upstream.base_sha")
 # A stop is stale when it lasted longer than ``refresh.stale_after_days``,
 # counted from the older of ``paused_at`` and
 # ``pending_human_action.requested_at``. ``resume_stale`` requires it; every
@@ -1300,7 +1316,7 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION,
                  pending_is("work_budget_exhausted", "dispatch_failed", "work_failed",
-                            BASE_BRANCH_UNAVAILABLE)),
+                            BASE_BRANCH_UNAVAILABLE, UPSTREAM_UNAVAILABLE)),
                 _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
                                    "source_reads"),
                 description="Fresh rewrite Work is requested, and its review after it. "
@@ -1469,7 +1485,8 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION,
                  pending_is("dispatch_failed", "work_failed", "publication_infrastructure_failure",
-                            "repair_budget_exhausted", BASE_BRANCH_UNAVAILABLE)),
+                            "repair_budget_exhausted", BASE_BRANCH_UNAVAILABLE,
+                            UPSTREAM_UNAVAILABLE)),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("repair_attempts_cluster", "no_progress", "work_total",
                             "dispatch_recovery", "work_recovery", "publish_recovery",
@@ -1578,9 +1595,9 @@ RULES: dict[str, Rule] = {
         Transition(
             _O, None, (BASE_BRANCH_UNREAD, "source_reads remains", NOT_PAUSED, QUIESCENT),
             charges=("source_reads",),
-            description="A network error, a server error, or a rate limit: the contribution "
-                        "stays, and a later tick reads the upstream again. A tick that reads it "
-                        "starts `source_reads` again."),
+            description="A network error, a server error, a rate limit, or a repository that "
+                        "cannot be read: the contribution stays, and a later tick reads the "
+                        "upstream again. A tick that reads it starts `source_reads` again."),
         "every state in which the controller needs the upstream base branch: "
         "`queued.idle`, `planning.idle`, `provisioning.idle`, `development.fix_needed`, "
         "`handoff.review_due`, `handoff.review_pending`, and `upstream_review.fix_needed`",
@@ -1637,19 +1654,53 @@ BASE_BRANCH_WAITS = {
     "handoff.review_pending": "handoff.waiting_human",
     "upstream_review.fix_needed": "upstream_review.waiting_human",
 }
+_UNAVAILABLE_NOTE = ("While the contribution waits, the upstream is read again only once an "
+                     "authorized resume is posted.")
 _REQUIRE_BASE_BRANCH = Transition(
     _O, None, (BASE_BRANCH_GONE, NOT_PAUSED, QUIESCENT),
-    _E(sets=(f"pending_human_action={BASE_BRANCH_UNAVAILABLE}", PENDING_COUNTER)),
-    description="The collector stops reading the upstream while the contribution waits, until "
-                "an authorized `/upstreaming resume` is posted. The entry names the branch, and "
-                "for a rename the branch GitHub redirects to. `pending_human_action.counter` "
-                "names `source_reads` when that budget is exhausted, and no counter when the "
-                "upstream answered that the branch is missing. Once the branch exists again, "
-                "`/upstreaming resume` continues; a contribution that must target another "
-                "branch is parked and restarted with `/upstreaming refresh branch=NAME`.")
+    _E(sets=(f"pending_human_action={BASE_BRANCH_UNAVAILABLE}",)),
+    description="The entry says whether the branch does not exist or was renamed, and to which "
+                "name. " + _UNAVAILABLE_NOTE + " Once the branch exists again, a resume "
+                "continues; to continue on another branch, the contribution is parked first and "
+                "then restarted on that branch.")
+_EXHAUST_SOURCE_READS = Transition(
+    _O, None, (BASE_BRANCH_UNREADABLE, NOT_PAUSED, QUIESCENT),
+    _E(sets=(f"pending_human_action={BASE_BRANCH_UNAVAILABLE}",
+             f"{PENDING_COUNTER}=source_reads")),
+    description="The entry says how many reads failed, since when, and the last error. "
+                + _UNAVAILABLE_NOTE + " Once the branch can be read again, a resume continues.")
+_REQUIRE_UPSTREAM_ACCESS = Transition(
+    _O, None, (UPSTREAM_GONE, NOT_PAUSED, QUIESCENT),
+    _E(sets=(f"pending_human_action={UPSTREAM_UNAVAILABLE}",
+             f"{PENDING_COUNTER}=source_reads")),
+    description="The entry names the repository, and the name GitHub now gives it when it was "
+                "renamed or transferred. " + _UNAVAILABLE_NOTE + " Once the repository can be "
+                "read again (access restored), a resume continues; a repository that moved "
+                "is a new request: the contribution is parked, then abandoned.")
 for _state, _wait in BASE_BRANCH_WAITS.items():
     LIFECYCLE[_state].transitions[("require_base_branch", _wait)] = _REQUIRE_BASE_BRANCH
+    LIFECYCLE[_state].transitions[("exhaust_source_reads", _wait)] = _EXHAUST_SOURCE_READS
+    LIFECYCLE[_state].transitions[("require_upstream_access", _wait)] = _REQUIRE_UPSTREAM_ACCESS
 
+# A renamed base branch of an open upstream PR: the record follows the
+# rename, in the states of upstream review that read the base branch, and
+# ends the wait the rename caused.
+_FOLLOW_RENAMED_BASE = Transition(
+    _O, None, (BASE_RENAMED_IN_PR, QUIESCENT),
+    _E(sets=("upstream.base_ref", "upstream_pr.base_ref")),
+    description="`upstream.base_ref` and the recorded base of the upstream PR become the new "
+                "name; `upstream.base_sha` is kept, since the renamed branch still contains it. "
+                "An entry on the tracking issue states the rename.")
+for _state in ("upstream_review.waiting_ci", "upstream_review.fix_needed"):
+    LIFECYCLE[_state].transitions[("follow_renamed_base", SELF)] = _FOLLOW_RENAMED_BASE
+LIFECYCLE["upstream_review.waiting_human"].transitions[
+    ("resume_renamed_base", "upstream_review.fix_needed")] = Transition(
+    _O, None, (pending_is(BASE_BRANCH_UNAVAILABLE), BASE_RENAMED_IN_PR, NOT_PAUSED, QUIESCENT),
+    _E(revision="bump", sets=("upstream.base_ref", "upstream_pr.base_ref"),
+       clears=("pending_human_action",), restarts=("source_reads",)),
+    description="The wait a renamed base branch caused ends without a human: the record follows "
+                "the rename as `follow_renamed_base` does, and the revision Work that was due "
+                "is due again. An entry on the tracking issue states the rename.")
 
 expand_rules()
 
@@ -1782,11 +1833,13 @@ BUDGETS: dict[str, Budget] = {
         "`pending_publication.attempts`", ("exhaust_publish_recovery",), infrastructure=True),
     "source_reads": Budget(
         "retries.source_unavailable_ticks", 0,
-        "one controller tick in which the upstream base branch could not be read and the "
-        "upstream did not answer that it is missing",
-        "`budget.source_unavailable`, the consecutive ticks: a tick that reads the upstream "
-        "starts it again",
-        ("require_base_branch",)),
+        "one controller tick in which the upstream repository or base branch could not be read "
+        "and the upstream did not say that the branch is missing",
+        "`budget.source_unavailable`, the consecutive failed reads, since "
+        "`budget.source_unavailable_since`: a tick that reads the upstream starts it again. It "
+        "is exhausted only once both the count is reached and "
+        "`retries.source_unavailable_minutes` minutes have passed since the first failed read",
+        ("exhaust_source_reads", "require_upstream_access")),
     "operation_launch": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one launch of a planned fork provisioning operation", "the operation's launch attempts",
@@ -2353,28 +2406,64 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "handoff.waiting_human", "upstream_review.fix_needed",
                  "upstream_review.waiting_human"),
                 (("queued.idle", "require_base_branch"),
+                 ("queued.idle", "exhaust_source_reads"),
                  ("planning.idle", "require_base_branch"),
+                 ("planning.idle", "exhaust_source_reads"),
                  ("planning.waiting_human", "resume_planning"),
                  ("provisioning.idle", "require_base_branch"),
+                 ("provisioning.idle", "exhaust_source_reads"),
                  ("provisioning.waiting_human", "resume_provisioning"),
                  ("development.fix_needed", "require_base_branch"),
+                 ("development.fix_needed", "exhaust_source_reads"),
                  ("development.waiting_human", "resume_development"),
                  ("handoff.review_due", "require_base_branch"),
+                 ("handoff.review_due", "exhaust_source_reads"),
                  ("handoff.review_pending", "require_base_branch"),
+                 ("handoff.review_pending", "exhaust_source_reads"),
                  ("handoff.waiting_human", "resume_submission_review"),
                  ("upstream_review.fix_needed", "require_base_branch"),
+                 ("upstream_review.fix_needed", "exhaust_source_reads"),
                  ("upstream_review.waiting_human", "resume_upstream_revision")),
                 text="Where Work or the fork provisioning is due, the collector reads the "
                      "upstream base branch. When GitHub answers that it does not exist, or "
                      "redirects it to the branch it was renamed to, the contribution waits for a "
                      "human in its phase at once; a read that fails otherwise (network, server "
-                     "error, rate limit) is retried every tick within `source_reads`, and its "
-                     "exhaustion leads to the same wait. While it waits the upstream is not read, "
-                     "until an authorized resume is posted. A resume once the branch exists "
-                     "again continues; to target another branch, the contribution is parked and "
-                     "restarted with `/upstreaming refresh branch=NAME`."),
+                     "error, rate limit) is retried within `source_reads`, which is exhausted "
+                     "only once both its count of consecutive failed reads and its minimum time "
+                     "have passed, and its exhaustion leads to the same wait. While it waits the "
+                     "upstream is not read, until an authorized resume is posted. A resume once "
+                     "the branch exists again continues; to target another branch, the "
+                     "contribution is parked first and then restarted with "
+                     "`/upstreaming refresh branch=NAME`. In upstream review, a branch renamed "
+                     "while the upstream PR is open is followed without a human (failure case 6 "
+                     "of upstream review)."),
             Diagram(
-                "Failure case 3: park, then restart as a clean generation or abandon",
+                "Failure case 3: the upstream repository cannot be read",
+                ("queued.idle", "planning.idle", "planning.waiting_human", "provisioning.idle",
+                 "provisioning.waiting_human", "development.fix_needed",
+                 "development.waiting_human", "handoff.review_due", "handoff.review_pending",
+                 "handoff.waiting_human", "upstream_review.fix_needed",
+                 "upstream_review.waiting_human"),
+                (("queued.idle", "require_upstream_access"),
+                 ("planning.idle", "require_upstream_access"),
+                 ("planning.waiting_human", "resume_planning"),
+                 ("provisioning.idle", "require_upstream_access"),
+                 ("provisioning.waiting_human", "resume_provisioning"),
+                 ("development.fix_needed", "require_upstream_access"),
+                 ("development.waiting_human", "resume_development"),
+                 ("handoff.review_due", "require_upstream_access"),
+                 ("handoff.review_pending", "require_upstream_access"),
+                 ("handoff.waiting_human", "resume_submission_review"),
+                 ("upstream_review.fix_needed", "require_upstream_access"),
+                 ("upstream_review.waiting_human", "resume_upstream_revision")),
+                text="When reading the upstream repository itself keeps failing (it was "
+                     "renamed or transferred, or the token lost access), the exhaustion of "
+                     "`source_reads` leads to the same waits with the pending action "
+                     "`upstream_unavailable`. A resume once the repository can be read again "
+                     "continues; a repository that moved is parked and abandoned, and a new "
+                     "request names its new name."),
+            Diagram(
+                "Failure case 4: park, then restart as a clean generation or abandon",
                 ("development.fix_needed", "parked.idle", "queued.idle", "closed.idle"),
                 (("development.fix_needed", "park_contribution"),
                  ("parked.idle", "record_late_effect"),
@@ -2589,7 +2678,20 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`resume_upstream_revision` applies only when revision Work failed. Human "
                      "triage either resumes or parks."),
             Diagram(
-                "Failure case 6: release is missing, incomplete, or waiting for operator action",
+                "Failure case 6: the base branch is renamed while the upstream PR is open",
+                ("upstream_review.waiting_ci", "upstream_review.fix_needed",
+                 "upstream_review.waiting_human"),
+                (("upstream_review.waiting_ci", "follow_renamed_base"),
+                 ("upstream_review.fix_needed", "follow_renamed_base"),
+                 ("upstream_review.waiting_human", "resume_renamed_base")),
+                start="upstream_review.waiting_ci",
+                text="GitHub retargets an open PR when its base branch is renamed. Once the "
+                     "verified upstream PR targets the new name and that branch still contains "
+                     "the recorded base commit, the record follows the rename and the tracking "
+                     "issue states it. A contribution that already waits because of the rename "
+                     "leaves the wait the same way, without a resume."),
+            Diagram(
+                "Failure case 7: release is missing, incomplete, or waiting for operator action",
                 ("release_wait.idle", "release_wait.waiting_human", "released.idle"),
                 (("release_wait.idle", "record_release_incomplete"),
                  ("release_wait.idle", "require_release_intervention"),
@@ -2622,8 +2724,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 "Rule: the upstream base branch cannot be read", (), (),
                 rule="record_source_unavailable",
                 text="A read that fails without a definitive answer charges `source_reads` and "
-                     "keeps the state; its exhaustion takes `require_base_branch`, drawn with "
-                     "the human waits."),
+                     "keeps the state; its exhaustion takes `exhaust_source_reads`, or "
+                     "`require_upstream_access` when the repository itself could not be read, "
+                     "drawn with the human waits."),
         ),
     ),
 )
@@ -2701,7 +2804,7 @@ def _reachable(start: str, step) -> set[str]:
 # Tick transitions that end a human wait the way its resume does, once the
 # controller has observed that the cause is gone. The checks hold them to the
 # rules of a resume.
-AUTOMATIC_RESUMES = frozenset({"rearm_dispatch"})
+AUTOMATIC_RESUMES = frozenset({"rearm_dispatch", "resume_renamed_base"})
 
 
 def resumes_wait(edge: Edge) -> bool:
@@ -3541,6 +3644,11 @@ def _check_budgets(policy: dict, problems: list[str]) -> None:
                                 "lead to its human wait")
             if name in x.transition.charges:
                 problems.append(f"{where}: exhaustion charges {name!r}")
+    try:
+        if int(policy_value(policy, SOURCE_READS_MINUTES_KEY)) <= 0:
+            problems.append(f"budget source_reads: {SOURCE_READS_MINUTES_KEY} is not positive")
+    except (KeyError, TypeError, ValueError):
+        problems.append(f"budget source_reads: policy.json has no integer {SOURCE_READS_MINUTES_KEY}")
     shared = sorted(n for n, b in BUDGETS.items() if b.policy_key == INFRASTRUCTURE_KEY)
     if len(shared) < 2:
         problems.append(f"budgets: {INFRASTRUCTURE_KEY} is shared by {shared}")

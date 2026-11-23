@@ -915,6 +915,10 @@
           "type": "integer",
           "minimum": 0
         },
+        "source_unavailable_since": {
+          "type": "string",
+          "format": "date-time"
+        },
         "spent_estimate_usd_cents": {
           "type": "integer",
           "minimum": 0

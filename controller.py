@@ -178,9 +178,11 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
         source_blocked[cid] = snapshot
         rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
         return
-    if (c.get("budget") or {}).get("source_unavailable"):
+    budget = c.get("budget") or {}
+    if budget.get("source_unavailable") or "source_unavailable_since" in budget:
+        restarted = {k: v for k, v in budget.items() if k != "source_unavailable_since"}
         c = engine.record_beside(c, "upstream_read", now=now,
-                                 budget=dict(c["budget"], source_unavailable=0))
+                                 budget=dict(restarted, source_unavailable=0))
         by_id[cid] = c
         res.stage("contributions", c)
     current = c["upstream"].get("repository_id")
@@ -219,31 +221,89 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
         res.stage("contributions", changed)
 
 
+# The states in which the record follows a base branch the upstream renamed
+# while the upstream PR is open, each with the row it takes.
+RENAMED_BASE_ROWS = {"upstream_review.waiting_ci": "follow_renamed_base",
+                     "upstream_review.fix_needed": "follow_renamed_base",
+                     "upstream_review.waiting_human": "resume_renamed_base"}
+
+
+def _follow_renamed_base(c: dict, snapshot: dict, by_id: dict[str, dict], operations: dict,
+                         res: TickResult, policy: dict, now: str) -> bool:
+    """Follow a base branch the upstream renamed while the upstream PR is
+    open: the collector verified that the PR the record names is open, that
+    it targets the new name, and that the new name contains the recorded base
+    commit (``snapshot["pr_base"]``). ``True`` once a row was taken."""
+    verb = RENAMED_BASE_ROWS.get(engine.state_key(c))
+    pr_base = snapshot.get("pr_base") or {}
+    upstream, pr = c["upstream"], c.get("upstream_pr") or {}
+    if verb is None or not pr_base or snapshot.get("base_ref") != upstream.get("base_ref") \
+            or pr_base.get("pr_id") != pr.get("id") \
+            or pr_base.get("base_sha") != upstream.get("base_sha") \
+            or pr_base.get("base_ref") != snapshot.get("renamed_to"):
+        return False
+    details = {"base_ref": upstream["base_ref"], "renamed_to": pr_base["base_ref"],
+               "pr_number": pr.get("number"), "base_sha": upstream["base_sha"]}
+    out = engine.apply_transition(
+        c, verb, policy=policy, now=now, facts={"base_renamed_in_pr"},
+        open_operations=_open_operations(c, operations),
+        values={"upstream.base_ref": pr_base["base_ref"],
+                "upstream_pr.base_ref": pr_base["base_ref"]},
+        cause_id=f"base-renamed-{pr_base['base_ref'][:100]}", details=details)
+    if not out.accepted:
+        return False
+    by_id[c["contribution_id"]] = out.record
+    res.stage("contributions", out.record)
+    res.stage("events", out.event)
+    res.report.setdefault("base_branch_renamed", []).append(
+        {"contribution": c["contribution_id"], **details})
+    return True
+
+
 def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operations: dict,
                         res: TickResult, policy: dict, now: str) -> None:
-    """Take the row for an upstream base branch that could not be read in
-    this tick, in a state of ``lifecycle.BASE_BRANCH_WAITS``. A request in
-    `queued.idle` takes `require_base_branch` from there; only a paused or
-    non-quiescent contribution, or one in another state, stays deferred."""
+    """Take the row for an upstream repository or base branch that could not
+    be read in this tick, in a state of ``lifecycle.BASE_BRANCH_WAITS``. A
+    request in `queued.idle` takes it from there; only a paused or
+    non-quiescent contribution, or one in another state, stays deferred.
+
+    A snapshot read at another branch than the record names says nothing
+    about the record's branch: the collector reads one branch per upstream,
+    and that snapshot never leads this record to a wait or a charge."""
     cid = c["contribution_id"]
     if engine.state_key(c) not in lifecycle.BASE_BRANCH_WAITS:
         return
+    if "ref" in snapshot and snapshot["ref"] != c["upstream"].get("base_ref"):
+        res.report["deferred"].append({"contribution": cid,
+                                       "why": "upstream snapshot is not of the recorded base branch"})
+        return
     ops = _open_operations(c, operations)
+    base_ref = snapshot.get("base_ref") or c["upstream"].get("base_ref")
+    details: dict[str, Any] = {"base_ref": base_ref, "why": snapshot["error"]}
     if snapshot.get("missing"):
         verb, facts = "require_base_branch", {"base_branch_missing"}
-        details = {"base_ref": snapshot.get("base_ref"), "why": snapshot["error"]}
         if snapshot.get("renamed_to"):
             details["renamed_to"] = snapshot["renamed_to"]
-        values = {lifecycle.PENDING_COUNTER: None}
+        values: dict[str, Any] = {}
     else:
-        facts = {"base_branch_unread"}
-        count = int((c.get("budget") or {}).get("source_unavailable", 0))
+        repository = snapshot.get("scope") == "repository"
+        facts = {"base_branch_unread"} | ({"upstream_repository_unread"} if repository else set())
+        budget = c.get("budget") or {}
+        count = int(budget.get("source_unavailable", 0))
         limit = lifecycle.budget_limit("source_reads", policy)
-        spent = count >= limit
-        verb = "require_base_branch" if spent else "record_source_unavailable"
-        details = {"base_ref": c["upstream"].get("base_ref"), "why": snapshot["error"],
-                   "count": count if spent else count + 1, "limit": limit}
-        values = {lifecycle.PENDING_COUNTER: "source_reads"} if spent else {}
+        spent = engine.source_reads_spent(c, policy, now)
+        verb = ("require_upstream_access" if repository else "exhaust_source_reads") if spent \
+            else "record_source_unavailable"
+        # The failed reads in a row, this one included.
+        details.update({"count": count + 1, "limit": limit,
+                        "since": budget.get("source_unavailable_since") or now,
+                        "minutes": int(lifecycle.policy_value(
+                            policy, lifecycle.SOURCE_READS_MINUTES_KEY))})
+        if repository:
+            details["repository"] = c["upstream"]["full_name"]
+            if snapshot.get("renamed_repository"):
+                details["renamed_repository"] = snapshot["renamed_repository"]
+        values = {}
     out = engine.apply_transition(c, verb, policy=policy, now=now, facts=facts, values=values,
                                   open_operations=ops, cause_id=f"source-r{c['revision']}",
                                   details=details)
@@ -252,9 +312,10 @@ def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operati
     by_id[cid] = out.record
     res.stage("contributions", out.record)
     res.stage("events", out.event)
-    if verb == "require_base_branch":
+    if verb != "record_source_unavailable":
         res.report.setdefault("base_branch_unavailable", []).append(
-            {"contribution": cid, **{k: v for k, v in details.items() if k != "why"}})
+            {"contribution": cid, "verb": verb,
+             **{k: v for k, v in details.items() if k != "why"}})
 
 
 def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consumed: dict[int, dict],
@@ -422,15 +483,20 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         with isolation.contribution(cid, "source_identity"):
             _bind_source(c, inputs, by_id, res, source_blocked, policy, now)
 
-    # An upstream base branch that could not be read, where Work or the fork
-    # provisioning is due: `require_base_branch` once the upstream answered
-    # that it is missing or `source_reads` is exhausted, the charge of
+    # An upstream base branch that could not be read. In upstream review, a
+    # branch renamed while the upstream PR is open is followed
+    # (`follow_renamed_base`, `resume_renamed_base`). Where Work or the fork
+    # provisioning is due otherwise: `require_base_branch` once the upstream
+    # answered that it is missing, `exhaust_source_reads` (or
+    # `require_upstream_access` when the repository itself could not be
+    # read) once `source_reads` is exhausted, the charge of
     # `record_source_unavailable` otherwise.
     for cid, snapshot in list(source_blocked.items()):
         if cid in skip or snapshot is None:
             continue
         with isolation.contribution(cid, "source_unavailable"):
-            _source_unavailable(by_id[cid], snapshot, by_id, operations, res, policy, now)
+            if not _follow_renamed_base(by_id[cid], snapshot, by_id, operations, res, policy, now):
+                _source_unavailable(by_id[cid], snapshot, by_id, operations, res, policy, now)
 
     # 2b. Reminders of a pending human step: the table's `record_reminder`, in
     # every state of kind gate, human_wait, or locked, once
@@ -1308,7 +1374,8 @@ def _unread_field(cmd: Command, verb: str, state: str) -> str | None:
 PROVISIONING_WAITS = frozenset({(LAUNCH_EXHAUSTED, "operation_launch"),
                                 (PROVISIONING_FAILED, None),
                                 (lifecycle.BASE_BRANCH_UNAVAILABLE, "source_reads"),
-                                (lifecycle.BASE_BRANCH_UNAVAILABLE, None)})
+                                (lifecycle.BASE_BRANCH_UNAVAILABLE, None),
+                                (lifecycle.UPSTREAM_UNAVAILABLE, "source_reads")})
 
 
 def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> frozenset[str]:

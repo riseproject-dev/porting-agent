@@ -207,11 +207,8 @@ def _observed(event: dict) -> str:
     if kind in SUBMISSION_REQUESTS and _submission_request(event):
         bound = details.get("bound_to") or details
         parts.append(f"Candidate head: {_head(bound.get('head'))}.")
-    if kind == "require_base_branch" and details.get("base_ref"):
-        renamed = details.get("renamed_to")
-        parts.append(f"Upstream base branch: `{_quotable(details['base_ref'], 255)}`"
-                     + (f", renamed upstream to `{_quotable(renamed, 255)}`" if renamed else "")
-                     + ".")
+    if kind in UNAVAILABLE_KINDS or kind in RENAMED_BASE_KINDS:
+        parts.append(_unavailable_cause(kind, details))
     for key in ("mismatch", "incomplete", "why"):
         if details.get(key):
             parts.append(f"Observed: `{_quotable(details[key], 600)}`.")
@@ -231,6 +228,76 @@ def _observed(event: dict) -> str:
     if details.get("admission_override_not_applied"):
         parts.append("The recorded admission override was not applied.")
     return "".join(" " + p for p in parts)
+
+
+# The rows of an upstream that could not be read, and of a base branch the
+# record followed after the upstream renamed it while the upstream PR is open.
+UNAVAILABLE_KINDS = frozenset({"require_base_branch", "exhaust_source_reads",
+                               "require_upstream_access"})
+RENAMED_BASE_KINDS = frozenset({"follow_renamed_base", "resume_renamed_base"})
+
+
+def _branch(details: dict) -> str:
+    base = details.get("base_ref")
+    return f"`{_quotable(base, 255)}`" if base else "the default branch"
+
+
+def _unavailable_cause(kind: str, details: dict) -> str:
+    """Which cause applied, in plain words: the branch does not exist, was
+    renamed, or could not be read; the repository could not be read or moved;
+    or the record followed a renamed branch."""
+    if kind in RENAMED_BASE_KINDS:
+        number = _quotable(details.get("pr_number"), 12)
+        return (f"The upstream renamed the base branch {_branch(details)} to "
+                f"`{_quotable(details.get('renamed_to'), 255)}`, and the upstream pull request "
+                f"#{number} now targets it; the contribution now follows "
+                f"`{_quotable(details.get('renamed_to'), 255)}`. The base commit "
+                f"{_head(details.get('base_sha'))} is unchanged.")
+    failed = ""
+    if isinstance(details.get("count"), int):
+        since = _quotable(details.get("since") or "", 40)
+        failed = (f" {details['count']} consecutive reads failed"
+                  + (f" since {since}" if since else "") + ".")
+    if kind == "require_upstream_access":
+        repository = f"`{_quotable(details.get('repository'), 200)}`"
+        if details.get("renamed_repository"):
+            return (f"Cause: GitHub now names the upstream repository {repository} "
+                    f"`{_quotable(details['renamed_repository'], 200)}`: it was renamed or "
+                    "transferred." + failed)
+        return (f"Cause: the upstream repository {repository} could not be read (it may have "
+                "been deleted, made private, or the token lost access)." + failed)
+    if details.get("renamed_to"):
+        return (f"Cause: the upstream renamed the base branch {_branch(details)} to "
+                f"`{_quotable(details['renamed_to'], 255)}`.")
+    if isinstance(details.get("count"), int):
+        return f"Cause: the upstream base branch {_branch(details)} could not be read." + failed
+    return f"Cause: the upstream says the base branch {_branch(details)} does not exist."
+
+
+def _unavailable_guidance(record: dict, event: dict) -> str:
+    """What a human can do while the upstream is unavailable. A restart on
+    another branch is a refresh from `parked.idle`: it is named only after a
+    park, and never while the upstream PR is open, which refuses it."""
+    pending = (record.get("pending_human_action") or {}).get("kind")
+    if engine.state_key(record) not in engine.HUMAN_WAITS or record.get("paused"):
+        return ""
+    revision = record["revision"]
+    if pending == lifecycle.UPSTREAM_UNAVAILABLE:
+        return (" Once the repository can be read again, resume. A repository that was renamed "
+                "or transferred is a new request: park, then abandon, and file a request for its "
+                "new name.")
+    if pending != lifecycle.BASE_BRANCH_UNAVAILABLE:
+        return ""
+    text = " Once the branch can be read again, resume."
+    if record["phase"] == "upstream_review" or record.get("upstream_pr"):
+        return text + (" The upstream pull request is open, so a restart on another branch is "
+                       "refused; a rename the pull request follows is applied without a "
+                       "command.")
+    renamed = ((event.get("details") or {}).get("renamed_to"))
+    branch = renamed if isinstance(renamed, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", renamed) else "NAME"
+    return (" To continue on another branch, park first; then, from `parked.idle`, post "
+            f'`/upstreaming refresh revision={revision} branch={branch} reason="..."`.')
 
 
 def _close_finding(name, entry: dict) -> str:
@@ -345,26 +412,9 @@ def _table_command_lines(record: dict) -> list[str]:
     return lines
 
 
-# The restart on another upstream target branch, offered while the
-# contribution waits because its base branch is unavailable: after a park
-# (which keeps the revision), a refresh from `parked.idle` with `branch`.
-REFRESH_BRANCH = '/upstreaming refresh revision={revision} branch={branch} reason="..."'
-
-
-def _command_lines(record: dict, event: dict | None = None) -> list[str]:
-    """The commands an authorized human may post next, from the table. While
-    the base branch is unavailable, the refresh that restarts on another
-    branch once the contribution is parked follows them, naming the branch
-    the upstream renamed it to when the event observed one."""
-    lines = _table_command_lines(record)
-    pending = (record.get("pending_human_action") or {}).get("kind")
-    if pending == lifecycle.BASE_BRANCH_UNAVAILABLE \
-            and engine.state_key(record) in engine.HUMAN_WAITS and not record.get("paused"):
-        renamed = ((event or {}).get("details") or {}).get("renamed_to")
-        branch = renamed if isinstance(renamed, str) and re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", renamed) else "NAME"
-        lines.append(REFRESH_BRANCH.format(revision=record["revision"], branch=branch))
-    return lines
+def _command_lines(record: dict) -> list[str]:
+    """The commands an authorized human may post next, from the table."""
+    return _table_command_lines(record)
 
 
 def render(event: dict, record: dict, run_url: str) -> str:
@@ -382,14 +432,16 @@ def render(event: dict, record: dict, run_url: str) -> str:
     message += _observed(event)
     if kind == "pause_on_processing_error":
         message += _processing_error(event)
-    message += _budget_note(event)
+    if lifecycle.current_name(kind) not in UNAVAILABLE_KINDS:
+        message += _budget_note(event)
+    message += _unavailable_guidance(record, event)
     request = _submission_request(event)
     if request:
         message += " An authorized human requests upstream submission with the command below."
     visible = f"**Upstreaming r{revision} · {phase}/{activity}** -- {message} [Workflow run]({run_url})"
     if request:
         visible += f"\n\n```text\n{request}\n```"
-    lines = _command_lines(record, event)
+    lines = _command_lines(record)
     details = ""
     if lines:
         details = "\n\n<details>\n<summary>Possible next commands</summary>\n\n```text\n" + "\n".join(lines) + "\n```\n"
@@ -417,10 +469,15 @@ def render(event: dict, record: dict, run_url: str) -> str:
 # - a reminder of a pending human step: a rule that applies in exactly the
 #   states of those kinds and keeps the state (`record_reminder`).
 #
+# - a status entry for a change the pipeline made without a human that the
+#   human must know about (`NOTICE_VERBS`): the record followed a base
+#   branch the upstream renamed while the upstream PR is open.
+#
 # Replies to commands are posted by `command_feedback` and `command_reactions`.
 
 HUMAN_KINDS = frozenset(lifecycle.REMINDER_KINDS)
 END_KINDS = frozenset({"generation_end", "terminal"})
+NOTICE_VERBS = RENAMED_BASE_KINDS
 REMINDER_VERBS = frozenset(
     verb for verb, rule in lifecycle.RULES.items()
     if rule.target == lifecycle.SELF and frozenset(rule.kinds) == HUMAN_KINDS)
@@ -468,6 +525,8 @@ def event_states(events: list[dict]) -> list[tuple[str | None, str | None]]:
 
 def notifies(event: dict, source: str | None, target: str | None) -> bool:
     """Whether ``event`` is posted on the tracking issue (see above)."""
+    if lifecycle.current_name(event["kind"]) in NOTICE_VERBS:
+        return True
     if lifecycle.current_name(event["kind"]) in REMINDER_VERBS \
             or lifecycle.current_name((event.get("details") or {}).get("verb")) in REMINDER_VERBS:
         return True

@@ -1186,36 +1186,59 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
 class TestBaseBranchUnavailable(unittest.TestCase):
     """An upstream base branch that cannot be read where Work is due: a
     definitive answer (missing, renamed) leads to the human wait of the
-    phase at once, any other failure only after `source_reads` consecutive
-    ticks; the collector stops reading while the contribution waits, and a
-    resume or a restart on another branch continues."""
+    phase at once, any other failure only once `source_reads` is exhausted
+    (a count of consecutive failed reads and a minimum time); the collector
+    stops reading while the contribution waits, and a resume or a restart on
+    another branch continues. A branch renamed while the upstream PR is open
+    is followed without a human."""
 
     SNAPSHOT = {"repository_id": 1, "base_ref": "main", "base_sha": SHA_B}
-    MISSING = {"error": "upstream base branch 'main' does not exist", "base_ref": "main",
-               "missing": True}
-    RENAMED = {"error": "upstream base branch 'master' was renamed", "base_ref": "master",
-               "missing": True, "renamed_to": "main"}
-    TRANSIENT = {"error": "GET https://api.github.com/repos/example/proj: HTTP 503"}
+    MISSING = {"error": "upstream base branch 'main' does not exist", "ref": "main",
+               "base_ref": "main", "missing": True}
+    RENAMED = {"error": "upstream base branch 'master' was renamed", "ref": "master",
+               "base_ref": "master", "missing": True, "renamed_to": "main"}
+    TRANSIENT = {"error": "GET /repos/example/proj/branches/main: HTTP 503", "ref": "main",
+                 "scope": "branch"}
+    REPOSITORY = {"error": "GET /repos/example/proj: HTTP 404", "ref": "main",
+                  "scope": "repository"}
+    PR = {"id": 77, "number": 5, "url": "https://github.com/example/proj/pull/5",
+          "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
+          "base_ref": "master", "registered_by": OWNER}
 
     class Api:
         """The upstream as GitHub answers it: ``branches`` maps a branch
         to the name its response carries (another name for a rename);
-        a branch it lacks is HTTP 404; ``fail`` answers every read with it."""
+        a branch it lacks is HTTP 404; ``fail`` answers every read with it,
+        ``repo_fail`` the read of the repository; ``pr`` is the upstream PR
+        (``None``: its read fails); ``compare`` the status of a comparison."""
 
-        def __init__(self, branches=(("main", "main"),), fail=None):
-            self.branches, self.fail, self.paths = dict(branches), fail, []
+        def __init__(self, branches=(("main", "main"),), fail=None, repo_fail=None,
+                     full_name="example/proj", pr=None, compare="ahead"):
+            self.branches, self.fail, self.repo_fail = dict(branches), fail, repo_fail
+            self.full_name, self.pr, self.compare, self.paths = full_name, pr, compare, []
+            self.base = "https://api.github.test"
 
         def get(self, path):
             self.paths.append(path)
             if self.fail:
                 raise collect.CollectError(f"GET {path}: {self.fail}")
             if path == "/repos/example/proj":
-                return {"id": 1, "full_name": "example/proj", "default_branch": "main"}
+                if self.repo_fail:
+                    raise collect.CollectError(f"GET {path}: {self.repo_fail}")
+                return {"id": 1, "full_name": self.full_name, "default_branch": "main"}
+            if "/pulls/" in path:
+                if self.pr is None:
+                    raise collect.CollectError(f"GET {path}: HTTP 502")
+                return self.pr
             name = self.branches.get(path.rsplit("/", 1)[1])
             if name is None:
                 raise collect.CollectError(f"GET {path}: HTTP 404")
             return {"name": name, "commit": {"sha": SHA_B, "commit": {"tree": {"sha": SHA_A}},
                                              "parents": []}}
+
+        def _request(self, url):
+            self.paths.append(url)
+            return {"status": self.compare}, {}
 
     def queued(self, **over):
         rec = contribution(phase="queued", activity="idle", fork=None,
@@ -1224,11 +1247,36 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         rec.update(over)
         return rec
 
-    def tick(self, rec, snapshot, comments=(), consumed=None):
+    def reviewing(self, activity="fix_needed", **over):
+        """A record in upstream review on `master`, its PR open."""
+        rec = contribution(phase="upstream_review", activity=activity,
+                           upstream={"repository_id": 1, "full_name": "example/proj",
+                                     "base_ref": "master", "base_sha": SHA_A},
+                           upstream_pr=dict(self.PR))
+        rec.update(over)
+        return rec
+
+    def waiting(self, state, kind="base_branch_unavailable", counter=None, **over):
+        phase, activity = state.split(".")
+        rec = contribution(phase=phase, activity=activity, pending_human_action={
+            "kind": kind, "requested_at": NOW, "reminded_at": None, "escalated_at": None,
+            "counter": counter})
+        rec.update(over)
+        return rec
+
+    def pull(self, **over):
+        """The upstream PR as GitHub reports it after the rename."""
+        pr = {"id": 77, "number": 5, "state": "open", "merged": False,
+              "base": {"ref": "main", "repo": {"id": 1}},
+              "head": {"ref": "riscv64", "sha": SHA_A, "repo": {"id": 2}}}
+        pr.update(over)
+        return pr
+
+    def tick(self, rec, snapshot, comments=(), consumed=None, now=T):
         return controller.tick(
             contributions={rec["contribution_id"]: rec}, operations={},
             consumed={} if consumed is None else consumed, projects={}, policy=policy(),
-            inputs=controller.Inputs(now=T, comments=list(comments),
+            inputs=controller.Inputs(now=now, comments=list(comments),
                                      upstream_snapshots={"example/proj": snapshot}
                                      if snapshot is not None else {}))
 
@@ -1239,6 +1287,11 @@ class TestBaseBranchUnavailable(unittest.TestCase):
     def events(self, res):
         return [e for k, e in res.staged if k == "events"]
 
+    def render(self, event, record):
+        import status_ledger
+        return status_ledger.render(dict(event, sequence=1), record,
+                                    "https://github.com/r/actions/runs/1")
+
     # The collector
 
     def test_the_collector_tells_a_definitive_answer_from_a_failed_read(self):
@@ -1246,10 +1299,11 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         cases = (
             ("missing", self.Api(branches=()), dict(self.MISSING)),
             ("renamed", self.Api(branches={"main": "trunk"}),
-             {"error": "upstream base branch 'main' was renamed", "base_ref": "main",
-              "missing": True, "renamed_to": "trunk"}),
-            ("unavailable", self.Api(fail="HTTP 503"),
-             {"error": "GET /repos/example/proj: HTTP 503"}),
+             {"error": "upstream base branch 'main' was renamed", "ref": "main",
+              "base_ref": "main", "missing": True, "renamed_to": "trunk"}),
+            ("repository unavailable", self.Api(fail="HTTP 503"),
+             {"error": "GET /repos/example/proj: HTTP 503", "ref": "main",
+              "scope": "repository"}),
             ("read", self.Api(), dict(self.SNAPSHOT)),
         )
         for name, api, expected in cases:
@@ -1257,20 +1311,64 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                 self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy()),
                                  {"example/proj": expected})
 
+    def test_a_failed_branch_read_is_not_a_definitive_answer(self):
+        rec = contribution(phase="development", activity="fix_needed")
+
+        class Flaky(self.Api):
+            def get(self, path):
+                if "/branches/" in path:
+                    raise collect.CollectError(f"GET {path}: HTTP 503")
+                return super().get(path)
+
+        self.assertEqual(collect.upstream_snapshots(Flaky(), [rec], [], policy()),
+                         {"example/proj": dict(self.TRANSIENT)})
+
+    def test_a_repository_that_is_gone_or_forbidden_stays_a_failed_read(self):
+        # HTTP 404 and 403 for the repository say nothing definitive about the
+        # branch: the token may have lost access. The read is charged, and
+        # the contribution waits only once `source_reads` is exhausted.
+        for status in ("HTTP 404", "HTTP 403"):
+            with self.subTest(status):
+                got = collect.upstream_snapshots(self.Api(repo_fail=status),
+                                                 [self.queued()], [], policy())
+                self.assertEqual(got, {"example/proj": {
+                    "error": f"GET /repos/example/proj: {status}", "ref": "main",
+                    "scope": "repository"}})
+                res = self.tick(self.queued(), got["example/proj"])
+                final = self.final(res, self.queued())
+                self.assertEqual(engine.state_key(final), "queued.idle")
+                self.assertEqual([e["kind"] for e in self.events(res)],
+                                 ["record_source_unavailable"])
+        moved = collect.upstream_snapshots(self.Api(full_name="other/proj"),
+                                           [self.queued()], [], policy())
+        self.assertEqual(moved["example/proj"]["scope"], "repository")
+        self.assertEqual(moved["example/proj"]["renamed_repository"], "other/proj")
+
     def test_the_collector_does_not_read_while_the_contribution_waits(self):
-        rec = contribution(phase="development", activity="waiting_human", pending_human_action={
-            "kind": "base_branch_unavailable", "requested_at": NOW, "reminded_at": None,
-            "escalated_at": None, "counter": None})
         resume = {"issue_number": 12, "comment": comment(
             "/upstreaming resume revision=0 reason=restored", cid=61)}
-        cases = (("no command", [], (), False), ("resume", [resume], (), True),
-                 ("consumed", [resume], (61,), False))
-        for name, comments, consumed, read in cases:
-            with self.subTest(name):
-                api = self.Api()
-                got = collect.upstream_snapshots(api, [rec], [], policy(), comments, consumed)
-                self.assertEqual(bool(api.paths), read)
-                self.assertEqual(got, {"example/proj": dict(self.SNAPSHOT)} if read else {})
+        for kind in ("base_branch_unavailable", "upstream_unavailable"):
+            rec = self.waiting("development.waiting_human", kind)
+            cases = (("no command", [], (), False), ("resume", [resume], (), True),
+                     ("consumed", [resume], (61,), False))
+            for name, comments, consumed, read in cases:
+                with self.subTest(kind=kind, case=name):
+                    api = self.Api()
+                    got = collect.upstream_snapshots(api, [rec], [], policy(), comments, consumed)
+                    self.assertEqual(bool(api.paths), read)
+                    self.assertEqual(got, {"example/proj": dict(self.SNAPSHOT)} if read else {})
+
+    def test_a_duplicate_intake_request_does_not_read_a_waiting_upstream(self):
+        rec = self.waiting("planning.waiting_human")
+        body = "### Upstream repository\n\nhttps://github.com/example/proj\n\n### Packages\n\n_No response_\n"
+        duplicate = {"id": 900, "number": 90, "body": body, "user": dict(STRANGER),
+                     "labels": [{"name": "upstreaming-request"}]}
+        api = self.Api()
+        self.assertEqual(collect.upstream_snapshots(api, [rec], [duplicate], policy()), {})
+        self.assertEqual(api.paths, [])
+        # Without a contribution, the request is read as before.
+        self.assertEqual(collect.upstream_snapshots(self.Api(), [], [duplicate], policy()),
+                         {"example/proj": dict(self.SNAPSHOT)})
 
     def test_the_collector_reads_a_parked_upstream_at_the_branch_of_the_refresh(self):
         rec = contribution(phase="parked", activity="idle", parked_reason="r",
@@ -1285,6 +1383,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
     # The controller
 
     def test_a_missing_branch_waits_for_a_human_in_planning_at_once(self):
+        import status_ledger
         rec = self.queued()
         res = self.tick(rec, dict(self.MISSING))
         final = self.final(res, rec)
@@ -1300,6 +1399,13 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                           if d["contribution"] == rec["contribution_id"]],
                          [{"contribution": rec["contribution_id"],
                            "why": "source verification unavailable"}])
+        self.assertTrue(status_ledger.notifies(dict(event, sequence=1), "queued.idle",
+                                               "planning.waiting_human"))
+        text = self.render(event, final)
+        self.assertIn("Cause: the upstream says the base branch `main` does not exist.", text)
+        self.assertNotIn("pending_human_action.counter", text)
+        self.assertIn("To continue on another branch, park first; then, from `parked.idle`, "
+                      f"post `/upstreaming refresh revision={final['revision']} branch=NAME", text)
 
     def test_a_renamed_branch_of_a_bound_record_waits_in_its_phase(self):
         import status_ledger
@@ -1315,32 +1421,98 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         [event] = self.events(res)
         self.assertEqual((event["details"]["base_ref"], event["details"]["renamed_to"]),
                          ("master", "main"))
-        event = dict(event, sequence=1)
-        self.assertTrue(status_ledger.notifies(event, "development.fix_needed",
+        self.assertTrue(status_ledger.notifies(dict(event, sequence=1), "development.fix_needed",
                                                "development.waiting_human"))
-        text = status_ledger.render(event, final, "https://github.com/r/actions/runs/1")
-        self.assertIn("Upstream base branch: `master`, renamed upstream to `main`.", text)
+        text = self.render(event, final)
+        self.assertIn("Cause: the upstream renamed the base branch `master` to `main`.", text)
         self.assertIn(f"/upstreaming resume revision={final['revision']}", text)
         self.assertIn(f"/upstreaming park revision={final['revision']}", text)
-        self.assertIn(f"/upstreaming refresh revision={final['revision']} branch=main", text)
+        # The restart on the new name is named after a park, never as a
+        # command of this state, which would refuse it.
+        commands_block = text.split("<summary>Possible next commands</summary>", 1)[1]
+        self.assertNotIn("branch=", commands_block)
+        self.assertIn("park first; then, from `parked.idle`, post "
+                      f"`/upstreaming refresh revision={final['revision']} branch=main", text)
 
-    def test_a_failed_read_waits_only_after_the_bound(self):
-        limit = 12
+    def test_the_bound_needs_both_the_count_and_the_time(self):
+        import status_ledger
+        limit, minutes = 12, 60
         rec = self.queued()
-        for count in range(1, limit + 1):
-            res = self.tick(rec, dict(self.TRANSIENT))
+        # A burst: twice the count within ten minutes waits for no human.
+        for count in range(1, 2 * limit + 1):
+            res = self.tick(rec, dict(self.TRANSIENT), now=T + timedelta(seconds=20 * count))
             rec = self.final(res, rec)
             self.assertEqual(engine.state_key(rec), "queued.idle", count)
             self.assertEqual(rec["budget"]["source_unavailable"], count)
             self.assertEqual([e["kind"] for e in self.events(res)], ["record_source_unavailable"])
             self.assertEqual(res.requested_effects, [])
-        res = self.tick(rec, dict(self.TRANSIENT))
+        self.assertEqual(rec["budget"]["source_unavailable_since"],
+                         (T + timedelta(seconds=20)).isoformat())
+        [event] = self.events(res)
+        self.assertFalse(status_ledger.notifies(dict(event, sequence=1), "queued.idle",
+                                                "queued.idle"))
+        # Once the minimum time has passed too, the next failed read waits.
+        res = self.tick(rec, dict(self.TRANSIENT),
+                        now=T + timedelta(seconds=20, minutes=minutes))
         final = self.final(res, rec)
         self.assertEqual(engine.state_key(final), "planning.waiting_human")
-        self.assertEqual(final["pending_human_action"]["counter"], "source_reads")
+        self.assertEqual(final["pending_human_action"],
+                         dict(final["pending_human_action"], kind="base_branch_unavailable",
+                              counter="source_reads"))
         [event] = self.events(res)
         self.assertEqual((event["kind"], event["details"]["count"], event["details"]["limit"]),
-                         ("require_base_branch", limit, limit))
+                         ("exhaust_source_reads", 2 * limit + 1, limit))
+        text = self.render(event, final)
+        self.assertIn("Cause: the upstream base branch `main` could not be read. "
+                      f"{2 * limit + 1} consecutive reads failed since", text)
+        self.assertNotIn("pending_human_action.counter", text)
+
+    def test_the_count_alone_reached_after_a_long_run_waits(self):
+        rec = self.queued()
+        rec["budget"] = dict(rec["budget"], source_unavailable=12,
+                             source_unavailable_since=(T - timedelta(hours=2)).isoformat())
+        res = self.tick(rec, dict(self.TRANSIENT))
+        self.assertEqual([e["kind"] for e in self.events(res)], ["exhaust_source_reads"])
+        # A count recorded without its start time starts its clock first.
+        rec["budget"] = dict(rec["budget"], source_unavailable=12)
+        del rec["budget"]["source_unavailable_since"]
+        res = self.tick(rec, dict(self.TRANSIENT))
+        final = self.final(res, rec)
+        self.assertEqual([e["kind"] for e in self.events(res)], ["record_source_unavailable"])
+        self.assertEqual(final["budget"]["source_unavailable_since"], T.isoformat())
+
+    def test_a_repository_that_cannot_be_read_waits_with_its_own_cause(self):
+        import status_ledger
+        rec = self.queued()
+        rec["budget"] = dict(rec["budget"], source_unavailable=12,
+                             source_unavailable_since=(T - timedelta(hours=2)).isoformat())
+        for snapshot, cause in (
+                (dict(self.REPOSITORY), "Cause: the upstream repository `example/proj` could "
+                                        "not be read"),
+                (dict(self.REPOSITORY, error="GitHub names the upstream repository 'other/proj' "
+                      "now", renamed_repository="other/proj"),
+                 "Cause: GitHub now names the upstream repository `example/proj` `other/proj`")):
+            with self.subTest(cause):
+                res = self.tick(rec, snapshot)
+                final = self.final(res, rec)
+                self.assertEqual(engine.state_key(final), "planning.waiting_human")
+                self.assertEqual((final["pending_human_action"]["kind"],
+                                  final["pending_human_action"]["counter"]),
+                                 ("upstream_unavailable", "source_reads"))
+                [event] = self.events(res)
+                self.assertEqual(event["kind"], "require_upstream_access")
+                self.assertTrue(status_ledger.notifies(dict(event, sequence=1), "queued.idle",
+                                                       "planning.waiting_human"))
+                text = self.render(event, final)
+                self.assertIn(cause, text)
+                self.assertIn("park, then abandon", text)
+                self.assertNotIn("branch=", text)
+                self.assertNotIn("base branch", text.split("Cause:", 1)[1].split("[Workflow", 1)[0])
+                # Its resume continues once the repository is read again.
+                again = self.tick(final, dict(self.SNAPSHOT), self.resume(final))
+                self.assertEqual(again.report["commands"][0]["result"], "accepted")
+                self.assertEqual(engine.state_key(self.final(again, final)),
+                                 "planning.agent_running")
 
     def test_a_read_starts_the_count_again(self):
         rec = self.queued()
@@ -1350,8 +1522,23 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         res = self.tick(rec, dict(self.SNAPSHOT))
         final = self.final(res, rec)
         self.assertEqual(final["budget"]["source_unavailable"], 0)
+        self.assertNotIn("source_unavailable_since", final["budget"])
         self.assertEqual(final["upstream"]["base_sha"], SHA_B)
         self.assertEqual(len(res.requested_effects), 1)
+
+    def test_a_snapshot_of_another_branch_never_escalates(self):
+        rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",
+                                    "base_ref": "release-2", "base_sha": None})
+        rec["budget"] = dict(rec["budget"], source_unavailable=12,
+                             source_unavailable_since=(T - timedelta(hours=2)).isoformat())
+        for snapshot in (dict(self.MISSING), dict(self.TRANSIENT), dict(self.REPOSITORY)):
+            with self.subTest(snapshot["error"]):
+                res = self.tick(rec, snapshot)
+                self.assertEqual(self.events(res), [])
+                self.assertEqual(res.staged, [])
+                self.assertIn({"contribution": rec["contribution_id"],
+                               "why": "upstream snapshot is not of the recorded base branch"},
+                              res.report["deferred"])
 
     def test_a_paused_record_stays_deferred(self):
         rec = self.queued(paused=True, paused_at=NOW, paused_by="human")
@@ -1372,6 +1559,48 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertEqual(final["upstream"]["base_sha"], SHA_B)
         self.assertEqual(len(res.requested_effects), 1)
 
+    def test_the_resume_of_every_phase_leaves_the_wait(self):
+        cases = (("provisioning.waiting_human", "resume_provisioning", "provisioning.idle",
+                  {"fork": None}),
+                 ("development.waiting_human", "resume_development", "development.fix_needed", {}),
+                 ("handoff.waiting_human", "resume_submission_review", "handoff.review_due", {}),
+                 ("upstream_review.waiting_human", "resume_upstream_revision",
+                  "upstream_review.fix_needed", {"upstream_pr": dict(self.PR, base_ref="main")}))
+        for state, verb, target, over in cases:
+            for kind, counter in (("base_branch_unavailable", None),
+                                  ("base_branch_unavailable", "source_reads"),
+                                  ("upstream_unavailable", "source_reads")):
+                with self.subTest(state=state, kind=kind, counter=counter):
+                    rec = self.waiting(state, kind, counter, **over)
+                    rec["budget"] = dict(rec["budget"], source_unavailable=12,
+                                         source_unavailable_since=NOW)
+                    res = self.tick(rec, None, self.resume(rec))
+                    self.assertEqual(res.report["commands"][0]["result"], "accepted",
+                                     res.report["commands"])
+                    [event] = [e for e in self.events(res) if e["kind"] == verb]
+                    self.assertEqual(event["details"]["to_state"], target)
+                    final = [r for k, r in res.staged if k == "contributions"][0]
+                    self.assertIsNone(final["pending_human_action"])
+                    if counter:
+                        self.assertEqual(final["budget"]["source_unavailable"], 0)
+                        self.assertNotIn("source_unavailable_since", final["budget"])
+
+    def test_a_paused_wait_needs_two_resumes(self):
+        rec = self.waiting("development.waiting_human", paused=True, paused_at=NOW,
+                           paused_by="human")
+        api = self.Api()
+        self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy()), {})
+        self.assertEqual(api.paths, [])
+        res = self.tick(rec, None, self.resume(rec))
+        first = self.final(res, rec)
+        self.assertEqual([e["kind"] for e in self.events(res)], ["resume_pause"])
+        self.assertFalse(first["paused"])
+        self.assertEqual(engine.state_key(first), "development.waiting_human")
+        self.assertEqual(first["pending_human_action"]["kind"], "base_branch_unavailable")
+        res = self.tick(first, dict(self.SNAPSHOT), self.resume(first, cid=64))
+        self.assertEqual([e["kind"] for e in self.events(res)][:1], ["resume_development"])
+        self.assertIsNone(self.final(res, first)["pending_human_action"])
+
     def test_a_resume_while_the_branch_is_missing_waits_again(self):
         rec = self.final(self.tick(self.queued(), dict(self.MISSING)), self.queued())
         res = self.tick(rec, dict(self.MISSING), self.resume(rec))
@@ -1384,7 +1613,8 @@ class TestBaseBranchUnavailable(unittest.TestCase):
 
     def test_a_resume_after_the_bound_starts_the_count_again(self):
         rec = self.queued()
-        rec["budget"] = dict(rec["budget"], source_unavailable=12)
+        rec["budget"] = dict(rec["budget"], source_unavailable=12,
+                             source_unavailable_since=(T - timedelta(hours=2)).isoformat())
         rec = self.final(self.tick(rec, dict(self.TRANSIENT)), rec)
         self.assertEqual(rec["pending_human_action"]["counter"], "source_reads")
         res = self.tick(rec, dict(self.SNAPSHOT), self.resume(rec))
@@ -1426,6 +1656,11 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         with self.assertRaises(commands.CommandError):
             commands.parse("/upstreaming resume revision=0 branch=trunk reason=r")
 
+    def test_the_refresh_help_names_branch(self):
+        for text in (commands.PARKED_RESUME, commands.RETIRED["restart"],
+                     commands.RETIRED["approve-scope"]):
+            self.assertIn("branch=", text)
+
     def test_a_snapshot_of_another_branch_is_deferred_once(self):
         rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",
                                     "base_ref": "release-2", "base_sha": None})
@@ -1435,6 +1670,102 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                          [{"contribution": rec["contribution_id"],
                            "why": "upstream snapshot is not of the requested base branch"}])
         self.assertEqual(res.staged, [])
+
+    # A base branch renamed while the upstream PR is open
+
+    def renamed_api(self, **over):
+        return self.Api(branches={"master": "main", "main": "main"}, pr=self.pull(**over))
+
+    def test_the_collector_verifies_the_pr_that_follows_a_rename(self):
+        rec = self.reviewing()
+        api = self.renamed_api()
+        got = collect.upstream_snapshots(api, [rec], [], policy())
+        self.assertEqual(got, {"example/proj": dict(self.RENAMED, pr_base={
+            "pr_id": 77, "pr_number": 5, "base_ref": "main", "base_sha": SHA_A})})
+        self.assertIn(f"{api.base}/repos/example/proj/compare/{SHA_A}...{SHA_B}?per_page=100",
+                      api.paths)
+        for name, kwargs, compare in (
+                ("closed", {"state": "closed"}, "ahead"),
+                ("merged", {"merged": True}, "ahead"),
+                ("another base", {"base": {"ref": "release", "repo": {"id": 1}}}, "ahead"),
+                ("another repository", {"base": {"ref": "main", "repo": {"id": 9}}}, "ahead"),
+                ("base commit not contained", {}, "diverged")):
+            with self.subTest(name):
+                api = self.renamed_api(**kwargs)
+                api.compare = compare
+                self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy()),
+                                 {"example/proj": dict(self.RENAMED)})
+        # A PR that cannot be read is a failed read, never a definitive answer.
+        api = self.Api(branches={"master": "main", "main": "main"}, pr=None)
+        got = collect.upstream_snapshots(api, [rec], [], policy())["example/proj"]
+        self.assertEqual((got.get("missing"), got["scope"], got["ref"]), (None, "branch", "master"))
+
+    def test_the_collector_reads_a_review_that_waits_for_a_rename(self):
+        rec = self.reviewing("waiting_human", pending_human_action={
+            "kind": "base_branch_unavailable", "requested_at": NOW, "reminded_at": None,
+            "escalated_at": None, "counter": None})
+        api = self.renamed_api()
+        got = collect.upstream_snapshots(api, [rec], [], policy())
+        self.assertIn("pr_base", got["example/proj"])
+
+    def test_an_open_pr_follows_the_renamed_base(self):
+        import status_ledger
+        for activity in ("fix_needed", "waiting_ci"):
+            with self.subTest(activity):
+                rec = self.reviewing(activity)
+                snapshot = collect.upstream_snapshots(self.renamed_api(), [rec], [],
+                                                      policy())["example/proj"]
+                res = self.tick(rec, snapshot)
+                final = self.final(res, rec)
+                self.assertEqual(engine.state_key(final), f"upstream_review.{activity}")
+                self.assertEqual(final["upstream"], dict(rec["upstream"], base_ref="main"))
+                self.assertEqual(final["upstream_pr"], dict(self.PR, base_ref="main"))
+                self.assertEqual(final["revision"], rec["revision"])
+                [event] = self.events(res)
+                self.assertEqual(event["kind"], "follow_renamed_base")
+                self.assertTrue(status_ledger.notifies(dict(event, sequence=1),
+                                                       f"upstream_review.{activity}",
+                                                       f"upstream_review.{activity}"))
+                text = self.render(event, final)
+                self.assertIn("The upstream renamed the base branch `master` to `main`, and the "
+                              "upstream pull request #5 now targets it", text)
+                # The next tick reads the new name and continues.
+                again = self.tick(final, dict(self.SNAPSHOT))
+                self.assertEqual([e["kind"] for e in self.events(again)
+                                  if e["kind"].startswith(("require", "follow"))], [])
+
+    def test_a_wait_the_rename_caused_ends_without_a_human(self):
+        import status_ledger
+        rec = self.reviewing()
+        stuck = self.final(self.tick(rec, dict(self.RENAMED)), rec)
+        self.assertEqual(engine.state_key(stuck), "upstream_review.waiting_human")
+        self.assertIn("The upstream pull request is open, so a restart on another branch is "
+                      "refused", self.render(self.events(self.tick(rec, dict(self.RENAMED)))[0],
+                                             stuck))
+        snapshot = collect.upstream_snapshots(self.renamed_api(), [stuck], [],
+                                              policy())["example/proj"]
+        res = self.tick(stuck, snapshot)
+        final = self.final(res, stuck)
+        self.assertEqual(engine.state_key(final), "upstream_review.fix_needed")
+        self.assertIsNone(final["pending_human_action"])
+        self.assertEqual(final["revision"], stuck["revision"] + 1)
+        self.assertEqual(final["upstream"]["base_ref"], "main")
+        self.assertEqual(final["upstream"]["base_sha"], SHA_A)
+        [event] = self.events(res)
+        self.assertEqual(event["kind"], "resume_renamed_base")
+        self.assertTrue(status_ledger.notifies(dict(event, sequence=1),
+                                               "upstream_review.waiting_human",
+                                               "upstream_review.fix_needed"))
+        self.assertEqual(status_ledger.NOTICE_VERBS,
+                         {"follow_renamed_base", "resume_renamed_base"})
+
+    def test_a_pr_that_does_not_follow_the_rename_still_waits(self):
+        rec = self.reviewing()
+        snapshot = dict(self.RENAMED, pr_base={"pr_id": 999, "pr_number": 5, "base_ref": "main",
+                                               "base_sha": SHA_A})
+        res = self.tick(rec, snapshot)
+        self.assertEqual([e["kind"] for e in self.events(res)], ["require_base_branch"])
+        self.assertEqual(engine.state_key(self.final(res, rec)), "upstream_review.waiting_human")
 
 
 class _Stop(Exception):

@@ -76,12 +76,14 @@ RESUME_FORM = '/upstreaming resume revision=N reason="..."'
 OVERRIDE_FORM = ('/upstreaming refresh revision=N class=configuration_integration '
                  'paths=".github/workflows/*" reason="..."')
 REFRESH_FORM = '/upstreaming refresh revision=N reason="..."'
+BRANCH_FORM = '/upstreaming refresh revision=N branch=NAME reason="..."'
 
 # The reply to a resume in `parked.idle` that has no pause to end: a new
 # generation starts with a refresh there.
 PARKED_RESUME = ("`/upstreaming resume` does not apply in `parked.idle`: a new generation "
-                 f"starts with `{REFRESH_FORM}`, and `class=` and `paths=` on it record an "
-                 "admission override")
+                 f"starts with `{REFRESH_FORM}`, `class=` and `paths=` on it record an "
+                 f"admission override, and `branch=` names another upstream target branch: "
+                 f"`{BRANCH_FORM}`")
 # Fields that moved from one command to another, with the reply that names
 # where they are given now.
 MOVED_FIELDS: dict[tuple[str, str], str] = {
@@ -105,7 +107,8 @@ RETIRED["block"] = (
 RETIRED["approve-scope"] = (
     "`approve-scope` is retired. The verified planning plan decides admission and "
     "provisioning starts automatically. A contribution parked by its plan restarts from "
-    f"`parked.idle` with `{REFRESH_FORM}`; `class=` and `paths=` record an admission override")
+    f"`parked.idle` with `{REFRESH_FORM}`; `class=` and `paths=` record an admission override, "
+    "and `branch=` names another upstream target branch")
 RETIRED["provision"] = (
     "`provision` is retired. The fork is provisioned automatically. When provisioning waits "
     f"for a human in `provisioning.waiting_human`, correct the prerequisite, then post "
@@ -113,7 +116,8 @@ RETIRED["provision"] = (
     "starts again")
 RETIRED["restart"] = (
     "`restart` is retired. A new generation starts from `parked.idle` with "
-    f"`{REFRESH_FORM}`; `closed.idle` is final")
+    f"`{REFRESH_FORM}`, or on another upstream target branch with `{BRANCH_FORM}`; "
+    "`closed.idle` is final")
 RETIRED["clarify"] = (
     "`clarify` is retired. A contribution that waits for a human continues with "
     f"`{RESUME_FORM}` once the cause is corrected")

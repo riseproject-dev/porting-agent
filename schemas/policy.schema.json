@@ -144,6 +144,10 @@
         "source_unavailable_ticks": {
           "type": "integer",
           "minimum": 1
+        },
+        "source_unavailable_minutes": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

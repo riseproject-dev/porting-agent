@@ -414,7 +414,7 @@ class TestLifecycleTable(unittest.TestCase):
                          {"work_budget_exhausted", "dispatch_failed", "work_failed",
                           "upstream_branch_failed", "upstream_branch_blocked", "ci_interrupted",
                           "submission_comment_failed", "clean_head_ci_missing",
-                          "base_branch_unavailable"})
+                          "base_branch_unavailable", "upstream_unavailable"})
         for key in ("handoff.waiting_human", "development.waiting_human",
                     "upstream_review.waiting_human"):
             resumes = [e for e in lc.state_edges(key)
@@ -494,7 +494,8 @@ class TestLifecycleTable(unittest.TestCase):
             ("planning.waiting_human", "rearm_dispatch"),
             ("development.waiting_human", "rearm_dispatch"),
             ("handoff.waiting_human", "rearm_dispatch"),
-            ("upstream_review.waiting_human", "rearm_dispatch")})
+            ("upstream_review.waiting_human", "rearm_dispatch"),
+        ("upstream_review.waiting_human", "resume_renamed_base")})
         self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
                          {"resume_stale"})
 

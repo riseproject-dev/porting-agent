@@ -561,22 +561,74 @@ flowchart TB
     end
 
     queued_idle -->|require_base_branch| planning_waiting_human
+    queued_idle -->|exhaust_source_reads| planning_waiting_human
     planning_idle -->|require_base_branch| planning_waiting_human
+    planning_idle -->|exhaust_source_reads| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
     provisioning_idle -->|require_base_branch| provisioning_waiting_human
+    provisioning_idle -->|exhaust_source_reads| provisioning_waiting_human
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
     development_fix_needed -->|require_base_branch| development_waiting_human
+    development_fix_needed -->|exhaust_source_reads| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     handoff_review_due -->|require_base_branch| handoff_waiting_human
+    handoff_review_due -->|exhaust_source_reads| handoff_waiting_human
     handoff_review_pending -->|require_base_branch| handoff_waiting_human
+    handoff_review_pending -->|exhaust_source_reads| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     upstream_fix_needed -->|require_base_branch| upstream_waiting_human
+    upstream_fix_needed -->|exhaust_source_reads| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
 
-Where Work or the fork provisioning is due, the collector reads the upstream base branch. When GitHub answers that it does not exist, or redirects it to the branch it was renamed to, the contribution waits for a human in its phase at once; a read that fails otherwise (network, server error, rate limit) is retried every tick within `source_reads`, and its exhaustion leads to the same wait. While it waits the upstream is not read, until an authorized resume is posted. A resume once the branch exists again continues; to target another branch, the contribution is parked and restarted with `/upstreaming refresh branch=NAME`.
+Where Work or the fork provisioning is due, the collector reads the upstream base branch. When GitHub answers that it does not exist, or redirects it to the branch it was renamed to, the contribution waits for a human in its phase at once; a read that fails otherwise (network, server error, rate limit) is retried within `source_reads`, which is exhausted only once both its count of consecutive failed reads and its minimum time have passed, and its exhaustion leads to the same wait. While it waits the upstream is not read, until an authorized resume is posted. A resume once the branch exists again continues; to target another branch, the contribution is parked first and then restarted with `/upstreaming refresh branch=NAME`. In upstream review, a branch renamed while the upstream PR is open is followed without a human (failure case 6 of upstream review).
 
-### Failure case 3: park, then restart as a clean generation or abandon
+### Failure case 3: the upstream repository cannot be read
+
+```mermaid
+flowchart TB
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_waiting_human["planning.waiting_human"]
+    end
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+        provisioning_waiting_human["provisioning.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph handoff["handoff"]
+        handoff_review_due["handoff.review_due"]
+        handoff_review_pending["handoff.review_pending"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    queued_idle -->|require_upstream_access| planning_waiting_human
+    planning_idle -->|require_upstream_access| planning_waiting_human
+    planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    provisioning_idle -->|require_upstream_access| provisioning_waiting_human
+    provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
+    development_fix_needed -->|require_upstream_access| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    handoff_review_due -->|require_upstream_access| handoff_waiting_human
+    handoff_review_pending -->|require_upstream_access| handoff_waiting_human
+    handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
+    upstream_fix_needed -->|require_upstream_access| upstream_waiting_human
+    upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+```
+
+When reading the upstream repository itself keeps failing (it was renamed or transferred, or the token lost access), the exhaustion of `source_reads` leads to the same waits with the pending action `upstream_unavailable`. A resume once the repository can be read again continues; a repository that moved is parked and abandoned, and a new request names its new name.
+
+### Failure case 4: park, then restart as a clean generation or abandon
 
 ```mermaid
 flowchart TB
@@ -838,7 +890,25 @@ flowchart TB
 
 The pipeline does not reopen the PR or create a replacement. `resume_upstream_review` returns to `upstream_review.waiting_ci` after a head change, and after a closed PR once it is observed open again. `resume_upstream_revision` applies only when revision Work failed. Human triage either resumes or parks.
 
-### Failure case 6: release is missing, incomplete, or waiting for operator action
+### Failure case 6: the base branch is renamed while the upstream PR is open
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    start_1(( )) --> upstream_waiting_ci
+    upstream_waiting_ci -->|follow_renamed_base| upstream_waiting_ci
+    upstream_fix_needed -->|follow_renamed_base| upstream_fix_needed
+    upstream_waiting_human -->|resume_renamed_base| upstream_fix_needed
+```
+
+GitHub retargets an open PR when its base branch is renamed. Once the verified upstream PR targets the new name and that branch still contains the recorded base commit, the record follows the rename and the tracking issue states it. A contribution that already waits because of the rename leaves the wait the same way, without a resume.
+
+### Failure case 7: release is missing, incomplete, or waiting for operator action
 
 ```mermaid
 flowchart TB
@@ -918,7 +988,7 @@ flowchart TB
     any -->|record_source_unavailable| any
 ```
 
-A read that fails without a definitive answer charges `source_reads` and keeps the state; its exhaustion takes `require_base_branch`, drawn with the human waits.
+A read that fails without a definitive answer charges `source_reads` and keeps the state; its exhaustion takes `exhaust_source_reads`, or `require_upstream_access` when the repository itself could not be read, drawn with the human waits.
 
 ## Remote operations
 

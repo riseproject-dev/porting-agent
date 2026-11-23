@@ -35,6 +35,7 @@ SAMPLE = {
              "head_sha": SHA_A, "pr_number": None},
     "fork.head_sha": SHA_B,
     "upstream.repository_id": 1, "upstream.base_ref": "main", "upstream.base_sha": SHA_C,
+    "upstream_pr.base_ref": "main",
     "upstream_pr": {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
                     "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
                     "base_ref": "main", "registered_by": OWNER},
@@ -143,8 +144,14 @@ def scenario(state, verb, t):
                       work_total=lc.budget_limit("work_total", POLICY))
     if verb == "require_provisioning_intervention":
         facts.add("provisioning_blocked")
-    if verb == "require_base_branch":
-        facts.add("base_branch_missing")
+    if verb in ("exhaust_source_reads", "require_upstream_access"):
+        # Exhausted: the count is reached and the minimum time has passed.
+        facts.add("base_branch_unread")
+        if verb == "require_upstream_access":
+            facts.add("upstream_repository_unread")
+        rec["budget"] = dict(rec["budget"],
+                             source_unavailable=lc.budget_limit("source_reads", POLICY),
+                             source_unavailable_since=LONG_AGO)
     if verb == "reject_patch_proposal" and phase == "development":
         facts.add("proposal_rejected_or_blocked")
     e = t.effects
