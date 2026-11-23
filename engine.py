@@ -685,6 +685,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_upstream_review": "controller",
     "resume_upstream_revision": "controller",
     "resume_release_observation": "controller",
+    # The reminder of a pending human step.
+    "record_reminder": "controller",
     # The stop after an unexpected error while one contribution was processed.
     "pause_on_processing_error": "reconcile",
 }

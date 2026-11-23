@@ -65,6 +65,7 @@ MESSAGES = {
     "resume_upstream_review": "Resumed: the upstream review is observed again.",
     "resume_upstream_revision": "Resumed: upstream revision Work is due again.",
     "resume_release_observation": "Resumed: the release is observed again.",
+    "record_reminder": "Reminder: this contribution still waits for a human.",
     compat.FLAG_MIGRATED: ("Recorded the stop of this contribution in the lifecycle's one stop "
                            "flag, `paused`, with its reason and who set it. The retired "
                            "`block` is a pause now; `resume` at the current revision ends it."),
@@ -94,11 +95,16 @@ def _submission_request(event: dict, record: dict) -> tuple[str, str] | None:
     """The message and the command of an entry that asks for upstream
     submission, bound to the revision and head the event recorded."""
     details = event.get("details") or {}
-    head, revision = details.get("head"), details.get("revision")
+    bound = details.get("bound_to") or details
+    head, revision = bound.get("head"), bound.get("revision")
     if not head or revision is None:
         return None
     if event["kind"] == "nominate_for_handoff":
         lead = f"Required CI passed on the exact head `{head}` of the development PR."
+    elif event["kind"] == "record_reminder" \
+            and details.get("from_state") == "handoff.awaiting_submission":
+        lead = (f"Reminder: required CI passed on the exact head `{head}` of the development PR, "
+                "and upstream submission still waits for an authorized human.")
     elif event["kind"] == compat.HANDOFF_WAIT_MIGRATED:
         lead = ("Moved this contribution to the lifecycle state `handoff.awaiting_submission`. "
                 f"Its fork, development PR, head `{head}`, revision, and CI evidence are "
@@ -214,7 +220,11 @@ def render(event: dict, record: dict, run_url: str) -> str:
     if kind == "record_explanation":
         message += _quoted_comments(event)
     pending = (event.get("details") or {}).get("pending_human_action")
-    if kind == "resume_pause" and pending:
+    if kind == "record_reminder" and pending:
+        message = (f"Reminder: this contribution still waits for a human: pending action "
+                   f"`{_quotable(pending, 80)}`, requested at "
+                   f"{_quotable((event.get('details') or {}).get('requested_at'), 40)}.")
+    elif kind == "resume_pause" and pending:
         message += (f" The contribution still waits for a human: pending action "
                     f"`{_quotable(pending, 80)}`. A second `resume` at the new revision "
                     "leaves the wait.")

@@ -397,6 +397,29 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         rep["commands"].append({"comment": receipt["comment_id"], "result": receipt["result"],
                                 "reason": receipt.get("reason")})
 
+    # 2b. Reminders of a pending human step: the table's `record_reminder`, in
+    # every state of kind gate, human_wait, or locked, once
+    # `human_sla_business_days.reminder` business days have passed since the
+    # request or the last reminder. Suppressed while paused.
+    reminders = []
+    reminder_states = set(lifecycle.rule_states("record_reminder"))
+    for cid, c in list(by_id.items()):
+        if cid in skip or engine.state_key(c) not in reminder_states:
+            continue
+        with isolation.contribution(cid, "reminder"):
+            if engine.refusal(c, "record_reminder", policy=policy, now=now):
+                continue
+            out = engine.apply_transition(c, "record_reminder", policy=policy, now=now,
+                                          cause_id=f"reminder-{c['revision']}",
+                                          details=reminder_details(c))
+            by_id[cid] = out.record
+            res.stage("contributions", out.record)
+            res.stage("events", out.event)
+            reminders.append({"contribution": cid, "state": engine.state_key(c),
+                              "pending_human_action": c["pending_human_action"]["kind"]})
+    if reminders:
+        rep["reminders"] = reminders
+
     # 3. Uncertain operations before any replacement.
     blocked_by_op: set[str] = set()
     for op in operations.values():
@@ -782,6 +805,19 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     if policy["read_only"]:
         rep["note"] = "read-only: requested effects are reported, not executed"
     return res
+
+
+def reminder_details(record: dict) -> dict:
+    """What a reminder repeats: the pending human action, when it was
+    requested, and, where the step binds to a head, the revision and head."""
+    pending = record["pending_human_action"]
+    heads = {"handoff.awaiting_submission": (record.get("handoff_request") or {}).get("head"),
+             "handoff.waiting_upstream_pr": record.get("clean_head_sha")}
+    state = engine.state_key(record)
+    return {"pending_human_action": pending["kind"], "requested_at": pending["requested_at"],
+            "previous_reminder_at": pending.get("reminded_at"),
+            **({"bound_to": {"revision": record["revision"], "head": heads[state]}}
+               if state in heads else {})}
 
 
 def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:

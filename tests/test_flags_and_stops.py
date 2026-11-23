@@ -33,6 +33,7 @@ import schemas
 import state as store
 import status_ledger
 from common import canonical_json
+from tests import test_live_handoff_migration as live_handoff
 from tests.helpers import (
     NOW,
     OWNER,
@@ -43,7 +44,7 @@ from tests.helpers import (
     policy,
 )
 from tests.test_late_results import RESULTS, WORK, events, final, publication, running, tick
-from tests.test_live_handoff_migration import live, load
+from tests.test_live_handoff_migration import HEAD, live, load
 
 POLICY = policy()
 TABLE_COMMANDS = {"pause": '/upstreaming pause reason="stop"',
@@ -279,6 +280,98 @@ class TestStaleResume(unittest.TestCase):
         self.assertIsNone(new["refresh"])
 
 
+class TestReminders(unittest.TestCase):
+    def ticks(self, record, now):
+        output = reconcile.tick(None, reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, {}),
+                                policy=POLICY, now=datetime.fromisoformat(now), publications=[],
+                                pressure=reconcile.capacity.Pressure(ok=False, reason="none"),
+                                observe=False, dispatcher_runs=[], queue_works={})
+        return final(output, record), events(output)
+
+    def test_cadence_in_business_days(self):
+        record = table_record("development.waiting_human", pending="work_failed")
+        record["pending_human_action"]["requested_at"] = "2026-11-20T10:00:00+00:00"  # a Friday
+        # Monday and Tuesday count; the weekend does not.
+        for now, due in (("2026-11-24T09:59:59+00:00", False), ("2026-11-24T10:00:00+00:00", False),
+                         ("2026-11-25T09:59:59+00:00", False), ("2026-11-25T10:00:00+00:00", True)):
+            with self.subTest(now=now):
+                after, evs = self.ticks(record, now)
+                self.assertEqual([e["kind"] for e in evs], ["record_reminder"] if due else [])
+        after, _ = self.ticks(record, "2026-11-25T10:00:00+00:00")
+        self.assertEqual(after["pending_human_action"]["reminded_at"], "2026-11-25T10:00:00+00:00")
+        self.assertEqual(after["revision"], record["revision"])
+        # The next one counts from the last reminder: Thu, Fri, Mon.
+        self.assertEqual(self.ticks(after, "2026-11-30T09:59:59+00:00")[1], [])
+        self.assertEqual([e["kind"] for e in self.ticks(after, "2026-11-30T10:00:00+00:00")[1]],
+                         ["record_reminder"])
+        # Paused, no reminder.
+        paused = dict(record, paused=True, paused_at=NOW, paused_by="human")
+        self.assertEqual(self.ticks(paused, "2026-12-30T10:00:00+00:00")[1], [])
+
+    def test_every_reminder_state_and_no_other(self):
+        states = set(lc.rule_states("record_reminder"))
+        self.assertEqual(states, {k for k, s in lc.LIFECYCLE.items() if s.kind in lc.REMINDER_KINDS})
+        for state in lc.LIFECYCLE:
+            record = table_record(state)
+            if not record.get("pending_human_action"):
+                record["pending_human_action"] = {"kind": "x", "requested_at": NOW,
+                                                  "reminded_at": None, "escalated_at": None}
+            with self.subTest(state=state):
+                _after, evs = self.ticks(record, "2026-12-30T10:00:00+00:00")
+                self.assertEqual("record_reminder" in [e["kind"] for e in evs], state in states)
+
+    def test_an_error_in_the_reminder_step_pauses_only_that_contribution(self):
+        from unittest import mock
+
+        record = table_record("development.waiting_human", pending="work_failed")
+        with mock.patch("controller.reminder_details", side_effect=RuntimeError("injected")):
+            after, evs = self.ticks(record, "2026-12-30T10:00:00+00:00")
+        self.assertEqual([e["kind"] for e in evs], ["pause_on_processing_error"])
+        self.assertEqual(evs[0]["details"]["step"], "reminder")
+        self.assertEqual((after["paused"], after["pending_human_action"]),
+                         (True, record["pending_human_action"]))
+
+    def live_gate(self):
+        record, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
+                                                     policy=POLICY, now=LIVE_REQUESTED)
+        self.assertEqual(record["pending_human_action"]["requested_at"], LIVE_REQUESTED)
+        return record
+
+    def test_the_live_record_is_first_reminded_three_business_days_after_the_request(self):
+        record = self.live_gate()
+        first = "2026-11-25T22:54:12.110885+00:00"
+        for now in ("2026-11-22T23:30:00+00:00", "2026-11-23T09:00:00+00:00",
+                    "2026-11-25T22:54:12.110884+00:00"):
+            with self.subTest(now=now):
+                after, evs = self.ticks(record, now)
+                self.assertEqual(evs, [])
+                self.assertEqual(after, record)
+        # With CI observed as on every live tick: still nothing before it is due.
+        harness = live_handoff.TestMigratedRecordUnderTheOrdinaryController(
+            "test_pause_and_resume_keep_the_submission")
+        output = harness.tick(record)
+        self.assertEqual([e for k, e in output.staged if k == "events"], [])
+        self.assertNotIn("reminders", output.report["controller"])
+        after, evs = self.ticks(record, first)
+        self.assertEqual([e["kind"] for e in evs], ["record_reminder"])
+        event = evs[0]
+        self.assertEqual(event["details"]["bound_to"], {"revision": 6, "head": HEAD})
+        self.assertEqual((event["from"], event["to"], event["revision_bumped"]), ({}, {}, False))
+        # Only the reminder time changes; the record keeps its fork, PR, head, and evidence.
+        self.assertEqual(dict(after, pending_human_action=None, updated_at=None),
+                         dict(record, pending_human_action=None, updated_at=None))
+        self.assertEqual(after["pending_human_action"], dict(record["pending_human_action"],
+                                                             reminded_at=first))
+        text = status_ledger.render(dict(event, sequence=24), after, "https://run")
+        self.assertIn(f"/upstreaming submit-upstream revision=6 head={HEAD}", text)
+        self.assertIn(status_ledger.SUBMIT_HOLD, text)
+        self.assertIn("Reminder", text)
+        # The next one is three business days later: Thursday, Friday, Monday.
+        self.assertEqual(self.ticks(after, "2026-11-30T22:54:12.110884+00:00")[1], [])
+        self.assertEqual([e["kind"] for e in self.ticks(after, "2026-11-30T22:54:12.110885+00:00")[1]],
+                         ["record_reminder"])
+
+
 class TestControllerStops(unittest.TestCase):
     def snapshot(self, upstream_id=99):
         return {"example/proj": {"repository_id": upstream_id, "base_ref": "main",
@@ -386,9 +479,7 @@ class TestFlagMigration(unittest.TestCase):
     def test_the_live_record_is_untouched(self):
         record = json.loads(Path(".state/contributions/closeio--ciso8601--1.json").read_text()) \
             if Path(".state/contributions/closeio--ciso8601--1.json").exists() else None
-        gate, _event = compat.migrate_handoff_wait(live(), evidence=load("evidence-ci.json"),
-                                                   policy=POLICY, now=LIVE_REQUESTED)
-        for candidate in filter(None, (record, gate)):
+        for candidate in filter(None, (record, TestReminders().live_gate())):
             self.assertFalse(compat.needs_flag_migration(candidate))
 
     def test_the_controller_migrates_in_its_own_commit_and_refuses_unknown_shapes(self):
