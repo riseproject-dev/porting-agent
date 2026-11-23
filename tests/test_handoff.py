@@ -1046,10 +1046,11 @@ class TestReminders(unittest.TestCase):
                           event["details"]["mismatch"]), (package_url, OWNER["login"], None))
         self.assertEqual(event["details"]["bound_to"], {"revision": 7, "head": CLEAN})
         text = status_ledger.render(event, world.record, "https://run")
-        self.assertIn(f"Reminder @{OWNER['login']}", text)
+        self.assertIn(f"Submitter: @{OWNER['login']}.", text)
         self.assertIn(f"]({package_url})", text)
         self.assertIn(f"`{CLEAN}`", text)
-        self.assertIn("still resolves to that head", text)
+        self.assertIn("Pending human action: `open_upstream_pr`", text)
+        self.assertNotIn("Observed:", text)
         self.assertIn(f"/upstreaming retract-pr revision=7 head={CLEAN}", text)
         world.gh.branches["riscv64"] = "f" * 40
         world.tick(at(0, "2026-12-02"))
@@ -1057,7 +1058,8 @@ class TestReminders(unittest.TestCase):
         reminder = [e for e in world.events if e["kind"] == "record_reminder"][-1]
         self.assertIn("`riscv64` resolves to", reminder["details"]["mismatch"] or "")
         text = status_ledger.render(reminder, world.record, "https://run")
-        self.assertIn("Do not submit from the package", text)
+        self.assertIn("Observed: `", text)
+        self.assertIn("'riscv64' resolves to", text)
         self.assertNotIn(chr(0x2014), text)
 
 

@@ -762,13 +762,8 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
 
 
 class TestLedger(unittest.TestCase):
-    def test_every_development_verb_has_a_message(self):
+    def test_a_development_pr_mismatch_is_quoted(self):
         import status_ledger
-        for verb in ("record_publish_success", "reject_patch_proposal", "replan_development",
-                     "schedule_publish_retry", "exhaust_publish_recovery", "retry_dispatch",
-                     "exhaust_dispatch_recovery", "record_ci_failure", "record_pr_mismatch",
-                     "development_state_migrated"):
-            self.assertIn(verb, status_ledger.MESSAGES)
         rec = record()
         out = tick(rec, pull="development PR 1 does not exist")
         event = next(e for kind, e in out.staged if kind == "events")

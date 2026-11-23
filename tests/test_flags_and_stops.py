@@ -160,7 +160,8 @@ class TestCommandsByTheTable(unittest.TestCase):
         self.assertEqual(out.event["details"]["pending_human_action"], "work_failed")
         self.assertEqual(engine.state_key(out.record), "development.waiting_human")
         text = status_ledger.render(dict(out.event, sequence=3), out.record, "https://run")
-        self.assertIn("still waits for a human: pending action `work_failed`", text)
+        self.assertIn("The contribution stays in `development.waiting_human`", text)
+        self.assertIn("Pending human action: `work_failed`", text)
         second = apply_command(out.record, commands.parse('/upstreaming resume revision=1 reason="go"'))
         self.assertEqual(second.event["kind"], "resume_development")
         self.assertEqual(engine.state_key(second.record), "development.fix_needed")
@@ -348,7 +349,8 @@ class TestReminders(unittest.TestCase):
         self.assertIn(f"/upstreaming submit-upstream revision=6 head={HEAD}", text)
         self.assertNotIn("refuse", text)
         self.assertNotIn("changes nothing", text)
-        self.assertIn("Reminder", text)
+        self.assertIn("`record_reminder` by the controller", text)
+        self.assertIn(f"Candidate head: `{HEAD}`.", text)
         # The next one is three business days later: Thursday, Friday, Monday.
         self.assertEqual(self.ticks(after, "2026-11-30T22:54:12.110884+00:00")[1], [])
         self.assertEqual([e["kind"] for e in self.ticks(after, "2026-11-30T22:54:12.110885+00:00")[1]],

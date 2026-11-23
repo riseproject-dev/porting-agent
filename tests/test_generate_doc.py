@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import lifecycle
 from scripts import generate_doc
 
 FORK = "riseproject-upstreaming/bravo"
@@ -113,22 +114,46 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
         self.assertIn("https://github.com/riseproject-dev/porting-agent/issues/42", rendered)
         self.assertIn("https://github.com/riseproject-upstreaming/bravo/pull/3", rendered)
         self.assertIn("https://github.com/example/bravo/pull/7", rendered)
-        self.assertIn("Development (waiting for CI)", rendered)
+        self.assertIn("Development (waiting for observation)", rendered)
         self.assertEqual(rendered.count("<tr class=\"event-log-row\">"), 2)
 
-    def test_paused_state_is_primary_status_with_pending_activity_context(self):
-        self.assertEqual(generate_doc.status_label({"phase": "development", "activity": "fix_needed",
+    def test_paused_state_is_primary_status_with_the_label_of_its_state(self):
+        self.assertEqual(generate_doc.status_label({"phase": "parked", "activity": "idle",
                                                     "paused": True}),
-                         "Paused (Development; fix needed pending)")
-        self.assertEqual(generate_doc.status_label({"phase": "development", "activity": "idle",
+                         "Paused (Parked)")
+        self.assertEqual(generate_doc.status_label({"phase": "development", "activity": "waiting_ci",
                                                     "paused": True}),
-                         "Paused (Development)")
+                         "Paused (Development (waiting for observation))")
 
     def test_submission_gate_names_the_human_step(self):
         self.assertEqual(
-            generate_doc.status_label({"phase": "handoff", "activity": "awaiting_submission"}),
-            "Ready for upstream (waiting for a human to request submission)")
+            generate_doc.status_label({"phase": "handoff", "activity": "awaiting_submission",
+                                       "pending_human_action": {"kind": "submit_upstream"}}),
+            "Ready for upstream (waiting for a human: submit upstream)")
 
+    def test_every_state_of_the_table_has_a_label_from_its_kind(self):
+        from tests.helpers import contribution
+        self.assertEqual(set(generate_doc.PHASE_LABELS), set(lifecycle.PHASES))
+        for key, spec in lifecycle.LIFECYCLE.items():
+            phase, activity = key.split(".")
+            label = generate_doc.status_label(contribution(phase=phase, activity=activity))
+            with self.subTest(state=key):
+                self.assertTrue(label.startswith(generate_doc.PHASE_LABELS[phase]))
+                if spec.kind in lifecycle.REMINDER_KINDS:
+                    self.assertIn("waiting for a human", label)
+                elif spec.kind in ("work", "auto_wait"):
+                    self.assertRegex(label, r"\((next: [a-z_]+.*|waiting (for|until) .+)\)$")
+                self.assertNotIn("capacity wait", label)
+
+    def test_work_that_is_due_names_the_guard_it_waits_on(self):
+        from tests.helpers import contribution
+        label = generate_doc.status_label(contribution(activity="fix_needed"))
+        self.assertEqual(label, "Development (next: request_patch, once worker slot free; "
+                                "capacity available)")
+        exhausted = contribution(activity="fix_needed")
+        exhausted["budget"]["attempts_used"] = 99
+        self.assertEqual(generate_doc.status_label(exhausted),
+                         "Development (next: exhaust_work_total)")
 
     def test_closed_names_its_terminal_reason(self):
         for reason, label in (("abandoned", "Closed (abandoned)"),

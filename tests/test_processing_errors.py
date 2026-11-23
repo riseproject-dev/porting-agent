@@ -734,7 +734,8 @@ class TestErrorText(unittest.TestCase):
         event = dict([r for kind, r in staged_for(output, A) if kind == "events"][0], sequence=7)
         body = status_ledger.render(event, paused, "https://github.com/run/1")
         self.assertIn("**Upstreaming r0 · development/paused**", body)
-        self.assertIn("unexpected error while it processed this contribution", body)
+        self.assertIn("`pause_on_processing_error` by the controller: an unexpected error while "
+                      "the controller processed this contribution in the tick.", body)
         self.assertIn("> Boom: bad 'value'", body)
         self.assertIn("Step: observation. Run: 4242.", body)
         self.assertIn('/upstreaming resume revision=0 reason="..."', body)

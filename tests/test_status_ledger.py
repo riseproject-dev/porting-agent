@@ -52,46 +52,6 @@ class TestStatusLedger(unittest.TestCase):
         self.assertNotIn("force-develop", body)
         self.assertIn("<!-- upstreaming-ledger:", body)
 
-    def test_paused_feedback_ledger_does_not_claim_work_was_requested(self):
-        record = contribution(phase="development", activity="fix_needed", revision=8, paused=True)
-        event = lifecycle._event(record, record, "development_review_feedback", "observation",
-                                 "review-1", NOW, True)
-        event["sequence"] = 14
-        body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertTrue(body.startswith("**Upstreaming r8 · development/paused**"))
-        self.assertIn("Repair remains pending", body)
-        self.assertIn("no Work was requested because the contribution is paused", body)
-        self.assertNotIn("and requested repair", body)
-        self.assertNotIn("/upstreaming pause revision=8", body)
-        self.assertIn("/upstreaming resume revision=8", body)
-
-    def test_pause_event_explains_retained_pending_state(self):
-        record = contribution(phase="development", activity="fix_needed", revision=10, paused=True)
-        event = lifecycle._event(record, record, "command:pause", "command", "comment-1", NOW, False)
-        event["sequence"] = 15
-        body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertTrue(body.startswith("**Upstreaming r10 · development/paused**"))
-        self.assertIn("Paused automatic work", body)
-        self.assertIn("Pending lifecycle activity `fix needed` is retained until resume", body)
-
-    def test_unpaused_feedback_ledger_reports_repair_request(self):
-        record = contribution(phase="development", activity="fix_needed", revision=8, paused=False)
-        event = lifecycle._event(record, record, "development_review_feedback", "observation",
-                                 "review-1", NOW, True)
-        event["sequence"] = 14
-        body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn("change feedback and requested repair", body)
-
-    def test_explanation_only_ledger_does_not_claim_repair(self):
-        record = contribution(phase="development", activity="fix_needed", revision=8, paused=True)
-        event = lifecycle._event(record, record, "development_review_inquiry", "observation",
-                                 "inquiry-1", NOW, False)
-        event["sequence"] = 14
-        body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn("explanation-only", body)
-        self.assertIn("No repair was requested", body)
-        self.assertNotIn("requested repair", body)
-
     def test_gate_review_rows_render_what_they_did(self):
         import engine
         from tests.helpers import awaiting_submission, policy
@@ -102,13 +62,15 @@ class TestStatusLedger(unittest.TestCase):
             values={"processed_review_ids": [], "processed_review_comment_ids": [],
                     "processed_pr_conversation_comment_ids": [88]},
             details={"comments": [{"url": "https://github.com/o/r/pull/1#issuecomment-88",
-                                   "body": "Why `riscv64` only? <!-- x -->"}]})
+                                   "body": "Why `riscv64` only? <!-- x --> @someone [l](u)"}]})
         body = status_ledger.render(dict(explained.event, sequence=24), explained.record,
                                     "https://github.com/run")
         self.assertTrue(body.startswith("**Upstreaming r0 · handoff/awaiting_submission**"))
-        self.assertIn("explanation-only", body)
-        self.assertIn("nothing is answered automatically", body)
-        self.assertIn("> Why 'riscv64' only?", body)
+        self.assertIn("`record_explanation` by observation: authorized explanation-only inquiry.",
+                      body)
+        self.assertIn("The contribution stays in `handoff.awaiting_submission`", body)
+        # The comment is quoted as a code span: nothing in it renders.
+        self.assertIn("> `Why 'riscv64' only?  x  @someone [l](u)`", body)
         self.assertIn("([comment](https://github.com/o/r/pull/1#issuecomment-88))", body)
         self.assertEqual(body.count("<!--"), 1)   # only the ledger marker
         self.assertIn("/upstreaming submit-upstream revision=0", body)
@@ -119,7 +81,10 @@ class TestStatusLedger(unittest.TestCase):
         body = status_ledger.render(dict(reviewed.event, sequence=25), reviewed.record,
                                     "https://github.com/run")
         self.assertTrue(body.startswith("**Upstreaming r1 · development/fix_needed**"))
-        self.assertIn("Recorded authorized change feedback", body)
+        self.assertIn("`record_actionable_review` by observation: authorized actionable review "
+                      "feedback", body)
+        self.assertIn("Now `development.fix_needed`: "
+                      + lifecycle.LIFECYCLE["development.fix_needed"].description, body)
         self.assertNotIn(chr(0x2014), body)
 
     def test_development_pr_ledger_offers_dossier_refresh(self):
@@ -129,27 +94,22 @@ class TestStatusLedger(unittest.TestCase):
         body = status_ledger.render(event, record, "https://github.com/run")
         self.assertIn('/upstreaming refresh revision=7 reason="..."', body)
 
-    def test_repair_exhaustion_park_renders_and_offers_resume(self):
-        before = contribution(phase="development", activity="fix_needed", revision=7)
-        record = dict(before, revision=8, phase="parked", activity="idle",
-                      parked_reason="repair-attempt budget exhausted", previous_phase="development")
-        event = lifecycle._event(before, record, "repair_attempts_exhausted", "result", "1", NOW, True)
-        event["sequence"] = 9
-        body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn("r8 · parked/idle", body)
-        self.assertIn("Exhausted the bounded repair-attempt budget and parked the contribution", body)
-        self.assertIn('/upstreaming resume revision=8 reason="..."', body)
-
     def test_closed_ledger_offers_no_command(self):
-        parked = contribution(phase="parked", activity="idle", revision=8, parked_reason="x")
-        record = dict(parked, phase="closed", terminal_reason="abandoned")
-        event = lifecycle._event(parked, record, "abandon", "command", "c", NOW, False)
-        event["sequence"] = 9
-        body = status_ledger.render(event, record, "https://github.com/run")
+        import engine
+        from tests.helpers import policy
+        parked = contribution(phase="parked", activity="idle", revision=8, parked_reason="x",
+                              previous_phase="development")
+        out = engine.apply_transition(parked, "abandon", policy=policy(), now=NOW, cause_id="c",
+                                      command=__import__("commands").parse(
+                                          '/upstreaming abandon revision=8 reason="done"'))
+        self.assertTrue(out.accepted, out.reason)
+        body = status_ledger.render(dict(out.event, sequence=9), out.record,
+                                    "https://github.com/run")
         self.assertIn("r8 · closed/idle", body)
-        self.assertIn("Abandoned the parked contribution", body)
+        self.assertIn("`abandon` by the command `/upstreaming abandon`", body)
+        self.assertIn("Now `closed.idle`: " + lifecycle.LIFECYCLE["closed.idle"].description, body)
         self.assertNotIn("Possible next commands", body)
-        self.assertNotIn("/upstreaming", body)
+        self.assertNotIn("/upstreaming abandon revision", body)
 
     def test_ledger_never_offers_a_retired_command(self):
         """In every admitted state, paused or not, the offered commands are
@@ -175,37 +135,29 @@ class TestStatusLedger(unittest.TestCase):
                 if state == "closed.idle" and not paused:
                     self.assertEqual(status_ledger._command_lines(record), [])
 
-    def test_resume_with_an_admission_override_states_what_it_does(self):
+    def test_an_admission_override_is_shown_as_data(self):
         parked = contribution(phase="parked", activity="idle", revision=8, parked_reason="x")
         record = dict(parked, phase="queued", revision=9, admission_override={
             "class": "optimized_backend", "paths": ["setup.py"], "reason": "r"})
         event = lifecycle._event(parked, record, "restart_generation", "command", "c", NOW, True)
         event["sequence"] = 9
-        event["details"] = {"admission_override": record["admission_override"]}
+        event["details"] = {"verb": "restart_generation", "from_state": "parked.idle",
+                            "to_state": "queued.idle",
+                            "admission_override": record["admission_override"]}
         body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn("The admission override is recorded (class `optimized_backend`, paths "
-                      "`setup.py`)", body)
-        self.assertIn("a dossier that decides park then admits development with the override's "
-                      "class and paths", body)
-        self.assertNotIn("force-develop", body)
-
-    def test_the_dossier_admission_states_the_override_it_applied(self):
-        record = contribution(phase="provisioning", activity="idle", revision=10, fork=None)
-        before = dict(record, phase="investigation", activity="agent_running", revision=9)
-        override = {"class": "optimized_backend", "paths": ["setup.py"], "reason": "r"}
-        event = lifecycle._event(before, record, "admit_development", "result", "1", NOW, True)
-        event["sequence"] = 10
-        event["details"] = {"admission_override": override}
-        body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn("the recorded admission override (class `optimized_backend`, paths "
-                      "`setup.py`) admitted development instead", body)
+        self.assertIn("`restart_generation` by the command `/upstreaming resume`", body)
+        self.assertIn("Admission override: class `optimized_backend`, paths `setup.py`.", body)
         closed = contribution(phase="closed", activity="idle", terminal_reason="no_work")
+        before = dict(closed, phase="investigation", activity="agent_running")
         event = lifecycle._event(before, closed, "close_investigation", "result", "1", NOW, False)
         event["sequence"] = 11
-        event["details"] = {"admission_override_not_applied": override}
+        event["details"] = {"verb": "close_investigation", "from_state": "investigation.agent_running",
+                            "to_state": "closed.idle", "admission_override_not_applied": True}
         body = status_ledger.render(event, closed, "https://github.com/run")
-        self.assertIn("closed the contribution", body)
+        self.assertIn("`close_investigation` by the Result of requested Work: verified dossier "
+                      "decision close.", body)
         self.assertIn("The recorded admission override was not applied", body)
+
 
     def test_publish_appends_one_app_authored_comment_for_written_event(self):
         with tempfile.TemporaryDirectory() as td:
@@ -371,4 +323,55 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
         self.assertEqual([r["status"] for r in receipts], ["existing", "status_page_only", "created"])
         self.assertEqual([c[0] for c in api.calls], ["GET", "POST", "GET"])
         self.assertIn("<!-- upstreaming-ledger:example--proj/12:2 -->", api.comment["body"])
-        self.assertIn("Reminder", api.comment["body"])
+        self.assertIn("`record_reminder` by the controller", api.comment["body"])
+
+
+class TestWordingIsTheTable(unittest.TestCase):
+    """Every entry of a table event is generated from the row it took and
+    the state it led to; no verb has hand-written wording."""
+
+    def test_every_row_renders_its_verb_guards_description_and_state(self):
+        import engine
+        for edge in lifecycle.table_edges():
+            t = edge.transition
+            phase, activity = edge.target.split(".")
+            record = contribution(phase=phase, activity=activity, revision=2)
+            event = table_event(edge.verb, edge.source, edge.target)
+            with self.subTest(edge=edge[:3]):
+                text = status_ledger.table_message(event, record)
+                self.assertTrue(text.startswith(f"`{edge.verb}` "))
+                for guard in t.guard:
+                    if guard not in status_ledger.GENERIC_GUARDS:
+                        self.assertIn(guard, text)
+                if t.description:
+                    self.assertIn(t.description.rstrip("."), text)
+                self.assertIn(lifecycle.LIFECYCLE[edge.target].description.rstrip("."), text)
+                for entry in t.effects.sets:
+                    name, literal, value = entry.partition("=")
+                    if name == "pending_human_action" and literal:
+                        self.assertIn(f"Pending human action: `{value}`", text)
+                if t.charges:
+                    self.assertIn(", ".join(f"`{c}`" for c in t.charges), text)
+                self.assertNotIn(chr(0x2014), text)
+                self.assertTrue(engine.resolve(edge.source, edge.verb))
+
+    def test_every_flag_verb_renders_from_the_table(self):
+        for flag in lifecycle.FLAGS.values():
+            for verb, t in (*flag.set_by.items(), *flag.cleared_by.items()):
+                with self.subTest(verb=verb):
+                    event = table_event(verb, "development.waiting_ci", "development.waiting_ci")
+                    text = status_ledger.table_message(event, contribution())
+                    self.assertTrue(text.startswith(f"`{verb}` "))
+                    if t.description:
+                        self.assertIn(t.description.rstrip("."), text)
+
+    def test_only_events_outside_the_table_have_fixed_wording(self):
+        import engine
+        self.assertFalse(set(status_ledger.RECORDED_KINDS) & engine.table_verbs())
+        self.assertFalse(hasattr(status_ledger, "MESSAGES"))
+
+    def test_an_unknown_kind_is_named_quoted(self):
+        record = contribution()
+        event = table_event("some_kind`<b>", "x", "y")
+        body = status_ledger.render(event, record, "https://github.com/run")
+        self.assertIn("Recorded `some_kind'<b>`.", body)

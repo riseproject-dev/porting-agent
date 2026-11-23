@@ -36,7 +36,9 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
         body = status_ledger.render(dict(out.event, sequence=4), out.record, "https://github.com/run")
         visible = body.partition("<details>")[0]
         self.assertTrue(body.startswith("**Upstreaming r5 · handoff/awaiting_submission** -- "))
-        self.assertIn(f"Required CI passed on the exact head `{SHA_A}`", visible)
+        self.assertIn("`nominate_for_handoff` by observation: every required CI job executed and "
+                      "passed on the exact head", visible)
+        self.assertIn(f"Candidate head: `{SHA_A}`.", visible)
         self.assertIn(f"```text\n/upstreaming submit-upstream revision=5 head={SHA_A}\n```", visible)
         self.assertNotIn("refuse", body)
         self.assertNotIn("approve-handoff", body)

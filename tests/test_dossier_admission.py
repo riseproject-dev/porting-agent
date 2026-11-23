@@ -221,9 +221,10 @@ class TestDossierDecisionMatrix(unittest.TestCase):
             event = dict([r for kind, r in staged if kind == "events"][0], sequence=5)
             body = status_ledger.render(event, new, "https://github.com/run")
             with self.subTest(decision=decision, override=bool(override)):
-                self.assertIn(status_ledger.MESSAGES[event["kind"]], body)
+                self.assertIn(status_ledger.table_message(event, new), body)
+                self.assertIn(f"`{event['kind']}` by the Result of requested Work", body)
                 if decision == "park" and override:
-                    self.assertIn("admitted development instead", body)
+                    self.assertIn("Admission override: class", body)
                 if decision == "close" and override:
                     self.assertIn("override was not applied", body)
 

@@ -81,6 +81,8 @@ class TestRootModuleMigration(unittest.TestCase):
         expected_script_roots = {
             "scripts/audit_repository_settings.py": "parents[1]",
             "scripts/dependencies/sync.py": "parents[2]",
+            # The status page reads the lifecycle table of the repository root.
+            "scripts/generate_doc.py": "parents[1]",
         }
         observed = {}
         for path in ROOT.glob("scripts/**/*.py"):

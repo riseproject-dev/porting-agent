@@ -9,36 +9,33 @@ import argparse
 import html
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import engine  # noqa: E402
+import lifecycle  # noqa: E402
 
 CONTROL_REPO = "riseproject-dev/porting-agent"
 GITHUB = "https://github.com"
 
+# The name of each phase of the lifecycle table on the page.
 PHASE_LABELS = {
-    "intake": "Requested",
+    "queued": "Requested",
     "investigation": "Investigating",
-    "parked": "Parked",
-    "closed": "Closed",
-    "released": "Released",
     "provisioning": "Preparing fork",
     "development": "Development",
     "handoff": "Ready for upstream",
     "upstream_review": "Upstream review",
-    "completed": "Completed",
+    "release_wait": "Waiting for release",
+    "released": "Released",
+    "parked": "Parked",
+    "closed": "Closed",
 }
-ACTIVITY_LABELS = {
-    "idle": "",
-    "agent_running": "agent running",
-    "waiting_ci": "waiting for CI",
-    "waiting_human": "waiting for human",
-    "awaiting_submission": "waiting for a human to request submission",
-    "cleaning_debug": "removing debug commits",
-    "closing_internal_pr": "closing the development PR",
-    "preparing_submission": "posting the submission package",
-    "waiting_upstream_pr": "waiting for a human to open the upstream PR",
-}
-
 
 # Why a contribution is closed (`terminal_reason` of `closed.idle`).
 TERMINAL_REASON_LABELS = {
@@ -49,20 +46,83 @@ TERMINAL_REASON_LABELS = {
     "already_released": "already released",
 }
 
+# What a contribution waits for when no row the controller takes can apply
+# yet, by the trigger of the rows that leave its state.
+WAIT_LABELS = {
+    lifecycle.Trigger.OBSERVATION: "observation",
+    lifecycle.Trigger.RESULT: "the Result of requested Work",
+    lifecycle.Trigger.OPERATION: "a remote operation",
+}
+# The rows a human command or a rule takes in many states say nothing about
+# what a state waits for.
+_RULE_VERBS = frozenset(lifecycle.RULES)
 
-def status_label(state: dict) -> str:
-    phase = PHASE_LABELS.get(state["phase"], state["phase"].replace("_", " ").title())
-    if state["phase"] == "closed" and state.get("terminal_reason"):
-        reason = state["terminal_reason"]
-        phase += f" ({TERMINAL_REASON_LABELS.get(reason, reason.replace('_', ' '))})"
-        return phase
-    activity = ACTIVITY_LABELS.get(
-        state["activity"], state["activity"].replace("_", " ")
-    )
-    if state.get("paused"):
-        pending = f"; {activity} pending" if activity else ""
-        return f"Paused ({phase}{pending})"
-    return f"{phase} ({activity})" if activity else phase
+
+def _policy() -> dict:
+    return json.loads((ROOT / "policy.json").read_text())
+
+
+def _waiting_for(state: dict, key: str, ci_evidence: dict | None) -> str:
+    """What a state of kind `work` or `auto_wait` waits for, from the table.
+    In an `auto_wait` state: the first row the controller takes whose record
+    guards hold, with the guards only the controller observes (a worker
+    slot, capacity), or else the first guard of such a row that does not
+    hold. Otherwise, and in a `work` state: the triggers of the rows that
+    leave the state."""
+    unmet = None
+    if lifecycle.LIFECYCLE[key].kind == "auto_wait":
+        ctx = engine.Context(state, key, _policy(), state.get("updated_at") or "",
+                             ci_evidence=ci_evidence)
+        for edge in lifecycle.state_edges(key):
+            t = edge.transition
+            if t.trigger != lifecycle.Trigger.TICK or edge.verb in _RULE_VERBS:
+                continue
+            facts, why = [], None
+            for guard in t.guard:
+                predicate = engine.PREDICATES.get(guard)
+                if predicate is None:
+                    why = guard
+                elif predicate.kind == "fact":
+                    facts.append(guard)
+                else:
+                    try:
+                        why = guard if predicate.check(ctx) is not None else None
+                    except (KeyError, TypeError, ValueError, AttributeError):
+                        why = guard
+                if why:
+                    break
+            if why is None:
+                return f"next: {edge.verb}" + (f", once {'; '.join(facts)}" if facts else "")
+            unmet = unmet or why
+    triggers = [WAIT_LABELS[e.transition.trigger] for e in lifecycle.state_edges(key)
+                if e.transition.trigger in WAIT_LABELS and e.verb not in _RULE_VERBS]
+    if triggers:
+        return "waiting for " + " or ".join(dict.fromkeys(triggers))
+    return f"waiting until {unmet}" if unmet else ""
+
+
+def status_label(state: dict, ci_evidence: dict | None = None) -> str:
+    """The status of a contribution from the lifecycle table: its phase, the
+    kind of its state, and what it waits for: the pending human action of a
+    human wait, or the unmet guard of the next row the controller takes."""
+    phase = PHASE_LABELS.get(state["phase"], state["phase"].replace("_", " "))
+    key = f"{state['phase']}.{state['activity']}"
+    spec = lifecycle.LIFECYCLE.get(key)
+    if spec is None:
+        detail = key
+    elif spec.kind == "terminal":
+        reason = state.get("terminal_reason")
+        return f"{phase} ({TERMINAL_REASON_LABELS.get(reason, reason.replace('_', ' '))})" \
+            if reason else phase
+    elif spec.kind == "generation_end":
+        detail = ""
+    elif spec.kind in lifecycle.REMINDER_KINDS:
+        pending = (state.get("pending_human_action") or {}).get("kind")
+        detail = "waiting for a human" + (f": {pending.replace('_', ' ')}" if pending else "")
+    else:
+        detail = _waiting_for(state, key, ci_evidence)
+    label = f"{phase} ({detail})" if detail else phase
+    return f"Paused ({label})" if state.get("paused") else label
 
 
 def escape_html(value: str) -> str:
@@ -403,7 +463,7 @@ def render(states: list[dict], state_root: Path | None = None) -> str:
             html_link(full_name, repo_url(full_name)) if repo_url(full_name)
             else escape_cell(full_name),
             html_link(f"#{issue}", repo_url(CONTROL_REPO, "issues", issue)),
-            escape_cell(status_label(state)),
+            escape_cell(status_label(state, data.evidence(state.get("last_ci_evidence_id")))),
             html_link(f"#{fork.get('pr_number')}", internal_url) if internal_url else "-",
             html_link(f"#{upstream_pr.get('number')}", upstream_pr.get("url")) if upstream_pr else "-",
             escape_cell(updated),
