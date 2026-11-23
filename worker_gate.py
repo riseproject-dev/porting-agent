@@ -11,6 +11,7 @@ import json
 import re
 from pathlib import Path
 
+import commit_rules
 import schemas
 from common import validate_scope_paths
 from work import WRITE_TASKS
@@ -102,6 +103,21 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
         )
         if any(value in additions for value in FORBIDDEN_PATCH_TEXT):
             raise WorkerGateError("patch adds forbidden workflow content")
+        rules = (task.get("context") or {}).get("commit_rules")
+        if rules is not None:
+            # The measurable commit conventions of the verified dossier, from
+            # the trusted Work payload. ``{debug}`` commits are exempt; the
+            # number of commits is checked at submission, where the review
+            # may squash.
+            try:
+                rules = commit_rules.normalize(rules)
+            except commit_rules.RuleError as exc:
+                raise WorkerGateError(f"the Work carries invalid commit rules: {exc}") from None
+            broken = commit_rules.series_problems(commit_rules.mbox_messages(mbox), rules,
+                                                  count_commits=False)
+            if broken:
+                raise WorkerGateError("the series breaks the project's commit conventions: "
+                                      + "; ".join(broken[:8]))
     elif mbox is not None or proposal.get("patch_digest") is not None or changed:
         raise WorkerGateError("no-change proposal must not carry patch bytes or changed files")
 

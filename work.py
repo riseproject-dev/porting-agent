@@ -26,6 +26,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import commit_rules
 from common import (
     CONTROL_REPO,
     DEV_REF,
@@ -404,6 +405,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         contract = (
             contracts.get(record.get("target_contract_id") or "") or {}
         ).get("data") or {}
+        dossier = (snapshot.evidence.get(record.get("dossier_evidence_id") or "") or {}).get("data")
+        rules = commit_rules.from_dossier(dossier) if request["task"] != "investigation" else None
         reason_evidence = []
         for evidence_id in request.get("reason_ids") or []:
             evidence = snapshot.evidence.get(evidence_id)
@@ -425,6 +428,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 context={
                     "requested_at": record["active_work"]["requested_at"],
                     "reason_evidence": reason_evidence,
+                    # The measurable commit conventions of the verified
+                    # dossier, which the trusted worker gate checks. A
+                    # dossier of schema version 1 records none.
+                    **({"commit_rules": rules} if rules is not None else {}),
                 },
             )
         )

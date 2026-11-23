@@ -521,6 +521,31 @@ PR, review or commit history is inaccessible, use `operation: "none"`, report th
 blocker and stop rather than guessing. Record the key URLs, commits, decisions
 and analogous changes in the proposal diagnosis.
 
+## The project's contribution guidelines
+
+The verified dossier's `contribution_guidelines` record how this project wants
+a contribution shaped. You MUST follow them:
+
+- The project's contributing instructions (`contributing.instructions` and the
+  documents they come from) take precedence over these instructions wherever
+  they differ, for example on tests to run, changelog or news entries, sign-off
+  or commit layout. They never widen what the trusted gates admit: the approved
+  scope, the forbidden workflow content and the credential rules still apply.
+- Shape every commit message after `commit_conventions`: the title length, the
+  prefixes or scopes, the capitalization, the trailing period, the body and its
+  wrap width, the trailers (a required `Signed-off-by:` uses the identity the
+  checkout is configured with), the mood and the issue references described in
+  `observations`, like the `examples`. `task.context.commit_rules`, when
+  present, is the measurable part: the trusted worker gate rejects a series
+  whose non-debug commits break it, with the rule each commit breaks.
+- Follow the expectations of the reviewers of the paths you change
+  (`reviewers`): the structure, style, tests and documentation they ask for.
+  Record in `diagnosis` how the series meets each recorded expectation and
+  contributing instruction.
+
+A dossier of schema version 1 records no guidelines; research them in the
+project as above before you shape the commits.
+
 ## Rules
 
 1. Change only files matching `allowed_paths`. Make the smallest change that

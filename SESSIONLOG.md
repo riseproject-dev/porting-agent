@@ -38,3 +38,4 @@ One bullet per commit, oldest first: what changed and how.
 - Adds this log with one entry per commit of the current work and an AGENTS.md rule that every commit adds its own entry.
 - Reduces every entry of this log to what changed and how, without subject or date, and updates the AGENTS.md rule to match.
 - Adds the contribution guidelines (pull request templates, contributing instructions, measured commit conventions with measurable rules, and reviewers of the changed paths) to dossier schema version 2, and makes the research gate require them, with "none found" admitted only with the record of the search.
+- Carries the dossier's measurable commit rules in the Work payload and makes the trusted worker gate reject a series whose non-debug commits break them; the worker is told to follow the contributing instructions, commit conventions and reviewer expectations.

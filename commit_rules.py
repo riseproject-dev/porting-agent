@@ -179,7 +179,7 @@ def message_problems(message: str, rules: dict) -> list[str]:
         problems.append(f"the commit {shown!r} has no body")
     width = rules.get("body_line_max_length")
     if width is not None:
-        long = [line for line in body if len(line) > width and " " in line.strip()
+        long = [line for line in text if len(line) > width and " " in line.strip()
                 and "://" not in line]
         if long:
             problems.append(f"the commit {shown!r} has {len(long)} body line"
