@@ -56,3 +56,4 @@ One bullet per commit, oldest first: what changed and how.
 - CI evidence lists the jobs of a run sorted by job id, so observing the same run again no longer rewrites the evidence file on every tick.
 - The underscore is no longer folded to a hyphen when attribution trailers are matched, so a body line such as `order_by: x` is not refused as a trailer.
 - `lifecycle check` now reports a table mutation that breaks the settled review, repair, first-patch and resume decisions, and the known gap listing those missed violations is removed.
+- A resume from `parked.idle` that names only `class` or only `paths` is refused when it is posted and changes nothing, since such an override could never admit development.

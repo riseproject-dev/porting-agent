@@ -325,9 +325,10 @@ def _budget_note(event: dict) -> str:
 
 
 def _override_text(override: dict) -> str:
-    """The class and paths of an admission override, quoted for the issue."""
-    return (f"class `{_quotable(override.get('class') or 'not given', 60)}`, paths "
-            f"`{_quotable(', '.join(override.get('paths') or []) or 'not given', 300)}`")
+    """The class and paths of an admission override, quoted for the issue.
+    The controller records an override only with both."""
+    return (f"class `{_quotable(override.get('class') or '', 60)}`, paths "
+            f"`{_quotable(', '.join(override.get('paths') or []), 300)}`")
 
 
 def _quoted_comments(event: dict) -> str:
@@ -445,7 +446,8 @@ def render(event: dict, record: dict, run_url: str) -> str:
         message += (f" The admission override is recorded ({_override_text(override)}). "
                     "The new investigation still runs; a dossier that decides park then admits "
                     "development with the override's class and paths, and a dossier that "
-                    "decides develop or close is applied as it decides.")
+                    "decides develop or close is applied as it decides. An override names both "
+                    "a class and paths; a resume that names only one of them is refused.")
     elif kind in ("admit_development", "readmit_development") and override:
         message += (f" The dossier decided park; the recorded admission override "
                     f"({_override_text(override)}) admitted development instead.")

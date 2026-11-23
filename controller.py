@@ -1123,18 +1123,26 @@ def _refusal(record: dict, cmd: Command, why: str) -> str:
     return why
 
 
+PARTIAL_OVERRIDE = ("an admission override names both `class` and `paths`, or neither: the "
+                    "override admits development only with a class and paths, so one of them "
+                    "alone could never admit")
+
+
 def admission_override(cmd: Command) -> dict | None:
     """The admission override a resume from ``parked.idle`` records: its
     ``class`` and ``paths`` with the command's reason, or ``None`` when it
-    names neither. Raises ``ValueError`` for an unsafe scope path."""
+    names neither. Raises ``ValueError`` when it names only one of them (the
+    dossier fold refuses such an override against every decision park, so
+    each investigation it starts would be wasted) and for an unsafe scope
+    path."""
     if "class" not in cmd.args and "paths" not in cmd.args:
         return None
-    override: dict = {"reason": cmd.args["reason"]}
-    if "class" in cmd.args:
-        override["class"] = cmd.args["class"]
-    if "paths" in cmd.args:
-        override["paths"] = validate_scope_paths([g for g in cmd.args["paths"].split(",") if g])
-    return override
+    if "class" not in cmd.args or "paths" not in cmd.args:
+        raise ValueError(PARTIAL_OVERRIDE)
+    paths = validate_scope_paths([g for g in cmd.args["paths"].split(",") if g])
+    if not cmd.args["class"] or not paths:
+        raise ValueError(PARTIAL_OVERRIDE)
+    return {"reason": cmd.args["reason"], "class": cmd.args["class"], "paths": paths}
 
 
 def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict, operations: dict,

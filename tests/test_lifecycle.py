@@ -209,15 +209,26 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertEqual(out.record["admission_override"], override)
         self.assertEqual((out.record["phase"], out.record["activity"]), ("queued", "idle"))
         self.assertEqual(out.event["details"]["admission_override"], override)
-        only_class = apply(self.parked(), f"/upstreaming resume contribution={CID} revision=8 "
-                                          "class=optimized_backend reason=r")
-        self.assertEqual(only_class.record["admission_override"],
-                         {"class": "optimized_backend", "reason": "r"})
         schemas.validate("contribution", out.record)
+
+    def test_a_partial_admission_override_is_refused(self):
+        """An override admits development only with both a class and paths:
+        a resume that names one of them alone is refused when it is posted,
+        with nothing changed, instead of starting investigations that the
+        dossier fold could never admit."""
+        for args in ("class=optimized_backend", 'paths=".github/workflows/*"'):
+            with self.subTest(args=args):
+                parked = self.parked()
+                out = apply(parked, f"/upstreaming resume contribution={CID} revision=8 "
+                                    f"{args} reason=r")
+                self.assertFalse(out.accepted)
+                self.assertIn("names both `class` and `paths`, or neither", out.reason)
+                self.assertEqual(out.record, parked)
+                self.assertIsNone(out.event)
 
     def test_the_admission_override_needs_parked_and_a_safe_scope(self):
         unsafe = apply(self.parked(), f'/upstreaming resume contribution={CID} revision=8 '
-                                      'paths="../etc" reason=r')
+                                      'class=optimized_backend paths="../etc" reason=r')
         self.assertFalse(unsafe.accepted)
         self.assertIn("unsafe scope path", unsafe.reason)
         waiting = contribution(phase="investigation", activity="waiting_human", revision=3,
