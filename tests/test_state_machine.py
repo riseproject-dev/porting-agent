@@ -550,7 +550,8 @@ class TestLifecycleTable(unittest.TestCase):
             ("handoff.waiting_human", "rearm_dispatch"),
             ("upstream_review.waiting_human", "rearm_dispatch"),
         ("upstream_review.waiting_human", "resume_renamed_base"),
-        *((wait, "resume_upstream_read") for wait in lc.UPSTREAM_READ_RESUMES)})
+        *((wait, "resume_upstream_read") for wait in lc.UPSTREAM_READ_RESUMES),
+        *((wait, "resume_renamed_upstream") for wait in lc.UPSTREAM_READ_RESUMES)})
         self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
                          {"resume_stale"})
 
@@ -762,6 +763,25 @@ class TestLifecycleTable(unittest.TestCase):
         record = fresh
         self.assertEqual((record["phase"], record["activity"]), (phase, activity))
 
+    def test_the_exhaustion_of_a_row_is_declared_not_read_from_its_guards(self):
+        edge = lc.find_edge("queued.idle", "exhaust_source_reads")
+        reworded = dataclasses.replace(edge.transition,
+                                       guard=("reads kept failing",) + edge.transition.guard[1:])
+        self.assertEqual(lc.exhausted_budgets(edge._replace(transition=reworded)),
+                         ["source_reads"])
+        undeclared = dataclasses.replace(edge.transition, exhausts=())
+        self.assertEqual(lc.exhausted_budgets(edge._replace(transition=undeclared)), [])
+        # The definitive answer about a renamed repository is no exhaustion,
+        # and its wait names no counter.
+        renamed = lc.find_edge("queued.idle", "require_renamed_upstream")
+        self.assertEqual(lc.exhausted_budgets(renamed), [])
+        self.assertEqual(lc.counters_named(renamed), set())
+        self.assertFalse([s for s in renamed.transition.effects.sets
+                          if s.startswith(lc.PENDING_COUNTER)])
+        self.assertEqual(lc.exhausted_budgets(lc.find_edge("queued.idle",
+                                                           "require_upstream_access")),
+                         ["source_reads"])
+
     def test_table_is_a_definition_without_annotations(self):
         source = (ROOT / "lifecycle.py").read_text()
         table = source[source.index("# Lifecycle table"):]
@@ -792,6 +812,12 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             key = next(k for k in transitions if k[0] == verb)
             transitions[key] = dataclasses.replace(transitions[key], **changes)
         return _with_state(state, transitions=transitions)
+
+    def test_a_declared_exhaustion_of_another_budget(self):
+        self.assertReports(
+            self.with_row("queued.idle", "require_renamed_upstream", exhausts=("work_total",)),
+            "queued.idle --require_renamed_upstream--> planning.waiting_human: declares the "
+            "exhaustion of 'work_total', which does not name 'require_renamed_upstream'")
 
     def test_work_allocation_without_work_total(self):
         self.assertReports(

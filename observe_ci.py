@@ -234,13 +234,15 @@ def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: d
     of the upstream PR the package asked for.
 
     Exactly one candidate that satisfies every filter (``handoff.pull_mismatch``)
-    takes ``verify_upstream_pr``. When none does, a single candidate that
-    satisfies every filter but the base, and targets the name GitHub now
-    redirects the frozen base to, whose history still contains the recorded
-    base commit (``collect.base_renamed_to``), takes it too, and the record
-    follows the new name: the upstream renamed its base branch before the PR
-    was opened. Anything else that does not match (another fork head, a
-    candidate that fails a filter, several matching candidates) is recorded
+    takes ``verify_upstream_pr``. When none does, the candidates that satisfy
+    every filter but the base and target the name GitHub now redirects the
+    frozen base to (``collect.base_redirect``) are considered: a single one,
+    whose branch still contains the recorded base commit
+    (``collect.base_contained``), takes it too, and the record follows the
+    new name: the upstream renamed its base branch before the PR was opened.
+    A candidate on another branch never makes it ambiguous. Anything else
+    that does not match (another fork head, a candidate that fails a
+    filter, several matching candidates) is recorded
     once by ``record_audit_observation`` and never changes the state; the
     reminder states it."""
     cid = rec["contribution_id"]
@@ -250,8 +252,12 @@ def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: d
     base_ref = rec["upstream"].get("base_ref")
     if not matching:
         renamed = handoff.renamed_base_candidates(rec, prs, authority)
-        if len(renamed) == 1 and collect.base_renamed_to(api, rec, renamed[0]["base_ref"]):
-            matching, base_ref = renamed, renamed[0]["base_ref"]
+        # Only the candidates on the name GitHub redirects the frozen base
+        # to count: one on another branch never makes it ambiguous.
+        target = collect.base_redirect(api, rec) if renamed else None
+        renamed = [pr for pr in renamed if target is not None and pr["base_ref"] == target]
+        if len(renamed) == 1 and collect.base_contained(api, rec, target):
+            matching, base_ref = renamed, target
     if len(matching) == 1:
         pr = matching[0]
         details = {"pr_number": pr["number"], "url": pr["url"], "head": pr["head_sha"],

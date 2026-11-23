@@ -357,7 +357,9 @@ class Transition:
     ``command`` is the `/upstreaming` command that triggers it. ``guard``
     lists every condition that must hold; an unconditional transition states
     ``(ALWAYS,)``. ``charges`` names the ``BUDGETS`` entries one taking of
-    this transition charges.
+    this transition charges, and ``exhausts`` the ones whose exhaustion it
+    is: an explicit declaration, so that the wording of a guard never
+    decides it.
     """
 
     trigger: Trigger
@@ -366,6 +368,7 @@ class Transition:
     effects: Effects = field(default_factory=Effects)
     charges: tuple[str, ...] = ()
     description: str = ""
+    exhausts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -442,9 +445,10 @@ class Budget:
     is what one charge is, ``counter`` where the count lives. When the count
     reaches the limit, one of ``exhaustion_verbs`` is taken instead of the
     charging verb, from the charging state or the state the charging verb
-    leads to; its guard names the budget. ``infrastructure`` marks a budget
-    spent on infrastructure failures: its exhaustion always leads to a human
-    wait of the same phase and never ends the generation. Every exhaustion
+    leads to; its row declares the budget in ``Transition.exhausts``.
+    ``infrastructure`` marks a budget spent on infrastructure failures: its
+    exhaustion always leads to a human wait of the same phase and never ends
+    the generation. Every exhaustion
     that leads to a human wait names its counter in
     ``pending_human_action.counter``, and the resume from that wait starts
     exactly that counter again.
@@ -503,15 +507,20 @@ UPSTREAM_BOUND = "upstream identity and base bound"
 # renamed to) leads to the human wait at once; any other failed read is
 # charged to `source_reads`, and its exhaustion leads to the same wait, with
 # the pending action of the cause: the base branch, or the repository itself
-# (renamed, transferred, or no longer readable with the token).
+# (deleted, made private, or no longer readable with the token). GitHub
+# answering for the recorded repository id under another name (renamed or
+# transferred) is definitive too, and leads to the wait at once.
 BASE_BRANCH_UNREAD = ("the upstream repository or its base branch could not be read, and the "
                       "upstream did not say that the branch is missing")
 BASE_BRANCH_GONE = "the upstream says that the base branch does not exist or was renamed"
 BASE_BRANCH_UNREADABLE = ("source_reads exhausted: reads of the upstream kept failing for the "
                           "whole retry window, most of them for the base branch")
-UPSTREAM_GONE = ("GitHub now gives the upstream repository another name (renamed or "
-                 "transferred), or source_reads exhausted with most failed reads for the "
-                 "repository itself")
+UPSTREAM_UNREADABLE = ("source_reads exhausted: reads of the upstream kept failing for the "
+                       "whole retry window, most of them for the repository itself")
+# GitHub answering for the recorded repository id under another name is a
+# definitive answer, like a missing branch: no read is counted for it.
+UPSTREAM_RENAMED = ("GitHub answers for the recorded upstream repository id under another name "
+                    "(renamed or transferred)")
 # The upstream PR the locked wait verifies targets the frozen base, or the
 # name GitHub redirects it to after a rename, when that branch still
 # contains the recorded base commit.
@@ -522,6 +531,10 @@ UPSTREAM_PR_ON_BASE = ("an open PR against the upstream repository and the froze
 UPSTREAM_READ_AGAIN = "the upstream repository and its base branch are read again"
 READS_CAUSED_WAIT = ("the wait was entered because reads kept failing, not because the upstream "
                      "said that the branch is missing")
+# The automatic end of the wait a renamed repository caused: GitHub answers
+# for the recorded repository id under its recorded name again.
+RENAME_CAUSED_WAIT = ("the wait was entered because GitHub named the recorded repository "
+                      "otherwise: its pending action names no counter")
 BASE_BRANCH_UNAVAILABLE = "base_branch_unavailable"
 # `source_reads` is exhausted only once its count is reached and this many
 # minutes have passed since the first failed read of the run: the controller
@@ -636,7 +649,8 @@ _RETRY_DISPATCH = Transition(
 _EXHAUST_DISPATCH_RECOVERY = Transition(
     _K, None, ("dispatch_recovery exhausted",),
     _E(work="clear", sets=("pending_human_action=dispatch_failed",
-                           f"{PENDING_COUNTER}=dispatch_recovery")))
+                           f"{PENDING_COUNTER}=dispatch_recovery")),
+    exhausts=("dispatch_recovery",))
 # A dispatch refused because the installed work-queue Policy no longer
 # matches the compiled one is not a failure of the Work: once the dispatcher
 # reinstalls the compiled policy, the controller requests the Work again.
@@ -740,7 +754,8 @@ _EXHAUST_WORK_RECOVERY = Transition(
     ("the Work graph is terminal without a usable Result", "work_recovery or work_total exhausted"),
     _E(work="clear", sets=("pending_human_action=work_failed", PENDING_COUNTER)),
     description="`pending_human_action.counter` names `work_total` when that budget is "
-                "exhausted, and `work_recovery` otherwise.")
+                "exhausted, and `work_recovery` otherwise.",
+    exhausts=("work_recovery", "work_total"))
 _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
     ("publication failed with an infrastructure error", "publish_recovery remains"),
@@ -753,7 +768,8 @@ _EXHAUST_PUBLISH_RECOVERY = Transition(
     _R, None,
     ("publish_recovery exhausted",),
     _E(sets=("pending_human_action=publication_infrastructure_failure",
-            f"{PENDING_COUNTER}=publish_recovery", "pending_publication.exhausted")))
+            f"{PENDING_COUNTER}=publish_recovery", "pending_publication.exhausted")),
+    exhausts=("publish_recovery",))
 _RECORD_EXPLANATION = Transition(
     _O, None, ("authorized explanation-only inquiry",),
     _E(sets=("processed_review_ids", "processed_review_comment_ids",
@@ -770,7 +786,8 @@ _RERUN_INTERRUPTED_CI = Transition(
                 "within the budget.")
 _EXHAUST_INTERRUPTED_RERUNS = Transition(
     _O, None, (_INTERRUPTED, "interrupted_reruns exhausted"),
-    _E(sets=("pending_human_action=ci_interrupted", f"{PENDING_COUNTER}=interrupted_reruns")))
+    _E(sets=("pending_human_action=ci_interrupted", f"{PENDING_COUNTER}=interrupted_reruns")),
+    exhausts=("interrupted_reruns",))
 _RESUME_CI = _E(revision="bump", clears=("pending_human_action",), restarts=("interrupted_reruns",))
 _RESUME_CI_NOTE = ("Starts `interrupted_reruns` (`budget.reruns.interrupted`) again for the head; "
                    "the first observation after it reruns the interrupted jobs on the exact head "
@@ -835,7 +852,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_work_total", "planning.waiting_human"): Transition(
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total"))),
+                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",)),
         }),
     "planning.agent_running": State(
         "work", False, False,
@@ -854,7 +871,8 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 ("the Result has no usable plan", "planning_attempts exhausted"),
                 _E(work="clear", sets=("pending_human_action=planning_failed",
-                                       f"{PENDING_COUNTER}=planning_attempts"))),
+                                       f"{PENDING_COUNTER}=planning_attempts")),
+                exhausts=("planning_attempts",)),
             ("admit_development", "provisioning.idle"): Transition(
                 _R, None,
                 (_ADMISSION, PATCH_SCOPE_COMPLETE,
@@ -914,7 +932,8 @@ LIFECYCLE: dict[str, State] = {
                  "or operation_launch is exhausted",),
                 _E(sets=("pending_human_action", PENDING_COUNTER)),
                 description="`pending_human_action.counter` names `operation_launch` when that "
-                            "budget is exhausted, and no counter otherwise."),
+                            "budget is exhausted, and no counter otherwise.",
+                exhausts=("operation_launch",)),
             ("confirm_provisioning", "development.fix_needed"): Transition(
                 _P, None,
                 ("the receipt matches the operation", "exact fork and ref readback"),
@@ -957,7 +976,7 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 (DEVELOPMENT_PROPOSAL_REJECTED, "no_progress remains"),
                 _E(revision="bump", work="clear", clears=("clean_head_sha",)), ("no_progress",),
-                "The pending feedback is kept."),
+                "The pending feedback is kept.", exhausts=("flaky_reruns",)),
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
@@ -1052,18 +1071,20 @@ LIFECYCLE: dict[str, State] = {
                   clears=(*_REFRESH_EFFECTS.clears, "budget.clusters", "budget.no_progress_streak")),
                 description="One automatic refresh per generation: complete planning runs "
                             "again on the existing fork. The per-job and no-progress counters "
-                            "start again; `work_total` does not."),
+                            "start again; `work_total` does not.",
+                exhausts=("repair_attempts_cluster", "no_progress")),
             ("exhaust_repair_attempts", "parked.idle"): Transition(
                 _K, None,
                 (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_USED),
                 _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD),
                 description="Parks for `repair_attempts_cluster` and `no_progress` only, after "
                             "`refresh_on_exhaustion` is used. Exhaustion of `work_total` takes "
-                            "`exhaust_work_total` first."),
+                            "`exhaust_work_total` first.",
+                exhausts=("repair_attempts_cluster", "no_progress")),
             ("exhaust_work_total", "development.waiting_human"): Transition(
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total")),
+                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",),
                 description="The reply states the number of Work allocations spent in this "
                             "generation and names both `/upstreaming resume`, which starts "
                             "`work_total` again, and `/upstreaming park`."),
@@ -1171,7 +1192,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_work_total", "handoff.waiting_human"): Transition(
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total"))),
+                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",)),
         }),
     "handoff.agent_running": State(
         "work", False, False,
@@ -1224,7 +1245,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_work_total", "handoff.waiting_human"): Transition(
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total"))),
+                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",)),
             ("expire_submission_rewrite", "handoff.review_due"): Transition(
                 _K, None, (REWRITE_EXPIRED, WORK_TOTAL_REMAINS),
                 _E(clears=("submission_rewrite_id",)),
@@ -1298,7 +1319,7 @@ LIFECYCLE: dict[str, State] = {
                 _P, None,
                 ("upstream_branch exhausted",),
                 _E(sets=("pending_human_action=upstream_branch_failed",
-                        f"{PENDING_COUNTER}=upstream_branch"))),
+                        f"{PENDING_COUNTER}=upstream_branch")), exhausts=("upstream_branch",)),
         }),
     "handoff.waiting_ci": State(
         "auto_wait", False, False,
@@ -1353,7 +1374,8 @@ LIFECYCLE: dict[str, State] = {
                 _P, None,
                 ("submission_comment exhausted",),
                 _E(sets=("pending_human_action=submission_comment_failed",
-                        f"{PENDING_COUNTER}=submission_comment"))),
+                        f"{PENDING_COUNTER}=submission_comment")),
+                exhausts=("submission_comment",)),
         }),
     "handoff.waiting_human": State(
         "human_wait", False, False,
@@ -1407,12 +1429,15 @@ LIFECYCLE: dict[str, State] = {
                 (UPSTREAM_PR_ON_BASE,
                  "its head is `riscv64` of the contribution fork at the exact clean head",
                  "a compatible human author"),
+                # The base is kept, unless the upstream renamed the frozen base
+                # before the PR was opened: GitHub redirects the recorded name to
+                # the PR's base, that branch still contains `upstream.base_sha`,
+                # and `upstream.base_ref` follows the new name (the guard
+                # `UPSTREAM_PR_ON_BASE`). The entry of such an event is written in
+                # plain words (`status_ledger.plain_message`).
                 _E(sets=("upstream_pr", "upstream.base_ref"), clears=("pending_human_action",)),
-                description="`upstream.base_ref` is kept, unless the upstream renamed the frozen "
-                            "base before the PR was opened: GitHub redirects the recorded name "
-                            "to the PR's base and that branch still contains "
-                            "`upstream.base_sha`, and then the record follows the new name, as "
-                            "`follow_renamed_base` does."),
+                description="The base branch is kept, unless the upstream renamed it before the "
+                            "PR was opened; then the contribution follows the new name."),
             ("retract_submission", "development.fix_needed"): Transition(
                 _C, "/upstreaming retract-pr",
                 (EXACT_REVISION, "exact clean head", QUIESCENT),
@@ -1487,7 +1512,8 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 (REVISION_BUDGET_EXHAUSTED,),
                 _E(sets=("pending_human_action=repair_budget_exhausted", PENDING_COUNTER)),
-                description="`pending_human_action.counter` names the counter that is exhausted."),
+                description="`pending_human_action.counter` names the counter that is exhausted.",
+                exhausts=("work_total", "repair_attempts_cluster", "no_progress")),
         }),
     "upstream_review.agent_running": State(
         "work", False, True,
@@ -1658,11 +1684,13 @@ RULES: dict[str, Rule] = {
             description="A network error, a server error, a rate limit, or a repository that "
                         "cannot be read: the contribution stays, and a later tick reads the "
                         "upstream again. A failed read is charged only when it is the first of "
-                        "a run, or once the spacing (`retries.source_unavailable_minutes` "
-                        "divided by `retries.source_unavailable_ticks`) has passed since the "
-                        "last charged read; a failed read in between writes nothing, so a "
-                        "burst of ticks adds no events. A tick that reads the upstream starts "
-                        "`source_reads` again."),
+                        "a run, or once the spacing (four fifths of "
+                        "`retries.source_unavailable_minutes` divided by "
+                        "`retries.source_unavailable_ticks`, so that a tick that comes a little "
+                        "early still counts) has passed since the last charged read; a failed "
+                        "read in between writes nothing, so a burst of ticks adds no events, "
+                        "and a read after a long pause counts once. A tick that reads the "
+                        "upstream starts `source_reads` again."),
         "every state in which the controller needs the upstream base branch: "
         "`queued.idle`, `planning.idle`, `provisioning.idle`, `development.fix_needed`, "
         "`handoff.review_due`, `handoff.review_pending`, and `upstream_review.fix_needed`",
@@ -1735,22 +1763,34 @@ _EXHAUST_SOURCE_READS = Transition(
     description="Records how many failed reads were counted, since when, how many of them "
                 "could not read the repository itself, and the last error. The upstream is "
                 "still read on every tick, and once it can be read again the wait ends without "
-                "a human (`resume_upstream_read`); a resume does the same at once.")
+                "a human (`resume_upstream_read`); a resume reads it again at once.",
+    exhausts=("source_reads",))
 _REQUIRE_UPSTREAM_ACCESS = Transition(
-    _O, None, (UPSTREAM_GONE, NOT_PAUSED, QUIESCENT),
+    _O, None, (UPSTREAM_UNREADABLE, NOT_PAUSED, QUIESCENT),
     _E(sets=(f"pending_human_action={UPSTREAM_UNAVAILABLE}",
              f"{PENDING_COUNTER}=source_reads")),
-    description="Taken at once when GitHub answers for the recorded repository id under "
-                "another name (renamed or transferred), and otherwise once failed reads of the "
-                "repository itself are the majority of the retry window. Records the "
-                "repository, the name GitHub now gives it, and the counted reads. The upstream "
-                "is still read on every tick, and once it can be read under its recorded name "
-                "again the wait ends without a human; a repository that moved is a new request: "
-                "the contribution is parked, then abandoned.")
+    description="Taken once failed reads of the repository itself are the majority of the "
+                "retry window (deleted, made private, or no longer readable with the token). "
+                "Records the repository and the counted reads. The upstream is still read on "
+                "every tick, and once it can be read again the wait ends without a human "
+                "(`resume_upstream_read`); a resume reads it again at once.",
+    exhausts=("source_reads",))
+_REQUIRE_RENAMED_UPSTREAM = Transition(
+    _O, None, (UPSTREAM_RENAMED, NOT_PAUSED, QUIESCENT),
+    _E(sets=(f"pending_human_action={UPSTREAM_UNAVAILABLE}",)),
+    description="Taken at once, with no counter: the answer cannot change by reading again. "
+                "Records the repository and the name GitHub now gives it. The upstream is still "
+                "read on every tick, and once GitHub answers for the same repository under its "
+                "recorded name again the wait ends without a human "
+                "(`resume_renamed_upstream`); a resume while it is still named otherwise waits "
+                "again at once. A repository that moved is a new request: the contribution is "
+                "parked, then abandoned.")
 for _state, _wait in BASE_BRANCH_WAITS.items():
     LIFECYCLE[_state].transitions[("require_base_branch", _wait)] = _REQUIRE_BASE_BRANCH
     LIFECYCLE[_state].transitions[("exhaust_source_reads", _wait)] = _EXHAUST_SOURCE_READS
     LIFECYCLE[_state].transitions[("require_upstream_access", _wait)] = _REQUIRE_UPSTREAM_ACCESS
+    LIFECYCLE[_state].transitions[("require_renamed_upstream", _wait)] = \
+        _REQUIRE_RENAMED_UPSTREAM
 
 # The wait that failed reads caused ends once the upstream is read again: the
 # same transition as the resume a human would post, taken by the controller.
@@ -1768,6 +1808,19 @@ _RESUME_UPSTREAM_READ_DESCRIPTION = (
     "the upstream's own answer caused (a missing or renamed branch) still needs a resume.")
 
 
+def _resume_renamed_upstream(*restarts: str) -> Transition:
+    # The wait names no counter, so the restarts the checks require of a
+    # resume of this wait start nothing.
+    return Transition(
+        _K, None,
+        (pending_is(UPSTREAM_UNAVAILABLE), RENAME_CAUSED_WAIT, UPSTREAM_READ_AGAIN, NOT_PAUSED,
+         QUIESCENT),
+        _E(revision="bump", clears=("pending_human_action",), restarts=restarts),
+        description="Ends the wait a renamed repository caused once a tick reads the repository "
+                    "under its recorded name and id again: the step that was due runs again, "
+                    "and the tracking issue states that the contribution continues.")
+
+
 def _resume_upstream_read(*restarts: str) -> Transition:
     # A tick row, like `rearm_dispatch`: the wait has no observation row, so
     # the head and CI are not observed while it lasts.
@@ -1783,8 +1836,11 @@ for _wait, _to in UPSTREAM_READ_RESUMES.items():
     # The wait of provisioning is also entered by the exhaustion of
     # `operation_launch`; the row restarts only the counter the pending action
     # names, which is `source_reads` whenever its guards hold.
-    LIFECYCLE[_wait].transitions[("resume_upstream_read", _to)] = _resume_upstream_read(
-        *(("operation_launch",) if _wait == "provisioning.waiting_human" else ()), "source_reads")
+    _restarts = (*(("operation_launch",) if _wait == "provisioning.waiting_human" else ()),
+                 "source_reads")
+    LIFECYCLE[_wait].transitions[("resume_upstream_read", _to)] = _resume_upstream_read(*_restarts)
+    LIFECYCLE[_wait].transitions[("resume_renamed_upstream", _to)] = \
+        _resume_renamed_upstream(*_restarts)
 
 # A renamed base branch of an open upstream PR: the record follows the
 # rename, in the states of upstream review that read the base branch, and
@@ -1938,8 +1994,8 @@ BUDGETS: dict[str, Budget] = {
     "source_reads": Budget(
         "retries.source_unavailable_ticks", 0,
         "one failed read of the upstream repository or base branch without a definitive "
-        "answer, counted at most once per spacing (`retries.source_unavailable_minutes` "
-        "divided by `retries.source_unavailable_ticks`)",
+        "answer, counted at most once per spacing (four fifths of "
+        "`retries.source_unavailable_minutes` divided by `retries.source_unavailable_ticks`)",
         "`budget.source_unavailable`, the counted failed reads, since "
         "`budget.source_unavailable_since`, the last at `budget.source_unavailable_at`, of which "
         "`budget.source_unavailable_repository` could not read the repository itself: a tick "
@@ -2071,18 +2127,13 @@ def is_rule_row(edge: Edge) -> bool:
     return rule is not None and edge.transition is rule.transition
 
 
-def _names_exhaustion(t: Transition, budget: str) -> bool:
-    """Whether a guard of ``t`` states that ``budget`` is exhausted. A guard
-    that requires the budget to remain does not."""
-    return any(budget in g and "exhausted" in g for g in t.guard)
-
-
 def exhaustion_edges(budget: str):
     """The transitions taken when ``budget`` is exhausted: one of its
-    exhaustion verbs with a guard that names the budget."""
+    exhaustion verbs whose row declares it (``Transition.exhausts``). The
+    declaration, not the wording of a guard, decides it."""
     verbs = BUDGETS[budget].exhaustion_verbs
     for e in table_edges():
-        if e.verb in verbs and _names_exhaustion(e.transition, budget):
+        if e.verb in verbs and budget in e.transition.exhausts:
             yield e
 
 
@@ -2564,25 +2615,42 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "handoff.waiting_human", "upstream_review.fix_needed",
                  "upstream_review.waiting_human"),
                 (("queued.idle", "require_upstream_access"),
+                 ("queued.idle", "require_renamed_upstream"),
                  ("planning.idle", "require_upstream_access"),
+                 ("planning.idle", "require_renamed_upstream"),
                  ("planning.waiting_human", "resume_planning"),
+                 ("planning.waiting_human", "resume_renamed_upstream"),
                  ("provisioning.idle", "require_upstream_access"),
+                 ("provisioning.idle", "require_renamed_upstream"),
                  ("provisioning.waiting_human", "resume_provisioning"),
+                 ("provisioning.waiting_human", "resume_renamed_upstream"),
                  ("development.fix_needed", "require_upstream_access"),
+                 ("development.fix_needed", "require_renamed_upstream"),
                  ("development.waiting_human", "resume_development"),
+                 ("development.waiting_human", "resume_renamed_upstream"),
                  ("handoff.review_due", "require_upstream_access"),
+                 ("handoff.review_due", "require_renamed_upstream"),
                  ("handoff.review_pending", "require_upstream_access"),
+                 ("handoff.review_pending", "require_renamed_upstream"),
                  ("handoff.waiting_human", "resume_submission_review"),
+                 ("handoff.waiting_human", "resume_renamed_upstream"),
                  ("upstream_review.fix_needed", "require_upstream_access"),
-                 ("upstream_review.waiting_human", "resume_upstream_revision")),
-                text="When GitHub answers for the recorded repository under another name "
-                     "(renamed or transferred), the contribution waits at once with the pending "
-                     "action `upstream_unavailable`; when most failed reads of the retry window "
-                     "could not read the repository itself (the token lost access), the "
-                     "exhaustion of `source_reads` leads to the same waits. Once the repository "
-                     "can be read again, `resume_upstream_read` (drawn in failure case 2) or a "
-                     "resume continues; a repository that moved is parked and abandoned, and a "
-                     "new request names its new name."),
+                 ("upstream_review.fix_needed", "require_renamed_upstream"),
+                 ("upstream_review.waiting_human", "resume_upstream_revision"),
+                 ("upstream_review.waiting_human", "resume_renamed_upstream")),
+                text="When GitHub answers for the recorded repository id under another name "
+                     "(renamed or transferred), `require_renamed_upstream` waits at once with "
+                     "the pending action `upstream_unavailable` and no counter; when most "
+                     "failed reads of the retry window could not read the repository itself "
+                     "(deleted, made private, or the token lost access), the exhaustion of "
+                     "`source_reads`, `require_upstream_access`, leads to the same waits with "
+                     "the counter `source_reads`. Either wait is still read: once GitHub "
+                     "answers for the same repository under its recorded name again, "
+                     "`resume_renamed_upstream` ends the first, and once the repository can be "
+                     "read again, `resume_upstream_read` (drawn in failure case 2) ends the "
+                     "second. A resume of the first while the repository is still named "
+                     "otherwise waits again at once; a repository that moved is parked and "
+                     "abandoned, and a new request names its new name."),
             Diagram(
                 "Failure case 4: park, then restart as a clean generation or abandon",
                 ("development.fix_needed", "parked.idle", "queued.idle", "closed.idle"),
@@ -2927,7 +2995,8 @@ def _reachable(start: str, step) -> set[str]:
 # Tick transitions that end a human wait the way its resume does, once the
 # controller has observed that the cause is gone. The checks hold them to the
 # rules of a resume.
-AUTOMATIC_RESUMES = frozenset({"rearm_dispatch", "resume_renamed_base", "resume_upstream_read"})
+AUTOMATIC_RESUMES = frozenset({"rearm_dispatch", "resume_renamed_base", "resume_upstream_read",
+                               "resume_renamed_upstream"})
 
 
 def resumes_wait(edge: Edge) -> bool:
@@ -3667,7 +3736,7 @@ def _check_work_identity(problems: list[str]) -> None:
 def exhausted_budgets(edge: Edge) -> list[str]:
     """The budgets whose exhaustion ``edge`` is."""
     return [n for n, b in BUDGETS.items()
-            if edge.verb in b.exhaustion_verbs and _names_exhaustion(edge.transition, n)]
+            if edge.verb in b.exhaustion_verbs and n in edge.transition.exhausts]
 
 
 def counters_named(edge: Edge) -> set[str]:
@@ -3768,7 +3837,7 @@ def _check_budgets(policy: dict, problems: list[str]) -> None:
             problems.append(f"budget {name}: no transition charges it")
         for verb in b.exhaustion_verbs:
             if not any(e.verb == verb for e in exhaustion_edges(name)):
-                problems.append(f"budget {name}: no transition {verb!r} has a guard that names it")
+                problems.append(f"budget {name}: no transition {verb!r} declares its exhaustion")
         if b.policy_key == INFRASTRUCTURE_KEY and not b.infrastructure:
             problems.append(f"budget {name}: uses {INFRASTRUCTURE_KEY} but is not marked "
                             "infrastructure")
@@ -3794,12 +3863,17 @@ def _check_budgets(policy: dict, problems: list[str]) -> None:
     if len(shared) < 2:
         problems.append(f"budgets: {INFRASTRUCTURE_KEY} is shared by {shared}")
     for e in edges:
+        for name in e.transition.exhausts:
+            if name not in BUDGETS or e.verb not in BUDGETS[name].exhaustion_verbs:
+                problems.append(f"{e.source} --{e.verb}--> {e.target}: declares the exhaustion "
+                                f"of {name!r}, which does not name {e.verb!r}")
+    for e in edges:
         for name in e.transition.charges:
             if name not in BUDGETS:
                 continue
             if not [x for x in exhaustion_edges(name) if x.source in (e.source, e.target)]:
                 problems.append(f"{e.source} --{e.verb}--> {e.target}: charges {name!r} but no "
-                                f"exhaustion transition whose guard names {name!r} leaves "
+                                f"exhaustion transition that declares {name!r} leaves "
                                 f"{e.source} or {e.target}")
 
 

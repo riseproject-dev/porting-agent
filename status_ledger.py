@@ -207,8 +207,6 @@ def _observed(event: dict) -> str:
     if kind in SUBMISSION_REQUESTS and _submission_request(event):
         bound = details.get("bound_to") or details
         parts.append(f"Candidate head: {_head(bound.get('head'))}.")
-    if kind == "verify_upstream_pr" and details.get("renamed_to"):
-        parts.append(_renamed(details, " before the pull request was opened"))
     for key in ("mismatch", "incomplete", "why"):
         if details.get(key):
             parts.append(f"Observed: `{_quotable(details[key], 600)}`.")
@@ -231,15 +229,17 @@ def _observed(event: dict) -> str:
 
 
 # The rows of an upstream that could not be read, of a base branch the
-# record followed after the upstream renamed it while the upstream PR is
-# open, and of the wait that failed reads caused ending once the upstream is
-# read again. Their entries, and the reminders of their waits, are written in
-# plain words (`plain_message`): they name no verb, budget, field, or pending
+# record followed after the upstream renamed it (while the upstream PR is
+# open, or before it was opened, when `verify_upstream_pr` names the rename),
+# and of a wait for the upstream ending once it is read again. Their
+# entries, and the reminders of their waits, are written in plain words
+# (`plain_message`): they name no verb, budget, field, state, or pending
 # action of the table.
 UNAVAILABLE_KINDS = frozenset({"require_base_branch", "exhaust_source_reads",
-                               "require_upstream_access"})
+                               "require_upstream_access", "require_renamed_upstream"})
+REPOSITORY_KINDS = frozenset({"require_upstream_access", "require_renamed_upstream"})
 RENAMED_BASE_KINDS = frozenset({"follow_renamed_base", "resume_renamed_base"})
-READ_AGAIN_KINDS = frozenset({"resume_upstream_read"})
+READ_AGAIN_KINDS = frozenset({"resume_upstream_read", "resume_renamed_upstream"})
 UNAVAILABLE_PENDING = frozenset({lifecycle.BASE_BRANCH_UNAVAILABLE, lifecycle.UPSTREAM_UNAVAILABLE})
 
 
@@ -270,7 +270,7 @@ def _unavailable_cause(kind: str, details: dict) -> str:
         if isinstance(details.get("repository_failures"), int):
             failed += f", {details['repository_failures']} of them for the repository itself"
         failed += "."
-    if kind == "require_upstream_access":
+    if kind in REPOSITORY_KINDS:
         repository = f"`{_quotable(details.get('repository'), 200)}`"
         if details.get("renamed_repository"):
             return (f"Cause: GitHub now names the upstream repository {repository} "
@@ -288,8 +288,11 @@ def _unavailable_cause(kind: str, details: dict) -> str:
 
 def _unavailable_guidance(record: dict, event: dict) -> str:
     """What a human can do while the upstream is unavailable. A wait that
-    failed reads caused ends on its own once the upstream is read again. A
-    restart on another branch is a refresh from `parked.idle`: it is named
+    failed reads caused ends on its own once the upstream is read again, and
+    a resume reads it again at once; the wait a renamed repository caused
+    ends on its own once GitHub answers for it under its recorded name
+    again, and a resume before then waits again at once. A restart on
+    another branch is a refresh of the parked contribution: it is named
     only after a park, and never while the upstream PR is open, which
     refuses it."""
     pending = record.get("pending_human_action") or {}
@@ -298,14 +301,18 @@ def _unavailable_guidance(record: dict, event: dict) -> str:
         return ""
     revision = record["revision"]
     by_reads = pending.get("counter") == "source_reads"
-    if pending["kind"] == lifecycle.UPSTREAM_UNAVAILABLE:
+    moved = (" A repository that was renamed or transferred is a new request: park, then "
+             "abandon, and file a request for its new name.")
+    if pending["kind"] == lifecycle.UPSTREAM_UNAVAILABLE and by_reads:
         return (" The pipeline keeps reading it and continues on its own once it can be read "
-                "under its recorded name again; a resume does the same at once. A repository "
-                "that was renamed or transferred is a new request: park, then abandon, and file "
-                "a request for its new name.")
+                "again; a resume reads it again at once." + moved)
+    if pending["kind"] == lifecycle.UPSTREAM_UNAVAILABLE:
+        return (" The pipeline keeps reading it and continues on its own if GitHub answers for "
+                "it under its recorded name again; while GitHub names it otherwise, a resume "
+                "only waits again." + moved)
     if by_reads:
         text = (" The pipeline keeps reading the branch and continues on its own once it can be "
-                "read again; a resume does the same at once.")
+                "read again; a resume reads it again at once.")
     else:
         text = " Once the branch can be read again, resume."
     if record["phase"] == "upstream_review" or record.get("upstream_pr"):
@@ -315,7 +322,7 @@ def _unavailable_guidance(record: dict, event: dict) -> str:
     renamed = ((event.get("details") or {}).get("renamed_to"))
     branch = renamed if isinstance(renamed, str) and re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}", renamed) else "NAME"
-    return text + (" To continue on another branch, park first; then, from `parked.idle`, post "
+    return text + (" To continue on another branch, park first; then, once it is parked, post "
                    f'`/upstreaming refresh revision={revision} branch={branch} reason="..."`.')
 
 
@@ -341,7 +348,7 @@ def plain_message(event: dict, record: dict) -> str | None:
     observed = (f" Last error: `{_quotable(details['why'], 600)}`."
                 if details.get("why") and isinstance(details.get("count"), int) else "")
     if kind in UNAVAILABLE_KINDS:
-        what = ("the upstream repository is unavailable" if kind == "require_upstream_access"
+        what = ("the upstream repository is unavailable" if kind in REPOSITORY_KINDS
                 else "the upstream base branch is unavailable")
         return (f"The contribution waits for a human: {what}. "
                 + _unavailable_cause(kind, details) + observed
@@ -356,8 +363,17 @@ def plain_message(event: dict, record: dict) -> str | None:
     if kind in READ_AGAIN_KINDS:
         what = ("repository" if details.get("pending_human_action") == lifecycle.UPSTREAM_UNAVAILABLE
                 else f"base branch {_branch(details)}")
-        return (f"The upstream {what} can be read again, so the wait for it ends without a "
-                "command, and the contribution continues with the step that was due.")
+        how = (" under its recorded name" if kind == "resume_renamed_upstream" else "")
+        return (f"The upstream {what} can be read again{how}, so the wait for it ends without "
+                "a command, and the contribution continues with the step that was due.")
+    if kind == "verify_upstream_pr" and details.get("renamed_to"):
+        link = _link(details.get("url"))
+        number = _quotable(details.get("pr_number"), 12)
+        pr = f"[#{number}]({link})" if link else f"#{number}"
+        return (_renamed(details, " before the pull request was opened")
+                + f" Pull request {pr} by {_login(details.get('author'))} at "
+                  f"{_head(details.get('head'))} is recorded, and the contribution now waits "
+                  "for its upstream CI and review.")
     if _waits_for_upstream(event, record):
         pending = record["pending_human_action"]
         what = ("the upstream repository is unavailable"

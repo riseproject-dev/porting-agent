@@ -620,20 +620,32 @@ flowchart TB
     end
 
     queued_idle -->|require_upstream_access| planning_waiting_human
+    queued_idle -->|require_renamed_upstream| planning_waiting_human
     planning_idle -->|require_upstream_access| planning_waiting_human
+    planning_idle -->|require_renamed_upstream| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    planning_waiting_human -->|resume_renamed_upstream| planning_idle
     provisioning_idle -->|require_upstream_access| provisioning_waiting_human
+    provisioning_idle -->|require_renamed_upstream| provisioning_waiting_human
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
+    provisioning_waiting_human -->|resume_renamed_upstream| provisioning_idle
     development_fix_needed -->|require_upstream_access| development_waiting_human
+    development_fix_needed -->|require_renamed_upstream| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_waiting_human -->|resume_renamed_upstream| development_fix_needed
     handoff_review_due -->|require_upstream_access| handoff_waiting_human
+    handoff_review_due -->|require_renamed_upstream| handoff_waiting_human
     handoff_review_pending -->|require_upstream_access| handoff_waiting_human
+    handoff_review_pending -->|require_renamed_upstream| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
+    handoff_waiting_human -->|resume_renamed_upstream| handoff_review_due
     upstream_fix_needed -->|require_upstream_access| upstream_waiting_human
+    upstream_fix_needed -->|require_renamed_upstream| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+    upstream_waiting_human -->|resume_renamed_upstream| upstream_fix_needed
 ```
 
-When GitHub answers for the recorded repository under another name (renamed or transferred), the contribution waits at once with the pending action `upstream_unavailable`; when most failed reads of the retry window could not read the repository itself (the token lost access), the exhaustion of `source_reads` leads to the same waits. Once the repository can be read again, `resume_upstream_read` (drawn in failure case 2) or a resume continues; a repository that moved is parked and abandoned, and a new request names its new name.
+When GitHub answers for the recorded repository id under another name (renamed or transferred), `require_renamed_upstream` waits at once with the pending action `upstream_unavailable` and no counter; when most failed reads of the retry window could not read the repository itself (deleted, made private, or the token lost access), the exhaustion of `source_reads`, `require_upstream_access`, leads to the same waits with the counter `source_reads`. Either wait is still read: once GitHub answers for the same repository under its recorded name again, `resume_renamed_upstream` ends the first, and once the repository can be read again, `resume_upstream_read` (drawn in failure case 2) ends the second. A resume of the first while the repository is still named otherwise waits again at once; a repository that moved is parked and abandoned, and a new request names its new name.
 
 ### Failure case 4: park, then restart as a clean generation or abandon
 

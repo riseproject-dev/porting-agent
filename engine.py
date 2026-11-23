@@ -555,12 +555,23 @@ SOURCE_READ_FIELDS = ("source_unavailable_since", "source_unavailable_at",
                       "source_unavailable_repository")
 
 
+# Ticks do not come on time: a scheduled run is delayed or skipped, and most
+# ticks come from issue, comment, and push events. Two counted reads are
+# spaced by four fifths of the nominal spacing (the minutes divided by the
+# count), so that a read a little early is still counted and the count is
+# reached about when the minimum time has passed, while a burst of ticks
+# still counts once.
+SOURCE_READ_TOLERANCE = 0.8
+
+
 def source_read_spacing(policy: dict) -> timedelta:
     """The least time between two counted failed reads:
-    ``retries.source_unavailable_minutes`` divided by the count of
-    ``source_reads``, so that the count is reached no sooner than the time."""
+    ``SOURCE_READ_TOLERANCE`` of ``retries.source_unavailable_minutes``
+    divided by the count of ``source_reads``. The count may be reached
+    before the minimum time; ``source_reads_spent`` requires both."""
     minutes = int(lc.policy_value(policy, lc.SOURCE_READS_MINUTES_KEY))
-    return timedelta(minutes=minutes) / max(1, lc.budget_limit("source_reads", policy))
+    nominal = timedelta(minutes=minutes) / max(1, lc.budget_limit("source_reads", policy))
+    return nominal * SOURCE_READ_TOLERANCE
 
 
 def source_read_counted(record: dict, policy: dict, now: str) -> bool:
@@ -688,14 +699,14 @@ def _base_branch_unreadable(ctx: Context) -> str | None:
     return None
 
 
-@_record(lc.UPSTREAM_GONE, "upstream_gone")
-def _upstream_gone(ctx: Context) -> str | None:
+@_record(lc.UPSTREAM_UNREADABLE, "upstream_unreadable")
+def _upstream_unreadable(ctx: Context) -> str | None:
     if not _asserted(ctx, "upstream_repository_unread") or not _asserted(ctx, "base_branch_unread"):
         return "the upstream repository was read"
-    # GitHub answering for the recorded repository id under another name is
-    # definitive: the controller asserts it only for the same repository id.
+    # A renamed repository is a definitive answer (`require_renamed_upstream`),
+    # never the exhaustion of `source_reads`.
     if _asserted(ctx, "upstream_repository_renamed"):
-        return None
+        return "GitHub answered for the repository under another name"
     if remains("source_reads", ctx) is not False:
         return "source_reads remains"
     return None
@@ -706,6 +717,16 @@ def _reads_caused_wait(ctx: Context) -> str | None:
     pending = ctx.record.get("pending_human_action") or {}
     if pending.get("counter") != "source_reads":
         return "the wait was not entered because reads kept failing"
+    return None
+
+
+@_record(lc.RENAME_CAUSED_WAIT, "rename_caused_wait")
+def _rename_caused_wait(ctx: Context) -> str | None:
+    # `require_renamed_upstream` is the only row that records
+    # `upstream_unavailable` without a counter.
+    pending = ctx.record.get("pending_human_action") or {}
+    if pending.get("kind") != lc.UPSTREAM_UNAVAILABLE or pending.get("counter") is not None:
+        return "the wait was not entered because GitHub named the repository otherwise"
     return None
 
 
@@ -811,6 +832,7 @@ for _guard, _name in (
     (lc.BASE_BRANCH_GONE, "base_branch_missing"),
     (lc.BASE_RENAMED_IN_PR, "base_renamed_in_pr"),
     (lc.UPSTREAM_READ_AGAIN, "upstream_read_again"),
+    (lc.UPSTREAM_RENAMED, "upstream_repository_renamed"),
 ):
     _fact(_guard, _name)
 
@@ -825,7 +847,7 @@ _register("for pr_closed_unmerged, the upstream PR is observed open again",
 
 # Facts read by a record predicate in addition to the fact predicates above.
 EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked",
-                         "upstream_repository_unread", "upstream_repository_renamed"})
+                         "upstream_repository_unread"})
 FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") | EXTRA_FACTS
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
@@ -959,12 +981,16 @@ PIPELINE_VERBS: dict[str, str] = {
     "require_base_branch": "controller",
     "exhaust_source_reads": "controller",
     "require_upstream_access": "controller",
+    "require_renamed_upstream": "controller",
     # A base branch the upstream renamed while the upstream PR is open: the
     # record follows the rename the verified PR shows.
     "follow_renamed_base": "controller",
     "resume_renamed_base": "controller",
-    # The wait that failed reads caused ends once the upstream is read again.
+    # The wait that failed reads caused ends once the upstream is read again,
+    # and the wait a renamed repository caused once GitHub answers for it
+    # under its recorded name again.
     "resume_upstream_read": "controller",
+    "resume_renamed_upstream": "controller",
     # The fork provisioning operation: its launches within `operation_launch`,
     # the wait once that budget is exhausted or the operation failed, and its
     # confirmation by the receipt and readback (rows the operation fires

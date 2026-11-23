@@ -385,23 +385,28 @@ def _branch_contains(api: Api, full_name: str, ref: str, sha: str) -> bool:
         "status") == "ahead"
 
 
-def base_renamed_to(api: Api, record: dict, ref: str) -> bool:
-    """Whether the upstream renamed the recorded base branch of ``record`` to
-    ``ref`` and that branch still contains the recorded base commit: GitHub
-    answers a read of ``upstream.base_ref`` with a redirect to ``ref`` (the
-    same check as ``_renamed_base_in_pr``). ``False`` when the recorded base
-    is read as it is, is missing, or is redirected elsewhere; a read that
-    fails raises ``CollectError``."""
+def base_redirect(api: Api, record: dict) -> str | None:
+    """The name GitHub now redirects the recorded base branch of ``record``
+    to: a read of ``upstream.base_ref`` answers with another branch, the
+    one it was renamed to. ``None`` when the recorded base is read as it is
+    or is missing; a read that fails raises ``CollectError``. Whether the
+    new name still contains the recorded base commit is
+    ``base_contained``."""
     upstream = record["upstream"]
-    if not upstream.get("base_ref") or not upstream.get("base_sha") or ref == upstream["base_ref"]:
-        return False
+    if not upstream.get("base_ref") or not upstream.get("base_sha"):
+        return None
     try:
         branch_head(api, upstream["full_name"], upstream["base_ref"])
     except BranchRenamed as e:
-        if e.name != ref:
-            return False
-        return _branch_contains(api, upstream["full_name"], ref, upstream["base_sha"])
-    return False
+        return e.name if e.name != upstream["base_ref"] else None
+    return None
+
+
+def base_contained(api: Api, record: dict, ref: str) -> bool:
+    """Whether the history of the branch ``ref`` contains the recorded base
+    commit of ``record`` (the same check as ``_renamed_base_in_pr``)."""
+    upstream = record["upstream"]
+    return _branch_contains(api, upstream["full_name"], ref, upstream["base_sha"])
 
 
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
@@ -466,11 +471,17 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
         renamed_wait = pending.get("kind") == lifecycle.BASE_BRANCH_UNAVAILABLE \
             and c["phase"] == "upstream_review" and bool(c.get("upstream_pr"))
         # A wait that failed reads caused is read on every tick, so that it
-        # ends once the upstream can be read again (`resume_upstream_read`).
+        # ends once the upstream can be read again (`resume_upstream_read`),
+        # and so is the wait a renamed repository caused (no counter), which
+        # ends once GitHub answers for it under its recorded name again
+        # (`resume_renamed_upstream`).
         reads_wait = pending.get("counter") == "source_reads"
+        moved_wait = pending.get("kind") == lifecycle.UPSTREAM_UNAVAILABLE \
+            and pending.get("counter") is None
         if pending.get("kind") in (lifecycle.BASE_BRANCH_UNAVAILABLE,
                                    lifecycle.UPSTREAM_UNAVAILABLE) \
-                and "resume" not in verbs and not renamed_wait and not reads_wait:
+                and "resume" not in verbs and not renamed_wait and not reads_wait \
+                and not moved_wait:
             continue
         refs[name] = c["upstream"].get("base_ref")
         active[name] = c

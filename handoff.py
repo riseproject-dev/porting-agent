@@ -657,7 +657,7 @@ def renamed_base_candidates(record: dict, prs: list[dict], authority) -> list[di
     """The candidates that satisfy every filter but the frozen base: they
     target another branch of the upstream repository. One of them is the
     upstream PR only once GitHub redirects the frozen base to its branch
-    (``collect.base_renamed_to``)."""
+    (``collect.base_redirect``)."""
     base = record["upstream"].get("base_ref")
     return [pr for pr in prs
             if isinstance(pr.get("base_ref"), str) and pr["base_ref"] and pr["base_ref"] != base

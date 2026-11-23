@@ -162,6 +162,9 @@ def task_for(verb: str, record: dict) -> str:
     return "development_patch"
 
 
+SOURCE_UNVERIFIED = "source verification unavailable"
+
+
 def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResult,
                  source_blocked: dict[str, dict | None], policy: dict, now: str) -> None:
     """Bind the unbound upstream identity and base of ``c`` from this tick's
@@ -177,7 +180,7 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
         return
     if snapshot.get("error"):
         source_blocked[cid] = snapshot
-        rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
+        rep["deferred"].append({"contribution": cid, "why": SOURCE_UNVERIFIED})
         return
     budget = c.get("budget") or {}
     if budget.get("source_unavailable") or any(k in budget for k in engine.SOURCE_READ_FIELDS):
@@ -261,25 +264,42 @@ def _follow_renamed_base(c: dict, snapshot: dict, by_id: dict[str, dict], operat
     return True
 
 
+def _upstream_read_resume(c: dict) -> str | None:
+    """The row that ends the wait of ``c`` once the upstream is read again:
+    ``resume_upstream_read`` for a wait failed reads caused (the counter
+    ``source_reads``), ``resume_renamed_upstream`` for the wait a renamed
+    repository caused (``upstream_unavailable`` with no counter), and
+    ``None`` for any other wait."""
+    pending = c.get("pending_human_action") or {}
+    if engine.state_key(c) not in lifecycle.UPSTREAM_READ_RESUMES:
+        return None
+    if pending.get("counter") == "source_reads":
+        return "resume_upstream_read"
+    if pending.get("kind") == lifecycle.UPSTREAM_UNAVAILABLE and pending.get("counter") is None:
+        return "resume_renamed_upstream"
+    return None
+
+
 def _resume_upstream_read(c: dict, snapshot: dict, by_id: dict[str, dict], operations: dict,
                           res: TickResult, policy: dict, now: str) -> None:
-    """End a wait that failed reads caused (``pending_human_action.counter``
-    ``source_reads``) once this tick read the upstream again: the table's
-    ``resume_upstream_read``. A snapshot of another branch than the record
-    names says nothing about it, and a paused or non-quiescent record keeps
-    the wait."""
-    if engine.state_key(c) not in lifecycle.UPSTREAM_READ_RESUMES \
-            or snapshot.get("error") or snapshot.get("base_ref") != c["upstream"].get("base_ref") \
+    """End a wait that failed reads caused, or that a renamed repository
+    caused, once this tick read the upstream again under its recorded name
+    (``_upstream_read_resume``). A snapshot of another branch than the record
+    names, or of another repository id, says nothing about it, and a paused
+    or non-quiescent record keeps the wait."""
+    verb = _upstream_read_resume(c)
+    if verb is None or snapshot.get("error") \
+            or snapshot.get("base_ref") != c["upstream"].get("base_ref") \
             or snapshot.get("repository_id") != c["upstream"].get("repository_id"):
         return
     ops = _open_operations(c, operations)
-    if engine.refusal(c, "resume_upstream_read", policy=policy, now=now,
+    if engine.refusal(c, verb, policy=policy, now=now,
                       facts={"upstream_read_again"}, open_operations=ops):
         return
     pending = c["pending_human_action"]
     details = {"base_ref": c["upstream"].get("base_ref"), "pending_human_action": pending["kind"],
                "repository": c["upstream"]["full_name"]}
-    out = engine.apply_transition(c, "resume_upstream_read", policy=policy, now=now,
+    out = engine.apply_transition(c, verb, policy=policy, now=now,
                                   facts={"upstream_read_again"}, open_operations=ops,
                                   cause_id=f"upstream-read-r{c['revision']}", details=details)
     if not out.accepted:
@@ -302,6 +322,17 @@ def _same_repository_renamed(c: dict, snapshot: dict) -> bool:
     return recorded is None or recorded == snapshot["renamed_repository_id"]
 
 
+def _defer(res: TickResult, cid: str, why: str) -> None:
+    """Report ``cid`` as deferred for ``why``: the entry `_bind_source`
+    already made for it in this tick is made more precise, so that a
+    contribution is reported as deferred once."""
+    for entry in res.report["deferred"]:
+        if entry["contribution"] == cid and entry["why"] == SOURCE_UNVERIFIED:
+            entry["why"] = why
+            return
+    res.report["deferred"].append({"contribution": cid, "why": why})
+
+
 def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operations: dict,
                         res: TickResult, policy: dict, now: str) -> None:
     """Take the row for an upstream repository or base branch that could not
@@ -316,8 +347,7 @@ def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operati
     if engine.state_key(c) not in lifecycle.BASE_BRANCH_WAITS:
         return
     if "ref" in snapshot and snapshot["ref"] != c["upstream"].get("base_ref"):
-        res.report["deferred"].append({"contribution": cid,
-                                       "why": "upstream snapshot is not of the recorded base branch"})
+        _defer(res, cid, "upstream snapshot is not of the recorded base branch")
         return
     ops = _open_operations(c, operations)
     base_ref = snapshot.get("base_ref") or c["upstream"].get("base_ref")
@@ -329,9 +359,10 @@ def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operati
             details["renamed_to"] = snapshot["renamed_to"]
     elif _same_repository_renamed(c, snapshot):
         # GitHub answers for the same repository id under another name: a
-        # definitive answer, so the contribution waits at once instead of
-        # spending the retry window on a read that cannot change.
-        verb = "require_upstream_access"
+        # definitive answer, so the contribution waits at once, with no
+        # counter, instead of spending the retry window on a read that
+        # cannot change.
+        verb = "require_renamed_upstream"
         facts = {"base_branch_unread", "upstream_repository_unread", "upstream_repository_renamed"}
         details.update({"repository": c["upstream"]["full_name"],
                         "renamed_repository": snapshot["renamed_repository"]})
@@ -341,12 +372,11 @@ def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operati
         count = int(budget.get("source_unavailable", 0))
         limit = lifecycle.budget_limit("source_reads", policy)
         spent = engine.source_reads_spent(c, policy, now)
-        if not spent and not engine.source_read_counted(c, policy, now):
-            # Counted at most once per spacing: a read in between writes
-            # nothing, so a burst of ticks adds no events and no commits.
-            res.report["deferred"].append({"contribution": cid,
-                                           "why": "upstream read failed; counted at most once "
-                                                  "per spacing"})
+        if not engine.source_read_counted(c, policy, now):
+            # Counted at most once per spacing, the read that exhausts the
+            # budget included: a read in between writes nothing, so a burst
+            # of ticks adds no events and no commits.
+            _defer(res, cid, "upstream read failed; counted at most once per spacing")
             return
         # The counted failed reads of the run, this one included, and how
         # many of them could not read the repository itself: the exhaustion
@@ -553,11 +583,11 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # branch renamed while the upstream PR is open is followed
     # (`follow_renamed_base`, `resume_renamed_base`). Where Work or the fork
     # provisioning is due otherwise: `require_base_branch` once the upstream
-    # answered that it is missing, `exhaust_source_reads` (or
-    # `require_upstream_access` when the repository itself could not be
-    # read, or at once when GitHub names the same repository otherwise) once
-    # `source_reads` is exhausted, the charge of `record_source_unavailable`
-    # otherwise, at most once per spacing.
+    # answered that it is missing, `require_renamed_upstream` at once when
+    # GitHub names the same repository otherwise, `exhaust_source_reads` (or
+    # `require_upstream_access` when most counted reads could not read the
+    # repository itself) once `source_reads` is exhausted, the charge of
+    # `record_source_unavailable` otherwise, at most once per spacing.
     for cid, snapshot in list(source_blocked.items()):
         if cid in skip or snapshot is None:
             continue
@@ -566,8 +596,10 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 _source_unavailable(by_id[cid], snapshot, by_id, operations, res, policy, now)
 
     # A wait that failed reads caused ends once the upstream is read again
-    # (`resume_upstream_read`), after the commands, so that a resume posted
-    # in the same tick is taken as posted.
+    # (`resume_upstream_read`), and the wait a renamed repository caused
+    # once GitHub answers for it under its recorded name again
+    # (`resume_renamed_upstream`), after the commands, so that a resume
+    # posted in the same tick is taken as posted.
     for cid, c in list(by_id.items()):
         if cid in skip or cid in source_blocked:
             continue
