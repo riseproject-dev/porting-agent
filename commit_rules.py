@@ -46,7 +46,7 @@ _SIGNED_OFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>$")
 _ATTRIBUTION = re.compile(r"^\s*([^\s:]*-by)\s*:(.*)$")
 # Characters folded to a hyphen or a colon before a line is matched, after
 # NFKC (which already folds the fullwidth and small forms of most of them).
-_HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d_"
+_HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"
 _COLONS = "\uff1a\ufe55\ufe13\u2236\ua789\u02d0\u02f8\u0589\u05c3\u1361\u1804\u205a\u2e2c"
 _FOLD = str.maketrans({**{ch: "-" for ch in _HYPHENS}, **{ch: ":" for ch in _COLONS}})
 APP_IDENTITY = f"{APP_COMMIT_NAME} <{APP_COMMIT_EMAIL}>"
@@ -222,8 +222,8 @@ def series_problems(messages: list[str], rules: dict | None, *,
 
 def _fold(line: str) -> str:
     """A line in the form attribution trailers are matched on: NFKC,
-    case-folded, with every hyphen-like character and the underscore as
-    ``-`` and every colon-like character as ``:``."""
+    case-folded, with every hyphen-like character as ``-`` and every
+    colon-like character as ``:``."""
     return unicodedata.normalize("NFKC", line).casefold().translate(_FOLD)
 
 

@@ -154,10 +154,16 @@ class TestWorkerGate(unittest.TestCase):
             ["Rebuild\n\nSigned-off-by: Ann  <ann@example.org>",
              "Rebuild\n\nAcked-by: Ann <ann@example.org>"], approved)), 2)
 
+    def test_an_underscore_key_is_not_an_attribution_trailer(self):
+        for line in ("order_by: x", "  group_by: name", "sort_by:"):
+            with self.subTest(line=line):
+                self.assertEqual(commit_rules.attribution_problems(
+                    ["Add riscv64\n\nBody.\n\n" + line], []), [])
+
     def test_a_lookalike_trailer_is_an_attribution_trailer(self):
         """Every lookalike of a key or colon that GitHub or a reader could
         take for an attribution trailer is one: case, white space before the
-        colon, Unicode hyphens and the underscore, fullwidth and other
+        colon, Unicode hyphens, fullwidth and other
         colon forms, compatibility characters, another script, and a title
         that is itself a trailer."""
         evil = "Evil <e@x>"
@@ -165,7 +171,7 @@ class TestWorkerGate(unittest.TestCase):
                      "Co‐authored‐by: " + evil, "Co‑authored‑by: " + evil,
                      "Co‒authored–by: " + evil, "Co―authored−by: " + evil,
                      "Co﹘authored﹣by: " + evil, "Co－authored－by: " + evil,
-                     "Co_authored_by: " + evil, "Co-authored-by： " + evil,
+                     "Co-authored-by： " + evil,
                      "Co-authored-by﹕ " + evil, "Co-authored-by︓ " + evil,
                      "Co-authored-by∶ " + evil, "Co-authored-by꞉ " + evil,
                      "Ｃｏ-authored-ｂｙ: " + evil, "Cо-authored-by: " + evil,
