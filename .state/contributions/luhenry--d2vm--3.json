@@ -4,7 +4,7 @@
     "attempt": 1,
     "deadline_at": "2026-11-24T02:13:29.927419+00:00",
     "dedupe_key": "luhenry--d2vm/3@g1.r3:development_patch",
-    "dispatched_run_id": null,
+    "dispatched_run_id": "45257187396",
     "feedback_evidence_ids": [],
     "generation": 1,
     "reason_ids": [
@@ -139,7 +139,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-23T20:13:29.927419+00:00",
+  "updated_at": "2026-11-23T22:21:19.289761+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
