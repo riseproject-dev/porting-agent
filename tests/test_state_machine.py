@@ -467,7 +467,12 @@ class TestLifecycleTable(unittest.TestCase):
             ("handoff.waiting_human", "resume_upstream_branch"),
             ("handoff.waiting_human", "resume_ci"),
             ("handoff.waiting_human", "resume_submission_preparation"),
-            ("upstream_review.waiting_human", "resume_upstream_revision")})
+            ("upstream_review.waiting_human", "resume_upstream_revision"),
+            # The automatic resume of a dispatch the installed queue Policy refused.
+            ("planning.waiting_human", "rearm_dispatch"),
+            ("development.waiting_human", "rearm_dispatch"),
+            ("handoff.waiting_human", "rearm_dispatch"),
+            ("upstream_review.waiting_human", "rearm_dispatch")})
         self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
                          {"resume_stale"})
 

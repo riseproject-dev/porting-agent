@@ -427,6 +427,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     }
     nodes = []
     selected = []
+    skipped = []
     ordered = sorted(
         snapshot.contributions.values(),
         key=lambda record: (record["active_work"] or {}).get("requested_at", "")
@@ -439,16 +440,20 @@ def cmd_plan(args: argparse.Namespace) -> int:
             continue
         if len(nodes) >= policy["concurrency"]["coding_workers"]:
             break
+        # A requested task that cannot be replayed is reported and skipped:
+        # one such record never blocks the dispatch of every other
+        # contribution. Its Work stays unclaimed, so the controller's
+        # dispatch recovery decides it.
         if not record["upstream"].get("repository_id") or not record["upstream"].get(
             "base_sha"
         ):
-            raise ValueError(
-                "requested task lacks verified upstream identity/base; request a fresh revision"
-            )
+            skipped.append({"contribution": record["contribution_id"], "task": request["task"],
+                            "reason": "the upstream identity or base is not bound"})
+            continue
         if not (record["active_work"].get("tracking_issue") or {}).get("url"):
-            raise ValueError(
-                "requested task lacks a frozen tracking-issue description; request a fresh revision"
-            )
+            skipped.append({"contribution": record["contribution_id"], "task": request["task"],
+                            "reason": "no frozen tracking-issue description"})
+            continue
         contract = (
             contracts.get(record.get("target_contract_id") or "") or {}
         ).get("data") or {}
@@ -511,7 +516,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 "worker_profile": nodes[-1]["worker_profile"],
             }
         )
-    print(json.dumps({"selected": selected}, indent=2))
+    print(json.dumps({"selected": selected, **({"skipped": skipped} if skipped else {})},
+                     indent=2))
     if not nodes:
         return 0
     output = Path(args.out)

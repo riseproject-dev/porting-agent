@@ -235,10 +235,11 @@ flowchart TB
     planning_agent_running -->|exhaust_work_recovery| planning_waiting_human
     planning_idle -->|exhaust_work_total| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    planning_waiting_human -->|rearm_dispatch| planning_idle
     planning_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity. Every Work allocation also charges `work_total`.
+Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity. Every Work allocation also charges `work_total`. While the installed work-queue Policy refuses every dispatch, a dispatch is not decided until the queue is quiescent, where the dispatcher reinstalls the compiled policy; a dispatch that failed before the reinstall is re-armed by `rearm_dispatch`.
 
 ### Failure case 4: fork provisioning fails or its outcome is uncertain
 
@@ -310,9 +311,10 @@ flowchart TB
     development_agent_running -->|exhaust_dispatch_recovery| development_waiting_human
     development_agent_running -->|exhaust_work_recovery| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_waiting_human -->|rearm_dispatch| development_fix_needed
 ```
 
-Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development. A rejected proposal, a replan, and a resume keep the pending feedback.
+Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion wait for a human in development. A rejected proposal, a replan, and a resume keep the pending feedback. A dispatch that failed while the installed work-queue Policy refused every dispatch is re-armed by `rearm_dispatch` once the dispatcher has reinstalled the compiled policy.
 
 ### Failure case 2: trusted publication failure
 
@@ -667,6 +669,7 @@ flowchart TB
     handoff_agent_running -->|allocate_work_retry| handoff_agent_running
     handoff_agent_running -->|exhaust_work_recovery| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
+    handoff_waiting_human -->|rearm_dispatch| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
     handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
     handoff_review_pending -->|expire_submission_rewrite| handoff_review_due
@@ -763,6 +766,7 @@ flowchart TB
     upstream_agent_running -->|exhaust_work_recovery| upstream_waiting_human
     upstream_agent_running -->|exhaust_publish_recovery| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+    upstream_waiting_human -->|rearm_dispatch| upstream_fix_needed
 ```
 
 Every exhaustion in upstream review waits for a human in `upstream_review.waiting_human`; nothing parks from upstream review automatically.

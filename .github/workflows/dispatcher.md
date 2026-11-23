@@ -33,6 +33,44 @@ steps:
   - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
     with:
       enable-cache: false
+  # gh-aw refuses every dispatch once the compiled queue policy drops an
+  # installed worker profile (a renamed worker workflow). Its remedy is an
+  # administrator Policy update on a quiescent queue: this run publishes the
+  # compiled policy as a new Policy epoch before it stages any Work. On a busy
+  # queue nothing is changed, and the controller charges no dispatch.
+  - name: Mint a queue token for the Policy reinstall
+    id: queue-token
+    continue-on-error: true
+    uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+    with:
+      client-id: ${{ vars.RISEPROJECT_APP_CLIENT_ID }}
+      private-key: ${{ secrets.RISEPROJECT_APP_PRIVATE_KEY }}
+      owner: riseproject-dev
+      repositories: porting-agent
+      permission-contents: write
+      permission-actions: read
+  - name: Write the compiled queue policy of this run
+    continue-on-error: true
+    env:
+      REPOSITORY: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+    run: |
+      set -euo pipefail
+      uv run --locked python -m queue_policy proposal \
+        --lock .github/workflows/dispatcher.lock.yml \
+        --sha "$SHA" --repository "$REPOSITORY" \
+        --out /tmp/gh-aw/queue-policy/proposal.json
+  - name: Reinstall the queue Policy when the compiled policy drops an installed profile
+    continue-on-error: true
+    uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+    with:
+      github-token: ${{ steps.queue-token.outputs.token }}
+      script: |
+        const path = require("node:path");
+        const { main } = require(path.join(process.env.GITHUB_WORKSPACE, "scripts/work_queue_policy.cjs"));
+        await main({ github, context, core,
+                     actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
+                     proposalPath: "/tmp/gh-aw/queue-policy/proposal.json" });
   - name: Replay the controller-requested task from committed state (deterministic, no model)
     id: select
     env:

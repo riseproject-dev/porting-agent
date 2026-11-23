@@ -140,18 +140,31 @@ def replay_output(result: subprocess.CompletedProcess) -> dict:
     return value
 
 
-def queue_work_states(gh_aw: str, repo: str, timeout: int = 600) -> dict[str, str]:
-    """``graph_id -> state`` for every Work in the live queue, from the same
-    validating replay. A queue that does not exist yet is empty. Any other
-    failure raises OSError: the caller must treat the queue as unknown."""
+def queue_projection(gh_aw: str, repo: str, timeout: int = 600) -> dict | None:
+    """The validating replay of the live queue, or None when the queue does
+    not exist yet. Any other failure raises OSError: the caller must treat
+    the queue as unknown."""
     p = subprocess.run([gh_aw, "work-queue", "--repo", repo, "replay", "--json"],
                        capture_output=True, text=True, timeout=timeout)
     if p.returncode != 0:
         if "queue_missing" in p.stderr:
-            return {}
+            return None
         raise OSError(f"gh aw work-queue replay failed: {p.stderr.strip()[-300:]}")
-    works = (replay_output(p).get("works") or {}).values()
+    return replay_output(p)
+
+
+def work_states(projection: dict | None) -> dict[str, str]:
+    """``graph_id -> state`` for every Work of a replayed queue; a queue that
+    does not exist yet is empty."""
+    works = ((projection or {}).get("works") or {}).values()
     return {w["graph_id"]: w.get("state") or "unknown" for w in works if w.get("graph_id")}
+
+
+def queue_work_states(gh_aw: str, repo: str, timeout: int = 600) -> dict[str, str]:
+    """``graph_id -> state`` for every Work in the live queue, from the same
+    validating replay. A queue that does not exist yet is empty. Any other
+    failure raises OSError: the caller must treat the queue as unknown."""
+    return work_states(queue_projection(gh_aw, repo, timeout))
 
 
 def _write_status(out, status: str, failure_class: str, reason: str) -> None:

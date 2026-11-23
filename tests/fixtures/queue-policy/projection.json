@@ -1,0 +1,256 @@
+{
+ "dispatches": {
+  "d_0794728f10f3d6c0e55f4ce983701f2e5210378ff51eb5393970caabf3117f7b_1": {
+   "released": true
+  },
+  "d_0ef4eaae74f0bda358c42a4e0e409324089f05cc25a802b327238df5a4956ba2_1": {
+   "released": true
+  },
+  "d_243a1bc65155fc3681730ebf2d62c9dcf22bc9ad9dc1600ea9344427085e24c9_1": {
+   "released": true
+  },
+  "d_26a5ebba95c23129b77d7d0b1918914e54ca76b2b4c773ab1ec64419d03102cd_1": {
+   "released": true
+  },
+  "d_67438b810e45941855198bb0e45397c8f7204bb4cab191b331fe451f947450e8_1": {
+   "released": true
+  },
+  "d_84dec95fd32a3a0d8b2e05cb7e09b4eae72369f9dec6362b417857ca8c32d4d1_1": {
+   "released": true
+  },
+  "d_866b393c5d3e6faee28bd141f7a42c93b639704ce1ab942e01a30e02503f5a16_1": {
+   "released": true
+  },
+  "d_910b755ce865ee82d666f25ea7ed397a4952ad92141d6b0121c03a7046dbf780_1": {
+   "released": true
+  },
+  "d_aa626cd208fbd3f1e7efdc01c7f926a90ddd50da6eae57c797acd5783593c865_1": {
+   "released": true
+  },
+  "d_ead283e0aca66c8640522e992f04d2b7e03fdabaca319e56b5eb184ec4f53649_1": {
+   "released": true
+  },
+  "d_f0e2c8378c28347bdfaca0f7ac90b0583a6ddc20e625a829fecfb6b1cbe11aaf_1": {
+   "released": true
+  },
+  "d_ffddb8a62b96a55cd04f31e45e0c3c46df66c2d254311be166957181cbfbaaca_1": {
+   "released": true
+  }
+ },
+ "policy": {
+  "accounting_weights": {
+   "": 1
+  },
+  "authorization": "aw",
+  "class_weights": [
+   8,
+   4,
+   2,
+   1,
+   1
+  ],
+  "limits": {
+   "assignment_bytes": 49152,
+   "evidence_bytes": 1024,
+   "graph_nodes": 4096,
+   "ledger_bytes": 67108864,
+   "observation_writes": 4096,
+   "operations": 256,
+   "payload_bytes": 16384,
+   "pending_nodes": 4096,
+   "predecessors": 64,
+   "recovery_bytes": 16777216,
+   "result_bytes": 4096
+  },
+  "mode": "weighted-priority",
+  "pools": {
+   "default": {
+    "allowed_repositories": [
+     "riseproject-dev/porting-agent"
+    ],
+    "default_profile": "investigator",
+    "logical_limit": 16,
+    "max_observation_age_ms": 60000,
+    "native_limit": 16,
+    "profiles": {
+     "investigator": {
+      "credential_scope": "repository",
+      "effect_scope": "riseproject-dev/porting-agent",
+      "logical_contract": "734b299085d51f83b5e867ab6ae26c7b7b2981bd6a5e5cce568418209380f6af",
+      "max_claims": 1,
+      "ref": "94ff3d10d5089d01a0a88a5373fc1e39c1034cd3",
+      "share_keys": false,
+      "trust_domain": "default",
+      "workflow": ".github/workflows/investigator.lock.yml"
+     },
+     "worker": {
+      "credential_scope": "repository",
+      "effect_scope": "riseproject-dev/porting-agent",
+      "logical_contract": "fa9bf9e9c2eb05c6eabd6356e9f9a19cd2f42c30ff2ab724c5dbb0b5b0309ea9",
+      "max_claims": 1,
+      "ref": "edf78d27f73fa5cdc2f3779f37f75b53694fe1bb",
+      "share_keys": false,
+      "trust_domain": "default",
+      "workflow": ".github/workflows/worker.lock.yml"
+     }
+    },
+    "reconciliation": {
+     "deadline_ms": 300000,
+     "max_attempts": 5
+    },
+    "retry": {
+     "backoff_ms": 30000,
+     "max_attempts": 3
+    }
+   }
+  },
+  "producers": {}
+ },
+ "policy_epoch": "epoch_b3513816f88102f6b482b6c30ef4255b0eaf4160ff9ff00442ff6e6c41dd4d08",
+ "repository": "riseproject-dev/porting-agent",
+ "requests": {
+  "request:89c225ce694cfc2df2c8e9c0f725fd8a44ff06eb38885fdddb06335d913d6bee": {
+   "actor": {
+    "principal": "330740410",
+    "repository": "riseproject-dev/porting-agent",
+    "role": "dispatcher",
+    "run_attempt": 1,
+    "run_id": "44974153913",
+    "workflow": ".github/workflows/dispatcher.lock.yml"
+   },
+   "at": 1795313083546,
+   "id": "q_b3513816f88102f6b482b6c30ef4255b0eaf4160ff9ff00442ff6e6c41dd4d08",
+   "operations": [
+    {
+     "epoch": "epoch_b3513816f88102f6b482b6c30ef4255b0eaf4160ff9ff00442ff6e6c41dd4d08",
+     "kind": "Policy",
+     "policy": {
+      "accounting_weights": {
+       "": 1
+      },
+      "authorization": "aw",
+      "class_weights": [
+       8,
+       4,
+       2,
+       1,
+       1
+      ],
+      "limits": {
+       "assignment_bytes": 49152,
+       "evidence_bytes": 1024,
+       "graph_nodes": 4096,
+       "ledger_bytes": 67108864,
+       "observation_writes": 4096,
+       "operations": 256,
+       "payload_bytes": 16384,
+       "pending_nodes": 4096,
+       "predecessors": 64,
+       "recovery_bytes": 16777216,
+       "result_bytes": 4096
+      },
+      "mode": "weighted-priority",
+      "pools": {
+       "default": {
+        "allowed_repositories": [
+         "riseproject-dev/porting-agent"
+        ],
+        "default_profile": "investigator",
+        "logical_limit": 16,
+        "max_observation_age_ms": 60000,
+        "native_limit": 16,
+        "profiles": {
+         "investigator": {
+          "credential_scope": "repository",
+          "effect_scope": "riseproject-dev/porting-agent",
+          "logical_contract": "734b299085d51f83b5e867ab6ae26c7b7b2981bd6a5e5cce568418209380f6af",
+          "max_claims": 1,
+          "ref": "94ff3d10d5089d01a0a88a5373fc1e39c1034cd3",
+          "share_keys": false,
+          "trust_domain": "default",
+          "workflow": ".github/workflows/investigator.lock.yml"
+         }
+        },
+        "reconciliation": {
+         "deadline_ms": 300000,
+         "max_attempts": 5
+        },
+        "retry": {
+         "backoff_ms": 30000,
+         "max_attempts": 3
+        }
+       }
+      },
+      "producers": {}
+     }
+    }
+   ],
+   "policy_epoch": "epoch_b3513816f88102f6b482b6c30ef4255b0eaf4160ff9ff00442ff6e6c41dd4d08",
+   "previous": null,
+   "request": {
+    "id": "request:89c225ce694cfc2df2c8e9c0f725fd8a44ff06eb38885fdddb06335d913d6bee",
+    "kind": "submit"
+   },
+   "version": 3
+  }
+ },
+ "tip": "q_9a823c5fe7cd99080649bd9dd345705dcc2a085cd9d919345004f32fa4b5db1e",
+ "works": {
+  "37c2c7a0d1e3a74495075760de4243fc0dcbd2136ea7edffccd6dd6a7ffb7187": {
+   "barrier": "verified",
+   "graph_id": "porting:ac6fc23536c0db2eeab9d6101fdd0bf4",
+   "state": "completed",
+   "work_id": "37c2c7a0d1e3a74495075760de4243fc0dcbd2136ea7edffccd6dd6a7ffb7187",
+   "worker_profile": "investigator"
+  },
+  "3dd14a2bd6a83a26b7229ae5d5a1797ec58de9dc8f0991d05b9ecc6c130f8949": {
+   "barrier": "verified",
+   "graph_id": "porting:bf1e2f094632b01e1ee6ad2eb7c89d64",
+   "state": "completed",
+   "work_id": "3dd14a2bd6a83a26b7229ae5d5a1797ec58de9dc8f0991d05b9ecc6c130f8949",
+   "worker_profile": "worker"
+  },
+  "4be72b98deda7e439d0bd2006a856b7036a9cde1d1a1f4c0341acdd3e94bf8b1": {
+   "barrier": "verified",
+   "graph_id": "porting:0cdedd3329b1526d8471490ae5634980",
+   "state": "completed",
+   "work_id": "4be72b98deda7e439d0bd2006a856b7036a9cde1d1a1f4c0341acdd3e94bf8b1",
+   "worker_profile": "worker"
+  },
+  "57b6e78dfd0376f4da50f5c7648909ca1957e05b194f6ccf7a872ca88aded423": {
+   "barrier": "verified",
+   "graph_id": "porting:f216b96d16ac0d828bc7991d68129a3a",
+   "state": "completed",
+   "work_id": "57b6e78dfd0376f4da50f5c7648909ca1957e05b194f6ccf7a872ca88aded423",
+   "worker_profile": "worker"
+  },
+  "587d4a79d400c6966afdc2b359481564c44a6d68be74bb637e3da1265c1cba06": {
+   "barrier": "verified",
+   "graph_id": "porting:4e8a338d456385bde6a8c6c6631f4d61",
+   "state": "completed",
+   "work_id": "587d4a79d400c6966afdc2b359481564c44a6d68be74bb637e3da1265c1cba06",
+   "worker_profile": "investigator"
+  },
+  "e97800b10e6adc8aeff2e41566f6ce1981fe8a508e02ccbcc602095f06c110a3": {
+   "barrier": "verified",
+   "graph_id": "porting:5ffa8e012913c1e65d844c5a438cc020",
+   "state": "completed",
+   "work_id": "e97800b10e6adc8aeff2e41566f6ce1981fe8a508e02ccbcc602095f06c110a3",
+   "worker_profile": "investigator"
+  },
+  "efc1ff042bf495a678e32c136fe216e1c486510eb782aebd110a402df3b98350": {
+   "barrier": "verified",
+   "graph_id": "porting:38c2cf07c8159d204dcc92ca4be4a32f",
+   "state": "completed",
+   "work_id": "efc1ff042bf495a678e32c136fe216e1c486510eb782aebd110a402df3b98350",
+   "worker_profile": "worker"
+  },
+  "fd27d53d6012166e4ccb0ac9c1b44e956e7bc59fcec9962ec158c38d389819b0": {
+   "barrier": "verified",
+   "graph_id": "porting:e37df8a9f45299b1800a63fb3fcdacc0",
+   "state": "completed",
+   "work_id": "fd27d53d6012166e4ccb0ac9c1b44e956e7bc59fcec9962ec158c38d389819b0",
+   "worker_profile": "investigator"
+  }
+ }
+}

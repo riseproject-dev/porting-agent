@@ -42,6 +42,7 @@ import isolation
 import lifecycle
 import observe_ci
 import plan_gate
+import queue_policy as queue_policy_facts
 import recovery
 import schemas
 import state
@@ -88,6 +89,10 @@ def publish_retry_delay(attempts: int) -> int:
 
 # A dispatcher launch that has not shown up as a run by then is launched again.
 DISPATCH_LAUNCH_GRACE_MINUTES = 15
+# While the installed work-queue Policy refuses every dispatch and the queue
+# is quiescent, the dispatcher is launched to reinstall the compiled policy at
+# most once in this many minutes.
+POLICY_REINSTALL_LAUNCH_MINUTES = 30
 DISPATCHER_WORKFLOW = ".github/workflows/dispatcher.lock.yml"
 
 
@@ -121,7 +126,8 @@ def migration_report(
 
 def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None,
                       queue_works: dict[str, str] | None, now: datetime, policy: dict,
-                      skip: frozenset[str] = frozenset()) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
+                      skip: frozenset[str] = frozenset(), queue_policy: dict | None = None,
+                      ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
 
     ``runs`` are recent dispatcher workflow runs (GitHub API objects);
@@ -143,6 +149,12 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
       dispatcher runs that ended since the request. Each
       ended run is decided once: the record names the last one it decided
       in ``active_work.dispatched_run_id``.
+
+    ``queue_policy`` is ``queue_policy.status`` of the replayed queue. While
+    the installed Policy drops a worker profile of the compiled policy, gh-aw
+    refuses every dispatch; the dispatcher reinstalls the compiled policy only
+    on a quiescent queue. Until the queue is quiescent, a dispatch is not
+    decided at all: nothing is charged and nothing is launched.
 
     A graph the queue reports completed or cancelled takes
     ``allocate_work_retry`` or ``exhaust_work_recovery``. A record in a state
@@ -199,6 +211,11 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             if any(r.get("status") != "completed" for r in after):
                 report.append(entry | {"decision": "dispatcher running"})
                 continue
+            if queue_policy and not queue_policy["preserved"] and not queue_policy["quiescent"]:
+                report.append(entry | {"decision": "waiting for the queue to drain: the installed "
+                                                   "Policy refuses every dispatch until the "
+                                                   "dispatcher reinstalls it"})
+                continue
             if not after:
                 if now - requested < timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
                     report.append(entry | {"decision": "waiting for the dispatcher to start"})
@@ -231,6 +248,71 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
             report.append(entry | {"decision": decision})
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
+
+
+def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict | None,
+                          runs: list[dict] | None, now: datetime, policy: dict,
+                          skip: frozenset[str] = frozenset(),
+                          ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
+    """Recovery from a work-queue Policy that refused every dispatch.
+
+    * A record that waits with ``pending_human_action`` ``dispatch_failed``
+      takes the table's ``rearm_dispatch`` once the installed Policy epoch
+      was published after the failure and the compiled policy preserves it:
+      the dispatch failed for a cause the dispatcher has since removed.
+    * While the installed Policy drops a compiled worker profile and the
+      queue is quiescent, and a record holds or waits for dispatched Work,
+      the dispatcher is launched to reinstall it, at most once every
+      ``POLICY_REINSTALL_LAUNCH_MINUTES`` and never while one runs.
+
+    Returns (launch requests, staged records, report)."""
+    launch: list[dict] = []
+    staged: list[tuple[str, dict]] = []
+    report: list[dict] = []
+    if queue_policy is None:
+        return launch, staged, report
+    iso = now.isoformat()
+    installed = queue_policy.get("installed_at")
+    waiting = False
+    for key, c in sorted(contributions.items()):
+        if c["contribution_id"] in skip:
+            continue
+        pending = c.get("pending_human_action") or {}
+        if c.get("active_work"):
+            waiting = True
+        if pending.get("kind") != "dispatch_failed":
+            continue
+        waiting = True
+        with isolation.contribution(c["contribution_id"], "queue_policy_recovery"):
+            if not queue_policy["preserved"] or not installed or \
+                    datetime.fromisoformat(installed) <= datetime.fromisoformat(pending["requested_at"]):
+                report.append({"contribution": c["contribution_id"],
+                               "decision": "no Policy reinstall since the dispatch failed"})
+                continue
+            out = engine.apply_transition(
+                c, "rearm_dispatch", policy=policy, now=iso,
+                cause_id=f"queue-policy-{queue_policy.get('epoch')}",
+                facts={"queue_policy_reinstalled"},
+                details={"policy_epoch": queue_policy.get("epoch"), "installed_at": installed})
+            if not out.accepted:
+                report.append({"contribution": c["contribution_id"],
+                               "decision": f"not re-armed: {out.reason}"})
+                continue
+            contributions[key] = out.record
+            staged.extend([("contributions", out.record), ("events", out.event)])
+            report.append({"contribution": c["contribution_id"],
+                           "decision": "dispatch re-armed after the Policy reinstall"})
+    if waiting and not queue_policy["preserved"] and queue_policy["quiescent"] and runs is not None:
+        recent = [r for r in runs if r.get("status") != "completed" or now - datetime.fromisoformat(
+            r["created_at"].replace("Z", "+00:00")) < timedelta(minutes=POLICY_REINSTALL_LAUNCH_MINUTES)]
+        if recent:
+            report.append({"decision": "Policy reinstall due; a dispatcher run is recent",
+                           "dropped": queue_policy["dropped"]})
+        else:
+            launch.append({"type": "reinstall_queue_policy"})
+            report.append({"decision": "launch the dispatcher to reinstall the Policy",
+                           "dropped": queue_policy["dropped"]})
+    return launch, staged, report
 
 
 def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
@@ -1300,7 +1382,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
-         skip: frozenset[str] = frozenset(), pypi=None) -> TickOutput:
+         skip: frozenset[str] = frozenset(), pypi=None,
+         queue_policy: dict | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
     process. Every step that works on one contribution runs in an
     ``isolation.contribution`` block; an exception that leaves such a block
@@ -1559,10 +1642,20 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # 1c. Requested tasks whose dispatch never reached the queue: relaunch the
     # dispatcher (bounded), then wait for a human.
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
-                                              now=now, policy=policy, skip=skip)
+                                              now=now, policy=policy, skip=skip,
+                                              queue_policy=queue_policy)
     out.staged.extend(staged)
     out.report["dispatch_recovery"] = rep
-    out.report["dispatch_relaunch"] = relaunch
+    # 1d. A dispatch refused by the installed work-queue Policy: re-arm it
+    # once the dispatcher has reinstalled the compiled policy, and launch the
+    # dispatcher to reinstall it when the queue is quiescent.
+    launch, staged, rep = queue_policy_recovery(contributions, queue_policy=queue_policy,
+                                                runs=dispatcher_runs, now=now, policy=policy,
+                                                skip=skip)
+    out.staged.extend(staged)
+    if queue_policy is not None:
+        out.report["queue_policy"] = {"status": queue_policy, "recovery": rep}
+    out.report["dispatch_relaunch"] = relaunch + launch
 
     # 2. Live branch and CI observation.
     if observe:
@@ -1581,7 +1674,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         # handoff phase are relaunched like development Work.
         out.report["dispatch_relaunch"] = [
             item for item in out.report["dispatch_relaunch"]
-            if _holds_dispatched_work(contributions[by_cid[item["contribution_id"]]])]
+            if "contribution_id" not in item
+            or _holds_dispatched_work(contributions[by_cid[item["contribution_id"]]])]
 
     # 3. Commands, intake and work selection (controller). The failing CI job
     # of a head is decided from the evidence the record names, including the
@@ -1859,12 +1953,16 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             api, issues, INTAKE_LABEL, policy["command_authority"]["actor_ids"]
         )
     )
-    runs = queue = None
+    runs = queue = queue_state = None
     if not args.offline and args.gh_aw:
         try:
             runs = collect.dispatcher_runs(api)
-            queue = queue_result.queue_work_states(args.gh_aw, collect.CONTROL_REPO)
+            projection = queue_result.queue_projection(args.gh_aw, collect.CONTROL_REPO)
+            queue = queue_result.work_states(projection)
+            queue_state = queue_policy_facts.status(
+                projection or {}, queue_policy_facts.load_compiled(repository=collect.CONTROL_REPO))
         except (collect.CollectError, OSError, ValueError) as error:
+            runs = queue = queue_state = None
             print(f"dispatch recovery skipped this tick: {error}", file=sys.stderr)
     if args.offline:
         observed_pressure = capacity.Pressure(ok=False, reason="offline")
@@ -1892,6 +1990,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             observe=not args.offline,
             dispatcher_runs=runs,
             queue_works=queue,
+            queue_policy=queue_state,
             acceptances=acceptances,
             tracking_issues=issue_snapshots,
             upstream_snapshots=source_snapshots,

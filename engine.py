@@ -642,6 +642,7 @@ for _guard, _name in (
     ("exact fork and ref readback", "fork_and_ref_read_back"),
     ("the prerequisite is corrected", "prerequisite_corrected"),
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_lost"),
+    (lc.QUEUE_POLICY_REINSTALLED, "queue_policy_reinstalled"),
     ("the Work graph is terminal without a usable Result", "work_terminal_without_result"),
     (lc.PLAN_REJECTED, "plan_rejected"),
     ("the Result has no usable plan", "no_usable_plan"),
@@ -777,6 +778,9 @@ PIPELINE_VERBS: dict[str, str] = {
     # unclaimed, within `dispatch_recovery`.
     "retry_dispatch": "reconcile",
     "exhaust_dispatch_recovery": "reconcile",
+    # A dispatch failed while the installed work-queue Policy refused every
+    # dispatch, once the dispatcher has reinstalled the compiled policy.
+    "rearm_dispatch": "reconcile",
     # A worker Result that matches no request of the record, in any state.
     "record_late_effect": "reconcile",
     # Work allocation, by the table's rows, and the exhaustion of its budgets

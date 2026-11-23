@@ -594,6 +594,18 @@ _EXHAUST_DISPATCH_RECOVERY = Transition(
     _K, None, ("dispatch_recovery exhausted",),
     _E(work="clear", sets=("pending_human_action=dispatch_failed",
                            f"{PENDING_COUNTER}=dispatch_recovery")))
+# A dispatch refused because the installed work-queue Policy no longer
+# matches the compiled one is not a failure of the Work: once the dispatcher
+# reinstalls the compiled policy, the controller requests the Work again.
+QUEUE_POLICY_REINSTALLED = ("the work-queue Policy was installed after the dispatch failed, and "
+                            "the compiled policy preserves it")
+_REARM_DISPATCH = Transition(
+    _K, None,
+    (pending_is("dispatch_failed"), QUEUE_POLICY_REINSTALLED, NOT_PAUSED, QUIESCENT),
+    _E(revision="bump", clears=("pending_human_action",), restarts=("dispatch_recovery",)),
+    description="Re-arms a dispatch that failed while the installed work-queue Policy refused "
+                "every dispatch, once the dispatcher has reinstalled the compiled policy: the "
+                "same transition as the resume a human would post, taken by the controller.")
 # Guards that decide which transition applies when Work is due. EXCLUSIVE_GUARDS
 # lists the combinations that cannot hold together.
 WORK_TOTAL_REMAINS = "work_total remains"
@@ -819,6 +831,7 @@ LIFECYCLE: dict[str, State] = {
         "human_wait", False, False,
         "Planning recovery or a budget is exhausted; a human corrects the cause and resumes.",
         transitions={
+            ("rearm_dispatch", "planning.idle"): _REARM_DISPATCH,
             ("resume_planning", "planning.idle"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, QUIESCENT),
@@ -1000,6 +1013,7 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION, pending_is("ci_interrupted"), QUIESCENT, NOT_STALE),
                 _RESUME_CI, description=_RESUME_CI_NOTE),
+            ("rearm_dispatch", "development.fix_needed"): _REARM_DISPATCH,
             ("resume_development", "development.fix_needed"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, pending_is_not("ci_interrupted"), QUIESCENT, NOT_STALE),
@@ -1254,6 +1268,7 @@ LIFECYCLE: dict[str, State] = {
         "to the step named by `pending_human_action` and starts again the counter named in "
         "`pending_human_action.counter`.",
         transitions={
+            ("rearm_dispatch", "handoff.review_due"): _REARM_DISPATCH,
             ("resume_submission_review", "handoff.review_due"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION,
@@ -1419,6 +1434,7 @@ LIFECYCLE: dict[str, State] = {
                 description="No revision Work is requested. The pending feedback is cleared when "
                             "the pending action is `answer_reviewer`, because a human answered "
                             "it; the other two pending actions hold none."),
+            ("rearm_dispatch", "upstream_review.fix_needed"): _REARM_DISPATCH,
             ("resume_upstream_revision", "upstream_review.fix_needed"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION,
@@ -2023,11 +2039,16 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("planning.agent_running", "exhaust_work_recovery"),
                  ("planning.idle", "exhaust_work_total"),
                  ("planning.waiting_human", "resume_planning"),
+                 ("planning.waiting_human", "rearm_dispatch"),
                  ("planning.waiting_human", "park_contribution")),
                 start="planning.idle",
                 text="Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` "
                      "and `work_recovery`. A terminal Work graph is never submitted again under the "
-                     "same identity. Every Work allocation also charges `work_total`."),
+                     "same identity. Every Work allocation also charges `work_total`. While the "
+                     "installed work-queue Policy refuses every dispatch, a dispatch is not "
+                     "decided until the queue is quiescent, where the dispatcher reinstalls the "
+                     "compiled policy; a dispatch that failed before the reinstall is re-armed by "
+                     "`rearm_dispatch`."),
             Diagram(
                 "Failure case 4: fork provisioning fails or its outcome is uncertain",
                 ("provisioning.idle", "provisioning.waiting_human", "development.fix_needed",
@@ -2080,11 +2101,14 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.agent_running", "allocate_work_retry"),
                  ("development.agent_running", "exhaust_dispatch_recovery"),
                  ("development.agent_running", "exhaust_work_recovery"),
-                 ("development.waiting_human", "resume_development")),
+                 ("development.waiting_human", "resume_development"),
+                 ("development.waiting_human", "rearm_dispatch")),
                 start="development.fix_needed",
                 text="Dispatch recovery and bounded repair are automatic. Dispatch and Work "
                      "exhaustion wait for a human in development. A rejected proposal, a replan, "
-                     "and a resume keep the pending feedback."),
+                     "and a resume keep the pending feedback. A dispatch that failed while the "
+                     "installed work-queue Policy refused every dispatch is re-armed by "
+                     "`rearm_dispatch` once the dispatcher has reinstalled the compiled policy."),
             Diagram(
                 "Failure case 2: trusted publication failure",
                 ("development.agent_running", "development.fix_needed", "development.waiting_human",
@@ -2352,6 +2376,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.agent_running", "allocate_work_retry"),
                  ("handoff.agent_running", "exhaust_work_recovery"),
                  ("handoff.waiting_human", "resume_submission_review"),
+                 ("handoff.waiting_human", "rearm_dispatch"),
                  ("handoff.review_due", "request_submission_rewrite"),
                  ("handoff.agent_running", "accept_submission_rewrite"),
                  ("handoff.review_pending", "expire_submission_rewrite"),
@@ -2434,7 +2459,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("upstream_review.agent_running", "exhaust_dispatch_recovery"),
                  ("upstream_review.agent_running", "exhaust_work_recovery"),
                  ("upstream_review.agent_running", "exhaust_publish_recovery"),
-                 ("upstream_review.waiting_human", "resume_upstream_revision")),
+                 ("upstream_review.waiting_human", "resume_upstream_revision"),
+                 ("upstream_review.waiting_human", "rearm_dispatch")),
                 start="upstream_review.agent_running",
                 text="Every exhaustion in upstream review waits for a human in "
                      "`upstream_review.waiting_human`; nothing parks from upstream review "
@@ -2556,12 +2582,23 @@ def _reachable(start: str, step) -> set[str]:
     return seen
 
 
+# Tick transitions that end a human wait the way its resume does, once the
+# controller has observed that the cause is gone. The checks hold them to the
+# rules of a resume.
+AUTOMATIC_RESUMES = frozenset({"rearm_dispatch"})
+
+
+def resumes_wait(edge: Edge) -> bool:
+    """Whether ``edge`` is the resume of a human wait, posted or automatic."""
+    return edge.transition.command == RESUME or edge.verb in AUTOMATIC_RESUMES
+
+
 def must_bump(edge: Edge) -> bool:
     """Whether the revision rule requires ``edge`` to bump the revision."""
     t, e = edge.transition, edge.transition.effects
     sets = {_field_name(f) for f in e.sets}
     clears = {_field_name(f) for f in e.clears}
-    if t.command == RESUME or e.generation == "bump" or e.work == "reallocate":
+    if resumes_wait(edge) or e.generation == "bump" or e.work == "reallocate":
         return True
     if sets & set(REVISION_SET_FIELDS) or clears & set(REVISION_CLEAR_FIELDS):
         return True
@@ -3174,7 +3211,7 @@ def _check_human_waits(problems: list[str]) -> None:
     of them, and every action with which the wait is entered satisfies one."""
     for e in table_edges():
         if any(g in PENDING_GUARDS for g in e.transition.guard) and (
-                LIFECYCLE[e.source].kind != "human_wait" or e.transition.command != RESUME):
+                LIFECYCLE[e.source].kind != "human_wait" or not resumes_wait(e)):
             problems.append(f"{e.source} --{e.verb}--> {e.target}: a pending-action guard on a "
                             "transition that is not the resume of a human wait")
     for key, state in LIFECYCLE.items():
@@ -3311,7 +3348,7 @@ def _check_counter_restarts(problems: list[str]) -> None:
         t = e.transition
         restarts = set(t.effects.restarts)
         where = f"{e.source} --{e.verb}--> {e.target}"
-        resume = t.command == RESUME and LIFECYCLE[e.source].kind == "human_wait"
+        resume = resumes_wait(e) and LIFECYCLE[e.source].kind == "human_wait"
         if e.verb in RULES:
             if resume:
                 rule_expected.setdefault(e.verb, set()).update(
