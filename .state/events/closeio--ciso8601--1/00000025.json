@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-23T13:28:18.067163+00:00",
+  "cause": {
+    "id": "44982902579",
+    "type": "result"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "from_state": "handoff.awaiting_submission",
+    "result_status": "rejected",
+    "task_generation": 0,
+    "task_revision": 3,
+    "task_work": null,
+    "to_state": "handoff.awaiting_submission",
+    "verb": "record_late_effect",
+    "why": "superseded publication artifact"
+  },
+  "from": {},
+  "kind": "record_late_effect",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 25,
+  "to": {}
+}
