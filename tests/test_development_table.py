@@ -843,6 +843,16 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                          "waiting for the history of the Work")
         late = tick(rec, observe=False, runs=runs, now=T + reconcile.HISTORY_WAIT)
         self.assertEqual(kinds(late), ["exhaust_dispatch_recovery"])
+        # The event, and the tracking issue entry, say that the history was
+        # never recorded.
+        [event] = [e for kind, e in late.staged if kind == "events"]
+        self.assertEqual(event["details"]["history"], "never recorded")
+        self.assertIn("the history of this Work was never recorded in the 2 hours",
+                      event["details"]["why"])
+        import status_ledger
+        entry = status_ledger.render(event, final(late, rec), "https://example.invalid/run")
+        self.assertIn("The history of this Work was never recorded, and the dispatcher gives "
+                      "no worker Work without its history", entry)
         # The history was recorded at 08:50: the runs before it are not
         # counted, and the dispatcher is launched again after the grace.
         history = helpers.committed_history(

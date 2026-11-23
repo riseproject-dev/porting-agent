@@ -600,7 +600,9 @@ Do not repeat, and do not revert, an approach the history records as failed or
 abandoned unless you have new evidence; then name the history entry and the
 new evidence in the report's `revisited`. For a repair after failing CI, read
 the report whose `head_after` is the failing head together with the CI entry
-that follows it: it says what was tried, why and how. An entry marked
+that follows it: it says what was tried, why and how. A report whose push was
+not read back names that commit as `head_candidate` instead; it is the report
+of the failing head only when the failing head is that commit. An entry marked
 `condensed` is a short form; its full record is the evidence file it names in
 `evidence_path`, in the control repository at the pinned commit, which you can
 read through `github-authenticated`. When the history is long, an `earlier`

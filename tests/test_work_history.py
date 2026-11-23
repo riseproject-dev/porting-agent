@@ -496,6 +496,60 @@ class TestCondensationOrder(unittest.TestCase):
         self.assertEqual((latest["evidence_id"], head["evidence_id"]),
                          ("report-rerun", "report-024"))
 
+    def test_a_report_whose_push_was_not_read_back_is_the_report_of_its_head(self):
+        """P published H1; U pushed H2 but its push was not read back, so
+        its report names H2 as ``head_candidate`` only; CI failed on H2;
+        the repair R asked for a rerun, which failed too. At every scale the
+        report of the head is U, with the CI on H2 linked to it, and never
+        P; once the recorded head is another commit, U is not the report of
+        the head."""
+        h0, h1, h2 = _sha(1), _sha(2), _sha(3)
+
+        def rep(eid, revision, at, before, after, verb, char, scale, candidate=None):
+            e = report_evidence(eid, at=at, head_before=before, head_after=after,
+                                **_big_report(char, scale))
+            e["data"]["work"].update(revision=revision, requested_at=at,
+                                     dedupe_key=f"{CID}@g0.r{revision}:development_repair")
+            e["data"]["verb"] = verb
+            if candidate:
+                e["data"]["head_candidate"] = candidate
+            return e
+
+        for scale in (0.3, 0.6, 0.7):
+            with self.subTest(scale=scale):
+                evidence = {e["evidence_id"]: e for e in (
+                    rep("report-p", 1, "2026-11-01T00:00:00+00:00", h0, h1,
+                        "record_publish_success", "p", scale),
+                    rep("report-u", 3, "2026-11-10T00:00:00+00:00", h1, None,
+                        "record_late_effect", "u", scale, candidate=h2),
+                    rep("report-r", 5, "2026-11-12T00:00:00+00:00", h2, None,
+                        "request_ci_rerun", "r", scale),
+                    ci_evidence("ci-p", h1, at="2026-11-02T00:00:00+00:00"),
+                    ci_evidence("ci-u1", h2, at="2026-11-11T00:00:00+00:00"),
+                    ci_evidence("ci-u2", h2, at="2026-11-13T00:00:00+00:00"),
+                    steering_evidence("steering-0", [
+                        steer(i, "Keep the QEMU row; do not touch aarch64. " * 20,
+                              at=f"2026-11-{1 + i % 20:02d}T05:00:00Z") for i in range(30)],
+                        at="2026-11-20T00:00:00+00:00"))}
+                rec = record()
+                rec["fork"]["head_sha"] = h2
+                doc = work_history.document(rec, dict(WORK, revision=7), evidence)
+                self.assertLessEqual(len(canonical_json(doc).encode()),
+                                     work_history.HISTORY_MAX_BYTES)
+                entries = {t.get("evidence_id"): t for t in doc["timeline"]}
+                self.assertFalse(entries["report-u"].get("condensed"))
+                self.assertEqual(entries["report-u"]["head_candidate"], h2)
+                for ci in ("ci-u1", "ci-u2"):
+                    if ci in entries:
+                        self.assertEqual(entries[ci]["after_report"], "report-u")
+                timeline = work_history._entries(rec, evidence)[1]
+                latest, head = work_history.protected_reports(rec, timeline)
+                self.assertEqual((latest["evidence_id"], head["evidence_id"]),
+                                 ("report-r", "report-u"))
+                rec["fork"]["head_sha"] = _sha(9)
+                self.assertEqual(work_history.protected_reports(rec, timeline)[1]["evidence_id"],
+                                 "report-p")
+
     def test_a_report_stored_late_never_passes_for_the_newest(self):
         """The report of a late Result whose push landed is stored when the
         Result is seen, possibly after newer Work: it is placed at the time
@@ -689,6 +743,9 @@ class TestTick(unittest.TestCase):
         self.assertEqual(kinds, ["worker_report", "ci"])
         self.assertEqual(history["data"]["timeline"][1]["after_report"], "report-1")
         self.assertEqual(out.report["work_history"][0]["evidence_id"], eid)
+        # The Work of this tick is dispatched by the launch after the commit.
+        self.assertNotIn("dispatch", out.report["work_history"][0])
+        self.assertEqual(out.report["dispatch_relaunch"], [])
         # Recorded once: a tick that finds it committed records nothing.
         evidence = dict(self.evidence(), **{e["evidence_id"]: e for k, e in out.staged
                                             if k == "evidence"})
@@ -802,8 +859,10 @@ class TestTick(unittest.TestCase):
             calls.append(degrade)
             if not degrade:
                 raise collect.CollectError("GET x: HTTP 403", status=403)
-            return {"items": [], "omitted": {}, "unreadable": ["development_pr_review"],
-                    "failed": {"development_pr_review": 403}}
+            return {"items": [], "omitted": {},
+                    "unreadable": ["development_pr_review", "upstream_pr_comment"],
+                    "failed": {"development_pr_review": 403,
+                               "upstream_pr_comment": "no HTTP answer: GET y: timed out"}}
         rec, evidence = dev.record("waiting_ci"), self.evidence()
         runs = []
         with mock.patch("collect.steering", side_effect=read):
@@ -831,15 +890,25 @@ class TestTick(unittest.TestCase):
                                          "waiting for the history of the Work")
         self.assertEqual(calls, [False] * 5 + [True])
         history = evidence[eid]
-        self.assertEqual(history["data"]["steering_unreadable"], ["development_pr_review"])
+        self.assertEqual(history["data"]["steering_unreadable"],
+                         ["development_pr_review", "upstream_pr_comment"])
         self.assertEqual(out.report["work_history"][0]["steering_failed"],
-                         {"development_pr_review": 403})
-        self.assertTrue(any("development_pr_review (HTTP 403)" in a["alert"]
-                            for a in out.report["controller"]["alerts"]))
+                         {"development_pr_review": 403,
+                          "upstream_pr_comment": "no HTTP answer: GET y: timed out"})
+        [alert] = [a["alert"] for a in out.report["controller"]["alerts"]
+                   if "steering" in a["alert"]]
+        self.assertIn("development_pr_review (HTTP 403), "
+                      "upstream_pr_comment (no HTTP answer: GET y: timed out)", alert)
+        self.assertNotIn("HTTP None", alert)
+        # The tick that recorded the history launches the dispatcher, which
+        # deferred the Work until then.
+        self.assertEqual(out.report["dispatch_relaunch"],
+                         [{"type": "relaunch_dispatcher", "contribution_id": rec["contribution_id"]}])
         self.assertEqual((engine_state(rec), rec["pending_human_action"]),
                          ("development.agent_running", None))
         # The dispatcher runs before the history was recorded charge
-        # nothing: the next tick relaunches it once the launch grace passed.
+        # nothing: should the launch not show up as a run, a later tick
+        # relaunches it once the launch grace passed.
         later = dev.tick(rec, verdict="failed", evidence=evidence, observe=False,
                          now=dev.T + timedelta(minutes=61) + timedelta(
                              minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES),
@@ -865,9 +934,16 @@ class TestTick(unittest.TestCase):
         self.assertFalse([e for k, e in out.staged if k == "evidence"])
 
     def test_work_in_flight_gets_its_history(self):
+        """Work an earlier tick requested whose history this tick records
+        was deferred by the dispatcher: the tick asks for a dispatcher
+        launch at once, not after the launch grace of dispatch recovery."""
         out = dev.tick(dev.running())
         [entry] = out.report["work_history"]
         self.assertEqual(entry["work"], dev.running()["active_work"]["dedupe_key"])
+        self.assertEqual(entry["dispatch"], "relaunch: the history was recorded after the request")
+        self.assertEqual(out.report["dispatch_relaunch"],
+                         [{"type": "relaunch_dispatcher",
+                           "contribution_id": dev.running()["contribution_id"]}])
 
 
 class TestPayload(unittest.TestCase):

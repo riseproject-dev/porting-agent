@@ -25,6 +25,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import commit_rules
 import lifecycle
@@ -389,10 +390,58 @@ MAX_PAYLOAD_BYTES = 15_500
 _HISTORY_PATH = re.compile(r"\.state/evidence/history-[0-9a-f]{32}\.json")
 
 
-def payload_floor(record: dict) -> int | None:
+def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
+                   plan_reference: Any) -> tuple[list[str], dict]:
+    """The allowed paths and the context of the payload of ``request``, as
+    the dispatcher builds them from the committed ``evidence``: the scope
+    of the record (else the paths of its target contract), the reason
+    evidence of the request (a plan named by ``plan_reference``, a callable
+    of its evidence id), the commit rules and template sections of the
+    verified plan, and the rewrite a review reviews. The history reference
+    is added by the caller. Raises ``ValueError`` when a part cannot be
+    built."""
+    target = evidence.get(record.get("target_contract_id") or "") or {}
+    contract = (target.get("data") or {}) if target.get("kind") == "target_contract" else {}
+    plan_document = (evidence.get(record.get("plan_evidence_id") or "") or {}).get("data")
+    rules = commit_rules.from_plan(plan_document) if request["task"] != "planning" else None
+    sections = (commit_rules.sections_from_plan(plan_document)
+                if request["task"] in SUBMISSION_TASKS else None)
+    rewrite = (rewrite_reference(evidence.get(record.get("submission_rewrite_id") or ""))
+               if request["task"] == SUBMISSION_REVIEW else None)
+    reason_evidence = []
+    for evidence_id in request.get("reason_ids") or []:
+        item_evidence = evidence.get(evidence_id)
+        if item_evidence:
+            item = _reason_item(item_evidence)
+            if item_evidence.get("kind") == "plan":
+                item["reference"] = plan_reference(item_evidence["evidence_id"])
+            reason_evidence.append(item)
+    allowed_paths = (record.get("scope_paths") or contract.get("allowed_paths")
+                     or [".github/workflows/*"])
+    context = {
+        "requested_at": record["active_work"]["requested_at"],
+        "reason_evidence": reason_evidence,
+        # The measurable commit conventions of the verified plan, which the
+        # trusted worker gate checks. A plan of schema version 1 records
+        # none.
+        **({"commit_rules": rules} if rules is not None else {}),
+        # The required sections of the pull request template, which the
+        # submission check requires in the reviewed description.
+        **({"template_sections": sections} if sections is not None else {}),
+        # The rewrite a review reviews: the trusted pre-agent step downloads
+        # its series and text from this artifact and checks them against
+        # these digests.
+        **({"rewrite": rewrite} if rewrite is not None else {}),
+    }
+    return allowed_paths, context
+
+
+def payload_floor(record: dict, evidence: dict[str, dict] | None = None) -> int | None:
     """The fewest bytes the payload of the record's requested Work can take
-    (as ``cmd_plan`` measures it): the payload built with a history
-    reference of its exact size and no reason evidence. ``None`` when the
+    (as ``cmd_plan`` measures it): the payload built from the committed
+    ``evidence`` as the dispatcher builds it (``payload_inputs``: the
+    allowed paths, the reason evidence, the commit rules), with references
+    to the history and the plan of their exact size. ``None`` when the
     record holds no Work it could dispatch, or the payload cannot be built.
     The controller names it when a dispatch fails, so that a payload over
     ``MAX_PAYLOAD_BYTES`` (a long frozen tracking issue description) is a
@@ -400,15 +449,22 @@ def payload_floor(record: dict) -> int | None:
     request = request_from_active(record)
     if request is None:
         return None
-    history = {"repository": CONTROL_REPO, "ref": "0" * 40,
+    zero = "0" * 40
+    history = {"repository": CONTROL_REPO, "ref": zero,
                "path": f".state/evidence/history-{'0' * 32}.json", "sha256": "0" * 64,
                "evidence_id": f"history-{'0' * 32}"}
+
+    def plan_reference(evidence_id: str) -> dict:
+        path = f"{STATE_ROOT}/evidence/{evidence_id}.json"
+        return {"repository": CONTROL_REPO, "ref": zero, "path": path, "sha256": "0" * 64,
+                "url": f"https://raw.githubusercontent.com/{CONTROL_REPO}/{zero}/{path}"}
     try:
+        allowed_paths, context = payload_inputs(request, record, evidence or {},
+                                                plan_reference=plan_reference)
+        if "generation" in request:
+            context["history"] = history
         built = payload(request, record, control_repo_id="0" * 12,
-                        allowed_paths=record.get("scope_paths") or [".github/workflows/*"],
-                        context={"requested_at": record["active_work"]["requested_at"],
-                                 "reason_evidence": [],
-                                 **({"history": history} if "generation" in request else {})})
+                        allowed_paths=allowed_paths, context=context)
         return len(json.dumps(built, separators=(",", ":"), ensure_ascii=False).encode())
     except (KeyError, TypeError, ValueError):
         return None
@@ -466,11 +522,6 @@ def cmd_plan(args: argparse.Namespace) -> int:
         check=True,
     ).stdout.strip()
     _store, snapshot = reconcile.load_snapshot(root, policy)
-    contracts = {
-        evidence["evidence_id"]: evidence
-        for evidence in snapshot.evidence.values()
-        if evidence.get("kind") == "target_contract"
-    }
     nodes = []
     selected = []
     skipped = []
@@ -516,57 +567,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
         # pinned commit, a payload over the queue budget) is skipped and
         # reported: one such record never fails the dispatch of the others.
         try:
-            contract = (
-                contracts.get(record.get("target_contract_id") or "") or {}
-            ).get("data") or {}
-            plan_document = (snapshot.evidence.get(record.get("plan_evidence_id") or "") or {}).get("data")
-            rules = commit_rules.from_plan(plan_document) if request["task"] != "planning" else None
-            sections = (commit_rules.sections_from_plan(plan_document)
-                        if request["task"] in SUBMISSION_TASKS else None)
-            rewrite = (rewrite_reference(snapshot.evidence.get(record.get("submission_rewrite_id")
-                                                               or ""))
-                       if request["task"] == SUBMISSION_REVIEW else None)
-            reason_evidence = []
-            for evidence_id in request.get("reason_ids") or []:
-                evidence = snapshot.evidence.get(evidence_id)
-                if evidence:
-                    item = _reason_item(evidence)
-                    if evidence.get("kind") == "plan":
-                        item["reference"] = _plan_reference(
-                            root, evidence["evidence_id"], control_ref
-                        )
-                    reason_evidence.append(item)
-            nodes.append(
-                node(
-                    request,
-                    record,
-                    control_repo_id=args.control_repo_id,
-                    allowed_paths=record.get("scope_paths")
-                    or contract.get("allowed_paths")
-                    or [".github/workflows/*"],
-                    context={
-                        "requested_at": record["active_work"]["requested_at"],
-                        "reason_evidence": reason_evidence,
-                        # The measurable commit conventions of the verified
-                        # plan, which the trusted worker gate checks. A
-                        # plan of schema version 1 records none.
-                        **({"commit_rules": rules} if rules is not None else {}),
-                        # The required sections of the pull request template,
-                        # which the submission check requires in the reviewed
-                        # description.
-                        **({"template_sections": sections} if sections is not None else {}),
-                        # The rewrite a review reviews: the trusted pre-agent
-                        # step downloads its series and text from this artifact
-                        # and checks them against these digests.
-                        **({"rewrite": rewrite} if rewrite is not None else {}),
-                        # Everything tried before and the owner's steering: the
-                        # trusted pre-agent step fetches it at the pinned
-                        # commit and checks its digest.
-                        **({"history": _history_reference(root, history_id, control_ref)}
-                           if history_id is not None else {}),
-                    },
-                )
-            )
+            allowed_paths, context = payload_inputs(
+                request, record, snapshot.evidence,
+                plan_reference=lambda eid: _plan_reference(root, eid, control_ref))
+            if history_id is not None:
+                # Everything tried before and the owner's steering: the
+                # trusted pre-agent step fetches it at the pinned commit and
+                # checks its digest.
+                context["history"] = _history_reference(root, history_id, control_ref)
+            nodes.append(node(request, record, control_repo_id=args.control_repo_id,
+                              allowed_paths=allowed_paths, context=context))
             payload_bytes = len(
                 json.dumps(
                     nodes[-1]["payload"], separators=(",", ":"), ensure_ascii=False

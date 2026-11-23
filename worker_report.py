@@ -226,10 +226,20 @@ def evidence_id(rec: dict, run: str, revision: int | None = None) -> str:
     return fitted_id(f"report-{rec['contribution_id'].replace('/', '--')}-r{revision}-{run}")
 
 
-def head_after(outcome: dict, verb: str) -> str | None:
+_PUBLISH_VERBS = ("record_publish_success", "record_revision_publish_success")
+
+
+def _sha(value: Any) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str | None:
     """The head the Work left on its branch: the confirmed commit of the
-    publication operation, the head read back on `riscv64` for a revision,
-    or ``None`` when the Work published nothing."""
+    publication operation the row names (``operation``, by default the
+    outcome's own), the head read back on `riscv64` for a revision
+    (``reconcile.published_head``), or
+    ``None`` when the Work published nothing or its push was not read
+    back."""
     import reconcile
 
     if verb == "record_revision_publish_success":
@@ -237,19 +247,39 @@ def head_after(outcome: dict, verb: str) -> str | None:
             return reconcile.published_head(outcome)
         except Exception:
             return None
-    if verb != "record_publish_success":
+    if verb not in _PUBLISH_VERBS:
         return None
-    op = outcome.get("operation")
+    op = operation if operation is not None else outcome.get("operation")
     # A publish-only retry that found the push of an earlier attempt on the
     # branch has no operation: the candidate it read there.
-    head = (((op.get("proposed") or {}).get("commit") if op.get("status") == "confirmed"
-             else None) if op else outcome.get("candidate"))
-    return head if isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    if op:
+        return _sha((op.get("proposed") or {}).get("commit")) \
+            if op.get("status") == "confirmed" else None
+    return _sha(outcome.get("candidate")) if outcome.get("status") == "published" else None
+
+
+def head_candidate(outcome: dict, verb: str, operation: dict | None = None) -> str | None:
+    """The commit a publication proposed whose push was not read back: the
+    proposed commit of an open (``applying`` or ``uncertain``) branch
+    operation, or the candidate of an ``uncertain`` Result. It may be on the
+    branch or not; the history treats it as the head the Work left only
+    when the recorded head (or the head a CI run ran on) is that very
+    commit. ``None`` when ``head_after`` names a head, or nothing was
+    proposed."""
+    if verb not in _PUBLISH_VERBS or head_after(outcome, verb, operation):
+        return None
+    op = operation if operation is not None else outcome.get("operation")
+    if op and op.get("status") in ("applying", "uncertain") \
+            and op.get("kind") in ("branch_update", "branch_rewrite"):
+        return _sha((op.get("proposed") or {}).get("commit"))
+    if outcome.get("status") == "uncertain":
+        return _sha(outcome.get("candidate"))
+    return None
 
 
 def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
              run: str, head_verb: str | None = None,
-             revision: int | None = None) -> dict | None:
+             revision: int | None = None, operation: dict | None = None) -> dict | None:
     """The ``worker_report`` evidence of a Result folded by ``verb``, or
     ``None`` when the Work carries no history and its Result no usable
     report. The report is checked again against the Work the Result
@@ -267,7 +297,10 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
     ``head_verb`` names the success row whose published head the report
     records when ``verb`` is another one (``record_late_effect`` of a
     Result whose push landed), and ``revision`` the revision of the Work
-    when the record has left it."""
+    when the record has left it. ``operation`` is the branch operation the
+    row names when it is not the outcome's own (the operation of an earlier
+    attempt that a publish-only retry confirmed); a report whose push was
+    not read back records the commit it proposed as ``head_candidate``."""
     task = outcome.get("task") or {}
     try:
         report = check(task, outcome.get("worker_report"))
@@ -279,7 +312,7 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
     if report is None:
         return None
     cleaned = clean_tree(report)
-    op = outcome.get("operation") or {}
+    op = operation or outcome.get("operation") or {}
     changed = [clean(path, 300) for path in
                ((op.get("proposed") or {}).get("changed_files") or [])[:200]
                if isinstance(path, str)]
@@ -293,11 +326,14 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
         "verb": verb,
         "result_status": outcome.get("status"),
         "head_before": task.get("expected_head"),
-        "head_after": head_after(outcome, head_verb or verb),
+        "head_after": head_after(outcome, head_verb or verb, operation),
         "changed_files": changed,
         "report": cleaned,
         "artifact": {"run_id": str(run), "artifact_id": outcome.get("publication_artifact_id")},
     }
+    candidate = head_candidate(outcome, head_verb or verb, operation)
+    if candidate:
+        data["head_candidate"] = candidate
     try:
         # The id is built inside the guard: an id that cannot be stored
         # pauses only this contribution, like any report that cannot be.

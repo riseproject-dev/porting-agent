@@ -283,6 +283,52 @@ class TestTrustAndReading(unittest.TestCase):
         self.assertEqual(opened, [1, 2, 3, 4, 5, 6, 7, 8])
         self.assertEqual(len(items), 800)
 
+    def test_a_list_without_a_last_page_keeps_its_newest_pages(self):
+        """A list whose first page names a next page but no last page is
+        read forwards, keeping its newest pages and flagging the rest; one
+        longer than ``NEWEST_SCAN_PAGES`` is a failed read, never its oldest
+        pages."""
+        from tests.test_collect_read_errors import Response
+        base = "https://api.github.com"
+
+        def api_of(total):
+            def open_(req, timeout=None):
+                import re
+                found = re.search(r"[?&]page=([0-9]+)", req.full_url)
+                n = int(found.group(1)) if found else 1
+                link = (f'<{base}/x?per_page=100&page={n + 1}>; rel="next"'
+                        if n < total else "")
+                return Response(body=json.dumps([{"id": n}]).encode(), headers={"Link": link})
+            return collect.Api(token="", opener=open_)
+        report: dict = {}
+        items = api_of(8).paginate("/x?per_page=100", max_pages=5, newest=True, report=report)
+        self.assertEqual(([i["id"] for i in items], report["truncated"]), ([4, 5, 6, 7, 8], True))
+        items = api_of(3).paginate("/x?per_page=100", max_pages=5, newest=True, report=report)
+        self.assertEqual(([i["id"] for i in items], report["truncated"]), ([1, 2, 3], False))
+        # Read oldest first, as before, without ``newest``.
+        items = api_of(8).paginate("/x?per_page=100", max_pages=5, report=report)
+        self.assertEqual(([i["id"] for i in items], report["truncated"]), ([1, 2, 3, 4, 5], True))
+        with self.assertRaisesRegex(collect.CollectError, "names no last page"):
+            api_of(collect.NEWEST_SCAN_PAGES + 1).paginate("/x?per_page=100", max_pages=5,
+                                                           newest=True)
+
+    def test_an_empty_page_is_a_failed_read(self):
+        """An empty body on a list read is a collector failure (a
+        ``CollectError``, which defers the history), never a crash that
+        pauses the contribution; a well-formed body of another shape stays
+        a processing error (``test_collect_read_errors``)."""
+        from tests.test_collect_read_errors import Response
+        for key, newest in ((None, True), (None, False), ("check_runs", False)):
+            with self.subTest(key=key, newest=newest):
+                api = collect.Api(token="", opener=lambda req, timeout=None:
+                                  Response(body=b"", headers={}))
+                with self.assertRaisesRegex(collect.CollectError, "body is empty"):
+                    api.paginate("/x?per_page=100", key=key, newest=newest)
+        api = collect.Api(token="", opener=lambda req, timeout=None: Response(body=b"",
+                                                                              headers={}))
+        with self.assertRaises(collect.CollectError):
+            collect.steering(api, record(), [OWNER["id"]], issue=None)
+
     def test_the_cap_is_flagged_whatever_the_size_of_the_last_page(self):
         """A list read backwards from a partial last page holds fewer items
         than the bound and is still flagged; a list of exactly the bound read
@@ -333,6 +379,17 @@ class TestTrustAndReading(unittest.TestCase):
         out = collect.steering(Forbidden(), record(), [OWNER["id"]], issue=None, degrade=True)
         self.assertEqual(out["unreadable"], ["development_pr_review"])
         self.assertEqual(out["failed"], {"development_pr_review": 403})
+
+    def test_a_list_github_never_answered_says_what_failed(self):
+        class Unreachable(Api):
+            def paginate(self, path, **kwargs):
+                if "/pulls/5/reviews" in path:
+                    raise collect.CollectError("GET /x: connection reset")
+                return super().paginate(path, **kwargs)
+
+        out = collect.steering(Unreachable(), record(), [OWNER["id"]], issue=None, degrade=True)
+        self.assertEqual(out["failed"],
+                         {"development_pr_review": "no HTTP answer: GET /x: connection reset"})
 
 
 def item(cid, *, body="Keep the QEMU row.", updated=None, source="tracking_issue_comment",

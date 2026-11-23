@@ -254,6 +254,52 @@ class TestPayload(unittest.TestCase):
             self.assertEqual(context.get("commit_rules"), expected)
             self.assertEqual("commit_rules" in context, expected is not None)
 
+    def test_the_payload_floor_is_the_payload_the_dispatcher_builds(self):
+        """The controller's measure of the smallest payload counts every part
+        the dispatcher builds from the committed evidence: the allowed paths
+        of the target contract, the reason evidence (the plan with its
+        reference) and the commit rules of the plan."""
+        import work
+        import work_history
+        from tests.helpers import contribution
+        record = contribution(phase="development", activity="agent_running", revision=3)
+        record.update(plan_evidence_id="plan-x", target_contract_id="contract-x",
+                      scope_paths=None, upstream=dict(
+                          record["upstream"], repository_id=1, base_sha="a" * 40))
+        record["active_work"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
+                                 "revision": 3, "attempt": 1, "requested_at": "2026-11-23T00:00:00+00:00",
+                                 "deadline_at": "2026-11-23T06:00:00+00:00", "dispatched_run_id": None,
+                                 "reason_ids": ["plan-x"], "tracking_issue": {"url": "https://x"},
+                                 "feedback_evidence_ids": []}
+        history = work_history.evidence_id("k")
+        evidence = {
+            "plan-x": {"evidence_id": "plan-x", "kind": "plan", "summary": "s" * 1500,
+                       "limitations": ["l" * 400] * 4, "data": plan()},
+            "contract-x": {"evidence_id": "contract-x", "kind": "target_contract",
+                           "data": {"allowed_paths": [f".github/workflows/w{i}.yml"
+                                                      for i in range(40)]}},
+            history: {}}
+        snapshot = type("S", (), {"contributions": {"c": record}, "evidence": evidence})
+        with tempfile.TemporaryDirectory() as directory, \
+                unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
+                unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="c" * 40)):
+            out = Path(directory) / "plan.json"
+            (Path(directory) / ".state" / "evidence").mkdir(parents=True)
+            for eid in (history, "plan-x"):
+                (Path(directory) / ".state" / "evidence" / f"{eid}.json").write_text("{}")
+            args = type("A", (), {"root": directory, "out": str(out),
+                                  "control_repo_id": "1" * 12})
+            work.cmd_plan(args)
+            payload = json.loads(out.read_text())["nodes"][0]["payload"]
+        self.assertEqual(len(payload["allowed_paths"]), 40)
+        self.assertIn("commit_rules", payload["context"])
+        self.assertEqual(payload["context"]["reason_evidence"][0]["evidence_id"], "plan-x")
+        size = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode())
+        self.assertEqual(work.payload_floor(record, evidence), size)
+        # Without the evidence, the floor misses those parts.
+        self.assertLess(work.payload_floor(record), size)
+
 
 
 class TestHeadings(unittest.TestCase):

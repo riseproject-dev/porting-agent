@@ -262,6 +262,35 @@ class TestArtifact(unittest.TestCase):
 
 
 class TestEvidence(unittest.TestCase):
+    def test_the_head_a_publication_left_or_proposed(self):
+        """``head_after`` is the commit of a confirmed operation, of the one
+        the row names, or the candidate a publish-only retry read back; the
+        commit of a push that was not read back is only ``head_candidate``."""
+        verb = "record_publish_success"
+
+        def op(status, commit="c" * 40):
+            return {"kind": "branch_update", "status": status,
+                    "proposed": {"commit": commit, "changed_files": ["a"]}}
+        cases = [
+            ({"status": "published", "operation": op("confirmed")}, None, "c" * 40, None),
+            ({"status": "uncertain", "operation": op("uncertain"), "candidate": "c" * 40},
+             None, None, "c" * 40),
+            ({"status": "uncertain", "operation": op("applying")}, None, None, "c" * 40),
+            ({"status": "uncertain", "candidate": "d" * 40}, None, None, "d" * 40),
+            ({"status": "published", "candidate": "d" * 40}, None, "d" * 40, None),
+            # A stale retry behind the confirmed operation of an earlier
+            # attempt: the row names that operation.
+            ({"status": "rejected", "failure_class": "stale"}, op("confirmed", "e" * 40),
+             "e" * 40, None),
+            ({"status": "published", "operation": op("confirmed")}, None, None, None),
+        ]
+        for index, (outcome, named, after, candidate) in enumerate(cases):
+            row = "request_ci_rerun" if index == len(cases) - 1 else verb
+            with self.subTest(case=index):
+                self.assertEqual((worker_report.head_after(outcome, row, named),
+                                  worker_report.head_candidate(outcome, row, named)),
+                                 (after, candidate))
+
     def test_the_evidence_is_cleaned_and_passes_the_store(self):
         rec = {"contribution_id": CID, "revision": 3}
         outcome = {"status": "published", "task": task(), "publication_artifact_id": 9,

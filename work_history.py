@@ -150,6 +150,8 @@ def _report_entry(ev: dict) -> dict:
             "generation": work.get("generation", 0),
             "work": copy.deepcopy(work), "verb": data.get("verb"),
             "head_before": data.get("head_before"), "head_after": data.get("head_after"),
+            **({"head_candidate": data["head_candidate"]}
+               if isinstance(data.get("head_candidate"), str) else {}),
             "changed_files": list(data.get("changed_files") or []),
             "report": copy.deepcopy(data.get("report") or {})}
 
@@ -235,6 +237,8 @@ def _short(full: dict) -> dict:
         report = full.get("report") or {}
         entry.update(generation=full.get("generation"), work=full.get("work"),
                      head_before=full.get("head_before"), head_after=full.get("head_after"),
+                     **({"head_candidate": full["head_candidate"]}
+                        if full.get("head_candidate") else {}),
                      summary=_text(report.get("summary") or "", 2 * SHORT),
                      approaches=[{"title": _text(a.get("title") or "", SHORT),
                                   "outcome": a.get("outcome"),
@@ -372,11 +376,13 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
                                  str(t.get("evidence_id") or ""), str(t.get("id") or "")))
     # Each CI run is linked to the report that published the head it ran on,
     # whatever their order: the newest such report that sorts before the
-    # run, else the oldest one on that head.
+    # run, else the oldest one on that head. A report whose push was not
+    # read back is matched by the commit it proposed (``head_candidate``):
+    # a CI run on that very commit shows the push landed.
     by_head: dict[str, list[int]] = {}
     for index, entry in enumerate(timeline):
-        if entry["kind"] == "worker_report" and entry.get("head_after"):
-            by_head.setdefault(entry["head_after"], []).append(index)
+        if entry["kind"] == "worker_report" and report_head(entry):
+            by_head.setdefault(report_head(entry), []).append(index)
     for index, entry in enumerate(timeline):
         if entry["kind"] == "ci" and entry.get("head") in by_head:
             candidates = by_head[entry["head"]]
@@ -632,16 +638,25 @@ def _work_order(entry: dict) -> tuple:
             str(entry.get("at") or ""), entry["seq"])
 
 
+def report_head(entry: dict) -> str | None:
+    """The head a report entry left on its branch: ``head_after``, or the
+    commit a push that was not read back proposed (``head_candidate``),
+    which matches only a head that is that very commit."""
+    return entry.get("head_after") or entry.get("head_candidate")
+
+
 def protected_reports(record: dict, timeline: list[dict]) -> tuple[dict | None, dict | None]:
     """The two reports the condensation protects: the newest report, by the
     Work it describes (its generation and revision, then its time, so a
     report stored late never passes for the newest), and the report of the
     head: the newest report whose ``head_after`` is the recorded head of the
-    branch the record works on (the head CI ran on), else the newest report
-    with a ``head_after``. A report that published nothing (a CI rerun, a
-    reviewer answer, a submission rewrite or review) is never the report of
-    the head, so a repair after failing CI reads the report of the worker
-    whose head failed whatever was stored after it."""
+    branch the record works on (the head CI ran on), or whose
+    ``head_candidate`` (the commit of a push that was not read back) is
+    that head, else the newest report with a ``head_after``. A report that
+    published nothing (a CI rerun, a reviewer answer, a submission rewrite
+    or review) is never the report of the head, so a repair after failing
+    CI reads the report of the worker whose head failed whatever was stored
+    after it."""
     import lifecycle
 
     reports = [t for t in timeline if t["kind"] == "worker_report"]
@@ -650,8 +665,9 @@ def protected_reports(record: dict, timeline: list[dict]) -> tuple[dict | None, 
     latest = max(reports, key=_work_order)
     head = lifecycle.recorded_head(record)
     published = [t for t in reports if t.get("head_after")]
-    on_head = [t for t in published if head and t.get("head_after") == head]
-    head_report = max(on_head or published, key=_work_order) if published else None
+    on_head = [t for t in reports if head and report_head(t) == head]
+    candidates = on_head or published
+    head_report = max(candidates, key=_work_order) if candidates else None
     return latest, head_report
 
 

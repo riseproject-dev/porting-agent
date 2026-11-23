@@ -274,7 +274,9 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 continue
             # A dispatcher run ended since the request with the Work unclaimed.
             new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
-                                                  policy=policy)
+                                                  policy=policy,
+                                                  history_missing=history is False,
+                                                  evidence=evidence)
             if new is None:
                 report.append(entry | {"decision": decision})
                 continue
@@ -362,19 +364,34 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
 
 
 def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
-                   policy: dict) -> tuple[dict | None, dict | None, str]:
+                   policy: dict, history_missing: bool = False,
+                   evidence: dict[str, dict] | None = None
+                   ) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work that a dispatcher run left absent
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
     relaunches spent) remains, ``exhaust_dispatch_recovery`` once it is
     spent. ``count`` is the number of dispatcher runs since the request,
-    all ended. The record names the decided run in ``dispatched_run_id``."""
+    all ended. The record names the decided run in ``dispatched_run_id``.
+    ``evidence`` is the committed evidence the payload is measured from
+    (``payload_cause``). ``history_missing`` says that the history of the
+    Work was never recorded (``HISTORY_WAIT`` has passed), which the event states as the
+    cause in plain words."""
     iso = now.isoformat()
     if engine.state_key(c) not in lifecycle.LIFECYCLE:
         return None, None, (f"dispatch lost in {engine.state_key(c)}, a state the table does "
                             "not have")
     counts = {"dispatch_recovery": count}
     details = {"dispatcher_run": str(run["id"]), "work": aw["dedupe_key"]}
-    cause = payload_cause(c)
+    causes = [payload_cause(c, evidence)]
+    if history_missing:
+        details["history"] = "never recorded"
+        hours = int(HISTORY_WAIT.total_seconds()) // 3600
+        causes.insert(0, (
+            f"the history of this Work was never recorded in the {hours} hours since it was "
+            "requested, and the dispatcher dispatches no Work without its history, so no "
+            "worker ever received it. The controller reports of those ticks say why the "
+            "history was not recorded"))
+    cause = "; ".join(text for text in causes if text)
     if cause:
         details["why"] = cause
     limit = lifecycle.budget_limit("dispatch_recovery", policy)
@@ -394,14 +411,16 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     return out.record, out.event, "dispatch failed; waiting for a human"
 
 
-def payload_cause(record: dict) -> str | None:
+def payload_cause(record: dict, evidence: dict[str, dict] | None = None) -> str | None:
     """Why the dispatcher cannot dispatch the record's Work, when the
     controller can tell: its payload is over the queue's budget
     (``work.MAX_PAYLOAD_BYTES``) at the least, since it carries the frozen
     tracking issue description inline. The dispatcher skips such Work and
     dispatches every other; the event of the dispatch recovery names the
-    cause, so the tracking issue entry of the human wait says what to do."""
-    floor = work.payload_floor(record)
+    cause, so the tracking issue entry of the human wait says what to do.
+    The payload is measured from the committed ``evidence`` as the
+    dispatcher builds it (``work.payload_floor``)."""
+    floor = work.payload_floor(record, evidence)
     if floor is None or floor <= work.MAX_PAYLOAD_BYTES:
         return None
     description = ((record.get("active_work") or {}).get("tracking_issue") or {}).get(
@@ -532,19 +551,22 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
 def late_report_evidence(rec: dict, pub: dict, *, now: str, policy: dict,
                          known: dict[str, dict], details: dict) -> list[tuple[str, dict]]:
     """The report of a Result that takes ``record_late_effect`` although its
-    push landed (a ``published`` Result whose head was read back): the head
-    is on the branch and CI runs on it, so the report is stored as
-    ``worker_report`` evidence of the Work it answers, and the next repair
-    reads what was tried on that head. A Result that published nothing
-    stores nothing. A report that cannot be stored is recorded as such in
-    ``details`` and never stops the fold of the late Result, which changes
-    nothing else; an id already in ``known`` is not stored again."""
-    if pub.get("status") != "published":
+    push landed or may have landed (a ``published`` Result whose head was
+    read back, or an ``uncertain`` one that names the commit it pushed): the
+    head may be on the branch and CI run on it, so the report is stored as
+    ``worker_report`` evidence of the Work it answers, with ``head_after``,
+    or with ``head_candidate`` when the push was not read back, and the
+    next repair reads what was tried on that head. A Result that published
+    nothing stores nothing. A report that cannot be stored is recorded as
+    such in ``details`` and never stops the fold of the late Result, which
+    changes nothing else; an id already in ``known`` is not stored again."""
+    if pub.get("status") not in ("published", "uncertain"):
         return []
     task = pub.get("task") or {}
     landed = ("record_revision_publish_success" if task.get("task") == "upstream_revision"
               else "record_publish_success")
-    if worker_report.head_after(pub, landed) is None:
+    if worker_report.head_after(pub, landed) is None \
+            and worker_report.head_candidate(pub, landed) is None:
         return []
     run = str(pub.get("worker_run_id") or (pub.get("artifact") or {}).get("run_id") or "0")
     revision = task.get("revision")
@@ -1009,18 +1031,21 @@ REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_suc
 
 
 def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: dict,
-                    run: str | None, details: dict) -> list[tuple[str, dict]]:
+                    run: str | None, details: dict,
+                    operation: dict | None = None) -> list[tuple[str, dict]]:
     """The report of a Result folded by ``verb``, staged as ``worker_report``
     evidence when ``verb`` is a success row; its id is named in
     ``details``, or that it is absent when the Work carries no history and
     returned no usable report. A success row of Work that carries a history
     never drops its report: ``worker_report.evidence`` raises when it cannot
     be stored, so the contribution pauses and the Result stays unfolded.
-    Nothing is staged for any other row."""
+    Nothing is staged for any other row. ``operation`` is the branch
+    operation the row names, whose commit the report records as the head
+    the Work left."""
     if verb not in REPORT_VERBS:
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
-                                      run=str(run or "0"))
+                                      run=str(run or "0"), operation=operation)
     if evidence is None:
         details["report"] = "absent"
         return []
@@ -1362,7 +1387,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         # The report of a successful worker is kept for later Work; any
         # other report is discarded.
         staged.extend(report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
-                                      details=details))
+                                      details=details, operation=op))
         out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
                                       facts=facts, values=values, details=details)
     if not out.accepted:
@@ -2184,8 +2209,9 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     defers the history, never the allocation, which the tick commits; it is
     read without, with an alert, once the Work has waited
     ``STEERING_FAILURE_GRACE`` since its committed ``requested_at``, so one
-    failing list never holds the Work. Dispatch recovery launches the
-    dispatcher again for Work whose history a later tick recorded."""
+    failing list never holds the Work. The tick that records the history of
+    Work an earlier tick requested asks for a dispatcher launch
+    (``dispatch_relaunch``), since the dispatcher deferred that Work."""
     latest = {c["contribution_id"]: c for c in contributions.values()}
     for kind, record in out.staged:
         if kind == "contributions":
@@ -2193,6 +2219,11 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     evidence = dict(snap.evidence)
     evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
     authority = policy["command_authority"]["actor_ids"]
+    # The Work this tick submits is dispatched by the launch that follows
+    # the commit; any other Work whose history this tick records was
+    # deferred by an earlier dispatcher run.
+    submitted = {item.get("dedupe_key") for item in out.report.get("requested_effects") or []
+                 if item.get("type") == "submit_work"}
     report = []
     budget = HISTORY_BYTES_PER_TICK
     for cid in sorted(latest):
@@ -2269,13 +2300,23 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                      "steering_unreadable": list(collected.get("unreadable") or [])}
             if deferred:
                 entry["steering_deferred"] = deferred
+            if request["dedupe_key"] not in submitted:
+                # The Work was requested by an earlier tick and the
+                # dispatcher deferred it while its history was missing:
+                # the dispatcher is launched once this history is committed,
+                # without waiting for the launch grace of dispatch recovery.
+                entry["dispatch"] = "relaunch: the history was recorded after the request"
+                launches = out.report.setdefault("dispatch_relaunch", [])
+                if not launches:
+                    launches.append({"type": "relaunch_dispatcher", "contribution_id": cid})
             if collected.get("failed"):
                 entry["steering_failed"] = dict(collected["failed"])
                 out.report["controller"]["alerts"].append({
                     "contribution": cid,
                     "alert": "steering lists failing for longer than "
                              f"{STEERING_FAILURE_GRACE}, read without them: "
-                             + ", ".join(f"{k} (HTTP {v})"
+                             + ", ".join(f"{k} (HTTP {v})" if isinstance(v, int)
+                                         else f"{k} ({v})"
                                          for k, v in sorted(collected["failed"].items()))})
             report.append(entry)
     return report

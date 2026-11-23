@@ -808,12 +808,16 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "reports are kept longest, the newest by the Work it describes and the report of the "
         "head CI ran on (so a CI rerun or a reviewer answer, which publish nothing, never "
         "displaces the report of the worker whose head failed), with the CI linked to it; "
+        "the head a report left is the commit of the confirmed operation its row names, and a "
+        "late report whose push was not read back records the commit it proposed, which "
+        "matches only a head that is that very commit; "
         "they take a reduced form, every section kept, before any of the owner's steering is "
         "folded, and everything else gives way first, oldest first. The payload names it by "
         "pinned commit and SHA-256, and a trusted pre-agent step fetches and verifies it; the "
         "dispatcher defers Work whose history is not committed yet, and dispatch recovery "
         "charges nothing for it for two hours, after which a history never recorded ends in "
-        "the human wait of `exhaust_dispatch_recovery`. No record field changes.",
+        "the human wait of `exhaust_dispatch_recovery`, whose entry says so; the tick that "
+        "records a late history launches the dispatcher. No record field changes.",
         ("development.agent_running", "development.waiting_ci",
          "handoff.agent_running", "handoff.review_pending", "handoff.reviewing",
          "handoff.building_upstream_branch"),

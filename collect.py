@@ -147,39 +147,55 @@ class Api:
         inside an object response (e.g. ``check_runs``). With ``newest``, a
         list longer than ``max_pages`` is read from its last page backwards
         (Link: rel=last, then rel=prev), so the newest items are the ones
-        read; the result is in the order of the list either way. When
+        read; a list that names no last page is read forwards, keeping its
+        ``max_pages`` newest pages, up to ``NEWEST_SCAN_PAGES`` pages, and a
+        longer one raises ``CollectError`` rather than return its oldest
+        pages. The result is in the order of the list either way. When
         ``report`` is a dict, ``report["truncated"]`` is set to whether the
         list holds pages that were not read (a rel=next left after the last
-        page read, or a rel=last past ``max_pages``), whatever the number of
-        items on its last page."""
+        page read, a rel=last past ``max_pages``, or pages dropped from the
+        front), whatever the number of items on its last page. A page with an
+        empty body raises ``CollectError``: the list could not be read."""
         if report is not None:
             report["truncated"] = False
         if not _PATH_RE.match(path) or ".." in path:
             raise CollectError(f"refusing unexpected API path {path!r}")
         url = self.base + path
-        out: list = []
-        for index in range(max_pages):
+        pages: list[list] = []
+        limit = max_pages
+        for index in range(max(max_pages, NEWEST_SCAN_PAGES)):
             data, headers = self._request(url)
             link = headers.get("Link") or headers.get("link") or ""
+            nxt = _link(link, "next")
             if newest and index == 0:
                 last = _link(link, "last")
-                pages = re.search(r"[?&]page=([0-9]+)", last or "")
-                if last and pages and int(pages.group(1)) > max_pages:
+                number = re.search(r"[?&]page=([0-9]+)", last or "")
+                if last and number and int(number.group(1)) > max_pages:
                     if report is not None:
                         report["truncated"] = True
                     return self._backwards(last, key=key, max_pages=max_pages)
-            out.extend(data[key] if key else data)
-            nxt = _link(link, "next")
+                if nxt and not last:
+                    # No last page is named: the newest pages are found by
+                    # reading forwards, within a bound.
+                    limit = NEWEST_SCAN_PAGES
+            pages.append(list(_page(url, data, key)))
+            if len(pages) > max_pages:
+                pages.pop(0)
+                if report is not None:
+                    report["truncated"] = True
             if not nxt:
                 break
-            if index == max_pages - 1:
+            if index == limit - 1:
+                if limit != max_pages:
+                    raise CollectError(f"GET {url}: the list names no last page and is longer "
+                                       f"than {NEWEST_SCAN_PAGES} pages")
                 if report is not None:
                     report["truncated"] = True
                 break
             if not nxt.startswith(self.base + "/"):
                 raise CollectError("pagination left the API host")
             url = nxt
-        return out
+        return [item for page in pages for item in page]
 
     def _backwards(self, url: str, *, key: str | None, max_pages: int) -> list:
         """``max_pages`` pages read from ``url`` (the last page) backwards,
@@ -189,11 +205,26 @@ class Api:
             if not url.startswith(self.base + "/"):
                 raise CollectError("pagination left the API host")
             data, headers = self._request(url)
-            pages.append(list(data[key] if key else data))
+            pages.append(list(_page(url, data, key)))
             url = _link(headers.get("Link") or headers.get("link") or "", "prev")
             if not url:
                 break
         return [item for page in reversed(pages) for item in page]
+
+
+# How many pages a list read for its newest items is read forwards at most
+# when GitHub names no last page (``Api.paginate``).
+NEWEST_SCAN_PAGES = 50
+
+
+def _page(url: str, data: Any, key: str | None) -> list:
+    """The items of one page of a list read. A page GitHub answered with an
+    empty body is a failed read (the collector could not read the list),
+    never an empty list or a crash; a well-formed body of another shape stays
+    an error of the caller, as for every other read."""
+    if data is None:
+        raise CollectError(f"GET {url}: the response body is empty, not a list")
+    return data[key] if key else data
 
 
 def _link(link: str, rel: str) -> str | None:
@@ -532,15 +563,16 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     stored. A list GitHub answers with a status of ``STEERING_GONE`` is
     named in ``unreadable``; any other failed read raises ``CollectError``,
     unless ``degrade`` is true (the Work has waited for its history too
-    long): then the list is named in ``unreadable`` too, and its HTTP status
-    in ``failed``."""
+    long): then the list is named in ``unreadable`` too, and in ``failed``
+    the HTTP status GitHub answered, or, for a read GitHub never answered,
+    what failed (``no HTTP answer: ...``)."""
     from common import sha256_text
 
     allowed = {int(value) for value in authority}
     items: list[dict] = []
     omitted: dict[str, int] = {}
     unreadable: list[str] = []
-    failed: dict[str, int | None] = {}
+    failed: dict[str, int | str] = {}
 
     def keep(source: str, raw: dict, *, maintainers: bool, review: bool = False,
              **keys) -> None:
@@ -578,7 +610,11 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
                 raise
             unreadable.append(source)
             if status not in STEERING_GONE:
-                failed[source] = status
+                # What failed: the HTTP status GitHub answered, or the
+                # failure of a read GitHub never answered (a transport
+                # error, a body that is not the list).
+                failed[source] = status if isinstance(status, int) \
+                    else f"no HTTP answer: {str(error)[:200]}"
             return []
         # A client that does not report truncation is judged by the number
         # of items read.

@@ -207,6 +207,9 @@ def _observed(event: dict) -> str:
     if kind in SUBMISSION_REQUESTS and _submission_request(event):
         bound = details.get("bound_to") or details
         parts.append(f"Candidate head: {_head(bound.get('head'))}.")
+    if details.get("history") == "never recorded":
+        parts.append("The history of this Work was never recorded, and the dispatcher gives "
+                     "no worker Work without its history, so no worker ever received it.")
     for key in ("mismatch", "incomplete", "why"):
         if details.get(key):
             parts.append(f"Observed: `{_quotable(details[key], 600)}`.")

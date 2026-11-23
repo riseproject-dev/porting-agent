@@ -166,7 +166,7 @@ class TestDevelopment(unittest.TestCase):
 
     def test_a_late_result_that_published_nothing_stores_nothing(self):
         rec = dev.running()
-        for name in ("rejected_validation", "uncertain", "infra_error"):
+        for name in ("rejected_validation", "infra_error"):
             with self.subTest(result=name):
                 late = with_report(rec, publication(rec, name))
                 late["candidate"] = SHA_B
@@ -174,6 +174,42 @@ class TestDevelopment(unittest.TestCase):
                 out = dev.tick(rec, [late], observe=False)
                 self.assertEqual(dev.kinds(out), ["record_late_effect"])
                 self.assertEqual(stored(out.staged), [])
+
+    def test_a_late_uncertain_result_stores_the_commit_it_proposed(self):
+        """A late Result whose push was not read back may have landed: its
+        report is stored with the commit it proposed (``head_candidate``),
+        never as ``head_after``. The history treats it as the report of the
+        head only when the recorded head, or the head a CI run ran on, is
+        that very commit; otherwise the report that published the head
+        stays the report of the head."""
+        from tests.test_work_history import ci_evidence, report_evidence
+        rec = dev.running()
+        late = with_report(rec, publication(rec, "uncertain"), summary="Pinned the QEMU row.")
+        late["candidate"] = SHA_B
+        late["task"]["revision"] = late["worker_report"]["expected_revision"] = rec["revision"] + 7
+        out = dev.tick(rec, [late], observe=False)
+        self.assertEqual(dev.kinds(out), ["record_late_effect"])
+        [evidence] = stored(out.staged)
+        self.assertEqual((evidence["data"]["head_after"], evidence["data"]["head_candidate"]),
+                         (None, SHA_B))
+        older = report_evidence("report-older", at="2026-11-01T00:00:00+00:00",
+                                head_before="c" * 40, head_after=SHA_A)
+        ci = dict(ci_evidence("ci-9", SHA_B, at="2026-11-23T10:00:00+00:00"),
+                  contribution_id=rec["contribution_id"])
+        known = {evidence["evidence_id"]: evidence, "report-older": older, "ci-9": ci}
+        work_ = {"dedupe_key": "k", "task": "development_repair"}
+        landed = dict(rec, fork=dict(rec["fork"], head_sha=SHA_B))
+        doc = work_history.document(landed, work_, known)
+        ci_entry = next(t for t in doc["timeline"] if t["kind"] == "ci")
+        self.assertEqual(ci_entry["after_report"], evidence["evidence_id"])
+        timeline = work_history._entries(landed, known)[1]
+        self.assertEqual(work_history.protected_reports(landed, timeline)[1]["evidence_id"],
+                         evidence["evidence_id"])
+        # The push did not land: the recorded head is the older one.
+        lost = dict(rec, fork=dict(rec["fork"], head_sha=SHA_A))
+        timeline = work_history._entries(lost, {k: v for k, v in known.items() if k != "ci-9"})[1]
+        self.assertEqual(work_history.protected_reports(lost, timeline)[1]["evidence_id"],
+                         "report-older")
 
     def test_a_late_result_whose_report_cannot_be_stored_is_recorded_as_such(self):
         rec = dev.running()
@@ -462,3 +498,105 @@ class TestFoldFromArtifact(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUncertainPublicationHistory(unittest.TestCase):
+    """The owner's case after a lost push response: patch Work U pushes H2
+    but its push is not read back (`uncertain`); the publish-only retry
+    confirms it, CI fails on H2, the repair Work R answers `no_change` and
+    its rerun fails again. The Work allocated next reads U's report as the
+    report of the head, whole or reduced, with the CI on H2 linked to it,
+    even when the history is condensed and an older report P published the
+    head before."""
+
+    def run_chain(self, *, stale):
+        from datetime import timedelta
+
+        import recovery
+        from tests.test_late_results import ci_snapshot
+        from tests.test_work_history import _big_report, report_evidence, steer, steering_evidence
+        cid = dev.running()["contribution_id"]
+        older = report_evidence("report-p", at="2026-11-01T00:00:00+00:00",
+                                head_before="c" * 40, head_after=SHA_A,
+                                **_big_report("p", 0.7))
+        older["contribution_id"] = cid
+        heavy = steering_evidence("steering-0", [
+            steer(i, "Keep the QEMU row; do not touch aarch64. " * 25,
+                  at=f"2026-11-{1 + i % 20:02d}T05:00:00Z") for i in range(30)],
+            at="2026-11-20T00:00:00+00:00")
+        heavy["contribution_id"] = cid
+        evidence = {"report-p": older, "steering-0": heavy}
+        ops: dict = {}
+        now = dev.T
+
+        def step(rec, pubs=(), minutes=0, **kw):
+            out = dev.tick(rec, list(pubs), evidence=evidence, operations=ops,
+                           now=now + timedelta(minutes=minutes), **kw)
+            self.assertEqual([str(f) for f in out.failures], [])
+            for kind, staged in out.staged:
+                if kind == "evidence":
+                    evidence[staged["evidence_id"]] = staged
+                if kind == "operations":
+                    ops[staged["operation_id"]] = staged
+            return dev.final(out, rec), dev.kinds(out)
+
+        def settle(rec):
+            # The development PR operations the tick planned are carried out.
+            for key, op in list(ops.items()):
+                if op["status"] == "planned":
+                    ops[key] = recovery.record_discovery(dict(op, status="uncertain"),
+                                                         "confirmed", "done", now.isoformat())
+            return dict(rec, fork=dict(rec["fork"], pr_number=12), active_operation_id=None)
+
+        start = dev.running(fork=dict(dev.record()["fork"], pr_number=None))
+        op = dev.branch_operation(start)
+        lost = with_report(start, dev.uncertain(start, op), **_big_report("u", 0.7))
+        rec, verbs = step(start, [lost], observe=False)
+        self.assertEqual(verbs, ["schedule_publish_retry"])
+        self.assertEqual([e["evidence_id"] for e in stored(
+            [("evidence", e) for e in evidence.values()])], ["report-p"])
+        if stale:
+            ops[op["operation_id"]] = dev.branch_operation(start, confirmed=True)
+            retry = dev.retried(rec, "rejected_stale")
+        else:
+            retry = dev.retried(rec)
+        rec, verbs = step(rec, [with_report(start, retry, **_big_report("u", 0.7))],
+                          minutes=10, head=SHA_B)
+        self.assertEqual(verbs, ["record_publish_success", "record_head_change"])
+        [own] = [e for e in evidence.values()
+                 if e["kind"] == "worker_report" and e["evidence_id"] != "report-p"]
+        self.assertEqual(own["data"]["head_after"], SHA_B)
+        rec, verbs = step(settle(rec), minutes=20, head=SHA_B, verdict="failed")
+        self.assertEqual(verbs, ["record_ci_failure", "request_repair"])
+        repair = rec
+        rerun = dict(with_report(repair, dev.rerun_outcome(repair), **_big_report("r", 0.7)),
+                     publication_artifact_id=1001, worker_run_id="556")
+        rec, verbs = step(rec, [rerun], minutes=40, head=SHA_B)
+        self.assertEqual(verbs, ["request_ci_rerun"])
+
+        def attempt(verdict):
+            snapshot = ci_snapshot(SHA_B, verdict)
+            snapshot.runs[0]["run_attempt"] = 2
+            return snapshot
+        rec, verbs = step(rec, minutes=50, head=SHA_B, ci=attempt("failed"))
+        self.assertEqual(verbs, ["record_ci_failure"])
+        rec, verbs = step(settle(rec), minutes=60, head=SHA_B, ci=attempt("failed"))
+        self.assertEqual(verbs, ["request_repair"])
+        key = rec["active_work"]["dedupe_key"]
+        history = evidence[work_history.evidence_id(key)]["data"]
+        return own, history
+
+    def test_the_report_of_the_confirmed_head_is_protected(self):
+        for stale in (False, True):
+            with self.subTest(stale=stale):
+                own, history = self.run_chain(stale=stale)
+                self.assertTrue(history["condensed"])
+                entries = {t.get("evidence_id"): t for t in history["timeline"]}
+                head = entries[own["evidence_id"]]
+                self.assertFalse(head.get("condensed"))
+                self.assertEqual(head["head_after"], SHA_B)
+                self.assertEqual(head["report"]["summary"][:1], "u")
+                for ci in (t for t in history["timeline"] if t["kind"] == "ci"):
+                    self.assertEqual(ci.get("after_report"), own["evidence_id"])
+                older = entries.get("report-p")
+                self.assertTrue(older is None or older.get("condensed"))
