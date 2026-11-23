@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 
+import commands
 import engine
 from common import CONTROL_REPO
 from status_ledger import Api, LedgerError, issue_comments
@@ -15,16 +16,24 @@ from status_ledger import Api, LedgerError, issue_comments
 TEMPLATES = {
     "force-develop": '/upstreaming force-develop revision=N class=configuration_integration paths=".github/workflows/release.yml" reason="..."',
     "submit-upstream": "/upstreaming submit-upstream revision=N head=FULL_SHA",
-    "request-handoff": "/upstreaming submit-upstream revision=N head=FULL_SHA",
-    "approve-handoff": "/upstreaming submit-upstream revision=N head=FULL_SHA",
-    "register-upstream-pr": "/upstreaming submit-upstream revision=N head=FULL_SHA",
+    "retract-pr": "/upstreaming retract-pr revision=N head=FULL_SHA",
     "pause": '/upstreaming pause revision=N reason="..."',
     "park": '/upstreaming park revision=N reason="..."',
-    "block": '/upstreaming pause revision=N reason="..."',
     "abandon": '/upstreaming abandon revision=N reason="..."',
-    "restart": '/upstreaming restart revision=N reason="..."',
     "refresh": '/upstreaming refresh revision=N reason="..."',
     "resume": '/upstreaming resume revision=N reason="..."',
+}
+# A retired command is answered with the form of the command that replaced it.
+REPLACEMENTS = {
+    "request-handoff": "submit-upstream",
+    "approve-handoff": "submit-upstream",
+    "register-upstream-pr": "submit-upstream",
+    "block": "pause",
+    "approve-scope": "resume",
+    "provision": "resume",
+    "restart": "resume",
+    "clarify": "resume",
+    "revise-scope": "refresh",
 }
 
 
@@ -58,7 +67,7 @@ def render(receipt: dict, original: dict) -> str:
         text += ("\n\n**Nothing was changed.** The command was well-formed; no other form of it "
                  "is accepted.")
         return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
-    template = TEMPLATES.get(verb)
+    template = TEMPLATES.get(REPLACEMENTS.get(verb, verb))
     if template:
         head = re.search(r"(?:^|\s)head=([0-9a-f]{40})(?:\s|$)", body)
         if head:
@@ -70,6 +79,8 @@ def render(receipt: dict, original: dict) -> str:
         if revision is not None:
             template = template.replace("revision=N", f"revision={revision}")
         text += f"\n\n**Expected form:**\n```text\n{template}\n```"
+    if verb in commands.DEPRECATED:
+        text += f"\n\n**Deprecated:** {commands.DEPRECATED[verb]}."
     return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
 
 

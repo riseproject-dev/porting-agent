@@ -16,7 +16,8 @@ PHASE_LABELS = {
     "intake": "Requested",
     "investigation": "Investigating",
     "parked": "Parked",
-    "abandoned": "Closed",
+    "closed": "Closed",
+    "released": "Released",
     "provisioning": "Preparing fork",
     "development": "Development",
     "handoff": "Ready for upstream",
@@ -33,8 +34,22 @@ ACTIVITY_LABELS = {
 }
 
 
+# Why a contribution is closed (`terminal_reason` of `closed.idle`).
+TERMINAL_REASON_LABELS = {
+    "abandoned": "abandoned",
+    "withdrawn": "request withdrawn",
+    "no_work": "not applicable",
+    "deferred": "deferred",
+    "already_released": "already released",
+}
+
+
 def status_label(state: dict) -> str:
     phase = PHASE_LABELS.get(state["phase"], state["phase"].replace("_", " ").title())
+    if state["phase"] == "closed" and state.get("terminal_reason"):
+        reason = state["terminal_reason"]
+        phase += f" ({TERMINAL_REASON_LABELS.get(reason, reason.replace('_', ' '))})"
+        return phase
     activity = ACTIVITY_LABELS.get(
         state["activity"], state["activity"].replace("_", " ")
     )

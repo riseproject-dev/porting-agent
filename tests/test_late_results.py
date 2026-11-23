@@ -4,15 +4,15 @@
 
 The table's ``record_late_effect`` applies in every state: a Result that does
 not match the current generation, revision, and requested Work is recorded and
-never folded. ``park``, ``abandon``, and ``pause`` clear the
-requested Work without a revision bump, so the Result of the Work they stopped
+never folded. ``park`` and ``pause`` clear the requested Work without a
+revision bump (``abandon`` then closes a parked contribution), so the Result of the Work they stopped
 carries the record's own revision. It must be recorded, change nothing, and
 never stop the tick.
 
 A stop also clears the pending publication: the Result held for publication is
 invalidated, so its publication Result is recorded like any other late Result,
 no publish retry is launched for a stopped record, and the stop never keeps a
-later resume or restart from applying.
+later resume from applying.
 """
 
 from __future__ import annotations
@@ -135,6 +135,16 @@ def stopped(phase, verb):
     """``running(phase)`` after a human stopped it with ``verb``, or ``None``
     where the table has no such stop."""
     record = running(phase)
+    if verb == "abandon":
+        # Only a parked contribution is abandoned.
+        refused = apply_command(record, commands.parse('/upstreaming abandon reason="stop"'))
+        assert not refused.accepted and "does not apply" in refused.reason, refused.reason
+        parked = stopped(phase, "park")
+        if parked is None:
+            return None
+        out = apply_command(parked, commands.parse('/upstreaming abandon reason="stop"'))
+        assert out.accepted, out.reason
+        return out.record
     out = apply_command(record, commands.parse(f'/upstreaming {verb} reason="stop"'))
     if (phase, verb) == ("upstream_review", "park"):
         # Nothing parks from upstream review but its human wait.
@@ -176,7 +186,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
     def test_park_abandon_and_pause_during_running_work(self):
         # A pause from an `agent_running` state leads to the state in which
         # the Work is due again.
-        expected = {"park": "parked.idle", "abandon": "abandoned.idle",
+        expected = {"park": "parked.idle", "abandon": "closed.idle",
                     "pause": {"investigation": "investigation.idle",
                               "development": "development.fix_needed",
                               "upstream_review": "upstream_review.fix_needed"}}
@@ -211,7 +221,6 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
             "parked.waiting_human": contribution(
                 phase="parked", activity="waiting_human", parked_reason="x",
                 previous_phase="development", pending_human_action=human),
-            "abandoned.idle": contribution(phase="abandoned", activity="idle"),
             "closed.idle": contribution(phase="closed", activity="idle"),
         }
         for state, record in records.items():
@@ -281,7 +290,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         details = {"result_status": "published", "task_revision": 0}
         for record in (contribution(phase="parked", activity="idle", parked_reason="x",
                                     previous_phase="development"),
-                       contribution(phase="abandoned", activity="idle")):
+                       contribution(phase="development", activity="idle")):
             state = engine.state_key(record)
             self.assertEqual(state in lifecycle.LIFECYCLE, state == "parked.idle")
             event = compat.record_late_effect(record, policy=POLICY, now=NOW, cause_id="555",
@@ -300,7 +309,7 @@ PENDING = {"worker_run_id": "555", "attempts": 1, "last_reason": "x", "next_atte
 # What the trusted publisher can return for a launched publication.
 PUBLISHER_RESULTS = ("published", "uncertain", "proposal", "no_change", "rejected_validation",
                      "rejected_stale", "infra_error", "worker_blocked")
-RESUME = {"park": "resume", "abandon": "restart", "pause": "resume"}
+RESUME = {"park": "resume", "pause": "resume"}
 
 
 def command(record, body):
@@ -374,7 +383,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                     self.assertTrue(resumed.accepted, resumed.reason)
                     self.assertEqual(resumed.record["revision"], record["revision"] + 1)
                     self.assertFalse(compat.stopped(resumed.record))
-                    if verb in ("park", "abandon"):
+                    if verb == "park":
                         self.assertEqual(engine.state_key(resumed.record), "queued.idle")
                         self.assertEqual(resumed.record["generation"], record["generation"] + 1)
 
@@ -435,20 +444,13 @@ class TestStopWithAPendingPublication(unittest.TestCase):
     def test_legacy_stop_paths_outside_commands(self):
         record = contribution(pending_publication=dict(PENDING))
         self.assertIsNone(compat.park(copy.deepcopy(record), "x")["pending_publication"])
-        for body in ('/upstreaming park reason="x"', '/upstreaming abandon reason="x"',
-                     "/upstreaming pause"):
+        for body in ('/upstreaming park reason="x"', "/upstreaming pause"):
             for activity in ("agent_running", "waiting_capacity", "waiting_ci", "waiting_human"):
                 with self.subTest(command=body, activity=activity):
                     out = command(dict(record, activity=activity), body)
                     self.assertIsNone(out.record["pending_publication"])
                     self.assertNotIn(out.record["activity"], ("agent_running", "waiting_capacity"))
                     self.assertIsNone(compat.state_problem(out.record))
-        # A command that does not stop keeps the publication.
-        kept = command(dict(record, activity="waiting_human", pending_human_action={
-            "kind": "task_without_outcome", "requested_at": NOW, "reminded_at": None,
-            "escalated_at": None}), "/upstreaming clarify revision=0 decision=x answer=x")
-        self.assertTrue(kept.accepted, kept.reason)
-        self.assertEqual(kept.record["pending_publication"], PENDING)
 
     def test_recovered_worker_blocker_is_recorded_once(self):
         # The rejected proposal of run 555 is recorded; its blocker report for
@@ -605,8 +607,10 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                 out = command(record, body)
                 if not out.accepted:
                     # The table does not take this stop here (no row, or a
-                    # guard), or the record is terminal.
+                    # guard; `abandon` applies in states of the table only),
+                    # or the record is terminal.
                     self.assertTrue(engine.takes_command(record, cmd.verb)
+                                    or cmd.verb not in compat.LEGACY_COMMANDS
                                     or record["phase"] in lifecycle.TERMINAL, out.reason)
                     continue
                 stopped_record = out.record
@@ -624,7 +628,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                         self.assertEqual(output.report["publication_retries"], [])
                         self.assertEqual(output.report["proposal_publications"], [])
                         count += 1
-        self.assertGreater(count, 2000)
+        self.assertGreater(count, 1200)
 
 
 if __name__ == "__main__":

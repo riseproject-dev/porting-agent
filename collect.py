@@ -368,60 +368,6 @@ def pull_request(api: Api, url: str) -> dict:
     }
 
 
-def user(api: Api, login: str) -> dict | None:
-    """{"id", "login"} for a GitHub user, or None if there is no such user."""
-    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", login):
-        return None
-    try:
-        u = api.get(f"/users/{login}")
-    except CollectError as e:
-        if "HTTP 404" in str(e):
-            return None
-        raise
-    return {"id": u["id"], "login": u["login"]} if u.get("type") == "User" else None
-
-
-FORK_ORG = "riseproject-upstreaming"
-
-
-def verify_provisioning(api: Api, record: dict) -> dict:
-    """Read-only check that a human-provisioned fork is ready (plan 10.1).
-
-    The fork is ``riseproject-upstreaming/<upstream repo name>``. It must be a
-    fork of the recorded upstream (same repository ID), not archived, and have
-    a ``riscv64`` branch. The upstream base is the upstream default branch's
-    current head unless the record names a base ref. Returns the facts the
-    ``provision`` command records, or {"error": why}.
-    """
-    up_name = record["upstream"]["full_name"]
-    fork = f"{FORK_ORG}/{up_name.split('/', 1)[1]}"
-    try:
-        upstream = api.get(f"/repos/{up_name}")
-        f = api.get(f"/repos/{fork}")
-    except CollectError as e:
-        return {"error": f"cannot read {fork} or {up_name}: {e}"}
-    if record["upstream"].get("repository_id") not in (None, upstream["id"]):
-        return {"error": "upstream repository ID changed"}
-    parent = f.get("parent") or {}
-    if not f.get("fork") or parent.get("id") != upstream["id"]:
-        return {"error": f"{fork} is not a fork of {up_name}"}
-    if f.get("archived"):
-        return {"error": f"{fork} is archived"}
-    head = branch_head(api, fork, "riscv64")
-    if head is None:
-        return {"error": f"{fork} has no riscv64 branch"}
-    base_ref = record["upstream"].get("base_ref") or upstream["default_branch"]
-    base = branch_head(api, up_name, base_ref)
-    if base is None:
-        return {"error": f"{up_name} has no branch {base_ref}"}
-    return {"fork": fork, "fork_id": f["id"], "head_sha": head["head"], "upstream_id": upstream["id"],
-            "base_ref": base_ref, "base_sha": base["head"]}
-
-
-# --------------------------------------------------------------------------
-# Fork / branch state
-
-
 def repository(api: Api, full_name: str) -> dict:
     r = api.get(f"/repos/{full_name}")
     return {"id": r["id"], "full_name": r["full_name"], "default_branch": r["default_branch"],
@@ -559,26 +505,3 @@ def ecosystem_report(api: Api, project: str) -> str | None:
         raise
     import base64
     return base64.b64decode(data["content"]).decode("utf-8", "replace")
-
-
-def command_lookups(api: Api, snapshot, comments: list[dict]) -> tuple[dict, dict]:
-    """Collect read-only prerequisites needed by accepted command candidates."""
-    import commands
-    import intake
-
-    users: dict = {}
-    provisioning: dict = {}
-    for item in comments:
-        try:
-            command = commands.parse(item["comment"]["body"])
-        except commands.CommandError:
-            continue
-        if command.verb == "approve-scope" and command.args["backup"] not in users:
-            users[command.args["backup"]] = user(api, command.args["backup"])
-        if command.verb == "provision":
-            record = intake.contribution_for_issue(
-                snapshot.contributions.values(), item["issue_number"]
-            )
-            if record is not None and record["contribution_id"] not in provisioning:
-                provisioning[record["contribution_id"]] = verify_provisioning(api, record)
-    return users, provisioning

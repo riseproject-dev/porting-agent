@@ -170,10 +170,11 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         problems.append(f"{path}: content matches a credential pattern")
     if _forbidden_state_text(record):
         problems.append(f"{path}: content contains forbidden repository text U+2014")
-    # A record that awaits the flag migration is read as the migration reads it.
-    flag_migration = kind == "contributions" and isinstance(record, dict) \
-        and compat.awaits_flag_migration(record)
-    view = compat.schema_view(record) if flag_migration else record
+    # A record that awaits the flag or the terminal migration is read as the
+    # migration reads it.
+    awaits_migration = kind == "contributions" and isinstance(record, dict) \
+        and (compat.awaits_flag_migration(record) or compat.awaits_terminal_migration(record))
+    view = compat.schema_view(record) if awaits_migration else record
     for e in schemas.errors(STATE_KINDS[kind], view):
         problems.append(f"{path}: {e}")
     if kind == "contributions" and not problems:
@@ -181,7 +182,7 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         # compatibility paths still write, or is one of the old shapes that
         # the reviewed record migrations rewrite before anything else runs.
         state_problem = compat.state_problem(record)
-        if state_problem and not compat.is_handoff_wait(record) and not flag_migration:
+        if state_problem and not compat.is_handoff_wait(record) and not awaits_migration:
             problems.append(f"{path}: {state_problem}")
     if not problems:
         try:
@@ -254,6 +255,9 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
         if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
                 and compat.needs_migration(json.loads(data)):
             rep.problems.append(f"{path}: written in a handoff shape that awaits record migration")
+        if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
+                and compat.needs_terminal_migration(json.loads(data)):
+            rep.problems.append(f"{path}: written in a terminal phase the lifecycle replaced")
     if rep.total_bytes > policy["storage"]["max_commit_bytes"]:
         rep.problems.append(f"state commit is {rep.total_bytes} bytes, over the limit")
     # Case-insensitive collisions anywhere in the resulting state tree.
@@ -442,8 +446,10 @@ def _pending_record_migrations(root: Path, policy: dict, *,
                                now: str | None = None) -> list[tuple[str, dict, dict]]:
     """Contribution records in a shape that a reviewed record migration
     rewrites, each with its migrated record and event: a record in the
-    handoff phase but not in a state of the lifecycle table, and a record
-    whose stop flag predates the merge of ``blocked`` into ``paused``.
+    handoff phase but not in a state of the lifecycle table, a record in a
+    terminal phase that ``closed`` replaced, and a record whose stop flag
+    predates the merge of ``blocked`` into ``paused``. A record that needs
+    two of them gets one per run, in this order.
 
     Reads the checkout without changing it. Every record must be
     schema-valid (a text ``blocked_reason`` aside, which the flag migration
@@ -478,6 +484,11 @@ def _pending_record_migrations(root: Path, policy: dict, *,
                     record, evidence=evidence, policy=policy, now=now or record["updated_at"])
             except compat.TransitionError as error:
                 raise StateError(f"{rel}: {error}") from error
+        elif compat.needs_terminal_migration(record):
+            try:
+                migrated, event = compat.migrate_terminal(record, now=now or record["updated_at"])
+            except (compat.TransitionError, schemas.SchemaError) as error:
+                raise StateError(f"{rel}: {error}") from error
         elif compat.needs_flag_migration(record):
             try:
                 migrated, event = compat.migrate_flags(record, now=now or record["updated_at"])
@@ -495,12 +506,13 @@ def pending_record_migrations(root: Path, policy: dict) -> list[str]:
 
 
 def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> list[str]:
-    """Rewrite every old handoff approval wait as ``handoff.awaiting_submission``
-    and every old stop flag as the table's ``paused``, and append one
-    migration event per record.
+    """Rewrite every old handoff approval wait as ``handoff.awaiting_submission``,
+    every old terminal phase as ``closed.idle``, and every old stop flag as
+    the table's ``paused``, and append one migration event per record.
 
-    Each migration is bound to the exact shapes ``compat.migrate_handoff_wait``
-    and ``compat.migrate_flags`` accept; a record in any other such shape
+    Each migration is bound to the exact shapes ``compat.migrate_handoff_wait``,
+    ``compat.migrate_terminal``, and ``compat.migrate_flags`` accept; a record
+    in any other such shape
     fails closed. It is idempotent: a migrated record is not selected
     again. Callers publish only the returned paths, before any ordinary
     reconciliation, so no other lifecycle mutation rides in the commit.

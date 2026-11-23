@@ -606,7 +606,7 @@ class TestRepeatedErrorAndResume(unittest.TestCase):
                                  "not paused again: contribution is paused")
 
     def test_terminal_contribution_is_not_paused(self):
-        a = contribution(phase="abandoned", activity="idle", terminal_reason="x")
+        a = contribution(phase="closed", activity="idle", terminal_reason="abandoned")
         output = tick([a, other_waiting()], patches=[
             ("controller._actionable", only_for(A, REAL["_actionable"]))])
         self.assertEqual(staged_for(output, A), [])

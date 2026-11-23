@@ -15,10 +15,13 @@ produce. It can never enter the ``handoff`` phase or change a record that is
 in it: every handoff state is written by the engine.
 
 For a record in a state of ``LEGACY_STATES`` the verbs that set ``paused``
-are written by ``legacy_pause``, and the commands by ``apply_command``; in a
-state of the table the engine takes them. The reviewed record migrations
-(``migrate_handoff_wait``, ``migrate_flags``) bring records written before
-the table to the shapes it describes.
+are written by ``legacy_pause``, and ``pause``, ``resume``, and ``park`` by
+``apply_command``; in a state of the table the engine takes them. Every
+other command of the table applies in states of the table only.
+``apply_command`` also applies the deprecated ``force-develop`` and the
+intake command ``authorize-followup``. The reviewed record migrations
+(``migrate_handoff_wait``, ``migrate_flags``, ``migrate_terminal``) bring
+records written before the table to the shapes it describes.
 
 ``LEGACY_SITES`` and ``LEGACY_STATES`` shrink as call sites are converted;
 when both are empty this module is deleted.
@@ -32,8 +35,16 @@ from typing import Any
 import engine
 import schemas
 from commands import URGENT, Command
-from common import DEV_REF, validate_scope_paths
-from lifecycle import ACTIVITIES, FLAGS, LIFECYCLE, TERMINAL, Outcome, TransitionError, _event
+from common import INTAKE_LABEL, validate_scope_paths
+from lifecycle import (
+    ACTIVITIES,
+    FLAGS,
+    LIFECYCLE,
+    TERMINAL,
+    Outcome,
+    TransitionError,
+    _event,
+)
 
 # States that are not in the lifecycle table and that legacy paths still
 # write. Each is removed together with the paths that write it.
@@ -45,8 +56,7 @@ LEGACY_STATES = frozenset(
     # they know: `idle` where Work is due or CI passed, `waiting_capacity`
     # where the table keeps the state whose guard does not hold yet.
     {f"{phase}.{activity}" for phase in _LEGACY_PHASES for activity in _LEGACY_ACTIVITIES}
-    # `abandon` and a removed intake label; `closed.idle` replaces it.
-    | {"abandoned.idle"}) - frozenset(LIFECYCLE)
+) - frozenset(LIFECYCLE)
 
 # The call sites that still write lifecycle state outside the table, by the
 # identifier each passes to ``legacy_update``.
@@ -54,7 +64,6 @@ LEGACY_SITES = frozenset({
     "canary.repair_mismatch",
     "controller.select_work",
     "controller.defer_destination_operation",
-    "controller.cancel_unlabeled_request",
     "controller.rearm_provisioning",
     "controller.plan_provisioning",
     "controller.plan_development_pr",
@@ -268,13 +277,17 @@ def needs_flag_migration(record: dict) -> bool:
 
 
 def schema_view(record: dict) -> dict:
-    """The record as the schema reads it while it awaits the flag migration:
-    a text ``blocked_reason`` is the one field the current schema no longer
-    admits."""
+    """The record as the schema reads it while it awaits a record migration:
+    a text ``blocked_reason`` (flag migration) and a terminal phase the
+    table replaced by ``closed`` (terminal migration) are the values the
+    current schema no longer admits."""
+    view = record
     blocked = record.get("blocked_reason")
     if isinstance(blocked, str) and len(blocked) <= 2000:
-        return dict(record, blocked_reason=None)
-    return record
+        view = dict(view, blocked_reason=None)
+    if needs_terminal_migration(record):
+        view = dict(view, phase="closed")
+    return view
 
 
 def awaits_flag_migration(record: dict) -> bool:
@@ -311,6 +324,89 @@ def migrate_flags(record: dict, *, now: str) -> tuple[dict, dict]:
     event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
                         "changed": changed, "paused_by": new.get("paused_by"),
                         "paused_reason": new.get("paused_reason")}
+    schemas.validate("event", event)
+    return new, event
+
+
+# The terminal phases before the lifecycle table: ``abandoned`` (written by
+# ``/upstreaming abandon`` in any phase, and by the removal of the intake
+# label), and ``no_work``, ``deferred``, and ``already_released``, which the
+# schema admitted. The table has one terminal phase for work that is not
+# needed, ``closed.idle``, whose reason is ``terminal_reason``.
+# ``migrate_terminal`` rewrites exactly these records.
+
+TERMINAL_MIGRATION = "closed-terminal-phase"
+TERMINAL_MIGRATED = "terminal_phase_migrated"
+LEGACY_TERMINAL_PHASES = ("abandoned", "no_work", "deferred", "already_released")
+# The ``terminal_reason`` the removal of the intake label recorded; the
+# table's ``withdraw_request`` records ``withdrawn``.
+LABEL_REMOVED_REASON = f"{INTAKE_LABEL} label removed before Work admission"
+
+
+def needs_terminal_migration(record: dict) -> bool:
+    """Whether a record is in a terminal phase the table replaced."""
+    return isinstance(record, dict) and record.get("phase") in LEGACY_TERMINAL_PHASES
+
+
+def terminal_reason(record: dict) -> str:
+    """The ``terminal_reason`` of ``closed.idle`` for a legacy terminal record:
+    ``withdrawn`` for a removed intake label, ``abandoned`` for any other
+    abandon, and the name of the phase for the others."""
+    if record["phase"] == "abandoned":
+        return "withdrawn" if record.get("terminal_reason") == LABEL_REMOVED_REASON \
+            else "abandoned"
+    return record["phase"]
+
+
+def terminal_shape_problem(record: dict) -> str | None:
+    """Why a legacy terminal record is not the shape the migration rewrites."""
+    if not needs_terminal_migration(record):
+        return f"phase {record.get('phase')!r} is not a legacy terminal phase"
+    expected = {"activity": "idle", "blocked_reason": None, "active_work": None,
+                "active_operation_id": None, "pending_publication": None}
+    for name, value in expected.items():
+        if record.get(name) != value:
+            return f"{name} is {record.get(name)!r}, not {value!r}"
+    if (record.get("proposal_artifact") or {}).get("outcome") == "proposal":
+        return "a proposal is held without having been published"
+    return None
+
+
+def awaits_terminal_migration(record: dict) -> bool:
+    """Whether the terminal migration rewrites this record without refusing it."""
+    if not needs_terminal_migration(record):
+        return False
+    try:
+        migrate_terminal(record, now=record["updated_at"])
+    except (TransitionError, schemas.SchemaError, KeyError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def migrate_terminal(record: dict, *, now: str) -> tuple[dict, dict]:
+    """The legacy terminal record as ``closed.idle``, with its event.
+
+    ``terminal_reason`` becomes the table's reason (see ``terminal_reason``);
+    the text it held before is kept in the event. Nothing else changes: the
+    revision, the generation, the flag, the evidence, and the replay fences
+    are kept. Raises ``TransitionError`` for any other shape: open Work, an
+    open operation, a pending publication, a held proposal, a text
+    ``blocked_reason``, or an activity other than ``idle``.
+    """
+    problem = terminal_shape_problem(record)
+    if problem:
+        raise TransitionError(f"no reviewed terminal migration for this record: {problem}")
+    new = copy.deepcopy(record)
+    new.update(phase="closed", activity="idle", terminal_reason=terminal_reason(record),
+               updated_at=now)
+    problem = state_problem(new)
+    if problem:
+        raise TransitionError(f"no reviewed terminal migration for this record: {problem}")
+    schemas.validate("contribution", new)
+    event = _event(record, new, TERMINAL_MIGRATED, "migration", TERMINAL_MIGRATION, now, False)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
+                        "terminal_reason": {"from": record.get("terminal_reason"),
+                                            "to": new["terminal_reason"]}}
     schemas.validate("event", event)
     return new, event
 
@@ -445,14 +541,6 @@ def _reject(record: dict, reason: str) -> Outcome:
     return Outcome(record, False, reason, None)
 
 
-def _restart_generation(record: dict, now: str) -> dict:
-    """Reset mutable lifecycle state while retaining identity and replay fences."""
-    rec = engine.reset_generation(record)
-    rec.update({"phase": "queued", "activity": "idle", "updated_at": now})
-    _bump(rec)
-    return rec
-
-
 def park(rec: dict, reason: str) -> dict:
     """End the current generation in place.
 
@@ -548,12 +636,21 @@ def legacy_pause(record: dict, verb: str, *, reason: str | None, now: str,
     return Outcome(rec, True, None, event)
 
 
-def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, now: str,
-                  provisioning: dict | None = None,
-                  backup_user: dict | None = None) -> Outcome:
+# The commands ``apply_command`` applies itself: the stop and resume commands
+# on a record in a state of ``LEGACY_STATES``, the deprecated
+# ``force-develop``, and the intake command ``authorize-followup``. Every
+# other command of the table applies in states of the table only.
+LEGACY_COMMANDS = frozenset({"pause", "resume", "park", "force-develop", "authorize-followup"})
+
+
+def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict,
+                  now: str) -> Outcome:
     """Apply an already authenticated, not-yet-consumed command that the
-    engine does not take (``engine.takes_command``): a command on a record in
-    a legacy state, or a command the table does not have yet.
+    engine does not take (``engine.takes_command``): ``pause``, ``resume``,
+    or ``park`` on a record in a legacy state, the deprecated
+    ``force-develop``, and ``authorize-followup``. Any other command of the
+    table on a record in a legacy state is rejected with the states it
+    applies in.
 
     Actor authority, replay and digest checks happen in ``intake.accept_command``
     before this is called.
@@ -565,6 +662,8 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
                               "transition engine")
     if cmd.contribution is not None and cmd.contribution != record["contribution_id"]:
         return _reject(record, "command names another contribution than this issue's")
+    if cmd.verb not in LEGACY_COMMANDS:
+        return _reject(record, engine.not_applicable(cmd.verb, engine.state_key(record)))
     rev = cmd.revision
     cur = record["revision"]
     phase = record["phase"]
@@ -573,11 +672,11 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
         rev = cur
     if rev > cur:
         return _reject(record, "revision is not a known revision")
-    # Stopping is always safe, so a stale pause/park/abandon is honoured.
+    # Stopping is always safe, so a stale pause/park is honoured.
     # Everything that (re)activates or approves work must name the current revision.
-    if cmd.verb not in ("pause", "park", "abandon") and rev != cur:
+    if cmd.verb not in ("pause", "park") and rev != cur:
         return _reject(record, f"stale revision {rev}, current is {cur}")
-    if phase in TERMINAL and cmd.verb not in ("authorize-followup", "restart"):
+    if phase in TERMINAL and cmd.verb != "authorize-followup":
         return _reject(record, f"contribution is terminal ({phase})")
 
     rec = copy.deepcopy(record)
@@ -593,72 +692,20 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
             return _reject(record, "already paused" if record.get("paused") else out.reason)
         return out
     elif v == "resume":
-        if rec["paused"]:
-            rec.update(paused=False, paused_at=None, paused_by=None, paused_reason=None)
-        else:
+        if not rec["paused"]:
             return _reject(record, "nothing to resume")
-        if not bumped:
-            _bump(rec)
-            bumped = True
+        if "class" in a or "paths" in a:
+            return _reject(record, "`class` and `paths` apply only to a resume from `parked.idle` "
+                                   "that starts a new generation")
+        rec.update(paused=False, paused_at=None, paused_by=None, paused_reason=None)
+        _bump(rec)
+        bumped = True
     elif v == "park":
         if phase == "parked":
             return _reject(record, "already parked")
         park(rec, a["reason"])
-    elif v == "abandon":
-        rec["phase"] = "abandoned"
-        rec["terminal_reason"] = a["reason"]
-        rec["activity"] = "idle"
-    elif v == "restart":
-        if phase != "abandoned":
-            return _reject(record, f"restart needs phase abandoned, not {phase}")
-        if record.get("active_work"):
-            return _reject(record, "cannot restart while Work is active")
-        if record.get("active_operation_id") or record.get("pending_publication"):
-            return _reject(record, "cannot restart while a writer operation is active")
-        rec = _restart_generation(record, now)
-        bumped = True
-    elif v == "refresh":
-        if phase != "development":
-            return _reject(record, f"refresh needs an existing development PR, not phase {phase}")
-        fork = record.get("fork") or {}
-        if not fork.get("pr_number") or not fork.get("head_sha"):
-            return _reject(record, "refresh needs a verified development PR and head")
-        if record.get("active_work"):
-            return _reject(record, "cannot refresh while Work is active")
-        if record.get("active_operation_id") or record.get("pending_publication"):
-            return _reject(record, "cannot refresh while a writer operation is active")
-        rec["refresh"] = {"command_id": command_id, "reason": a["reason"],
-                          "from_phase": phase, "head_sha": fork["head_sha"],
-                          "pr_number": fork["pr_number"]}
-        rec["phase"] = "queued"
-        rec["activity"] = "idle"
-        rec["dossier_evidence_id"] = None
-        rec["scope_coverage_complete"] = False
-        rec["scope_paths"] = None
-        rec["proposal_artifact"] = None
-        rec["last_ci_evidence_id"] = None
-        rec["clean_head_sha"] = None
-        rec["handoff_request"] = None
-        rec["handoff_approval"] = None
-        rec["pending_human_action"] = None
-        rec["publication_operation_id"] = None
-        _bump(rec)
-        bumped = True
-    elif v == "clarify":
-        if rec["activity"] != "waiting_human":
-            return _reject(record, "no pending question")
-        rec["activity"] = "idle"
-        rec["pending_human_action"] = None
-        _bump(rec)
-        bumped = True
-    elif v == "revise-scope":
-        if rec.get("upstream_pr") is None:
-            rec["handoff_approval"] = None
-        rec["target_contract_id"] = a["proposal"]
-        rec["activity"] = "idle"
-        _bump(rec)
-        bumped = True
     elif v == "force-develop":
+        # Deprecated: see ``commands.DEPRECATED``.
         if phase != "parked":
             return _reject(record, f"force-develop needs phase parked, not {phase}")
         paths = [g for g in a["paths"].split(",") if g]
@@ -674,53 +721,12 @@ def apply_command(record: dict, cmd: Command, *, command_id: str, actor: dict, n
         rec["pending_human_action"] = None
         _bump(rec)
         bumped = True
-    elif v == "approve-scope":
-        if phase != "investigation":
-            return _reject(record, f"approve-scope needs phase investigation, not {phase}")
-        if rec.get("active_work"):
-            return _reject(record, "the investigation is still running")
-        if not rec.get("dossier_evidence_id"):
-            return _reject(record, "no investigation dossier recorded yet")
-        if backup_user is None:
-            return _reject(record, f"backup owner {a['backup']!r} is not a known GitHub user")
-        if backup_user["id"] == actor["id"]:
-            return _reject(record, "the backup owner must be someone else")
-        rec["owners"] = dict(rec["owners"], primary=dict(actor), backup=dict(backup_user))
-        rec["admission_class"] = a["class"]
-        rec["scope_paths"] = [g for g in (a.get("paths") or "").split(",") if g] or None
-        rec["phase"] = "provisioning"
-        rec["activity"] = "waiting_human"
-        rec["pending_human_action"] = {"kind": "provision_fork", "requested_at": now,
-                                       "reminded_at": None, "escalated_at": None}
-        _bump(rec)
-        bumped = True
-    elif v == "provision":
-        if phase != "provisioning":
-            return _reject(record, f"provision needs phase provisioning, not {phase}")
-        if not provisioning or provisioning.get("error"):
-            return _reject(record, (provisioning or {}).get("error") or "fork not verified")
-        if provisioning.get("workflow_verified") is not True:
-            return _reject(record, "fork provisioning must complete through the trusted upstreaming workflow; a bare existing fork is not sufficient")
-        rec["fork"] = {"repository_id": provisioning["fork_id"], "name": provisioning["fork"],
-                       "head_ref": DEV_REF, "head_sha": provisioning["head_sha"], "pr_number": None}
-        rec["upstream"] = dict(rec["upstream"], repository_id=provisioning["upstream_id"],
-                               base_ref=provisioning["base_ref"], base_sha=provisioning["base_sha"])
-        rec["phase"] = "development"
-        rec["activity"] = "idle"
-        rec["pending_human_action"] = None
-        rec["last_ci_evidence_id"] = None
-        _bump(rec)
-        bumped = True
     elif v == "authorize-followup":
         if phase not in ("release_wait", "released"):
             return _reject(record, "follow-ups need a merged contribution")
         # The completed record is left intact; intake.new_followup creates
         # the new identity. Here we only record the event.
-    elif v == "submit-upstream":
-        return _reject(record, f"`/upstreaming submit-upstream` does not apply in "
-                               f"`{engine.state_key(record)}`; it applies in "
-                               "`handoff.awaiting_submission`, after CI passed on the head")
-    else:  # pragma: no cover - grammar and this table must agree
+    else:  # pragma: no cover - LEGACY_COMMANDS and this function must agree
         raise TransitionError(f"unhandled verb {v}")
 
     _end_requested(record, rec)

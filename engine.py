@@ -667,6 +667,8 @@ PIPELINE_VERBS: dict[str, str] = {
     # The submission command, the stop and resume commands, and refresh, on a
     # record in a state of the table, and the controller's own stops.
     "submit_upstream": "controller",
+    "retract_submission": "controller",
+    "abandon": "controller",
     "pause": "controller",
     "resume_pause": "controller",
     "resume_stale": "controller",
@@ -689,11 +691,22 @@ PIPELINE_VERBS: dict[str, str] = {
     "record_reminder": "controller",
     # The stop after an unexpected error while one contribution was processed.
     "pause_on_processing_error": "reconcile",
+    # The intake label removed from a request that has not started.
+    "withdraw_request": "controller",
 }
 
+def table_commands() -> frozenset[str]:
+    """The commands of the lifecycle table, by their grammar verb."""
+    texts = {e.transition.command for e in lc.table_edges()}
+    for flag in lc.FLAGS.values():
+        texts.update(t.command for t in (*flag.set_by.values(), *flag.cleared_by.values()))
+    return frozenset(text.split()[-1] for text in texts if text)
+
+
 # Commands the controller applies through this engine to a record in a state
-# of the table. In the handoff phase every command is the table's.
-TABLE_COMMANDS = frozenset({"pause", "resume", "park", "refresh"})
+# of the table: every command of the table. In the handoff phase every
+# command is the table's.
+TABLE_COMMANDS = table_commands()
 
 
 def takes_command(record: dict, verb: str) -> bool:
@@ -727,6 +740,11 @@ HELD_COMMANDS: dict[str, str] = {
         "closing the development PR, and the submission package); the contribution stays in "
         "`handoff.awaiting_submission` with its fork, development PR, head, and evidence "
         "unchanged"),
+    "retract-pr": (
+        "the command is valid for this revision and clean head, but this controller does not "
+        "run the handoff operations that lead to the upstream PR wait or that a retraction "
+        "ends (the submission package and its reminders); the contribution stays in "
+        "`handoff.waiting_upstream_pr` unchanged"),
 }
 
 
@@ -1091,6 +1109,19 @@ def command_verbs(record: dict, command: Command) -> list[str]:
     return flag_verbs + rows
 
 
+def command_states(verb: str) -> list[str]:
+    """The states of the table whose rows take the command ``verb``."""
+    text = f"/upstreaming {verb}"
+    return sorted({e.source for e in lc.table_edges() if e.transition.command == text})
+
+
+def not_applicable(verb: str, state: str) -> str:
+    """The reply to a command no row of ``state`` takes: where it applies."""
+    states = command_states(verb)
+    where = f"; it applies in {', '.join(f'`{s}`' for s in states)}" if states else ""
+    return f"`/upstreaming {verb}` does not apply in `{state}`{where}"
+
+
 def resolve_command(record: dict, command: Command, *, policy: dict, now: str, facts=(),
                     counts: dict[str, int] | None = None,
                     open_operations: tuple[str, ...] | None = None) -> tuple[str | None, str | None]:
@@ -1098,7 +1129,7 @@ def resolve_command(record: dict, command: Command, *, policy: dict, now: str, f
     verbs = command_verbs(record, command)
     state = state_key(record)
     if not verbs:
-        return None, f"`/upstreaming {command.verb}` does not apply in `{state}`"
+        return None, not_applicable(command.verb, state)
     reasons, admitted = [], []
     for verb in verbs:
         why = refusal(record, verb, policy=policy, now=now, command=command, facts=facts,

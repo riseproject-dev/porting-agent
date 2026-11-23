@@ -294,16 +294,13 @@ class TestStateDiff(unittest.TestCase):
             contribution_id=self.rec["contribution_id"],
             migration_id="test-absent-migration",
         )
-        snapshot = reconcile.Snapshot({}, {}, {}, {}, {})
         api = object()
         with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)), \
              patch.object(controller.collect, "Api", return_value=api), \
              patch.object(controller.collect, "usage", side_effect=RuntimeError("offline")), \
              patch.object(controller.collect, "intake_issues", return_value=[]), \
              patch.object(controller.collect, "command_comments", return_value=[]), \
-             patch.object(reconcile, "reconcile_snapshot", return_value=snapshot) as loaded, \
-             patch.object(controller.collect, "command_lookups", return_value=({}, {})), \
-             patch.object(controller.collect, "tracking_issues", return_value={}), \
+             patch.object(controller.collect, "tracking_issues", return_value={}) as loaded, \
              patch.object(controller.collect, "upstream_snapshots", return_value={}):
             result, stdout, stderr = self.run_observe()
         self.assertEqual(result, 0)

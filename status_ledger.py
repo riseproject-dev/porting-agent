@@ -26,6 +26,15 @@ class LedgerError(ValueError):
 MESSAGES = {
     "intake:accepted": "Accepted the labeled request.",
     "intake:label_removed": "Cancelled intake because the request label was removed before Work admission.",
+    "withdraw_request": ("Withdrew the request: the request label was removed before any Work, "
+                         "dossier, or fork. The contribution is closed."),
+    "abandon": "Abandoned the parked contribution. It is closed; its evidence is kept for audit.",
+    compat.TERMINAL_MIGRATED: ("Recorded this closed contribution in the lifecycle's one terminal "
+                               "phase for work that is not needed, `closed`, with its reason in "
+                               "`terminal_reason`. Nothing else changed."),
+    "command:force-develop": ("Overrode the dossier park: automatic development starts with the "
+                              "admission class and paths of the command. "
+                              f"{commands.DEPRECATED['force-develop']}."),
     "dossier_develop": "Verified the investigation dossier and admitted automatic development.",
     "dossier_parked": "Verified the investigation dossier and parked the contribution because no bounded patch is actionable.",
     "fork_provisioned": "Provisioned and verified the contribution fork and exact `riscv64` base.",
@@ -58,6 +67,7 @@ MESSAGES = {
                      "and development PR are kept."),
     "restart_generation": ("Resumed from parked: a new generation starts with a complete "
                            "investigation."),
+    "retract_submission": "Retracted the submission: branch work is unlocked.",
     "resume_investigation": "Resumed: the investigation continues.",
     "resume_provisioning": "Resumed: provisioning continues.",
     "resume_ci": "Resumed: CI on the head is observed again.",
@@ -153,15 +163,30 @@ _TEMPLATES = {
     "/upstreaming refresh": '/upstreaming refresh revision={revision} reason="..."',
     "/upstreaming abandon": '/upstreaming abandon revision={revision} reason="..."',
     "/upstreaming submit-upstream": "/upstreaming submit-upstream revision={revision} head={head}",
+    "/upstreaming retract-pr": "/upstreaming retract-pr revision={revision} head={head}",
 }
+# The commands whose row in a state checks the exact head, by state.
+_HEAD_TEMPLATES = {
+    ("handoff.waiting_upstream_pr", "/upstreaming refresh"):
+        '/upstreaming refresh revision={revision} head={head} reason="..."',
+}
+# The head a command names in a state of the table.
+_HEADS = {"handoff.awaiting_submission": lambda r: (r.get("handoff_request") or {}).get("head"),
+          "handoff.waiting_upstream_pr": lambda r: r.get("clean_head_sha")}
+# The deprecated override of a dossier park, offered in `parked.idle` until
+# the dossier admission applies the override a resume records.
+FORCE_DEVELOP = ('/upstreaming force-develop revision={revision} class={admission} '
+                 'paths="{paths}" reason="..."')
 
 
 def _table_command_lines(record: dict) -> list[str]:
     """The commands the lifecycle table offers in the record's state."""
     state = engine.state_key(record)
     paused = bool(record.get("paused"))
-    offered = [t.command for flag in lifecycle.FLAGS.values()
-               for t in (flag.cleared_by if paused else flag.set_by).values() if t.command]
+    offered = []
+    if lifecycle.LIFECYCLE[state].kind != "terminal" or paused:
+        offered = [t.command for flag in lifecycle.FLAGS.values()
+                   for t in (flag.cleared_by if paused else flag.set_by).values() if t.command]
     for edge in lifecycle.state_edges(state):
         command = edge.transition.command
         if not command or command in offered:
@@ -171,33 +196,31 @@ def _table_command_lines(record: dict) -> list[str]:
         if command == lifecycle.RESUME and edge.verb == "resume_stale":
             continue
         offered.append(command)
-    head = (record.get("handoff_request") or {}).get("head") or record.get("clean_head_sha")
-    return [_TEMPLATES[c].format(revision=record["revision"], head=head) for c in offered
-            if c in _TEMPLATES and c.split()[-1] in commands.GRAMMAR]
+    head = _HEADS.get(state, lambda r: None)(record)
+    lines = [_HEAD_TEMPLATES.get((state, c), _TEMPLATES[c]).format(
+                 revision=record["revision"], head=head)
+             for c in offered if c in _TEMPLATES and c.split()[-1] in commands.GRAMMAR]
+    if state == "parked.idle":
+        lines.append(FORCE_DEVELOP.format(
+            revision=record["revision"],
+            admission=record.get("admission_class") or "configuration_integration",
+            paths=",".join(record.get("scope_paths") or [".github/workflows/*"])))
+    return lines
 
 
 def _command_lines(record: dict) -> list[str]:
+    """The commands an authorized human may post next. In a state of the
+    table they come from the table; in a state that only the legacy paths
+    write, `pause`, `park`, and `resume` apply."""
+    if engine.state_key(record) in lifecycle.LIFECYCLE:
+        return _table_command_lines(record)
     revision = record["revision"]
     lines = []
-    phase = record["phase"]
-    if phase == "handoff":
-        return _table_command_lines(record)
-    if phase not in ("released", "abandoned", "superseded", "no_work", "already_released"):
-        if not record.get("paused"):
-            lines.append(f'/upstreaming pause revision={revision} reason="..."')
-        lines += [f'/upstreaming park revision={revision} reason="..."',
-                  f'/upstreaming abandon revision={revision} reason="..."']
-    state = lifecycle.LIFECYCLE.get(engine.state_key(record))
-    if record.get("paused") or phase == "parked" or (state and state.kind == "human_wait"):
+    if not record.get("paused"):
+        lines.append(f'/upstreaming pause revision={revision} reason="..."')
+    lines.append(f'/upstreaming park revision={revision} reason="..."')
+    if record.get("paused"):
         lines.append(f'/upstreaming resume revision={revision} reason="..."')
-    if phase == "development" and (record.get("fork") or {}).get("pr_number"):
-        lines.append(f'/upstreaming refresh revision={revision} reason="..."')
-    if phase == "abandoned":
-        lines.append(f'/upstreaming restart revision={revision} reason="..."')
-    if phase == "parked":
-        paths = ",".join(record.get("scope_paths") or [".github/workflows/*"])
-        admission = record.get("admission_class") or "configuration_integration"
-        lines.append(f'/upstreaming force-develop revision={revision} class={admission} paths="{paths}" reason="..."')
     return lines
 
 
@@ -230,6 +253,14 @@ def render(event: dict, record: dict, run_url: str) -> str:
                     "leaves the wait.")
     if kind == "pause_on_processing_error":
         message += _processing_error(event)
+    override = (event.get("details") or {}).get("admission_override")
+    if kind == "restart_generation" and override:
+        message += (f" The admission override is recorded (class "
+                    f"`{_quotable(override.get('class') or 'not given', 60)}`, paths "
+                    f"`{_quotable(', '.join(override.get('paths') or []) or 'not given', 300)}`). "
+                    "The new investigation still runs; until the dossier admission applies the "
+                    "override, a dossier that decides park parks the contribution again, and "
+                    "`force-develop` from `parked.idle` is the override that takes effect.")
     request = _submission_request(event, record)
     if request:
         message = request[0]

@@ -28,10 +28,8 @@ from common import DEV_REF
 PHASES = (
     "queued", "investigation", "provisioning", "development", "handoff",
     "upstream_review", "release_wait", "released", "parked", "closed",
-    "no_work", "deferred", "abandoned", "already_released",
 )
-TERMINAL = frozenset({"released", "closed", "no_work", "deferred", "abandoned",
-                      "already_released"})
+TERMINAL = frozenset({"released", "closed"})
 ACTIVITIES = ("idle", "agent_running", "waiting_ci", "fix_needed",
               "waiting_capacity", "waiting_human", "awaiting_submission", "cleaning_debug",
               "closing_internal_pr", "preparing_submission", "waiting_upstream_pr")

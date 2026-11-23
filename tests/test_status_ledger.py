@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """Lifecycle issue ledger entries are concise, append-only and App-authored."""
+import itertools
 import json
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ from unittest.mock import patch
 import compat
 import lifecycle
 import status_ledger
-from tests.helpers import NOW, contribution
+from tests.helpers import NOW, SHA_A, contribution
 
 
 class FakeApi:
@@ -138,14 +139,54 @@ class TestStatusLedger(unittest.TestCase):
         self.assertIn("Exhausted the bounded repair-attempt budget and parked the contribution", body)
         self.assertIn('/upstreaming resume revision=8 reason="..."', body)
 
-    def test_abandoned_ledger_offers_same_issue_restart(self):
-        record = contribution(phase="abandoned", activity="idle", revision=8,
-                              terminal_reason="restart requested")
-        event = lifecycle._event(record, record, "command:abandon", "command", "c", NOW, False)
+    def test_closed_ledger_offers_no_command(self):
+        parked = contribution(phase="parked", activity="idle", revision=8, parked_reason="x")
+        record = dict(parked, phase="closed", terminal_reason="abandoned")
+        event = lifecycle._event(parked, record, "abandon", "command", "c", NOW, False)
         event["sequence"] = 9
         body = status_ledger.render(event, record, "https://github.com/run")
-        self.assertIn('/upstreaming restart revision=8 reason="..."', body)
-        self.assertNotIn("/upstreaming resume", body)
+        self.assertIn("r8 · closed/idle", body)
+        self.assertIn("Abandoned the parked contribution", body)
+        self.assertNotIn("Possible next commands", body)
+        self.assertNotIn("/upstreaming", body)
+
+    def test_ledger_never_offers_a_retired_command(self):
+        """In every admitted state, paused or not, the offered commands are
+        commands of the grammar, never retired, and each parses."""
+        import commands
+        import engine
+        states = sorted(set(lifecycle.LIFECYCLE) | compat.LEGACY_STATES)
+        for state, paused in itertools.product(states, (False, True)):
+            phase, activity = state.split(".")
+            record = contribution(phase=phase, activity=activity, revision=3,
+                                  clean_head_sha=SHA_A, paused=paused,
+                                  handoff_request={"command_id": "x", "head": SHA_A,
+                                                   "revision": 3})
+            with self.subTest(state=state, paused=paused):
+                for line in status_ledger._command_lines(record):
+                    verb = line.split()[1]
+                    self.assertNotIn(verb, commands.RETIRED)
+                    self.assertIn(verb, commands.GRAMMAR)
+                    parsed = commands.parse(line.replace("...", "x"))
+                    if verb == "force-develop":
+                        self.assertEqual(state, "parked.idle")
+                    elif verb not in ("pause", "park", "resume") or state in lifecycle.LIFECYCLE:
+                        # Every other offer is a command the table takes here.
+                        self.assertTrue(engine.command_verbs(record, parsed), line)
+                if state == "closed.idle" and not paused:
+                    self.assertEqual(status_ledger._command_lines(record), [])
+
+    def test_resume_with_an_admission_override_states_what_it_does(self):
+        parked = contribution(phase="parked", activity="idle", revision=8, parked_reason="x")
+        record = dict(parked, phase="queued", revision=9, admission_override={
+            "class": "optimized_backend", "paths": ["setup.py"], "reason": "r"})
+        event = lifecycle._event(parked, record, "restart_generation", "command", "c", NOW, True)
+        event["sequence"] = 9
+        event["details"] = {"admission_override": record["admission_override"]}
+        body = status_ledger.render(event, record, "https://github.com/run")
+        self.assertIn("The admission override is recorded (class `optimized_backend`, paths "
+                      "`setup.py`)", body)
+        self.assertIn("`force-develop` from `parked.idle` is the override that takes effect", body)
 
     def test_publish_appends_one_app_authored_comment_for_written_event(self):
         with tempfile.TemporaryDirectory() as td:

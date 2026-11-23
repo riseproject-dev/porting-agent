@@ -35,7 +35,14 @@ import lifecycle
 import recovery
 import schemas
 from commands import URGENT, Command
-from common import CONTROL_REPO, INTAKE_LABEL, contribution_file_id, load_policy, repository_root
+from common import (
+    CONTROL_REPO,
+    INTAKE_LABEL,
+    contribution_file_id,
+    load_policy,
+    repository_root,
+    validate_scope_paths,
+)
 
 
 @dataclass
@@ -47,8 +54,6 @@ class Inputs:
     comments: list[dict] = field(default_factory=list)        # {"issue_number", "comment", "event_body"}
     pressure: capacity.Pressure | None = None
     verified_prs: dict[str, dict] = field(default_factory=dict)  # url -> verified PR resource
-    users: dict[str, dict | None] = field(default_factory=dict)  # login -> {"id","login"} or None
-    provisioning: dict[str, dict] = field(default_factory=dict)  # contribution -> verify_provisioning()
     resolution_evidence: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
@@ -290,9 +295,10 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 ))
                 rep["deferred_destination_operations"].append(operation["operation_id"])
 
-    # Removing the intake label cancels only an accepted request that has not
-    # requested any Work yet. Once active_work exists, explicit lifecycle
-    # commands are required so an unlabeled event cannot silently stop work.
+    # Removing the intake label withdraws only an accepted request that has
+    # not requested any Work yet (`withdraw_request`, guarded by no Work, no
+    # dossier, and no fork). Once Work exists, explicit lifecycle commands are
+    # required so an unlabeled event cannot silently stop work.
     for cid, c in list(by_id.items()):
         if cid in skip:
             continue
@@ -300,19 +306,19 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             issue = inputs.tracking_issues.get(c["tracking_issue"]["number"])
             labels = {label.get("name") if isinstance(label, dict) else label
                       for label in (issue or {}).get("labels", [])}
-            unprocessed = c["phase"] == "queued" and c["activity"] == "idle" \
-                and not c.get("active_work") and not c.get("dossier_evidence_id") and not c.get("fork")
-            if issue is None or INTAKE_LABEL in labels or not unprocessed:
+            if issue is None or INTAKE_LABEL in labels \
+                    or engine.state_key(c) != "queued.idle":
                 continue
-            changed = compat.legacy_update(
-                c, "controller.cancel_unlabeled_request", phase="abandoned", activity="idle",
-                terminal_reason=f"{INTAKE_LABEL} label removed before Work admission", updated_at=now)
-            schemas.validate("contribution", changed)
+            out = engine.apply_transition(c, "withdraw_request", policy=policy, now=now,
+                                          cause_id=f"issue-{c['tracking_issue']['id']}",
+                                          facts={"intake_label_removed"})
+            if not out.accepted:
+                continue
+            changed = out.record
             by_id[cid] = changed
             active.pop(c["upstream"]["full_name"], None)
             res.stage("contributions", changed)
-            res.stage("events", lifecycle._event(c, changed, "intake:label_removed", "observation",
-                                                  f"issue-{c['tracking_issue']['id']}", now, False))
+            res.stage("events", out.event)
             project = projects.get(c["project_id"])
             if project and project.get("active_contribution_id") == cid:
                 project = dict(project, active_contribution_id=None, updated_at=now)
@@ -854,15 +860,48 @@ def _refusal(record: dict, cmd: Command, why: str) -> str:
     return why
 
 
+def admission_override(cmd: Command) -> dict | None:
+    """The admission override a resume from ``parked.idle`` records: its
+    ``class`` and ``paths`` with the command's reason, or ``None`` when it
+    names neither. Raises ``ValueError`` for an unsafe scope path."""
+    if "class" not in cmd.args and "paths" not in cmd.args:
+        return None
+    override: dict = {"reason": cmd.args["reason"]}
+    if "class" in cmd.args:
+        override["class"] = cmd.args["class"]
+    if "paths" in cmd.args:
+        override["paths"] = validate_scope_paths([g for g in cmd.args["paths"].split(",") if g])
+    return override
+
+
 def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict) -> dict:
     """The values of the fields a command's row sets that the engine cannot
-    derive: the refresh a refresh or a stale resume records."""
+    derive: the refresh a refresh or a stale resume records, and the
+    admission override of a restart."""
+    if verb == "restart_generation":
+        return {"admission_override": admission_override(cmd)}
     if verb not in ("refresh_investigation", "resume_stale"):
         return {}
     fork = rec.get("fork") or {}
     return {"refresh": {"command_id": receipt["command_id"], "reason": cmd.args["reason"],
                         "from_phase": rec["phase"], "head_sha": fork.get("head_sha"),
                         "pr_number": fork.get("pr_number")}}
+
+
+# Optional command fields, and the guards or verbs that read them. A field a
+# command gives that the transition it takes does not read is refused.
+_HEAD_GUARDS = frozenset({"exact candidate head", "exact clean head"})
+
+
+def _unread_field(cmd: Command, verb: str, state: str) -> str | None:
+    """Why the command gives a field the transition ``verb`` does not read."""
+    if ("class" in cmd.args or "paths" in cmd.args) and verb != "restart_generation":
+        return ("`class` and `paths` apply only to a resume from `parked.idle` that starts a new "
+                "generation")
+    transition, _target = engine.resolve(state, verb)
+    if "head" in cmd.args and not _HEAD_GUARDS & set(transition.guard):
+        return f"`head` does not apply to `/upstreaming {cmd.verb}` in `{state}`"
+    return None
 
 
 def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,
@@ -873,31 +912,42 @@ def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dic
                                        open_operations=open_ops)
     if verb is None:
         return engine.Outcome(rec, False, _refusal(rec, cmd, why), None)
+    unread = _unread_field(cmd, verb, engine.state_key(rec))
+    if unread:
+        return engine.Outcome(rec, False, unread, None, verb)
     if cmd.verb in engine.HELD_COMMANDS:
         return engine.Outcome(rec, False, engine.HELD_COMMANDS[cmd.verb], None, verb)
+    try:
+        values = _command_values(rec, verb, cmd, receipt)
+    except ValueError as error:
+        return engine.Outcome(rec, False, str(error), None, verb)
     details = {}
     pending = (rec.get("pending_human_action") or {}).get("kind")
     if verb == "resume_pause" and pending:
         # A resume clears the flag only; the reply names the wait that remains.
         details["pending_human_action"] = pending
+    if verb == "abandon":
+        # The table records `terminal_reason=abandoned`; the event keeps the
+        # reason the human gave.
+        details["reason"] = cmd.args["reason"]
+    if values.get("admission_override"):
+        details["admission_override"] = values["admission_override"]
     return engine.apply_transition(rec, verb, policy=policy, now=now,
                                    cause_id=receipt["command_id"], command=cmd,
-                                   values=_command_values(rec, verb, cmd, receipt),
+                                   values=values,
                                    open_operations=open_ops, actor=receipt["actor"],
                                    details=details)
 
 
 def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, policy: dict,
-                  now: str, provisioning: dict | None = None,
-                  backup_user: dict | None = None) -> engine.Outcome:
+                  now: str) -> engine.Outcome:
     """Apply an authenticated command to the record it concerns: through the
     transition engine where the table defines it (``engine.takes_command``),
     through the compatibility layer otherwise."""
     if engine.takes_command(rec, cmd.verb):
         return _apply_table_command(rec, cmd, receipt, operations, policy, now)
     out = compat.apply_command(rec, cmd, command_id=receipt["command_id"],
-                               actor=receipt["actor"], now=now, provisioning=provisioning,
-                               backup_user=backup_user)
+                               actor=receipt["actor"], now=now)
     return engine.Outcome(out.record, out.accepted, out.reason, out.event)
 
 
@@ -926,9 +976,7 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
     receipt = dict(receipt, contribution_id=rec["contribution_id"],
                    revision=cmd.revision if cmd.revision is not None else rec["revision"])
     try:
-        out = apply_command(rec, cmd, receipt, operations=operations, policy=policy, now=now,
-                            provisioning=inputs.provisioning.get(rec["contribution_id"]),
-                            backup_user=inputs.users.get(cmd.args.get("backup", "")))
+        out = apply_command(rec, cmd, receipt, operations=operations, policy=policy, now=now)
     except lifecycle.TransitionError as e:
         return dict(receipt, result="rejected", reason=str(e))
     if not out.accepted:
@@ -999,11 +1047,8 @@ def cmd_observe(args: argparse.Namespace) -> int:
         collect.command_comments(api, issue_numbers, None) if not args.offline else []
     )
     if args.offline:
-        users, provisioning = {}, {}
         tracking_issues, upstream_snapshots = {}, {}
     else:
-        snapshot = reconcile.reconcile_snapshot(root, policy)
-        users, provisioning = collect.command_lookups(api, snapshot, comments)
         tracking_issues = collect.tracking_issues(api, contributions.values(), issues)
         upstream_snapshots = collect.upstream_snapshots(
             api, contributions.values(), issues, policy
@@ -1021,8 +1066,6 @@ def cmd_observe(args: argparse.Namespace) -> int:
             pressure=observed_pressure,
             upstream_snapshots=upstream_snapshots,
             tracking_issues=tracking_issues,
-            users=users,
-            provisioning=provisioning,
         ),
     )
     result.report["would_stage"] = [

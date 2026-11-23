@@ -24,6 +24,8 @@ _SHA = r"[0-9a-f]{40}"
 _ID = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}"
 _INT = r"[0-9]{1,9}"
 _REASON = r".{1,2000}"
+_CLASS = r"configuration_integration|architecture_correctness|optimized_backend"
+_PATHS = r"[A-Za-z0-9_.*/?\[\]{},-]{1,500}"
 
 # verb -> {field: regex}; every listed field is required unless it is in
 # OPTIONAL for that verb; no other fields are allowed.
@@ -36,47 +38,44 @@ _REASON = r".{1,2000}"
 # approval cannot apply to work that moved since you read it) and optional
 # for stop commands (stopping is always safe, a stale stop is honored).
 GRAMMAR: dict[str, dict[str, str]] = {
+    # The commands of the lifecycle table.
     "pause": {"contribution": _ID, "revision": _INT, "reason": _REASON},
-    "resume": {"contribution": _ID, "revision": _INT, "reason": _REASON},
+    # In `parked.idle` a resume starts a new generation; ``class`` and
+    # ``paths`` are then recorded as the admission override.
+    "resume": {"contribution": _ID, "revision": _INT, "reason": _REASON,
+               "class": _CLASS, "paths": _PATHS},
     "park": {"contribution": _ID, "revision": _INT, "reason": _REASON},
+    # Re-run investigation on an existing development PR. In
+    # `handoff.waiting_upstream_pr` it names the exact clean head.
+    "refresh": {"contribution": _ID, "revision": _INT, "reason": _REASON, "head": _SHA},
+    # Only from `parked.idle`; the contribution is then closed.
+    "abandon": {"contribution": _ID, "revision": _INT, "reason": _REASON},
     # The one submission command: it names the exact revision and the exact
     # candidate head of `handoff.awaiting_submission`.
     "submit-upstream": {"contribution": _ID, "revision": _INT, "head": _SHA},
-    "clarify": {"contribution": _ID, "revision": _INT, "decision": _ID, "answer": _REASON},
-    "revise-scope": {"contribution": _ID, "revision": _INT, "proposal": _ID},
-    "abandon": {"contribution": _ID, "revision": _INT, "reason": _REASON},
-    # Start a new lifecycle generation on the same tracking issue. This is
-    # deliberately allowed only after abandon and requires an exact revision.
-    "restart": {"contribution": _ID, "revision": _INT, "reason": _REASON},
-    # Re-run investigation on an existing development PR, then require a new
-    # worker pass with the refreshed dossier and current prompts.
-    "refresh": {"contribution": _ID, "revision": _INT, "reason": _REASON},
+    # Withdraws the submission package of `handoff.waiting_upstream_pr`; it
+    # names the exact revision and the exact clean head.
+    "retract-pr": {"contribution": _ID, "revision": _INT, "head": _SHA},
+    # Intake commands, outside the lifecycle table.
     "resolve-operation": {
         "operation": _ID,
         "disposition": r"confirmed|not-launched|failed",
         "evidence": _ID,
     },
     "authorize-followup": {"contribution": _ID, "revision": _INT, "proposal": _ID},
-    # Investigation -> provisioning: a RISE owner approves the dossier's scope.
-    # ``class`` is the admission class; ``backup`` is the backup owner's login
-    # (the commenter becomes the primary owner). ``paths`` optionally narrows
-    # the patch surface (comma-separated globs; default: the dossier's
-    # allowed_paths, else .github/workflows/*).
-    "approve-scope": {"contribution": _ID, "revision": _INT,
-                      "class": r"configuration_integration|architecture_correctness|optimized_backend",
-                      "backup": r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})",
-                      "paths": r"[A-Za-z0-9_.*/?\[\]{},-]{1,500}"},
-    # Explicit human override for an automatically parked dossier. Development
-    # remains automated after this stale-proof bounded-scope decision.
-    "force-develop": {"contribution": _ID, "revision": _INT,
-                      "class": r"configuration_integration|architecture_correctness|optimized_backend",
-                      "paths": r"[A-Za-z0-9_.*/?\[\]{},-]{1,500}", "reason": _REASON},
-    # Provisioning -> development: verify a human-created fork, its riscv64
-    # branch and the upstream base, then record them (trusted code reads them).
-    "provision": {"contribution": _ID, "revision": _INT},
+    # Deprecated: see DEPRECATED.
+    "force-develop": {"contribution": _ID, "revision": _INT, "class": _CLASS, "paths": _PATHS,
+                      "reason": _REASON},
 }
 
+# Commands outside the lifecycle table: they act on intake and on operations.
+INTAKE_COMMANDS = frozenset({"authorize-followup", "resolve-operation"})
+
 SUBMIT_FORM = "/upstreaming submit-upstream revision=N head=FULL_SHA"
+RESUME_FORM = '/upstreaming resume revision=N reason="..."'
+OVERRIDE_FORM = ('/upstreaming resume revision=N class=configuration_integration '
+                 'paths=".github/workflows/*" reason="..."')
+REFRESH_FORM = '/upstreaming refresh revision=N reason="..."'
 
 # Commands the lifecycle no longer has, with what replaced them. They are
 # rejected with this message instead of being reported as unknown.
@@ -90,6 +89,32 @@ RETIRED["block"] = (
     "`block` is retired. A stop is a pause: "
     '`/upstreaming pause revision=N reason="..."` records the reason and who set it, and '
     "`/upstreaming resume revision=N reason=\"...\"` ends it")
+RETIRED["approve-scope"] = (
+    "`approve-scope` is retired. The verified investigation dossier decides admission and "
+    "provisioning starts automatically. A contribution parked by its dossier is resumed from "
+    f"`parked.idle` with `{RESUME_FORM}`; `class=` and `paths=` record an admission override")
+RETIRED["provision"] = (
+    "`provision` is retired. The fork is provisioned automatically. When provisioning waits "
+    f"for a human in `provisioning.waiting_human`, correct the prerequisite and post `{RESUME_FORM}`")
+RETIRED["restart"] = (
+    "`restart` is retired. A new generation starts from `parked.idle` with "
+    f"`{RESUME_FORM}`; `closed.idle` is final")
+RETIRED["clarify"] = (
+    "`clarify` is retired. A contribution that waits for a human continues with "
+    f"`{RESUME_FORM}` once the cause is corrected")
+RETIRED["revise-scope"] = (
+    "`revise-scope` is retired. A new scope comes from a new investigation: "
+    f"`{REFRESH_FORM}` keeps the fork and development PR, and a contribution in "
+    f"`parked.idle` resumes with `{OVERRIDE_FORM}` to record an admission override")
+
+# Commands still accepted while their replacement is not in effect, with the
+# reply that names it.
+DEPRECATED: dict[str, str] = {
+    "force-develop": (
+        "`force-develop` is deprecated. Its replacement is a resume from `parked.idle` with an "
+        f"admission override, `{OVERRIDE_FORM}`; until the dossier admission applies that "
+        "override, `force-develop` from `parked.idle` remains the override that takes effect"),
+}
 
 # Commands that stop work; processed before everything else in a tick.
 URGENT = frozenset({"pause", "park", "abandon"})
@@ -100,7 +125,8 @@ OPTIONAL: dict[str, frozenset[str]] = {
     for verb in GRAMMAR if verb != "resolve-operation"
 }
 OPTIONAL["resolve-operation"] = frozenset()
-OPTIONAL["approve-scope"] = OPTIONAL["approve-scope"] | {"paths"}
+OPTIONAL["resume"] = OPTIONAL["resume"] | {"class", "paths"}
+OPTIONAL["refresh"] = OPTIONAL["refresh"] | {"head"}
 
 _TOKEN_RE = re.compile(r'\s*([a-z][a-z-]*)=("((?:[^"\\]|\\.)*)"|[^\s"]+)')
 

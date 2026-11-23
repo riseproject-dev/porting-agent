@@ -8,7 +8,7 @@ import commands
 import compat
 import lifecycle
 import schemas
-from tests.helpers import BACKUP, NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution
+from tests.helpers import NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution
 
 
 def cmd(text):
@@ -111,13 +111,20 @@ class TestPauseParkResume(unittest.TestCase):
         self.assertFalse(out.accepted)
 
     def test_terminal_rejects(self):
-        rec = contribution(phase="abandoned")
-        self.assertFalse(apply(rec, f"/upstreaming resume contribution={CID} revision=0 reason=r").accepted)
+        rec = contribution(phase="closed", activity="idle", terminal_reason="abandoned")
+        for text in (f"/upstreaming resume contribution={CID} revision=0 reason=r",
+                     f"/upstreaming pause contribution={CID} revision=0",
+                     f"/upstreaming park contribution={CID} revision=0 reason=r",
+                     f"/upstreaming abandon contribution={CID} revision=0 reason=r"):
+            with self.subTest(text=text):
+                out = apply(rec, text)
+                self.assertFalse(out.accepted)
+                self.assertEqual(out.record, rec)
 
 
 class TestDossierRefresh(unittest.TestCase):
     def test_refresh_preserves_existing_pr_and_queues_investigation(self):
-        rec = contribution(revision=7, dossier_evidence_id="dossier-old",
+        rec = contribution(activity="waiting_ci", revision=7, dossier_evidence_id="dossier-old",
                            scope_coverage_complete=True,
                            scope_paths=[".github/workflows/wheels.yml"],
                            proposal_artifact={"outcome": "published"},
@@ -137,14 +144,16 @@ class TestDossierRefresh(unittest.TestCase):
         self.assertIsNone(refreshed["last_ci_evidence_id"])
         self.assertEqual(refreshed["refresh"]["head_sha"], SHA_A)
         self.assertEqual(refreshed["refresh"]["pr_number"], 1)
-        self.assertEqual(out.event["kind"], "command:refresh")
+        self.assertEqual(out.event["kind"], "refresh_investigation")
 
     def test_refresh_requires_existing_pr_and_quiescence(self):
         cases = [contribution(phase="queued"),
-                 contribution(fork=dict(contribution()["fork"], pr_number=None)),
-                 contribution(active_work={"x": 1}),
-                 contribution(active_operation_id="op-1"),
-                 contribution(pending_publication={"x": 1})]
+                 contribution(activity="waiting_ci", fork=dict(contribution()["fork"], pr_number=None)),
+                 contribution(activity="fix_needed", active_work={"x": 1}),
+                 contribution(activity="waiting_ci", active_operation_id="op-1"),
+                 contribution(activity="waiting_ci", pending_publication={"x": 1}),
+                 # A state the table does not have: refresh applies in states of the table only.
+                 contribution(activity="idle")]
         for rec in cases:
             with self.subTest(record=rec):
                 self.assertFalse(apply(rec,
@@ -152,9 +161,10 @@ class TestDossierRefresh(unittest.TestCase):
 
 
 class TestRestartGeneration(unittest.TestCase):
-    def test_abandoned_contribution_restarts_on_same_identity(self):
+    def parked(self, **over):
         rec = contribution(
-            phase="abandoned", generation=2, revision=8, terminal_reason="old attempt",
+            phase="parked", activity="idle", generation=2, revision=8, parked_reason="old attempt",
+            previous_phase="development",
             scope_paths=[".github/workflows/wheels.yml"], dossier_evidence_id="dossier-old",
             scope_coverage_complete=True, processed_publications=[11, 12],
             processed_review_ids=[21], processed_review_comment_ids=[22],
@@ -163,8 +173,13 @@ class TestRestartGeneration(unittest.TestCase):
             proposal_artifact={"artifact_id": 1}, last_ci_evidence_id="ci-old",
             budget={"policy_id": "test", "attempts_used": 3, "no_progress_streak": 2,
                     "clusters": {"x": 2}, "spent_estimate_usd_cents": 99})
-        out = apply(rec, f'/upstreaming restart contribution={CID} revision=8 reason="clean start"')
-        self.assertTrue(out.accepted)
+        rec.update(over)
+        return rec
+
+    def test_parked_contribution_resumes_on_same_identity(self):
+        rec = self.parked()
+        out = apply(rec, f'/upstreaming resume contribution={CID} revision=8 reason="clean start"')
+        self.assertTrue(out.accepted, out.reason)
         restarted = out.record
         self.assertEqual(restarted["contribution_id"], CID)
         self.assertEqual(restarted["tracking_issue"], rec["tracking_issue"])
@@ -174,28 +189,92 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertIsNone(restarted["dossier_evidence_id"])
         self.assertIsNone(restarted["scope_paths"])
         self.assertIsNone(restarted["proposal_artifact"])
+        self.assertIsNone(restarted["admission_override"])
         self.assertEqual(restarted["processed_publications"], [11, 12])
         self.assertEqual(restarted["processed_review_comment_ids"], [])
         self.assertEqual(restarted["pending_feedback_evidence_ids"], [])
         self.assertEqual(restarted["budget"]["attempts_used"], 0)
-        self.assertEqual(out.event["kind"], "command:restart")
+        self.assertEqual(out.event["kind"], "restart_generation")
         self.assertTrue(out.event["revision_bumped"])
+        self.assertNotIn("admission_override", out.event["details"])
         schemas.validate("contribution", restarted)
 
-    def test_restart_is_abandoned_only_and_stale_proof(self):
-        self.assertFalse(apply(contribution(),
-                               f"/upstreaming restart contribution={CID} revision=0 reason=r").accepted)
-        abandoned = contribution(phase="abandoned", revision=2)
-        self.assertFalse(apply(abandoned,
-                               f"/upstreaming restart contribution={CID} revision=1 reason=r").accepted)
+    def test_resume_from_parked_records_the_admission_override(self):
+        out = apply(self.parked(), f'/upstreaming resume contribution={CID} revision=8 '
+                                   'class=architecture_correctness paths=".github/workflows/*,setup.py" '
+                                   'reason="the patch is bounded"')
+        self.assertTrue(out.accepted, out.reason)
+        override = {"class": "architecture_correctness",
+                    "paths": [".github/workflows/*", "setup.py"], "reason": "the patch is bounded"}
+        self.assertEqual(out.record["admission_override"], override)
+        self.assertEqual((out.record["phase"], out.record["activity"]), ("queued", "idle"))
+        self.assertEqual(out.event["details"]["admission_override"], override)
+        only_class = apply(self.parked(), f"/upstreaming resume contribution={CID} revision=8 "
+                                          "class=optimized_backend reason=r")
+        self.assertEqual(only_class.record["admission_override"],
+                         {"class": "optimized_backend", "reason": "r"})
+        schemas.validate("contribution", out.record)
 
-    def test_restart_waits_for_writer_quiescence(self):
-        for rec in (contribution(phase="abandoned", active_work={"x": 1}),
-                    contribution(phase="abandoned", active_operation_id="op-1"),
-                    contribution(phase="abandoned", pending_publication={"x": 1})):
-            with self.subTest(record=rec):
-                self.assertFalse(apply(rec,
-                    f"/upstreaming restart contribution={CID} revision=0 reason=r").accepted)
+    def test_the_admission_override_needs_parked_and_a_safe_scope(self):
+        unsafe = apply(self.parked(), f'/upstreaming resume contribution={CID} revision=8 '
+                                      'paths="../etc" reason=r')
+        self.assertFalse(unsafe.accepted)
+        self.assertIn("unsafe scope path", unsafe.reason)
+        waiting = contribution(phase="investigation", activity="waiting_human", revision=3,
+                               pending_human_action={"kind": "work_failed", "requested_at": NOW,
+                                                     "reminded_at": None, "escalated_at": None,
+                                                     "counter": None})
+        paused = contribution(activity="waiting_ci", paused=True, paused_at=NOW, paused_by="human")
+        legacy = contribution(activity="idle", paused=True, paused_at=NOW, paused_by="human")
+        for rec in (waiting, paused, legacy):
+            with self.subTest(state=f"{rec['phase']}.{rec['activity']}"):
+                out = apply(rec, f"/upstreaming resume contribution={CID} revision={rec['revision']} "
+                                 "class=optimized_backend reason=r")
+                self.assertFalse(out.accepted)
+                self.assertEqual(out.reason,
+                                 "`class` and `paths` apply only to a resume from `parked.idle` "
+                                 "that starts a new generation")
+                self.assertEqual(out.record, rec)
+
+    def test_resume_from_parked_is_stale_proof(self):
+        out = apply(self.parked(), f"/upstreaming resume contribution={CID} revision=7 reason=r")
+        self.assertFalse(out.accepted)
+        self.assertIn("stale revision 7", out.reason)
+
+    def test_resume_from_parked_waits_for_writer_quiescence(self):
+        for over in ({"active_operation_id": "op-1"}, {"pending_publication": {"x": 1}}):
+            with self.subTest(over=over):
+                self.assertFalse(apply(self.parked(**over),
+                    f"/upstreaming resume contribution={CID} revision=8 reason=r").accepted)
+
+    def test_abandon_closes_only_a_parked_contribution(self):
+        rec = self.parked(paused=True, paused_at=NOW, paused_by="human", proposal_artifact=None)
+        out = apply(rec, f'/upstreaming abandon contribution={CID} revision=5 reason="not needed"')
+        self.assertTrue(out.accepted, out.reason)
+        closed = out.record
+        self.assertEqual((closed["phase"], closed["activity"]), ("closed", "idle"))
+        self.assertEqual(closed["terminal_reason"], "abandoned")
+        self.assertEqual((closed["revision"], closed["generation"]), (8, 2))
+        self.assertEqual(out.event["kind"], "abandon")
+        self.assertEqual(out.event["details"]["reason"], "not needed")
+        schemas.validate("contribution", closed)
+        self.assertTrue(closed["paused"])
+        # Closed is final. A resume of the paused record clears the flag only
+        # (`resume_pause` has no other effect); the next resume is refused.
+        cleared = apply(closed, f"/upstreaming resume contribution={CID} revision=8 reason=r")
+        self.assertTrue(cleared.accepted, cleared.reason)
+        self.assertEqual(cleared.event["kind"], "resume_pause")
+        self.assertEqual((cleared.record["phase"], cleared.record["paused"]), ("closed", False))
+        self.assertFalse(apply(cleared.record, f"/upstreaming resume contribution={CID} revision=9 "
+                                               "reason=r").accepted)
+        for rec in (contribution(activity="waiting_ci"), contribution(activity="idle"),
+                    contribution(phase="queued", activity="idle")):
+            with self.subTest(state=f"{rec['phase']}.{rec['activity']}"):
+                refused = apply(rec, f"/upstreaming abandon contribution={CID} reason=r")
+                self.assertFalse(refused.accepted)
+                self.assertEqual(refused.record, rec)
+                self.assertTrue(refused.reason.endswith("; it applies in `parked.idle`"),
+                                refused.reason)
 
 
 class TestHandoff(unittest.TestCase):
@@ -264,8 +343,7 @@ class TestStopEndsRequestedWork(unittest.TestCase):
         rec = contribution(phase="investigation", activity="agent_running", revision=1)
         rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 1,
                               "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None}
-        for body in ("/upstreaming pause", "/upstreaming abandon reason=x", "/upstreaming park reason=x",
-                     ):
+        for body in ("/upstreaming pause", "/upstreaming park reason=x"):
             out = apply_command(rec, C.parse(body))
             self.assertTrue(out.accepted, body)
             self.assertIsNone(out.record["active_work"], body)
@@ -312,31 +390,7 @@ class TestScopeAndProvision(unittest.TestCase):
                 self.assertEqual(
                     out.reason,
                     f"`/upstreaming submit-upstream` does not apply in `{phase}.{activity}`; it "
-                    "applies in `handoff.awaiting_submission`, after CI passed on the head")
-
-    def test_approve_scope_then_provision(self):
-        bk = dict(BACKUP)
-        out = self.apply(self.rec, f"/upstreaming approve-scope revision=1 class=configuration_integration "
-                                   f"backup={bk['login']}", backup_user=bk)
-        self.assertTrue(out.accepted, out.reason)
-        r = out.record
-        self.assertEqual((r["phase"], r["revision"], r["owners"]["primary"]["id"], r["owners"]["backup"]["id"]),
-                         ("provisioning", 2, OWNER["id"], bk["id"]))
-        self.assertEqual(r["pending_human_action"]["kind"], "provision_fork")
-        self.assertIsNotNone(lifecycle.write_admission(r))          # no fork yet
-        bad = self.apply(r, "/upstreaming provision revision=2", provisioning={"error": "no riscv64 branch"})
-        self.assertFalse(bad.accepted)
-        self.assertIn("riscv64", bad.reason)
-        prov = {"workflow_verified": True, "fork": "riseproject-upstreaming/proj", "fork_id": 9, "head_sha": SHA_A, "upstream_id": 1,
-                "base_ref": "main", "base_sha": SHA_A}
-        out = self.apply(r, "/upstreaming provision revision=2", provisioning=prov)
-        self.assertTrue(out.accepted, out.reason)
-        d = out.record
-        self.assertEqual((d["phase"], d["activity"], d["fork"]["repository_id"], d["upstream"]["base_sha"]),
-                         ("development", "idle", 9, SHA_A))
-        self.assertIsNone(lifecycle.write_admission(d))
-        import controller
-        self.assertEqual(controller._actionable(d), "development_patch")
+                    "applies in `handoff.awaiting_submission`")
 
     def test_human_can_force_parked_dossier_into_automatic_development(self):
         parked = dict(self.rec, phase="parked", activity="idle", parked_reason="No current patch")
@@ -352,17 +406,13 @@ class TestScopeAndProvision(unittest.TestCase):
         self.assertFalse(self.apply(parked, '/upstreaming force-develop revision=1 class=configuration_integration '
                                              'paths="*" reason="Scope is too broad."').accepted)
 
-    def test_approve_scope_needs_dossier_and_other_backup(self):
-        bk = dict(BACKUP)
-        no_dossier = dict(self.rec, dossier_evidence_id=None)
-        self.assertFalse(self.apply(no_dossier, "/upstreaming approve-scope revision=1 class=configuration_integration "
-                                                f"backup={bk['login']}", backup_user=bk).accepted)
-        self.assertFalse(self.apply(self.rec, "/upstreaming approve-scope revision=1 class=configuration_integration "
-                                              f"backup={OWNER['login']}", backup_user=dict(OWNER)).accepted)
-        self.assertFalse(self.apply(self.rec, "/upstreaming approve-scope revision=1 class=configuration_integration "
-                                              "backup=nobody", backup_user=None).accepted)
-        with self.assertRaises(commands.CommandError):
-            commands.parse("/upstreaming approve-scope revision=1 class=whatever backup=x")
-        c = commands.parse('/upstreaming approve-scope revision=1 class=configuration_integration backup=x '
-                           'paths=".github/workflows/*,pyproject.toml"')
-        self.assertEqual(c.args["paths"], ".github/workflows/*,pyproject.toml")
+    def test_retired_scope_and_provisioning_commands_name_their_replacement(self):
+        for text, replacement in (
+                ("/upstreaming approve-scope revision=1 class=configuration_integration backup=x",
+                 "/upstreaming resume revision=N"),
+                ("/upstreaming provision revision=2", "/upstreaming resume revision=N"),
+                ("/upstreaming revise-scope revision=1 proposal=p", "/upstreaming refresh revision=N")):
+            with self.subTest(text=text), self.assertRaises(commands.CommandError) as raised:
+                commands.parse(text)
+            self.assertIn("is retired", str(raised.exception))
+            self.assertIn(replacement, str(raised.exception))

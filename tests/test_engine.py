@@ -356,7 +356,7 @@ class TestEnginePage(unittest.TestCase):
         page = (ROOT / "docs/state-machine/engine.md").read_text()
         for verb in engine.PIPELINE_VERBS:
             self.assertIn(f"`{verb}`", page)
-        names = (*engine.HELD_COMMANDS, *commands.RETIRED,
+        names = (*engine.HELD_COMMANDS, *commands.RETIRED, *commands.DEPRECATED,
                  *(command.split()[-1] for command in engine.PAUSED_COMMANDS))
         for name in names:
             self.assertIn(f"`{name}`", page)
@@ -858,8 +858,10 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                     open_operations=("op-7",))
         self.assertEqual((busy.accepted, busy.reason), (False, "operation op-7 is open"))
         locked = contribution(phase="release_wait", activity="idle")
-        self.assertEqual(engine.resolve_command(locked, stale_park, policy=POLICY, now=NOW),
-                         (None, "`/upstreaming park` does not apply in `release_wait.idle`"))
+        verb, why = engine.resolve_command(locked, stale_park, policy=POLICY, now=NOW)
+        self.assertIsNone(verb)
+        self.assertTrue(why.startswith("`/upstreaming park` does not apply in `release_wait.idle`; "
+                                       "it applies in `development.agent_running`, "), why)
 
     def test_restart_starts_a_clean_generation(self):
         rec = contribution(phase="parked", activity="idle", parked_reason="x", revision=7,
@@ -933,7 +935,8 @@ class TestSubmitUpstream(unittest.TestCase):
              f"/upstreaming submit-upstream revision=6 head={SHA_A}", "contribution is paused"),
             (contribution(phase="development", activity="waiting_ci", revision=6),
              f"/upstreaming submit-upstream revision=6 head={SHA_A}",
-             "`/upstreaming submit-upstream` does not apply in `development.waiting_ci`"),
+             "`/upstreaming submit-upstream` does not apply in `development.waiting_ci`; it "
+             "applies in `handoff.awaiting_submission`"),
         )
         for record, text, reason in cases:
             with self.subTest(text=text, reason=reason):
@@ -1049,8 +1052,10 @@ class TestSingleWritePath(unittest.TestCase):
     def test_legacy_states_are_exactly_the_states_outside_the_table(self):
         self.assertEqual(compat.LEGACY_STATES & set(lc.LIFECYCLE), set())
         self.assertFalse(any(key.startswith("handoff.") for key in compat.LEGACY_STATES))
-        for key in ("development.idle", "development.waiting_capacity", "abandoned.idle"):
+        for key in ("development.idle", "development.waiting_capacity"):
             self.assertIn(key, compat.LEGACY_STATES)
+        for phase in compat.LEGACY_TERMINAL_PHASES:
+            self.assertFalse(any(key.startswith(f"{phase}.") for key in compat.LEGACY_STATES))
         for key in ("handoff.idle", "handoff.waiting_capacity", "closed.waiting_human"):
             self.assertIsNotNone(compat.state_problem(contribution(
                 phase=key.split(".")[0], activity=key.split(".")[1])))

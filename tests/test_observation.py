@@ -12,13 +12,12 @@ import capacity
 import ci_evidence
 import collect
 import commands
-import compat
 import controller
 import observe_ci
 import recovery
 import release
 import triggers
-from tests.helpers import NOW, OWNER, SHA_A, SHA_B, comment, contribution, policy
+from tests.helpers import NOW, OWNER, SHA_A, SHA_B, apply_command, comment, contribution, policy
 
 T = datetime.fromisoformat(NOW)
 
@@ -649,8 +648,10 @@ class TestTick(unittest.TestCase):
                                policy=policy(), inputs=controller.Inputs(now=T,
                                tracking_issues={raw["number"]: raw}, pressure=capacity.Pressure(ok=True)))
         final = [value for kind, value in tick.staged if kind == "contributions"][-1]
-        self.assertEqual((final["phase"], final["activity"]), ("abandoned", "idle"))
-        self.assertIn("label removed", final["terminal_reason"])
+        self.assertEqual((final["phase"], final["activity"]), ("closed", "idle"))
+        self.assertEqual(final["terminal_reason"], "withdrawn")
+        self.assertEqual([value["kind"] for kind, value in tick.staged if kind == "events"],
+                         ["withdraw_request"])
         self.assertEqual(tick.requested_effects, [])
         self.assertEqual(tick.report["intake"][-1]["decision"], "cancelled")
 
@@ -660,7 +661,15 @@ class TestTick(unittest.TestCase):
         tick = controller.tick(contributions={"c": active}, operations={}, consumed={}, projects={},
                                policy=policy(), inputs=controller.Inputs(now=T,
                                tracking_issues={raw["number"]: raw}, pressure=capacity.Pressure(ok=True)))
-        self.assertFalse(any(kind == "contributions" and value["phase"] == "abandoned"
+        self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
+                             for kind, value in tick.staged))
+        # A request with a dossier is not withdrawn by the label: the table's
+        # guard requires no Work, no dossier, and no fork.
+        investigated = dict(rec, dossier_evidence_id="dossier-1")
+        tick = controller.tick(contributions={"c": investigated}, operations={}, consumed={},
+                               projects={}, policy=policy(), inputs=controller.Inputs(now=T,
+                               tracking_issues={raw["number"]: raw}, pressure=capacity.Pressure(ok=True)))
+        self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
                              for kind, value in tick.staged))
 
     def test_unlabeled_issue_without_state_is_a_noop(self):
@@ -793,10 +802,10 @@ class TestTick(unittest.TestCase):
         import commands
         import reconcile
         from tests.test_dossier_gate import dossier
-        rec = contribution(revision=7, dossier_evidence_id="old-dossier",
+        rec = contribution(activity="waiting_ci", revision=7, dossier_evidence_id="old-dossier",
                            scope_paths=[".github/workflows/wheels.yml"],
                            scope_coverage_complete=True)
-        refreshed = compat.apply_command(
+        refreshed = apply_command(
             rec, commands.parse('/upstreaming refresh revision=7 reason="audit dependencies"'),
             command_id="comment-9", actor=OWNER, now=NOW).record
         refreshed["phase"] = "investigation"

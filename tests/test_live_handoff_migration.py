@@ -393,11 +393,21 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
             ("/upstreaming register-upstream-pr revision=6 url=https://github.com/closeio/ciso8601/pull/9",
              "`register-upstream-pr` is retired"),
             ('/upstreaming abandon revision=6 reason="x"',
-             "`/upstreaming abandon` does not apply in `handoff.awaiting_submission`"),
-            ('/upstreaming restart revision=6 reason="x"',
-             "`/upstreaming restart` does not apply in `handoff.awaiting_submission`"),
+             "`/upstreaming abandon` does not apply in `handoff.awaiting_submission`; it applies "
+             "in `parked.idle`"),
+            ('/upstreaming restart revision=6 reason="x"', "`restart` is retired"),
             ('/upstreaming block revision=6 reason="x"', "`block` is retired"),
             ('/upstreaming resume revision=6 reason="x"', "not paused"),
+            (f"/upstreaming retract-pr revision=6 head={HEAD}",
+             "`/upstreaming retract-pr` does not apply in `handoff.awaiting_submission`; it "
+             "applies in `handoff.waiting_upstream_pr`"),
+            (f'/upstreaming refresh revision=6 head={HEAD} reason="x"',
+             "`head` does not apply to `/upstreaming refresh` in `handoff.awaiting_submission`"),
+            ("/upstreaming resume revision=6 class=optimized_backend reason=x",
+             "not paused"),
+            ('/upstreaming force-develop revision=6 class=configuration_integration paths=a '
+             'reason="x"', "`/upstreaming force-develop` does not apply in "
+                           "`handoff.awaiting_submission`"),
         )
         for body, reason in cases:
             with self.subTest(body=body):
@@ -405,7 +415,9 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
                 receipt = next(r for kind, r in output.staged if kind == "commands")
                 self.assertEqual(receipt["result"], "rejected")
                 self.assertIn(reason, receipt["reason"])
-                if "retired" in reason and "block" not in reason:
+                if "`restart`" in reason:
+                    self.assertIn('/upstreaming resume revision=N reason="..."', receipt["reason"])
+                elif "retired" in reason and "block" not in reason:
                     self.assertIn("/upstreaming submit-upstream revision=N head=FULL_SHA",
                                   receipt["reason"])
                 elif "retired" in reason:

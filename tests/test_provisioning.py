@@ -8,8 +8,6 @@ from datetime import datetime
 
 import capacity
 import collect
-import commands
-import compat
 import controller
 import provisioning
 import reconcile
@@ -188,14 +186,6 @@ class TestProvisioning(unittest.TestCase):
         self.assertEqual(result.report["provisions"][0]["status"], "provisioned")
         self.assertEqual(result.report["requested_effects"][0]["task"], "development_patch")
         self.assertTrue(any(k == "operations" and r["status"] == "confirmed" for k, r in result.staged))
-
-    def test_bare_existing_fork_cannot_bypass_workflow_provisioning(self):
-        rec, _ = request()
-        facts = {"fork": FORK, "fork_id": 2, "head_sha": SHA_C, "upstream_id": 1, "base_ref": "main", "base_sha": SHA_C}
-        outcome = compat.apply_command(rec, commands.parse(f"/upstreaming provision revision={rec['revision']}"),
-                                          command_id="c", actor=rec["owners"]["primary"], now=NOW, provisioning=facts)
-        self.assertFalse(outcome.accepted)
-        self.assertIn("trusted upstreaming workflow", outcome.reason)
 
     def test_source_snapshots_bind_only_unspecified_fields(self):
         rec = contribution(phase="investigation", activity="idle")

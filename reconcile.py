@@ -676,8 +676,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          issues: list[dict] | None = None, comments: list[dict] | None = None,
          verified_prs: dict[str, dict] | None = None, acceptances: dict[int, int] | None = None,
          observe: bool = True, dispatcher_runs: list[dict] | None = None,
-         queue_works: dict[str, str] | None = None, users: dict | None = None,
-         provisioning: dict | None = None, tracking_issues: dict | None = None,
+         queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None,
          skip: frozenset[str] = frozenset()) -> TickOutput:
@@ -979,7 +978,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                           projects=snap.projects, policy=policy,
                           inputs=controller.Inputs(now=now, issues=issues or [], comments=comments or [],
                                                    pressure=pressure, verified_prs=verified_prs or {},
-                                                   users=users or {}, provisioning=provisioning or {},
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {}),
@@ -1193,9 +1191,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         if args.offline
         else collect.tracking_issues(api, snapshot.contributions.values(), issues)
     )
-    users, provisioning = (
-        collect.command_lookups(api, snapshot, comments) if not args.offline else ({}, {})
-    )
     acceptances = (
         {}
         if args.offline
@@ -1236,8 +1231,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             observe=not args.offline,
             dispatcher_runs=runs,
             queue_works=queue,
-            users=users,
-            provisioning=provisioning,
             acceptances=acceptances,
             tracking_issues=issue_snapshots,
             upstream_snapshots=source_snapshots,

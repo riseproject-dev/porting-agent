@@ -66,11 +66,7 @@
         "release_wait",
         "released",
         "parked",
-        "closed",
-        "no_work",
-        "deferred",
-        "abandoned",
-        "already_released"
+        "closed"
       ]
     },
     "activity": {
@@ -142,10 +138,6 @@
         "released",
         "parked",
         "closed",
-        "no_work",
-        "deferred",
-        "abandoned",
-        "already_released",
         null
       ]
     },

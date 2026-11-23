@@ -54,5 +54,16 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
             "Ready for upstream (waiting for a human to request submission)")
 
 
+    def test_closed_names_its_terminal_reason(self):
+        for reason, label in (("abandoned", "Closed (abandoned)"),
+                              ("withdrawn", "Closed (request withdrawn)")):
+            with self.subTest(reason=reason):
+                self.assertEqual(generate_doc.status_label(
+                    {"phase": "closed", "activity": "idle", "terminal_reason": reason,
+                     "paused": True}), label)
+        self.assertEqual(generate_doc.status_label({"phase": "closed", "activity": "idle"}),
+                         "Closed")
+
+
 if __name__ == "__main__":
     unittest.main()
