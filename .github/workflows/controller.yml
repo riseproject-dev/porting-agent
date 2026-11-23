@@ -96,6 +96,9 @@ jobs:
       - name: Controller tick (read-only)
         env:
           GH_TOKEN: ${{ github.token }}
+          # The retention of the worker's publication artifact, as its
+          # generated lock sets it, for the expiry of a submission rewrite.
+          UPSTREAMING_ARTIFACT_RETENTION_DAYS: ${{ vars.GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS || '30' }}
         run: |
           set -euo pipefail
           uv run --locked python -m controller observe > report.json
@@ -235,6 +238,9 @@ jobs:
       - name: Reconcile deterministic state locally
         env:
           GH_TOKEN: ${{ github.token }}
+          # The retention of the worker's publication artifact, as its
+          # generated lock sets it, for the expiry of a submission rewrite.
+          UPSTREAMING_ARTIFACT_RETENTION_DAYS: ${{ vars.GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS || '30' }}
         run: |
           set -euo pipefail
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=

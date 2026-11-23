@@ -17,6 +17,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -612,6 +613,28 @@ class TestRewriteExpiry(unittest.TestCase):
         evidence = world.evidence[eid]
         stamp = datetime.fromisoformat(evidence["collected_at"]) - timedelta(days=days)
         world.evidence[eid] = dict(evidence, collected_at=stamp.isoformat())
+
+    def test_the_expiry_follows_the_retention_the_worker_lock_uses(self):
+        """The generated lock keeps the publication artifact for the
+        repository variable's days when it is set; the controller's
+        workflow hands that value to the tick."""
+        world = rewritten()
+        for value, fresh, stale in (("10", 8.9, 9), ("1", 0.4, 0.5), ("90", 88.9, 89),
+                                    (None, 28.9, 29), ("0", 28.9, 29), ("x", 28.9, 29),
+                                    ("401", 28.9, 29)):
+            with self.subTest(value=value), mock.patch.dict(
+                    "os.environ", {} if value is None else {handoff.RETENTION_ENV: value}):
+                if value is None:
+                    os.environ.pop(handoff.RETENTION_ENV, None)
+                for days, expired in ((fresh, False), (stale, True)):
+                    copy_ = dict(world.evidence)
+                    eid = world.record["submission_rewrite_id"]
+                    stamp = datetime.fromisoformat(copy_[eid]["collected_at"]) \
+                        - timedelta(days=days)
+                    copy_[eid] = dict(copy_[eid], collected_at=stamp.isoformat())
+                    self.assertEqual(handoff.rewrite_expired(
+                        world.record, copy_, datetime.fromisoformat(
+                            world.evidence[eid]["collected_at"])), expired, days)
 
     def test_an_expired_rewrite_is_never_reviewed(self):
         world = rewritten()

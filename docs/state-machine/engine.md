@@ -233,7 +233,7 @@ In `handoff.review_pending` the controller allocates the review (`request_submis
 
 An outcome of either Work that is not usable (the Result could not be verified, the check could not run, or the Result is malformed, answers other Work, or names another series or text) is Work without a usable Result, never a verdict: `allocate_work_retry` within `work_recovery` and `work_total`, then `exhaust_work_recovery` to `handoff.waiting_human`, whose `resume_submission_review` returns to `handoff.review_due` for a fresh rewrite. A pause in `handoff.agent_running` or `handoff.reviewing` leads to `handoff.review_due`.
 
-The rewritten series is held in the rewrite run's publication artifact, which GitHub keeps 30 days. When it has expired or expires within a day, `expire_submission_rewrite` leads back to `handoff.review_due` for a fresh rewrite: in `handoff.review_pending` before the review is allocated, and in `handoff.building_upstream_branch` before an attempt is planned, also after a long human wait that resumed to the build.
+The rewritten series is held in the rewrite run's publication artifact, which GitHub keeps 30 days, or the number of days the repository variable `GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS` sets (the generated worker lock uses it, and the controller's workflow hands it to the tick). When it has expired or expires within a day, `expire_submission_rewrite` leads back to `handoff.review_due` for a fresh rewrite: in `handoff.review_pending` before the review is allocated, and in `handoff.building_upstream_branch` before an attempt is planned, also after a long human wait that resumed to the build.
 
 ## The handoff operations
 
