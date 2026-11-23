@@ -964,17 +964,18 @@ class TestTick(unittest.TestCase):
         self.assertEqual(res.requested_effects[0]["effect_contract"], {"kind": "none"})
 
     def test_work_waits_for_a_bound_upstream_identity(self):
-        # A restart from `parked` clears the upstream identity and base, and
-        # source binding never reads a parked upstream: no Work is requested
-        # in that tick, since its payload needs them; the next tick binds
-        # them and requests it.
+        # Every row that allocates Work is guarded by the bound upstream
+        # identity and base: without a snapshot no Work is requested and the
+        # record is deferred with that guard; a later tick binds them and
+        # requests it.
         from tests.test_commands_intake import issue
         res = controller.tick(contributions={}, operations={}, consumed={}, projects={},
                               policy=policy(), inputs=controller.Inputs(
                                   now=T, issues=[issue()], acceptances={77: OWNER["id"]}))
         self.assertEqual(res.requested_effects, [])
-        self.assertIn({"contribution": "example--proj/12", "why": "upstream identity not yet bound"},
-                      res.report["deferred"])
+        why = [d["why"] for d in res.report["deferred"] if d["contribution"] == "example--proj/12"]
+        self.assertEqual(len(why), 1)
+        self.assertIn("upstream identity and base not bound", why[0])
         queued = [r for k, r in res.staged if k == "contributions"][-1]
         self.assertEqual((queued["phase"], queued["active_work"]), ("queued", None))
         again = controller.tick(contributions={queued["contribution_id"]: queued}, operations={},
@@ -983,6 +984,98 @@ class TestTick(unittest.TestCase):
                                         "repository_id": 99, "base_ref": "main",
                                         "base_sha": "a" * 40}}))
         self.assertEqual(len(again.requested_effects), 1)
+
+
+class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
+    """A refresh from `parked.idle` clears the upstream identity and base;
+    the tick that restarts the generation binds them again and requests the
+    planning Work, or keeps the record waiting when the upstream cannot be
+    read."""
+
+    SNAPSHOT = {"repository_id": 1, "base_ref": "trunk", "base_sha": SHA_B}
+
+    def parked(self):
+        return contribution(phase="parked", activity="idle", generation=1, revision=4,
+                            parked_reason="old attempt", previous_phase="development")
+
+    def tick(self, rec, snapshots):
+        cid = rec["contribution_id"]
+        return controller.tick(
+            contributions={cid: rec}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, upstream_snapshots=snapshots, comments=[
+                {"issue_number": 12, "comment": comment(
+                    f'/upstreaming refresh contribution={cid} revision=4 reason="clean start"',
+                    cid=31)}]))
+
+    def final(self, res):
+        return [r for k, r in res.staged if k == "contributions"][-1]
+
+    def test_refresh_requests_planning_with_identity_in_the_same_tick(self):
+        res = self.tick(self.parked(), {"example/proj": dict(self.SNAPSHOT)})
+        self.assertEqual(res.report["commands"][0]["result"], "accepted")
+        self.assertEqual([e["kind"] for k, e in res.staged if k == "events"],
+                         ["restart_generation", "begin_planning", "dispatch_planning"])
+        final = self.final(res)
+        self.assertEqual((final["phase"], final["activity"], final["generation"]),
+                         ("planning", "agent_running", 2))
+        self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
+                                             "base_ref": "trunk", "base_sha": SHA_B})
+        self.assertEqual(len(res.requested_effects), 1)
+        self.assertEqual(res.requested_effects[0]["task"], "planning")
+        self.assertEqual(res.requested_effects[0]["dedupe_key"],
+                         final["active_work"]["dedupe_key"])
+
+    def test_refresh_without_snapshot_waits_unbound(self):
+        for snapshots in ({}, {"example/proj": {"error": "upstream unavailable"}}):
+            with self.subTest(snapshots=snapshots):
+                res = self.tick(self.parked(), snapshots)
+                self.assertEqual(res.report["commands"][0]["result"], "accepted")
+                final = self.final(res)
+                self.assertEqual((final["phase"], final["activity"]), ("queued", "idle"))
+                self.assertIsNone(final["active_work"])
+                self.assertEqual(final["upstream"]["repository_id"], None)
+                self.assertEqual(res.requested_effects, [])
+                self.assertTrue(any(d["contribution"] == final["contribution_id"]
+                                    for d in res.report["deferred"]))
+                # A later tick with the snapshot binds them and requests the Work.
+                later = controller.tick(
+                    contributions={final["contribution_id"]: final}, operations={}, consumed={},
+                    projects={}, policy=policy(), inputs=controller.Inputs(
+                        now=T, upstream_snapshots={"example/proj": dict(self.SNAPSHOT)}))
+                self.assertEqual(len(later.requested_effects), 1)
+                self.assertEqual(self.final(later)["upstream"]["base_sha"], SHA_B)
+
+    def test_a_parked_record_is_not_bound_or_paused_without_a_restart(self):
+        rec = self.parked()
+        res = controller.tick(
+            contributions={"a": rec}, operations={}, consumed={}, projects={}, policy=policy(),
+            inputs=controller.Inputs(now=T, upstream_snapshots={"example/proj": dict(
+                self.SNAPSHOT, repository_id=77)}))
+        self.assertEqual(res.staged, [])
+        self.assertEqual(res.requested_effects, [])
+
+    def test_the_collector_reads_a_parked_upstream_only_for_a_refresh(self):
+        class Api:
+            def __init__(self):
+                self.paths = []
+
+            def get(self, path):
+                self.paths.append(path)
+                if path == "/repos/example/proj":
+                    return {"id": 1, "full_name": "example/proj", "default_branch": "trunk"}
+                return {"name": "trunk", "commit": {"sha": SHA_B, "commit": {"tree": {"sha": SHA_A}},
+                                                   "parents": []}}
+
+        rec = self.parked()
+        api = Api()
+        self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy()), {})
+        self.assertEqual(api.paths, [])
+        refresh = {"issue_number": 12, "comment": comment(
+            "/upstreaming refresh contribution=example--proj/12 revision=4 reason=r")}
+        other = {"issue_number": 12, "comment": comment("/upstreaming pause reason=r")}
+        self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy(), [other]), {})
+        self.assertEqual(collect.upstream_snapshots(api, [rec], [], policy(), [refresh]),
+                         {"example/proj": dict(self.SNAPSHOT)})
 
 
 if __name__ == "__main__":

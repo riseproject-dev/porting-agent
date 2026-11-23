@@ -178,6 +178,25 @@ class TestLifecycleTable(unittest.TestCase):
     def without(self, entries, *names):
         return tuple(e for e in entries if e not in names)
 
+    def test_every_work_allocation_requires_the_bound_upstream_identity(self):
+        allocating = [e for e in lc.table_edges()
+                      if e.transition.effects.work in ("allocate", "reallocate")]
+        self.assertEqual({e.verb for e in allocating},
+                         {"dispatch_planning", "request_patch", "request_repair",
+                          "request_submission_rewrite", "request_submission_review",
+                          "request_upstream_revision", "request_review_revision",
+                          "allocate_work_retry"})
+        for e in allocating:
+            self.assertIn(lc.UPSTREAM_BOUND, e.transition.guard, f"{e.source} --{e.verb}-->")
+        for state, verb in (("planning.idle", "dispatch_planning"),
+                            ("upstream_review.fix_needed", "request_review_revision"),
+                            ("development.agent_running", "allocate_work_retry")):
+            with self.subTest(verb=verb):
+                guard = lc.find_edge(state, verb).transition.guard
+                problems = self.mutated(state, verb, guard=self.without(guard, lc.UPSTREAM_BOUND))
+                self.assertTrue(any(p.startswith(f"{state} --{verb}-->") and lc.UPSTREAM_BOUND in p
+                                    for p in problems), problems)
+
     def test_the_check_holds_the_feedback_rules(self):
         patch = lc.find_edge("development.fix_needed", "request_patch").transition
         published = lc.find_edge("development.agent_running", "record_publish_success").transition

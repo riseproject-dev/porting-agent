@@ -223,6 +223,8 @@ def render_index() -> str:
         "it accepts. It also checks the rules of the lifecycle:", "",
         "- every transition that allocates Work charges `work_total`, and every charged budget "
         "has a `policy.json` key and an exhaustion transition;",
+        "- every transition that allocates Work, or a fresh graph for it, is guarded by "
+        f"`{lc.UPSTREAM_BOUND}`: the Work names the verified upstream repository and base;",
         "- exhaustion of an infrastructure budget leads to a human wait of the same phase, and "
         "nothing ends the generation from `upstream_review` without a command;",
         "- the revision is bumped by every resume and by every transition that invalidates "

@@ -309,15 +309,26 @@ def _review_feedback(api: Api, record: dict, repository: str, number: int, head:
             "inquiry_conversation_comment_ids": [item["id"] for item in inquiry_conversation]}
 
 
-def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict) -> dict[str, dict]:
+def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
+                       comments: Iterable[dict] = ()) -> dict[str, dict]:
     """Verify source IDs and initial immutable bases before task admission.
-    Errors are data: urgent commands must still run when an upstream is absent."""
+    Errors are data: urgent commands must still run when an upstream is absent.
+
+    A parked contribution whose tracking issue carries a refresh command in
+    ``comments`` is read too, at the upstream default branch: a restart
+    clears the identity and base, and the controller binds them again in the
+    tick that restarts it."""
     import intake
     import lifecycle
     contributions = list(contributions)
     parked = {c["upstream"]["full_name"] for c in contributions if c["phase"] == "parked"}
     refs = {c["upstream"]["full_name"]: c["upstream"].get("base_ref") for c in contributions
             if c["phase"] not in lifecycle.TERMINAL | {"parked"}}
+    refreshed = {int(item["issue_number"]) for item in comments
+                 if "/upstreaming refresh" in str((item.get("comment") or {}).get("body") or "")}
+    for c in contributions:
+        if c["phase"] == "parked" and c["tracking_issue"]["number"] in refreshed:
+            refs.setdefault(c["upstream"]["full_name"], None)
     known = {c["tracking_issue"]["id"] for c in contributions}
     for issue in issues:
         if issue["id"] in known:

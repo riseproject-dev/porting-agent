@@ -161,6 +161,47 @@ def task_for(verb: str, record: dict) -> str:
     return "development_patch"
 
 
+def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResult,
+                 source_blocked: set[str], policy: dict, now: str) -> None:
+    """Bind the unbound upstream identity and base of ``c`` from this tick's
+    verified snapshot of its upstream; a changed identity pauses it, and a
+    source that cannot be verified blocks it for the tick."""
+    cid = c["contribution_id"]
+    rep = res.report
+    snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
+    if snapshot is None:
+        return
+    if snapshot.get("error"):
+        source_blocked.add(cid)
+        rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
+        return
+    current = c["upstream"].get("repository_id")
+    if current is not None and current != snapshot["repository_id"]:
+        source_blocked.add(cid)
+        # The table verb for a changed identity sets the paused flag
+        # with the controller's reason, clears the requested Work and
+        # what is held for publication, and keeps the state (from an
+        # `agent_running` state, the state in which the Work is due).
+        cause = f"upstream-identity-{snapshot['repository_id']}"
+        out = engine.apply_transition(
+            c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
+            facts={"upstream_identity_changed"})
+        if out.accepted:
+            by_id[cid] = out.record
+            res.stage("contributions", out.record)
+            res.stage("events", out.event)
+        return
+    updated = dict(c["upstream"])
+    for key in ("repository_id", "base_ref", "base_sha"):
+        if updated.get(key) is None:
+            updated[key] = snapshot[key]
+    if updated != c["upstream"]:
+        changed = engine.record_beside(c, "upstream_identity_bound", now=now,
+                                       upstream=updated)
+        by_id[cid] = changed
+        res.stage("contributions", changed)
+
+
 def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consumed: dict[int, dict],
          projects: dict[str, dict], policy: dict, inputs: Inputs,
          skip: frozenset[str] = frozenset(), evidence: dict[str, dict] | None = None) -> TickResult:
@@ -271,44 +312,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                   "detail": f"{INTAKE_LABEL} label removed before Work admission"})
 
     # Bind initially unspecified source identities/bases from trusted API data,
-    # never from the model's plan. Already-bound bases remain immutable.
+    # never from the model's plan. Already-bound bases remain immutable. A
+    # parked upstream is not read here: it is bound again below, in the same
+    # tick, once a restart left `parked` and cleared it.
     source_blocked: set[str] = set()
     for cid, c in list(by_id.items()):
-        if cid in skip:
+        if cid in skip or c["phase"] == "parked":
             continue
         with isolation.contribution(cid, "source_identity"):
-            snapshot = inputs.upstream_snapshots.get(c["upstream"]["full_name"])
-            if snapshot is None:
-                continue
-            if snapshot.get("error"):
-                source_blocked.add(cid)
-                rep["deferred"].append({"contribution": cid, "why": "source verification unavailable"})
-                continue
-            current = c["upstream"].get("repository_id")
-            if current is not None and current != snapshot["repository_id"]:
-                source_blocked.add(cid)
-                # The table verb for a changed identity sets the paused flag
-                # with the controller's reason, clears the requested Work and
-                # what is held for publication, and keeps the state (from an
-                # `agent_running` state, the state in which the Work is due).
-                cause = f"upstream-identity-{snapshot['repository_id']}"
-                out = engine.apply_transition(
-                    c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
-                    facts={"upstream_identity_changed"})
-                if out.accepted:
-                    by_id[cid] = out.record
-                    res.stage("contributions", out.record)
-                    res.stage("events", out.event)
-                continue
-            updated = dict(c["upstream"])
-            for key in ("repository_id", "base_ref", "base_sha"):
-                if updated.get(key) is None:
-                    updated[key] = snapshot[key]
-            if updated != c["upstream"]:
-                changed = engine.record_beside(c, "upstream_identity_bound", now=now,
-                                               upstream=updated)
-                by_id[cid] = changed
-                res.stage("contributions", changed)
+            _bind_source(c, inputs, by_id, res, source_blocked, policy, now)
 
     # 2. Authorized commands, urgent stops first, all before any work is selected.
     decisions = []
@@ -341,6 +353,19 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         res.stage("commands", receipt)
         rep["commands"].append({"comment": receipt["comment_id"], "result": receipt["result"],
                                 "reason": receipt.get("reason")})
+
+    # A restart from `parked` (`restart_generation`) cleared the upstream
+    # identity and base: they are bound in this tick, before any Work is
+    # selected, from the snapshot read for the refresh. Every row that
+    # allocates Work requires them; without a snapshot, or when the source
+    # cannot be verified, the record waits and a later tick binds them.
+    for cid, c in list(by_id.items()):
+        if cid in skip or cid in source_blocked or c["phase"] in lifecycle.TERMINAL | {"parked"} \
+                or all(c["upstream"].get(k) is not None
+                       for k in ("repository_id", "base_ref", "base_sha")):
+            continue
+        with isolation.contribution(cid, "source_identity"):
+            _bind_source(c, inputs, by_id, res, source_blocked, policy, now)
 
     # 2b. Reminders of a pending human step: the table's `record_reminder`, in
     # every state of kind gate, human_wait, or locked, once
@@ -584,15 +609,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             continue
         with isolation.contribution(c["contribution_id"], "work_selection"):
             if c["contribution_id"] in source_blocked:
-                continue
-            if c["phase"] not in lifecycle.TERMINAL | {"parked"} and (
-                    not c["upstream"].get("repository_id") or not c["upstream"].get("base_sha")):
-                # A Work names the verified upstream identity and base. A
-                # restart from `parked` clears them after this tick's source
-                # binding, which never reads a parked upstream: the next tick
-                # binds them, and the Work is requested then.
-                rep["deferred"].append({"contribution": c["contribution_id"],
-                                        "why": "upstream identity not yet bound"})
                 continue
             kind = _actionable(c)
             if kind is None:
@@ -1436,7 +1452,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
     else:
         tracking_issues = collect.tracking_issues(api, contributions.values(), issues)
         upstream_snapshots = collect.upstream_snapshots(
-            api, contributions.values(), issues, policy
+            api, contributions.values(), issues, policy, comments
         )
     result = tick(
         contributions=contributions,

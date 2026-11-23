@@ -721,6 +721,20 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
             engine.apply_transition(rec, "record_head_change", policy=POLICY, now=NOW,
                                     facts={"candidate_head_changed"})
 
+    def test_work_is_allocated_only_with_the_bound_upstream_identity(self):
+        rec = contribution(phase="planning", activity="idle", fork=None)
+        work = dict(SAMPLE["active_work"])
+        for missing in ("repository_id", "base_ref", "base_sha"):
+            with self.subTest(missing=missing):
+                unbound = dict(rec, upstream=dict(rec["upstream"], **{missing: None}))
+                out = engine.apply_transition(unbound, "dispatch_planning", policy=POLICY,
+                                              now=NOW, facts={"worker_slot_free"},
+                                              values={"active_work": work})
+                self.assertFalse(out.accepted)
+                self.assertEqual(out.reason,
+                                 f"upstream identity and base not bound: upstream.{missing}")
+                self.assertEqual(out.record, unbound)
+
     def test_charges_and_external_counters(self):
         rec = contribution(phase="planning", activity="idle", fork=None)
         work = dict(SAMPLE["active_work"])

@@ -492,6 +492,11 @@ ANY_REVISION = "any revision, current or stale"
 NOT_PAUSED = "not paused"
 QUIESCENT = "quiescent: no open operation and no pending publication"
 NO_WORK = "no requested Work"
+# Work names the verified upstream repository identity and base, bound from
+# trusted API data (`upstream.repository_id`, `upstream.base_ref`,
+# `upstream.base_sha`). Every row that allocates Work requires them; a
+# restart clears them, and the tick that restarts binds them again.
+UPSTREAM_BOUND = "upstream identity and base bound"
 # A stop is stale when it lasted longer than ``refresh.stale_after_days``,
 # counted from the older of ``paused_at`` and
 # ``pending_human_action.requested_at``. ``resume_stale`` requires it; every
@@ -681,7 +686,8 @@ EXCLUSIVE_OBSERVATIONS = {
 
 _ALLOCATE_WORK_RETRY = Transition(
     _K, None,
-    ("the Work graph is terminal without a usable Result", "work_recovery and work_total remain"),
+    ("the Work graph is terminal without a usable Result", "work_recovery and work_total remain",
+     UPSTREAM_BOUND),
     _E(revision="bump", work="reallocate"), ("work_recovery", "work_total"),
     description="A terminal Work graph is never submitted again; a fresh graph is allocated. It "
                 "carries the same feedback ids.")
@@ -772,7 +778,8 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("dispatch_planning", "planning.agent_running"): Transition(
                 _K, None,
-                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation"),
+                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
+                 UPSTREAM_BOUND),
                 _E(work="allocate"), ("work_total",)),
             ("exhaust_work_total", "planning.waiting_human"): Transition(
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
@@ -953,14 +960,15 @@ LIFECYCLE: dict[str, State] = {
             ("request_patch", "development.agent_running"): Transition(
                 _K, None,
                 (NO_FAILING_JOB, "write admission", "worker slot free",
-                 "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS, NOT_PAUSED),
+                 "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS, NOT_PAUSED,
+                 UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)), ("work_total",),
                 "Covers the first patch, the patch after a rejected proposal, and a repair "
                 "driven only by review feedback." + _FEEDBACK_NOTE),
             ("request_repair", "development.agent_running"): Transition(
                 _K, None,
                 (FAILING_JOB, "write admission", "worker slot free", "capacity available",
-                 REPAIR_BUDGETS_REMAIN, WORK_TOTAL_REMAINS, NOT_PAUSED),
+                 REPAIR_BUDGETS_REMAIN, WORK_TOTAL_REMAINS, NOT_PAUSED, UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)),
                 ("repair_attempts_cluster", "work_total"),
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
@@ -1074,7 +1082,8 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("request_submission_rewrite", "handoff.agent_running"): Transition(
                 _K, None,
-                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation"),
+                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
+                 UPSTREAM_BOUND),
                 _E(work="allocate"), ("work_total",),
                 "The uncredentialed rewrite Work reads the plan's contribution guidelines and "
                 "the non-debug commits of the approved `riscv64-dev` series. It reshapes the "
@@ -1127,7 +1136,7 @@ LIFECYCLE: dict[str, State] = {
             ("request_submission_review", "handoff.reviewing"): Transition(
                 _K, None,
                 ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
-                 REWRITE_CURRENT),
+                 REWRITE_CURRENT, UPSTREAM_BOUND),
                 _E(work="allocate"), ("work_total",),
                 "The uncredentialed review Work starts in a fresh context and reads exactly the "
                 "rewritten series and text (the trusted pre-agent step downloads them from the "
@@ -1366,14 +1375,15 @@ LIFECYCLE: dict[str, State] = {
             ("request_upstream_revision", "upstream_review.agent_running"): Transition(
                 _K, None,
                 ("the upstream PR head is the controlled fork ref", FAILING_JOB,
-                 "worker slot free", REVISION_BUDGETS_REMAIN, NOT_PAUSED),
+                 "worker slot free", REVISION_BUDGETS_REMAIN, NOT_PAUSED, UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)),
                 ("repair_attempts_cluster", "work_total"),
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
             ("request_review_revision", "upstream_review.agent_running"): Transition(
                 _K, None,
                 ("the upstream PR head is the controlled fork ref", NO_FAILING_JOB,
-                 "worker slot free", REVIEW_REVISION_BUDGETS_REMAIN, NOT_PAUSED),
+                 "worker slot free", REVIEW_REVISION_BUDGETS_REMAIN, NOT_PAUSED,
+                 UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)), ("work_total",),
                 "A revision driven only by review feedback; it charges no "
                 "`repair_attempts_cluster`." + _FEEDBACK_NOTE),
@@ -2874,7 +2884,7 @@ def _check_feedback(problems: list[str]) -> None:
 # allocation of development shares; no proposal or scope admission.
 REQUEST_PATCH_GUARDS = frozenset({NO_FAILING_JOB, "write admission", "worker slot free",
                                   "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS,
-                                  NOT_PAUSED})
+                                  NOT_PAUSED, UPSTREAM_BOUND})
 CONTROLLED_REF = "the upstream PR head is the controlled fork ref"
 
 
@@ -3294,6 +3304,16 @@ def _check_due_work(problems: list[str]) -> None:
                                 "leads to a human wait")
 
 
+def _check_work_identity(problems: list[str]) -> None:
+    """Work names the verified upstream identity and base: every row that
+    allocates Work, or a fresh graph for it, requires them."""
+    for e in table_edges():
+        if e.transition.effects.work in ("allocate", "reallocate") \
+                and UPSTREAM_BOUND not in e.transition.guard:
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: allocates Work without the "
+                            f"guard {UPSTREAM_BOUND!r}")
+
+
 def exhausted_budgets(edge: Edge) -> list[str]:
     """The budgets whose exhaustion ``edge`` is."""
     return [n for n, b in BUDGETS.items()
@@ -3590,6 +3610,7 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_flags(problems)
     _check_budgets(policy, problems)
     _check_due_work(problems)
+    _check_work_identity(problems)
     _check_human_waits(problems)
     _check_counter_restarts(problems)
     _check_operations(problems)

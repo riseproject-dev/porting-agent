@@ -210,6 +210,15 @@ def _not_paused(ctx: Context) -> str | None:
     return "contribution is paused" if is_paused(ctx.record) else None
 
 
+@_record(lc.UPSTREAM_BOUND, "upstream_bound")
+def _upstream_bound(ctx: Context) -> str | None:
+    upstream = ctx.record.get("upstream") or {}
+    missing = [k for k in ("repository_id", "base_ref", "base_sha") if upstream.get(k) is None]
+    if not missing:
+        return None
+    return "upstream identity and base not bound: " + ", ".join(f"upstream.{k}" for k in missing)
+
+
 @_record("paused", "paused")
 def _paused(ctx: Context) -> str | None:
     return None if ctx.record.get("paused") else "not paused"

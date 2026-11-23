@@ -1938,7 +1938,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         {}
         if args.offline
         else collect.upstream_snapshots(
-            api, snapshot.contributions.values(), issues, policy
+            api, snapshot.contributions.values(), issues, policy, comments
         )
     )
     issue_snapshots = (

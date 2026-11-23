@@ -15,6 +15,7 @@ The contribution lifecycle is defined by one table in `lifecycle.py`. That table
 `uv run --locked python -m lifecycle check` verifies that the table is consistent, and the Agent Validation workflow runs it on every pull request and every push to `main`. It checks the structure: every target exists, every state is reachable from `queued.idle`, an end state (kind `terminal`) is reachable from every state, end states have no exits and every other state has one that leaves it, a verb leads from a state to one target only, and every transition names its trigger and its guard (`always` when unconditional), every command transition its command and the revision it accepts. It also checks the rules of the lifecycle:
 
 - every transition that allocates Work charges `work_total`, and every charged budget has a `policy.json` key and an exhaustion transition;
+- every transition that allocates Work, or a fresh graph for it, is guarded by `upstream identity and base bound`: the Work names the verified upstream repository and base;
 - exhaustion of an infrastructure budget leads to a human wait of the same phase, and nothing ends the generation from `upstream_review` without a command;
 - the revision is bumped by every resume and by every transition that invalidates requested or approved work, and by no other transition;
 - `resume_stale` and the other resumes of the same states carry complementary guards, so exactly one applies, and `resume_stale` requires the quiescence of `refresh_planning`;
