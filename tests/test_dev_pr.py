@@ -52,7 +52,7 @@ class FakeApi:
             return {"id": 9, "full_name": FORK, "default_branch": "main", "archived": False,
                     "fork": True, "parent": {"id": 1, "full_name": "example/proj"}}
         if path == f"/repos/{FORK}/branches/riscv64-dev":
-            return {"commit": {"sha": SHA_B, "commit": {"tree": {"sha": "d" * 40}}, "parents": []}}
+            return {"name": "riscv64-dev", "commit": {"sha": SHA_B, "commit": {"tree": {"sha": "d" * 40}}, "parents": []}}
         if path == f"/repos/{FORK}/contents/.github/workflows?ref=riscv64-dev":
             return [{"type": "file", "name": "build.yml", "path": ".github/workflows/build.yml"}]
         if path == f"/repos/{FORK}/contents/.github/workflows/build.yml?ref=riscv64-dev":

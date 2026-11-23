@@ -26,6 +26,11 @@ NATIVE_RUNNER_LABEL = "ubuntu-24.04-riscv"
 STATE_ROOT = ".state"
 INTAKE_LABEL = "upstreaming-request"
 DEBUG_PREFIX = "{debug}"
+# The commit identity of the destination App: the trusted publisher replays
+# every commit it writes under it, and the worker's checkout is configured
+# with it.
+APP_COMMIT_NAME = "riseproject-upstreaming[bot]"
+APP_COMMIT_EMAIL = "359135081+riseproject-upstreaming[bot]@users.noreply.github.com"
 
 # Directory under STATE_ROOT -> schema file name.
 STATE_KINDS = {

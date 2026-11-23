@@ -384,6 +384,11 @@ def branch_head(api: Api, full_name: str, ref: str) -> dict | None:
         if "HTTP 404" in str(e):
             return None
         raise
+    # GitHub answers the branch of a renamed one with a redirect to the new
+    # name: a branch whose name is not the one asked for is another branch.
+    if not isinstance(b, dict) or b.get("name") != ref:
+        raise CollectError(f"GET branch {ref!r}: the response names another branch "
+                           f"{str((b or {}).get('name') if isinstance(b, dict) else None)[:100]!r}")
     c = b["commit"]
     return {"head": c["sha"], "tree": c["commit"]["tree"]["sha"], "parents": [p["sha"] for p in c["parents"]]}
 

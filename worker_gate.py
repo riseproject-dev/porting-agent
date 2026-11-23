@@ -103,6 +103,13 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
         )
         if any(value in additions for value in FORBIDDEN_PATCH_TEXT):
             raise WorkerGateError("patch adds forbidden workflow content")
+        # Attribution trailers: the worker commits under the App's identity,
+        # and the gate has no approved commits to compare with, so every
+        # ``*-by:`` trailer of the series must name the App.
+        attributed = commit_rules.attribution_problems(commit_rules.mbox_messages(mbox), [])
+        if attributed:
+            raise WorkerGateError("the series attributes work to someone else: "
+                                  + "; ".join(attributed[:4]))
         rules = (task.get("context") or {}).get("commit_rules")
         if rules is not None:
             # The measurable commit conventions of the verified dossier, from

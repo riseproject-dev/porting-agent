@@ -110,20 +110,79 @@ def reconstruct(work: Path, *, fork: str, upstream: str, base: str, approved: st
         clean, _removed = handoff.rebuild_without_debug(work, base=base, head=approved)
     except handoff.HandoffInvalid as error:
         raise fork_publish.PublishRejected(f"the approved series: {error}") from None
-    commits = []
-    for sha in [s for s in _out(work, "rev-list", "--reverse", f"{base}..{head}").split() if s]:
-        commits.append({"sha": sha, "message": _git(work, "show", "-s", "--format=%B", sha)
-                        .stdout.decode("utf-8", "replace").rstrip("\n"),
-                        "tree": _out(work, "rev-parse", f"{sha}^{{tree}}")})
-    report = publisher.validate_update(
-        work, base=base, expected_head=approved, candidate=head,
-        scope=publisher.Scope(allowed_globs=list(scope_paths), upstream_facing=True,
-                              history="rewrite"))
+    commits = [{"sha": sha, "message": _message(work, sha),
+                "tree": _out(work, "rev-parse", f"{sha}^{{tree}}")}
+               for sha in _revs(work, base, head)]
+    approved_messages = [_message(work, sha) for sha in _revs(work, base, clean)]
+    scope = publisher.Scope(allowed_globs=list(scope_paths), upstream_facing=True,
+                            history="rewrite")
+    report = publisher.validate_update(work, base=base, expected_head=approved, candidate=head,
+                                       scope=scope)
+    problems = list(report.problems) + intermediate_problems(
+        work, base=base, approved=approved, clean=clean,
+        reviewed=[c["sha"] for c in commits], scope=scope)
     return {"head": head, "commits": commits,
             "tree": _out(work, "rev-parse", f"{head}^{{tree}}"),
             "clean_tree": _out(work, "rev-parse", f"{clean}^{{tree}}"),
             "candidate_tree": _out(work, "rev-parse", f"{approved}^{{tree}}"),
-            "problems": list(report.problems)}
+            "approved_messages": approved_messages,
+            "problems": problems}
+
+
+def _revs(work: Path, base: str, head: str) -> list[str]:
+    return [s for s in _out(work, "rev-list", "--reverse", f"{base}..{head}").split() if s]
+
+
+def _message(work: Path, sha: str) -> str:
+    return _git(work, "show", "-s", "--format=%B", sha).stdout.decode("utf-8", "replace") \
+        .rstrip("\n")
+
+
+def _changes(work: Path, old: str, new: str) -> list[tuple[str, str | None, str | None]]:
+    """The paths ``new`` changes relative to ``old``, each with its mode and
+    blob in ``new`` (``None`` for a deleted path)."""
+    fields = _git(work, "diff-tree", "-r", "-z", "--no-renames", old, new).stdout \
+        .decode("utf-8", "surrogateescape").split("\0")
+    out = []
+    for i in range(0, len(fields) - 1, 2):
+        _old_mode, new_mode, _old_sha, new_sha, status = fields[i].lstrip(":").split()
+        out.append((fields[i + 1], None, None) if status == "D" else
+                   (fields[i + 1], new_mode, new_sha))
+    return out
+
+
+def intermediate_problems(work: Path, *, base: str, approved: str, clean: str,
+                          reviewed: list[str], scope: publisher.Scope) -> list[str]:
+    """Why a commit of the reviewed series, not only its head, may not be
+    published upstream. Each commit passes the publisher's validation of an
+    upstream-facing rewrite against the base (scope, forbidden workflow
+    content, symlinks, gitlinks, modes); each path a commit touches is a path
+    the approved series without its debug commits changes; and every file of
+    every reviewed tree is the base's or one the approved series without its
+    debug commits has in one of its trees (the same path, mode, and blob). A
+    series that adds and later reverts anything else is refused, even when
+    its head has the approved tree."""
+    allowed_paths = {path for path, _mode, _blob in _changes(work, base, clean)}
+    approved_entries: set[tuple[str, str | None, str | None]] = set()
+    for sha in _revs(work, base, clean):
+        approved_entries.update(_changes(work, base, sha))
+    problems = []
+    for sha in reviewed[:-1]:
+        report = publisher.validate_update(work, base=base, expected_head=approved,
+                                           candidate=sha, scope=scope)
+        problems += [f"commit {sha[:12]}: {p}" for p in report.problems]
+    for sha in reviewed:
+        parent = _out(work, "rev-parse", f"{sha}^")
+        touched = sorted({path for path, _m, _b in _changes(work, parent, sha)} - allowed_paths)
+        if touched:
+            problems.append(f"commit {sha[:12]} touches {', '.join(touched[:5])}, which the "
+                            "approved series does not change")
+        foreign = sorted(path for path, mode, blob in _changes(work, base, sha)
+                         if path in allowed_paths and (path, mode, blob) not in approved_entries)
+        if foreign:
+            problems.append(f"commit {sha[:12]} has content in {', '.join(foreign[:5])} that no "
+                            "commit of the approved series has")
+    return problems
 
 
 def _identity_problem(task: dict, review: dict) -> str | None:
@@ -193,6 +252,8 @@ def check(task: dict, review: dict, mbox: bytes | None, *, workdir: Path | None 
         reasons.append("check: the reviewed series changes the tree of the approved series "
                        "without its debug commits; the review may not change code")
     reasons += [f"check: {p}" for p in commit_rules.series_problems(messages, rules)]
+    reasons += [f"check: {p}" for p in commit_rules.attribution_problems(
+        messages, built["approved_messages"])]
     reasons += [f"check: {p}" for p in commit_rules.body_problems(body, sections)]
     result = {"title": title, "body": body, "head": built["head"], "series_digest": digest,
               "commits": [{"message": c["message"], "tree": c["tree"]} for c in built["commits"]],

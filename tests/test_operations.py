@@ -431,7 +431,7 @@ class ReceiptWorld:
         class Api:
             def get(self, path):
                 if path.endswith("/branches/riscv64-dev"):
-                    return {"commit": {"sha": SHA_C, "commit": {"tree": {"sha": "d" * 40}},
+                    return {"name": "riscv64-dev", "commit": {"sha": SHA_C, "commit": {"tree": {"sha": "d" * 40}},
                                        "parents": []}}
                 return {"id": 2, "full_name": "riseproject-upstreaming/proj", "fork": True,
                         "parent": {"id": 1}, "default_branch": "main", "archived": False}

@@ -26,7 +26,7 @@ import email.policy
 import re
 from typing import Any
 
-from common import DEBUG_PREFIX
+from common import APP_COMMIT_EMAIL, APP_COMMIT_NAME, DEBUG_PREFIX
 
 # The rules, their types, and their bounds.
 RULE_KEYS = ("title_max_length", "title_prefixes", "title_prefix_required",
@@ -37,9 +37,17 @@ TRAILING_PERIOD = ("forbidden", "any")
 MAX_PREFIXES = 20
 MAX_SECTIONS = 30
 _SIGNED_OFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>$")
+# An attribution trailer: any ``<token>-by:`` line (Signed-off-by,
+# Co-authored-by, Reviewed-by, Acked-by, Tested-by, Reported-by,
+# Suggested-by, and every other).
+_ATTRIBUTION = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9-]*-by)\s*:(.*)$", re.IGNORECASE)
+APP_IDENTITY = f"{APP_COMMIT_NAME} <{APP_COMMIT_EMAIL}>"
 _PATCH_PREFIX = re.compile(r"^\[PATCH[^\]]*\]\s*")
 _MBOX_FROM = re.compile(rb"^From [0-9a-f]{40} Mon Sep 17 00:00:00 2001$", re.M)
-_HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+# An ATX heading opener; its text (the rest of the line, without a closing
+# sequence of ``#`` and trailing white space) is cut in Python, so no pattern
+# backtracks over a long line.
+_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]|$)")
 
 
 class RuleError(ValueError):
@@ -204,6 +212,33 @@ def series_problems(messages: list[str], rules: dict | None, *,
     return problems
 
 
+def attribution_trailers(message: str) -> list[str]:
+    """The attribution trailer lines of a commit message, exactly as written
+    (anywhere in its body)."""
+    _title, body = split_message(message)
+    return [line.rstrip("\r") for line in body if _ATTRIBUTION.match(line)]
+
+
+def attribution_problems(messages: list[str], approved: list[str]) -> list[str]:
+    """Why the attribution trailers of a series are not admitted. Each one
+    must name the App's commit identity, or be byte-identical to a trailer of
+    the ``approved`` commit messages: no commit attributes work to anyone the
+    approved series does not already name."""
+    allowed = {t for m in approved for t in attribution_trailers(m)}
+    problems = []
+    for message in messages:
+        title = split_message(message)[0]
+        shown = title if len(title) <= 80 else title[:77] + "..."
+        for trailer in attribution_trailers(message):
+            value = _ATTRIBUTION.match(trailer).group(2).strip()
+            if value == APP_IDENTITY or trailer in allowed:
+                continue
+            problems.append(f"the commit {shown!r} carries the attribution trailer "
+                            f"{trailer[:200]!r}, which is neither the App's commit identity nor "
+                            "a trailer of the approved commits")
+    return problems
+
+
 def mbox_messages(data: bytes) -> list[str]:
     """The commit messages of a ``git format-patch`` mbox, in order: the
     subject without its ``[PATCH ...]`` prefix, a blank line, and the body up
@@ -244,8 +279,18 @@ def headings(markdown: str) -> list[str]:
             continue
         match = _HEADING.match(line)
         if match:
-            found.append(_section_key(match.group(2)))
+            found.append(_section_key(_heading_text(line[match.end():])))
     return found
+
+
+def _heading_text(rest: str) -> str:
+    """The text of an ATX heading after its opener: without trailing white
+    space and an optional closing sequence of ``#`` preceded by white space."""
+    text = rest.strip(" \t")
+    stripped = text.rstrip("#")
+    if stripped != text and (not stripped or stripped[-1] in " \t"):
+        text = stripped.rstrip(" \t")
+    return text
 
 
 def _section_key(text: str) -> str:

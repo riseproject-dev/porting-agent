@@ -21,7 +21,8 @@ RULES = {"title_max_length": 50, "title_prefixes": ["ci:", "build(wheels):"],
          "title_trailing_period": "forbidden", "body_required": True, "body_line_max_length": 72,
          "signed_off_by_required": True, "max_commits": 1}
 GOOD = ("ci: Add riscv64 to the wheel matrix\n\nBuild riscv64 wheels with the existing QEMU "
-        "job.\n\nSigned-off-by: riseproject-upstreaming[bot] <1+bot@users.noreply.github.com>")
+        "job.\n\nSigned-off-by: " + commit_rules.APP_IDENTITY)
+APP_SIGNOFF = "Signed-off-by: " + commit_rules.APP_IDENTITY
 
 
 def series(*messages: str, path=".github/workflows/build-wheels.yml") -> bytes:
@@ -128,9 +129,30 @@ class TestWorkerGate(unittest.TestCase):
                          "accepted")
         with self.assertRaisesRegex(worker_gate.WorkerGateError,
                                     "commit conventions: .*none of the prefixes"):
-            self.gate(series(GOOD, "Add riscv64\n\nBody.\n\nSigned-off-by: a <a@b.c>"), rules)
+            self.gate(series(GOOD, "Add riscv64\n\nBody.\n\n" + APP_SIGNOFF), rules)
         # The number of commits is checked at submission only.
         self.assertEqual(self.gate(series(GOOD, GOOD), RULES)["status"], "accepted")
+
+    def test_attribution_trailers_name_the_app_only(self):
+        for trailer in ("Signed-off-by: Linus Torvalds <torvalds@linux-foundation.org>",
+                        "Co-authored-by: Real Maintainer <m@example.org>",
+                        "Reviewed-by: a <a@b.c>", "acked-BY: a <a@b.c>", "Tested-by: x",
+                        "Reported-by: x", "Suggested-by: x", "Helped-by: x",
+                        "Co-authored-by: " + commit_rules.APP_IDENTITY + " extra"):
+            with self.subTest(trailer=trailer), self.assertRaisesRegex(
+                    worker_gate.WorkerGateError, "attributes work to someone else"):
+                self.gate(series("Add riscv64\n\nBody.\n\n" + trailer), None)
+        for trailer in (APP_SIGNOFF, "Co-authored-by: " + commit_rules.APP_IDENTITY):
+            self.assertEqual(self.gate(series("Add riscv64\n\nBody.\n\n" + trailer), None)
+                             ["status"], "accepted")
+        # A trailer is admitted when it is byte-identical to one of the
+        # approved commits, and only then.
+        approved = ["Build\n\nSigned-off-by: Ann <ann@example.org>"]
+        self.assertEqual(commit_rules.attribution_problems(
+            ["Rebuild\n\nSigned-off-by: Ann <ann@example.org>"], approved), [])
+        self.assertEqual(len(commit_rules.attribution_problems(
+            ["Rebuild\n\nSigned-off-by: Ann  <ann@example.org>",
+             "Rebuild\n\nAcked-by: Ann <ann@example.org>"], approved)), 2)
 
     def test_without_rules_nothing_is_checked(self):
         self.assertEqual(self.gate(series("anything goes"), None)["status"], "accepted")
@@ -165,6 +187,25 @@ class TestPayload(unittest.TestCase):
                 context = json.loads(out.read_text())["nodes"][0]["payload"]["context"]
             self.assertEqual(context.get("commit_rules"), expected)
             self.assertEqual("commit_rules" in context, expected is not None)
+
+
+
+class TestHeadings(unittest.TestCase):
+    def test_atx_headings_and_their_closing_sequence(self):
+        self.assertEqual(commit_rules.headings(
+            "## Summary\n# Testing ##\n   ### A #b ###  \n#NoSpace\n####### seven\n"
+            "    ## indented code\n```\n## fenced\n```\n## *Checklist*\t#"),
+            ["summary", "testing", "a #b", "checklist"])
+
+    def test_an_adversarial_description_is_read_in_linear_time(self):
+        import time
+        bodies = ["#" + " " * 12000 + "x", "# " + "#" * 6000 + " " * 6000 + "x",
+                  "##" + "\t " * 6000 + "#", ("# " + " #" * 6000 + "\n") * 2]
+        start = time.monotonic()
+        for body in bodies:
+            commit_rules.headings(body)
+            commit_rules.body_problems(body, ["Summary"])
+        self.assertLess(time.monotonic() - start, 1.0)
 
 
 if __name__ == "__main__":

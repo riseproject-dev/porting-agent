@@ -12,6 +12,7 @@ import io
 import json
 import tempfile
 import unittest
+import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +52,7 @@ class FakeApi:
             if h is None:
                 from collect import CollectError
                 raise CollectError("HTTP 404")
-            return {"commit": {"sha": h, "commit": {"tree": {"sha": "t" * 40}}, "parents": []}}
+            return {"name": urllib.parse.unquote(path.rsplit("/branches/", 1)[1]), "commit": {"sha": h, "commit": {"tree": {"sha": "t" * 40}}, "parents": []}}
         if path.startswith("/repos/") and path.count("/") == 3:
             name = path[len("/repos/"):]
             return {"id": 2, "full_name": name, "default_branch": "main"}

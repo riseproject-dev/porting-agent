@@ -55,7 +55,7 @@ class Api:
         if path == f"/repos/{FORK}/branches/riscv64-dev":
             if self.head is None:
                 raise collect.CollectError("HTTP 404")
-            return {"commit": {"sha": self.head, "commit": {"tree": {"sha": "d" * 40}}, "parents": []}}
+            return {"name": "riscv64-dev", "commit": {"sha": self.head, "commit": {"tree": {"sha": "d" * 40}}, "parents": []}}
         if path == f"/repos/{FORK}/actions/permissions/workflow":
             return self.defaults
         if path == f"/repos/{FORK}/actions/permissions":

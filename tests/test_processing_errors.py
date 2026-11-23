@@ -598,7 +598,7 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
             if failing and failing in url:
                 return Response(body=body or b"", error=error)
             if "/branches/" in url:
-                value = {"commit": {"sha": head, "commit": {"tree": {"sha": "f" * 40}},
+                value = {"name": url.rsplit("/branches/", 1)[1], "commit": {"sha": head, "commit": {"tree": {"sha": "f" * 40}},
                                     "parents": []}}
             elif "/actions/runs?" in url:
                 value = {"workflow_runs": []}
