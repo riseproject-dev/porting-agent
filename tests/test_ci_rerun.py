@@ -289,6 +289,12 @@ class TestPreflight(unittest.TestCase):
     def test_a_rerun_needs_every_check(self):
         schemas.validate("proposal", no_change_proposal(repair_record()))
         self.assertEqual(self.preflight(), {"rerun": True, "fork_name": "proj", "reason": None})
+        # `development_patch` Work carries no feedback: its `no_change` Result
+        # is published by the rerun as well, as the reconciler requires.
+        patch = repair_record()
+        patch["active_work"]["task"] = "development_patch"
+        self.assertEqual(self.preflight(record=patch, t=task(task="development_patch")),
+                         {"rerun": True, "fork_name": "proj", "reason": None})
         carried = repair_record()
         carried["active_work"]["feedback_evidence_ids"] = ["review-1"]
         exhausted = repair_record(budget=dict(repair_record()["budget"], reruns={
@@ -329,8 +335,13 @@ class TestPublish(unittest.TestCase):
         self.assertIsNone(ci_rerun.receipt_problem(out, repair_record()))
 
     def test_the_other_outcomes(self):
-        out = self.publish(FakeApi([run(5, status="in_progress", conclusion=None)]))
+        out = self.publish(FakeApi([run(5, attempt=2, status="in_progress", conclusion=None)]))
         self.assertEqual((out["status"], out["rerun"]["status"]), ("no_change", "superseded"))
+        # Another run in progress on its first attempt does not hold the
+        # completed failed run back: that run is rerun.
+        out = self.publish(FakeApi([run(4, status="in_progress", conclusion=None), run(5)]))
+        self.assertEqual((out["rerun"]["status"], [r["run_id"] for r in out["rerun"]["runs"]]),
+                         ("rerun", [5]))
         out = self.publish(FakeApi([run(5, attempt=2)]))
         self.assertEqual((out["status"], out["rerun"]["status"]), ("no_change", "superseded"))
         api = FakeApi([run(5)])
@@ -352,6 +363,33 @@ class TestPublish(unittest.TestCase):
         out = self.publish(FakeApi([run(5)], land=False))
         self.assertEqual((out["status"], out["failure_class"]), ("infra_error", "infrastructure"))
         self.assertNotIn("operation", out)
+        self.assertTrue(ci_rerun.receipt_problem(out, repair_record()))
+
+
+class TestReceiptShape(unittest.TestCase):
+    """A malformed receipt is a problem for every answered status, never an
+    error in the reconciler."""
+
+    def test_malformed_runs(self):
+        record = repair_record()
+        good = {"run_id": 5, "from_attempt": 1, "run_attempt": 2}
+        bad_runs = [["x"], [{"run_id": 5}], [dict(good, from_attempt="1")],
+                    [dict(good, run_attempt=1)], [dict(good, run_id=True)], [good] * 6]
+        for status in ci_rerun.ANSWERED:
+            for runs in bad_runs:
+                with self.subTest(status=status, runs=runs):
+                    out = {"stage": "ci_rerun", "rerun": {"status": status, "runs": runs}}
+                    self.assertTrue(ci_rerun.receipt_problem(out, record))
+        out = {"stage": "ci_rerun", "rerun": {"status": "nothing_to_rerun", "runs": [good]}}
+        self.assertTrue(ci_rerun.receipt_problem(out, record))
+
+    def test_the_marker_attempts_must_match(self):
+        api = FakeApi([run(5)])
+        with mock.patch.dict("os.environ", {"UPSTREAMING_PUBLISH_ATTEMPT": "1"}):
+            out = ci_rerun.publish(record=repair_record(), task=task(), api=api, policy=POLICY,
+                                   now=NOW, sleep=lambda _s: None)
+        self.assertIsNone(ci_rerun.receipt_problem(out, repair_record()))
+        out["rerun"]["runs"][0]["from_attempt"] = 0
         self.assertTrue(ci_rerun.receipt_problem(out, repair_record()))
 
 

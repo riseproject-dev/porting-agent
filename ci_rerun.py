@@ -74,6 +74,10 @@ RUNNER_LOST = (
 STATUSES = ("rerun", "superseded", "nothing_to_rerun", "stale", "refused", "unconfirmed")
 # The statuses of a flaky receipt that let `request_ci_rerun` be taken.
 ANSWERED = ("rerun", "superseded", "nothing_to_rerun")
+# The Work of `development.agent_running` whose `no_change` Result may take
+# `request_ci_rerun` (the row refuses Work that carries feedback): the
+# reconciler requires the receipt for exactly the Results this admits.
+DEVELOPMENT_WRITE_TASKS = ("development_patch", "development_repair")
 _MARKER = re.compile(r"^ci-rerun:([0-9]{1,20}@[0-9]{1,6}(?:,[0-9]{1,20}@[0-9]{1,6}){0,4})$")
 _EVIDENCE = re.compile(r"^ci-[0-9]+-([0-9]+)-([0-9]+)$")
 _RUN_PATH = re.compile(r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/rerun-failed-jobs$")
@@ -310,8 +314,13 @@ def receipt_problem(outcome: dict, record: dict) -> str | None:
         return "the Result carries no CI rerun receipt"
     if rerun.get("status") not in ANSWERED or not isinstance(rerun.get("runs"), list):
         return "the CI rerun receipt is not a rerun"
+    if len(rerun["runs"]) > MAX_RUNS or not all(
+            isinstance(r, dict) and all(type(r.get(k)) is int and r[k] >= 0
+                                        for k in ("run_id", "from_attempt", "run_attempt"))
+            and r["run_attempt"] > r["from_attempt"] for r in rerun["runs"]):
+        return "the CI rerun receipt names a run it does not describe"
     if rerun["status"] != "rerun":
-        return None
+        return None if not rerun["runs"] else "the CI rerun receipt names runs it did not rerun"
     op = outcome.get("operation") or {}
     try:
         schemas.validate("operation", op)
@@ -319,13 +328,12 @@ def receipt_problem(outcome: dict, record: dict) -> str | None:
     except (schemas.SchemaError, RerunError):
         return "the CI rerun receipt names no ci_rerun operation"
     fork = record.get("fork") or {}
-    expected = {f"attempt:{r['run_id']}": r["run_attempt"] for r in rerun["runs"]
-                if isinstance(r, dict) and isinstance(r.get("run_id"), int)
-                and isinstance(r.get("run_attempt"), int)}
+    expected = {f"attempt:{r['run_id']}": r["run_attempt"] for r in rerun["runs"]}
     if op["status"] != "confirmed" or op["contribution_id"] != record["contribution_id"] \
             or op["target"].get("repository") != fork.get("name") \
             or op["target"].get("expected_head") != fork.get("head_sha") \
-            or len(runs) != len(rerun["runs"]) \
+            or [(r["run_id"], r["from_attempt"]) for r in runs] \
+            != [(r["run_id"], r["from_attempt"]) for r in rerun["runs"]] \
             or any((op.get("external_ids") or {}).get(k) != v for k, v in expected.items()) \
             or len(expected) != len(runs):
         return "the CI rerun operation does not match the receipt or the record"
@@ -345,8 +353,8 @@ def preflight(*, record: dict, task: dict, proposal: dict, policy: dict, now: st
     def no(reason: str) -> dict:
         return {"rerun": False, "fork_name": "", "reason": reason}
 
-    if task.get("task") != "development_repair" or proposal.get("outcome") != "no_change":
-        return no("not a no_change Result of repair Work")
+    if task.get("task") not in DEVELOPMENT_WRITE_TASKS or proposal.get("outcome") != "no_change":
+        return no("not a no_change Result of development Work")
     try:
         fork_publish.check_proposal(proposal, record, task, allow_no_change=True)
     except (fork_publish.PublishRejected, schemas.SchemaError) as error:
@@ -407,12 +415,20 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
     except (collect.CollectError, RerunError) as error:
         return _outcome("infra_error", f"could not read CI on the head: {error}",
                         failure_class="infrastructure")
-    runs, in_progress = targets(snap, head, interrupted_only=False)
+    runs, _in_progress = targets(snap, head, interrupted_only=False)
     answered = answered_run(record)
     newer = answered is not None and any(
         r["id"] == answered[0] and r["head_sha"] == head and r["run_attempt"] > answered[1]
         for r in snap.runs)
-    if in_progress or newer:
+    # CI is already running again only when the run the record answered has
+    # a newer attempt, or a run on the head is in progress on a later attempt
+    # (a rerun of a run that held a failed job). Another run still in
+    # progress (a fresh or unrelated workflow) does not hold the failed jobs
+    # back: the completed failed runs are rerun.
+    rerunning = any(r.get("head_sha") == head and r.get("status") != "completed"
+                    and int(r.get("run_attempt") or 1) > 1
+                    for r in ci_evidence.latest_attempts(snap.runs))
+    if newer or rerunning:
         return _outcome("no_change", "CI on the head is already running again",
                         rerun={"status": "superseded", "runs": []})
     if not runs:

@@ -652,7 +652,7 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
         return
     facts = {"ci_interrupted_on_head"}
     cause = ev["evidence_id"]
-    jobs = [j["name"] for j in ev["ci"]["jobs"] if j.get("interrupted")]
+    jobs = [str(j["name"])[:200] for j in ev["ci"]["jobs"] if j.get("interrupted")]
     details = {"evidence_id": cause, "head": head, "interrupted_jobs": jobs[:10]}
     if engine.refusal(cur, "rerun_interrupted_ci", policy=policy, now=now, facts=facts):
         cur = _take(obs, cur, "exhaust_interrupted_reruns", policy=policy, now=now,

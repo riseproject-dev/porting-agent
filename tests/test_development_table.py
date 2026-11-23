@@ -34,6 +34,7 @@ import observe_ci
 import reconcile
 import recovery
 import schemas
+from tests import test_ci_rerun
 from tests.helpers import (
     NOW,
     OWNER,
@@ -207,6 +208,34 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
                          ["reject_patch_proposal"])
         self.assertEqual(rejected["pending_feedback_evidence_ids"], ["review-1"])
+
+    def test_a_no_change_result_of_patch_work_is_published_by_the_rerun(self):
+        """`development_patch` Work (requested without pending feedback) may
+        take `request_ci_rerun` like repair Work: the trusted publication job
+        admits its `no_change` Result (`ci_rerun.preflight`), and the
+        reconciler folds the receipt by the row, never as a failed
+        publication."""
+        work = dict(WORK, task="development_patch",
+                    dedupe_key=WORK["dedupe_key"].replace("development_repair",
+                                                          "development_patch"))
+        rec = running(active_work=work, last_ci_evidence_id="ci-0")
+        record_ = copy.deepcopy(rec)
+        record_["active_work"] = dict(test_ci_rerun.WORK, task="development_patch")
+        pre = ci_rerun.preflight(
+            record=record_, task=test_ci_rerun.task(task="development_patch"),
+            proposal=test_ci_rerun.no_change_proposal(record_), policy=POLICY, now=NOW,
+            fork_lookup=lambda _n: {"id": 2, "full_name": rec["fork"]["name"]})
+        self.assertEqual(pre, {"rerun": True, "fork_name": "proj", "reason": None})
+        for status in ("nothing_to_rerun", "rerun"):
+            with self.subTest(receipt=status):
+                new, staged = reconcile.apply_publication(
+                    rec, rerun_outcome(rec, status), now=NOW, policy=POLICY,
+                    worker_run_id="555")
+                self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
+                                 ["request_ci_rerun"])
+                self.assertEqual(engine.state_key(new), "development.waiting_ci")
+                self.assertIsNone(engine.state_problem(new))
+                self.assertEqual(kinds(tick(new, verdict="passed")), ["nominate_for_handoff"])
 
     def test_a_published_patch_clears_exactly_the_feedback_its_work_carried(self):
         rec = running(pending_feedback_evidence_ids=["review-1", "review-2"])
@@ -804,6 +833,31 @@ class TestInterruptedRerun(unittest.TestCase):
         out = tick(after, ci=passing, operations=ops)
         self.assertEqual(kinds(out), ["nominate_for_handoff"])
 
+    def test_a_run_that_cannot_be_read_back_leaves_the_tick_to_the_launch_budget(self):
+        """A run of the marker that can no longer be read (deleted in the
+        fork) does not skip the contribution: the receipt stays unread, the
+        observation runs, and the spent launches close the operation."""
+        _out, rec, op = self.planned()
+        launched = recovery.charge_launch(op, NOW)
+        ops = {op["operation_id"]: launched}
+
+        class Gone:
+            def get(self, path):
+                raise collect.CollectError(f"GET {path}: HTTP 404")
+
+        out = tick(rec, ci=interrupted_ci(), operations=ops, api=Gone(),
+                   ci_reruns=[rerun_receipt(op)], now=T + timedelta(minutes=1))
+        self.assertEqual(out.report["ci_reruns"][0]["outcome"], "new attempt not read back yet")
+        self.assertNotIn("c", out.report.get("skipped") or {})
+        limit = lifecycle.budget_limit("operation_launch", POLICY)
+        spent = launched
+        for _ in range(limit - 1):
+            spent = recovery.charge_launch(spent, NOW)
+        out = tick(rec, ci=interrupted_ci(), operations={op["operation_id"]: spent}, api=Gone(),
+                   ci_reruns=[rerun_receipt(op)], now=T + timedelta(hours=1))
+        self.assertEqual(out.report["controller"]["ci_rerun_closures"][0]["closed"],
+                         "operation_launch is spent without a receipt")
+
     def test_failed_reruns_exhaust_the_budget_and_resume_ci_reruns_again(self):
         _out, rec, op = self.planned()
         ops = {op["operation_id"]: op}
@@ -867,7 +921,7 @@ class TestInterruptedRerun(unittest.TestCase):
         closed = [o for kind, o in out.staged if kind == "operations"]
         self.assertEqual([o["status"] for o in closed], ["failed"])
         self.assertIsNone(final(out, rec)["active_operation_id"])
-        self.assertEqual(out.report["controller"]["ci_reruns"][0]["closed"],
+        self.assertEqual(out.report["controller"]["ci_rerun_closures"][0]["closed"],
                          "the operation no longer matches the record")
 
 

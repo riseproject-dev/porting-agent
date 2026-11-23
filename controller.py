@@ -579,7 +579,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     by_id[cid] = released
                     res.stage("operations", closed)
                     res.stage("contributions", released)
-                    res.report.setdefault("ci_reruns", []).append(
+                    res.report.setdefault("ci_rerun_closures", []).append(
                         {"operation_id": closed["operation_id"], "contribution_id": cid,
                          "closed": why})
                     continue

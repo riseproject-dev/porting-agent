@@ -1343,9 +1343,15 @@ def fold_ci_rerun_receipts(api: collect.Api, receipts: list[dict], contributions
                 new = recovery.release(c, new_op, now)
                 report.append(dict(entry, outcome="failed", receipt=status))
             elif status == "rerun":
-                runs = [ci_rerun.read_run(api, op["target"]["repository"], r["run_id"])
-                        for r in ci_rerun.marker_runs(op)]
-                if ci_rerun.discover(op, runs) != "confirmed":
+                try:
+                    runs = [ci_rerun.read_run(api, op["target"]["repository"], r["run_id"])
+                            for r in ci_rerun.marker_runs(op)]
+                except collect.CollectError:
+                    # A run that cannot be read (deleted in the fork) is not
+                    # a collector failure for the contribution: the receipt
+                    # stays unread, and the launch budget closes the operation.
+                    runs = None
+                if runs is None or ci_rerun.discover(op, runs) != "confirmed":
                     report.append(dict(entry, outcome="new attempt not read back yet"))
                     continue
                 new_op = recovery.fold_receipt(
