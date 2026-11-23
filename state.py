@@ -372,8 +372,24 @@ class StateStore:
         problems = check_blob(path, data, self.policy)
         if problems:
             raise StateError("; ".join(problems))
+        if kind == "evidence" and path not in self._staged and self._same_evidence(path, record):
+            # Observing the same run again is not new evidence: the committed
+            # record, with the time it was first collected, is kept.
+            return path
         self._staged[path] = record
         return path
+
+    def _same_evidence(self, rel: str, record: dict) -> bool:
+        p = self.root / rel
+        self._ensure_no_symlink(p)
+        if not p.is_file():
+            return False
+        try:
+            stored = json.loads(p.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return ({k: v for k, v in stored.items() if k != "collected_at"}
+                == {k: v for k, v in record.items() if k != "collected_at"})
 
     def write_staged(self) -> list[str]:
         written = []
