@@ -523,7 +523,8 @@ class TestLifecycleTable(unittest.TestCase):
             ("development.waiting_human", "rearm_dispatch"),
             ("handoff.waiting_human", "rearm_dispatch"),
             ("upstream_review.waiting_human", "rearm_dispatch"),
-        ("upstream_review.waiting_human", "resume_renamed_base")})
+        ("upstream_review.waiting_human", "resume_renamed_base"),
+        *((wait, "resume_upstream_read") for wait in lc.UPSTREAM_READ_RESUMES)})
         self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
                          {"resume_stale"})
 

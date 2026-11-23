@@ -29,6 +29,13 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `return_for_repair` from `handoff.waiting_ci` bumps the revision and clears the clean head, `handoff_request`, and the pending action; it sets no evidence. `return_for_repair` from `handoff.awaiting_submission` records the failing evidence.
 - **Required:** a table decision that `return_for_repair` from `handoff.waiting_ci` sets `last_ci_evidence_id` to the failing evidence of the clean head, then set it in the observation.
 
+## A repository renamed during upstream review is not followed
+
+- **Where:** `upstream_review.*`; `require_upstream_access` and `resume_upstream_revision` in `upstream_review.waiting_human`; the collector (`collect.upstream_snapshots`).
+- **Today:** when the upstream repository is renamed or transferred while the upstream PR is open, GitHub keeps the PR and answers the recorded repository id under the new name. The collector reports the new name, and once revision Work is due in `upstream_review.fix_needed` the controller takes `require_upstream_access` at once. The record keeps `upstream.full_name`, which also names the contribution id, its project, and the intake dedupe, so no row rebinds it: the only route is park, abandon, and a new request for the new name, which opens a second upstream PR for the same change.
+- **Table:** `require_upstream_access` leads to the human wait with `upstream_unavailable`, and a resume or `resume_upstream_read` leaves it only once the repository is read under its recorded name again.
+- **Required:** a table decision to follow a repository rename while the upstream PR is open, verified by `upstream.repository_id` equality (for example rebind `upstream.full_name` and the PR URL, keeping the contribution id and project under the old name).
+
 ## A moved branch before the package is posted waits for a human
 
 - **Where:** `handoff.preparing_submission`; `handoff.post_package`.

@@ -163,12 +163,12 @@ class TestRecordMigration(unittest.TestCase):
                   "activity", "paused", "tracking_issue", "owners", "upstream", "budget",
                   "created_at", "updated_at"}
         self.assertEqual(set(engine.RECORD_DEFAULTS), set(schema["properties"]) - always)
-        # `budget.source_unavailable` and its start time are optional in the
-        # strict schema: an absent count reads 0, so no record is migrated
-        # for them.
+        # `budget.source_unavailable` and the fields of its run are optional
+        # in the strict schema: an absent count reads 0, so no record is
+        # migrated for them.
         self.assertEqual(set(engine.BUDGET_DEFAULTS) | {"reruns", "policy_id", "attempts_used",
                                                         "source_unavailable",
-                                                        "source_unavailable_since"},
+                                                        *engine.SOURCE_READ_FIELDS},
                          set(schema["properties"]["budget"]["properties"]))
         for name in ("source_unavailable", "source_unavailable_since"):
             self.assertNotIn(name, schema["properties"]["budget"]["required"])

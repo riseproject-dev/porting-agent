@@ -367,15 +367,41 @@ def _renamed_base_in_pr(api: Api, c: dict | None, repo: dict, ref: str, renamed_
     if pr["state"] != "open" or pr["merged"] or pr["base_ref"] != renamed_to \
             or pr["base_repository_id"] != repo["id"]:
         return None
-    head = branch_head(api, c["upstream"]["full_name"], renamed_to)
-    if head is None:
-        raise CollectError(f"GET branch {renamed_to!r}: HTTP 404 after the rename")
-    base_sha = c["upstream"]["base_sha"]
-    if head["head"] != base_sha and compare_commits(
-            api, c["upstream"]["full_name"], base_sha, head["head"]).get("status") != "ahead":
+    if not _branch_contains(api, c["upstream"]["full_name"], renamed_to, c["upstream"]["base_sha"]):
         return None
     return {"pr_id": pr["id"], "pr_number": pr["number"], "base_ref": renamed_to,
-            "base_sha": base_sha}
+            "base_sha": c["upstream"]["base_sha"]}
+
+
+def _branch_contains(api: Api, full_name: str, ref: str, sha: str) -> bool:
+    """Whether the history of the branch ``ref`` contains the commit
+    ``sha``. A branch that does not exist, or a read that fails, raises
+    ``CollectError``: it was just named by GitHub, so its absence is not an
+    answer."""
+    head = branch_head(api, full_name, ref)
+    if head is None:
+        raise CollectError(f"GET branch {ref!r}: HTTP 404 after the rename")
+    return head["head"] == sha or compare_commits(api, full_name, sha, head["head"]).get(
+        "status") == "ahead"
+
+
+def base_renamed_to(api: Api, record: dict, ref: str) -> bool:
+    """Whether the upstream renamed the recorded base branch of ``record`` to
+    ``ref`` and that branch still contains the recorded base commit: GitHub
+    answers a read of ``upstream.base_ref`` with a redirect to ``ref`` (the
+    same check as ``_renamed_base_in_pr``). ``False`` when the recorded base
+    is read as it is, is missing, or is redirected elsewhere; a read that
+    fails raises ``CollectError``."""
+    upstream = record["upstream"]
+    if not upstream.get("base_ref") or not upstream.get("base_sha") or ref == upstream["base_ref"]:
+        return False
+    try:
+        branch_head(api, upstream["full_name"], upstream["base_ref"])
+    except BranchRenamed as e:
+        if e.name != ref:
+            return False
+        return _branch_contains(api, upstream["full_name"], ref, upstream["base_sha"])
+    return False
 
 
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
@@ -389,7 +415,8 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
     default branch), so the controller never applies the answer for one
     branch to a record of another, and ``scope`` is ``repository`` when the
     repository itself could not be read (also when GitHub now names it
-    otherwise: renamed or transferred, with ``renamed_repository``) and
+    otherwise: renamed or transferred, with ``renamed_repository`` and the
+    id GitHub answered for, ``renamed_repository_id``) and
     ``branch`` otherwise. When the upstream answered definitively that the
     base branch is not there (it does not exist, or GitHub redirects it to
     the branch it was renamed to), the snapshot also carries ``base_ref``,
@@ -403,9 +430,11 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
     A contribution waiting for a human because its upstream is unavailable
     (``pending_human_action`` ``base_branch_unavailable`` or
     ``upstream_unavailable``) is not read, unless its tracking issue carries
-    a resume in ``comments``, or it waits in upstream review for a base
-    branch renamed while the upstream PR is open (the controller ends that
-    wait once the PR follows the rename). A parked contribution is read only
+    a resume in ``comments``, failed reads caused the wait
+    (``pending_human_action.counter`` ``source_reads``: the controller ends
+    it once the upstream is read again), or it waits in upstream review for a
+    base branch renamed while the upstream PR is open (the controller ends
+    that wait once the PR follows the rename). A parked contribution is read only
     when its tracking issue carries a refresh: a restart clears the identity
     and base, and the controller binds them again in the tick that restarts
     it. A command is counted only when ``commands.parse`` accepts it, it is
@@ -433,11 +462,15 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
                 if branch is not False:
                     refs.setdefault(name, branch)
             continue
-        pending = (c.get("pending_human_action") or {}).get("kind")
-        renamed_wait = pending == lifecycle.BASE_BRANCH_UNAVAILABLE \
+        pending = c.get("pending_human_action") or {}
+        renamed_wait = pending.get("kind") == lifecycle.BASE_BRANCH_UNAVAILABLE \
             and c["phase"] == "upstream_review" and bool(c.get("upstream_pr"))
-        if pending in (lifecycle.BASE_BRANCH_UNAVAILABLE, lifecycle.UPSTREAM_UNAVAILABLE) \
-                and "resume" not in verbs and not renamed_wait:
+        # A wait that failed reads caused is read on every tick, so that it
+        # ends once the upstream can be read again (`resume_upstream_read`).
+        reads_wait = pending.get("counter") == "source_reads"
+        if pending.get("kind") in (lifecycle.BASE_BRANCH_UNAVAILABLE,
+                                   lifecycle.UPSTREAM_UNAVAILABLE) \
+                and "resume" not in verbs and not renamed_wait and not reads_wait:
             continue
         refs[name] = c["upstream"].get("base_ref")
         active[name] = c
@@ -460,7 +493,8 @@ def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dic
                 snapshots[name] = {"error": f"GitHub names the upstream repository "
                                             f"{repo['full_name'][:200]!r} now",
                                    "ref": ref, "scope": "repository",
-                                   "renamed_repository": repo["full_name"][:200]}
+                                   "renamed_repository": repo["full_name"][:200],
+                                   "renamed_repository_id": repo["id"]}
                 continue
             scope = "branch"
             base_ref = ref or repo["default_branch"]

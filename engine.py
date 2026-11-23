@@ -549,6 +549,32 @@ def remains(name: str, ctx: Context) -> bool | None:
     return count < lc.budget_limit(name, ctx.policy)
 
 
+# The fields beside `budget.source_unavailable` that a run of failed reads
+# records, cleared with it.
+SOURCE_READ_FIELDS = ("source_unavailable_since", "source_unavailable_at",
+                      "source_unavailable_repository")
+
+
+def source_read_spacing(policy: dict) -> timedelta:
+    """The least time between two counted failed reads:
+    ``retries.source_unavailable_minutes`` divided by the count of
+    ``source_reads``, so that the count is reached no sooner than the time."""
+    minutes = int(lc.policy_value(policy, lc.SOURCE_READS_MINUTES_KEY))
+    return timedelta(minutes=minutes) / max(1, lc.budget_limit("source_reads", policy))
+
+
+def source_read_counted(record: dict, policy: dict, now: str) -> bool:
+    """Whether a failed read at ``now`` is counted: the first of a run, or
+    one at least ``source_read_spacing`` after the last counted read. A read
+    in between writes nothing, so a burst of ticks adds no events."""
+    budget = record.get("budget") or {}
+    last = budget.get("source_unavailable_at")
+    if not int(budget.get("source_unavailable", 0)) or not last:
+        return True
+    return datetime.fromisoformat(now) - datetime.fromisoformat(last) \
+        >= source_read_spacing(policy)
+
+
 def source_reads_spent(record: dict, policy: dict, now: str) -> bool:
     """Whether ``source_reads`` is exhausted: the count of consecutive failed
     reads (``budget.source_unavailable``) reached its limit, and at least
@@ -666,8 +692,20 @@ def _base_branch_unreadable(ctx: Context) -> str | None:
 def _upstream_gone(ctx: Context) -> str | None:
     if not _asserted(ctx, "upstream_repository_unread") or not _asserted(ctx, "base_branch_unread"):
         return "the upstream repository was read"
+    # GitHub answering for the recorded repository id under another name is
+    # definitive: the controller asserts it only for the same repository id.
+    if _asserted(ctx, "upstream_repository_renamed"):
+        return None
     if remains("source_reads", ctx) is not False:
         return "source_reads remains"
+    return None
+
+
+@_record(lc.READS_CAUSED_WAIT, "reads_caused_wait")
+def _reads_caused_wait(ctx: Context) -> str | None:
+    pending = ctx.record.get("pending_human_action") or {}
+    if pending.get("counter") != "source_reads":
+        return "the wait was not entered because reads kept failing"
     return None
 
 
@@ -747,7 +785,7 @@ for _guard, _name in (
     ("posting the package failed", "submission_comment_failed"),
     ("the package comment is read back", "submission_package_read_back"),
     ("an observation that does not satisfy verify_upstream_pr", "unverified_upstream_observation"),
-    ("an open PR against the upstream repository and the frozen base", "upstream_pr_open_on_base"),
+    (lc.UPSTREAM_PR_ON_BASE, "upstream_pr_open_on_base"),
     ("its head is `riscv64` of the contribution fork at the exact clean head",
      "upstream_pr_at_clean_head"),
     ("a compatible human author", "upstream_pr_human_author"),
@@ -772,6 +810,7 @@ for _guard, _name in (
     (lc.BASE_BRANCH_UNREAD, "base_branch_unread"),
     (lc.BASE_BRANCH_GONE, "base_branch_missing"),
     (lc.BASE_RENAMED_IN_PR, "base_renamed_in_pr"),
+    (lc.UPSTREAM_READ_AGAIN, "upstream_read_again"),
 ):
     _fact(_guard, _name)
 
@@ -786,7 +825,7 @@ _register("for pr_closed_unmerged, the upstream PR is observed open again",
 
 # Facts read by a record predicate in addition to the fact predicates above.
 EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked",
-                         "upstream_repository_unread"})
+                         "upstream_repository_unread", "upstream_repository_renamed"})
 FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") | EXTRA_FACTS
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
@@ -795,7 +834,9 @@ CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
                        ("submission_rewrite_current", "submission_rewrite_expired"),
                        ("submission_review_passed", "submission_review_failed"),
                        ("base_branch_unread", "base_branch_missing"),
-                       ("upstream_repository_unread", "base_branch_missing"))
+                       ("upstream_repository_unread", "base_branch_missing"),
+                       ("upstream_repository_renamed", "base_branch_missing"),
+                       ("upstream_read_again", "base_branch_unread"))
 
 
 def table_guards() -> set[str]:
@@ -922,6 +963,8 @@ PIPELINE_VERBS: dict[str, str] = {
     # record follows the rename the verified PR shows.
     "follow_renamed_base": "controller",
     "resume_renamed_base": "controller",
+    # The wait that failed reads caused ends once the upstream is read again.
+    "resume_upstream_read": "controller",
     # The fork provisioning operation: its launches within `operation_launch`,
     # the wait once that budget is exhausted or the operation failed, and its
     # confirmation by the receipt and readback (rows the operation fires
@@ -1183,7 +1226,8 @@ def _restart_counter(rec: dict, name: str) -> None:
         budget["clusters"] = {}
     elif name == "source_reads":
         budget["source_unavailable"] = 0
-        budget.pop("source_unavailable_since", None)
+        for key in SOURCE_READ_FIELDS:
+            budget.pop(key, None)
     elif name in RERUN_COUNTERS:
         budget["reruns"] = dict(head_reruns(rec), **{RERUN_COUNTERS[name]: 0})
 
@@ -1210,10 +1254,18 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
         before = int((ctx.record.get("pending_publication") or {}).get("attempts", 0))
         rec["pending_publication"] = dict(rec["pending_publication"], attempts=before + 1)
     elif name == "source_reads":
-        # The first failed read of a run starts its clock.
+        # The first failed read of a run starts its clock. The time of the
+        # last counted read spaces the next one, and the reads that could
+        # not read the repository itself are counted apart, so that the
+        # exhaustion names the cause of most of the run.
         if not int(budget.get("source_unavailable", 0)) or not budget.get("source_unavailable_since"):
             budget["source_unavailable_since"] = ctx.now
+            budget.pop("source_unavailable_repository", None)
         budget["source_unavailable"] = int(budget.get("source_unavailable", 0)) + 1
+        budget["source_unavailable_at"] = ctx.now
+        if _asserted(ctx, "upstream_repository_unread"):
+            budget["source_unavailable_repository"] = \
+                int(budget.get("source_unavailable_repository", 0)) + 1
     elif name in RERUN_COUNTERS:
         # Counted for the current head: counts of another head start again.
         reruns, key = head_reruns(rec), RERUN_COUNTERS[name]
@@ -1670,7 +1722,8 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
                                 "upstream.base_sha"),
     # A tick that read the upstream starts `source_reads` again: it counts
     # consecutive ticks only.
-    "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since"),
+    "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since",
+                      "budget.source_unavailable_at", "budget.source_unavailable_repository"),
     # The replay fences of the review comments a review row recorded.
     "review_fences": ("processed_review_ids", "processed_review_comment_ids",
                       "processed_pr_conversation_comment_ids"),

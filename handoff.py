@@ -616,20 +616,22 @@ def normalize_pull(pr: dict) -> dict:
             "user": {"id": user.get("id"), "login": user.get("login"), "type": user.get("type")}}
 
 
-def pull_mismatch(record: dict, pr: dict, authority) -> str | None:
+def pull_mismatch(record: dict, pr: dict, authority, base_ref: str | None = None) -> str | None:
     """Why ``pr`` is not the upstream PR the package asked for, or ``None``.
 
     It must be open, against the recorded upstream repository and the frozen
-    base, from the controlled fork ref at the exact clean head, and authored
-    by an authorized human (a ``User`` account whose id is in the command
+    base (or ``base_ref``, the name the upstream renamed it to), from the
+    controlled fork ref at the exact clean head, and authored by an
+    authorized human (a ``User`` account whose id is in the command
     authority)."""
     upstream, fork = record["upstream"], record.get("fork") or {}
+    base = base_ref or upstream.get("base_ref")
     if pr.get("state") != "open" or pr.get("merged"):
         return f"#{pr.get('number')} is not open"
     if pr.get("base_repository_id") != upstream.get("repository_id"):
         return f"#{pr.get('number')} is not against the upstream repository"
-    if pr.get("base_ref") != upstream.get("base_ref"):
-        return f"#{pr.get('number')} targets the base {pr.get('base_ref')!r}, not {upstream.get('base_ref')!r}"
+    if pr.get("base_ref") != base:
+        return f"#{pr.get('number')} targets the base {pr.get('base_ref')!r}, not {base!r}"
     if pr.get("head_repository_id") != fork.get("repository_id"):
         return f"#{pr.get('number')} is not from the contribution fork"
     if pr.get("head_ref") != UPSTREAM_REF:
@@ -649,6 +651,17 @@ def matching_upstream_prs(record: dict, prs: list[dict], authority) -> tuple[lis
         why = pull_mismatch(record, pr, authority)
         (rejected.append(why) if why else matching.append(pr))
     return matching, rejected
+
+
+def renamed_base_candidates(record: dict, prs: list[dict], authority) -> list[dict]:
+    """The candidates that satisfy every filter but the frozen base: they
+    target another branch of the upstream repository. One of them is the
+    upstream PR only once GitHub redirects the frozen base to its branch
+    (``collect.base_renamed_to``)."""
+    base = record["upstream"].get("base_ref")
+    return [pr for pr in prs
+            if isinstance(pr.get("base_ref"), str) and pr["base_ref"] and pr["base_ref"] != base
+            and pull_mismatch(record, pr, authority, base_ref=pr["base_ref"]) is None]
 
 
 def upstream_pr_value(pr: dict) -> dict:

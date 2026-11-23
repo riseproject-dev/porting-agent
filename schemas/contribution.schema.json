@@ -919,6 +919,14 @@
           "type": "string",
           "format": "date-time"
         },
+        "source_unavailable_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_unavailable_repository": {
+          "type": "integer",
+          "minimum": 0
+        },
         "spent_estimate_usd_cents": {
           "type": "integer",
           "minimum": 0

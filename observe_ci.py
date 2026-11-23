@@ -199,25 +199,41 @@ def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: d
     of the upstream PR the package asked for.
 
     Exactly one candidate that satisfies every filter (``handoff.pull_mismatch``)
-    takes ``verify_upstream_pr``. Anything else that does not match (another
-    fork head, a candidate that fails a filter, several matching candidates)
-    is recorded once by ``record_audit_observation`` and never changes the
-    state; the reminder states it."""
+    takes ``verify_upstream_pr``. When none does, a single candidate that
+    satisfies every filter but the base, and targets the name GitHub now
+    redirects the frozen base to, whose history still contains the recorded
+    base commit (``collect.base_renamed_to``), takes it too, and the record
+    follows the new name: the upstream renamed its base branch before the PR
+    was opened. Anything else that does not match (another fork head, a
+    candidate that fails a filter, several matching candidates) is recorded
+    once by ``record_audit_observation`` and never changes the state; the
+    reminder states it."""
     cid = rec["contribution_id"]
     authority = policy["command_authority"]["actor_ids"]
-    matching, rejected = handoff.matching_upstream_prs(
-        rec, collect.upstream_pull_requests(api, rec), authority)
+    prs = collect.upstream_pull_requests(api, rec)
+    matching, rejected = handoff.matching_upstream_prs(rec, prs, authority)
+    base_ref = rec["upstream"].get("base_ref")
+    if not matching:
+        renamed = handoff.renamed_base_candidates(rec, prs, authority)
+        if len(renamed) == 1 and collect.base_renamed_to(api, rec, renamed[0]["base_ref"]):
+            matching, base_ref = renamed, renamed[0]["base_ref"]
     if len(matching) == 1:
         pr = matching[0]
+        details = {"pr_number": pr["number"], "url": pr["url"], "head": pr["head_sha"],
+                   "author": pr["user"]["login"]}
+        if base_ref != rec["upstream"].get("base_ref"):
+            details.update({"base_ref": rec["upstream"].get("base_ref"), "renamed_to": base_ref,
+                            "base_sha": rec["upstream"].get("base_sha")})
         out = engine.apply_transition(
             rec, "verify_upstream_pr", policy=policy, now=now, cause_id=f"upstream-pr-{pr['id']}",
             facts={"upstream_pr_open_on_base", "upstream_pr_at_clean_head",
                    "upstream_pr_human_author"},
-            values={"upstream_pr": handoff.upstream_pr_value(pr)},
-            details={"pr_number": pr["number"], "url": pr["url"], "head": pr["head_sha"],
-                     "author": pr["user"]["login"]})
+            values={"upstream_pr": handoff.upstream_pr_value(pr), "upstream.base_ref": base_ref},
+            details=details)
         obs.staged.extend([("contributions", out.record), ("events", out.event)])
         entry["verified_upstream_pr"] = pr["number"]
+        if base_ref != rec["upstream"].get("base_ref"):
+            entry["base_branch_renamed"] = base_ref
         return
     key = handoff.observation_key(head, rec, rejected, len(matching))
     mismatch = handoff.mismatch_text(head, rec, rejected, len(matching))

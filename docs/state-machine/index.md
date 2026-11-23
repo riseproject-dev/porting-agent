@@ -581,9 +581,14 @@ flowchart TB
     upstream_fix_needed -->|require_base_branch| upstream_waiting_human
     upstream_fix_needed -->|exhaust_source_reads| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+    planning_waiting_human -->|resume_upstream_read| planning_idle
+    provisioning_waiting_human -->|resume_upstream_read| provisioning_idle
+    development_waiting_human -->|resume_upstream_read| development_fix_needed
+    handoff_waiting_human -->|resume_upstream_read| handoff_review_due
+    upstream_waiting_human -->|resume_upstream_read| upstream_fix_needed
 ```
 
-Where Work or the fork provisioning is due, the collector reads the upstream base branch. When GitHub answers that it does not exist, or redirects it to the branch it was renamed to, the contribution waits for a human in its phase at once; a read that fails otherwise (network, server error, rate limit) is retried within `source_reads`, which is exhausted only once both its count of consecutive failed reads and its minimum time have passed, and its exhaustion leads to the same wait. While it waits the upstream is not read, until an authorized resume is posted. A resume once the branch exists again continues; to target another branch, the contribution is parked first and then restarted with `/upstreaming refresh branch=NAME`. In upstream review, a branch renamed while the upstream PR is open is followed without a human (failure case 6 of upstream review).
+Where Work or the fork provisioning is due, the collector reads the upstream base branch. When GitHub answers that it does not exist, or redirects it to the branch it was renamed to, the contribution waits for a human in its phase at once; a read that fails otherwise (network, server error, rate limit) is retried within `source_reads`, which counts at most one failed read per spacing and is exhausted only once both its count and its minimum time have passed, and its exhaustion leads to the same wait. A wait that failed reads caused heals itself: the upstream is still read, and `resume_upstream_read` ends the wait once it can be read again. A wait the upstream's own answer caused is not read again until an authorized resume is posted. A resume once the branch exists again continues; to target another branch, the contribution is parked first and then restarted with `/upstreaming refresh branch=NAME`. In upstream review, a branch renamed while the upstream PR is open is followed without a human (failure case 6 of upstream review).
 
 ### Failure case 3: the upstream repository cannot be read
 
@@ -628,7 +633,7 @@ flowchart TB
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
 
-When reading the upstream repository itself keeps failing (it was renamed or transferred, or the token lost access), the exhaustion of `source_reads` leads to the same waits with the pending action `upstream_unavailable`. A resume once the repository can be read again continues; a repository that moved is parked and abandoned, and a new request names its new name.
+When GitHub answers for the recorded repository under another name (renamed or transferred), the contribution waits at once with the pending action `upstream_unavailable`; when most failed reads of the retry window could not read the repository itself (the token lost access), the exhaustion of `source_reads` leads to the same waits. Once the repository can be read again, `resume_upstream_read` (drawn in failure case 2) or a resume continues; a repository that moved is parked and abandoned, and a new request names its new name.
 
 ### Failure case 4: park, then restart as a clean generation or abandon
 
@@ -990,7 +995,7 @@ flowchart TB
     any -->|record_source_unavailable| any
 ```
 
-A read that fails without a definitive answer charges `source_reads` and keeps the state; its exhaustion takes `exhaust_source_reads`, or `require_upstream_access` when the repository itself could not be read, drawn with the human waits.
+A read that fails without a definitive answer charges `source_reads` and keeps the state, at most once per spacing; its exhaustion takes `exhaust_source_reads`, or `require_upstream_access` when most failed reads could not read the repository itself, drawn with the human waits.
 
 ## Remote operations
 
