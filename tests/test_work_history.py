@@ -149,9 +149,14 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(data["condensed"]["folded"], earlier["entries"])
         condensed = [t for t in data["timeline"] if t.get("condensed") and t["kind"] != "earlier"]
         for entry in condensed:
-            self.assertEqual(entry["path"], f".state/evidence/{entry['evidence_id']}.json")
+            self.assertEqual(entry["evidence_path"],
+                             f".state/evidence/{entry['evidence_id']}.json")
+        # The steering is not folded: the oldest items beyond the reserve
+        # are cut short, and the newest keep their whole text.
         self.assertEqual(len(data["steering"]), 40)
-        self.assertTrue(all(s.get("condensed") for s in data["steering"]))
+        self.assertTrue(data["steering"][0].get("condensed"))
+        self.assertNotIn("condensed", data["steering"][-1])
+        self.assertEqual(len(data["steering"][-1]["body"]), 3000)
         # Determinism of the condensed form.
         again = work_history.build(record(), WORK, copy.deepcopy(evidence), policy=POLICY,
                                    now=NOW)
@@ -234,7 +239,10 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(len(entry["items"]), 60)
         self.assertEqual(entry["items_not_listed"], 10)
         self.assertEqual(entry["items"][-1]["body"], "comment 69")
-        self.assertEqual(work_history._short(entry)["items_not_listed"], 10)
+        # The short form keeps the 20 newest items, and counts the rest.
+        short = work_history._short(entry)
+        self.assertEqual((len(short["items"]), short["items_not_listed"]), (20, 50))
+        self.assertEqual(short["items"][-1]["body"], "comment 69")
 
     def test_omitted_counts_are_those_of_the_newest_collection(self):
         evidence = {"steering-1": steering_evidence("steering-1", [], at="2026-11-20T00:00:00Z"),
@@ -339,6 +347,227 @@ class TestBuild(unittest.TestCase):
                                   now=NOW)["data"]
         self.assertEqual(data["condensed"], {"timeline_short": 0, "steering_short": 0,
                                              "folded": 0})
+
+
+def _big_report(char="x", scale=1.0, outcome="failed"):
+    """The fields of a report near the schema's limits (``scale`` 1 is
+    about 32 KiB of ASCII)."""
+    def n(value):
+        return int(value * scale)
+    return dict(summary=char * n(1000),
+                attempted=[{"what": char * n(300), "why": char * n(400)}] * 8,
+                approaches=[{"title": char * n(150), "description": char * n(600),
+                             "outcome": outcome, "evidence": char * n(600),
+                             "lesson": char * n(250)}] * 10,
+                failures=[{"what": char * n(300), "evidence": char * n(500)}] * 8,
+                open_items=[char * n(300)] * 10,
+                verification=[{"check": char * n(300), "result": "passed",
+                               "evidence": char * n(300)}] * 12,
+                revisited=[{"history_entry": char * n(150), "new_evidence": char * n(500)}] * 6)
+
+
+def _sha(i):
+    return f"{i:040x}"
+
+
+class TestCondensationOrder(unittest.TestCase):
+    """What is protected when the history does not fit: the newest report
+    with the newest linked CI run, then the owner's steering; maintainer
+    feedback, further CI runs and older entries give way first. Every case
+    was a failure of an earlier condensation order."""
+
+    def reports(self, count, *, scale=0.7, char="x", prefix="report-example--proj--12-r",
+                steering=0, length=500, ci=True):
+        evidence = {}
+        for i in range(count):
+            at = f"2026-10-{1 + i // 3:02d}T{i % 3 + 10}:00:00+00:00"
+            eid = f"{prefix}{i}-449829025{i:02d}"
+            evidence[eid] = report_evidence(eid, at=at, head_before=_sha(i), head_after=_sha(i + 1),
+                                            **_big_report(char, scale))
+            if ci:
+                cid = f"ci-1467208233-449849431{i:02d}-1"
+                evidence[cid] = ci_evidence(cid, _sha(i + 1),
+                                            at=f"2026-10-{1 + i // 3:02d}T{i % 3 + 10}:30:00+00:00")
+        if steering:
+            evidence["steering-a"] = steering_evidence("steering-a", [
+                steer(i, "s" * length, at=f"2026-09-01T00:{i // 60:02d}:{i % 60:02d}Z")
+                for i in range(steering)], at="2026-11-01T00:00:00+00:00")
+        return evidence
+
+    def maintainers(self, evidence, count, length):
+        evidence["steering-m"] = steering_evidence("steering-m", [
+            steer(1000 + i, "m" * length, at=f"2026-11-10T00:{i // 60:02d}:{i % 60:02d}Z",
+                  authority=False, source="upstream_pr_review_comment") for i in range(count)],
+            at="2026-11-11T00:00:00+00:00")
+        return evidence
+
+    def ci_tail(self, evidence, count, head):
+        for i in range(count):
+            eid = f"ci-1467208233-55{i:04d}-1"
+            evidence[eid] = ci_evidence(eid, head, at=f"2026-11-12T{i // 60:02d}:{i % 60:02d}:00+00:00")
+        return evidence
+
+    def check(self, evidence, *, steering_whole=None, report_whole=True):
+        """The history of ``evidence``, checked: it fits, every entry and
+        every steering item is kept or counted, the newest report (and its
+        newest linked CI run) is whole when ``report_whole``, and the newest
+        steering item is whole; with ``steering_whole`` every steering item
+        is whole and none is folded."""
+        timeline_total = len(work_history._entries(record(), evidence)[1])
+        steering_total = len(work_history._entries(record(), evidence)[0])
+        doc = work_history.document(record(), WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), work_history.HISTORY_MAX_BYTES)
+        counted = [t for t in doc["timeline"] if t["kind"] in ("earlier", "later")]
+        self.assertEqual(len(doc["timeline"]) - len(counted)
+                         + sum(t["entries"] for t in counted), timeline_total)
+        self.assertEqual(len(doc["steering"]) + (doc.get("steering_earlier") or {}).get("items", 0),
+                         steering_total)
+        reports = [t for t in doc["timeline"] if t["kind"] == "worker_report"]
+        newest = max((e for e in evidence.values() if e["kind"] == "worker_report"),
+                     key=lambda e: (e["collected_at"], e["evidence_id"]), default=None)
+        if newest is not None and report_whole:
+            self.assertEqual(reports[-1]["evidence_id"], newest["evidence_id"])
+            self.assertNotIn("condensed", reports[-1])
+            linked = [t for t in doc["timeline"] if t["kind"] == "ci"
+                      and t.get("after_report") == newest["evidence_id"]]
+            if any(e["kind"] == "ci" and e["ci"]["head_sha"] == newest["data"]["head_after"]
+                   for e in evidence.values()):
+                self.assertNotIn("condensed", linked[-1])
+        if steering_total and report_whole:
+            self.assertNotIn("condensed", doc["steering"][-1])
+        if steering_whole:
+            self.assertEqual(len(doc["steering"]), steering_total)
+            self.assertFalse([s for s in doc["steering"] if s.get("condensed")])
+        return doc
+
+    def test_a_large_report_then_many_ci_runs_keep_the_owner_steering(self):
+        # One 32 KiB report and 70 CI runs on its head: the CI runs gave
+        # way to the steering.
+        for scale, runs in ((0.7, 70), (0.18, 120), (0.18, 200)):
+            with self.subTest(scale=scale, runs=runs):
+                evidence = self.ci_tail(self.reports(1, scale=scale, ci=False, steering=3,
+                                                     length=300), runs, _sha(1))
+                doc = self.check(evidence, steering_whole=True)
+                self.assertEqual(doc["timeline"][-1]["kind"], "ci")
+
+    def test_maintainer_feedback_never_displaces_owner_steering(self):
+        for count, length in ((20, 3000), (35, 300), (40, 1500), (70, 300), (150, 1500),
+                              (400, 400)):
+            with self.subTest(maintainer_comments=count, length=length):
+                evidence = self.maintainers(self.reports(2, steering=8, length=500), count,
+                                            length)
+                doc = self.check(evidence, steering_whole=True)
+                self.assertNotIn("steering_earlier", doc)
+
+    def test_the_newest_report_outlives_any_tail(self):
+        cases = {"150 maintainer comments": self.maintainers(
+                     self.reports(2, steering=5, length=500), 150, 1500),
+                 "400 maintainer comments": self.maintainers(
+                     self.reports(2, steering=5, length=500), 400, 400),
+                 "150 CI runs": self.ci_tail(self.reports(2, steering=5, length=500), 150,
+                                             _sha(2)),
+                 "200 CI runs": self.ci_tail(self.reports(1, scale=0.18, ci=False, steering=3,
+                                                          length=300), 200, _sha(1))}
+        for name, evidence in cases.items():
+            with self.subTest(name):
+                doc = self.check(evidence, steering_whole=True)
+                kinds = [t["kind"] for t in doc["timeline"]]
+                self.assertIn("later", kinds)
+
+    def test_many_reports_and_steering(self):
+        for count, steering, length, scale in ((3, 10, 1500, 0.7), (5, 30, 1500, 0.7),
+                                               (30, 40, 1500, 0.7), (30, 40, 600, 0.18),
+                                               (80, 40, 600, 0.18)):
+            with self.subTest(reports=count, steering=steering):
+                self.check(self.reports(count, steering=steering, length=length, scale=scale))
+
+    def test_steering_within_the_reserve_survives_timeline_pressure(self):
+        evidence = self.reports(60, scale=0.18, steering=15, length=500)
+        doc = self.check(evidence, steering_whole=True)
+        self.assertGreater(doc["condensed"]["folded"], 50)
+
+    def test_heavy_history_of_every_kind(self):
+        evidence = {}
+        for i in range(60):
+            e = report_evidence(f"report-{i:03d}", at=f"2026-10-{1 + i // 3:02d}T{i % 3 + 10}:00:00+00:00",
+                                head_before=_sha(i), head_after=_sha(i + 1),
+                                **_big_report(scale=0.7))
+            evidence[e["evidence_id"]] = e
+            c = ci_evidence(f"ci-{i:03d}", _sha(i + 1),
+                            at=f"2026-10-{1 + i // 3:02d}T{i % 3 + 10}:30:00+00:00")
+            evidence[c["evidence_id"]] = c
+        items = [steer(i, "s" * 4000, at=f"2026-09-01T00:{i // 60:02d}:{i % 60:02d}Z")
+                 for i in range(600)]
+        for k in range(3):
+            evidence[f"steering-{k}"] = steering_evidence(
+                f"steering-{k}", items[k * 200:(k + 1) * 200], at=f"2026-11-0{k + 1}T00:00:00+00:00")
+        doc = self.check(evidence)
+        self.assertEqual(doc["timeline"][-1]["after_report"], "report-059")
+        self.assertEqual(doc["steering"][-1]["id"], 599)
+
+    def test_many_failing_ci_runs_after_the_newest_report(self):
+        evidence = {"report-1": report_evidence("report-1", at="2026-10-01T00:00:00+00:00",
+                                                head_after=SHA_B, **_big_report())}
+        for i in range(30):
+            c = ci_evidence(f"ci-{i:03d}", SHA_B, at=f"2026-10-02T00:00:{i:02d}+00:00")
+            c["ci"]["jobs"] = [dict(c["ci"]["jobs"][0], name=f"job {j} " + "n" * 150,
+                                    executed=True, conclusion="failure") for j in range(40)]
+            evidence[c["evidence_id"]] = c
+        doc = self.check(evidence)
+        self.assertEqual(doc["timeline"][-1]["evidence_id"], "ci-029")
+
+    def test_multibyte_text_and_long_ids_never_raise(self):
+        """Every bound is in bytes: a history of CJK text and long ids fits
+        once folded, and never holds the Work."""
+        evidence = {}
+        for i in range(120):
+            e = report_evidence("report-" + "q" * 100 + f"-{i:03d}",
+                                at=f"2026-10-01T00:{i // 60:02d}:{i % 60:02d}+00:00",
+                                head_before=_sha(i), head_after=_sha(i + 1),
+                                **_big_report("漢"))
+            evidence[e["evidence_id"]] = e
+            c = ci_evidence("ci-" + "q" * 100 + f"-{i:03d}", _sha(i + 1),
+                            at=f"2026-10-01T00:{i // 60:02d}:{i % 60:02d}+00:00")
+            evidence[c["evidence_id"]] = c
+        for k in range(3):
+            eid = "steering-" + "q" * 100 + f"-{k}"
+            evidence[eid] = steering_evidence(eid, [
+                steer(i, "漢" * 4000, at=f"2026-09-01T00:{i // 60:02d}:{i % 60:02d}Z")
+                for i in range(k * 200, (k + 1) * 200)], at=f"2026-11-0{k + 1}T00:00:00+00:00")
+        # The newest report alone is larger than the history: it is condensed.
+        self.check(evidence, report_whole=False)
+        cjk = self.ci_tail(self.reports(40, char="漢", scale=0.2, ci=False, steering=150,
+                                        length=500), 250, _sha(40))
+        self.check(cjk)
+        for i in range(100):
+            eid = f"report-example--proj--12-r{i + 50}-449829025{i:02d}"
+            cjk[eid] = report_evidence(eid, at=f"2026-10-02T00:{i // 60:02d}:{i % 60:02d}+00:00",
+                                       head_before=_sha(i), head_after=_sha(i + 1),
+                                       **_big_report("漢", 0.2))
+        self.check({k: v for k, v in cjk.items() if not k.startswith("ci-")})
+
+    def test_a_cut_is_bounded_in_bytes(self):
+        text = work_history._text("漢" * 1000, work_history.SHORT)
+        self.assertLessEqual(len(text.split(" [truncated")[0].encode()), work_history.SHORT)
+        self.assertTrue(text.endswith("[truncated: 900 more characters]"))
+        self.assertEqual(work_history._text("plain", work_history.SHORT), "plain")
+
+    def test_a_fully_folded_history_degrades_instead_of_raising(self):
+        evidence = self.reports(3, steering=3, length=100)
+        with mock.patch("work_history.HISTORY_MAX_BYTES", 2500):
+            doc = work_history.document(record(), WORK, evidence)
+        self.assertLessEqual(len(canonical_json(doc).encode()), 2500)
+        self.assertTrue(doc["condensed"]["degraded"])
+        self.assertEqual({t["kind"] for t in doc["timeline"]}, {"earlier", "later"})
+        self.assertEqual(sum(t["entries"] for t in doc["timeline"]), 6)
+
+    def test_condensed_steering_names_its_evidence_file(self):
+        evidence = self.reports(1, scale=0.7, steering=60, length=3000)
+        doc = self.check(evidence)
+        short = [s for s in doc["steering"] if s.get("condensed")]
+        self.assertTrue(short)
+        for item in short:
+            self.assertEqual(item["evidence_path"], ".state/evidence/steering-a.json")
 
 
 class TestTick(unittest.TestCase):

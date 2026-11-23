@@ -601,8 +601,11 @@ new evidence in the report's `revisited`. For a repair after failing CI, read
 the report whose `head_after` is the failing head together with the CI entry
 that follows it: it says what was tried, why and how. An entry marked
 `condensed` is a short form; its full record is the evidence file it names in
-the control repository at the pinned commit, which you can read through
-`github-authenticated`.
+`evidence_path`, in the control repository at the pinned commit, which you can
+read through `github-authenticated`. When the history is long, an `earlier`
+entry counts the entries folded before the newest report, a `later` entry
+those folded after it, and `steering_earlier` the oldest steering items folded;
+each lists their evidence ids and the failed or abandoned approaches.
 
 ## The worker report
 
