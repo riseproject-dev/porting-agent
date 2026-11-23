@@ -1,5 +1,5 @@
-name: Upstream RISC-V Python wheels
-description: Request investigation and upstream integration of Linux RISC-V wheels.
+name: Upstream RISC-V support
+description: Request investigation and upstream integration of Linux RISC-V (riscv64) support for a project, in any language.
 title: "[upstreaming] "
 labels: ["upstreaming-request"]
 body:
@@ -11,12 +11,12 @@ body:
     validations:
       required: true
   - type: textarea
-    id: distributions
+    id: packages
     attributes:
-      label: PyPI distributions
-      description: One distribution per line, with import names if known.
+      label: Packages
+      description: Optional. The packages the project publishes, one per line, as their registry names them (for example a PyPI distribution, a crate, an npm package, a Go module, or Maven group:artifact coordinates). Leave blank if the project publishes no package.
     validations:
-      required: true
+      required: false
   - type: input
     id: target-branch
     attributes:
@@ -26,6 +26,6 @@ body:
     id: additional-notes
     attributes:
       label: Additional notes
-      description: Optional recipes, patches, dependencies, optimization needs, runner constraints, contribution rules, or contact.
+      description: Optional language, toolchain, build system, recipes, patches, dependencies, optimization needs, runner constraints, contribution rules, or contact.
     validations:
       required: false

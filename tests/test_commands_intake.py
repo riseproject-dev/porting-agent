@@ -134,6 +134,15 @@ class TestIntake(unittest.TestCase):
             intake.FIELDS,
             {
                 "Upstream repository": "upstream",
+                "Packages": "packages",
+                "Upstream target branch": "target_branch",
+                "Additional notes": "notes",
+            },
+        )
+        self.assertEqual(
+            intake.PYPI_FIELDS,
+            {
+                "Upstream repository": "upstream",
                 "PyPI distributions": "distributions",
                 "Upstream target branch": "target_branch",
                 "Additional notes": "notes",
@@ -164,6 +173,38 @@ class TestIntake(unittest.TestCase):
                 "### Additional context\n\n_No response_")
         r = intake.parse_request(issue(body=body), self.p)
         self.assertEqual((r.upstream, r.distributions), ("PyAV-Org/PyAV", ("av",)))
+
+    def test_current_form_names_packages_of_any_ecosystem(self):
+        body = ("### Upstream repository\n\nhttps://github.com/example/tool\n\n### Packages\n\n"
+                "Proj_Core\n@scope/tool\ngithub.com/example/tool\norg.example:tool\nProj_Core\n\n"
+                "### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nRust and Go")
+        r = intake.parse_request(issue(body=body), self.p)
+        self.assertEqual(r.upstream, "example/tool")
+        self.assertEqual(r.distributions,
+                         ("Proj_Core", "@scope/tool", "github.com/example/tool", "org.example:tool"))
+        self.assertEqual(r.notes, "Rust and Go")
+
+    def test_current_form_packages_are_optional_and_plain(self):
+        body = ("### Upstream repository\n\nhttps://github.com/example/tool\n\n### Packages\n\n"
+                "_No response_\n\n### Upstream target branch\n\nmain\n\n### Additional notes\n\n_No response_")
+        r = intake.parse_request(issue(body=body), self.p)
+        self.assertEqual((r.distributions, r.target_branch), ((), "main"))
+        for bad in ("<b>x</b>", "x`y", "[x](y)", "x/", "@"):
+            with self.subTest(bad=bad), self.assertRaises(intake.IntakeError):
+                intake.parse_request(issue(body=body.replace("_No response_", bad, 1)), self.p)
+
+    def test_earlier_pypi_form_is_normalized_and_never_mixed(self):
+        body = ("### Upstream repository\n\nhttps://github.com/example/proj\n\n### PyPI distributions\n\n"
+                "Proj_Core\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\n_No response_")
+        r = intake.parse_request(issue(body=body), self.p)
+        self.assertEqual(r.distributions, ("proj-core",))
+        with self.assertRaises(intake.IntakeError):
+            intake.parse_request(issue(body=body.replace("Proj_Core", "")), self.p)
+        mixed = body + "\n\n### Packages\n\nproj"
+        with self.assertRaises(intake.IntakeError):
+            intake.parse_issue_form(mixed)
+        with self.assertRaises(intake.IntakeError):
+            intake.parse_issue_form(FORM + "\n\n### Packages\n\nproj")
 
     def test_wheel_issue_without_upstreaming_label_is_not_intake(self):
         repo = {"full_name": "riseproject-dev/porting-agent"}

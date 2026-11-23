@@ -410,7 +410,7 @@
       "maxItems": 32,
       "items": {
         "type": "string",
-        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        "pattern": "^@?[A-Za-z0-9]([A-Za-z0-9._/:+-]{0,198}[A-Za-z0-9])?$"
       }
     },
     "upstream": {

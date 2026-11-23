@@ -63,7 +63,7 @@ class TestCanonicalIssueBody(unittest.TestCase):
 
     def test_current_and_legacy_headings_cannot_be_mixed(self):
         mixed = BODY_PATH.read_text() + "\n### Source repository\n\nhttps://github.com/x/y\n"
-        with self.assertRaisesRegex(intake.IntakeError, "mixes current and legacy"):
+        with self.assertRaisesRegex(intake.IntakeError, "mixes headings of different issue forms"):
             intake.parse_issue_form(mixed)
 
     def test_target_branch_is_optional_but_fail_closed_when_malformed(self):

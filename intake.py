@@ -25,19 +25,31 @@ COMMENT_ACTIONS = frozenset({"created", "edited"})
 
 _REPO_URL = re.compile(r"^https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9_.-]{1,100}?)(?:\.git)?/?$")
 _DIST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+# A package of any ecosystem, as its registry names it: PyPI and crates.io
+# names, npm scoped names (@scope/name), Go module paths, Maven coordinates
+# (group:artifact). The characters are those of a name only, so the value
+# never carries markup.
+_PACKAGE = re.compile(r"^@?[A-Za-z0-9]([A-Za-z0-9._/:+-]{0,198}[A-Za-z0-9])?$")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
 # Stable headings produced by .github/ISSUE_TEMPLATE/porting-request.yml.
 FIELDS = {
     "Upstream repository": "upstream",
-    "PyPI distributions": "distributions",
+    "Packages": "packages",
     "Upstream target branch": "target_branch",
     "Additional notes": "notes",
 }
 
-# Explicit compatibility for the earlier python-wheels package request form.
-# New aliases are not accepted implicitly: a form is either current or this
-# immutable legacy contract, never a mixture.
+# Explicit compatibility for earlier forms, each an immutable contract: the
+# Python-only revision of this form, whose package field named PyPI
+# distributions, and the python-wheels package request form. New aliases are
+# not accepted implicitly: a form is exactly one contract, never a mixture.
+PYPI_FIELDS = {
+    "Upstream repository": "upstream",
+    "PyPI distributions": "distributions",
+    "Upstream target branch": "target_branch",
+    "Additional notes": "notes",
+}
 LEGACY_FIELDS = {
     "Package name (on PyPI)": "distributions",
     "Source repository": "upstream",
@@ -45,6 +57,7 @@ LEGACY_FIELDS = {
     "Why is this needed?": "why",
     "Additional context": "notes",
 }
+FORM_CONTRACTS = {"current": FIELDS, "pypi": PYPI_FIELDS, "legacy": LEGACY_FIELDS}
 
 
 class IntakeError(ValueError):
@@ -57,7 +70,7 @@ class Request:
     issue_number: int
     actor_id: int
     upstream: str            # owner/name
-    distributions: tuple[str, ...]
+    distributions: tuple[str, ...]  # packages of any ecosystem; PyPI names normalized
     target_branch: str | None
     notes: str
     body: str
@@ -65,9 +78,14 @@ class Request:
 
 
 def parse_issue_form(body: str) -> dict[str, str]:
-    """Parse one complete current or explicitly supported legacy issue form."""
+    """Parse one complete current or explicitly supported earlier issue form.
+
+    The packages are returned under ``packages`` for the current form, which
+    names packages of any ecosystem, and under ``distributions`` for the
+    earlier forms, which name PyPI distributions only."""
     out: dict[str, str] = {}
-    formats: set[str] = set()
+    contracts = set(FORM_CONTRACTS)
+    headings = set().union(*FORM_CONTRACTS.values())
     current: str | None = None
     buffer: list[str] = []
 
@@ -81,19 +99,14 @@ def parse_issue_form(body: str) -> dict[str, str]:
 
     for line in body.splitlines():
         match = re.match(r"^###\s+(.+?)\s*$", line)
-        if match and (
-            match.group(1) in FIELDS or match.group(1) in LEGACY_FIELDS
-        ):
+        if match and match.group(1) in headings:
             finish()
             heading = match.group(1)
-            if heading in FIELDS:
-                formats.add("current")
-                current = FIELDS[heading]
-            else:
-                formats.add("legacy")
-                current = LEGACY_FIELDS[heading]
-            if len(formats) > 1:
-                raise IntakeError("request mixes current and legacy issue-form headings")
+            contracts &= {name for name, fields in FORM_CONTRACTS.items() if heading in fields}
+            if not contracts:
+                raise IntakeError("request mixes headings of different issue forms")
+            current = next(fields[heading] for name, fields in FORM_CONTRACTS.items()
+                           if name in contracts)
         elif current is not None:
             buffer.append(line)
     finish()
@@ -185,20 +198,21 @@ def parse_request(issue: dict, policy: dict) -> Request:
         # one repository and the exact historical title shape.
         form = _freeform(issue)
     upstream = canonical_repo(form.get("upstream", ""))
+    pypi = "packages" not in form
     dists: list[str] = []
-    for line in form.get("distributions", "").splitlines():
+    for line in form.get("distributions" if pypi else "packages", "").splitlines():
         token = line.strip().lstrip("-* ").split()[0] if line.strip() else ""
         if not token:
             continue
-        if not _DIST.match(token):
-            raise IntakeError(f"invalid distribution name {token!r}")
-        n = normalize_distribution(token)
+        if not (_DIST if pypi else _PACKAGE).match(token):
+            raise IntakeError(f"invalid package name {token!r}")
+        n = normalize_distribution(token) if pypi else token
         if n not in dists:
             dists.append(n)
-    if not dists:
+    if pypi and not dists:
         raise IntakeError("at least one PyPI distribution is required")
     if len(dists) > policy["intake"]["max_distributions"]:
-        raise IntakeError("too many distributions")
+        raise IntakeError("too many packages")
     branch = canonical_branch(form.get("target_branch", ""))
     return Request(
         issue_id=issue["id"], issue_number=issue["number"], actor_id=issue["user"]["id"],

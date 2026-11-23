@@ -119,13 +119,13 @@ class TestMigrationInventory(unittest.TestCase):
 class TestIssueFormAndCanary(unittest.TestCase):
     def test_issue_form_structure_and_setup_label(self):
         form = yaml.safe_load((ROOT / ".github/ISSUE_TEMPLATE/porting-request.yml").read_text())
-        self.assertEqual(form["name"], "Upstream RISC-V Python wheels")
+        self.assertEqual(form["name"], "Upstream RISC-V support")
         self.assertEqual(form["title"], "[upstreaming] ")
         self.assertEqual(form["labels"], ["upstreaming-request"])
         body = form["body"]
         self.assertEqual(
             [field["id"] for field in body],
-            ["upstream-repository", "distributions", "target-branch", "additional-notes"],
+            ["upstream-repository", "packages", "target-branch", "additional-notes"],
         )
         required = {
             field["id"]: field.get("validations", {}).get("required", False) for field in body
@@ -134,11 +134,13 @@ class TestIssueFormAndCanary(unittest.TestCase):
             required,
             {
                 "upstream-repository": True,
-                "distributions": True,
+                "packages": False,
                 "target-branch": False,
                 "additional-notes": False,
             },
         )
+        for text in (form["name"], form["description"]):
+            self.assertNotRegex(text.lower(), "python|pypi|wheel")
         labels = yaml.safe_load((ROOT / ".github/labels.yml").read_text())
         self.assertIn(
             {
