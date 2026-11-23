@@ -626,7 +626,7 @@
     "workflow_path": ".github/workflows/build-wheels.yml",
     "workflow_sha": null
   },
-  "collected_at": "2026-11-23T13:29:28.619446+00:00",
+  "collected_at": "2026-11-23T13:30:39.873234+00:00",
   "contribution_id": "closeio--ciso8601/1",
   "debug_present": false,
   "evidence_id": "ci-1467208233-45150934812-1",
