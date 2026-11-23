@@ -1,7 +1,25 @@
 {
   "active_operation_id": null,
-  "active_work": null,
-  "activity": "idle",
+  "active_work": {
+    "attempt": 1,
+    "deadline_at": "2026-11-23T23:35:46.249203+00:00",
+    "dedupe_key": "luhenry--d2vm/3@g1.r1:planning",
+    "dispatched_run_id": null,
+    "feedback_evidence_ids": [],
+    "generation": 1,
+    "reason_ids": [],
+    "requested_at": "2026-11-23T17:35:46.249203+00:00",
+    "revision": 1,
+    "task": "planning",
+    "tracking_issue": {
+      "description": "### Upstream repository\n\nhttps://github.com/luhenry/d2vm\n\n### Packages\n\n_No response_\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nYou MUST NOT look at riscv64-draft at ALL. You ARE NOT ALLOWED to look at it. ",
+      "description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b",
+      "id": 6563486409,
+      "number": 3,
+      "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
+    }
+  },
+  "activity": "agent_running",
   "admission_class": null,
   "admission_override": null,
   "automatic_refresh_used": false,
@@ -26,7 +44,7 @@
   "distributions": [],
   "follows": null,
   "fork": null,
-  "generation": 0,
+  "generation": 1,
   "handoff_approval": null,
   "handoff_request": null,
   "last_ci_evidence_id": null,
@@ -38,7 +56,7 @@
     "primary": null,
     "submitter": null
   },
-  "parked_reason": "d2vm is a Go VM-image builder with no Python package, wheel, PyPI release, or build backend, and no riscv64 discussion upstream. A riscv64 wheel contribution cannot exist; any riscv64 support would be Go and bootloader feature work outside this pipeline's wheel scope. A human can resume with a class and paths if Go riscv64 support is desired.",
+  "parked_reason": null,
   "paused": false,
   "paused_at": null,
   "paused_by": null,
@@ -46,10 +64,10 @@
   "pending_feedback_evidence_ids": [],
   "pending_human_action": null,
   "pending_publication": null,
-  "phase": "parked",
+  "phase": "planning",
   "plan_evidence_id": null,
   "prerequisite_ids": [],
-  "previous_phase": "planning",
+  "previous_phase": null,
   "processed_pr_conversation_comment_ids": [],
   "processed_publications": [
     14837588488
@@ -65,7 +83,7 @@
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
-  "revision": 0,
+  "revision": 1,
   "schema_version": 1,
   "scope_coverage_complete": false,
   "scope_paths": null,
@@ -81,12 +99,12 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-23T16:22:56.531091+00:00",
+  "updated_at": "2026-11-23T17:35:46.249203+00:00",
   "upstream": {
-    "base_ref": "main",
-    "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
+    "base_ref": null,
+    "base_sha": null,
     "full_name": "luhenry/d2vm",
-    "repository_id": 1468806020
+    "repository_id": null
   },
   "upstream_pr": null
 }

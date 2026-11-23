@@ -1,0 +1,33 @@
+{
+  "at": "2026-11-23T17:35:46.249203+00:00",
+  "cause": {
+    "id": "comment-7108875748",
+    "type": "command"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "actor": {
+      "id": 660779,
+      "login": "luhenry"
+    },
+    "from_state": "parked.idle",
+    "to_state": "queued.idle",
+    "verb": "restart_generation"
+  },
+  "from": {
+    "generation": 0,
+    "parked_reason": "d2vm is a Go VM-image builder with no Python package, wheel, PyPI release, or build backend, and no riscv64 discussion upstream. A riscv64 wheel contribution cannot exist; any riscv64 support would be Go and bootloader feature work outside this pipeline's wheel scope. A human can resume with a class and paths if Go riscv64 support is desired.",
+    "phase": "parked",
+    "revision": 0
+  },
+  "kind": "restart_generation",
+  "revision_bumped": true,
+  "schema_version": 1,
+  "sequence": 5,
+  "to": {
+    "generation": 1,
+    "parked_reason": null,
+    "phase": "queued",
+    "revision": 1
+  }
+}

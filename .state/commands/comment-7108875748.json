@@ -1,0 +1,23 @@
+{
+  "actor": {
+    "id": 660779,
+    "login": "luhenry"
+  },
+  "args": {
+    "contribution": "luhenry--d2vm/3",
+    "reason": "Planning is language agnostic now: plan the riscv64 port of this Go project.",
+    "revision": "0"
+  },
+  "command_id": "comment-7108875748",
+  "command_version": 1,
+  "comment_id": 7108875748,
+  "content_digest": "e5a7de79dc34c2dfe7dae4f7560d83dd63e10200bf765671d26424d175f559e6",
+  "contribution_id": "luhenry--d2vm/3",
+  "issue_number": 3,
+  "reason": null,
+  "received_at": "2026-11-23T17:35:46.249203+00:00",
+  "result": "accepted",
+  "revision": 0,
+  "schema_version": 1,
+  "verb": "refresh"
+}
