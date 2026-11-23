@@ -24,6 +24,7 @@ import observe_ci
 import reconcile
 import schemas
 import work
+from tests import helpers
 from tests.helpers import NOW, OWNER, SHA_A, ci_record, contribution, policy
 from tests.test_late_results import ci_snapshot
 
@@ -59,7 +60,7 @@ class World:
                 mock.patch("observe_ci.collect.ci_snapshot",
                            return_value=ci_snapshot(head, verdict)), \
                 contextlib.redirect_stderr(io.StringIO()):
-            out = reconcile.tick(object(), copy.deepcopy(self.snap), policy=P, now=now,
+            out = reconcile.tick(helpers.NoReadApi(), copy.deepcopy(self.snap), policy=P, now=now,
                                  publications=[], comments=list(comments), issues=[],
                                  pressure=capacity.Pressure(ok=True),
                                  dispatcher_runs=runs if runs is not None else [],

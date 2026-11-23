@@ -47,8 +47,11 @@ import queue_policy as queue_policy_facts
 import recovery
 import schemas
 import state
+import steering
 import submission
 import work
+import work_history
+import worker_report
 from common import DEV_REF, INTAKE_LABEL, UPSTREAM_REF, load_policy, repository_root, safe_id
 
 
@@ -777,11 +780,15 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
     cause = _result_cause(outcome, worker_run_id)
     details = {"evidence_id": eid, "verdict": outcome["verdict"],
                "reasons": [isolation.clean_text(r, 300) for r in data["reasons"][:8]]}
+    reports: list[tuple[str, dict]] = []
     if passed:
+        details = dict(details, head=outcome["head"])
+        reports = report_evidence(rec, outcome, "accept_submission_rewrite", now=now,
+                                  policy=policy, run=worker_run_id, details=details)
         out = engine.apply_transition(
             rec, "accept_submission_rewrite", policy=policy, now=now, cause_id=cause,
             facts={"submission_rewrite_passed"}, values={"submission_rewrite_id": eid},
-            details=dict(details, head=outcome["head"]))
+            details=details)
     else:
         pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
         out = engine.apply_transition(
@@ -790,7 +797,7 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
             values={"pending_feedback_evidence_ids": pending[-64:]}, details=details)
     if not out.accepted:
         raise lifecycle.TransitionError(f"{out.verb} refused: {out.reason}")
-    return out.record, [("evidence", evidence), ("events", out.event),
+    return out.record, [("evidence", evidence), *reports, ("events", out.event),
                         ("contributions", out.record)]
 
 
@@ -834,11 +841,15 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
     cause = _result_cause(outcome, worker_run_id)
     details = {"evidence_id": eid, "verdict": outcome["verdict"],
                "reasons": [isolation.clean_text(r, 300) for r in data["reasons"][:8]]}
+    reports: list[tuple[str, dict]] = []
     if passed:
+        details = dict(details, head=data.get("head"))
+        reports = report_evidence(rec, outcome, "accept_submission_review", now=now,
+                                  policy=policy, run=worker_run_id, details=details)
         out = engine.apply_transition(
             rec, "accept_submission_review", policy=policy, now=now, cause_id=cause,
             facts={"submission_review_passed"}, values={"submission_review_id": eid},
-            details=dict(details, head=data.get("head")))
+            details=details)
     else:
         pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
         out = engine.apply_transition(
@@ -847,7 +858,7 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
             values={"pending_feedback_evidence_ids": pending[-64:]}, details=details)
     if not out.accepted:
         raise lifecycle.TransitionError(f"{out.verb} refused: {out.reason}")
-    return out.record, [("evidence", review), ("events", out.event),
+    return out.record, [("evidence", review), *reports, ("events", out.event),
                         ("contributions", out.record)]
 
 
@@ -882,6 +893,32 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
 
 
 _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")
+
+# The rows that fold the Result of a successful worker: its Result was
+# accepted and the pipeline acts on it. Only their reports are stored, as
+# `worker_report` evidence that every later Work of the contribution
+# carries in its history; the report of any other fold is discarded with
+# the artifact.
+REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_success",
+                          "accept_submission_rewrite", "accept_submission_review",
+                          "request_ci_rerun", "require_reviewer_answer"})
+
+
+def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: dict,
+                    run: str | None, details: dict) -> list[tuple[str, dict]]:
+    """The report of a Result folded by ``verb``, staged as ``worker_report``
+    evidence when ``verb`` is a success row and the Result carries a usable
+    report; its id, or that it is absent, is named in ``details``. Nothing
+    is staged for any other row."""
+    if verb not in REPORT_VERBS:
+        return []
+    evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
+                                      run=str(run or "0"))
+    if evidence is None:
+        details["report"] = "absent"
+        return []
+    details["report_evidence_id"] = evidence["evidence_id"]
+    return [("evidence", evidence)]
 
 
 def _rehearsal_evidence(rec: dict, outcome: dict, run: str, policy: dict, now: str) -> dict:
@@ -1215,6 +1252,10 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             evidence = _rehearsal_evidence(rec, outcome, run, policy, now)
             staged.append(("evidence", evidence))
             details["evidence_id"] = evidence["evidence_id"]
+        # The report of a successful worker is kept for later Work; any
+        # other report is discarded.
+        staged.extend(report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
+                                      details=details))
         out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
                                       facts=facts, values=values, details=details)
     if not out.accepted:
@@ -1962,8 +2003,66 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
                                 "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
+    # 5. The history of every Work the record requests, recorded in the tick
+    # that allocates it (or in the first tick after this step existed): the
+    # new human steering of the contribution, then the history built from
+    # all its evidence. A failed read skips the contribution for this tick,
+    # so the allocation and its history are committed together or not at all.
+    if observe:
+        out.report["work_history"] = work_histories(
+            api, contributions, out, snap, policy=policy, now=iso,
+            tracking_issues=tracking_issues or {}, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
     return out
+
+
+def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOutput,
+                   snap: Snapshot, *, policy: dict, now: str, tracking_issues: dict,
+                   skip: frozenset[str]) -> list[dict]:
+    """Stage the ``work_history`` evidence of every requested Work that has
+    none yet (``work_history.evidence_id`` of its Work id), with the
+    ``human_steering`` evidence of the text collected for it first. The
+    record as this tick leaves it is used, so Work allocated in this tick is
+    covered."""
+    latest = {c["contribution_id"]: c for c in contributions.values()}
+    for kind, record in out.staged:
+        if kind == "contributions":
+            latest[record["contribution_id"]] = record
+    evidence = dict(snap.evidence)
+    evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
+    authority = policy["command_authority"]["actor_ids"]
+    report = []
+    for cid in sorted(latest):
+        if cid in skip:
+            continue
+        record = latest[cid]
+        request = work.request_from_active(record)
+        if request is None or "generation" not in request:
+            # Nothing to dispatch, or Work requested before the identity
+            # carried the generation, whose payload carries no history.
+            continue
+        eid = work_history.evidence_id(request["dedupe_key"])
+        if eid in evidence:
+            continue
+        with isolation.contribution(cid, "work_history"):
+            collected = collect.steering(
+                api, record, authority,
+                issue=tracking_issues.get(record["tracking_issue"]["number"]))
+            new = steering.new_evidence(record, collected, evidence, policy=policy, now=now)
+            if new is not None:
+                evidence[new["evidence_id"]] = new
+                out.staged.append(("evidence", new))
+            history = work_history.build(record, record["active_work"], evidence,
+                                         policy=policy, now=now)
+            evidence[eid] = history
+            out.staged.append(("evidence", history))
+            data = history["data"]
+            report.append({"contribution": cid, "work": request["dedupe_key"],
+                           "evidence_id": eid, "steering": len(data["steering"]),
+                           "timeline": len(data["timeline"]),
+                           "condensed": data["condensed"],
+                           "steering_evidence_id": (new or {}).get("evidence_id")})
+    return report
 
 
 def load_snapshot(root: Path, policy: dict):
@@ -2034,12 +2133,15 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
             ("plan.json", "plan"),
             ("proposal.json", "proposal"),
             ("result.json", "artifact"),
+            # The worker's report (untrusted): checked again, and stored only
+            # when a success row folds the Result.
+            ("report.json", "worker_report"),
         ):
             candidate = path.parent / name
             if candidate.exists() and key not in outcome:
                 try:
                     outcome[key] = json.loads(candidate.read_text())
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
         publications.append(outcome)
     return publications

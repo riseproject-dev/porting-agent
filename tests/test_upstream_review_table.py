@@ -31,6 +31,7 @@ import release
 import review_response
 import schemas
 import status_ledger
+from tests import helpers
 from tests.helpers import NOW, OWNER, SHA_A, SHA_B, SHA_C, apply_command, contribution, policy
 from tests.test_late_results import PENDING, WORK, ci_snapshot, publication
 
@@ -101,7 +102,7 @@ def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feed
             mock.patch("observe_ci.collect.release_contains",
                        side_effect=lambda _api, _repo, version, _sha: (contains or {}).get(version)), \
             contextlib.redirect_stderr(io.StringIO()):
-        out = reconcile.tick(object(), snapshot, policy=POLICY, now=now,
+        out = reconcile.tick(helpers.NoReadApi(), snapshot, policy=POLICY, now=now,
                              publications=list(publications), comments=list(comments),
                              pressure=capacity.Pressure(ok=capacity_ok, reason="test"),
                              observe=True,
@@ -270,7 +271,7 @@ class TestObservation(unittest.TestCase):
         with mock.patch("observe_ci.collect.upstream_pull",
                         side_effect=collect.CollectError("GET pulls/9: HTTP 404")), \
                 contextlib.redirect_stderr(io.StringIO()):
-            out = reconcile.tick(object(), snapshot, policy=POLICY, now=T, publications=[],
+            out = reconcile.tick(helpers.NoReadApi(), snapshot, policy=POLICY, now=T, publications=[],
                                  comments=[abandon], pressure=capacity.Pressure(ok=False),
                                  observe=True, dispatcher_runs=[], queue_works={})
         self.assertEqual(out.failures, [])

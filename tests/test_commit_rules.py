@@ -226,6 +226,7 @@ class TestWorkerGate(unittest.TestCase):
 class TestPayload(unittest.TestCase):
     def test_the_payload_carries_the_rules_of_a_version_2_plan_only(self):
         import work
+        import work_history
         from tests.helpers import contribution
         record = contribution(phase="development", activity="agent_running", revision=3)
         record.update(plan_evidence_id="plan-x", upstream=dict(
@@ -237,12 +238,16 @@ class TestPayload(unittest.TestCase):
         for data, expected in ((plan(), commit_rules.from_plan(plan())),
                                (dict(plan(), schema_version=1), None)):
             evidence = {"evidence_id": "plan-x", "kind": "plan", "data": copy.deepcopy(data)}
-            snapshot = type("S", (), {"contributions": {"c": record}, "evidence": {"plan-x": evidence}})
+            history = work_history.evidence_id("k")
+            snapshot = type("S", (), {"contributions": {"c": record},
+                                      "evidence": {"plan-x": evidence, history: {}}})
             with tempfile.TemporaryDirectory() as directory, \
                     unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
                     unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                         [], 0, stdout="c" * 40)):
                 out = Path(directory) / "plan.json"
+                (Path(directory) / ".state" / "evidence").mkdir(parents=True)
+                (Path(directory) / ".state" / "evidence" / f"{history}.json").write_text("{}")
                 args = type("A", (), {"root": directory, "out": str(out), "control_repo_id": "1"})
                 work.cmd_plan(args)
                 context = json.loads(out.read_text())["nodes"][0]["payload"]["context"]

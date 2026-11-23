@@ -21,7 +21,7 @@ from pathlib import Path
 from common import repository_root
 
 ALLOWED = {"proposal.json": 256 * 1024, "patches.mbox": 4 * 1024 * 1024, "plan.json": 256 * 1024,
-           "notes.md": 64 * 1024}
+           "notes.md": 64 * 1024, "report.json": 32 * 1024}
 MAX_TOTAL = 5 * 1024 * 1024
 
 

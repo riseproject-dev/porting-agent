@@ -38,7 +38,7 @@ import status_ledger
 import submission
 import work as work_plan
 from common import CONTROL_REPO, canonical_json, contribution_file_id
-from tests.helpers import OWNER, STRANGER, policy
+from tests.helpers import OWNER, STRANGER, policy, steering_list
 from tests.test_live_handoff_migration import (
     CI_EVIDENCE,
     CID,
@@ -113,7 +113,11 @@ class FakeGitHub:
                     "parent": {"full_name": "closeio/ciso8601", "id": UPSTREAM_ID}}
         raise collect.CollectError(f"GET {path}: HTTP 404")
 
-    def paginate(self, path: str, *, key=None, max_pages=10):
+    def paginate(self, path: str, *, key=None, max_pages=10, **_kwargs):
+        # The steering lists of Work the controller allocates: no human text.
+        found = steering_list(path)
+        if found is not None:
+            return found
         self.calls.append(("GET", path))
         match = re.fullmatch(rf"/repos/{FORK['name']}/check-runs/([0-9]+)/annotations\?per_page=100",
                              path)

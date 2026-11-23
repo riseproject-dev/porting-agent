@@ -6,11 +6,42 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import subprocess
 from pathlib import Path
 
+import collect
 import lifecycle
 from common import load_policy
+
+# The list reads of ``collect.steering``: the comments of the tracking issue
+# and the reviews and comments of the development and upstream PRs.
+STEERING_LIST = re.compile(r"^/repos/[^/]+/[^/]+/(?:issues|pulls)/[0-9]+/(?:comments|reviews)"
+                           r"\?per_page=100$")
+
+
+def steering_list(path: str) -> list | None:
+    """``[]`` for a steering list read (no human text by default), ``None``
+    for any other path."""
+    return [] if STEERING_LIST.match(path) else None
+
+
+class NoReadApi:
+    """An API for a tick that reads nothing from GitHub but the (empty)
+    steering lists of the Work it allocates."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def paginate(self, path, **_kwargs):
+        self.calls.append(path)
+        found = steering_list(path)
+        if found is None:
+            raise collect.CollectError(f"GET {path}: not expected in this test")
+        return found
+
+    def get(self, path):
+        raise collect.CollectError(f"GET {path}: not expected in this test")
 
 NOW = "2026-11-18T12:00:00+00:00"
 OWNER = {"id": 1001, "login": "owner"}

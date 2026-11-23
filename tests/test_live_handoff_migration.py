@@ -32,6 +32,7 @@ import observe_ci
 import reconcile
 import state
 from common import canonical_json
+from tests import helpers
 from tests.helpers import OWNER, commit_files, git, init_repo, policy
 
 FIXTURES = Path(__file__).parent / "fixtures" / "live-handoff-r6"
@@ -291,7 +292,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
              mock.patch("observe_ci.collect.development_review_feedback", return_value=feedback), \
              mock.patch("observe_ci.collect.ci_snapshot", return_value=snapshot or self.passed()):
             return reconcile.tick(
-                object(), reconcile.Snapshot(contributions, canary_operations(), {}, {},
+                helpers.NoReadApi(), reconcile.Snapshot(contributions, canary_operations(), {}, {},
                                              {CI_EVIDENCE: load("evidence-ci.json")}),
                 policy=policy(), now=T, publications=list(publications), comments=list(comments),
                 pressure=capacity.Pressure(ok=pressure), dispatcher_runs=[], queue_works={})

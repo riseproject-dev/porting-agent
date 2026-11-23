@@ -49,8 +49,12 @@ usable Result: ``allocate_work_retry`` within its budget, never a verdict.
 The trusted handoff workflow then builds `riscv64` from the same series,
 checks it again, and pushes exactly the head this check computed.
 
-    python -m submission check-rewrite --task T --rewrite R --mbox M --out O
-    python -m submission check-review --task T --review R --out O
+A Work whose payload carries a history (``context.history``) must also
+return a valid worker report (``worker_report.check``); one without it is a
+Work without a usable Result.
+
+    python -m submission check-rewrite --task T --result R --mbox M --report P --out O
+    python -m submission check-review --task T --result R --report P --out O
 """
 
 from __future__ import annotations
@@ -67,6 +71,7 @@ import commit_rules
 import fork_publish
 import publisher
 import schemas
+import worker_report
 
 REWRITE = "submission_rewrite"
 REVIEW = "submission_review"
@@ -272,9 +277,21 @@ def _exact(task: dict, kind: str) -> bool:
         and bool(_SHA.match(str(task.get("base_sha") or "")))
 
 
+def _report_problem(task: dict, report: bytes | dict | None) -> str | None:
+    """Why the worker report does not answer the Work, or ``None``. A Work
+    that carries a history must return a valid report."""
+    try:
+        worker_report.check(task, report)
+    except worker_report.ReportError as error:
+        return f"the worker report is missing or invalid: {error}"
+    return None
+
+
 def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
-                  workdir: Path | None = None, read_token: str | None = None) -> dict:
-    """The trusted outcome of one submission rewrite Result."""
+                  workdir: Path | None = None, read_token: str | None = None,
+                  report: bytes | dict | None = None) -> dict:
+    """The trusted outcome of one submission rewrite Result. ``report`` is
+    the worker's ``report.json``."""
     out: dict[str, Any] = {"status": REWRITE, "stage": "submission_check",
                            "approved_head": task.get("expected_head"),
                            "base_sha": task.get("base_sha")}
@@ -285,6 +302,9 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
 
     if not _exact(task, REWRITE):
         return unusable("the Work is not a submission rewrite of an exact head")
+    problem = _report_problem(task, report)
+    if problem:
+        return unusable(problem)
     try:
         schemas.validate("submission_rewrite", rewrite)
     except schemas.SchemaError as error:
@@ -338,10 +358,10 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
     return dict(out, verdict=PASS, reasons=[], **result)
 
 
-def check_review(task: dict, review: dict) -> dict:
+def check_review(task: dict, review: dict, *, report: bytes | dict | None = None) -> dict:
     """The trusted outcome of one submission review Result: a review of
     exactly the rewritten series and text the Work names
-    (``context.rewrite``)."""
+    (``context.rewrite``). ``report`` is the worker's ``report.json``."""
     out: dict[str, Any] = {"status": REVIEW, "stage": "review_check",
                            "approved_head": task.get("expected_head"),
                            "base_sha": task.get("base_sha")}
@@ -350,6 +370,9 @@ def check_review(task: dict, review: dict) -> dict:
             or not re.fullmatch(r"[0-9a-f]{64}", str(rewrite.get("text_digest"))) \
             or not rewrite.get("evidence_id"):
         return unusable("the Work is not a submission review of a rewritten series")
+    problem = _report_problem(task, report)
+    if problem:
+        return unusable(problem)
     try:
         schemas.validate("submission_review", review)
     except schemas.SchemaError as error:
@@ -381,17 +404,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--result", type=Path, required=True,
                         help="the rewrite or review proposal.json")
     parser.add_argument("--mbox", type=Path, help="the rewritten series (check-rewrite)")
+    parser.add_argument("--report", type=Path,
+                        help="the worker's report.json (required when the Work carries a history)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     task = json.loads(args.task.read_text())
     try:
         result_value = json.loads(args.result.read_text())
+        report = (args.report.read_bytes()[: worker_report.MAX_REPORT_BYTES + 1]
+                  if args.report and args.report.is_file() and not args.report.is_symlink()
+                  else None)
         if args.command == "check-review":
-            result = check_review(task, result_value)
+            result = check_review(task, result_value, report=report)
         else:
             mbox = args.mbox.read_bytes() if args.mbox and args.mbox.is_file() \
                 and not args.mbox.is_symlink() else None
-            result = check_rewrite(task, result_value, mbox)
+            result = check_rewrite(task, result_value, mbox, report=report)
     except (OSError, ValueError) as error:
         result = unusable(f"the Result cannot be read: {str(error)[:300]}")
     except CheckError as error:

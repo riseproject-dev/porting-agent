@@ -13,6 +13,7 @@ from pathlib import Path
 
 import commit_rules
 import schemas
+import worker_report
 from common import validate_scope_paths
 from work import WRITE_TASKS
 
@@ -69,10 +70,16 @@ def _direct(command: str, image: str) -> bool:
         and "--platform linux/riscv64" in command and image in command
 
 
-def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
+def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | None = None) -> dict:
     schemas.validate("proposal", proposal)
     if task.get("task") not in WRITE_TASKS:
         raise WorkerGateError("worker gate accepts only patch tasks")
+    # The report of the run: required when the Work carries a history; it is
+    # stored for later Work only if this Result is accepted and published.
+    try:
+        worker_report.check_path(task, report_path)
+    except worker_report.ReportError as error:
+        raise WorkerGateError(f"the worker report is missing or invalid: {error}") from None
     for proposal_key, task_key in (
         ("contribution_id", "contribution_id"),
         ("expected_revision", "revision"),
@@ -205,12 +212,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", type=Path, required=True)
     parser.add_argument("--proposal", type=Path, required=True)
     parser.add_argument("--mbox", type=Path, required=True)
+    parser.add_argument("--report", type=Path,
+                        help="the worker's report.json (required when the Work carries a history)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         task = json.loads(args.task.read_text())
         proposal = json.loads(args.proposal.read_text())
-        report = validate(task, proposal, args.mbox)
+        report = validate(task, proposal, args.mbox, args.report)
         code = 0
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, schemas.SchemaError,
             WorkerGateError, ValueError) as error:

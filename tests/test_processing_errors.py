@@ -42,6 +42,7 @@ import reconcile
 import state
 import status_ledger
 from common import canonical_json
+from tests import helpers
 from tests.helpers import NOW, OWNER, SHA_A, awaiting_submission, contribution, policy, runner_loss
 from tests.test_collect_read_errors import Response
 from tests.test_late_results import WORK, ci_snapshot, publication
@@ -138,7 +139,7 @@ def tick(records, *, publications=(), comments=(), issues=(), observe=True, verd
         for target, replacement in patches:
             stack.enter_context(mock.patch(target, side_effect=replacement))
         stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
-        return reconcile.tick(object(), snapshot, policy=policy, now=T, run_id=run_id,
+        return reconcile.tick(helpers.NoReadApi(), snapshot, policy=policy, now=T, run_id=run_id,
                               publications=list(publications), comments=list(comments),
                               issues=list(issues), pressure=capacity.Pressure(ok=True),
                               observe=observe, dispatcher_runs=[], queue_works=queue_works or {})

@@ -28,6 +28,7 @@ import queue_result
 import reconcile
 import schemas
 import work
+from tests import helpers
 from tests.helpers import (
     NOW,
     awaiting_submission,
@@ -477,7 +478,7 @@ class TestDispatchRecovery(unittest.TestCase):
                     snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
                                               projects={}, evidence={})
                     with mock.patch.object(observe_ci, "observe", return_value=observe_ci.Observation()):
-                        t = reconcile.tick(object(), snap, policy=policy(read_only=False), now=self.now,
+                        t = reconcile.tick(helpers.NoReadApi(), snap, policy=policy(read_only=False), now=self.now,
                                            publications=[], pressure=capacity.Pressure(ok=True),
                                            observe=True, dispatcher_runs=list(runs), queue_works={})
                     rec = self.final(t) if [r for k, r in t.staged if k == "contributions"] else rec

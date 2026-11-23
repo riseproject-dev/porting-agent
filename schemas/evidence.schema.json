@@ -44,7 +44,10 @@
         "merge",
         "human_relay",
         "human_inquiry",
-        "resolution"
+        "resolution",
+        "worker_report",
+        "human_steering",
+        "work_history"
       ]
     },
     "policy_version": {

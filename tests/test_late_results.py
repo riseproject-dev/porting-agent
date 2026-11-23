@@ -33,6 +33,7 @@ import engine
 import lifecycle
 import reconcile
 import schemas
+from tests import helpers
 from tests.helpers import NOW, OWNER, SHA_A, SHA_B, apply_command, contribution, policy
 
 T = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
@@ -117,7 +118,7 @@ def tick(record, publications=(), *, observe=False, verdict="pending", head=SHA_
             mock.patch("observe_ci.collect.pypi_project", return_value=None), \
             mock.patch("observe_ci.collect.ci_snapshot", return_value=ci_snapshot(head, verdict)), \
             contextlib.redirect_stderr(io.StringIO()):
-        return reconcile.tick(object() if observe else None, snapshot, policy=policy, now=now,
+        return reconcile.tick(helpers.NoReadApi() if observe else None, snapshot, policy=policy, now=now,
                               publications=list(publications), comments=list(comments),
                               pressure=capacity.Pressure(ok=capacity_ok, reason="none"),
                               observe=observe,

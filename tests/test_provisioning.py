@@ -12,7 +12,7 @@ import controller
 import provisioning
 import reconcile
 import recovery
-from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, contribution, policy
+from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, contribution, policy, steering_list
 
 FORK = "riseproject-upstreaming/proj"
 UP = "example/proj"
@@ -74,6 +74,13 @@ class Api:
                 text = "permissions: {contents: write}\njobs: {}\n"
             return {"type": "file", "encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
         raise AssertionError(path)
+
+    def paginate(self, path, **_kwargs):
+        # The steering lists read for the Work the controller allocates.
+        found = steering_list(path)
+        if found is None:
+            raise AssertionError(path)
+        return found
 
     def write(self, method, path, body):
         self.writes.append((method, path, copy.deepcopy(body)))

@@ -22,6 +22,7 @@ import engine
 import queue_policy
 import reconcile
 import work
+import work_history
 from tests.helpers import NOW, contribution, policy
 
 ROOT = Path(__file__).parents[1]
@@ -227,15 +228,20 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
                 "dispatched_run_id": None, "reason_ids": [], "generation": 0,
                 "feedback_evidence_ids": [], "tracking_issue": {"url": "https://x"}}
             return record
+        histories = {work_history.evidence_id(f"{cid}@1:planning"): {}
+                     for cid in ("example--a/1", "example--b/2")}
         snapshot = type("S", (), {"contributions": {
             "a": requested("example--a/1", 1, bound=False),
-            "b": requested("example--b/2", 2, bound=True)}, "evidence": {}})
+            "b": requested("example--b/2", 2, bound=True)}, "evidence": histories})
         with tempfile.TemporaryDirectory() as directory, \
                 unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
                 unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                     [], 0, stdout="c" * 40)), \
                 unittest.mock.patch("builtins.print") as printed:
             out = Path(directory) / "plan.json"
+            (Path(directory) / ".state" / "evidence").mkdir(parents=True)
+            for history_id in histories:
+                (Path(directory) / ".state" / "evidence" / f"{history_id}.json").write_text("{}")
             args = type("A", (), {"root": directory, "out": str(out), "control_repo_id": "1"})
             self.assertEqual(work.cmd_plan(args), 0)
             nodes = json.loads(out.read_text())["nodes"]

@@ -409,6 +409,96 @@ def base_contained(api: Api, record: dict, ref: str) -> bool:
     return _branch_contains(api, upstream["full_name"], ref, upstream["base_sha"])
 
 
+# The bound of every list read for steering: pages of 100.
+STEERING_PAGES = 5
+# Accounts of the upstream repository whose reviews on the upstream PR are
+# recorded as maintainer feedback (never as steering).
+MAINTAINER_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
+
+
+def _steering_item(source: str, item: dict, *, authority: bool, body_key: str = "body",
+                   created_key: str = "created_at", updated_key: str = "updated_at") -> dict:
+    user = item.get("user") or {}
+    return {"source": source, "id": item.get("id"), "author": user.get("login"),
+            "author_id": user.get("id"), "authority": authority,
+            "author_association": item.get("author_association"),
+            "created_at": item.get(created_key), "updated_at": item.get(updated_key),
+            "url": item.get("html_url"), "commit_id": item.get("commit_id"),
+            "path": item.get("path"), "line": item.get("line") or item.get("original_line"),
+            "in_reply_to": item.get("in_reply_to_id"), "review_state": item.get("state"),
+            "body": item.get(body_key) or ""}
+
+
+def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | None) -> dict:
+    """The human text a worker is steered by, read for one contribution.
+
+    Read, each list bounded to ``STEERING_PAGES`` pages of 100: the current
+    tracking issue description (``issue``, the collected issue; only when
+    it differs from the description frozen at intake and the issue author is
+    in the command authority), the tracking issue comments, and the reviews,
+    review comments and conversation comments of the development PR and of
+    the upstream PR when the record names them.
+
+    Accounts whose immutable id is in ``authority`` are kept with
+    ``authority`` true, on every source. On the upstream PR only, accounts
+    whose association is OWNER, MEMBER or COLLABORATOR are kept with
+    ``authority`` false: maintainer review feedback, never steering.
+    Everything else (other accounts, bots, empty bodies) is counted per
+    source in ``omitted``. Returns ``{"items": [...], "omitted": {...}}``;
+    the text is untrusted and is bounded where it is stored. A failed read
+    raises ``CollectError``."""
+    from common import sha256_text
+
+    allowed = {int(value) for value in authority}
+    items: list[dict] = []
+    omitted: dict[str, int] = {}
+
+    def keep(source: str, raw: dict, *, maintainers: bool, **keys) -> None:
+        user = raw.get("user") or {}
+        body = raw.get(keys.get("body_key", "body")) or ""
+        trusted = user.get("id") in allowed
+        maintainer = maintainers and raw.get("author_association") in MAINTAINER_ASSOCIATIONS \
+            and user.get("type") != "Bot"
+        if not isinstance(body, str) or not body.strip() or not (trusted or maintainer):
+            omitted[source] = omitted.get(source, 0) + 1
+            return
+        items.append(_steering_item(source, raw, authority=trusted, **keys))
+
+    tracking = record["tracking_issue"]
+    if isinstance(issue, dict) and issue.get("id") == tracking.get("id"):
+        body = issue.get("body") or ""
+        if isinstance(body, str) and sha256_text(body) != tracking.get("description_digest"):
+            if (issue.get("user") or {}).get("id") in allowed and body.strip():
+                item = _steering_item("tracking_issue_description", issue, authority=True)
+                item["version"] = sha256_text(body)
+                items.append(item)
+            else:
+                omitted["tracking_issue_description"] = 1
+    for raw in api.paginate(f"/repos/{CONTROL_REPO}/issues/{int(tracking['number'])}/comments"
+                            "?per_page=100", max_pages=STEERING_PAGES):
+        keep("tracking_issue_comment", raw, maintainers=False)
+    pulls = []
+    fork = record.get("fork") or {}
+    if fork.get("name") and fork.get("pr_number"):
+        pulls.append(("development_pr", fork["name"], int(fork["pr_number"]), False))
+    upstream_pr = record.get("upstream_pr") or {}
+    if upstream_pr.get("number"):
+        pulls.append(("upstream_pr", record["upstream"]["full_name"], int(upstream_pr["number"]),
+                      True))
+    for prefix, repository, number, maintainers in pulls:
+        for raw in api.paginate(f"/repos/{repository}/pulls/{number}/reviews?per_page=100",
+                                max_pages=STEERING_PAGES):
+            keep(f"{prefix}_review", raw, maintainers=maintainers, created_key="submitted_at",
+                 updated_key="submitted_at")
+        for raw in api.paginate(f"/repos/{repository}/pulls/{number}/comments?per_page=100",
+                                max_pages=STEERING_PAGES):
+            keep(f"{prefix}_review_comment", raw, maintainers=maintainers)
+        for raw in api.paginate(f"/repos/{repository}/issues/{number}/comments?per_page=100",
+                                max_pages=STEERING_PAGES):
+            keep(f"{prefix}_comment", raw, maintainers=maintainers)
+    return {"items": items, "omitted": omitted}
+
+
 def upstream_snapshots(api: Api, contributions: Iterable[dict], issues: list[dict], policy: dict,
                        comments: Iterable[dict] = (),
                        consumed: Iterable[int] = ()) -> dict[str, dict]:

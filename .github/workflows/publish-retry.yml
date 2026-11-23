@@ -199,6 +199,7 @@ jobs:
             in/outcome.json
             in/proposal.json
             in/plan.json
+            in/report.json
             in/worker-run-id
           if-no-files-found: ignore
           retention-days: 30

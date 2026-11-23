@@ -119,3 +119,60 @@ class TestTheHandEditedRecord(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheLiveRecordAndItsHistory(unittest.TestCase):
+    """The committed live record takes the history step without change."""
+
+    def live(self) -> dict:
+        path = Path(__file__).parents[1] / RECORD_PATH
+        if not path.is_file():
+            self.skipTest("the live record is not in this checkout")
+        value = json.loads(path.read_text())
+        if state.needs_field_migration(value):
+            value = state.migrate_record_fields(value, now="2026-11-23T13:00:00+00:00")[0]
+        return value
+
+    def world(self) -> World:
+        world = World(record=self.live())
+        world.gh.branches = {"riscv64-dev": HEAD, "riscv64": None}
+        # The committed evidence of the contribution, as the store holds it.
+        for path in (Path(__file__).parents[1] / ".state/evidence").glob("*.json"):
+            value = json.loads(path.read_text())
+            if value.get("contribution_id") == world.record["contribution_id"]:
+                world.evidence[value["evidence_id"]] = value
+        return world
+
+    def test_a_tick_stages_nothing_new_and_reads_no_steering(self):
+        world = self.world()
+        before = copy.deepcopy(world.record)
+        with mock.patch("collect.steering") as steering:
+            out = world.tick(at(0))
+        steering.assert_not_called()
+        self.assertEqual(out.report["work_history"], [])
+        self.assertEqual([r["kind"] for k, r in out.staged if k == "evidence"
+                          and r["kind"] in ("work_history", "human_steering", "worker_report")],
+                         [])
+        self.assertEqual((world.kinds(out), world.record), ([], before))
+
+    def test_the_rewrite_work_gets_its_history_in_the_submitting_tick(self):
+        world = self.world()
+        paths = []
+
+        def paginate(path, **_kwargs):
+            paths.append(path)
+            return []
+
+        world.gh.paginate = paginate
+        out = world.tick(at(0), comments=[comment(
+            f"/upstreaming submit-upstream revision=6 head={HEAD}")])
+        self.assertEqual(world.kinds(out), ["submit_upstream", "request_submission_rewrite"])
+        [history] = [r for k, r in out.staged if k == "evidence" and r["kind"] == "work_history"]
+        self.assertEqual(history["data"]["work"]["task"], "submission_rewrite")
+        # Earlier Work left no report: the timeline starts with the CI runs.
+        self.assertEqual({t["kind"] for t in history["data"]["timeline"]}, {"ci"})
+        self.assertGreaterEqual(len(history["data"]["timeline"]), 4)
+        self.assertEqual(sorted(p.split("?")[0] for p in paths), sorted([
+            "/repos/riseproject-dev/porting-agent/issues/1/comments",
+            f"/repos/{FORK}/pulls/2/reviews", f"/repos/{FORK}/pulls/2/comments",
+            f"/repos/{FORK}/issues/2/comments"]))

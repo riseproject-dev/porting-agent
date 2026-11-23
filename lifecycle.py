@@ -974,12 +974,13 @@ LIFECYCLE: dict[str, State] = {
                             "publication (`schedule_publish_retry`), and the row is taken once "
                             "the publication is confirmed, by the publish-only retry reading "
                             "back the head the lost push left (or publishing the same commit), "
-                            "or by the confirmed branch operation of an earlier attempt."),
+                            "or by the confirmed branch operation of an earlier attempt."
+                            " The report of the Work is stored as `worker_report` evidence."),
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
                 (DEVELOPMENT_PROPOSAL_REJECTED, "no_progress remains"),
                 _E(revision="bump", work="clear", clears=("clean_head_sha",)), ("no_progress",),
-                "The pending feedback is kept.", exhausts=("flaky_reruns",)),
+                "The pending feedback is kept. The worker's report is discarded.", exhausts=("flaky_reruns",)),
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
@@ -996,7 +997,8 @@ LIFECYCLE: dict[str, State] = {
                 "`reject_patch_proposal`. The rerun is the publication of this Result: the "
                 "trusted publication job requests it on the exact head and reads back the new "
                 "attempt before the row is taken. A rerun that cannot be requested or read back "
-                "is a failed publication (`schedule_publish_retry`, `exhaust_publish_recovery`)."),
+                "is a failed publication (`schedule_publish_retry`, `exhaust_publish_recovery`). "
+                "The report of the Work is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
         }),
@@ -1218,7 +1220,8 @@ LIFECYCLE: dict[str, State] = {
                             "of the App or of the approved commits, the plan's measurable "
                             "commit rules, and every required section of the pull request "
                             "template in the description. Nothing is posted. The revision "
-                            "is bumped: the review Work is new Work of the next revision."),
+                            "is bumped: the review Work is new Work of the next revision. "
+                            "The report of the Work is stored as `worker_report` evidence."),
             ("reject_submission_rewrite", "development.fix_needed"): Transition(
                 _R, None,
                 (REWRITE_FAILED,),
@@ -1226,7 +1229,7 @@ LIFECYCLE: dict[str, State] = {
                   clears=_LEAVE_HANDOFF),
                 description="The reasons are recorded as rewrite evidence and are the pending "
                             "feedback of the next development Work. Nothing is posted and "
-                            "`riscv64` is not written."),
+                            "`riscv64` is not written. The worker's report is discarded."),
         }),
     "handoff.review_pending": State(
         "auto_wait", True, False,
@@ -1269,7 +1272,8 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="clear", sets=("submission_review_id",)),
                 description="The trusted check of the Result requires a review of exactly the "
                             "rewritten series and text (their digests); the accepted review "
-                            "records the rewrite it passed. Nothing is posted."),
+                            "records the rewrite it passed. Nothing is posted. The report of "
+                            "the Work is stored as `worker_report` evidence."),
             ("reject_submission_review", "development.fix_needed"): Transition(
                 _R, None,
                 (REVIEW_FAILED,),
@@ -1278,7 +1282,8 @@ LIFECYCLE: dict[str, State] = {
                 description="The reasons are recorded as review evidence and are the pending "
                             "feedback of the next development Work. Nothing is posted and "
                             "`riscv64` is not written. A Result that is not a usable review "
-                            "takes `allocate_work_retry` or `exhaust_work_recovery` instead."),
+                            "takes `allocate_work_retry` or `exhaust_work_recovery` instead. "
+                            "The worker's report is discarded."),
         }),
     "handoff.building_upstream_branch": State(
         "work", False, True,
@@ -1543,20 +1548,22 @@ LIFECYCLE: dict[str, State] = {
                             "back on `riscv64` after its push. A publication whose push was not "
                             "read back (`uncertain`) does not take this row: it is a failed "
                             "publication (`schedule_publish_retry`), and the publish-only retry "
-                            "reads back the head a lost push left without pushing again."),
+                            "reads back the head a lost push left without pushing again. The "
+                            "report of the Work is stored as `worker_report` evidence."),
             ("reject_patch_proposal", "upstream_review.fix_needed"): Transition(
                 _R, None,
                 ("the proposal is rejected for the current revision, or the worker reports it is "
                  "blocked",
                  "no_progress remains"),
                 _E(revision="bump", work="clear"), ("no_progress",),
-                "The pending feedback is kept."),
+                "The pending feedback is kept. The worker's report is discarded."),
             ("require_reviewer_answer", "upstream_review.waiting_human"): Transition(
                 _R, None,
                 ("the worker reports that no change is needed",),
                 _E(work="clear", sets=("pending_human_action=answer_reviewer",)),
                 description="A human answers the reviewer; the pipeline posts nothing on the "
-                            "upstream PR."),
+                            "upstream PR. The report of the Work is stored as `worker_report` "
+                            "evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
@@ -2409,7 +2416,11 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.agent_running", "record_publish_success"),
                  ("development.waiting_ci", "nominate_for_handoff")),
                 start="development.fix_needed",
-                text="`development.fix_needed` is the one state in which development Work is due, "
+                text="Every Work carries its history: the reports of the earlier successful "
+                     "workers, the CI runs and reviews that followed them, and the owner's "
+                     "steering from the tracking issue and the pull requests. A repair after "
+                     "failing CI reads the report of the worker whose head failed.\n\n"
+                     "`development.fix_needed` is the one state in which development Work is due, "
                      "and it is entered only after `confirm_provisioning`: no patch is proposed "
                      "before the fork exists. `request_repair` applies while a failing CI job is "
                      "recorded for the head and charges `repair_attempts_cluster` for that job; "
@@ -2874,7 +2885,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("upstream_review.waiting_human", "resume_upstream_review"),
                  ("upstream_review.waiting_human", "resume_upstream_revision")),
                 start="upstream_review.waiting_ci",
-                text="Automated upstream revisions require that the upstream PR head is the "
+                text="Revision Work carries the same history as development Work, including "
+                     "the reviews of upstream maintainers. "
+                     "Automated upstream revisions require that the upstream PR head is the "
                      "controlled fork ref. `request_upstream_revision` applies while a failing "
                      "CI job is recorded for the head and charges `repair_attempts_cluster`; "
                      "`request_review_revision` applies to a revision driven only by review "

@@ -31,6 +31,7 @@ import reconcile
 import work
 import worker_gate
 import worker_recovery
+from tests import helpers
 from tests.helpers import apply_command, policy, runner_loss
 from tests.test_observation import TestExactHeadCiReconciliation
 
@@ -99,7 +100,7 @@ def tick(record, *, publications=(), queue_works=None, runs=None, now="2026-11-2
          mock.patch("observe_ci.collect.ci_snapshot", return_value=observed), \
          mock.patch("observe_ci.collect.classify_runner_loss", side_effect=runner_loss()):
         return reconcile.tick(
-            object(), reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, dict(REASONS)),
+            helpers.NoReadApi(), reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {}, dict(REASONS)),
             policy=policy(read_only=False),
             now=datetime.fromisoformat(now), publications=list(publications),
             pressure=capacity.Pressure(ok=True), issues=[], comments=[],

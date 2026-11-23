@@ -34,7 +34,7 @@ import observe_ci
 import reconcile
 import recovery
 import schemas
-from tests import test_ci_rerun
+from tests import helpers, test_ci_rerun
 from tests.helpers import (
     NOW,
     OWNER,
@@ -88,8 +88,8 @@ def tick(rec, publications=(), *, observe=True, verdict="pending", head=SHA_A, f
                        return_value=ci or ci_snapshot(head, verdict)), \
             mock.patch("observe_ci.collect.classify_runner_loss", side_effect=runner_loss(lost)), \
             contextlib.redirect_stderr(io.StringIO()):
-        return reconcile.tick(api or (object() if observe else None), snapshot, policy=POLICY,
-                              now=now, publications=list(publications),
+        return reconcile.tick(api or (helpers.NoReadApi() if observe else None), snapshot,
+                              policy=POLICY, now=now, publications=list(publications),
                               pressure=capacity.Pressure(ok=True), observe=observe,
                               dispatcher_runs=list(runs), queue_works=queue or {},
                               ci_reruns=ci_reruns)
