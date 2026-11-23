@@ -269,34 +269,8 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
 def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                    policy: dict) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work whose graph is terminal without a
-    usable Result: the record, its event, and the decision for the report.
-    A state outside the table has no row: the Work is left to its deadline."""
-    iso = now.isoformat()
-    if engine.state_key(c) not in lifecycle.LIFECYCLE:
-        return None, None, f"terminal Work in {engine.state_key(c)}, a state the table does not have"
-    facts = {"work_terminal_without_result"}
-    details = {"queue_state": queue_state, "work": aw["dedupe_key"]}
-    generation, revision = int(c.get("generation", 0)), c["revision"] + 1
-    fresh = dict(aw, dedupe_key=work.work_key(c["contribution_id"], generation, revision, aw["task"],
-                                              engine.head_reruns(c)["flaky"]),
-                 generation=generation, revision=revision, requested_at=iso,
-                 deadline_at=(now + timedelta(hours=controller.WORK_DEADLINE_HOURS)).isoformat(),
-                 dispatched_run_id=None)
-    out = engine.apply_transition(c, "allocate_work_retry", policy=policy, now=iso,
-                                  cause_id=f"queue-{queue_state}", facts=facts,
-                                  values={"active_work": fresh}, details=details)
-    if out.accepted:
-        attempt = out.record["active_work"]["attempt"]
-        limit = lifecycle.budget_limit("work_recovery", policy)
-        return out.record, out.event, f"new revision for terminal Work, attempt {attempt} of {limit}"
-    spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
-    out = engine.apply_transition(c, "exhaust_work_recovery", policy=policy, now=iso,
-                                  cause_id=f"queue-{queue_state}", facts=facts,
-                                  values={lifecycle.PENDING_COUNTER: (spent or ["work_recovery"])[0]},
-                                  details=details | {"exhausted": spent})
-    if not out.accepted:
-        return None, None, f"terminal Work: {out.reason}"
-    return out.record, out.event, "automatic Work recovery exhausted; waiting for a human"
+    usable Result (``controller.terminal_work``)."""
+    return controller.terminal_work(c, aw, queue_state, now=now, policy=policy)
 
 
 def _may_hold_work(rec: dict) -> bool:

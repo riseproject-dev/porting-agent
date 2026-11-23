@@ -563,24 +563,108 @@ class TestCiRerunWithoutTrustedRerun(unittest.TestCase):
 
     def test_work_that_returned_a_result_is_never_allocated_again(self):
         """An allocation that would name a Work graph the queue holds as
-        terminal, or that returned a Result in this tick, is an error of the
-        contribution, not a resubmission."""
+        terminal, or that returned a Result in this tick, is terminal Work
+        without a usable Result: a fresh graph is allocated, never a
+        resubmission."""
         import work
         due = record("fix_needed", last_ci_evidence_id=observed_ci_id())
         key = work.work_key(due["contribution_id"], 0, due["revision"], "development_repair")
+        fresh = work.work_key(due["contribution_id"], 0, due["revision"] + 1, "development_repair")
         out = tick(due, observe=False, evidence=self.evidence,
                    queue={work.graph_id(key): "completed"})
-        self.assertEqual(kinds(out), ["pause_on_processing_error"])
-        self.assertEqual(submitted(out), [])
-        self.assertIn("never submitted again",
-                      out.report["processing_errors"][0]["message"])
+        self.assertEqual(kinds(out), ["request_repair", "allocate_work_retry"])
+        self.assertEqual(submitted(out), [fresh])
         out = tick(due, [dict(publication(due, "published"),
                               task={"contribution_id": due["contribution_id"],
                                     "revision": due["revision"], "generation": 0,
                                     "dedupe_key": key, "task": "development_repair"})],
                    observe=False, evidence=self.evidence)
-        self.assertIn("pause_on_processing_error", kinds(out))
+        self.assertEqual(kinds(out)[-2:], ["request_repair", "allocate_work_retry"])
+        self.assertNotIn("pause_on_processing_error", kinds(out))
+        self.assertEqual(submitted(out), [fresh])
+
+
+class TestSpentWork(unittest.TestCase):
+    """A row that keeps the revision can name Work whose graph already
+    returned a Result or is terminal in the queue. That Work is terminal
+    without a usable Result: a fresh graph is allocated in the same tick
+    (`allocate_work_retry`), or the contribution waits for a human
+    (`exhaust_work_recovery`), and the spent graph is never submitted."""
+
+    def setUp(self):
+        failing = observed_ci_id()
+        self.evidence = {failing: ci_record(failing, SHA_A, failing=JOB)}
+
+    def check(self, output):
+        for kind, staged in output.staged:
+            schemas.validate({"contributions": "contribution", "events": "event"}.get(kind, kind),
+                             staged)
+        self.assertEqual(output.report.get("failures") or [], [])
+
+    def uncertain_publication(self):
+        """Repair Work whose uncertain publication is recorded at the same
+        revision, and the graph of that Work, completed in the queue."""
+        import work
+        due = record("fix_needed", last_ci_evidence_id=observed_ci_id())
+        out = tick(due, observe=False, evidence=self.evidence)
+        running_ = final(out, due)
+        key = running_["active_work"]["dedupe_key"]
+        out = tick(running_, [publication(running_, "uncertain")], observe=False,
+                   evidence=self.evidence)
+        self.assertEqual(kinds(out), ["record_publish_success"])
+        waiting = final(out, running_)
+        self.assertEqual(waiting["revision"], running_["revision"])
+        return waiting, key, {work.graph_id(key): "completed"}
+
+    def test_an_uncertain_publication_that_never_landed_is_repaired_on_a_fresh_graph(self):
+        waiting, key, queue = self.uncertain_publication()
+        # The push never landed: the same head fails again, and the repair
+        # Work at the kept revision names the spent graph.
+        out = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue)
+        self.check(out)
+        self.assertEqual(kinds(out), ["record_ci_failure", "request_repair", "allocate_work_retry"])
+        rec = final(out, waiting)
+        self.assertEqual((engine.state_key(rec), rec["paused"], rec["revision"]),
+                         ("development.agent_running", False, waiting["revision"] + 1))
+        self.assertEqual(rec["active_work"]["attempt"], 2)
+        self.assertEqual(submitted(out), [rec["active_work"]["dedupe_key"]])
+        self.assertNotIn(key, submitted(out))
+        self.assertEqual(out.report["controller"]["spent_work"][0]["work"], key)
+
+    def test_spent_work_without_work_recovery_waits_for_a_human(self):
+        waiting, key, queue = self.uncertain_publication()
+        limit = lifecycle.budget_limit("work_total", POLICY)
+        waiting = dict(waiting, budget=dict(waiting["budget"], attempts_used=limit - 1))
+        out = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue)
+        self.check(out)
+        self.assertEqual(kinds(out), ["record_ci_failure", "request_repair",
+                                      "exhaust_work_recovery"])
+        rec = final(out, waiting)
+        self.assertEqual((engine.state_key(rec), rec["active_work"],
+                          rec["pending_human_action"]["kind"],
+                          rec["pending_human_action"]["counter"]),
+                         ("development.waiting_human", None, "work_failed", "work_total"))
         self.assertEqual(submitted(out), [])
+
+    def test_a_stale_revision_result_in_upstream_review_is_revised_on_a_fresh_graph(self):
+        # A revision Result that left the revision unchanged (`no_change` or
+        # stale) is followed by failing CI at the same revision: the revision
+        # Work names the graph that already returned that Result.
+        import work
+        rec = record("fix_needed", phase="upstream_review", revision=3,
+                     last_ci_evidence_id=observed_ci_id())
+        rec["upstream_pr"] = {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
+                              "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
+                              "base_ref": "main", "registered_by": OWNER}
+        key = work.work_key(rec["contribution_id"], 0, 3, "upstream_revision")
+        out = tick(rec, observe=False, evidence=self.evidence,
+                   queue={work.graph_id(key): "completed"})
+        self.check(out)
+        self.assertEqual(kinds(out), ["request_upstream_revision", "allocate_work_retry"])
+        new = final(out, rec)
+        self.assertEqual((engine.state_key(new), new["paused"], new["revision"]),
+                         ("upstream_review.agent_running", False, 4))
+        self.assertEqual(submitted(out), ["example--proj/12@g0.r4:upstream_revision"])
 
 
 class TestLateRetryResult(unittest.TestCase):

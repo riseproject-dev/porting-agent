@@ -776,10 +776,12 @@ PIPELINE_VERBS: dict[str, str] = {
     "exhaust_work_total": "controller",
     "refresh_on_exhaustion": "controller",
     "exhaust_repair_attempts": "controller",
-    # A terminal Work graph without a usable Result, and an investigation
-    # Result without a usable dossier.
-    "allocate_work_retry": "reconcile",
-    "exhaust_work_recovery": "reconcile",
+    # A terminal Work graph without a usable Result (taken by
+    # `controller.terminal_work` for the reconciler and for an allocation
+    # that names a spent graph), and an investigation Result without a
+    # usable dossier.
+    "allocate_work_retry": "controller",
+    "exhaust_work_recovery": "controller",
     "reject_dossier": "reconcile",
     "exhaust_investigation_recovery": "reconcile",
     # The verified dossier decides: development on a new fork or on the

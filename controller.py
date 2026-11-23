@@ -20,7 +20,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +64,8 @@ class Inputs:
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
     # The queue graphs (``work.graph_id``) of Work that already returned a
     # Result or that the queue holds as terminal. A terminal graph is never
-    # submitted again, so no allocation may name one.
+    # submitted again: Work allocated under one takes `allocate_work_retry`
+    # or `exhaust_work_recovery` in the same tick.
     spent_graphs: frozenset[str] = frozenset()
 
 
@@ -721,9 +722,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
             cluster = engine.recorded_failing_job(claimed, ci)[1]
             request = _work_request(claimed, kind, inputs, now)
-            if work_queue.graph_id(request["dedupe_key"]) in inputs.spent_graphs:
-                raise SpentWork(f"{verb}: Work {request['dedupe_key']} already returned a Result "
-                                "or its queue graph is terminal; it is never submitted again")
             source = engine.state_key(claimed)
             claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
                             facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
@@ -745,7 +743,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if kind not in work_queue.SUBMISSION_TASKS and carried != expected:
                 raise lifecycle.TransitionError(
                     f"{verb}: the Work carries {carried}, not {expected}")
+            # A row that keeps the revision can name Work whose graph already
+            # returned a Result or is terminal in the queue. That Work is
+            # terminal without a usable Result: it is never submitted again,
+            # and a fresh graph is allocated within `work_recovery`
+            # (`allocate_work_retry`), or the contribution waits for a human
+            # (`exhaust_work_recovery`).
+            claimed = _retry_spent_work(claimed, inputs, res, policy)
             by_id[c["contribution_id"]] = claimed
+            if not claimed.get("active_work"):
+                slots += 1
+                continue
             aw = claimed["active_work"]
             work = {
                 "type": "submit_work",
@@ -775,9 +783,57 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     return res
 
 
-class SpentWork(RuntimeError):
-    """An allocation would name a Work graph that already returned a Result
-    or that the queue holds as terminal."""
+def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
+                  policy: dict) -> tuple[dict | None, dict | None, str]:
+    """The table's row for requested Work whose graph is terminal without a
+    usable Result: the record, its event, and the decision for the report.
+    A state outside the table has no row: nothing is decided."""
+    iso = now.isoformat()
+    if engine.state_key(c) not in lifecycle.LIFECYCLE:
+        return None, None, f"terminal Work in {engine.state_key(c)}, a state the table does not have"
+    facts = {"work_terminal_without_result"}
+    details = {"queue_state": queue_state, "work": aw["dedupe_key"]}
+    generation, revision = int(c.get("generation", 0)), c["revision"] + 1
+    fresh = dict(aw, dedupe_key=work_queue.work_key(c["contribution_id"], generation, revision,
+                                                    aw["task"], engine.head_reruns(c)["flaky"]),
+                 generation=generation, revision=revision, requested_at=iso,
+                 deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
+                 dispatched_run_id=None)
+    out = engine.apply_transition(c, "allocate_work_retry", policy=policy, now=iso,
+                                  cause_id=f"queue-{queue_state}", facts=facts,
+                                  values={"active_work": fresh}, details=details)
+    if out.accepted:
+        attempt = out.record["active_work"]["attempt"]
+        limit = lifecycle.budget_limit("work_recovery", policy)
+        return out.record, out.event, f"new revision for terminal Work, attempt {attempt} of {limit}"
+    spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
+    out = engine.apply_transition(c, "exhaust_work_recovery", policy=policy, now=iso,
+                                  cause_id=f"queue-{queue_state}", facts=facts,
+                                  values={lifecycle.PENDING_COUNTER: (spent or ["work_recovery"])[0]},
+                                  details=details | {"exhausted": spent})
+    if not out.accepted:
+        return None, None, f"terminal Work: {out.reason}"
+    return out.record, out.event, "automatic Work recovery exhausted; waiting for a human"
+
+
+def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
+    """``record`` once the Work it was just allocated no longer names a graph
+    in ``inputs.spent_graphs``: each spent graph takes ``allocate_work_retry``
+    (a fresh graph at a new revision) or ``exhaust_work_recovery``, which
+    clears the Work."""
+    while record.get("active_work") and \
+            work_queue.graph_id(record["active_work"]["dedupe_key"]) in inputs.spent_graphs:
+        spent = record["active_work"]["dedupe_key"]
+        new, event, decision = terminal_work(record, record["active_work"], "spent",
+                                             now=inputs.now, policy=policy)
+        if new is None:
+            raise lifecycle.TransitionError(f"Work {spent} is spent: {decision}")
+        res.stage("contributions", new)
+        res.stage("events", event)
+        res.report.setdefault("spent_work", []).append(
+            {"contribution": record["contribution_id"], "work": spent, "decision": decision})
+        record = new
+    return record
 
 
 def _carries_feedback(state: str, verb: str) -> bool:
