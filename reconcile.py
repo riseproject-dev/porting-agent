@@ -36,12 +36,12 @@ from typing import Any
 import capacity
 import collect
 import controller
-import dossier_gate
 import engine
 import handoff
 import isolation
 import lifecycle
 import observe_ci
+import plan_gate
 import recovery
 import schemas
 import state
@@ -287,7 +287,7 @@ def _holds_dispatched_work(rec: dict) -> bool:
 
 
 # The phase in which the table requests Work of each task.
-WORK_PHASE = {"investigation": "investigation", "development_patch": "development",
+WORK_PHASE = {"planning": "planning", "development_patch": "development",
               "development_repair": "development", "upstream_revision": "upstream_review",
               work.SUBMISSION_REWRITE: "handoff", work.SUBMISSION_REVIEW: "handoff"}
 # The states of the handoff phase that hold requested Work: the rewrite and
@@ -296,7 +296,7 @@ SUBMISSION_REWRITE_STATE = lifecycle.SUBMISSION_REWRITE
 SUBMISSION_REVIEW_STATE = lifecycle.SUBMISSION_REVIEW
 SUBMISSION_WORK_STATES = (SUBMISSION_REWRITE_STATE, SUBMISSION_REVIEW_STATE)
 # The phases whose states can request Work outside the handoff phase.
-WORK_PHASES = frozenset({"investigation", "provisioning", "development", "upstream_review"})
+WORK_PHASES = frozenset({"planning", "provisioning", "development", "upstream_review"})
 
 
 def result_mismatch(rec: dict, pub: dict) -> str | None:
@@ -339,9 +339,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if revision != rec["revision"]:
         return f"late Result of revision {revision}, current is {rec['revision']}"
     run = str(pub.get("worker_run_id"))
-    if (pub.get("status") == "investigation") != (rec["phase"] == "investigation"):
-        # A dossier answers investigation Work only, and investigation Work
-        # is answered by a dossier only.
+    if (pub.get("status") == "planning") != (rec["phase"] == "planning"):
+        # A plan answers planning Work only, and planning Work
+        # is answered by a plan only.
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
     if pub.get("status") == submission.STATUS and rec["phase"] != "handoff":
         return f"late Result: a submission review has no row in the {rec['phase']} phase"
@@ -355,9 +355,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
             and requested.get("revision") == revision \
             and (requested.get("dedupe_key") == key if key is not None else True) \
             and task.get("task", requested.get("task")) == requested.get("task") \
-            and (pub.get("status") == "investigation") == (requested.get("task") == "investigation"):
-        # The Work id names the task; a dossier answers investigation Work
-        # only, and investigation Work is answered by a dossier only.
+            and (pub.get("status") == "planning") == (requested.get("task") == "planning"):
+        # The Work id names the task; a plan answers planning Work
+        # only, and planning Work is answered by a plan only.
         return None
     if (rec.get("pending_publication") or {}).get("worker_run_id") == run \
             and rec["phase"] in ("development", "upstream_review"):
@@ -381,44 +381,44 @@ def _result_cause(outcome: dict, worker_run_id: str | None) -> str | None:
     return str(run) if run else None
 
 
-# The decisions of a verified dossier. A Result without a dossier, or with a
-# decision that is none of these, has no usable dossier.
-DOSSIER_DECISIONS = ("develop", "park", "close")
-# The `terminal_reason` of a contribution closed by its dossier is derived by
-# `dossier_gate.close_confirmation` from PyPI documents the reconciler reads
-# itself, never taken from the dossier.
+# The decisions of a verified plan. A Result without a plan, or with a
+# decision that is none of these, has no usable plan.
+PLAN_DECISIONS = ("develop", "park", "close")
+# The `terminal_reason` of a contribution closed by its plan is derived by
+# `plan_gate.close_confirmation` from PyPI documents the reconciler reads
+# itself, never taken from the plan.
 _DISTRIBUTION_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
-def _reject_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
+def _reject_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
                     worker_run_id: str | None, evidence: dict | None,
                     why: str) -> tuple[dict, list[tuple[str, dict]]]:
-    """Take ``reject_dossier``, or ``exhaust_investigation_recovery`` once
-    ``investigation_attempts`` is exhausted, for an investigation Result
-    without a usable dossier: no dossier, an invalid one (an incomplete
+    """Take ``reject_plan``, or ``exhaust_planning_recovery`` once
+    ``planning_attempts`` is exhausted, for a planning run Result
+    without a usable plan: no plan, an invalid one (an incomplete
     patch scope included), a decision that is none of develop, park, and
     close, or a decision close that PyPI does not confirm."""
     staged: list[tuple[str, dict]] = [("evidence", evidence)] if evidence else []
-    facts = {"dossier_rejected", "no_usable_dossier"}
+    facts = {"plan_rejected", "no_usable_plan"}
     details = {"result_status": outcome.get("status"),
-               "decision": ((outcome.get("dossier") or {}).get("proposal") or {}).get("decision")
-               if isinstance(outcome.get("dossier"), dict) else None,
+               "decision": ((outcome.get("plan") or {}).get("proposal") or {}).get("decision")
+               if isinstance(outcome.get("plan"), dict) else None,
                "why": why[:500],
                **({"evidence_id": evidence["evidence_id"]} if evidence else {})}
     cause = _result_cause(outcome, worker_run_id)
-    for verb in ("reject_dossier", "exhaust_investigation_recovery"):
+    for verb in ("reject_plan", "exhaust_planning_recovery"):
         out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
                                       facts=facts, details=details)
         if out.accepted:
             staged.extend([("events", out.event), ("contributions", out.record)])
             return out.record, staged
-    raise lifecycle.TransitionError(f"no row takes an investigation Result without a usable "
-                                    f"dossier in {engine.state_key(rec)}: {out.reason}")
+    raise lifecycle.TransitionError(f"no row takes a planning run Result without a usable "
+                                    f"plan in {engine.state_key(rec)}: {out.reason}")
 
 
 def _admitted_scope(rec: dict, decision: dict) -> tuple[str | None, list | None]:
-    """The admission class and scope paths a dossier decision admits: the
-    dossier's own for a decision develop, the recorded ``admission_override``
+    """The admission class and scope paths a plan decision admits: the
+    plan's own for a decision develop, the recorded ``admission_override``
     for a decision park (the override applies against a park only)."""
     if decision.get("decision") == "park":
         override = rec.get("admission_override") or {}
@@ -426,22 +426,22 @@ def _admitted_scope(rec: dict, decision: dict) -> tuple[str | None, list | None]
     return decision.get("admission_class"), decision.get("allowed_paths")
 
 
-def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
+def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
                  worker_run_id: str | None, pypi=None) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold an investigation Result through the table's rows of
-    ``investigation.agent_running``.
+    """Fold a planning run Result through the table's rows of
+    ``planning.agent_running``.
 
-    * no dossier, a decision that is none of develop, park, and close, a
+    * no plan, a decision that is none of develop, park, and close, a
       patch scope that is incomplete where ``admit_development`` checks it,
-      or a decision close that PyPI does not confirm: ``reject_dossier``
-      (``exhaust_investigation_recovery`` once ``investigation_attempts`` is
+      or a decision close that PyPI does not confirm: ``reject_plan``
+      (``exhaust_planning_recovery`` once ``planning_attempts`` is
       exhausted);
     * develop, or park with a recorded ``admission_override``:
       ``readmit_development`` to the recorded fork when a refresh began with
       the fork and development PR the record still holds, otherwise
       ``admit_development`` to provisioning. Both clear the override;
-    * park without an override: ``park_investigation``;
-    * close, confirmed from PyPI: ``close_investigation``. ``pypi`` reads
+    * park without an override: ``park_planning``;
+    * close, confirmed from PyPI: ``close_planning``. ``pypi`` reads
       the PyPI document of each recorded distribution
       (``collect.pypi_project`` by default); ``terminal_reason`` is
       ``already_released`` when the latest release of a distribution has a
@@ -450,46 +450,46 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
       skips the contribution and folds the same Result again. A recorded
       override is not applied, and the event says so.
 
-    The dossier is recorded as evidence first. The rows set the dossier, the
+    The plan is recorded as evidence first. The rows set the plan, the
     admission class, and the scope paths; the complete coverage the scope
     was checked for is recorded beside them in ``scope_coverage_complete``.
     """
-    if engine.state_key(rec) != "investigation.agent_running":
+    if engine.state_key(rec) != "planning.agent_running":
         raise lifecycle.TransitionError(
-            f"an investigation Result is folded in investigation.agent_running only, not in "
+            f"a planning run Result is folded in planning.agent_running only, not in "
             f"{engine.state_key(rec)}")
-    dossier = outcome.get("dossier")
+    plan = outcome.get("plan")
     staged: list[tuple[str, dict]] = []
     evidence = None
-    if isinstance(dossier, dict):
-        eid = safe_id(f"dossier-{rec['contribution_id'].replace('/', '--')}-r{rec['revision']}")
+    if isinstance(plan, dict):
+        eid = safe_id(f"plan-{rec['contribution_id'].replace('/', '--')}-r{rec['revision']}")
         evidence = {"schema_version": 1, "evidence_id": eid, "contribution_id": rec["contribution_id"],
-                    "kind": "dossier", "policy_version": policy.get("policy_version", "unknown"),
+                    "kind": "plan", "policy_version": policy.get("policy_version", "unknown"),
                     "collected_at": now,
                     "summary": str((outcome.get("proposal") or {}).get("diagnosis")
-                                   or "investigation dossier")[:8000],
-                    "limitations": [], "data": dossier,
+                                   or "planning plan")[:8000],
+                    "limitations": [], "data": plan,
                     "digests": {"artifact": (outcome.get("artifact") or {}).get("digest") or ""}}
-    decision = (dossier.get("proposal") if isinstance(dossier, dict) else None)
+    decision = (plan.get("proposal") if isinstance(plan, dict) else None)
     decision = decision if isinstance(decision, dict) else {}
     kind = decision.get("decision")
     common = dict(policy=policy, now=now, worker_run_id=worker_run_id, evidence=evidence)
     if evidence is None:
-        return _reject_dossier(rec, outcome, why="the Result has no dossier", **common)
-    if kind not in DOSSIER_DECISIONS:
-        return _reject_dossier(rec, outcome, why=f"the dossier decision {kind!r} is not develop, "
+        return _reject_plan(rec, outcome, why="the Result has no plan", **common)
+    if kind not in PLAN_DECISIONS:
+        return _reject_plan(rec, outcome, why=f"the plan decision {kind!r} is not develop, "
                                "park, or close", **common)
     close_reason = close_finding = None
     if kind == "close":
-        # `closed.idle` is final and the dossier is worker output: PyPI, read
+        # `closed.idle` is final and the plan is worker output: PyPI, read
         # here, confirms the close and gives its reason.
         read = pypi or collect.pypi_project
         names = [n for n in (rec.get("distributions") or []) if isinstance(n, str)]
         documents = {name: read(name) if _DISTRIBUTION_NAME.fullmatch(name) else None
                      for name in names}
-        close_reason, problem, close_finding = dossier_gate.close_confirmation(names, documents)
+        close_reason, problem, close_finding = plan_gate.close_confirmation(names, documents)
         if problem:
-            return _reject_dossier(
+            return _reject_plan(
                 rec, outcome, why=f"PyPI does not confirm the decision close: {problem}",
                 **common)
     staged.append(("evidence", evidence))
@@ -501,15 +501,15 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
         if override:
             details["admission_override_not_applied"] = override
         out = engine.apply_transition(
-            rec, "close_investigation", policy=policy, now=now, cause_id=cause,
-            facts={"dossier_decision_close", "close_confirmed_by_pypi"},
+            rec, "close_planning", policy=policy, now=now, cause_id=cause,
+            facts={"plan_decision_close", "close_confirmed_by_pypi"},
             values={"terminal_reason": close_reason},
             details=details | {"rationale": rationale, "pypi": close_finding})
     elif kind == "park" and not override:
         out = engine.apply_transition(
-            rec, "park_investigation", policy=policy, now=now, cause_id=cause,
-            facts={"dossier_decision_park"},
-            values={"parked_reason": rationale or "the dossier decided park"},
+            rec, "park_planning", policy=policy, now=now, cause_id=cause,
+            facts={"plan_decision_park"},
+            values={"parked_reason": rationale or "the plan decided park"},
             details=details)
     else:
         admission_class, paths = _admitted_scope(rec, decision)
@@ -519,22 +519,22 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
                        and fork.get("pr_number") == refresh.get("pr_number"))
         # The scope is a guard of `admit_development`. An override is checked
         # whichever row admits it, since nothing else names its class and
-        # paths; its paths are the human's scope, so the dossier's coverage
+        # paths; its paths are the human's scope, so the plan's coverage
         # is recorded for it but does not refuse it.
-        problem = dossier_gate.scope_problem(decision, admission_class=admission_class,
+        problem = plan_gate.scope_problem(decision, admission_class=admission_class,
                                              allowed_paths=paths)
-        refused = (dossier_gate.scope_problem(decision, admission_class=admission_class,
+        refused = (plan_gate.scope_problem(decision, admission_class=admission_class,
                                               allowed_paths=paths, coverage=False)
                    if kind == "park" else problem)
         if refused and (kind == "park" or not readmit):
-            return _reject_dossier(
+            return _reject_plan(
                 rec, outcome, why=f"the admitted patch scope is incomplete: {refused}",
                 **common)
         if override and kind == "park":
             details["admission_override"] = override
         elif override:
             details["admission_override_cleared"] = override
-        values = {"dossier_evidence_id": evidence["evidence_id"],
+        values = {"plan_evidence_id": evidence["evidence_id"],
                   "admission_class": admission_class,
                   "scope_paths": list(paths) if isinstance(paths, list) else paths}
         if readmit:
@@ -548,11 +548,11 @@ def fold_dossier(rec: dict, outcome: dict, *, now: str, policy: dict,
                 facts={"development_admitted", "patch_scope_complete", "fresh_fork_required"},
                 values=values, details=details)
     if not out.accepted:
-        raise lifecycle.TransitionError(f"the dossier decision {kind} is refused in "
+        raise lifecycle.TransitionError(f"the plan decision {kind} is refused in "
                                         f"{engine.state_key(rec)}: {out.reason}")
     new = out.record
     if out.verb in ("admit_development", "readmit_development"):
-        # The scope was checked complete for the dossier it came from.
+        # The scope was checked complete for the plan it came from.
         new = engine.record_beside(new, "scope_checked", now=now,
                                    scope_coverage_complete=problem is None)
     staged.extend([("events", out.event), ("contributions", new)])
@@ -769,7 +769,7 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
                       pypi=None) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one Result (from fork_publish / queue_result) into the record.
 
-    * investigation Work: the dossier decides, by the table (``fold_dossier``);
+    * planning Work: the plan decides, by the table (``fold_plan``);
     * the submission rewrite and review Work: their trusted checks decide
       (``fold_submission_rewrite``, ``fold_submission_review``);
     * patch Work in development and revision Work in upstream review: the
@@ -778,8 +778,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     ``pypi`` reads a PyPI document for the confirmation of a decision close
     (``collect.pypi_project`` by default).
     """
-    if outcome.get("status") == "investigation":
-        return fold_dossier(rec, outcome, now=now, policy=policy or {},
+    if outcome.get("status") == "planning":
+        return fold_plan(rec, outcome, now=now, policy=policy or {},
                             worker_run_id=worker_run_id, pypi=pypi)
     if engine.state_key(rec) == SUBMISSION_REWRITE_STATE:
         return fold_submission_rewrite(rec, outcome, now=now, policy=policy or {},
@@ -1022,7 +1022,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     new = out.record
     if out.verb in ("record_publish_success", "record_revision_publish_success"):
         # Beside the row: the published files join the admitted scope (a
-        # repair backed by review feedback may change a path the dossier
+        # repair backed by review feedback may change a path the plan
         # missed), and a published patch starts `no_progress` again.
         changed_files = ((op or {}).get("proposed") or {}).get("changed_files") or []
         scope = (list(dict.fromkeys((new.get("scope_paths") or []) + changed_files))
@@ -1730,7 +1730,7 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
             int(artifact_id.read_text().strip()) if artifact_id.exists() else None
         )
         for name, key in (
-            ("dossier.json", "dossier"),
+            ("plan.json", "plan"),
             ("proposal.json", "proposal"),
             ("result.json", "artifact"),
         ):

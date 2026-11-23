@@ -23,7 +23,7 @@ on:
   workflow_run:
     workflows:
       - Dispatcher
-      - Investigator
+      - Planner
       - Worker
       - Reproduction Image
       - Fork Provisioning
@@ -138,13 +138,13 @@ jobs:
       - name: Is the policy read-only?
         id: policy
         run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
-      - name: Collect verified investigator, worker, and publish-only retry outcomes
+      - name: Collect verified planner, worker, and publish-only retry outcomes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p publications
-          for workflow in investigator.lock.yml worker.lock.yml publish-retry.yml; do
+          for workflow in planner.lock.yml worker.lock.yml publish-retry.yml; do
             filter=
             if [ "$workflow" = publish-retry.yml ]; then
               # A retry the controller launched on main, once it completed.
@@ -167,7 +167,7 @@ jobs:
               printf '%s' "$id" > "publications/$run/artifact-id"
               task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
               # A retry's Result is the Result of the worker run it publishes.
-              # Only a publish-only retry names another run: an investigator or
+              # Only a publish-only retry names another run: a planner or
               # worker artifact is the Result of its own run, whatever it holds.
               worker_run=$run
               if [ "$workflow" = publish-retry.yml ]; then
@@ -178,18 +178,18 @@ jobs:
                 rm -f "publications/$run/worker-run-id"
               fi
               if [ ! -f "publications/$run/outcome.json" ]; then
-                if [ "$task" = investigation ] && [ -f "publications/$run/result.json" ] \
-                    && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/dossier.json" ]; then
-                  uv run --locked python -m investigation_recovery \
+                if [ "$task" = planning ] && [ -f "publications/$run/result.json" ] \
+                    && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/plan.json" ]; then
+                  uv run --locked python -m planning_recovery \
                     --directory "publications/$run" --run-id "$worker_run" \
-                    || { echo "trusted investigation recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
+                    || { echo "trusted planning recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
                 else
                   echo "incomplete publication for $run" >&2
                   rm -rf "publications/$run"
                   continue
                 fi
               fi
-              if [ "$task" != investigation ] && [ -f "publications/$run/outcome.json" ] \
+              if [ "$task" != planning ] && [ -f "publications/$run/outcome.json" ] \
                   && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/result.json" ]; then
                 uv run --locked python -m worker_recovery \
                   --directory "publications/$run" --run-id "$worker_run" \
@@ -301,24 +301,24 @@ jobs:
           repositories: porting-agent
           permission-contents: read
           permission-issues: write
-      - name: Publish comments for recovered verified investigations
+      - name: Publish comments for recovered verified planning runs
         if: steps.policy.outputs.read_only == 'false'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.issue-token.outputs.token }}
           PORTING_COMMENT_AUTHOR: riseproject-dev[bot]
-          PORTING_DOSSIER_RECOVERY: '1'
+          PORTING_PLAN_RECOVERY: '1'
         run: |
           set -euo pipefail
-          mkdir -p recovered-dossier-comments
-          for marker in publications/*/recovered-investigation; do
+          mkdir -p recovered-plan-comments
+          for marker in publications/*/recovered-planning; do
             [ -f "$marker" ] || continue
-            directory=${marker%/recovered-investigation}
+            directory=${marker%/recovered-planning}
             run=${directory##*/}
-            uv run --locked python -m dossier_comment \
-              --dossier "$directory/dossier.json" --proposal "$directory/proposal.json" \
+            uv run --locked python -m plan_comment \
+              --plan "$directory/plan.json" --proposal "$directory/proposal.json" \
               --task "$directory/task.json" --result "$directory/result.json" \
-              --out "recovered-dossier-comments/$run.json"
+              --out "recovered-plan-comments/$run.json"
           done
       # These projections run only after durable state publication. Each scans
       # committed receipts/events and is idempotent, so a later tick repairs a
@@ -410,7 +410,7 @@ jobs:
           name: porting-control-receipts
           path: |
             report.json
-            recovered-dossier-comments/*.json
+            recovered-plan-comments/*.json
             status-ledger/receipts.json
             command-feedback/receipts.json
             command-reactions/receipts.json

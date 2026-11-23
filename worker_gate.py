@@ -112,7 +112,7 @@ def validate(task: dict, proposal: dict, mbox_path: Path) -> dict:
                                   + "; ".join(attributed[:4]))
         rules = (task.get("context") or {}).get("commit_rules")
         if rules is not None:
-            # The measurable commit conventions of the verified dossier, from
+            # The measurable commit conventions of the verified plan, from
             # the trusted Work payload. ``{debug}`` commits are exempt; the
             # number of commits is checked at submission, where the review
             # may squash.

@@ -88,7 +88,7 @@ def fresh_workspace(path: Path) -> Path:
 
 @dataclass
 class Scope:
-    """Approved patch surface for one contribution (from the dossier)."""
+    """Approved patch surface for one contribution (from the plan)."""
     allowed_globs: list[str]
     workflow_globs: list[str] = field(default_factory=lambda: [".github/workflows/*"])
     upstream_facing: bool = False   # True after handoff: no {debug} allowed

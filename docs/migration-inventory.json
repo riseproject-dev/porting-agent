@@ -19,7 +19,7 @@
       "source": "upstreaming/INVESTIGATION.md",
       "action": "move",
       "targets": [
-        "docs/INVESTIGATION.md"
+        "docs/PLANNING.md"
       ],
       "milestone": 1,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
@@ -235,7 +235,7 @@
       "source": "upstreaming/dossier_comment.py",
       "action": "move",
       "targets": [
-        "dossier_comment.py"
+        "plan_comment.py"
       ],
       "milestone": 2,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
@@ -245,7 +245,7 @@
       "source": "upstreaming/dossier_gate.py",
       "action": "move",
       "targets": [
-        "dossier_gate.py"
+        "plan_gate.py"
       ],
       "milestone": 2,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
@@ -555,7 +555,7 @@
       "source": "upstreaming/schemas/dossier.schema.json",
       "action": "move",
       "targets": [
-        "schemas/dossier.schema.json"
+        "schemas/plan.schema.json"
       ],
       "milestone": 2,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
@@ -765,7 +765,7 @@
       "source": "upstreaming/tests/test_dossier_comment.py",
       "action": "move",
       "targets": [
-        "tests/test_dossier_comment.py"
+        "tests/test_plan_comment.py"
       ],
       "milestone": 2,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",
@@ -775,7 +775,7 @@
       "source": "upstreaming/tests/test_dossier_gate.py",
       "action": "move",
       "targets": [
-        "tests/test_dossier_gate.py"
+        "tests/test_plan_gate.py"
       ],
       "milestone": 2,
       "rationale": "Flatten the proven implementation into the conventional control repository layout.",

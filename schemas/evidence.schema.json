@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Evidence record (CI, release acceptance, dossier, probe)",
+  "title": "Evidence record (CI, release acceptance, plan, probe)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -35,7 +35,7 @@
         "ci",
         "probe",
         "release_acceptance",
-        "dossier",
+        "plan",
         "target_contract",
         "rehearsal",
         "submission_rewrite",

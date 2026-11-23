@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The dossier's measurable contribution rules and the trusted checks that
+"""The plan's measurable contribution rules and the trusted checks that
 apply them: the worker gate and the Work payload that carries them."""
 
 import copy
@@ -13,8 +13,8 @@ from pathlib import Path
 
 import commit_rules
 import worker_gate
-from tests.test_dossier_gate import dossier
 from tests.test_milestone5_worker import proposal, task
+from tests.test_plan_gate import plan
 
 RULES = {"title_max_length": 50, "title_prefixes": ["ci:", "build(wheels):"],
          "title_prefix_required": True, "title_capitalization": "upper",
@@ -101,16 +101,16 @@ class TestRules(unittest.TestCase):
         self.assertEqual(messages[1], long + "\n\nA body")
 
     def test_template_sections(self):
-        d = dossier()
-        self.assertEqual(commit_rules.sections_from_dossier(d), ["Summary", "Testing"])
+        d = plan()
+        self.assertEqual(commit_rules.sections_from_plan(d), ["Summary", "Testing"])
         body = "## Summary\n\nText.\n\n### **testing**\n\n- [x] Tests added"
         self.assertEqual(commit_rules.body_problems(body, ["Summary", "Testing"]), [])
         fenced = "## Summary\n\n```\n## Testing\n```"
         self.assertIn("'Testing'", commit_rules.body_problems(fenced, ["Summary", "Testing"])[0])
         v1 = dict(d, schema_version=1)
-        self.assertIsNone(commit_rules.sections_from_dossier(v1))
-        self.assertIsNone(commit_rules.from_dossier(v1))
-        self.assertEqual(commit_rules.from_dossier(d)["title_max_length"], 72)
+        self.assertIsNone(commit_rules.sections_from_plan(v1))
+        self.assertIsNone(commit_rules.from_plan(v1))
+        self.assertEqual(commit_rules.from_plan(d)["title_max_length"], 72)
 
 
 class TestWorkerGate(unittest.TestCase):
@@ -215,20 +215,20 @@ class TestWorkerGate(unittest.TestCase):
 
 
 class TestPayload(unittest.TestCase):
-    def test_the_payload_carries_the_rules_of_a_version_2_dossier_only(self):
+    def test_the_payload_carries_the_rules_of_a_version_2_plan_only(self):
         import work
         from tests.helpers import contribution
         record = contribution(phase="development", activity="agent_running", revision=3)
-        record.update(dossier_evidence_id="dossier-x", upstream=dict(
+        record.update(plan_evidence_id="plan-x", upstream=dict(
             record["upstream"], repository_id=1, base_sha="a" * 40))
         record["active_work"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
                                  "revision": 3, "attempt": 1, "requested_at": "2026-11-23T00:00:00+00:00",
                                  "deadline_at": "2026-11-23T06:00:00+00:00", "dispatched_run_id": None,
                                  "reason_ids": [], "tracking_issue": {"url": "https://x"}, "feedback_evidence_ids": []}
-        for data, expected in ((dossier(), commit_rules.from_dossier(dossier())),
-                               (dict(dossier(), schema_version=1), None)):
-            evidence = {"evidence_id": "dossier-x", "kind": "dossier", "data": copy.deepcopy(data)}
-            snapshot = type("S", (), {"contributions": {"c": record}, "evidence": {"dossier-x": evidence}})
+        for data, expected in ((plan(), commit_rules.from_plan(plan())),
+                               (dict(plan(), schema_version=1), None)):
+            evidence = {"evidence_id": "plan-x", "kind": "plan", "data": copy.deepcopy(data)}
+            snapshot = type("S", (), {"contributions": {"c": record}, "evidence": {"plan-x": evidence}})
             with tempfile.TemporaryDirectory() as directory, \
                     unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
                     unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(

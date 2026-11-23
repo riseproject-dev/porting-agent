@@ -25,7 +25,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 class TestDeterministicController(unittest.TestCase):
     def test_identical_fixture_inputs_produce_identical_state_effects_and_report(self):
         record = contribution(
-            phase="investigation",
+            phase="planning",
             activity="fix_needed",
             fork=None,
             active_work=None,

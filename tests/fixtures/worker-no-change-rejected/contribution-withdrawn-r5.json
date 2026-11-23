@@ -11,7 +11,7 @@
     "no_progress_streak": 1,
     "policy_id": "2026-11-18.1-proposed",
     "spent_estimate_usd_cents": 0,
-    "investigation_attempts": 0,
+    "planning_attempts": 0,
     "reruns": {
       "head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
       "flaky": 0,
@@ -25,7 +25,7 @@
   "distributions": [
     "ciso8601"
   ],
-  "dossier_evidence_id": "dossier-closeio--ciso8601--1-r2",
+  "plan_evidence_id": "plan-closeio--ciso8601--1-r2",
   "follows": null,
   "fork": {
     "head_ref": "riscv64",

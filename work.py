@@ -14,7 +14,7 @@ agent's only resource output is ``upload_artifact`` (verified by the
 Actions artifact API), carrying the proposal and patch series. The trusted
 ``publish`` job of the worker workflow reads that artifact after the Claim
 is verified and performs the fork push itself, recorded as a pipeline
-operation. Investigations are no-write.
+operation. Planning runs are no-write.
 """
 
 from __future__ import annotations
@@ -37,12 +37,12 @@ from common import (
 )
 
 POOL = "default"
-# Two worker profiles in one pool: investigations (read and report, cheaper
+# Two worker profiles in one pool: planning runs (read and report, cheaper
 # model, no publish job) and patch work (stronger model, trusted publish job).
 WORKER_PROFILE = "worker"
-INVESTIGATOR_PROFILE = "investigator"
+PLANNER_PROFILE = "planner"
 PROFILE_WORKFLOWS = {WORKER_PROFILE: ".github/workflows/worker.lock.yml",
-                     INVESTIGATOR_PROFILE: ".github/workflows/investigator.lock.yml"}
+                     PLANNER_PROFILE: ".github/workflows/planner.lock.yml"}
 PROPOSAL_ARTIFACT = "porting-out"
 
 WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
@@ -59,7 +59,7 @@ ALLOWED_OPERATIONS = {
     "development_patch": ["append", "rewrite"],
     "development_repair": ["append", "rewrite"],
     "upstream_revision": ["append"],   # history policy may widen this per project
-    "investigation": [],
+    "planning": [],
     SUBMISSION_REWRITE: [],
     SUBMISSION_REVIEW: [],
 }
@@ -70,8 +70,8 @@ _DIAG = [{"type": t, "min": 0, "max": 1} for t in ("noop", "report_incomplete", 
 
 
 def effect_contract(task: str) -> dict:
-    if task == "investigation":
-        # The dossier comes back as an artifact too, but investigations must
+    if task == "planning":
+        # The plan comes back as an artifact too, but planning runs must
         # not need a write-capable Claim: they report via artifact only.
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
     if task in WRITE_TASKS or task in SUBMISSION_TASKS:
@@ -89,14 +89,14 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
     issue = (record.get("active_work") or {}).get("tracking_issue")
     if issue is not None:
         context["tracking_issue"] = issue
-    if task == "investigation" and record.get("refresh"):
+    if task == "planning" and record.get("refresh"):
         context["refresh"] = dict(record["refresh"])
         context["existing_fork"] = dict(record.get("fork") or {})
     fork = record.get("fork") or {}
     up = record["upstream"]
     p = {
         "task": task,
-        "plan": _PLANS[task],
+        "instructions": _INSTRUCTIONS[task],
         "contribution_id": record["contribution_id"],
         "revision": record["revision"],
         "tracking_issue": record["tracking_issue"]["number"],
@@ -142,8 +142,8 @@ def _identity(request: dict) -> dict:
 
 
 def profile_for(task: str) -> str:
-    if task == "investigation":
-        return INVESTIGATOR_PROFILE
+    if task == "planning":
+        return PLANNER_PROFILE
     if task in WRITE_TASKS or task in SUBMISSION_TASKS:
         return WORKER_PROFILE
     raise ValueError(f"unknown task {task}")
@@ -238,17 +238,17 @@ def task_digest(pl: dict) -> str:
     return hashlib.sha256(canonical_json(pl).encode()).hexdigest()
 
 
-_PLANS = {
-    "investigation": (
-        "Investigate this upstream project and produce the dossier for a riscv64 wheel contribution. "
+_INSTRUCTIONS = {
+    "planning": (
+        "Research this upstream project and produce the plan for a riscv64 wheel contribution. "
         "Read the full tracking issue description in context.tracking_issue and fetch its comments. "
         "Research upstream issues, open/closed PRs, CI/history, docs, websites, mailing lists, blogs, "
         "maintainers and their past reviews before recommending scope. Query project_graph_query for "
         "the dependency graph. Check sw-ecosystem/project-reports and extensively use any matching "
-        "report, cross-checking it with current upstream sources. The dossier must satisfy "
-        "schemas/dossier.schema.json, including complete research records with source URLs "
+        "report, cross-checking it with current upstream sources. The plan must satisfy "
+        "schemas/plan.schema.json, including complete research records with source URLs "
         "and findings for every category. Missing or unavailable required research is incomplete work: "
-        "do not finish completed. Do not modify any repository. Return the dossier JSON as the proposal artifact."),
+        "do not finish completed. Do not modify any repository. Return the plan JSON as the proposal artifact."),
     "development_patch": (
         "Write the smallest patch to the fork's riscv64 branch that makes the upstream project build, "
         "test and publish Linux riscv64 wheels through its normal release process, following the "
@@ -317,7 +317,7 @@ def _feedback_data(data: dict) -> dict:
     return result
 
 
-def _dossier_data(data: dict) -> dict:
+def _plan_data(data: dict) -> dict:
     proposal = data.get("proposal") or {}
     compact = {
         key: proposal.get(key)
@@ -359,9 +359,9 @@ def _dossier_data(data: dict) -> dict:
     }
 
 
-def _dossier_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
+def _plan_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", evidence_id) or "/" in evidence_id:
-        raise ValueError("invalid dossier evidence ID")
+        raise ValueError("invalid plan evidence ID")
     if not re.fullmatch(r"[0-9a-f]{40}", control_ref):
         raise ValueError("invalid immutable control ref")
     relative = Path(STATE_ROOT) / "evidence" / f"{evidence_id}.json"
@@ -386,8 +386,8 @@ def _reason_item(evidence: dict) -> dict:
     ]
     if evidence.get("kind") == "human_relay":
         item["data"] = _feedback_data(evidence.get("data") or {})
-    elif evidence.get("kind") == "dossier":
-        item["data"] = _dossier_data(evidence.get("data") or {})
+    elif evidence.get("kind") == "plan":
+        item["data"] = _plan_data(evidence.get("data") or {})
     return item
 
 
@@ -449,9 +449,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
         contract = (
             contracts.get(record.get("target_contract_id") or "") or {}
         ).get("data") or {}
-        dossier = (snapshot.evidence.get(record.get("dossier_evidence_id") or "") or {}).get("data")
-        rules = commit_rules.from_dossier(dossier) if request["task"] != "investigation" else None
-        sections = (commit_rules.sections_from_dossier(dossier)
+        plan_document = (snapshot.evidence.get(record.get("plan_evidence_id") or "") or {}).get("data")
+        rules = commit_rules.from_plan(plan_document) if request["task"] != "planning" else None
+        sections = (commit_rules.sections_from_plan(plan_document)
                     if request["task"] in SUBMISSION_TASKS else None)
         rewrite = (rewrite_reference(snapshot.evidence.get(record.get("submission_rewrite_id")
                                                            or ""))
@@ -461,8 +461,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             evidence = snapshot.evidence.get(evidence_id)
             if evidence:
                 item = _reason_item(evidence)
-                if evidence.get("kind") == "dossier":
-                    item["reference"] = _dossier_reference(
+                if evidence.get("kind") == "plan":
+                    item["reference"] = _plan_reference(
                         root, evidence["evidence_id"], control_ref
                     )
                 reason_evidence.append(item)
@@ -478,8 +478,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     "requested_at": record["active_work"]["requested_at"],
                     "reason_evidence": reason_evidence,
                     # The measurable commit conventions of the verified
-                    # dossier, which the trusted worker gate checks. A
-                    # dossier of schema version 1 records none.
+                    # plan, which the trusted worker gate checks. A
+                    # plan of schema version 1 records none.
                     **({"commit_rules": rules} if rules is not None else {}),
                     # The required sections of the pull request template,
                     # which the submission check requires in the reviewed

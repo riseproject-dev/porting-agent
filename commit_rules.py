@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The measurable contribution rules a verified dossier records, and their
+"""The measurable contribution rules a verified plan records, and their
 deterministic checks.
 
-The investigator measures the project's commit conventions from its history
+The planner measures the project's commit conventions from its history
 and records them as ``contribution_guidelines.commit_conventions.rules`` in
-the dossier (schema version 2), and the required sections of the project's
+the plan (schema version 2), and the required sections of the project's
 pull request template as ``contribution_guidelines.pull_request_template``.
 Trusted code applies them: the worker gate to every non-debug commit a
 worker proposes, and the submission check to the reviewed series and the
@@ -15,8 +15,8 @@ Only rules a machine can measure are here. Qualitative expectations (the
 imperative mood, the scope of a change, a reviewer's style asks) are checked
 by the model review at submission.
 
-Nothing here runs a pattern from the dossier: prefixes are compared as
-literal strings, so a hostile dossier cannot make a check slow.
+Nothing here runs a pattern from the plan: prefixes are compared as
+literal strings, so a hostile plan cannot make a check slow.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]|$)")
 
 
 class RuleError(ValueError):
-    """The rules or the template sections a dossier records are malformed."""
+    """The rules or the template sections a plan records are malformed."""
 
 
 def _int(value: Any, low: int, high: int, name: str) -> int | None:
@@ -119,29 +119,29 @@ def normalize_sections(sections: Any) -> list[str]:
     return [_printable(s, 200, "a required section").strip() for s in sections]
 
 
-def guidelines(dossier: Any) -> dict | None:
-    """The contribution guidelines of a dossier, or ``None`` for a dossier
+def guidelines(plan: Any) -> dict | None:
+    """The contribution guidelines of a plan, or ``None`` for a plan
     written before they were part of the contract (schema version 1)."""
-    if not isinstance(dossier, dict) or dossier.get("schema_version") != 2:
+    if not isinstance(plan, dict) or plan.get("schema_version") != 2:
         return None
-    value = dossier.get("contribution_guidelines")
+    value = plan.get("contribution_guidelines")
     return value if isinstance(value, dict) else None
 
 
-def from_dossier(dossier: Any) -> dict | None:
-    """The measurable commit rules a dossier records, or ``None`` when it
-    records none (a dossier of schema version 1)."""
-    found = guidelines(dossier)
+def from_plan(plan: Any) -> dict | None:
+    """The measurable commit rules a plan records, or ``None`` when it
+    records none (a plan of schema version 1)."""
+    found = guidelines(plan)
     if found is None:
         return None
     return normalize((found.get("commit_conventions") or {}).get("rules"))
 
 
-def sections_from_dossier(dossier: Any) -> list[str] | None:
-    """Every required section of every pull request template the dossier
-    records, in order and without repeats; ``None`` for a dossier of schema
+def sections_from_plan(plan: Any) -> list[str] | None:
+    """Every required section of every pull request template the plan
+    records, in order and without repeats; ``None`` for a plan of schema
     version 1."""
-    found = guidelines(dossier)
+    found = guidelines(plan)
     if found is None:
         return None
     template = found.get("pull_request_template") or {}

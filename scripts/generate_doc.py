@@ -26,7 +26,7 @@ GITHUB = "https://github.com"
 # The name of each phase of the lifecycle table on the page.
 PHASE_LABELS = {
     "queued": "Requested",
-    "investigation": "Investigating",
+    "planning": "Planning",
     "provisioning": "Preparing fork",
     "development": "Development",
     "handoff": "Ready for upstream",

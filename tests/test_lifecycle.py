@@ -122,9 +122,9 @@ class TestPauseParkResume(unittest.TestCase):
                 self.assertEqual(out.record, rec)
 
 
-class TestDossierRefresh(unittest.TestCase):
-    def test_refresh_preserves_existing_pr_and_queues_investigation(self):
-        rec = contribution(activity="waiting_ci", revision=7, dossier_evidence_id="dossier-old",
+class TestPlanRefresh(unittest.TestCase):
+    def test_refresh_preserves_existing_pr_and_queues_planning(self):
+        rec = contribution(activity="waiting_ci", revision=7, plan_evidence_id="plan-old",
                            scope_coverage_complete=True,
                            scope_paths=[".github/workflows/wheels.yml"],
                            proposal_artifact={"outcome": "published"},
@@ -139,12 +139,12 @@ class TestDossierRefresh(unittest.TestCase):
         self.assertEqual(refreshed["fork"], rec["fork"])
         self.assertEqual(refreshed["processed_review_comment_ids"], [44])
         self.assertEqual(refreshed["pending_feedback_evidence_ids"], ["review-old"])
-        self.assertIsNone(refreshed["dossier_evidence_id"])
+        self.assertIsNone(refreshed["plan_evidence_id"])
         self.assertIsNone(refreshed["scope_paths"])
         self.assertIsNone(refreshed["last_ci_evidence_id"])
         self.assertEqual(refreshed["refresh"]["head_sha"], SHA_A)
         self.assertEqual(refreshed["refresh"]["pr_number"], 1)
-        self.assertEqual(out.event["kind"], "refresh_investigation")
+        self.assertEqual(out.event["kind"], "refresh_planning")
 
     def test_refresh_requires_existing_pr_and_quiescence(self):
         cases = [contribution(phase="queued"),
@@ -165,7 +165,7 @@ class TestRestartGeneration(unittest.TestCase):
         rec = contribution(
             phase="parked", activity="idle", generation=2, revision=8, parked_reason="old attempt",
             previous_phase="development",
-            scope_paths=[".github/workflows/wheels.yml"], dossier_evidence_id="dossier-old",
+            scope_paths=[".github/workflows/wheels.yml"], plan_evidence_id="plan-old",
             scope_coverage_complete=True, processed_publications=[11, 12],
             processed_review_ids=[21], processed_review_comment_ids=[22],
             processed_pr_conversation_comment_ids=[23],
@@ -173,7 +173,7 @@ class TestRestartGeneration(unittest.TestCase):
             proposal_artifact={"artifact_id": 1}, last_ci_evidence_id="ci-old",
             budget={"policy_id": "test", "attempts_used": 3, "no_progress_streak": 2,
                     "clusters": {"x": 2}, "spent_estimate_usd_cents": 99,
-                    "investigation_attempts": 0,
+                    "planning_attempts": 0,
                     "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0}})
         rec.update(over)
         return rec
@@ -188,7 +188,7 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertEqual((restarted["generation"], restarted["revision"]), (3, 9))
         self.assertEqual((restarted["phase"], restarted["activity"]), ("queued", "idle"))
         self.assertIsNone(restarted["fork"])
-        self.assertIsNone(restarted["dossier_evidence_id"])
+        self.assertIsNone(restarted["plan_evidence_id"])
         self.assertIsNone(restarted["scope_paths"])
         self.assertIsNone(restarted["proposal_artifact"])
         self.assertIsNone(restarted["admission_override"])
@@ -216,8 +216,8 @@ class TestRestartGeneration(unittest.TestCase):
     def test_a_partial_admission_override_is_refused(self):
         """An override admits development only with both a class and paths:
         a resume that names one of them alone is refused when it is posted,
-        with nothing changed, instead of starting investigations that the
-        dossier fold could never admit."""
+        with nothing changed, instead of starting planning runs that the
+        plan fold could never admit."""
         for args in ("class=optimized_backend", 'paths=".github/workflows/*"'):
             with self.subTest(args=args):
                 parked = self.parked()
@@ -233,7 +233,7 @@ class TestRestartGeneration(unittest.TestCase):
                                       'class=optimized_backend paths="../etc" reason=r')
         self.assertFalse(unsafe.accepted)
         self.assertIn("unsafe scope path", unsafe.reason)
-        waiting = contribution(phase="investigation", activity="waiting_human", revision=3,
+        waiting = contribution(phase="planning", activity="waiting_human", revision=3,
                                pending_human_action={"kind": "work_failed", "requested_at": NOW,
                                                      "reminded_at": None, "escalated_at": None,
                                                      "counter": None})
@@ -326,7 +326,7 @@ class TestHandoff(unittest.TestCase):
 
 
 class TestMergeAndRelease(unittest.TestCase):
-    def test_write_admission_is_automatic_after_dossier_and_fork(self):
+    def test_write_admission_is_automatic_after_plan_and_fork(self):
         rec = contribution()
         rec["owners"] = {"primary": None, "backup": None, "submitter": None, "handoff_reviewer": None}
         self.assertIsNone(lifecycle.write_admission(rec))
@@ -349,8 +349,8 @@ class TestStopEndsRequestedWork(unittest.TestCase):
     def test_stop_commands_clear_active_work(self):
         import commands as C
         from tests.helpers import NOW, contribution
-        rec = contribution(phase="investigation", activity="agent_running", revision=1)
-        rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 1,
+        rec = contribution(phase="planning", activity="agent_running", revision=1)
+        rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 1,
                               "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
         for body in ("/upstreaming pause", "/upstreaming park reason=x"):
             out = apply_command(rec, C.parse(body))
@@ -379,8 +379,8 @@ class TestCapacityOwnBacklog(unittest.TestCase):
 class TestScopeAndProvision(unittest.TestCase):
     def setUp(self):
         from tests.helpers import contribution
-        self.rec = contribution(phase="investigation", activity="waiting_human", revision=1,
-                                dossier_evidence_id="dossier-x", fork=None,
+        self.rec = contribution(phase="planning", activity="waiting_human", revision=1,
+                                plan_evidence_id="plan-x", fork=None,
                                 owners={"primary": None, "backup": None, "submitter": None,
                                         "handoff_reviewer": None}, admission_class=None)
         self.rec["upstream"]["base_sha"] = None
@@ -390,7 +390,7 @@ class TestScopeAndProvision(unittest.TestCase):
 
     def test_submit_upstream_outside_the_handoff_phase_names_where_it_applies(self):
         for phase, activity in (("development", "waiting_ci"), ("development", "fix_needed"),
-                                ("investigation", "idle"), ("parked", "idle")):
+                                ("planning", "idle"), ("parked", "idle")):
             rec = contribution(phase=phase, activity=activity)
             out = self.apply(rec, f"/upstreaming submit-upstream revision=0 head={SHA_A}")
             with self.subTest(state=f"{phase}.{activity}"):
@@ -401,7 +401,7 @@ class TestScopeAndProvision(unittest.TestCase):
                     f"`/upstreaming submit-upstream` does not apply in `{phase}.{activity}`; it "
                     "applies in `handoff.awaiting_submission`")
 
-    def test_human_overrides_a_dossier_park_with_a_resume_from_parked(self):
+    def test_human_overrides_a_plan_park_with_a_resume_from_parked(self):
         parked = dict(self.rec, phase="parked", activity="idle", parked_reason="No current patch")
         with self.assertRaises(commands.CommandError) as raised:
             commands.parse('/upstreaming force-develop revision=1 class=configuration_integration '

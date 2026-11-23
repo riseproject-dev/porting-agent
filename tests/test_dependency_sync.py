@@ -23,9 +23,9 @@ class TestDependencySynchronization(unittest.TestCase):
         (self.root / "queue_result.py").write_text('GH_AW_VERSION = "v1.2.2"\n')
         workflows = self.root / ".github/workflows"
         workflows.mkdir(parents=True)
-        for name in ("investigator", "worker", "dispatcher"):
+        for name in ("planner", "worker", "dispatcher"):
             source = 'engine:\n  id: pi\n  version: "1.5.0"\n'
-            if name == "investigator":
+            if name == "planner":
                 source += "tools:\n  - npm:pi-web-access@0.48.0\n  - npm:pi-subagents@0.89.0\n"
             (workflows / f"{name}.md").write_text(source)
             (workflows / f"{name}.lock.yml").write_text("generated\n")
@@ -48,7 +48,7 @@ class TestDependencySynchronization(unittest.TestCase):
         self.assertEqual(len(sync.synchronize(self.root)), 3)
         self.assertEqual(sync.synchronize(self.root, write=True), [])
         self.assertEqual(sync.synchronize(self.root), [])
-        source = (self.root / ".github/workflows/investigator.md").read_text()
+        source = (self.root / ".github/workflows/planner.md").read_text()
         self.assertIn('version: "1.6.0"', source)
         self.assertIn("npm:pi-web-access@0.49.0", source)
 

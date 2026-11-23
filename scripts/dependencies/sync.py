@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ("investigator", "worker", "dispatcher")
+WORKFLOWS = ("planner", "worker", "dispatcher")
 EXTENSIONS = ("pi-web-access", "pi-subagents")
 
 
@@ -71,7 +71,7 @@ def synchronize(root: Path, write: bool = False) -> list[str]:
         )
         if count != 1:
             raise ValueError(f"{path}: expected exactly one explicit Pi version")
-        if name == "investigator":
+        if name == "planner":
             for extension in EXTENSIONS:
                 target, count = re.subn(
                     r"npm:" + re.escape(extension) + r"@[^\s]+",

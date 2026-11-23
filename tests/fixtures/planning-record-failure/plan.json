@@ -13,7 +13,7 @@
    ],
    "coverage": {
     "complete": true,
-    "scope": "Full immutable description read plus all 3 ledger comments on porting-agent#1 (authenticated GitHub MCP, all pages), and the linked python-wheels issue #631, PR #625 and its investigation comment."
+    "scope": "Full immutable description read plus all 3 ledger comments on porting-agent#1 (authenticated GitHub MCP, all pages), and the linked python-wheels issue #631, PR #625 and its planning comment."
    },
    "sources": [
     {
@@ -29,7 +29,7 @@
      "finding": "Downstream RISE build-ciso8601.yml for 2.3.3 cp312-cp314 riscv64; 43 tests passed on cp313; upstream wheel job then had no tests."
     }
    ],
-   "findings": "The tracking issue asks for a bounded riscv64 wheel contribution mirroring the native aarch64 row. Prior handoff data (revision 9, head 9339ec54) is migration evidence only and not authorization; this dossier re-derives scope from current upstream master cbe0577 (Release 2.4.1)."
+   "findings": "The tracking issue asks for a bounded riscv64 wheel contribution mirroring the native aarch64 row. Prior handoff data (revision 9, head 9339ec54) is migration evidence only and not authorization; this plan re-derives scope from current upstream master cbe0577 (Release 2.4.1)."
   },
   "upstream_issues": {
    "status": "searched",
@@ -524,7 +524,7 @@
  },
  "proposal": {
   "decision": "develop",
-  "rationale": "ciso8601 is a pure C extension (module.c, timezone.c, isocalendar.c) built with setuptools and cibuildwheel, with no third-party native libraries and no arch-specific code. PyPI 2.4.1 has no riscv64 wheel, issue #181 requests one, and its prerequisite (closeio/cibuildwheel v3.4.1+) is met since the repo uses fork v4.3.5, which has riscv64 manylinux_2_39/musllinux images. Maintainers merged native-runner arch rows (#151, #178) and now test every wheel in CI (#192). A bounded CI/config patch is feasible; risks are listed in the dossier.",
+  "rationale": "ciso8601 is a pure C extension (module.c, timezone.c, isocalendar.c) built with setuptools and cibuildwheel, with no third-party native libraries and no arch-specific code. PyPI 2.4.1 has no riscv64 wheel, issue #181 requests one, and its prerequisite (closeio/cibuildwheel v3.4.1+) is met since the repo uses fork v4.3.5, which has riscv64 manylinux_2_39/musllinux images. Maintainers merged native-runner arch rows (#151, #178) and now test every wheel in CI (#192). A bounded CI/config patch is feasible; risks are listed in the plan.",
   "admission_class": "configuration_integration",
   "allowed_paths": [
    ".github/workflows/build-wheels.yml",

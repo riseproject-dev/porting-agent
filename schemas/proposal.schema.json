@@ -26,7 +26,7 @@
     "outcome": {
       "enum": [
         "patch",
-        "investigation",
+        "planning",
         "no_change",
         "blocked",
         "needs_clarification",

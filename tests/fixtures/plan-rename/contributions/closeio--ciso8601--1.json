@@ -1,0 +1,134 @@
+{
+  "active_operation_id": null,
+  "active_work": null,
+  "activity": "awaiting_submission",
+  "admission_class": "configuration_integration",
+  "admission_override": null,
+  "automatic_refresh_used": false,
+  "budget": {
+    "attempts_used": 1,
+    "clusters": {
+      "reproduction-image-infrastructure-docker-unavailable": 1
+    },
+    "investigation_attempts": 0,
+    "no_progress_streak": 1,
+    "policy_id": "2026-11-18.1-proposed",
+    "reruns": {
+      "flaky": 0,
+      "head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
+      "interrupted": 0
+    },
+    "spent_estimate_usd_cents": 0
+  },
+  "clean_head_ci_since": null,
+  "clean_head_sha": null,
+  "contribution_id": "closeio--ciso8601/1",
+  "created_at": "2026-11-22T01:09:36.980391+00:00",
+  "debug_commits": [],
+  "distributions": [
+    "ciso8601"
+  ],
+  "dossier_evidence_id": "dossier-closeio--ciso8601--1-r2",
+  "follows": null,
+  "fork": {
+    "head_ref": "riscv64-dev",
+    "head_sha": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "name": "riseproject-upstreaming/ciso8601",
+    "pr_number": 2,
+    "repository_id": 1467208233
+  },
+  "generation": 0,
+  "handoff_approval": null,
+  "handoff_request": {
+    "command_id": "observation-ci-1467208233-45008094068-1",
+    "head": "b29a8f49374004d650cf312e9c31848953e5ae60",
+    "revision": 6
+  },
+  "last_ci_evidence_id": "ci-1467208233-45150934812-1",
+  "merge": null,
+  "next_poll_at": null,
+  "owners": {
+    "backup": null,
+    "handoff_reviewer": null,
+    "primary": null,
+    "submitter": null
+  },
+  "parked_reason": null,
+  "paused": false,
+  "paused_at": null,
+  "paused_by": null,
+  "paused_reason": null,
+  "pending_feedback_evidence_ids": [],
+  "pending_human_action": {
+    "counter": null,
+    "escalated_at": null,
+    "kind": "submit_upstream",
+    "reminded_at": null,
+    "requested_at": "2026-11-22T22:54:12.110885+00:00"
+  },
+  "pending_publication": null,
+  "phase": "handoff",
+  "prerequisite_ids": [],
+  "previous_phase": null,
+  "processed_pr_conversation_comment_ids": [],
+  "processed_publications": [
+    14734929090,
+    14736190358,
+    14735532559,
+    14738278252,
+    14749100233,
+    14750552358,
+    14752196025,
+    14745208383,
+    14739124343,
+    14739685413
+  ],
+  "processed_review_comment_ids": [],
+  "processed_review_ids": [],
+  "project_id": "closeio--ciso8601",
+  "proposal_artifact": {
+    "artifact_id": 14751906562,
+    "claim_id": "c_f0e2c8378c28347bdfaca0f7ac90b0583a6ddc20e625a829fecfb6b1cbe11aaf_1",
+    "digest": "sha256:ab8a73a04fc36cce6ae184bb7eed35502933175167e5e10a468f80e9d21284d6",
+    "name": "claim-65146eff34112c62a93f6792727da5e9c01062a17ffd50448bb06702959913af-porting-out",
+    "outcome": "no_change",
+    "result_commit": "q_1fca898d5ab61baedda32007ea093f2f2e51bad1db93b9a8550ac3963337be1c",
+    "run_id": "45013412209",
+    "work_id": "efc1ff042bf495a678e32c136fe216e1c486510eb782aebd110a402df3b98350"
+  },
+  "publication_operation_id": "op-0b54d1e289a0b1bd1b4797e5",
+  "queue_claim_handle": null,
+  "queue_result_id": null,
+  "queue_work_id": null,
+  "refresh": null,
+  "release_acceptance": null,
+  "retirement": null,
+  "revision": 6,
+  "schema_version": 1,
+  "scope_coverage_complete": true,
+  "scope_paths": [
+    ".github/workflows/build-wheels.yml",
+    "pyproject.toml",
+    "CHANGELOG.md"
+  ],
+  "submission_review_id": null,
+  "submission_rewrite_id": null,
+  "target_contract_id": null,
+  "terminal_reason": null,
+  "tracking_issue": {
+    "description": "### Upstream repository\n\nhttps://github.com/closeio/ciso8601\n\n### PyPI distributions\n\nciso8601 (import: ciso8601)\n\n### Upstream target branch\n\nmaster\n\n### Additional notes\n\nMigration canary based on https://github.com/riseproject-dev/python-wheels/issues/631.\nThe downstream riscv64 wheel build was added in python-wheels#625.\nThe earlier investigation found that PyPI ciso8601 2.4.1 had no riscv64 wheel,\nupstream issue closeio/ciso8601#181 requested support, and the project is a pure\nC extension using setuptools and cibuildwheel with no third-party native library.\nThe earlier proposal selected configuration_integration and these bounded paths:\n.github/workflows/build-wheels.yml, pyproject.toml, CHANGELOG.md, and tox.ini.\nThe expected topology is an ubuntu-24.04-riscv row with CIBW_ARCHS=riscv64,\nfollowing the project's existing native aarch64 row.\nThe previous implementation reached handoff/waiting_human at revision 9 and\nreported clean head 9339ec54ae594458b0b9c6039bb55e9b2b13eff7.\nTreat all previous dossier, CI, fork, PR, and head data as migration evidence.\nDo not treat it as current authorization or verified state without the migration\nand readback gates in this plan.\n",
+    "description_digest": "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
+    "id": 6536262483,
+    "notes": "Migration canary based on https://github.com/riseproject-dev/python-wheels/issues/631.\nThe downstream riscv64 wheel build was added in python-wheels#625.\nThe earlier investigation found that PyPI ciso8601 2.4.1 had no riscv64 wheel,\nupstream issue closeio/ciso8601#181 requested support, and the project is a pure\nC extension using setuptools and cibuildwheel with no third-party native library.\nThe earlier proposal selected configuration_integration and these bounded paths:\n.github/workflows/build-wheels.yml, pyproject.toml, CHANGELOG.md, and tox.ini.\nThe expected topology is an ubuntu-24.04-riscv row with CIBW_ARCHS=riscv64,\nfollowing the project's existing native aarch64 row.\nThe previous implementation reached handoff/waiting_human at revision 9 and\nreported clean head 9339ec54ae594458b0b9c6039bb55e9b2b13eff7.\nTreat all previous dossier, CI, fork, PR, and head data as migration evidence.\nDo not treat it as current authorization or verified state without the migration\nand readback gates in this plan.",
+    "number": 1,
+    "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+  },
+  "updated_at": "2026-11-23T14:55:15.187182+00:00",
+  "upstream": {
+    "base_ref": "master",
+    "base_sha": "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8",
+    "full_name": "closeio/ciso8601",
+    "repository_id": 20633992
+  },
+  "upstream_pr": null
+}

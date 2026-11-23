@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Trusted research-completeness gate, before durable investigation Completion.
+"""Trusted research-completeness gate, before durable planning Completion.
 
 Reads bounded JSON from the exact Claim staging directory, never executes
 agent files. The native queue still authenticates the Claim and verifies upload.
 This gate checks documented research coverage, not the truth of every assertion.
-A dossier decides develop, park, or close; ``close_confirmation`` is the pure
+A plan decides develop, park, or close; ``close_confirmation`` is the pure
 check the reconciler applies to PyPI documents it read itself before it takes
 a decision close.
 """
@@ -29,11 +29,11 @@ RESEARCH_CATEGORIES = (
     "documentation", "website", "mailing_lists", "blogs", "maintainer_reviews", "release_repositories", "ecosystem_report",
 )
 OPTIONALLY_ABSENT = {"website", "mailing_lists", "blogs", "release_repositories", "ecosystem_report"}
-# The schema version of a dossier the gate admits: it records the contribution
-# guidelines. A stored dossier of version 1 stays readable; no new one is
+# The schema version of a plan the gate admits: it records the contribution
+# guidelines. A stored plan of version 1 stays readable; no new one is
 # admitted.
-DOSSIER_VERSION = 2
-# Where the investigator must have looked, as (what, words every one of the
+PLAN_VERSION = 2
+# Where the planner must have looked, as (what, words every one of the
 # searched locations of that kind names). Each kind must be searched; "none
 # found" is admitted only with that evidence.
 TEMPLATE_LOCATIONS = (
@@ -59,7 +59,7 @@ _MAX_FILENAME = 200
 _MAX_NAME = 100
 
 
-class DossierError(ValueError):
+class PlanError(ValueError):
     pass
 
 
@@ -67,120 +67,120 @@ def _searched(section: dict, locations, what: str) -> None:
     searched = [str(s).strip().removeprefix("./").casefold() for s in section["searched"]]
     for name, matches in locations:
         if not any(matches(s) for s in searched):
-            raise DossierError(f"{what}: the search does not cover {name}")
+            raise PlanError(f"{what}: the search does not cover {name}")
 
 
-def validate_guidelines(dossier: dict) -> None:
-    """The contribution guidelines a new dossier must record: the pull
+def validate_guidelines(plan: dict) -> None:
+    """The contribution guidelines a new plan must record: the pull
     request templates, the contributing instructions, the measured commit
     conventions, and the reviewers of the paths the contribution changes.
     Each may be "none found" only with the record of the search."""
-    if dossier.get("schema_version") != DOSSIER_VERSION or "contribution_guidelines" not in dossier:
-        raise DossierError(f"a new dossier must be schema version {DOSSIER_VERSION} and record "
+    if plan.get("schema_version") != PLAN_VERSION or "contribution_guidelines" not in plan:
+        raise PlanError(f"a new plan must be schema version {PLAN_VERSION} and record "
                            "the contribution guidelines")
-    found = dossier["contribution_guidelines"]
+    found = plan["contribution_guidelines"]
     template = found["pull_request_template"]
     _searched(template, TEMPLATE_LOCATIONS, "pull_request_template")
     if (template["status"] == "found") != bool(template["templates"]):
-        raise DossierError("pull_request_template: a found template is recorded, and only then")
+        raise PlanError("pull_request_template: a found template is recorded, and only then")
     sources = {s["url"] for s in template["sources"]}
     for item in template["templates"]:
         if item["url"] not in sources:
-            raise DossierError(f"pull_request_template: {item['path']} is not cited in sources")
+            raise PlanError(f"pull_request_template: {item['path']} is not cited in sources")
     contributing = found["contributing"]
     _searched(contributing, CONTRIBUTING_LOCATIONS, "contributing")
     if (contributing["status"] == "found") != bool(contributing["documents"]):
-        raise DossierError("contributing: a found document is recorded, and only then")
+        raise PlanError("contributing: a found document is recorded, and only then")
     if contributing["status"] == "found" and not contributing["instructions"]:
-        raise DossierError("contributing: a found document needs its instructions")
+        raise PlanError("contributing: a found document needs its instructions")
     sources = {s["url"] for s in contributing["sources"]}
     for item in contributing["documents"]:
         if item["url"] not in sources:
-            raise DossierError(f"contributing: {item['path']} is not cited in sources")
+            raise PlanError(f"contributing: {item['path']} is not cited in sources")
     conventions = found["commit_conventions"]
     try:
         commit_rules.normalize(conventions["rules"])
-        commit_rules.sections_from_dossier(dossier)
+        commit_rules.sections_from_plan(plan)
     except commit_rules.RuleError as exc:
-        raise DossierError(f"commit_conventions: {exc}") from None
+        raise PlanError(f"commit_conventions: {exc}") from None
     lengths = conventions["title_lengths"]
     if not lengths["median"] <= lengths["p90"] <= lengths["max"]:
-        raise DossierError("commit_conventions: the title lengths are not ordered")
+        raise PlanError("commit_conventions: the title lengths are not ordered")
     reviewers = found["reviewers"]
     named = [r for entry in reviewers["paths"] for r in (*entry["codeowners"], *entry["reviewers"])]
     if (reviewers["status"] == "found") != bool(named):
-        raise DossierError("reviewers: a reviewer or code owner is recorded, and only when found")
+        raise PlanError("reviewers: a reviewer or code owner is recorded, and only when found")
     if reviewers["status"] == "found" and not reviewers["expectations"]:
-        raise DossierError("reviewers: found reviewers need their expectations")
-    decision = dossier["proposal"]
+        raise PlanError("reviewers: found reviewers need their expectations")
+    decision = plan["proposal"]
     if decision["decision"] == "develop":
         covered = {entry["path"] for entry in reviewers["paths"]}
         missing = [p for p in decision["allowed_paths"] if p not in covered]
         if missing:
-            raise DossierError(f"reviewers: no reviewer research for the paths {missing[:8]}")
+            raise PlanError(f"reviewers: no reviewer research for the paths {missing[:8]}")
 
 
-def validate(dossier: dict, proposal: dict, task: dict) -> None:
-    schemas.validate("dossier", dossier)
+def validate(plan: dict, proposal: dict, task: dict) -> None:
+    schemas.validate("plan", plan)
     schemas.validate("proposal", proposal)
-    for obj in (dossier, proposal):
+    for obj in (plan, proposal):
         if obj["contribution_id"] != task["contribution_id"] or obj["expected_revision"] != task["revision"]:
-            raise DossierError("dossier/proposal does not answer this immutable task")
-    if proposal["outcome"] != "investigation" or proposal["operation"] != "none":
-        raise DossierError("investigator must deliver an investigation, not a patch")
+            raise PlanError("plan/proposal does not answer this immutable task")
+    if proposal["outcome"] != "planning" or proposal["operation"] != "none":
+        raise PlanError("planner must deliver a planning run, not a patch")
     if proposal.get("expected_head") != task.get("expected_head"):
-        raise DossierError("proposal head does not match task")
+        raise PlanError("proposal head does not match task")
     issue = (task.get("context") or {}).get("tracking_issue") or {}
     if not issue.get("url") or not isinstance(issue.get("description"), str):
-        raise DossierError("task has no frozen tracking-issue description and URL")
+        raise PlanError("task has no frozen tracking-issue description and URL")
     digest = sha256_text(issue["description"])
-    if digest != issue.get("description_digest") or dossier["tracking_issue_description_digest"] != digest:
-        raise DossierError("tracking issue description digest does not match immutable task")
+    if digest != issue.get("description_digest") or plan["tracking_issue_description_digest"] != digest:
+        raise PlanError("tracking issue description digest does not match immutable task")
     for category in RESEARCH_CATEGORIES:
-        entry = dossier["research"][category]
+        entry = plan["research"][category]
         if entry["status"] == "not_applicable" and category not in OPTIONALLY_ABSENT:
-            raise DossierError(f"{category}: research cannot be skipped")
-    report = dossier["ecosystem_report"]
-    research = dossier["research"]["ecosystem_report"]
+            raise PlanError(f"{category}: research cannot be skipped")
+    report = plan["ecosystem_report"]
+    research = plan["research"]["ecosystem_report"]
     if report["status"] == "available":
         if research["status"] != "searched" or report["url"] not in {s["url"] for s in research["sources"]}:
-            raise DossierError("available ecosystem report must be researched and cited")
+            raise PlanError("available ecosystem report must be researched and cited")
     elif research["status"] != "not_applicable":
-        raise DossierError("absent ecosystem report needs documented discovery and justification")
-    if issue["url"] not in {s["url"] for s in dossier["research"]["tracking_issue"]["sources"]}:
-        raise DossierError("tracking-issue research must cite the original issue URL")
-    decision = dossier["proposal"]
+        raise PlanError("absent ecosystem report needs documented discovery and justification")
+    if issue["url"] not in {s["url"] for s in plan["research"]["tracking_issue"]["sources"]}:
+        raise PlanError("tracking-issue research must cite the original issue URL")
+    decision = plan["proposal"]
     coverage = decision["path_coverage"]
     areas = [entry["area"] for entry in coverage]
     required_areas = {"build", "test", "release", "packaging", "documentation", "native_sources"}
     if set(areas) != required_areas or len(areas) != len(set(areas)):
-        raise DossierError("path_coverage must assess each required area exactly once")
+        raise PlanError("path_coverage must assess each required area exactly once")
     covered_paths = [path for entry in coverage for path in entry["paths"]]
     if covered_paths:
         try:
             validate_scope_paths(covered_paths)
         except ValueError as exc:
-            raise DossierError(f"path_coverage: {exc}") from None
+            raise PlanError(f"path_coverage: {exc}") from None
     if decision["decision"] == "develop":
         try:
             validate_scope_paths(decision["allowed_paths"])
         except ValueError as exc:
-            raise DossierError(str(exc)) from None
+            raise PlanError(str(exc)) from None
         missing = [path for path in covered_paths if not any(
             fnmatch.fnmatchcase(path, allowed) for allowed in decision["allowed_paths"])]
         if missing:
-            raise DossierError(f"allowed_paths omit researched riscv64 paths: {sorted(set(missing))}")
-    validate_guidelines(dossier)
+            raise PlanError(f"allowed_paths omit researched riscv64 paths: {sorted(set(missing))}")
+    validate_guidelines(plan)
 
 
 def scope_problem(decision: dict, *, admission_class: str | None,
                   allowed_paths: list[str] | None, coverage: bool = True) -> str | None:
-    """Why the patch scope admitted for a dossier is incomplete, or ``None``.
+    """Why the patch scope admitted for a plan is incomplete, or ``None``.
 
     The scope is complete when it has an admission class, names 1..32 safe
-    scope paths, and, with ``coverage``, matches every path the dossier's
+    scope paths, and, with ``coverage``, matches every path the plan's
     ``path_coverage`` lists as possibly needing a riscv64 change. The
-    reconciler asserts the fact "the verified dossier names `scope_paths`,
+    reconciler asserts the fact "the verified plan names `scope_paths`,
     and `scope_coverage_complete` holds" of ``admit_development`` from this."""
     if not isinstance(admission_class, str) or not admission_class:
         return "no admission class"
@@ -278,36 +278,36 @@ def close_confirmation(distributions: list[str], documents: dict[str, dict | Non
 
 def _read(root: Path, relative: Path, limit: int = 256 * 1024) -> str:
     if root.is_symlink() or relative.is_absolute() or ".." in relative.parts:
-        raise DossierError("invalid or symlinked staging path")
+        raise PlanError("invalid or symlinked staging path")
     path = root
     for part in relative.parts:
         path /= part
         if path.is_symlink():
-            raise DossierError("symlink in investigation staging")
+            raise PlanError("symlink in planning staging")
     if not path.is_file() or path.stat().st_size > limit:
-        raise DossierError(f"missing or oversized research input: {relative}")
+        raise PlanError(f"missing or oversized research input: {relative}")
     data = path.read_bytes()
     if len(data) > limit:
-        raise DossierError("research input grew beyond its bound")
+        raise PlanError("research input grew beyond its bound")
     return data.decode("utf-8")
 
 
 def check_stage(assignment: dict, staging: Path, finish_root: Path) -> str:
     claims = assignment.get("claims") or []
     if assignment.get("version") != 3 or len(claims) != 1:
-        raise DossierError("expected a singleton version-3 investigator assignment")
+        raise PlanError("expected a singleton version-3 planner assignment")
     member = claims[0]
     task = member["work"]
-    if task.get("task") != "investigation":
-        raise DossierError("research gate only accepts investigator tasks")
-    # A cancellation needs no dossier, but cannot smuggle a completed intent.
+    if task.get("task") != "planning":
+        raise PlanError("research gate only accepts planner tasks")
+    # A cancellation needs no plan, but cannot smuggle a completed intent.
     # Native processing downstream still authenticates and applies these intents.
     intents = [json.loads(line) for line in _read(finish_root, Path("work-queue.finish.jsonl"), 1024 * 1024).splitlines()
                if line.strip()]
     if intents and all(i.get("version") == 3 and i.get("kind") == "finish"
                        and i.get("claim_handle", member["handle"]) == member["handle"]
                        and (i.get("parameters") or {}).get("outcome") == "cancelled" for i in intents):
-        return "cancelled: no completed investigation admitted"
+        return "cancelled: no completed planning admitted"
     identity = {"dispatch_id": assignment["dispatch_id"], "claim_id": member["claim_id"],
                 "work_id": member["work_id"], "claim_handle": member["handle"]}
     # gh-aw's native codec is compact, recursively key-sorted JSON. The broader
@@ -316,9 +316,9 @@ def check_stage(assignment: dict, staging: Path, finish_root: Path) -> str:
     native = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     namespace = hashlib.sha256(native.encode()).hexdigest()
     base = Path("claims") / namespace / "porting-out"
-    dossier = json.loads(_read(staging, base / "dossier.json"))
+    plan = json.loads(_read(staging, base / "plan.json"))
     proposal = json.loads(_read(staging, base / "proposal.json"))
-    validate(dossier, proposal, task)
+    validate(plan, proposal, task)
     return "research complete: eligible for native Completion and verified artifact delivery"
 
 
@@ -327,21 +327,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--staging", type=Path)
     parser.add_argument("--finish-root", type=Path)
-    parser.add_argument("--dossier", type=Path)
+    parser.add_argument("--plan", type=Path)
     parser.add_argument("--proposal", type=Path)
     parser.add_argument("--task", type=Path)
     parser.add_argument("--assignment-env", default="ASSIGNMENT")
     args = parser.parse_args()
-    files = (args.dossier, args.proposal, args.task)
+    files = (args.plan, args.proposal, args.task)
     if any(files):
         if not all(files) or args.staging or args.finish_root:
-            parser.error("--dossier, --proposal and --task must be supplied together")
+            parser.error("--plan, --proposal and --task must be supplied together")
         validate(*(json.loads(path.read_text()) for path in files))
-        print("dossier, proposal and task satisfy the research contract")
+        print("plan, proposal and task satisfy the research contract")
     else:
         if not args.staging or not args.finish_root:
             parser.error("--staging and --finish-root are required for trusted staging validation")
         raw = os.environ[args.assignment_env]
         if len(raw.encode()) > 49152:
-            raise DossierError("assignment exceeds native bound")
+            raise PlanError("assignment exceeds native bound")
         print(check_stage(json.loads(raw), args.staging, args.finish_root))

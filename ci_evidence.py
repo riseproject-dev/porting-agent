@@ -55,7 +55,7 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
     """Decide what the observed CI establishes for ``head_sha``.
 
     ``required_job_patterns`` are substrings identifying the wheel jobs the
-    target contract requires (from the dossier). A run for another SHA is
+    target contract requires (from the plan). A run for another SHA is
     ignored: evidence is bound to the exact head that ran.
     """
     v = CiVerdict(state="missing")

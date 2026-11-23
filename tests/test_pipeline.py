@@ -340,9 +340,9 @@ class TestPublicationRetry(unittest.TestCase):
 
 
 class TestDispatcherPayloadBudget(unittest.TestCase):
-    def test_large_dossier_is_projected_without_losing_worker_contract(self):
+    def test_large_plan_is_projected_without_losing_worker_contract(self):
         paths = [".github/workflows/wheels.yml", ".github/workflows/test.yml"]
-        evidence = {"evidence_id": "dossier-c-r10", "kind": "dossier",
+        evidence = {"evidence_id": "plan-c-r10", "kind": "plan",
                     "summary": "summary " * 1000, "limitations": ["limit " * 500],
                     "data": {"proposal": {"decision": "develop",
                                             "admission_class": "configuration_integration",
@@ -359,21 +359,21 @@ class TestDispatcherPayloadBudget(unittest.TestCase):
         item = work._reason_item(evidence)
         encoded = json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode()
         self.assertLess(len(encoded), 8000)
-        self.assertEqual(item["evidence_id"], "dossier-c-r10")
+        self.assertEqual(item["evidence_id"], "plan-c-r10")
         self.assertEqual(item["data"]["proposal"]["allowed_paths"], paths)
         self.assertEqual([row["area"] for row in item["data"]["proposal"]["path_coverage"]],
                          ["build", "test"])
         self.assertIn("dependency", item["data"]["dependency_graph"]["assessment"])
         self.assertNotIn("research", item["data"])
 
-    def test_complete_dossier_reference_is_immutable_and_digest_bound(self):
+    def test_complete_plan_reference_is_immutable_and_digest_bound(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            path = root / ".state/evidence/dossier-c-r10.json"
+            path = root / ".state/evidence/plan-c-r10.json"
             path.parent.mkdir(parents=True)
-            path.write_text('{"kind":"dossier","evidence_id":"dossier-c-r10","data":{"full":"research"}}\n')
-            reference = work._dossier_reference(root, "dossier-c-r10", "a" * 40)
-        self.assertEqual(reference["path"], ".state/evidence/dossier-c-r10.json")
+            path.write_text('{"kind":"plan","evidence_id":"plan-c-r10","data":{"full":"research"}}\n')
+            reference = work._plan_reference(root, "plan-c-r10", "a" * 40)
+        self.assertEqual(reference["path"], ".state/evidence/plan-c-r10.json")
         self.assertEqual(reference["ref"], "a" * 40)
         self.assertEqual(reference["repository"], "riseproject-dev/porting-agent")
         self.assertIn("/" + "a" * 40 + "/.state/evidence/", reference["url"])
@@ -400,8 +400,8 @@ class TestDispatchRecovery(unittest.TestCase):
 
     def setUp(self):
         self.now = datetime(2026, 11, 18, 20, tzinfo=timezone.utc)
-        self.rec = contribution(phase="investigation", activity="agent_running", revision=1)
-        self.rec["active_work"] = {"dedupe_key": "example--proj/12@1:investigation", "task": "investigation",
+        self.rec = contribution(phase="planning", activity="agent_running", revision=1)
+        self.rec["active_work"] = {"dedupe_key": "example--proj/12@1:planning", "task": "planning",
                                    "revision": 1, "requested_at": "2026-11-18T19:22:14+00:00",
                                    "deadline_at": "2026-11-19T01:22:14+00:00", "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
         self.gid = work.graph_id(self.rec["active_work"]["dedupe_key"])
@@ -505,7 +505,7 @@ class TestDispatchRecovery(unittest.TestCase):
     def test_plan_replays_committed_request_with_profile_per_task(self):
         req = work.request_from_active(self.rec)
         n = work.node(req, self.rec, control_repo_id="1", allowed_paths=["x"])
-        self.assertEqual((n["worker_profile"], n["graph_id"]), ("investigator", self.gid))
+        self.assertEqual((n["worker_profile"], n["graph_id"]), ("planner", self.gid))
         # Identical across replays (the queue admits an identical node once).
         self.assertEqual(n, work.node(work.request_from_active(self.rec), self.rec, control_repo_id="1",
                                       allowed_paths=["x"]))

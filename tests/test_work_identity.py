@@ -69,7 +69,7 @@ class TestLateResultMatrix(unittest.TestCase):
 
     def record(self, generation=1, revision=5):
         return requested(contribution(generation=generation, revision=revision,
-                                      dossier_evidence_id="dossier-1"))
+                                      plan_evidence_id="plan-1"))
 
     def test_only_the_exact_identity_is_folded(self):
         record = self.record()
@@ -193,13 +193,13 @@ class TestLateResultMatrix(unittest.TestCase):
 class TestAllocation(unittest.TestCase):
     """Work is allocated by the table's rows; each allocation charges once."""
 
-    def test_investigation_begins_and_is_dispatched_in_one_tick(self):
+    def test_planning_begins_and_is_dispatched_in_one_tick(self):
         record = contribution(phase="queued", activity="idle", fork=None)
         res, after = select(record)
-        self.assertEqual(kinds(res), ["begin_investigation", "dispatch_investigation"])
-        self.assertEqual(engine.state_key(after), "investigation.agent_running")
+        self.assertEqual(kinds(res), ["begin_planning", "dispatch_planning"])
+        self.assertEqual(engine.state_key(after), "planning.agent_running")
         self.assertEqual(after["budget"]["attempts_used"], 1)
-        self.assertEqual(after["active_work"]["dedupe_key"], "example--proj/12@g0.r0:investigation")
+        self.assertEqual(after["active_work"]["dedupe_key"], "example--proj/12@g0.r0:planning")
         self.assertEqual(res.requested_effects[0]["generation"], 0)
         # Without a worker slot nothing begins.
         res, waiting = select(record, slots=0)
@@ -207,7 +207,7 @@ class TestAllocation(unittest.TestCase):
 
     def test_repair_charges_its_failing_job_once_at_allocation(self):
         record = contribution(activity="fix_needed", last_ci_evidence_id="ci-9",
-                              dossier_evidence_id="dossier-1")
+                              plan_evidence_id="plan-1")
         evidence = {"ci-9": ci_record("ci-9", SHA_A, failing="build riscv64")}
         res, after = select(record, evidence=evidence)
         self.assertEqual(kinds(res), ["request_repair"])
@@ -237,14 +237,14 @@ class TestAllocation(unittest.TestCase):
         self.assertEqual(after["budget"]["clusters"], {})
 
     def test_the_first_patch_after_a_pause_is_a_patch(self):
-        record = requested(contribution(dossier_evidence_id="dossier-1"), "development_patch")
+        record = requested(contribution(plan_evidence_id="plan-1"), "development_patch")
         paused = apply_command(record, commands.parse("/upstreaming pause")).record
         resumed = apply_command(paused, commands.parse(
             f"/upstreaming resume revision={paused['revision']} reason=go")).record
         res, after = select(resumed)
         self.assertEqual(kinds(res), ["request_patch"])
         self.assertEqual(after["active_work"]["task"], "development_patch")
-        self.assertEqual(after["active_work"]["reason_ids"], ["dossier-1"])
+        self.assertEqual(after["active_work"]["reason_ids"], ["plan-1"])
 
     def test_feedback_ids_are_carried_exactly(self):
         record = contribution(activity="fix_needed", pending_feedback_evidence_ids=["r-1", "r-2"])
@@ -293,12 +293,12 @@ class TestExhaustion(unittest.TestCase):
 
     def test_work_total_waits_for_a_human_and_resume_restarts_it(self):
         limit = lc.budget_limit("work_total", POLICY)
-        for record in (contribution(phase="investigation", activity="idle", fork=None),
+        for record in (contribution(phase="planning", activity="idle", fork=None),
                        contribution(phase="queued", activity="idle", fork=None),
                        contribution(activity="fix_needed")):
             with self.subTest(state=engine.state_key(record)):
                 record = self.spent(record, attempts_used=limit, no_progress_streak=1,
-                                    investigation_attempts=1)
+                                    planning_attempts=1)
                 res, waiting = select(record)
                 self.assertEqual(res.requested_effects, [])
                 self.assertEqual(kinds(res)[-1], "exhaust_work_total")
@@ -355,32 +355,32 @@ class TestExhaustion(unittest.TestCase):
         self.assertEqual([e["kind"] for k, e in staged if k == "events"], ["allocate_work_retry"])
         self.assertEqual(len(relaunch), 1)
 
-    def test_investigation_without_a_usable_dossier(self):
-        record = requested(contribution(phase="investigation", fork=None), "investigation")
-        limit = lc.budget_limit("investigation_attempts", POLICY)
+    def test_planning_without_a_usable_plan(self):
+        record = requested(contribution(phase="planning", fork=None), "planning")
+        limit = lc.budget_limit("planning_attempts", POLICY)
         for decision in (None, "maybe"):
             with self.subTest(decision=decision):
-                name = "investigation_without_dossier" if decision is None else "investigation_develop"
+                name = "planning_without_plan" if decision is None else "planning_develop"
                 pub = result(record, name)
                 if decision:
-                    pub["dossier"] = {"proposal": {"decision": decision}}
+                    pub["plan"] = {"proposal": {"decision": decision}}
                 new, staged = reconcile.apply_publication(record, pub, now=NOW, policy=POLICY,
                                                           worker_run_id="555")
-                self.assertEqual([e["kind"] for k, e in staged if k == "events"], ["reject_dossier"])
-                self.assertEqual(engine.state_key(new), "investigation.idle")
-                self.assertEqual(new["budget"]["investigation_attempts"], 1)
+                self.assertEqual([e["kind"] for k, e in staged if k == "events"], ["reject_plan"])
+                self.assertEqual(engine.state_key(new), "planning.idle")
+                self.assertEqual(new["budget"]["planning_attempts"], 1)
                 self.assertEqual(new["revision"], record["revision"] + 1)
-                exhausted = self.spent(record, investigation_attempts=limit)
+                exhausted = self.spent(record, planning_attempts=limit)
                 new, staged = reconcile.apply_publication(exhausted, pub, now=NOW, policy=POLICY,
                                                           worker_run_id="555")
                 self.assertEqual([e["kind"] for k, e in staged if k == "events"],
-                                 ["exhaust_investigation_recovery"])
+                                 ["exhaust_planning_recovery"])
                 self.assertEqual((new["pending_human_action"]["kind"],
                                   new["pending_human_action"]["counter"]),
-                                 ("investigation_failed", "investigation_attempts"))
+                                 ("planning_failed", "planning_attempts"))
                 out = self.resume(new)
                 self.assertEqual(out.record["budget"],
-                                 dict(new["budget"], investigation_attempts=0))
+                                 dict(new["budget"], planning_attempts=0))
 
     def test_repair_budgets_refresh_once_then_park(self):
         evidence = {"ci-9": ci_record("ci-9", SHA_A, failing="build riscv64")}

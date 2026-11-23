@@ -172,16 +172,14 @@ def check_blob(path: str, data: bytes, policy: dict) -> list[str]:
         problems.append(f"{path}: content matches a credential pattern")
     if _forbidden_state_text(record):
         problems.append(f"{path}: content contains forbidden repository text U+2014")
-    # A contribution written before the strict record schema is read as the
-    # record migration rewrites it (``migrate_record_fields``); one it would
-    # refuse is invalid.
-    view = record
-    if kind == "contributions" and needs_field_migration(record):
-        try:
-            view = migrate_record_fields(record, now=record["updated_at"])[0]
-        except (StateError, KeyError, TypeError) as error:
-            problems.append(f"{path}: {error}")
-            return problems
+    # A record written before the strict record schema or the plan rename is
+    # read as the record migrations rewrite it (``migrated_view``); one they
+    # would refuse is invalid.
+    try:
+        view = migrated_view(kind, record)
+    except (StateError, KeyError, TypeError) as error:
+        problems.append(f"{path}: {error}")
+        return problems
     for e in schemas.errors(STATE_KINDS[kind], view):
         problems.append(f"{path}: {e}")
     if kind == "contributions" and not problems:
@@ -257,8 +255,7 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
         rep.total_bytes += len(data)
         blob_problems = check_blob(path, data, policy)
         rep.problems.extend(blob_problems)
-        if not blob_problems and path.startswith(f"{STATE_ROOT}/contributions/") \
-                and needs_field_migration(json.loads(data)):
+        if not blob_problems and _awaits_migration(path, json.loads(data)):
             rep.problems.append(f"{path}: written in a shape that awaits the record migration")
         if not blob_problems and path.startswith(f"{STATE_ROOT}/operations/"):
             # An operation's status changes only by rows of the operation
@@ -468,6 +465,100 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
 
 
 # --------------------------------------------------------------------------
+# Name migration
+#
+# The planning phase and its plan were once named `investigation` and
+# `dossier` (``lifecycle.HISTORIC_NAMES``). A record written before the
+# rename carries the historic names in exactly these places, and
+# ``migrate_record_names`` rewrites them and nothing else:
+#
+# - a contribution: the field `dossier_evidence_id` (now `plan_evidence_id`)
+#   and the count `budget.investigation_attempts` (now
+#   `budget.planning_attempts`), with their values; the value
+#   `investigation` of `phase` and `previous_phase`; and the values
+#   `investigation_failed` and `investigation_attempts` of
+#   `pending_human_action.kind` and `.counter`;
+# - a project: the field `dossier_evidence_id`;
+# - an evidence record: the kind `dossier` (now `plan`). Its id is kept: ids
+#   are opaque, and operations and events name it.
+#
+# Requested Work under the historic names (an `active_work` of the task
+# `investigation`) has no reviewed migration: its queued payload names a
+# worker profile that no longer exists. Committed events are not rewritten:
+# they are the history as it was written, the event schema accepts any kind,
+# and their readers translate a historic name (``lifecycle.current_name``).
+
+NAME_MIGRATION = "plan-rename"
+NAMES_MIGRATED = "record_names_migrated"
+_HISTORIC = lifecycle.HISTORIC_NAMES
+
+
+def migrate_names(kind: str, record: Any) -> tuple[Any, list[str]]:
+    """``record`` of the state kind ``kind`` with its historic names replaced
+    by the current ones, and the places it changed (empty when it carries
+    none). Raises ``StateError`` for a shape the migration does not know."""
+    if not isinstance(record, dict):
+        return record, []
+    if kind == "contributions":
+        try:
+            return engine.with_current_names(record)
+        except lifecycle.TransitionError as error:
+            raise StateError(str(error)) from error
+    if kind == "projects" and "dossier_evidence_id" in record:
+        if "plan_evidence_id" in record:
+            raise StateError("both dossier_evidence_id and plan_evidence_id are present")
+        return ({_HISTORIC.get(key, key) if key == "dossier_evidence_id" else key:
+                 copy.deepcopy(value) for key, value in record.items()},
+                ["dossier_evidence_id"])
+    if kind == "evidence" and record.get("kind") == "dossier":
+        return dict(copy.deepcopy(record), kind=_HISTORIC["dossier"]), ["kind=dossier"]
+    return record, []
+
+
+def needs_name_migration(kind: str, record: Any) -> bool:
+    """Whether a stored record still carries a historic name."""
+    try:
+        return bool(migrate_names(kind, record)[1])
+    except StateError:
+        return True
+
+
+def migrate_record_names(record: dict, *, now: str, evidence: list[str] = (),
+                         projects: list[str] = ()) -> tuple[dict, dict]:
+    """The contribution record with its historic names replaced, and the
+    event that records it, with the evidence and projects whose names the
+    same migration rewrites. Nothing else changes, `updated_at` included.
+    Raises ``StateError`` when nothing is renamed or for any other shape."""
+    new, changes = migrate_names("contributions", record)
+    if not (changes or evidence or projects):
+        raise StateError("the record needs no name migration")
+    view = engine.with_defaults(new)[0]
+    errors = schemas.errors("contribution", view)
+    if errors:
+        raise StateError("no reviewed name migration for this record: " + "; ".join(errors[:5]))
+    problem = engine.state_problem(view)
+    if problem:
+        raise StateError(f"no reviewed name migration for this record: {problem}")
+    event = lifecycle._event(record, new, NAMES_MIGRATED, "migration", NAME_MIGRATION, now, False)
+    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
+                        "renamed": changes, "evidence": sorted(evidence),
+                        "projects": sorted(projects)}
+    schemas.validate("event", event)
+    return new, event
+
+
+def migrated_view(kind: str, record: Any) -> Any:
+    """``record`` as the controller's record migrations rewrite it: its
+    historic names replaced and, for a contribution, the fields of the
+    strict record schema added. Raises ``StateError`` when a migration
+    refuses it."""
+    view = migrate_names(kind, record)[0]
+    if kind == "contributions" and needs_field_migration(view):
+        view = migrate_record_fields(view, now=view["updated_at"])[0]
+    return view
+
+
+# --------------------------------------------------------------------------
 # Record migration
 #
 # The strict record schema requires every field of the record, the counts of
@@ -522,47 +613,118 @@ def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
     return new, event
 
 
-def _pending_record_migrations(root: Path, policy: dict, *,
-                               now: str | None = None) -> list[tuple[str, dict, dict]]:
-    """Contribution records that the record migration rewrites, each with its
-    migrated record and event. Reads the checkout without changing it. Every
-    other record must be valid under the strict schema, and a record the
-    migration refuses fails closed here, before any caller acts on the
-    state."""
-    root = Path(root)
-    directory = root / STATE_ROOT / "contributions"
-    pending: list[tuple[str, dict, dict]] = []
+def _awaits_migration(path: str, record: Any) -> bool:
+    """Whether a committed state file is in a shape the record migrations
+    rewrite."""
+    parts = path.split("/")
+    kind = parts[1] if len(parts) > 2 else None
+    if needs_name_migration(kind, record):
+        return True
+    return kind == "contributions" and needs_field_migration(record)
+
+
+def _read_kind(root: Path, kind: str) -> list[tuple[str, Any]]:
+    directory = root / STATE_ROOT / kind
+    out: list[tuple[str, Any]] = []
     if not directory.exists():
-        return pending
+        return out
     for path in sorted(directory.glob("*.json")):
         rel = path.relative_to(root).as_posix()
         if path.is_symlink() or not path.is_file():
             raise StateError(f"{rel}: not a regular file")
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            out.append((rel, json.loads(path.read_text(encoding="utf-8"))))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise StateError(f"{rel}: not UTF-8 JSON ({error})") from error
-        if not needs_field_migration(record):
-            errors = schemas.errors("contribution", record)
+    return out
+
+
+def _pending_record_migrations(root: Path, policy: dict, *, now: str | None = None
+                               ) -> list[tuple[str, str, dict]]:
+    """The state files that the record migrations rewrite, each with its
+    kind and migrated content, and the events that record them, in the
+    order they are staged. Reads the checkout without changing it.
+
+    A contribution, project, or evidence record that carries a historic name
+    is renamed (``migrate_names``), with one ``record_names_migrated`` event
+    per contribution that names the renamed evidence of the contribution and
+    the renamed projects of which it is the first contribution; then a
+    contribution that lacks a field of the strict schema is migrated
+    (``migrate_record_fields``). Every other record must be valid, and a
+    record a migration refuses fails closed here, before any caller acts on
+    the state."""
+    root = Path(root)
+    contributions = _read_kind(root, "contributions")
+    renamed: dict[str, list[tuple[str, str, dict]]] = {}
+    evidence_of: dict[str, list[str]] = {}
+    projects_of: dict[str, list[str]] = {}
+    first_of_project: dict[str, str] = {}
+    for _rel, record in contributions:
+        if isinstance(record, dict) and isinstance(record.get("project_id"), str):
+            cid = record.get("contribution_id")
+            if isinstance(cid, str):
+                first = first_of_project.get(record["project_id"])
+                first_of_project[record["project_id"]] = min(cid, first) if first else cid
+    for kind, owner in (("evidence", "contribution_id"), ("projects", "project_id")):
+        for rel, record in _read_kind(root, kind):
+            try:
+                migrated, changes = migrate_names(kind, record)
+            except StateError as error:
+                raise StateError(f"{rel}: {error}") from error
+            if not changes:
+                continue
+            key = record.get(owner) if isinstance(record, dict) else None
+            cid = key if kind == "evidence" else first_of_project.get(key)
+            if not isinstance(cid, str):
+                raise StateError(f"{rel}: no contribution records its name migration")
+            errors = schemas.errors(STATE_KINDS[kind], migrated)
             if errors:
-                raise StateError(f"{rel}: {'; '.join(errors[:5])}")
-            continue
+                raise StateError(f"{rel}: no reviewed name migration: {'; '.join(errors[:5])}")
+            renamed.setdefault(cid, []).append((rel, kind, migrated))
+            target = evidence_of if kind == "evidence" else projects_of
+            target.setdefault(cid, []).append(record[_ID_KEY[kind]])
+    pending: list[tuple[str, str, dict]] = []
+    seen: set[str] = set()
+    for rel, record in contributions:
+        cid = record.get("contribution_id") if isinstance(record, dict) else None
+        seen.add(cid)
         try:
-            migrated, event = migrate_record_fields(record, now=now or record["updated_at"])
+            current = record
+            stamp = now or (record["updated_at"] if isinstance(record, dict) else None)
+            if needs_name_migration("contributions", record) or cid in renamed:
+                current, event = migrate_record_names(
+                    record, now=stamp, evidence=evidence_of.get(cid, []),
+                    projects=projects_of.get(cid, []))
+                pending.append((rel, "contributions", current))
+                pending.extend(renamed.get(cid, []))
+                pending.append(("", "events", event))
+            if needs_field_migration(current):
+                current, event = migrate_record_fields(current, now=stamp)
+                pending.append((rel, "contributions", current))
+                pending.append(("", "events", event))
+            elif current is record:
+                errors = schemas.errors("contribution", record)
+                if errors:
+                    raise StateError("; ".join(errors[:5]))
         except (StateError, KeyError, TypeError) as error:
             raise StateError(f"{rel}: {error}") from error
-        pending.append((rel, migrated, event))
+    missing = sorted(set(renamed) - seen)
+    if missing:
+        raise StateError(f"no contribution record for the name migration of {missing}")
     return pending
 
 
 def pending_record_migrations(root: Path, policy: dict) -> list[str]:
-    """Paths of the contribution records that await the record migration."""
-    return [rel for rel, _record, _event in _pending_record_migrations(root, policy)]
+    """Paths of the state files that await a record migration."""
+    return sorted({rel for rel, _kind, _record in _pending_record_migrations(root, policy)
+                   if rel})
 
 
 def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> list[str]:
-    """Rewrite every record written before the strict record schema
-    (``migrate_record_fields``) and append one migration event per record.
+    """Rewrite every record written before the plan rename
+    (``migrate_record_names``) or the strict record schema
+    (``migrate_record_fields``) and append one migration event per
+    migration of each contribution.
 
     It is idempotent: a migrated record is not selected again. Callers
     publish only the returned paths, before any ordinary reconciliation, so
@@ -572,12 +734,12 @@ def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> li
     if not pending:
         return []
     store = StateStore(Path(root), policy)
-    expected = []
-    for rel, migrated, event in pending:
-        record_rel = store.stage("contributions", migrated)
-        if record_rel != rel:
+    expected = set()
+    for rel, kind, record in pending:
+        staged = store.stage(kind, record)
+        if rel and staged != rel:
             raise StateError(f"{rel}: record migration identity mismatch")
-        expected += [record_rel, store.stage("events", event)]
+        expected.add(staged)
     written = store.write_staged()
     if sorted(written) != sorted(expected):
         raise StateError("record migration attempted an unrelated state mutation")

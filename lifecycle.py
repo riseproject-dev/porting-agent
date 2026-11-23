@@ -172,7 +172,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
         "active_work": None,
-        "dossier_evidence_id": None,
+        "plan_evidence_id": None,
         "pending_feedback_evidence_ids": [],
         "scope_coverage_complete": False,
         "scope_paths": None,
@@ -188,7 +188,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "retirement": None,
         "release_acceptance": None,
         "budget": {"policy_id": policy_id, "attempts_used": 0, "no_progress_streak": 0,
-                   "clusters": {}, "investigation_attempts": 0,
+                   "clusters": {}, "planning_attempts": 0,
                    "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                    "spent_estimate_usd_cents": 0},
         "pending_human_action": None,
@@ -208,8 +208,48 @@ def write_admission(record: dict) -> str | None:
     if not record.get("fork") or not record["fork"].get("repository_id"):
         return "fork not provisioned/verified"
     if record["upstream"].get("base_sha") is None:
-        return "no immutable upstream base SHA in the dossier"
+        return "no immutable upstream base SHA in the plan"
     return None
+
+
+# --------------------------------------------------------------------------
+# Names before the plan rename
+#
+# The planning phase and its plan were once named `investigation` and
+# `dossier`. Committed events keep the names they were written with; the
+# record migration of `state.py` (`state.migrate_record_names`) rewrites the
+# stored records, projects, and evidence to the current names, and readers of
+# the event history translate a historic name with `current_name`. Each
+# entry maps a name that is no longer written to the name that replaced it.
+
+HISTORIC_NAMES: dict[str, str] = {
+    # The phase, its states, and the Work task.
+    "investigation": "planning",
+    "investigation.idle": "planning.idle",
+    "investigation.agent_running": "planning.agent_running",
+    "investigation.waiting_human": "planning.waiting_human",
+    # The verbs of its rows.
+    "begin_investigation": "begin_planning",
+    "dispatch_investigation": "dispatch_planning",
+    "reject_dossier": "reject_plan",
+    "exhaust_investigation_recovery": "exhaust_planning_recovery",
+    "park_investigation": "park_planning",
+    "close_investigation": "close_planning",
+    "resume_investigation": "resume_planning",
+    "refresh_investigation": "refresh_planning",
+    # Its budget, the pending human action, the evidence kind, and the field
+    # that names the verified plan.
+    "investigation_attempts": "planning_attempts",
+    "investigation_failed": "planning_failed",
+    "dossier": "plan",
+    "dossier_evidence_id": "plan_evidence_id",
+}
+
+
+def current_name(name):
+    """The current name of a lifecycle name a committed event may carry: the
+    name that replaced a historic one, else ``name`` itself."""
+    return HISTORIC_NAMES.get(name, name) if isinstance(name, str) else name
 
 
 # --------------------------------------------------------------------------
@@ -498,7 +538,7 @@ def pending_is_not(*kinds: str) -> str:
 
 _REFRESH_EFFECTS = _E(
     revision="bump", sets=("refresh",),
-    clears=("dossier_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
+    clears=("plan_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
             "pending_human_action", "publication_operation_id"))
 _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
@@ -542,7 +582,7 @@ _REFRESH = Transition(
     _C, REFRESH,
     (EXACT_REVISION, QUIESCENT, NO_WORK, "development PR and head recorded"),
     _REFRESH_EFFECTS,
-    description="Runs a complete investigation again while keeping the fork and development PR. "
+    description="Runs complete planning again while keeping the fork and development PR. "
                 "Accepted while paused.")
 _RETRY_DISPATCH = Transition(
     _K, None,
@@ -586,7 +626,7 @@ CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
 # rewrite, then the model review of the rewritten series and text.
 REWRITE_PASSED = ("the rewritten series has the tree of the approved series without its debug "
                   "commits, every commit passes the upstream-facing validation and the "
-                  "attribution check, and the series and description satisfy the dossier's "
+                  "attribution check, and the series and description satisfy the plan's "
                   "measurable rules")
 REWRITE_FAILED = ("the rewrite reports the series cannot be shaped without a code change, the "
                   "rewritten series changes the tree, a commit fails the upstream-facing "
@@ -687,66 +727,66 @@ DEVELOPMENT_PROPOSAL_REJECTED = (
     "the proposal is rejected for the current revision, the worker reports it is blocked, or the "
     "worker reports a failure not caused by the patch and either flaky_reruns is exhausted or "
     "the Work carries feedback")
-_ADMISSION = ("verified dossier decision develop, or verified dossier decision park and a "
+_ADMISSION = ("verified plan decision develop, or verified plan decision park and a "
               "recorded admission_override")
-PATCH_SCOPE_COMPLETE = ("the verified dossier names `scope_paths`, and `scope_coverage_complete` "
+PATCH_SCOPE_COMPLETE = ("the verified plan names `scope_paths`, and `scope_coverage_complete` "
                         "holds")
 # The trusted confirmation of a decision close: the reconciler reads PyPI
-# itself, since `closed.idle` is final and the dossier is worker output.
+# itself, since `closed.idle` is final and the plan is worker output.
 CLOSE_CONFIRMED = ("PyPI serves riscv64 for the latest release of every distribution: a riscv64 "
                    "wheel, or pure-Python wheels only")
-DOSSIER_REJECTED = ("the Result has no dossier, the dossier is invalid, its decision is not "
+PLAN_REJECTED = ("the Result has no plan, the plan is invalid, its decision is not "
                     "develop, park, or close, or PyPI does not confirm a decision close")
 
 
 LIFECYCLE: dict[str, State] = {
     "queued.idle": State(
         "auto_wait", True, False,
-        "An accepted request is recorded; investigation has not started.",
+        "An accepted request is recorded; planning has not started.",
         transitions={
-            ("begin_investigation", "investigation.idle"): Transition(_K, None, (NOT_PAUSED,)),
+            ("begin_planning", "planning.idle"): Transition(_K, None, (NOT_PAUSED,)),
             ("withdraw_request", "closed.idle"): Transition(
                 _O, None,
-                ("intake label removed", "no Work requested", "no dossier", "no fork"),
+                ("intake label removed", "no Work requested", "no plan", "no fork"),
                 _E(sets=("terminal_reason=withdrawn",))),
         }),
-    "investigation.idle": State(
+    "planning.idle": State(
         "auto_wait", True, False,
-        "Investigation is due; the controller allocates investigation Work when a worker slot is free.",
+        "Planning is due; the controller allocates planning Work when a worker slot is free.",
         transitions={
-            ("dispatch_investigation", "investigation.agent_running"): Transition(
+            ("dispatch_planning", "planning.agent_running"): Transition(
                 _K, None,
                 ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation"),
                 _E(work="allocate"), ("work_total",)),
-            ("exhaust_work_total", "investigation.waiting_human"): Transition(
+            ("exhaust_work_total", "planning.waiting_human"): Transition(
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
                         f"{PENDING_COUNTER}=work_total"))),
         }),
-    "investigation.agent_running": State(
+    "planning.agent_running": State(
         "work", False, False,
-        "Investigation Work is requested or running and will return a dossier.",
+        "Planning Work is requested or running and will return a plan.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_dispatch_recovery", "investigation.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
+            ("exhaust_dispatch_recovery", "planning.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
-            ("exhaust_work_recovery", "investigation.waiting_human"): _EXHAUST_WORK_RECOVERY,
-            ("reject_dossier", "investigation.idle"): Transition(
+            ("exhaust_work_recovery", "planning.waiting_human"): _EXHAUST_WORK_RECOVERY,
+            ("reject_plan", "planning.idle"): Transition(
                 _R, None,
-                (DOSSIER_REJECTED, "investigation_attempts remains"),
-                _E(revision="bump", work="clear"), ("investigation_attempts",),
-                "Trusted validation rejects the Result; a new investigation is due."),
-            ("exhaust_investigation_recovery", "investigation.waiting_human"): Transition(
+                (PLAN_REJECTED, "planning_attempts remains"),
+                _E(revision="bump", work="clear"), ("planning_attempts",),
+                "Trusted validation rejects the Result; a new planning run is due."),
+            ("exhaust_planning_recovery", "planning.waiting_human"): Transition(
                 _R, None,
-                ("the Result has no usable dossier", "investigation_attempts exhausted"),
-                _E(work="clear", sets=("pending_human_action=investigation_failed",
-                                       f"{PENDING_COUNTER}=investigation_attempts"))),
+                ("the Result has no usable plan", "planning_attempts exhausted"),
+                _E(work="clear", sets=("pending_human_action=planning_failed",
+                                       f"{PENDING_COUNTER}=planning_attempts"))),
             ("admit_development", "provisioning.idle"): Transition(
                 _R, None,
                 (_ADMISSION, PATCH_SCOPE_COMPLETE,
                  "no refresh recorded, or the recorded fork or development PR no longer matches"),
                 _E(revision="bump", work="clear",
-                  sets=("dossier_evidence_id", "admission_class", "scope_paths"),
+                  sets=("plan_evidence_id", "admission_class", "scope_paths"),
                   clears=("refresh", "admission_override")),
                 description="The scope of the patch is checked here, before a fork exists: "
                             "no patch Work is requested before `confirm_provisioning`."),
@@ -755,30 +795,30 @@ LIFECYCLE: dict[str, State] = {
                 (_ADMISSION,
                  "refresh recorded", "the recorded fork and development PR still match"),
                 _E(revision="bump", work="clear",
-                  sets=("dossier_evidence_id", "admission_class", "scope_paths"),
+                  sets=("plan_evidence_id", "admission_class", "scope_paths"),
                   clears=("refresh", "admission_override")),
-                description="A refreshed investigation returns to the existing fork for repair."),
-            ("park_investigation", "parked.idle"): Transition(
+                description="A refreshed planning returns to the existing fork for repair."),
+            ("park_planning", "parked.idle"): Transition(
                 _R, None,
-                ("verified dossier decision park", "no admission_override recorded"),
+                ("verified plan decision park", "no admission_override recorded"),
                 _E(work="clear", sets=("parked_reason", "previous_phase"), clears=_HELD)),
-            ("close_investigation", "closed.idle"): Transition(
+            ("close_planning", "closed.idle"): Transition(
                 _R, None,
-                ("verified dossier decision close", CLOSE_CONFIRMED),
+                ("verified plan decision close", CLOSE_CONFIRMED),
                 _E(work="clear", sets=("terminal_reason",), clears=_HELD),
                 description="The reconciler reads PyPI itself; `terminal_reason` is `already_released` "
                 "when a riscv64 wheel is published, else `no_work`. A recorded `admission_override` "
                 "is not applied against a decision close; the reply states so."),
         }),
-    "investigation.waiting_human": State(
+    "planning.waiting_human": State(
         "human_wait", False, False,
-        "Investigation recovery or a budget is exhausted; a human corrects the cause and resumes.",
+        "Planning recovery or a budget is exhausted; a human corrects the cause and resumes.",
         transitions={
-            ("resume_investigation", "investigation.idle"): Transition(
+            ("resume_planning", "planning.idle"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, QUIESCENT),
                 _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
-                                   "investigation_attempts"),
+                                   "planning_attempts"),
                 description=_RESTART_NOTE),
         }),
     "provisioning.idle": State(
@@ -883,12 +923,12 @@ LIFECYCLE: dict[str, State] = {
                  "no pending actionable feedback", "no requested Work"),
                 _E(sets=("last_ci_evidence_id", "handoff_request",
                         "pending_human_action=submit_upstream"))),
-            ("refresh_investigation", "queued.idle"): _REFRESH,
+            ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
         "auto_wait", True, True,
         "Development Work is due: the fork is ready for a first patch, or a CI failure, "
-        "actionable review, rejected proposal, refreshed dossier, or a resume needs a bounded "
+        "actionable review, rejected proposal, refreshed plan, or a resume needs a bounded "
         "repair. It is the only state in which patch Work is requested, so none is requested "
         "before `confirm_provisioning`.",
         transitions={
@@ -911,7 +951,7 @@ LIFECYCLE: dict[str, State] = {
                 (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_UNUSED, NOT_PAUSED),
                 _E(revision="bump", sets=("refresh", "automatic_refresh_used"),
                   clears=(*_REFRESH_EFFECTS.clears, "budget.clusters", "budget.no_progress_streak")),
-                description="One automatic refresh per generation: a complete investigation runs "
+                description="One automatic refresh per generation: complete planning runs "
                             "again on the existing fork. The per-job and no-progress counters "
                             "start again; `work_total` does not."),
             ("exhaust_repair_attempts", "parked.idle"): Transition(
@@ -944,7 +984,7 @@ LIFECYCLE: dict[str, State] = {
                             "observed together with the CI failure that left the submission "
                             "gate: it is recorded as pending feedback, so the Work requested "
                             "next carries it. The CI evidence is kept."),
-            ("refresh_investigation", "queued.idle"): _REFRESH,
+            ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.waiting_human": State(
         "human_wait", False, False,
@@ -962,7 +1002,7 @@ LIFECYCLE: dict[str, State] = {
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery")),
                 description="Fresh Work is requested; a Result held for publication is not "
                             "reused. The pending feedback is kept. " + _RESTART_NOTE),
-            ("refresh_investigation", "queued.idle"): _REFRESH,
+            ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "handoff.awaiting_submission": State(
         "gate", False, False,
@@ -1006,7 +1046,7 @@ LIFECYCLE: dict[str, State] = {
                 ("the observed fork head differs from the candidate head",),
                 _E(revision="bump", sets=("fork.head_sha", RERUNS),
                   clears=("last_ci_evidence_id", "handoff_request", "pending_human_action"))),
-            ("refresh_investigation", "queued.idle"): _REFRESH,
+            ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "handoff.review_due": State(
         "auto_wait", True, False,
@@ -1017,7 +1057,7 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation"),
                 _E(work="allocate"), ("work_total",),
-                "The uncredentialed rewrite Work reads the dossier's contribution guidelines and "
+                "The uncredentialed rewrite Work reads the plan's contribution guidelines and "
                 "the non-debug commits of the approved `riscv64-dev` series. It reshapes the "
                 "commit messages (squashing or splitting only where the project's contributing "
                 "instructions or reviewers require it, with the same final tree and no content "
@@ -1047,7 +1087,7 @@ LIFECYCLE: dict[str, State] = {
                             "rebuilds the rewritten series on the frozen base and requires the "
                             "tree of the approved series without its debug commits, the "
                             "upstream-facing validation of every commit, attribution trailers "
-                            "of the App or of the approved commits, the dossier's measurable "
+                            "of the App or of the approved commits, the plan's measurable "
                             "commit rules, and every required section of the pull request "
                             "template in the description. Nothing is posted. The revision "
                             "is bumped: the review Work is new Work of the next revision."),
@@ -1072,7 +1112,7 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="allocate"), ("work_total",),
                 "The uncredentialed review Work starts in a fresh context and reads exactly the "
                 "rewritten series and text (the trusted pre-agent step downloads them from the "
-                "rewrite's publication artifact and checks their digests), the dossier's "
+                "rewrite's publication artifact and checks their digests), the plan's "
                 "contribution guidelines, the pull request template, the contributing "
                 "instructions, and the commit conventions. It reviews them against the "
                 "reviewers' expectations and returns pass or fail with reasons; it can change "
@@ -1236,7 +1276,7 @@ LIFECYCLE: dict[str, State] = {
     "handoff.waiting_upstream_pr": State(
         "locked", False, False,
         "Waiting for a human to open the upstream PR from the package. Exactly three exits leave "
-        "it: `verify_upstream_pr`, `retract_submission`, and `refresh_investigation`.",
+        "it: `verify_upstream_pr`, `retract_submission`, and `refresh_planning`.",
         transitions={
             ("record_audit_observation", SELF): Transition(
                 _O, None,
@@ -1254,11 +1294,11 @@ LIFECYCLE: dict[str, State] = {
                 _E(revision="bump", clears=("pending_human_action", "handoff_request", "handoff_approval")),
                 description="Stops reminders and unlocks branch work. `riscv64` is left as it "
                             "is; the next `submit_upstream` replaces it."),
-            ("refresh_investigation", "queued.idle"): Transition(
+            ("refresh_planning", "queued.idle"): Transition(
                 _C, REFRESH,
                 (EXACT_REVISION, "exact clean head", QUIESCENT),
                 _REFRESH_EFFECTS,
-                description="Returns to a complete investigation while keeping the fork. "
+                description="Returns to complete planning while keeping the fork. "
                             "Accepted while paused."),
         }),
     "upstream_review.waiting_ci": State(
@@ -1418,7 +1458,7 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION, QUIESCENT, "no open upstream PR"),
                 _E(revision="bump", generation="bump", work="clear", sets=("admission_override",)),
-                description="Starts a clean generation that runs the complete investigation; "
+                description="Starts a clean generation that runs complete planning; "
                             "identity, events, evidence, and replay fences are kept. An optional "
                             "class, paths, and reason are stored as `admission_override`."),
             ("abandon", "closed.idle"): Transition(
@@ -1456,7 +1496,7 @@ RULES: dict[str, Rule] = {
               clears=(*_REFRESH_EFFECTS.clears, *_FLAG_FIELDS),
               restarts=("operation_launch", "interrupted_reruns", "dispatch_recovery",
                         "work_recovery", "work_total", "publish_recovery")),
-            description="After a long stop the dossier is refreshed: a complete investigation "
+            description="After a long stop the plan is refreshed: complete planning "
                         "runs again while the fork and development PR are kept. The stop is "
                         "counted from the older of `paused_at` and "
                         "`pending_human_action.requested_at`. While an operation is open no "
@@ -1530,10 +1570,10 @@ FLAGS: dict[str, Flag] = {
         "is launched while paused. Phase, "
         "activity, evidence, and pending feedback are kept. "
         "The one exception: setting it in an `agent_running` state leads to the state in which the "
-        "Work is due again, `investigation.idle`, `development.fix_needed`, "
+        "Work is due again, `planning.idle`, `development.fix_needed`, "
         "`handoff.review_due` (also from `handoff.reviewing`), or `upstream_review.fix_needed`. "
         "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
-        "keeps the dossier, candidate head, clean head, `handoff_request`, and the posted "
+        "keeps the plan, candidate head, clean head, `handoff_request`, and the posted "
         "package. `verify_upstream_pr` binds to the exact head only, so the revision bump "
         "does not invalidate the posted package; `submit_upstream` and `retract_submission` "
         "also name the exact revision, so after the bump they name the new revision with the "
@@ -1576,7 +1616,7 @@ FLAGS: dict[str, Flag] = {
                             "the wait."),
         },
         {
-            "investigation.agent_running": "investigation.idle",
+            "planning.agent_running": "planning.idle",
             "development.agent_running": "development.fix_needed",
             "handoff.agent_running": "handoff.review_due",
             "handoff.reviewing": "handoff.review_due",
@@ -1607,10 +1647,10 @@ BUDGETS: dict[str, Budget] = {
         "retries.work_recovery", 1,
         "one fresh Work graph after terminal Work without a usable Result",
         "`active_work.attempt`", ("exhaust_work_recovery",), infrastructure=True),
-    "investigation_attempts": Budget(
-        "retries.investigation_attempts", 0,
-        "one investigation Result without a usable dossier",
-        "`budget.investigation_attempts`", ("exhaust_investigation_recovery",)),
+    "planning_attempts": Budget(
+        "retries.planning_attempts", 0,
+        "one planning Result without a usable plan",
+        "`budget.planning_attempts`", ("exhaust_planning_recovery",)),
     "repair_attempts_cluster": Budget(
         "retries.patch_attempts_per_cluster", 0,
         "one repair or revision Work allocation for one failing CI job; Work that is due "
@@ -1843,7 +1883,7 @@ class DiagramSection:
 
 _SIMPLIFIED_NODES = (
     "queued.idle",
-    "investigation.idle", "investigation.agent_running", "investigation.waiting_human",
+    "planning.idle", "planning.agent_running", "planning.waiting_human",
     "provisioning.idle", "provisioning.waiting_human",
     "development.fix_needed", "development.agent_running", "development.waiting_ci",
     "development.waiting_human",
@@ -1860,20 +1900,20 @@ _SIMPLIFIED_NODES = (
 DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
     DiagramSection(
         "Simplified state diagram",
-        "This is the expected path when investigation finds useful work, provisioning succeeds, "
+        "This is the expected path when planning finds useful work, provisioning succeeds, "
         "development CI becomes green, upstream accepts the contribution, and an official release "
         "publishes the required artifacts.",
         (
             Diagram(None, _SIMPLIFIED_NODES, (
-                ("queued.idle", "begin_investigation"),
+                ("queued.idle", "begin_planning"),
                 ("queued.idle", "withdraw_request"),
-                ("investigation.idle", "dispatch_investigation"),
-                ("investigation.agent_running", "reject_dossier"),
-                ("investigation.agent_running", "exhaust_investigation_recovery"),
-                ("investigation.waiting_human", "resume_investigation"),
-                ("investigation.agent_running", "admit_development"),
-                ("investigation.agent_running", "park_investigation"),
-                ("investigation.agent_running", "close_investigation"),
+                ("planning.idle", "dispatch_planning"),
+                ("planning.agent_running", "reject_plan"),
+                ("planning.agent_running", "exhaust_planning_recovery"),
+                ("planning.waiting_human", "resume_planning"),
+                ("planning.agent_running", "admit_development"),
+                ("planning.agent_running", "park_planning"),
+                ("planning.agent_running", "close_planning"),
                 ("provisioning.idle", "require_provisioning_intervention"),
                 ("provisioning.waiting_human", "resume_provisioning"),
                 ("provisioning.idle", "confirm_provisioning"),
@@ -1931,53 +1971,53 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
         ),
     ),
     DiagramSection(
-        "Investigation and provisioning failure cases",
-        "Investigation and provisioning fail in different ways, and each case has its own recovery "
+        "Planning and provisioning failure cases",
+        "Planning and provisioning fail in different ways, and each case has its own recovery "
         "path. An infrastructure failure that exhausts its retries waits for a human in the same "
         "phase; it never ends the generation.",
         (
             Diagram(
-                "Failure case 1: investigation finds no development path",
-                ("investigation.idle", "investigation.agent_running", "provisioning.idle",
+                "Failure case 1: planning finds no development path",
+                ("planning.idle", "planning.agent_running", "provisioning.idle",
                  "parked.idle", "queued.idle", "closed.idle"),
-                (("investigation.idle", "dispatch_investigation"),
-                 ("investigation.agent_running", "admit_development"),
-                 ("investigation.agent_running", "park_investigation"),
-                 ("investigation.agent_running", "close_investigation"),
+                (("planning.idle", "dispatch_planning"),
+                 ("planning.agent_running", "admit_development"),
+                 ("planning.agent_running", "park_planning"),
+                 ("planning.agent_running", "close_planning"),
                  ("parked.idle", "restart_generation"),
                  ("parked.idle", "abandon")),
-                start="investigation.idle", ends=("closed.idle",),
-                text="The verified dossier decides between development, park, and close; a close "
+                start="planning.idle", ends=("closed.idle",),
+                text="The verified plan decides between development, park, and close; a close "
                      "is confirmed from PyPI by the reconciler. "
                      "`closed` is the single terminal phase for work that is not needed; the reason "
                      "is `terminal_reason`. A restart may record an `admission_override`; the new "
-                     "generation still runs the complete investigation."),
+                     "generation still runs complete planning."),
             Diagram(
-                "Failure case 2: the Result has no usable dossier",
-                ("investigation.idle", "investigation.agent_running", "investigation.waiting_human",
+                "Failure case 2: the Result has no usable plan",
+                ("planning.idle", "planning.agent_running", "planning.waiting_human",
                  "provisioning.idle"),
-                (("investigation.idle", "dispatch_investigation"),
-                 ("investigation.agent_running", "reject_dossier"),
-                 ("investigation.agent_running", "exhaust_investigation_recovery"),
-                 ("investigation.waiting_human", "resume_investigation"),
-                 ("investigation.agent_running", "admit_development")),
-                start="investigation.idle",
-                text="`reject_dossier` retries automatically while `investigation_attempts` remains; "
-                     "a Result without a dossier counts like an invalid one. An incomplete artifact "
+                (("planning.idle", "dispatch_planning"),
+                 ("planning.agent_running", "reject_plan"),
+                 ("planning.agent_running", "exhaust_planning_recovery"),
+                 ("planning.waiting_human", "resume_planning"),
+                 ("planning.agent_running", "admit_development")),
+                start="planning.idle",
+                text="`reject_plan` retries automatically while `planning_attempts` remains; "
+                     "a Result without a plan counts like an invalid one. An incomplete artifact "
                      "is never adopted by hand."),
             Diagram(
-                "Failure case 3: the investigator or dispatcher has an infrastructure failure",
-                ("investigation.idle", "investigation.agent_running", "investigation.waiting_human",
+                "Failure case 3: the planner or dispatcher has an infrastructure failure",
+                ("planning.idle", "planning.agent_running", "planning.waiting_human",
                  "parked.idle"),
-                (("investigation.idle", "dispatch_investigation"),
-                 ("investigation.agent_running", "retry_dispatch"),
-                 ("investigation.agent_running", "allocate_work_retry"),
-                 ("investigation.agent_running", "exhaust_dispatch_recovery"),
-                 ("investigation.agent_running", "exhaust_work_recovery"),
-                 ("investigation.idle", "exhaust_work_total"),
-                 ("investigation.waiting_human", "resume_investigation"),
-                 ("investigation.waiting_human", "park_contribution")),
-                start="investigation.idle",
+                (("planning.idle", "dispatch_planning"),
+                 ("planning.agent_running", "retry_dispatch"),
+                 ("planning.agent_running", "allocate_work_retry"),
+                 ("planning.agent_running", "exhaust_dispatch_recovery"),
+                 ("planning.agent_running", "exhaust_work_recovery"),
+                 ("planning.idle", "exhaust_work_total"),
+                 ("planning.waiting_human", "resume_planning"),
+                 ("planning.waiting_human", "park_contribution")),
+                start="planning.idle",
                 text="Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` "
                      "and `work_recovery`. A terminal Work graph is never submitted again under the "
                      "same identity. Every Work allocation also charges `work_total`."),
@@ -2086,17 +2126,17 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
             Diagram(
                 "Failure case 4: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",
-                 "investigation.idle", "investigation.agent_running", "parked.idle"),
+                 "planning.idle", "planning.agent_running", "parked.idle"),
                 (("development.fix_needed", "request_repair"),
                  ("development.fix_needed", "refresh_on_exhaustion"),
-                 ("queued.idle", "begin_investigation"),
-                 ("investigation.idle", "dispatch_investigation"),
-                 ("investigation.agent_running", "readmit_development"),
+                 ("queued.idle", "begin_planning"),
+                 ("planning.idle", "dispatch_planning"),
+                 ("planning.agent_running", "readmit_development"),
                  ("development.fix_needed", "exhaust_repair_attempts")),
                 start="development.fix_needed",
                 text="Exhaustion is decided at `development.fix_needed`. The first time "
                      "`repair_attempts_cluster` or `no_progress` is exhausted in a generation, "
-                     "`refresh_on_exhaustion` runs a complete investigation again on the existing "
+                     "`refresh_on_exhaustion` runs complete planning again on the existing "
                      "fork. After that, `exhaust_repair_attempts` parks. Both apply only while "
                      "`work_total` remains. `repair_attempts_cluster` counts only while a failing "
                      "CI job is recorded for the head."),
@@ -2117,15 +2157,15 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`work_total` again and returns to `development.fix_needed`; the repair "
                      "budgets are not started again."),
             Diagram(
-                "Failure case 6: development must be re-investigated",
+                "Failure case 6: development must be re-planned",
                 ("development.waiting_ci", "development.fix_needed",
-                 "development.waiting_human", "queued.idle", "investigation.agent_running"),
-                (("development.waiting_ci", "refresh_investigation"),
-                 ("development.fix_needed", "refresh_investigation"),
-                 ("development.waiting_human", "refresh_investigation"),
-                 ("investigation.agent_running", "readmit_development")),
-                text="`refresh` runs a complete investigation without deleting the fork or "
-                     "development PR. A refreshed dossier that decides to develop returns to "
+                 "development.waiting_human", "queued.idle", "planning.agent_running"),
+                (("development.waiting_ci", "refresh_planning"),
+                 ("development.fix_needed", "refresh_planning"),
+                 ("development.waiting_human", "refresh_planning"),
+                 ("planning.agent_running", "readmit_development")),
+                text="`refresh` runs complete planning without deleting the fork or "
+                     "development PR. A refreshed plan that decides to develop returns to "
                      "`development.fix_needed` on the existing fork."),
         ),
     ),
@@ -2164,7 +2204,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "again is entered. A Result that lands during the pause takes "
                      "`record_late_effect`; after the resume, fresh Work is requested."),
             Diagram(
-                "Success case 3: resume after a long stop refreshes the dossier",
+                "Success case 3: resume after a long stop refreshes the plan",
                 ("development.waiting_ci", "development.waiting_ci+paused",
                  "development.waiting_human", "development.fix_needed", "queued.idle"),
                 (("development.waiting_ci", "pause"),
@@ -2175,7 +2215,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 start="development.waiting_ci",
                 text="In provisioning and development, a pause or human wait longer than "
                      "`refresh.stale_after_days` days resumes through `resume_stale`, which runs "
-                     "the investigation again. The normal resume verbs carry the complementary "
+                     "the planning again. The normal resume verbs carry the complementary "
                      "guard, so exactly one applies. Handoff, upstream review, and release waits "
                      "are never refreshed automatically."),
             Diagram(
@@ -2237,13 +2277,13 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.waiting_upstream_pr", "record_reminder"),
                  ("handoff.waiting_upstream_pr", "verify_upstream_pr")),
                 text="`submit-upstream` is the only submission command. The rewrite Work reads "
-                     "the dossier's contribution guidelines and the non-debug commits of the "
+                     "the plan's contribution guidelines and the non-debug commits of the "
                      "approved `riscv64-dev` series; the project's contributing instructions "
                      "take precedence over the pipeline's for content and style. It returns the "
                      "reshaped series and the upstream PR title and description written after "
                      "the pull request template. Trusted code checks that every commit of the "
                      "series is valid upstream, that its tree is the tree of the approved series "
-                     "without its debug commits, the attribution trailers, the dossier's "
+                     "without its debug commits, the attribution trailers, the plan's "
                      "measurable commit rules, and the template's required sections. A separate "
                      "review Work, in a fresh context, reviews exactly that series and text "
                      "against the reviewers' expectations and blocks on failure. Trusted code "
@@ -2275,10 +2315,10 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.reviewing", "reject_submission_review"),
                  ("handoff.building_upstream_branch", "return_for_repair"),
                  ("handoff.waiting_ci", "return_for_repair"),
-                 ("handoff.awaiting_submission", "refresh_investigation"),
+                 ("handoff.awaiting_submission", "refresh_planning"),
                  ("handoff.waiting_upstream_pr", "record_audit_observation"),
                  ("handoff.waiting_upstream_pr", "retract_submission"),
-                 ("handoff.waiting_upstream_pr", "refresh_investigation")),
+                 ("handoff.waiting_upstream_pr", "refresh_planning")),
                 start="handoff.awaiting_submission",
                 text="Before the package is posted, a changed candidate head, a rewrite that "
                      "fails the trusted check, a failed review, a reviewed series that does not rebuild, a "
@@ -2291,7 +2331,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "first; a review observed with the failure is then recorded in "
                      "`development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the "
                      "gate. `handoff.waiting_upstream_pr` is locked: only "
-                     "`verify_upstream_pr`, `retract_submission`, and `refresh_investigation` "
+                     "`verify_upstream_pr`, `retract_submission`, and `refresh_planning` "
                      "leave it, and none of them changes `riscv64`."),
             Diagram(
                 "Failure case 2: a handoff step fails repeatedly or needs a human",
@@ -2464,14 +2504,14 @@ DIAGRAM_PHASE_IDS = {"upstream_review": "upstream"}
 # a recorded head (``REVISION_OBSERVED_FIELDS`` set by an observation, or by
 # a Result that read the head back).
 REVISION_SET_FIELDS = ("scope_paths", "pending_feedback_evidence_ids", "refresh")
-REVISION_CLEAR_FIELDS = ("scope_paths", "dossier_evidence_id", "handoff_request",
+REVISION_CLEAR_FIELDS = ("scope_paths", "plan_evidence_id", "handoff_request",
                          "handoff_approval", "clean_head_sha")
 REVISION_OBSERVED_FIELDS = ("fork.head_sha", "upstream_pr.head_sha")
 _REVISION_GUARDS = (EXACT_REVISION, ANY_REVISION)
 
 # The exits of the locked upstream-PR wait.
 LOCKED_EXITS = {"handoff.waiting_upstream_pr": ("verify_upstream_pr", "retract_submission",
-                                                "refresh_investigation")}
+                                                "refresh_planning")}
 # Phases from which only a command may end the generation.
 NO_AUTOMATIC_PARK = ("upstream_review",)
 # The steps every submission passes, in order, from the gate to the locked
@@ -2999,15 +3039,15 @@ def _check_stale_resume(policy: dict, problems: list[str]) -> None:
     t = rule.transition
     if t.command != RESUME or STALE not in t.guard or NOT_STALE in t.guard:
         problems.append(f"rule resume_stale: must be `{RESUME}` guarded by {STALE!r}")
-    refresh = {e.transition.guard for e in table_edges() if e.verb == "refresh_investigation"}
+    refresh = {e.transition.guard for e in table_edges() if e.verb == "refresh_planning"}
     for guard in (QUIESCENT, NO_WORK):
         if guard not in t.guard:
             problems.append(f"rule resume_stale: without the guard {guard!r}")
         if not any(guard in g for g in refresh):
-            problems.append(f"refresh_investigation: no row with the guard {guard!r}")
+            problems.append(f"refresh_planning: no row with the guard {guard!r}")
     if not set(_REFRESH_EFFECTS.sets) <= set(t.effects.sets) \
             or not set(_REFRESH_EFFECTS.clears) <= set(t.effects.clears):
-        problems.append("rule resume_stale: does not have the effects of refresh_investigation")
+        problems.append("rule resume_stale: does not have the effects of refresh_planning")
     for e in table_edges():
         if e.transition.command != RESUME or e.verb == "resume_stale":
             continue

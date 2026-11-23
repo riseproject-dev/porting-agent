@@ -1,5 +1,5 @@
 name: Upstream RISC-V support
-description: Request investigation and upstream integration of Linux RISC-V (riscv64) support for a project, in any language.
+description: Request planning and upstream integration of Linux RISC-V (riscv64) support for a project, in any language.
 title: "[upstreaming] "
 labels: ["upstreaming-request"]
 body:
@@ -21,7 +21,7 @@ body:
     id: target-branch
     attributes:
       label: Upstream target branch
-      description: Optional. Leave blank for investigation.
+      description: Optional. Leave blank for planning.
   - type: textarea
     id: additional-notes
     attributes:

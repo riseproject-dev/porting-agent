@@ -299,7 +299,7 @@ class TestSingleWritePath(unittest.TestCase):
 
 def provisioning_record(**over):
     rec = contribution(phase="provisioning", activity="idle", fork=None,
-                       dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/*"])
+                       plan_evidence_id="plan-1", scope_paths=[".github/workflows/*"])
     rec.update(over)
     return rec
 
@@ -417,7 +417,7 @@ class ReceiptWorld:
     def receipt_world(self, rec):
         op = recovery.charge_launch(recovery.plan(
             contribution_id=rec["contribution_id"], revision=rec["revision"], kind="fork_provision",
-            policy_version="test", reason_ids=["dossier-1"],
+            policy_version="test", reason_ids=["plan-1"],
             target={"repository": "riseproject-upstreaming/proj", "repository_id": None,
                     "ref": "riscv64-dev", "base_sha": SHA_C, "expected_head": None},
             proposed={"commit": SHA_C, "marker": "provision"}, now=NOW), NOW)

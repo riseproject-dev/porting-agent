@@ -60,7 +60,7 @@
     "processed_pr_conversation_comment_ids",
     "pending_feedback_evidence_ids",
     "active_work",
-    "dossier_evidence_id",
+    "plan_evidence_id",
     "scope_coverage_complete",
     "scope_paths"
   ],
@@ -136,7 +136,7 @@
     "phase": {
       "enum": [
         "queued",
-        "investigation",
+        "planning",
         "provisioning",
         "development",
         "handoff",
@@ -204,7 +204,7 @@
     "previous_phase": {
       "enum": [
         "queued",
-        "investigation",
+        "planning",
         "provisioning",
         "development",
         "handoff",
@@ -884,7 +884,7 @@
         "attempts_used",
         "no_progress_streak",
         "clusters",
-        "investigation_attempts",
+        "planning_attempts",
         "spent_estimate_usd_cents",
         "reruns"
       ],
@@ -907,7 +907,7 @@
             "minimum": 0
           }
         },
-        "investigation_attempts": {
+        "planning_attempts": {
           "type": "integer",
           "minimum": 0
         },
@@ -991,7 +991,7 @@
               "enum": [
                 "work_total",
                 "work_recovery",
-                "investigation_attempts",
+                "planning_attempts",
                 "repair_attempts_cluster",
                 "no_progress",
                 "flaky_reruns",
@@ -1296,7 +1296,7 @@
         }
       ]
     },
-    "dossier_evidence_id": {
+    "plan_evidence_id": {
       "anyOf": [
         {
           "type": "string",

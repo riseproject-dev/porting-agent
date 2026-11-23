@@ -40,7 +40,7 @@ POLICY = policy()
 WRITES = policy(read_only=False)
 
 
-def _dossier(decision):
+def _plan(decision):
     coverage = [{"area": area, "paths": ["a"] if area == "build" else [], "assessment": "x" * 20}
                 for area in ("build", "test", "release", "packaging", "documentation",
                              "native_sources")]
@@ -60,12 +60,12 @@ RESULTS = {
     "rejected_stale": {"status": "rejected", "failure_class": "stale", "reason": "x"},
     "infra_error": {"status": "infra_error", "failure_class": "infrastructure", "reason": "x"},
     "worker_blocked": {"status": "worker_blocked", "reason": "x", "proposal": {}},
-    "investigation_without_dossier": {"status": "investigation"},
-    "investigation_develop": {"status": "investigation", "dossier": _dossier("develop")},
-    "investigation_park": {"status": "investigation", "dossier": _dossier("park")},
+    "planning_without_plan": {"status": "planning"},
+    "planning_develop": {"status": "planning", "plan": _plan("develop")},
+    "planning_park": {"status": "planning", "plan": _plan("park")},
     # Every Result here is late. `tick` patches PyPI to have no project, so no
     # test reaches the network, and a close folded here would be rejected.
-    "investigation_close": {"status": "investigation", "dossier": _dossier("close")},
+    "planning_close": {"status": "planning", "plan": _plan("close")},
 }
 
 WORK = {"dedupe_key": "example--proj/12@0:development_repair", "task": "development_repair",
@@ -135,10 +135,10 @@ def events(output):
 
 def running(phase):
     """A contribution whose worker runs."""
-    task = "investigation" if phase == "investigation" else "development_repair"
-    record = contribution(phase=phase, activity="agent_running", dossier_evidence_id="dossier-1",
+    task = "planning" if phase == "planning" else "development_repair"
+    record = contribution(phase=phase, activity="agent_running", plan_evidence_id="plan-1",
                           scope_paths=["a"], scope_coverage_complete=True)
-    if phase == "investigation":
+    if phase == "planning":
         record["fork"] = None
     if phase == "upstream_review":
         record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
@@ -206,10 +206,10 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         # A pause from an `agent_running` state leads to the state in which
         # the Work is due again.
         expected = {"park": "parked.idle", "abandon": "closed.idle",
-                    "pause": {"investigation": "investigation.idle",
+                    "pause": {"planning": "planning.idle",
                               "development": "development.fix_needed",
                               "upstream_review": "upstream_review.fix_needed"}}
-        for phase, verb in itertools.product(("investigation", "development", "upstream_review"),
+        for phase, verb in itertools.product(("planning", "development", "upstream_review"),
                                              ("park", "abandon", "pause")):
             record = stopped(phase, verb)
             if record is None:
@@ -252,7 +252,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
     def test_working_state_without_matching_work(self):
         for phase, activity in (("development", "fix_needed"), ("development", "waiting_ci"),
                                 ("upstream_review", "fix_needed")):
-            record = contribution(phase=phase, activity=activity, dossier_evidence_id="dossier-1")
+            record = contribution(phase=phase, activity=activity, plan_evidence_id="plan-1")
             if phase == "upstream_review":
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
             other = dict(record, active_work=dict(WORK, revision=7))
@@ -261,22 +261,22 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                                   result=name):
                     self.assert_recorded_only(rec, name)
 
-        idle = contribution(phase="investigation", activity="idle", fork=None)
+        idle = contribution(phase="planning", activity="idle", fork=None)
         for name in RESULTS:
-            with self.subTest(state="investigation.idle", result=name):
+            with self.subTest(state="planning.idle", result=name):
                 self.assert_recorded_before_new_work(idle, name)
 
     def assert_recorded_before_new_work(self, record, name):
-        """Where an investigation is due, the same tick requests it after the
+        """Where a planning run is due, the same tick requests it after the
         Result is recorded. Nothing of the Result reaches the record."""
         output = tick(record, [publication(record, name)])
         after = final(output, record)
         self.assertEqual([e["kind"] for e in events(output)][:1], ["record_late_effect"])
-        self.assertEqual(engine.state_key(after), "investigation.agent_running")
+        self.assertEqual(engine.state_key(after), "planning.agent_running")
         self.assertEqual((after["active_work"]["task"], after["revision"]),
-                         ("investigation", record["revision"]))
+                         ("planning", record["revision"]))
         self.assertEqual(
-            (after["dossier_evidence_id"], after["proposal_artifact"],
+            (after["plan_evidence_id"], after["proposal_artifact"],
              after["pending_publication"], after["publication_operation_id"],
              after["pending_human_action"], after["budget"], after["processed_publications"]),
             (None, None, None, None, None,
@@ -428,7 +428,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
     def test_recovered_worker_blocker_is_recorded_once(self):
         # The rejected proposal of run 555 is recorded; its blocker report for
         # an older revision is collected on every tick.
-        record = contribution(activity="fix_needed", revision=3, dossier_evidence_id="dossier-1",
+        record = contribution(activity="fix_needed", revision=3, plan_evidence_id="plan-1",
                               proposal_artifact=dict(ARTIFACT, outcome="rejected"))
         blocker = dict(publication(record, "worker_blocked"),
                        task={"contribution_id": record["contribution_id"], "revision": 2})
@@ -448,7 +448,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
         """Without requested Work no Result matches, at any revision."""
         for phase in ("development", "upstream_review"):
             record = contribution(phase=phase, activity="agent_running", revision=3,
-                                  dossier_evidence_id="dossier-1")
+                                  plan_evidence_id="plan-1")
             if phase == "upstream_review":
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
             for name, revision in itertools.product(RESULTS, (2, 3)):
@@ -471,9 +471,9 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
         states = sorted(set(lifecycle.LIFECYCLE))
         for state, flag, work in itertools.product(states, (None, "paused"), (False, True)):
             phase, activity = state.split(".")
-            record = contribution(phase=phase, activity=activity, dossier_evidence_id="dossier-1",
+            record = contribution(phase=phase, activity=activity, plan_evidence_id="plan-1",
                                   scope_paths=["a"], scope_coverage_complete=True)
-            if phase in ("queued", "investigation", "provisioning"):
+            if phase in ("queued", "planning", "provisioning"):
                 record["fork"] = None
             if phase in ("upstream_review", "release_wait", "released"):
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)

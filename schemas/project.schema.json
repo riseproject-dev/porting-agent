@@ -164,7 +164,7 @@
         }
       }
     },
-    "dossier_evidence_id": {
+    "plan_evidence_id": {
       "anyOf": [
         {
           "type": "string",

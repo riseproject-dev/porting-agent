@@ -45,17 +45,17 @@
     },
     {
       "source": "upstreaming-investigator.md",
-      "target": "investigator.md",
+      "target": "planner.md",
       "milestone": 4,
-      "owner": "verified investigation",
+      "owner": "verified planning",
       "agentic": true,
       "status": "migrated"
     },
     {
       "source": "upstreaming-investigator.lock.yml",
-      "target": "investigator.lock.yml",
+      "target": "planner.lock.yml",
       "milestone": 4,
-      "owner": "generated investigator lock",
+      "owner": "generated planner lock",
       "agentic": false,
       "status": "migrated"
     },

@@ -63,7 +63,7 @@ def proposal(patch: bytes, path=".github/workflows/build-wheels.yml"):
         "outcome": "patch",
         "expected_revision": 3,
         "expected_head": None,
-        "reason_ids": ["dossier-closeio--ciso8601--1-r2"],
+        "reason_ids": ["plan-closeio--ciso8601--1-r2"],
         "patch_digest": hashlib.sha256(patch).hexdigest(),
         "changed_files": [path],
         "operation": "append",
@@ -297,7 +297,7 @@ class TestWorkerContract(unittest.TestCase):
         self.assertEqual(worker["post-steps"][0]["if"], "always()")
         prompt = (WORKFLOWS / "worker.md").read_text()
         self.assertIn("## Mandatory riscv64 reproduction", prompt)
-        self.assertIn("Select only dossier-relevant build and test workflows/jobs", prompt)
+        self.assertIn("Select only plan-relevant build and test workflows/jobs", prompt)
         self.assertIn("Pass no secret", prompt)
 
     def test_dispatcher_compiled_policy_contains_only_current_profiles(self):
@@ -311,7 +311,7 @@ class TestWorkerContract(unittest.TestCase):
         self.assertTrue(policies)
         for queue_policy in policies:
             profiles = queue_policy["pools"]["default"]["profiles"]
-            self.assertEqual(set(profiles), {"investigator", "worker"})
+            self.assertEqual(set(profiles), {"planner", "worker"})
             self.assertEqual(profiles["worker"]["workflow"], ".github/workflows/worker.lock.yml")
             self.assertEqual(profiles["worker"]["max_claims"], 1)
 

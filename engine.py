@@ -395,9 +395,9 @@ def _refresh_used(ctx: Context) -> str | None:
     return None if ctx.record.get("automatic_refresh_used") else "the automatic refresh is unused"
 
 
-@_record("no dossier", "no_dossier")
-def _no_dossier(ctx: Context) -> str | None:
-    return "a dossier is recorded" if ctx.record.get("dossier_evidence_id") else None
+@_record("no plan", "no_plan")
+def _no_plan(ctx: Context) -> str | None:
+    return "a plan is recorded" if ctx.record.get("plan_evidence_id") else None
 
 
 @_record("no fork", "no_fork")
@@ -482,8 +482,8 @@ def budget_count(name: str, ctx: Context) -> int | None:
         return int(budget.get("attempts_used", 0))
     if name == "no_progress":
         return int(budget.get("no_progress_streak", 0))
-    if name == "investigation_attempts":
-        return int(budget.get("investigation_attempts", 0))
+    if name == "planning_attempts":
+        return int(budget.get("planning_attempts", 0))
     if name == "repair_attempts_cluster":
         clusters = budget.get("clusters") or {}
         if ctx.cluster is not None:
@@ -518,7 +518,7 @@ def head_reruns(record: dict) -> dict:
 
 
 # Budgets whose counter is a field of the contribution record.
-RECORD_COUNTERS = ("work_total", "no_progress", "investigation_attempts",
+RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts",
                    "repair_attempts_cluster", "work_recovery", "publish_recovery",
                    *RERUN_COUNTERS)
 
@@ -643,15 +643,15 @@ for _guard, _name in (
     ("the prerequisite is corrected", "prerequisite_corrected"),
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_lost"),
     ("the Work graph is terminal without a usable Result", "work_terminal_without_result"),
-    (lc.DOSSIER_REJECTED, "dossier_rejected"),
-    ("the Result has no usable dossier", "no_usable_dossier"),
+    (lc.PLAN_REJECTED, "plan_rejected"),
+    ("the Result has no usable plan", "no_usable_plan"),
     (lc._ADMISSION, "development_admitted"),
     (lc.PATCH_SCOPE_COMPLETE, "patch_scope_complete"),
     ("no refresh recorded, or the recorded fork or development PR no longer matches",
      "fresh_fork_required"),
     ("the recorded fork and development PR still match", "recorded_fork_matches"),
-    ("verified dossier decision park", "dossier_decision_park"),
-    ("verified dossier decision close", "dossier_decision_close"),
+    ("verified plan decision park", "plan_decision_park"),
+    ("verified plan decision close", "plan_decision_close"),
     (lc.CLOSE_CONFIRMED, "close_confirmed_by_pypi"),
     ("the Result is published, or uncertain and later confirmed", "result_published"),
     ("the proposal no longer applies to the fork head", "proposal_stale"),
@@ -781,8 +781,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "record_late_effect": "reconcile",
     # Work allocation, by the table's rows, and the exhaustion of its budgets
     # where Work is due.
-    "begin_investigation": "controller",
-    "dispatch_investigation": "controller",
+    "begin_planning": "controller",
+    "dispatch_planning": "controller",
     "request_patch": "controller",
     "request_repair": "controller",
     "request_upstream_revision": "controller",
@@ -792,18 +792,18 @@ PIPELINE_VERBS: dict[str, str] = {
     "exhaust_repair_attempts": "controller",
     # A terminal Work graph without a usable Result (taken by
     # `controller.terminal_work` for the reconciler and for an allocation
-    # that names a spent graph), and an investigation Result without a
-    # usable dossier.
+    # that names a spent graph), and a planning run Result without a
+    # usable plan.
     "allocate_work_retry": "controller",
     "exhaust_work_recovery": "controller",
-    "reject_dossier": "reconcile",
-    "exhaust_investigation_recovery": "reconcile",
-    # The verified dossier decides: development on a new fork or on the
+    "reject_plan": "reconcile",
+    "exhaust_planning_recovery": "reconcile",
+    # The verified plan decides: development on a new fork or on the
     # recorded one, a park, or a close.
     "admit_development": "reconcile",
     "readmit_development": "reconcile",
-    "park_investigation": "reconcile",
-    "close_investigation": "reconcile",
+    "park_planning": "reconcile",
+    "close_planning": "reconcile",
     # The submission command, the stop and resume commands, and refresh, on a
     # record in a state of the table, and the controller's own stops.
     "submit_upstream": "controller",
@@ -813,11 +813,11 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_pause": "controller",
     "resume_stale": "controller",
     "park_contribution": "controller",
-    "refresh_investigation": "controller",
+    "refresh_planning": "controller",
     "restart_generation": "controller",
     "pause_on_identity_change": "controller",
     # The resumes of the human waits of the table.
-    "resume_investigation": "controller",
+    "resume_planning": "controller",
     "resume_provisioning": "controller",
     "resume_ci": "controller",
     "resume_development": "controller",
@@ -1060,7 +1060,7 @@ def reset_generation(record: dict) -> dict:
         "processed_review_ids": [], "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
         "pending_feedback_evidence_ids": [], "active_work": None,
-        "dossier_evidence_id": None, "scope_coverage_complete": False,
+        "plan_evidence_id": None, "scope_coverage_complete": False,
         "scope_paths": None, "debug_commits": [], "clean_head_sha": None,
         "clean_head_ci_since": None,
         "submission_rewrite_id": None,
@@ -1071,7 +1071,7 @@ def reset_generation(record: dict) -> dict:
         "next_poll_at": None,
     })
     rec["budget"] = {"policy_id": record["budget"]["policy_id"], "attempts_used": 0,
-                     "no_progress_streak": 0, "clusters": {}, "investigation_attempts": 0,
+                     "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
                      "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                      "spent_estimate_usd_cents": 0}
     return rec
@@ -1083,8 +1083,8 @@ def _restart_counter(rec: dict, name: str) -> None:
         budget["attempts_used"] = 0
     elif name == "no_progress":
         budget["no_progress_streak"] = 0
-    elif name == "investigation_attempts":
-        budget["investigation_attempts"] = 0
+    elif name == "planning_attempts":
+        budget["planning_attempts"] = 0
     elif name == "repair_attempts_cluster":
         budget["clusters"] = {}
     elif name in RERUN_COUNTERS:
@@ -1099,8 +1099,8 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
         budget["attempts_used"] = int(budget.get("attempts_used", 0)) + 1
     elif name == "no_progress":
         budget["no_progress_streak"] = int(budget.get("no_progress_streak", 0)) + 1
-    elif name == "investigation_attempts":
-        budget["investigation_attempts"] = int(budget.get("investigation_attempts", 0)) + 1
+    elif name == "planning_attempts":
+        budget["planning_attempts"] = int(budget.get("planning_attempts", 0)) + 1
     elif name == "repair_attempts_cluster":
         if not ctx.cluster:
             raise TransitionError("charging repair_attempts_cluster needs the failing CI job")
@@ -1424,7 +1424,7 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "publication_operation_id": None, "pending_publication": None,
     "processed_publications": [], "processed_review_ids": [],
     "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
-    "pending_feedback_evidence_ids": [], "active_work": None, "dossier_evidence_id": None,
+    "pending_feedback_evidence_ids": [], "active_work": None, "plan_evidence_id": None,
     "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
     "clean_head_sha": None, "clean_head_ci_since": None, "submission_rewrite_id": None,
     "submission_review_id": None, "handoff_request": None, "handoff_approval": None,
@@ -1435,7 +1435,7 @@ RECORD_DEFAULTS: dict[str, Any] = {
 # The counts of `budget` a record may lack; `reruns` starts for the recorded
 # head (``fresh_reruns``), as the engine reads absent rerun counts.
 BUDGET_DEFAULTS: dict[str, Any] = {
-    "no_progress_streak": 0, "clusters": {}, "investigation_attempts": 0,
+    "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
     "spent_estimate_usd_cents": 0,
 }
 # The fields of requested Work a record may lack: Work requested before the
@@ -1490,6 +1490,52 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     return new, added, removed
 
 
+def with_current_names(record: dict) -> tuple[dict, list[str]]:
+    """``record`` with the names of the planning phase and its plan that it
+    carries from before the rename (``lifecycle.HISTORIC_NAMES``) replaced,
+    and the places it replaced: the fields `dossier_evidence_id` and
+    `budget.investigation_attempts`, and the historic values of `phase`,
+    `previous_phase`, `pending_human_action.kind`, and
+    `pending_human_action.counter`. Nothing else changes. Raises
+    ``TransitionError`` for requested Work of the historic task, whose queued
+    payload names a worker profile that no longer exists, and for a record
+    that carries a field under both names."""
+    historic = lc.HISTORIC_NAMES
+    new = copy.deepcopy(record)
+    renamed: list[str] = []
+
+    def rename_key(container: dict, old: str, path: str) -> None:
+        if old in container:
+            if historic[old] in container:
+                raise TransitionError(f"both {path}{old} and {path}{historic[old]} are present")
+            container[historic[old]] = container.pop(old)
+            renamed.append(f"{path}{old}")
+
+    def rename_value(container: dict, name: str, old: str, path: str) -> None:
+        if container.get(name) == old:
+            container[name] = historic[old]
+            renamed.append(f"{path}{name}={old}")
+
+    rename_key(new, "dossier_evidence_id", "")
+    if isinstance(new.get("budget"), dict):
+        new["budget"] = dict(new["budget"])
+        rename_key(new["budget"], "investigation_attempts", "budget.")
+    for name in ("phase", "previous_phase"):
+        rename_value(new, name, "investigation", "")
+    if isinstance(new.get("pending_human_action"), dict):
+        new["pending_human_action"] = dict(new["pending_human_action"])
+        rename_value(new["pending_human_action"], "kind", "investigation_failed",
+                     "pending_human_action.")
+        rename_value(new["pending_human_action"], "counter", "investigation_attempts",
+                     "pending_human_action.")
+    work = new.get("active_work")
+    if isinstance(work, dict) and (work.get("task") == "investigation"
+                                   or str(work.get("dedupe_key")).endswith(":investigation")):
+        raise TransitionError("requested Work of the historic task investigation has no "
+                              "reviewed name migration")
+    return new, renamed
+
+
 # --------------------------------------------------------------------------
 # Writes beside a row
 #
@@ -1517,7 +1563,7 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     "dispatcher_run_decided": ("active_work.dispatched_run_id",),
     # Work held in a handoff state that requests none is dropped.
     "handoff_work_dropped": ("active_work",),
-    # The admitted scope was checked complete for its dossier.
+    # The admitted scope was checked complete for its plan.
     "scope_checked": ("scope_coverage_complete",),
     # A published patch: its files join the admitted scope, and `no_progress`
     # starts again.

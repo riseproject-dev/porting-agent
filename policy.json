@@ -28,7 +28,7 @@
     "patch_attempts_per_cluster": 3,
     "no_progress_review_after": 2,
     "max_attempts_per_contribution": 24,
-    "investigation_attempts": 3,
+    "planning_attempts": 3,
     "work_recovery": 2
   },
   "refresh": {

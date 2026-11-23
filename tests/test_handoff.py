@@ -51,7 +51,7 @@ from tests.test_live_handoff_migration import (
     migrated,
 )
 
-DOSSIER = "dossier-closeio--ciso8601--1-r2"
+PLAN = "plan-closeio--ciso8601--1-r2"
 PACKAGE_OP = "op-" + "a" * 24
 BASE = "cbe05770dc95966a9bf0bff32bbcfa8ba0a3cbf8"
 UPSTREAM_ID = 20633992
@@ -164,7 +164,7 @@ class World:
     def __init__(self, record=None, p=None):
         self.record = record or migrated()
         self.operations: dict[str, dict] = canary_operations()
-        self.evidence = {CI_EVIDENCE: load("evidence-ci.json"), DOSSIER: load("dossier.json")}
+        self.evidence = {CI_EVIDENCE: load("evidence-ci.json"), PLAN: load("plan.json")}
         self.consumed: dict[int, dict] = {}
         self.events: list[dict] = []
         self.gh = FakeGitHub()
@@ -376,13 +376,13 @@ class TestLivePath(unittest.TestCase):
         approval = world.record["handoff_approval"]
         self.assertEqual((approval["head"], approval["revision"], approval["actor"]),
                          (HEAD, 6, {"id": OWNER["id"], "login": OWNER["login"]}))
-        self.assertEqual(approval["evidence_ids"], [CI_EVIDENCE, DOSSIER])
+        self.assertEqual(approval["evidence_ids"], [CI_EVIDENCE, PLAN])
         # The rewrite Work is uncredentialed and writes nothing; no operation
         # and nothing remote yet.
         [work] = out.report["requested_effects"]
         self.assertEqual((work["task"], work["expected_head"], work["effect_contract"]),
                          ("submission_rewrite", HEAD, {"kind": "none"}))
-        self.assertEqual(world.record["active_work"]["reason_ids"], [DOSSIER, CI_EVIDENCE])
+        self.assertEqual(world.record["active_work"]["reason_ids"], [PLAN, CI_EVIDENCE])
         self.assertEqual(out.report["handoff_requests"], [])
         self.assertIsNone(world.record["active_operation_id"])
 
@@ -443,7 +443,7 @@ class TestLivePath(unittest.TestCase):
         self.assertIsNone(world.record["active_operation_id"])
         [posted] = world.gh.comments.values()
         self.assertEqual(posted["body"], handoff.build_package(
-            world.record, dossier=load("dossier.json"), ci=world.evidence[CI_EVIDENCE],
+            world.record, plan=load("plan.json"), ci=world.evidence[CI_EVIDENCE],
             review=world.review, commits=[{"sha": CLEAN, "message": REVIEWED_MESSAGE}],
             files=[".github/workflows/build-wheels.yml", "pyproject.toml"],
             operation_id=package_op["operation_id"])["comment"])
@@ -940,7 +940,7 @@ class TestLockedWait(unittest.TestCase):
     def test_the_table_gives_it_exactly_three_exits(self):
         exits = sorted(e.verb for e in lifecycle.state_edges("handoff.waiting_upstream_pr")
                        if e.target != "handoff.waiting_upstream_pr")
-        self.assertEqual(exits, ["refresh_investigation", "retract_submission", "verify_upstream_pr"])
+        self.assertEqual(exits, ["refresh_planning", "retract_submission", "verify_upstream_pr"])
         self.assertEqual(lifecycle.LIFECYCLE["handoff.waiting_upstream_pr"].kind, "locked")
 
     def test_nothing_else_leaves_it(self):
@@ -989,8 +989,8 @@ class TestLockedWait(unittest.TestCase):
         world = through("handoff.waiting_upstream_pr")
         out = world.tick(at(30), comments=[comment(
             f'/upstreaming refresh revision=7 head={CLEAN} reason="new base"', cid=971)])
-        self.assertEqual(world.kinds(out), ["refresh_investigation", "begin_investigation",
-                                            "dispatch_investigation"])
+        self.assertEqual(world.kinds(out), ["refresh_planning", "begin_planning",
+                                            "dispatch_planning"])
         self.assertEqual(world.record["refresh"]["head_sha"], HEAD)
         self.assertEqual(world.record["fork"], FORK)
         self.assertEqual(world.gh.branches["riscv64"], CLEAN)
@@ -1114,7 +1114,7 @@ def package_args(record, review_data=None, commits=None, **over):
             "commits": [{"message": c["message"], "tree": TREE} for c in commits],
             "artifact": {"run_id": "91010", "artifact_id": 9101}}
     data.update(review_data or {})
-    args = {"dossier": load("dossier.json"), "ci": load("evidence-ci.json"),
+    args = {"plan": load("plan.json"), "ci": load("evidence-ci.json"),
             "review": {"evidence_id": record.get("submission_review_id") or "r", "data": data},
             "commits": commits, "files": [f["filename"] for f in compare["files"]],
             "operation_id": PACKAGE_OP}
@@ -1138,7 +1138,7 @@ class TestPackage(unittest.TestCase):
                      f"`riscv64`, built from the reviewed series of the approved head `{HEAD}` of "
                      "`riscv64-dev` (development PR #2, which stays open)",
                      f"Exact head: `{CLEAN}`", f"Package operation: `{PACKAGE_OP}`",
-                     f"dossier evidence: `{DOSSIER}`",
+                     f"plan evidence: `{PLAN}`",
                      f"review evidence: `{record['submission_review_id']}`",
                      "19 required jobs executed and passed, including "
                      "`Build - ubuntu-24.04-riscv (riscv64)`",
@@ -1226,9 +1226,9 @@ class TestPackage(unittest.TestCase):
                 if field == "file":
                     args["files"] = [*args["files"], nested]
                 if field == "rules":
-                    dossier = copy.deepcopy(args["dossier"])
-                    dossier["data"]["proposal"]["contribution_rules"] = nested
-                    args["dossier"] = dossier
+                    plan = copy.deepcopy(args["plan"])
+                    plan["data"]["proposal"]["contribution_rules"] = nested
+                    args["plan"] = plan
                 comment = handoff.build_package(record, **args)["comment"]
                 self.assertEqual(comment.count("<!--"), 1)
                 self.assertEqual(comment.count("-->"), 1)
@@ -1446,13 +1446,13 @@ class TestPackageRendering(unittest.TestCase):
         commit = {"sha": CLEAN, "message": f"Title {evil}\n\nBody {evil}\n\n```\n@infence\n```"}
         args = package_args(record, commits=[commit], review_data={
             "title": f"Title {evil}", "body": f"Body {evil}\n\n```\n@infence\n```"})
-        dossier = copy.deepcopy(args["dossier"])
-        dossier["data"]["proposal"]["contribution_rules"] = evil + " ```\n@fence"
-        dossier["data"]["proposal"]["allowed_paths"] = [
-            *dossier["data"]["proposal"]["allowed_paths"], f"docs/{evil}.md", "a`@x`b"]
+        plan = copy.deepcopy(args["plan"])
+        plan["data"]["proposal"]["contribution_rules"] = evil + " ```\n@fence"
+        plan["data"]["proposal"]["allowed_paths"] = [
+            *plan["data"]["proposal"]["allowed_paths"], f"docs/{evil}.md", "a`@x`b"]
         ci = copy.deepcopy(args["ci"])
         ci["ci"]["jobs"][0]["name"] = f"riscv64 {evil}"
-        args.update(dossier=dossier, ci=ci,
+        args.update(plan=plan, ci=ci,
                     files=[*args["files"], f"x{evil}.yml", "a`@victim2 [l](https://evil.example)`.yml"])
         return record, args
 

@@ -22,7 +22,7 @@
           "Verification that build/test deps resolve as wheels (not sdists) on riscv64.",
           "CHANGELOG.md intentionally not edited (no documented contributor convention)."
         ],
-        "summary": "Outcome: blocked (operation none). The mandatory riscv64 reproduction could not run: the Docker daemon is unreachable in this sandbox (`docker info`, `docker pull --platform linux/riscv64 <image>` and `docker run --platform linux/riscv64 ... uname -m` all exit 1 with 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock'), and /proc/sys/fs/binfmt_misc has no registered handlers. Failure class: image/container infrastructure (not QEMU, not gh act, not dependency, not build, not test, not model). `gh act` 0.2.98 is installed but cannot run any job without Docker. Per the worker rules, no patch outcome is claimed without a passing riscv64 build+test, so no series is delivered.\n\nPrepared (undelivered) series, ready for the next attempt once the reproduction environment works -- single commit on base cbe05770 touching 2 files:\n1. .github/workflows/build-wheels.yml: add matrix include row `os: ubuntu-24.04-riscv`, `cibw_archs: \"riscv64\"` directly after the ubuntu-24.04-arm/aarch64 row; add `if: matrix.cibw_archs != 'riscv64'` (plus a one-line comment) to the 'Build legacy wheels' closeio/cibuildwheel@v3.4.1 step.\n2. pyproject.toml: `[tool.cibuildwheel.linux] archs = [\"x86_64\", \"aarch64\", \"riscv64\"]`.\nCommit body must cite 'RISC-V GitHub Runners [1]' and end with '[1]: https://ci.riseproject.dev/'.\n\nChecklist (dossier constraints, each verified against history):\n- Topology: project uses dedicated native runner rows (ubuntu-24.04-arm/aarch64 from #192 a897556, windows-11-arm/ARM64 from #178 4e58dc8); no shared QEMU arch list remains. Native ubuntu-24.04-riscv row fol\u2026"
+        "summary": "Outcome: blocked (operation none). The mandatory riscv64 reproduction could not run: the Docker daemon is unreachable in this sandbox (`docker info`, `docker pull --platform linux/riscv64 <image>` and `docker run --platform linux/riscv64 ... uname -m` all exit 1 with 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock'), and /proc/sys/fs/binfmt_misc has no registered handlers. Failure class: image/container infrastructure (not QEMU, not gh act, not dependency, not build, not test, not model). `gh act` 0.2.98 is installed but cannot run any job without Docker. Per the worker rules, no patch outcome is claimed without a passing riscv64 build+test, so no series is delivered.\n\nPrepared (undelivered) series, ready for the next attempt once the reproduction environment works -- single commit on base cbe05770 touching 2 files:\n1. .github/workflows/build-wheels.yml: add matrix include row `os: ubuntu-24.04-riscv`, `cibw_archs: \"riscv64\"` directly after the ubuntu-24.04-arm/aarch64 row; add `if: matrix.cibw_archs != 'riscv64'` (plus a one-line comment) to the 'Build legacy wheels' closeio/cibuildwheel@v3.4.1 step.\n2. pyproject.toml: `[tool.cibuildwheel.linux] archs = [\"x86_64\", \"aarch64\", \"riscv64\"]`.\nCommit body must cite 'RISC-V GitHub Runners [1]' and end with '[1]: https://ci.riseproject.dev/'.\n\nChecklist (plan constraints, each verified against history):\n- Topology: project uses dedicated native runner rows (ubuntu-24.04-arm/aarch64 from #192 a897556, windows-11-arm/ARM64 from #178 4e58dc8); no shared QEMU arch list remains. Native ubuntu-24.04-riscv row fol\u2026"
       },
       {
         "data": {
@@ -97,15 +97,15 @@
             }
           }
         },
-        "evidence_id": "dossier-closeio--ciso8601--1-r2",
-        "kind": "dossier",
+        "evidence_id": "plan-closeio--ciso8601--1-r2",
+        "kind": "plan",
         "limitations": [],
         "reference": {
-          "path": ".state/evidence/dossier-closeio--ciso8601--1-r2.json",
+          "path": ".state/evidence/plan-closeio--ciso8601--1-r2.json",
           "ref": "8a5cc11fa39482ba2254604b2925bc278a1dd550",
           "repository": "riseproject-dev/porting-agent",
           "sha256": "fd87f87ef10226df9927f8e1ad38d7efeba22bc5a372678a1ef0998e5860bd74",
-          "url": "https://raw.githubusercontent.com/riseproject-dev/porting-agent/8a5cc11fa39482ba2254604b2925bc278a1dd550/.state/evidence/dossier-closeio--ciso8601--1-r2.json"
+          "url": "https://raw.githubusercontent.com/riseproject-dev/porting-agent/8a5cc11fa39482ba2254604b2925bc278a1dd550/.state/evidence/plan-closeio--ciso8601--1-r2.json"
         },
         "summary": "develop: add ubuntu-24.04-riscv/riscv64 native row to build-wheels.yml (skip legacy v3.4.1 step there since setup-python lacks riscv64), add riscv64 to pyproject linux archs, CHANGELOG entry. PyPI 2.4.1 has no riscv64 wheel; no deps; precedent is native-runner rows (aarch64, win-arm64); issue #181 open; no sw-ecosystem report."
       }
@@ -158,10 +158,10 @@
   "fork_name": "ciso8601",
   "fork_repository_id": 1467208233,
   "legacy_scope_extension": false,
-  "plan": "Diagnose the failing fork CI identified by reason_ids on the expected head and propose a focused fix within scope. Return the proposal and patch series as the artifact.",
+  "instructions": "Diagnose the failing fork CI identified by reason_ids on the expected head and propose a focused fix within scope. Return the proposal and patch series as the artifact.",
   "reason_ids": [
     "rehearsal-closeio--ciso8601--1-r3-44982902579",
-    "dossier-closeio--ciso8601--1-r2"
+    "plan-closeio--ciso8601--1-r2"
   ],
   "ref": "riscv64",
   "resource_scope": {

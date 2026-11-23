@@ -130,9 +130,9 @@ def ci_record(evidence_id: str, head: str, *, failing: str | None = None,
 COVERAGE_AREAS = ("build", "test", "release", "packaging", "documentation", "native_sources")
 
 
-def dossier(decision="develop", *, allowed_paths=None, admission_class="configuration_integration",
+def plan(decision="develop", *, allowed_paths=None, admission_class="configuration_integration",
             covered=("a",), rationale="r"):
-    """A verified dossier as the investigator delivers it: a decision, its
+    """A verified plan as the planner delivers it: a decision, its
     admission class and allowed paths (for develop), and the path coverage
     of every required area (``covered`` paths in ``build``)."""
     if allowed_paths is None:

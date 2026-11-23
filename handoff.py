@@ -297,7 +297,7 @@ def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,
 def approval(record: dict, *, command_id: str, actor: dict, head: str) -> dict:
     """The ``handoff_approval`` ``submit_upstream`` records: the command, its
     actor, the exact revision and head, and the evidence the approval saw."""
-    evidence = [i for i in (record.get("last_ci_evidence_id"), record.get("dossier_evidence_id")) if i]
+    evidence = [i for i in (record.get("last_ci_evidence_id"), record.get("plan_evidence_id")) if i]
     return {"command_id": command_id, "actor": {"id": actor["id"], "login": actor["login"]},
             "head": head, "revision": record["revision"], "evidence_ids": evidence}
 
@@ -448,7 +448,7 @@ def _fit_files(template: str, files: list[str]) -> str:
     return comment
 
 
-def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commits: list[dict],
+def build_package(record: dict, *, plan: dict, ci: dict, review: dict, commits: list[dict],
                   files: list[str], operation_id: str, retract_revision: int | None = None) -> dict:
     """The submission package for the record's clean head of `riscv64`.
 
@@ -458,10 +458,10 @@ def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commit
     of ``base..clean head`` (``sha``, ``message``), oldest first, which must be
     the reviewed series; ``files`` the changed paths; ``operation_id`` the
     submission package operation. Everything is derived from them, the
-    verified dossier, the CI evidence of the clean head, and the record, so
+    verified plan, the CI evidence of the clean head, and the record, so
     the same inputs give the same bytes.
 
-    Every untrusted value (the dossier's rules and paths, file names, commit
+    Every untrusted value (the plan's rules and paths, file names, commit
     messages, CI job names, the reviewed title and description) is in a code
     span or a fenced block of the comment, so none of it renders as a
     mention, a link, an image, or HTML; the only mention is the human who
@@ -500,7 +500,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commit
     revision = retract_revision if retract_revision is not None else record["revision"]
     retract = f"/upstreaming retract-pr revision={revision} head={head}"
     upstream, base = record["upstream"]["full_name"], record["upstream"]["base_ref"]
-    proposal = (dossier.get("data") or {}).get("proposal") or {}
+    proposal = (plan.get("data") or {}).get("proposal") or {}
     rules = _line(proposal.get("contribution_rules"), 600)
     unchanged = [p for p in proposal.get("allowed_paths") or []
                  if not any(ch in str(p) for ch in "*?[") and p not in files][:10]
@@ -525,8 +525,8 @@ def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commit
         _FILES_LINE,
         f"- CI: {testing}. Checks: https://github.com/{fork}/commit/{ci_head}",
         f"- Package operation: {_code(operation_id, 40)}; approval: "
-        f"{_code(approval['command_id'], 120)}; dossier evidence: "
-        f"{_code(record.get('dossier_evidence_id'), 120)}; review evidence: "
+        f"{_code(approval['command_id'], 120)}; plan evidence: "
+        f"{_code(record.get('plan_evidence_id'), 120)}; review evidence: "
         f"{_code(record.get('submission_review_id'), 120)}",
         "",
         "> [!WARNING]",
@@ -567,7 +567,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commit
         "",
         "</details>",
         "",
-        "**Contribution policy** (from the verified dossier):",
+        "**Contribution policy** (from the verified plan):",
         "",
         *(_fenced(rules) if rules else ["None recorded."]),
         "",
@@ -582,7 +582,7 @@ def build_package(record: dict, *, dossier: dict, ci: dict, review: dict, commit
                  "returns the contribution to development for a repair. Only steps outside the "
                  "series (such as signing a CLA) are yours to do before you submit.")
     if unchanged:
-        lines += ["", f"The dossier admitted {', '.join(_code(p) for p in unchanged)}, which the "
+        lines += ["", f"The plan admitted {', '.join(_code(p) for p in unchanged)}, which the "
                       "series does not change: if the project expects a change there (for example "
                       "a changelog entry), withdraw this package rather than submit it."]
     lines += [
@@ -1217,7 +1217,7 @@ def ci_head(record: dict, review: dict) -> str:
 
 
 def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
-    """The verified dossier, the accepted submission review, the CI evidence
+    """The verified plan, the accepted submission review, the CI evidence
     of the clean head, and the exact clean series of `riscv64`, read from
     committed state and the fork."""
     def evidence(eid: str | None) -> dict:
@@ -1227,7 +1227,7 @@ def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
         schemas.validate("evidence", value)
         return value
 
-    dossier, ci = evidence(record.get("dossier_evidence_id")), evidence(record.get("last_ci_evidence_id"))
+    plan, ci = evidence(record.get("plan_evidence_id")), evidence(record.get("last_ci_evidence_id"))
     review = evidence(record.get("submission_review_id"))
     try:
         review_evidence(record, {review["evidence_id"]: review})
@@ -1244,7 +1244,7 @@ def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
     commits = [{"sha": c["sha"], "message": (c.get("commit") or {}).get("message") or ""}
                for c in cmp.get("commits") or []]
     files = [f["filename"] for f in cmp.get("files") or []]
-    return {"dossier": dossier, "ci": ci, "review": review, "commits": commits, "files": files}
+    return {"plan": plan, "ci": ci, "review": review, "commits": commits, "files": files}
 
 
 def is_package_of(body: str, record: dict, package: dict) -> bool:
@@ -1257,8 +1257,9 @@ def is_package_of(body: str, record: dict, package: dict) -> bool:
         return True
     lines = body.split("\n")
     approval = _code(record["handoff_approval"]["command_id"], 120)
+    # A package posted before the plan rename names its plan the `dossier`.
     named = re.compile(rf"- Package operation: `op-[0-9a-f]{{24}}`; approval: {re.escape(approval)}; "
-                       r"dossier evidence: `[^`\n]*`; review evidence: `[^`\n]*`")
+                       r"(?:plan|dossier) evidence: `[^`\n]*`; review evidence: `[^`\n]*`")
     return lines[-1] == package["marker"] and any(named.fullmatch(line) for line in lines)
 
 

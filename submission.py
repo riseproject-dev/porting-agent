@@ -35,7 +35,7 @@ Trusted code decides, without a token, in a fresh repository
   ``{debug}`` commits: the rewrite changes no code;
 * every attribution trailer names the App's commit identity or repeats one
   of the approved commits;
-* its commit messages follow the dossier's measurable commit rules, and the
+* its commit messages follow the plan's measurable commit rules, and the
   description has every required section of the pull request template.
 
 A rewrite that fails a check, or reports that the series cannot be shaped
@@ -112,8 +112,8 @@ def rules_for(task: dict, review: dict) -> tuple[dict | None, list[str] | None, 
     """The measurable rules and template sections the check applies, and
     notes about where they come from.
 
-    The dossier's, from the trusted Work payload, when it records them. A
-    dossier of schema version 1 records none; then the rules and sections the
+    The plan's, from the trusted Work payload, when it records them. A
+    plan of schema version 1 records none; then the rules and sections the
     rewrite reports having found in the project are applied: they only add
     checks, so an untrusted value can refuse a submission but never admit
     one."""
@@ -122,10 +122,10 @@ def rules_for(task: dict, review: dict) -> tuple[dict | None, list[str] | None, 
     rules, sections = context.get("commit_rules"), context.get("template_sections")
     if rules is None and review.get("commit_rules") is not None:
         rules = review["commit_rules"]
-        notes.append("the commit rules the rewrite found (the dossier records none)")
+        notes.append("the commit rules the rewrite found (the plan records none)")
     if sections is None and review.get("template_sections") is not None:
         sections = review["template_sections"]
-        notes.append("the template sections the rewrite found (the dossier records none)")
+        notes.append("the template sections the rewrite found (the plan records none)")
     return (commit_rules.normalize(rules) if rules is not None else None,
             commit_rules.normalize_sections(sections) if sections is not None else None, notes)
 

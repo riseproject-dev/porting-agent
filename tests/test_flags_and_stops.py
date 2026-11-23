@@ -35,7 +35,7 @@ from tests.helpers import (
     apply_command,
     awaiting_submission,
     contribution,
-    dossier,
+    plan,
     policy,
 )
 from tests.test_late_results import RESULTS, WORK, events, final, publication, running, tick
@@ -52,9 +52,9 @@ LIVE_REQUESTED = "2026-11-22T22:54:12.110885+00:00"
 def table_record(state, *, paused=False, pending=None):
     """A record in ``state`` of the table, with what the state is entered with."""
     phase, activity = state.split(".")
-    record = contribution(phase=phase, activity=activity, dossier_evidence_id="dossier-1",
+    record = contribution(phase=phase, activity=activity, plan_evidence_id="plan-1",
                           scope_paths=["a"], scope_coverage_complete=True)
-    if phase in ("queued", "investigation", "provisioning"):
+    if phase in ("queued", "planning", "provisioning"):
         record["fork"] = None
     if phase in ("upstream_review", "release_wait", "released"):
         record["upstream_pr"] = {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
@@ -124,7 +124,7 @@ class TestCommandsByTheTable(unittest.TestCase):
         self.assertIn("resume_stale", reached)
 
     def test_pause_from_agent_running_leads_to_the_state_where_work_is_due(self):
-        for phase, target in (("investigation", "investigation.idle"),
+        for phase, target in (("planning", "planning.idle"),
                               ("development", "development.fix_needed"),
                               ("upstream_review", "upstream_review.fix_needed")):
             record = running(phase)
@@ -236,7 +236,7 @@ class TestStaleResume(unittest.TestCase):
                 self.assertEqual(refresh["from_phase"], record["phase"])
                 self.assertEqual(refresh["head_sha"], (record["fork"] or {}).get("head_sha"))
                 self.assertEqual(refresh["pr_number"], (record["fork"] or {}).get("pr_number"))
-                self.assertIsNone(stale.record["dossier_evidence_id"])
+                self.assertIsNone(stale.record["plan_evidence_id"])
                 self.assertEqual(stale.record["fork"], record["fork"])
 
     def test_a_human_wait_in_development_refreshes_after_a_long_wait(self):
@@ -249,16 +249,16 @@ class TestStaleResume(unittest.TestCase):
         out = self.resume(record, (datetime.fromisoformat(NOW) + timedelta(days=60)).isoformat())
         self.assertEqual(out.event["kind"], "resume_pause")
         self.assertEqual(engine.state_key(out.record), "handoff.awaiting_submission")
-        for name in ("handoff_request", "fork", "last_ci_evidence_id", "dossier_evidence_id",
+        for name in ("handoff_request", "fork", "last_ci_evidence_id", "plan_evidence_id",
                      "pending_human_action"):
             self.assertEqual(out.record[name], record[name])
 
-    def test_a_refreshed_dossier_without_a_development_pr_is_admitted_afresh(self):
+    def test_a_refreshed_plan_without_a_development_pr_is_admitted_afresh(self):
         stale = self.resume(table_record("provisioning.idle", paused=True), self.LATER).record
-        rec = dict(stale, phase="investigation", activity="agent_running",
-                   active_work=dict(WORK, task="investigation"))
+        rec = dict(stale, phase="planning", activity="agent_running",
+                   active_work=dict(WORK, task="planning"))
         new, _staged = reconcile.apply_publication(
-            rec, {"status": "investigation", "dossier": dossier("develop")},
+            rec, {"status": "planning", "plan": plan("develop")},
             now=NOW, policy=policy(), worker_run_id="7")
         self.assertEqual(engine.state_key(new), "provisioning.idle")
         self.assertIsNone(new["refresh"])

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Publish an exact verified investigation Result as a readable issue comment."""
+"""Publish an exact verified planning Result as a readable issue comment."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from common import CONTROL_REPO, canonical_json
-from dossier_gate import validate
+from plan_gate import validate
 
 
 class CommentError(ValueError):
@@ -26,12 +26,12 @@ def marker(task: dict, result: dict) -> str:
     identity = {"contribution_id": task["contribution_id"], "revision": task["revision"],
                 "work_id": result["work_id"], "claim_id": result["claim_id"],
                 "artifact_id": result["artifact_id"], "digest": result["digest"]}
-    return "<!-- upstreaming-investigation-result:" + hashlib.sha256(canonical_json(identity).encode()).hexdigest() + " -->"
+    return "<!-- upstreaming-planning-result:" + hashlib.sha256(canonical_json(identity).encode()).hexdigest() + " -->"
 
 
-def render(dossier: dict, task: dict, result: dict) -> str:
-    lines = ["## Porting investigation result", "", _text(dossier["summary"]), ""]
-    proposal = dossier.get("proposal") or {}
+def render(plan: dict, task: dict, result: dict) -> str:
+    lines = ["## Porting planning result", "", _text(plan["summary"]), ""]
+    proposal = plan.get("proposal") or {}
     if proposal:
         lines += ["### Proposed direction", ""]
         for key, value in list(proposal.items())[:20]:
@@ -41,28 +41,28 @@ def render(dossier: dict, task: dict, result: dict) -> str:
             elif isinstance(value, list):
                 lines.append(f"- **{label}:** " + "; ".join(_text(v, 500) for v in value[:20]))
         lines.append("")
-    lines += ["### Dependency and ecosystem evidence", "", _text(dossier["dependency_graph"]["assessment"]), ""]
-    report = dossier["ecosystem_report"]
+    lines += ["### Dependency and ecosystem evidence", "", _text(plan["dependency_graph"]["assessment"]), ""]
+    report = plan["ecosystem_report"]
     if report["status"] == "available":
         lines += [f"Ecosystem report: {report['url']} (`{_text(report['revision'], 100)}`)", "",
                   _text(report["riscv64_status"]), ""]
     else:
-        lines += ["No matching ecosystem report was available; the dossier records the search evidence.", ""]
+        lines += ["No matching ecosystem report was available; the plan records the search evidence.", ""]
     lines += ["### Research coverage", ""]
-    for category, record in dossier["research"].items():
+    for category, record in plan["research"].items():
         lines.append(f"- **{category.replace('_', ' ').title()}**: {_text(record['findings'], 1000)}")
         links = [source["url"] for source in record["sources"][:5]]
         if links:
             lines.append("  Sources: " + ", ".join(links))
-    if dossier.get("history"):
+    if plan.get("history"):
         lines += ["", "### Relevant prior work", ""]
-        for item in dossier["history"][:30]:
+        for item in plan["history"][:30]:
             lines.append(f"- [{item['outcome']}]({item['url']}): {_text(item['decision'], 1000)}")
     lines += ["", f"Verified native Result: work `{result['work_id']}`, claim `{result['claim_id']}`, artifact `{result['artifact_id']}`.",
-              "This is investigation evidence, not an upstream approval or publication decision.", "", marker(task, result)]
+              "This is planning evidence, not an upstream approval or publication decision.", "", marker(task, result)]
     body = "\n".join(lines)
     if len(body.encode()) > 60_000:
-        raise CommentError("rendered dossier comment exceeds bounded size")
+        raise CommentError("rendered plan comment exceeds bounded size")
     return body
 
 
@@ -88,23 +88,23 @@ def trusted_runtime(env: dict[str, str]) -> bool:
     if env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_REPOSITORY") != CONTROL_REPO:
         return False
     if env.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and env.get("GITHUB_WORKFLOW") in (
-        "Investigator", "Publish Retry"
+        "Planner", "Publish Retry"
     ):
         return True
     return (
         env.get("GITHUB_WORKFLOW") == "Controller"
-        and env.get("PORTING_DOSSIER_RECOVERY") == "1"
+        and env.get("PORTING_PLAN_RECOVERY") == "1"
     )
 
 
-def publish(dossier: dict, proposal: dict, task: dict, result: dict, token: str, run_id: str,
+def publish(plan: dict, proposal: dict, task: dict, result: dict, token: str, run_id: str,
             expected_author: str | None = None) -> dict:
-    validate(dossier, proposal, task)
+    validate(plan, proposal, task)
     for key in ("work_id", "claim_id", "artifact_id", "digest"):
         if not result.get(key):
             raise CommentError(f"verified Result missing {key}")
     number = int(task["tracking_issue"])
-    body = render(dossier, task, result)
+    body = render(plan, task, result)
     identity = marker(task, result)
     comments = request("GET", f"/repos/{CONTROL_REPO}/issues/{number}/comments?per_page=100", token)
     matches = [comment for comment in comments if identity in (comment.get("body") or "")]
@@ -125,13 +125,13 @@ def publish(dossier: dict, proposal: dict, task: dict, result: dict, token: str,
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("dossier", "proposal", "task", "result"):
+    for name in ("plan", "proposal", "task", "result"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if not trusted_runtime(os.environ):
-        raise CommentError("dossier comments require a trusted porting Result workflow")
-    values = [json.loads(getattr(args, name).read_text()) for name in ("dossier", "proposal", "task", "result")]
+        raise CommentError("plan comments require a trusted porting Result workflow")
+    values = [json.loads(getattr(args, name).read_text()) for name in ("plan", "proposal", "task", "result")]
     receipt = publish(*values, os.environ.get("GH_TOKEN", ""), os.environ["GITHUB_RUN_ID"],
                       os.environ.get("PORTING_COMMENT_AUTHOR") or None)
     args.out.parent.mkdir(parents=True, exist_ok=True)

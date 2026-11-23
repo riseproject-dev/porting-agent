@@ -92,7 +92,7 @@ def _evidence_id(repo_id: int, run: dict) -> str:
 
 
 def contract_for(record: dict, contracts: dict[str, dict]) -> dict:
-    """The dossier target contract: required job patterns + expected wheels.
+    """The plan target contract: required job patterns + expected wheels.
 
     Plan 9.2 accepts exact-head CI when every required build/test job
     executed and passed. Uploaded workflow artifacts are not a development CI
@@ -299,7 +299,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 continue
             if human_wait_without_observation(rec):
                 # A human wait is left only by the rows the table lists for it
-                # (a resume, `park_contribution`, `refresh_investigation`,
+                # (a resume, `park_contribution`, `refresh_planning`,
                 # `resume_stale`). It has no observation row: the head, CI,
                 # and review are read again once a human has resumed it.
                 entry["note"] = f"{engine.state_key(rec)} waits for a human and is not observed"

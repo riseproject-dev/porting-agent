@@ -24,7 +24,7 @@ This page records the decisions behind the [lifecycle table]({{ '/state-machine/
 1. Infrastructure exhaustion goes to the phase's `waiting_human`. It never ends the generation.
 2. Park means "the approach is not working" or "a human said stop". Nothing parks from `upstream_review` automatically.
 3. A Result is reused only while the pipeline ran continuously. Any stop of unknown length (pause, human wait, park) invalidates it; the next step is fresh Work.
-4. The dossier is refreshed after a park, and after a pause or human wait longer than 7 days in provisioning or development. It is never refreshed automatically from `handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses `/upstreaming refresh`.
+4. The plan is refreshed after a park, and after a pause or human wait longer than 7 days in provisioning or development. It is never refreshed automatically from `handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses `/upstreaming refresh`.
 5. Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation counter, `work_total`. `lifecycle check` verifies this.
 6. Prefer a guard or a derived status over a new state or flag.
 7. Every stop that clears the requested Work also clears `pending_publication`: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
@@ -138,8 +138,8 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
@@ -149,7 +149,7 @@ flowchart TB
     end
 
     queued_idle ==>|withdraw_request| closed_idle
-    investigation_agent_running ==>|close_investigation| closed_idle
+    planning_agent_running ==>|close_planning| closed_idle
     parked_idle ==>|abandon<br/>/upstreaming abandon| closed_idle
 ```
 
@@ -197,24 +197,24 @@ flowchart TB
     development_fix_needed ==>|exhaust_repair_attempts| parked_idle
 ```
 
-### 8. Investigation retry budget
+### 8. Planning retry budget
 
-Which budget `reject_dossier` charges.
+Which budget `reject_plan` charges.
 
-**Decision.** A dedicated `investigation_attempts` budget with the key `retries.investigation_attempts` (3) and its own counter. A Result without a dossier charges it too instead of going straight to `investigation.waiting_human`.
+**Decision.** A dedicated `planning_attempts` budget with the key `retries.planning_attempts` (3) and its own counter. A Result without a plan charges it too instead of going straight to `planning.waiting_human`.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
 
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running ==>|reject_dossier| investigation_idle
-    investigation_agent_running ==>|exhaust_investigation_recovery| investigation_waiting_human
-    investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    planning_agent_running ==>|reject_plan| planning_idle
+    planning_agent_running ==>|exhaust_planning_recovery| planning_waiting_human
+    planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
 ```
 
 ### 9. Publication recovery exhaustion and its resume
@@ -240,7 +240,7 @@ flowchart TB
 
 Whether dispatch exhaustion and Work exhaustion lead to the same place.
 
-**Decision.** Both wait for a human: `exhaust_work_recovery` leads to the phase's `waiting_human` in investigation, development, and upstream review, like `exhaust_dispatch_recovery`. An observed development PR that does not match the record takes `record_pr_mismatch` to `development.waiting_human`.
+**Decision.** Both wait for a human: `exhaust_work_recovery` leads to the phase's `waiting_human` in planning, development, and upstream review, like `exhaust_dispatch_recovery`. An observed development PR that does not match the record takes `record_pr_mismatch` to `development.waiting_human`.
 
 ```mermaid
 flowchart TB
@@ -257,9 +257,9 @@ flowchart TB
 
 ### 11. Where park and refresh apply
 
-From which states `park_contribution` and `refresh_investigation` are accepted.
+From which states `park_contribution` and `refresh_planning` are accepted.
 
-**Decision.** `park_contribution` is one rule: every non-terminal state, guarded by no open operation, except `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`. `refresh_investigation` stays explicit: `development.fix_needed`, `development.waiting_ci`, `development.waiting_human`, `handoff.awaiting_submission`, and `handoff.waiting_upstream_pr`. Both are accepted while paused.
+**Decision.** `park_contribution` is one rule: every non-terminal state, guarded by no open operation, except `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human`. `refresh_planning` stays explicit: `development.fix_needed`, `development.waiting_ci`, `development.waiting_human`, `handoff.awaiting_submission`, and `handoff.waiting_upstream_pr`. Both are accepted while paused.
 
 ```mermaid
 flowchart TB
@@ -280,15 +280,15 @@ flowchart TB
 
     development_agent_running ==>|park_contribution<br/>/upstreaming park| parked_idle
     development_waiting_ci -->|park_contribution<br/>/upstreaming park| parked_idle
-    development_waiting_ci ==>|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    development_waiting_ci ==>|refresh_planning<br/>/upstreaming refresh| queued_idle
     handoff_awaiting_submission -->|park_contribution<br/>/upstreaming park| parked_idle
-    handoff_awaiting_submission -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
-    handoff_waiting_upstream_pr ==>|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    handoff_awaiting_submission -->|refresh_planning<br/>/upstreaming refresh| queued_idle
+    handoff_waiting_upstream_pr ==>|refresh_planning<br/>/upstreaming refresh| queued_idle
 ```
 
 ### 12. Return path after refresh
 
-Where a refreshed investigation that decides to develop leads.
+Where a refreshed planning that decides to develop leads.
 
 **Decision.** `readmit_development` leads to `development.fix_needed` on the existing fork. The guard of `admit_development` is the complement: no refresh recorded, or the recorded fork or development PR no longer matches.
 
@@ -300,42 +300,42 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
     end
 
-    development_fix_needed -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
-    investigation_agent_running ==>|admit_development| provisioning_idle
-    investigation_agent_running ==>|readmit_development| development_fix_needed
+    development_fix_needed -->|refresh_planning<br/>/upstreaming refresh| queued_idle
+    planning_agent_running ==>|admit_development| provisioning_idle
+    planning_agent_running ==>|readmit_development| development_fix_needed
 ```
 
-### 13. Park by dossier decision and park by command
+### 13. Park by plan decision and park by command
 
-Whether parking from investigation is one verb or two.
+Whether parking from planning is one verb or two.
 
-**Decision.** Two verbs. `park_investigation` is the Result transition taken on a dossier decision and no longer carries the `/upstreaming park` label; `park_contribution` is the command.
+**Decision.** Two verbs. `park_planning` is the Result transition taken on a plan decision and no longer carries the `/upstreaming park` label; `park_contribution` is the command.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
     end
 
-    investigation_agent_running ==>|park_investigation| parked_idle
-    investigation_agent_running -->|park_contribution<br/>/upstreaming park| parked_idle
-    investigation_idle -->|park_contribution<br/>/upstreaming park| parked_idle
+    planning_agent_running ==>|park_planning| parked_idle
+    planning_agent_running -->|park_contribution<br/>/upstreaming park| parked_idle
+    planning_idle -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-### 14. Beginning the investigation
+### 14. Beginning the planning
 
-Whether `begin_investigation` and `dispatch_investigation` are two writes.
+Whether `begin_planning` and `dispatch_planning` are two writes.
 
 **Decision.** Two transitions, written in two commits.
 
@@ -344,20 +344,20 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
     end
 
-    queued_idle ==>|begin_investigation| investigation_idle
-    investigation_idle ==>|dispatch_investigation| investigation_agent_running
+    queued_idle ==>|begin_planning| planning_idle
+    planning_idle ==>|dispatch_planning| planning_agent_running
 ```
 
 ### 15. Provisioning failures
 
 How provisioning failures are recovered, and whether the `approve-scope` and `provision` commands stay.
 
-**Decision.** `approve-scope` and `provision` are retired. The `provisioning_attempts` budget and `exhaust_provisioning_attempts` are removed; a human parks explicitly. `close_investigation` no longer leaves `provisioning.idle`. Exhausting `operation_launch` waits for a human and does not park.
+**Decision.** `approve-scope` and `provision` are retired. The `provisioning_attempts` budget and `exhaust_provisioning_attempts` are removed; a human parks explicitly. `close_planning` no longer leaves `provisioning.idle`. Exhausting `operation_launch` waits for a human and does not park.
 
 ```mermaid
 flowchart TB
@@ -407,7 +407,7 @@ flowchart TB
 
 Which commands become table rows and which are retired.
 
-**Decision.** Retired: `request-handoff`, `approve-handoff`, `register-upstream-pr`, `approve-scope`, `provision`, `restart`, `clarify`, `revise-scope`, and `force-develop`. `abandon` leads from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. `/upstreaming resume` from `parked.idle` accepts an optional class, paths, and reason, stored as `admission_override`; `restart_generation` still runs the complete investigation, and `admit_development` accepts a verified dossier decision develop, or a decision park with a recorded override. `authorize-followup` is an intake command outside the table.
+**Decision.** Retired: `request-handoff`, `approve-handoff`, `register-upstream-pr`, `approve-scope`, `provision`, `restart`, `clarify`, `revise-scope`, and `force-develop`. `abandon` leads from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. `/upstreaming resume` from `parked.idle` accepts an optional class, paths, and reason, stored as `admission_override`; `restart_generation` still runs the complete planning, and `admit_development` accepts a verified plan decision develop, or a decision park with a recorded override. `authorize-followup` is an intake command outside the table.
 
 ```mermaid
 flowchart TB
@@ -420,8 +420,8 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
@@ -429,7 +429,7 @@ flowchart TB
 
     parked_idle ==>|abandon<br/>/upstreaming abandon| closed_idle
     parked_idle ==>|restart_generation<br/>/upstreaming resume| queued_idle
-    investigation_agent_running -->|admit_development| provisioning_idle
+    planning_agent_running -->|admit_development| provisioning_idle
 ```
 
 ### 18. Observations and outcomes without verbs
@@ -479,21 +479,21 @@ flowchart TB
 
 Whether budgets get their own `policy.json` keys.
 
-**Decision.** Keys are split by what is spent. `work_total` reads `retries.max_attempts_per_contribution`, `work_recovery` reads `retries.work_recovery`, `investigation_attempts` reads `retries.investigation_attempts`, and the infrastructure budgets share `retries.infrastructure_per_head_failure`. The reminder interval reads `human_sla_business_days.reminder`. Each Result records its token usage in the events.
+**Decision.** Keys are split by what is spent. `work_total` reads `retries.max_attempts_per_contribution`, `work_recovery` reads `retries.work_recovery`, `planning_attempts` reads `retries.planning_attempts`, and the infrastructure budgets share `retries.infrastructure_per_head_failure`. The reminder interval reads `human_sla_business_days.reminder`. Each Result records its token usage in the events.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
 
-    investigation_agent_running -->|retry_dispatch| investigation_agent_running
-    investigation_agent_running ==>|allocate_work_retry| investigation_agent_running
-    investigation_agent_running ==>|reject_dossier| investigation_idle
-    investigation_agent_running -->|exhaust_dispatch_recovery| investigation_waiting_human
-    investigation_waiting_human ==>|record_reminder| investigation_waiting_human
+    planning_agent_running -->|retry_dispatch| planning_agent_running
+    planning_agent_running ==>|allocate_work_retry| planning_agent_running
+    planning_agent_running ==>|reject_plan| planning_idle
+    planning_agent_running -->|exhaust_dispatch_recovery| planning_waiting_human
+    planning_waiting_human ==>|record_reminder| planning_waiting_human
 ```
 
 ### 21. Flaky CI reruns
@@ -613,7 +613,7 @@ flowchart TB
 
 Whether the two states in which development Work is due become one.
 
-**Decision.** One state, `development.fix_needed`: development Work is due. `confirm_provisioning` enters it. `request_repair` applies while a failing CI job is recorded for the head; `request_patch` applies otherwise. `development.idle` and its own exhaustion row are removed, also from the states that accept `refresh_investigation`.
+**Decision.** One state, `development.fix_needed`: development Work is due. `confirm_provisioning` enters it. `request_repair` applies while a failing CI job is recorded for the head; `request_patch` applies otherwise. `development.idle` and its own exhaustion row are removed, also from the states that accept `refresh_planning`.
 
 ```mermaid
 flowchart TB
@@ -638,13 +638,13 @@ flowchart TB
 
 Which state a contribution is in after `pause` cleared its requested Work.
 
-**Decision.** `pause` in an `agent_running` state leads to the state in which the Work is due again: `investigation.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. It is the one exception to a flag keeping phase and activity, and the description of the flag states it.
+**Decision.** `pause` in an `agent_running` state leads to the state in which the Work is due again: `planning.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. It is the one exception to a flag keeping phase and activity, and the description of the flag states it.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_idle_paused["investigation.idle, paused=true"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+        planning_idle_paused["planning.idle, paused=true"]
     end
     subgraph development["development"]
         development_agent_running["development.agent_running"]
@@ -655,7 +655,7 @@ flowchart TB
         upstream_fix_needed_paused["upstream_review.fix_needed, paused=true"]
     end
 
-    investigation_agent_running ==>|pause<br/>/upstreaming pause| investigation_idle_paused
+    planning_agent_running ==>|pause<br/>/upstreaming pause| planning_idle_paused
     development_agent_running ==>|pause<br/>/upstreaming pause| development_fix_needed_paused
     upstream_agent_running ==>|pause<br/>/upstreaming pause| upstream_fix_needed_paused
 ```
@@ -680,7 +680,7 @@ flowchart TB
 
 ### O4. `resume_stale` with an open operation
 
-Whether `resume_stale` needs quiescence, as `refresh_investigation` does.
+Whether `resume_stale` needs quiescence, as `refresh_planning` does.
 
 **Decision.** It does: `resume_stale` requires that no Work is requested, no operation is open, and no publication is pending. Until then no resume applies, and the rejection names the open operation.
 
@@ -720,23 +720,23 @@ flowchart TB
 
 What a resume does to the counter whose exhaustion caused the human wait.
 
-**Decision.** The resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. It was settled for `exhaust_work_total`, `exhaust_investigation_recovery`, and `exhaust_repair_attempts` in upstream review; O14 extends it to every exhaustion that leads to a human wait.
+**Decision.** The resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. It was settled for `exhaust_work_total`, `exhaust_planning_recovery`, and `exhaust_repair_attempts` in upstream review; O14 extends it to every exhaustion that leads to a human wait.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
     subgraph upstream_review["upstream_review"]
         upstream_fix_needed["upstream_review.fix_needed"]
         upstream_waiting_human["upstream_review.waiting_human"]
     end
 
-    investigation_idle -->|exhaust_work_total| investigation_waiting_human
-    investigation_agent_running -->|exhaust_investigation_recovery| investigation_waiting_human
-    investigation_waiting_human ==>|resume_investigation<br/>/upstreaming resume| investigation_idle
+    planning_idle -->|exhaust_work_total| planning_waiting_human
+    planning_agent_running -->|exhaust_planning_recovery| planning_waiting_human
+    planning_waiting_human ==>|resume_planning<br/>/upstreaming resume| planning_idle
     upstream_fix_needed -->|exhaust_repair_attempts| upstream_waiting_human
     upstream_waiting_human ==>|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
@@ -831,14 +831,14 @@ flowchart TB
 
 ### O11. Admission override against a park or close decision
 
-Which dossier decisions a recorded `admission_override` overrides.
+Which plan decisions a recorded `admission_override` overrides.
 
-**Decision.** A decision park only: with a recorded override, `admit_development` accepts a verified dossier that decides park. A verified decision close still takes `close_investigation`, and the reply states that the override was not applied.
+**Decision.** A decision park only: with a recorded override, `admit_development` accepts a verified plan that decides park. A verified decision close still takes `close_planning`, and the reply states that the override was not applied.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
@@ -850,9 +850,9 @@ flowchart TB
         closed_idle["closed.idle"]
     end
 
-    investigation_agent_running ==>|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation| parked_idle
-    investigation_agent_running ==>|close_investigation| closed_idle
+    planning_agent_running ==>|admit_development| provisioning_idle
+    planning_agent_running -->|park_planning| parked_idle
+    planning_agent_running ==>|close_planning| closed_idle
 ```
 
 ### O12. Resume after a reviewer was answered
@@ -880,12 +880,12 @@ flowchart TB
 
 Which rows count as invalidating requested or approved work.
 
-**Decision.** The rule stays derived from the effects: a resume, a generation bump, a fresh Work graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, a recorded head change (observed, or read back by a Result), and a rejected Result after which the same Work is due again. Under it `replan_development` bumps and `park_investigation` does not, because a park is a stop and the restart bumps.
+**Decision.** The rule stays derived from the effects: a resume, a generation bump, a fresh Work graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, a recorded head change (observed, or read back by a Result), and a rejected Result after which the same Work is due again. Under it `replan_development` bumps and `park_planning` does not, because a park is a stop and the restart bumps.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
@@ -895,7 +895,7 @@ flowchart TB
         development_fix_needed["development.fix_needed"]
     end
 
-    investigation_agent_running ==>|park_investigation| parked_idle
+    planning_agent_running ==>|park_planning| parked_idle
     development_agent_running ==>|replan_development| development_fix_needed
 ```
 
@@ -955,14 +955,14 @@ flowchart TB
 
 Whether the resume after `exhaust_work_recovery` starts `work_total` again when `work_total` was the exhausted budget.
 
-**Decision.** It does. When a Work retry cannot be allocated because `work_total` is exhausted, `exhaust_work_recovery` records `pending_human_action.counter=work_total`, and one resume starts it again, in investigation, development, and upstream review. When `work_recovery` itself is exhausted, it names `work_recovery`. The slice shows investigation and development; in upstream review `resume_upstream_revision` does the same.
+**Decision.** It does. When a Work retry cannot be allocated because `work_total` is exhausted, `exhaust_work_recovery` records `pending_human_action.counter=work_total`, and one resume starts it again, in planning, development, and upstream review. When `work_recovery` itself is exhausted, it names `work_recovery`. The slice shows planning and development; in upstream review `resume_upstream_revision` does the same.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
-        investigation_idle["investigation.idle"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
+        planning_idle["planning.idle"]
     end
     subgraph development["development"]
         development_agent_running["development.agent_running"]
@@ -970,8 +970,8 @@ flowchart TB
         development_fix_needed["development.fix_needed"]
     end
 
-    investigation_agent_running ==>|exhaust_work_recovery| investigation_waiting_human
-    investigation_waiting_human ==>|resume_investigation<br/>/upstreaming resume| investigation_idle
+    planning_agent_running ==>|exhaust_work_recovery| planning_waiting_human
+    planning_waiting_human ==>|resume_planning<br/>/upstreaming resume| planning_idle
     development_agent_running ==>|exhaust_work_recovery| development_waiting_human
     development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
@@ -1151,8 +1151,8 @@ Whether patch Work can be requested before `confirm_provisioning`.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
@@ -1163,41 +1163,41 @@ flowchart TB
         development_fix_needed_paused["development.fix_needed, paused=true"]
     end
 
-    investigation_agent_running ==>|admit_development| provisioning_idle
+    planning_agent_running ==>|admit_development| provisioning_idle
     provisioning_idle -->|confirm_provisioning| development_fix_needed
     development_fix_needed ==>|request_patch| development_agent_running
     development_agent_running -->|pause<br/>/upstreaming pause| development_fix_needed_paused
 ```
 
-### O25. When an investigation decides close
+### O25. When a planning run decides close
 
-When a dossier may decide close, and who confirms it.
+When a plan may decide close, and who confirms it.
 
-**Decision.** Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest release of every distribution of the request: a riscv64 wheel, or pure-Python wheels only. The reconciler reads PyPI itself before it takes `close_investigation` and sets `terminal_reason` `already_released` when a riscv64 wheel is published, else `no_work`; a close that PyPI does not confirm takes `reject_dossier` within `investigation_attempts`. Every other reason to stop is a park, which a human can resume.
+**Decision.** Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest release of every distribution of the request: a riscv64 wheel, or pure-Python wheels only. The reconciler reads PyPI itself before it takes `close_planning` and sets `terminal_reason` `already_released` when a riscv64 wheel is published, else `no_work`; a close that PyPI does not confirm takes `reject_plan` within `planning_attempts`. Every other reason to stop is a park, which a human can resume.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_idle["investigation.idle"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+        planning_idle["planning.idle"]
+        planning_waiting_human["planning.waiting_human"]
     end
     subgraph closed["closed"]
         closed_idle["closed.idle"]
     end
 
-    investigation_agent_running ==>|close_investigation| closed_idle
-    investigation_agent_running ==>|reject_dossier| investigation_idle
-    investigation_agent_running ==>|exhaust_investigation_recovery| investigation_waiting_human
+    planning_agent_running ==>|close_planning| closed_idle
+    planning_agent_running ==>|reject_plan| planning_idle
+    planning_agent_running ==>|exhaust_planning_recovery| planning_waiting_human
 ```
 
 ## Further settled changes
 
-### Dossier refresh after a stop
+### Plan refresh after a stop
 
-When a stop of unknown length makes the dossier stale.
+When a stop of unknown length makes the plan stale.
 
-**Change.** The dossier is refreshed after a park (`restart_generation` always runs the complete investigation) and after a pause or human wait longer than `refresh.stale_after_days` (7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads to `queued.idle` with the effects of `refresh_investigation`; the clock is the older of `paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry the complementary guard, so exactly one applies. `resume_stale` also requires that no Work is requested, no operation is open, and no publication is pending. A pause in investigation needs no rule because the Work was cleared. Handoff, upstream review, and release waits are never refreshed automatically; in `handoff.awaiting_submission` and `handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.
+**Change.** The plan is refreshed after a park (`restart_generation` always runs the complete planning) and after a pause or human wait longer than `refresh.stale_after_days` (7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads to `queued.idle` with the effects of `refresh_planning`; the clock is the older of `paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry the complementary guard, so exactly one applies. `resume_stale` also requires that no Work is requested, no operation is open, and no publication is pending. A pause in planning needs no rule because the Work was cleared. Handoff, upstream review, and release waits are never refreshed automatically; in `handoff.awaiting_submission` and `handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.
 
 ```mermaid
 flowchart TB
@@ -1227,16 +1227,16 @@ What each budget counts and where its exhaustion leads.
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
 
-    investigation_idle ==>|dispatch_investigation| investigation_agent_running
-    investigation_idle ==>|exhaust_work_total| investigation_waiting_human
-    investigation_agent_running -->|allocate_work_retry| investigation_agent_running
-    investigation_agent_running ==>|exhaust_work_recovery| investigation_waiting_human
+    planning_idle ==>|dispatch_planning| planning_agent_running
+    planning_idle ==>|exhaust_work_total| planning_waiting_human
+    planning_agent_running -->|allocate_work_retry| planning_agent_running
+    planning_agent_running ==>|exhaust_work_recovery| planning_waiting_human
 ```
 
 ### No automatic park from upstream review
@@ -1376,7 +1376,7 @@ flowchart TB
 
 `handoff.waiting_upstream_pr` was defined as having exactly two exits.
 
-**Change.** It has three: `verify_upstream_pr`, `retract_submission`, and `refresh_investigation`, the last with the guards of `retract_submission` (exact revision, exact clean head, quiescent). The check enforces the three exits.
+**Change.** It has three: `verify_upstream_pr`, `retract_submission`, and `refresh_planning`, the last with the guards of `retract_submission` (exact revision, exact clean head, quiescent). The check enforces the three exits.
 
 ```mermaid
 flowchart TB
@@ -1395,7 +1395,7 @@ flowchart TB
 
     handoff_waiting_upstream_pr -->|verify_upstream_pr| upstream_waiting_ci
     handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
-    handoff_waiting_upstream_pr ==>|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    handoff_waiting_upstream_pr ==>|refresh_planning<br/>/upstreaming refresh| queued_idle
 ```
 
 ### An error in one contribution's processing
@@ -1424,7 +1424,7 @@ flowchart TB
 
 Which branches development and the upstream PR use, whether the development PR is closed at submission, and how the upstream PR follows the project's pull request template, contributing instructions, commit conventions, and reviewers.
 
-**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the dossier's measured commit conventions (squashing or splitting only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections: `accept_submission_rewrite` bumps the revision and leads to `handoff.review_pending`, where `request_submission_review` allocates separate uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews exactly the rewritten series and text against the template, the contributing instructions, the commit conventions, and the reviewers' expectations and can change nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check (`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
+**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing or splitting only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections: `accept_submission_rewrite` bumps the revision and leads to `handoff.review_pending`, where `request_submission_review` allocates separate uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews exactly the rewritten series and text against the template, the contributing instructions, the commit conventions, and the reviewers' expectations and can change nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check (`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
 
 ```mermaid
 flowchart TB

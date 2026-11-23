@@ -39,7 +39,7 @@ SAMPLE = {
                     "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
                     "base_ref": "main", "registered_by": OWNER},
     "upstream_pr.head_sha": SHA_B,
-    "dossier_evidence_id": "dossier-1", "admission_class": "configuration_integration",
+    "plan_evidence_id": "plan-1", "admission_class": "configuration_integration",
     "scope_paths": ["pyproject.toml"], "parked_reason": "no bounded patch",
     "terminal_reason": "not applicable", "last_ci_evidence_id": "ci-2-8-1",
     "clean_head_sha": SHA_B, "submission_review_id": "submission-review-1",
@@ -62,7 +62,7 @@ SAMPLE = {
     "pending_human_action": "operator_action",
     "paused_reason": "processing_error: KeyError: 'x' (step observation, run 1)",
     "admission_override": {"class": "configuration_integration", "paths": ["a"], "reason": "r"},
-    "active_work": {"dedupe_key": "example--proj/12@0:investigation", "task": "investigation",
+    "active_work": {"dedupe_key": "example--proj/12@0:planning", "task": "planning",
                     "revision": 0, "attempt": 1, "requested_at": NOW, "deadline_at": NOW, "generation": 0, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []},
 }
 
@@ -671,10 +671,10 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(self.request(no_fork, "request_patch").reason,
                          "fork not provisioned/verified")
         self.assertNotIn("proposal or write admission", engine.PREDICATES)
-        admit = lc.find_edge("investigation.agent_running", "admit_development").transition
+        admit = lc.find_edge("planning.agent_running", "admit_development").transition
         self.assertIn(lc.PATCH_SCOPE_COMPLETE, admit.guard)
-        running = contribution(phase="investigation", activity="agent_running", fork=None)
-        values = {"dossier_evidence_id": "dossier-1", "scope_paths": ["pyproject.toml"],
+        running = contribution(phase="planning", activity="agent_running", fork=None)
+        values = {"plan_evidence_id": "plan-1", "scope_paths": ["pyproject.toml"],
                   "admission_class": "configuration_integration"}
         facts = {"development_admitted", "fresh_fork_required"}
         refused = engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
@@ -722,20 +722,20 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                     facts={"candidate_head_changed"})
 
     def test_charges_and_external_counters(self):
-        rec = contribution(phase="investigation", activity="idle", fork=None)
+        rec = contribution(phase="planning", activity="idle", fork=None)
         work = dict(SAMPLE["active_work"])
-        out = engine.apply_transition(rec, "dispatch_investigation", policy=POLICY, now=NOW,
+        out = engine.apply_transition(rec, "dispatch_planning", policy=POLICY, now=NOW,
                                       facts={"worker_slot_free"}, values={"active_work": work})
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(out.record["budget"]["attempts_used"], 1)
         self.assertEqual(out.event["details"]["charged"], ["work_total"])
         self.assertEqual(out.charged, ())
         spent = dict(rec, budget=dict(rec["budget"], attempts_used=lc.budget_limit("work_total", POLICY)))
-        refused = engine.apply_transition(spent, "dispatch_investigation", policy=POLICY, now=NOW,
+        refused = engine.apply_transition(spent, "dispatch_planning", policy=POLICY, now=NOW,
                                           facts={"worker_slot_free"}, values={"active_work": work})
         self.assertEqual((refused.accepted, refused.reason), (False, "work_total is exhausted"))
         waiting = engine.apply_transition(spent, "exhaust_work_total", policy=POLICY, now=NOW)
-        self.assertEqual(engine.state_key(waiting.record), "investigation.waiting_human")
+        self.assertEqual(engine.state_key(waiting.record), "planning.waiting_human")
         self.assertEqual(waiting.record["pending_human_action"]["kind"], "work_budget_exhausted")
         self.assertEqual(waiting.record["pending_human_action"]["counter"], "work_total")
         # A budget counted outside the record is refused until its count is supplied.
@@ -748,17 +748,17 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(retried.charged, ("dispatch_recovery",))
 
     def test_resume_starts_only_the_counter_the_wait_names(self):
-        rec = contribution(phase="investigation", activity="waiting_human")
-        rec["budget"].update(attempts_used=24, investigation_attempts=3, no_progress_streak=2)
+        rec = contribution(phase="planning", activity="waiting_human")
+        rec["budget"].update(attempts_used=24, planning_attempts=3, no_progress_streak=2)
         rec["pending_human_action"] = {"kind": "work_budget_exhausted", "requested_at": NOW,
                                        "reminded_at": None, "escalated_at": None,
                                        "counter": "work_total"}
         resume = commands.parse("/upstreaming resume revision=0 reason=r")
         out = engine.apply_command(rec, resume, policy=POLICY, now=NOW, command_id="comment-9",
                                    actor=OWNER)
-        self.assertEqual(out.verb, "resume_investigation")
+        self.assertEqual(out.verb, "resume_planning")
         self.assertEqual(out.record["budget"]["attempts_used"], 0)
-        self.assertEqual(out.record["budget"]["investigation_attempts"], 3)
+        self.assertEqual(out.record["budget"]["planning_attempts"], 3)
         self.assertEqual(out.record["budget"]["no_progress_streak"], 2)
         self.assertEqual(out.event["details"]["restarted"], {"counter": "work_total", "count": 24})
         self.assertEqual(out.event["details"]["actor"], OWNER)
@@ -907,7 +907,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
 
     def test_restart_starts_a_clean_generation(self):
         rec = contribution(phase="parked", activity="idle", parked_reason="x", revision=7,
-                           dossier_evidence_id="dossier-1", last_ci_evidence_id="ci-1",
+                           plan_evidence_id="plan-1", last_ci_evidence_id="ci-1",
                            processed_publications=[5])
         resume = commands.parse("/upstreaming resume revision=7 reason=r")
         out = engine.apply_command(rec, resume, policy=POLICY, now=NOW, command_id="c")
@@ -915,7 +915,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(out.verb, "restart_generation")
         self.assertEqual((engine.state_key(new), new["generation"], new["revision"]),
                          ("queued.idle", 1, 8))
-        self.assertEqual((new["fork"], new["dossier_evidence_id"], new["parked_reason"],
+        self.assertEqual((new["fork"], new["plan_evidence_id"], new["parked_reason"],
                           new["admission_override"]), (None, None, None, None))
         self.assertEqual(new["processed_publications"], [5])
         self.assertEqual(new["contribution_id"], rec["contribution_id"])

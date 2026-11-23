@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Milestone 4 native queue, investigator, and automatic pickup contracts."""
+"""Milestone 4 native queue, planner, and automatic pickup contracts."""
 
 import json
 import unittest
@@ -37,7 +37,7 @@ def manifest(name: str) -> dict:
 
 class TestNativeQueueContracts(unittest.TestCase):
     def test_authored_sources_have_one_generated_v122_lock_each(self):
-        for name in ("dispatcher", "investigator"):
+        for name in ("dispatcher", "planner"):
             self.assertTrue((WORKFLOWS / f"{name}.md").is_file())
             self.assertTrue((WORKFLOWS / f"{name}.lock.yml").is_file())
             compiled = manifest(name)
@@ -52,7 +52,7 @@ class TestNativeQueueContracts(unittest.TestCase):
     def test_dispatcher_policy_admits_only_current_profiles(self):
         dispatcher = source("dispatcher")
         dispatch = dispatcher["safe-outputs"]["dispatch-workflow"]
-        self.assertEqual(dispatch["workflows"], ["investigator", "worker"])
+        self.assertEqual(dispatch["workflows"], ["planner", "worker"])
         self.assertEqual(dispatch["max"], 1)
         lock = workflow("dispatcher.lock.yml")
         policies = []
@@ -64,10 +64,10 @@ class TestNativeQueueContracts(unittest.TestCase):
         self.assertTrue(policies)
         for policy in policies:
             pool = policy["pools"]["default"]
-            self.assertEqual(set(pool["profiles"]), {"investigator", "worker"})
+            self.assertEqual(set(pool["profiles"]), {"planner", "worker"})
             self.assertEqual(
-                pool["profiles"]["investigator"]["workflow"],
-                ".github/workflows/investigator.lock.yml",
+                pool["profiles"]["planner"]["workflow"],
+                ".github/workflows/planner.lock.yml",
             )
             self.assertEqual(
                 pool["profiles"]["worker"]["workflow"],
@@ -106,7 +106,7 @@ class TestNativeQueueContracts(unittest.TestCase):
         )
         self.assertEqual(
             result.report["selected"],
-            [{"contribution": "closeio--ciso8601/1", "task": "investigation"}],
+            [{"contribution": "closeio--ciso8601/1", "task": "planning"}],
         )
         self.assertEqual(len(result.requested_effects), 1)
         staged = [record for kind, record in result.staged if kind == "contributions"][-1]
@@ -118,7 +118,7 @@ class TestNativeQueueContracts(unittest.TestCase):
             allowed_paths=[".github/workflows/*"],
         )
         self.assertEqual(node["pool"], "default")
-        self.assertEqual(node["worker_profile"], "investigator")
+        self.assertEqual(node["worker_profile"], "planner")
         self.assertEqual(
             node["payload"]["context"]["tracking_issue"]["description_digest"],
             "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
@@ -128,11 +128,11 @@ class TestNativeQueueContracts(unittest.TestCase):
         )
 
 
-class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
-    def test_investigator_is_authenticated_read_only_and_complete(self):
-        investigator = source("investigator")
+class TestPlannerSecurityAndContinuation(unittest.TestCase):
+    def test_planner_is_authenticated_read_only_and_complete(self):
+        planner = source("planner")
         self.assertEqual(
-            investigator["permissions"],
+            planner["permissions"],
             {
                 "contents": "read",
                 "issues": "read",
@@ -140,12 +140,12 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
                 "actions": "read",
             },
         )
-        github = investigator["mcp-servers"]["github-authenticated"]
+        github = planner["mcp-servers"]["github-authenticated"]
         self.assertEqual(github["env"]["GITHUB_READ_ONLY"], "1")
         self.assertEqual(
             github["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "${{ github.token }}"
         )
-        text = (WORKFLOWS / "investigator.md").read_text()
+        text = (WORKFLOWS / "planner.md").read_text()
         for required in (
             "Read the ENTIRE issue description",
             "full upstream issue and PR corpus",
@@ -160,33 +160,33 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY", text)
         self.assertNotIn("RISEPROJECT_UPSTREAMING_APP_CLIENT_ID", text)
         for trusted_boundary in (
-            investigator.get("pre-agent-steps", []),
-            investigator["jobs"]["safe_outputs"],
-            investigator["jobs"]["record"],
+            planner.get("pre-agent-steps", []),
+            planner["jobs"]["safe_outputs"],
+            planner["jobs"]["record"],
         ):
             self.assertNotIn("RISEPROJECT_APP_PRIVATE_KEY", str(trusted_boundary))
 
     def test_completeness_gate_and_result_resolution_are_trusted(self):
-        investigator = source("investigator")
-        pre_steps = investigator["jobs"]["safe_outputs"]["pre-steps"]
+        planner = source("planner")
+        pre_steps = planner["jobs"]["safe_outputs"]["pre-steps"]
         gate = next(
             step
             for step in pre_steps
             if step.get("name") == "Require complete research before native queue Completion"
         )
-        self.assertIn("python -m dossier_gate", gate["run"])
-        record = investigator["jobs"]["record"]
+        self.assertIn("python -m plan_gate", gate["run"])
+        record = planner["jobs"]["record"]
         self.assertEqual(record["if"], "needs.safe_outputs.outputs.work_queue_outcome == 'completed'")
         record_text = str(record)
         self.assertIn("python -m queue_result", record_text)
         self.assertIn("python -m artifact", record_text)
-        self.assertIn("from dossier_gate import validate", record_text)
+        self.assertIn("from plan_gate import validate", record_text)
         self.assertIn("porting-publication", record_text)
 
-    def test_dispatcher_and_investigator_continue_controller_explicitly(self):
+    def test_dispatcher_and_planner_continue_controller_explicitly(self):
         expectations = {
             "dispatcher": {"safe_outputs"},
-            "investigator": {"safe_outputs", "record", "notify"},
+            "planner": {"safe_outputs", "record", "notify"},
         }
         for name, needs in expectations.items():
             continuation = source(name)["jobs"]["continuation"]
@@ -208,7 +208,7 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
             set(triggers["workflow_run"]["workflows"]),
             {
                 "Dispatcher",
-                "Investigator",
+                "Planner",
                 "Worker",
                 "Reproduction Image",
                 "Fork Provisioning",
@@ -217,7 +217,7 @@ class TestInvestigatorSecurityAndContinuation(unittest.TestCase):
                 "Handoff",
             },
         )
-        self.assertIn("for workflow in investigator.lock.yml worker.lock.yml", controller_text)
+        self.assertIn("for workflow in planner.lock.yml worker.lock.yml", controller_text)
         self.assertIn("actions/workflows/$workflow/runs?per_page=20", controller_text)
         self.assertIn('name == "porting-publication"', controller_text)
         self.assertIn("gh workflow run dispatcher.lock.yml", controller_text)

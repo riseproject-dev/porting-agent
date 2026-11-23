@@ -32,7 +32,7 @@ class TestStatusLedger(unittest.TestCase):
     def records(self, root: Path):
         old = contribution(phase="queued", activity="idle", revision=0)
         new = dict(old, phase="parked", activity="idle", revision=1, parked_reason="No patch", updated_at=NOW)
-        event = lifecycle._event(old, new, "dossier_parked", "observation", "dossier-1", NOW, True)
+        event = lifecycle._event(old, new, "plan_parked", "observation", "plan-1", NOW, True)
         event["sequence"] = 3
         cpath = root / ".state/contributions/example--proj--12.json"
         epath = root / ".state/events/example--proj--12/00000003.json"
@@ -42,7 +42,7 @@ class TestStatusLedger(unittest.TestCase):
 
     def test_render_has_short_summary_and_folded_prefilled_commands(self):
         record = contribution(phase="parked", activity="idle", revision=4, parked_reason="No patch")
-        event = lifecycle._event(record, record, "dossier_parked", "observation", "d", NOW, False)
+        event = lifecycle._event(record, record, "plan_parked", "observation", "d", NOW, False)
         event["sequence"] = 2
         body = status_ledger.render(event, record, "https://github.com/run")
         self.assertTrue(body.startswith("**Upstreaming r4 · parked/idle**"))
@@ -87,7 +87,7 @@ class TestStatusLedger(unittest.TestCase):
                       + lifecycle.LIFECYCLE["development.fix_needed"].description, body)
         self.assertNotIn(chr(0x2014), body)
 
-    def test_development_pr_ledger_offers_dossier_refresh(self):
+    def test_development_pr_ledger_offers_plan_refresh(self):
         record = contribution(phase="development", activity="fix_needed", revision=7)
         event = lifecycle._event(record, record, "activity", "observation", None, NOW, False)
         event["sequence"] = 8
@@ -148,23 +148,23 @@ class TestStatusLedger(unittest.TestCase):
         self.assertIn("`restart_generation` by the command `/upstreaming resume`", body)
         self.assertIn("Admission override: class `optimized_backend`, paths `setup.py`.", body)
         closed = contribution(phase="closed", activity="idle", terminal_reason="no_work")
-        before = dict(closed, phase="investigation", activity="agent_running")
-        event = lifecycle._event(before, closed, "close_investigation", "result", "1", NOW, False)
+        before = dict(closed, phase="planning", activity="agent_running")
+        event = lifecycle._event(before, closed, "close_planning", "result", "1", NOW, False)
         event["sequence"] = 11
-        event["details"] = {"verb": "close_investigation", "from_state": "investigation.agent_running",
+        event["details"] = {"verb": "close_planning", "from_state": "planning.agent_running",
                             "to_state": "closed.idle", "admission_override_not_applied": True}
         body = status_ledger.render(event, closed, "https://github.com/run")
-        self.assertIn("`close_investigation` by the Result of requested Work: verified dossier "
+        self.assertIn("`close_planning` by the Result of requested Work: verified plan "
                       "decision close; PyPI serves riscv64", body)
         self.assertIn("The recorded admission override was not applied", body)
 
     def test_a_close_shows_the_pypi_finding_quoted(self):
         closed = contribution(phase="closed", activity="idle", terminal_reason="already_released")
-        before = dict(closed, phase="investigation", activity="agent_running")
-        event = lifecycle._event(before, closed, "close_investigation", "result", "1", NOW, False)
+        before = dict(closed, phase="planning", activity="agent_running")
+        event = lifecycle._event(before, closed, "close_planning", "result", "1", NOW, False)
         event["sequence"] = 11
         wheel = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
-        event["details"] = {"verb": "close_investigation", "from_state": "investigation.agent_running",
+        event["details"] = {"verb": "close_planning", "from_state": "planning.agent_running",
                             "to_state": "closed.idle", "rationale": "`ignore` <!-- x -->",
                             "pypi": {"proj": {"version": "2.4.1", "served_by": "riscv64",
                                               "wheel": wheel},
@@ -173,7 +173,7 @@ class TestStatusLedger(unittest.TestCase):
         body = status_ledger.render(event, closed, "https://github.com/run")
         self.assertIn(f"PyPI: `proj 2.4.1` (riscv64 wheel `{wheel}`); "
                       "`proj-data 1.0` (pure-Python wheels only).", body)
-        # The dossier's rationale is not rendered as trusted text.
+        # The plan's rationale is not rendered as trusted text.
         self.assertNotIn("ignore", body)
         # A hostile value in the finding is quoted and bounded.
         event["details"]["pypi"] = {"proj": {"version": "`x` <!--", "served_by": "riscv64",
@@ -293,7 +293,7 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
              "to": {"phase": "development"}},
             {"sequence": 2, "kind": "activity", "from": {"activity": "waiting_capacity"},
              "to": {"activity": "waiting_human"}},
-            {"sequence": 3, "kind": "dossier_parked", "from": {}, "to": {"phase": "parked"}},
+            {"sequence": 3, "kind": "plan_parked", "from": {}, "to": {"phase": "parked"}},
         ]
         states = status_ledger.event_states(events)
         self.assertEqual(states[2], ("development.waiting_capacity", "development.waiting_human"))

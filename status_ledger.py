@@ -59,6 +59,9 @@ RECORDED_KINDS = {
                                "fields are added with the values the pipeline read for them, and "
                                "the retired `blocked_reason` is removed. Its state, revision, and "
                                "evidence are unchanged."),
+    "record_names_migrated": ("Recorded this contribution under the current names of the "
+                              "planning phase and its plan. Its state, revision, and evidence are "
+                              "unchanged."),
 }
 
 
@@ -91,8 +94,11 @@ def table_message(event: dict, record: dict) -> str | None:
     """The wording of an event of the table, generated from the row it took
     and the state it led to; ``None`` for an event outside the table."""
     details = event.get("details") or {}
-    verb = details.get("verb") or event["kind"]
-    source, target = details.get("from_state"), details.get("to_state")
+    # An event written before the plan rename names the historic verb and
+    # states (``lifecycle.HISTORIC_NAMES``).
+    verb = lifecycle.current_name(details.get("verb") or event["kind"])
+    source = lifecycle.current_name(details.get("from_state"))
+    target = lifecycle.current_name(details.get("to_state"))
     if source not in lifecycle.LIFECYCLE or target not in lifecycle.LIFECYCLE:
         return None
     t = _transition(verb, source)
@@ -165,8 +171,8 @@ def _observed(event: dict) -> str:
     """What the event observed, as bounded data: heads, links the pipeline
     recorded, the upstream pull request, a mismatch, release data."""
     details = event.get("details") or {}
-    kind = event["kind"]
-    state = details.get("from_state")
+    kind = lifecycle.current_name(event["kind"])
+    state = lifecycle.current_name(details.get("from_state"))
     parts = []
     if kind == "confirm_clean_head":
         how = ("it already resolved to that head; nothing was written"
@@ -205,7 +211,7 @@ def _observed(event: dict) -> str:
         parts.append("Releases: " + ", ".join(
             f"`{_quotable(n, 80)} {_quotable(v, 40)}`"
             for n, v in sorted(details["releases"].items())) + ".")
-    if kind == "close_investigation" and isinstance(details.get("pypi"), dict):
+    if kind == "close_planning" and isinstance(details.get("pypi"), dict):
         parts.append("PyPI: " + "; ".join(
             _close_finding(name, entry) for name, entry in sorted(details["pypi"].items())
             if isinstance(entry, dict)) + ".")
@@ -296,7 +302,7 @@ _HEAD_TEMPLATES = {
 _HEADS = {"handoff.awaiting_submission": lambda r: (r.get("handoff_request") or {}).get("head"),
           "handoff.waiting_upstream_pr": lambda r: r.get("clean_head_sha")}
 # The resume from `parked.idle` that records an admission override, offered
-# beside the plain resume: a dossier that decides park then admits
+# beside the plain resume: a plan that decides park then admits
 # development with the override's class and paths.
 RESUME_OVERRIDE = ('/upstreaming resume revision={revision} class={admission} '
                    'paths="{paths}" reason="..."')
@@ -417,7 +423,10 @@ def event_states(events: list[dict]) -> list[tuple[str | None, str | None]]:
     states = []
     for event in sorted(events, key=lambda e: e["sequence"]):
         details = event.get("details") or {}
-        before, to = event.get("from") or {}, event.get("to") or {}
+        # An event written before the plan rename names the historic phase
+        # and states.
+        before, to = ({k: lifecycle.current_name(v) if k == "phase" else v
+                       for k, v in (event.get(side) or {}).items()} for side in ("from", "to"))
         source = details.get("from_state")
         if not source and (before.get("phase") or phase):
             source = f"{before.get('phase') or phase}.{before.get('activity') or activity}"
@@ -425,6 +434,7 @@ def event_states(events: list[dict]) -> list[tuple[str | None, str | None]]:
         if not target:
             new_phase, new_activity = to.get("phase") or phase, to.get("activity") or activity
             target = f"{new_phase}.{new_activity}" if new_phase else None
+        source, target = lifecycle.current_name(source), lifecycle.current_name(target)
         if target:
             phase, activity = target.split(".", 1)
         states.append((source, target))
@@ -433,7 +443,8 @@ def event_states(events: list[dict]) -> list[tuple[str | None, str | None]]:
 
 def notifies(event: dict, source: str | None, target: str | None) -> bool:
     """Whether ``event`` is posted on the tracking issue (see above)."""
-    if event["kind"] in REMINDER_VERBS or (event.get("details") or {}).get("verb") in REMINDER_VERBS:
+    if lifecycle.current_name(event["kind"]) in REMINDER_VERBS \
+            or lifecycle.current_name((event.get("details") or {}).get("verb")) in REMINDER_VERBS:
         return True
     if (event.get("to") or {}).get("paused") is True:
         return True

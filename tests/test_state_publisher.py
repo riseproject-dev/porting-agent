@@ -161,7 +161,7 @@ class TestStateDiff(unittest.TestCase):
     def test_store_normalizes_all_untrusted_state_text_paths(self):
         dash = chr(0x2014)
         st = state.StateStore(self.repo, self.p)
-        evidence_kinds = ("dossier", "rehearsal", "ci", "human_relay")
+        evidence_kinds = ("plan", "rehearsal", "ci", "human_relay")
         paths = []
         for index, evidence_kind in enumerate(evidence_kinds):
             evidence = {

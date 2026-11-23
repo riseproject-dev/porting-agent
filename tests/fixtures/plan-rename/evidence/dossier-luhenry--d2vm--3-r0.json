@@ -1,0 +1,552 @@
+{
+  "collected_at": "2026-11-23T16:22:56.531091+00:00",
+  "contribution_id": "luhenry--d2vm/3",
+  "data": {
+    "contribution_guidelines": {
+      "commit_conventions": {
+        "examples": [
+          "feat: Add grub and grub-efi boot support for Rocky and AlmaLinux 9+",
+          "fix: fix centos / rhel family 8+ grub-bios boot",
+          "chore(ci): call linter in ci",
+          "docs: add CNAME to mkdocs build output"
+        ],
+        "observations": "59 of 100 titles use a conventional-commit prefix (feat/fix/docs/chore); 94 of 100 carry Signed-off-by, though no document requires it and CI does not enforce it. No title ends with a period. Bodies are mostly just the trailer. Mood is imperative; some commits add skip-checks: true. No squash policy is documented.",
+        "rules": {
+          "body_line_max_length": null,
+          "body_required": false,
+          "max_commits": null,
+          "signed_off_by_required": false,
+          "title_capitalization": "lower",
+          "title_max_length": null,
+          "title_prefix_required": false,
+          "title_prefixes": [
+            "feat:",
+            "fix:",
+            "docs:",
+            "chore:",
+            "build(deps):",
+            "chore(ci):",
+            "tests:",
+            "templates:"
+          ],
+          "title_trailing_period": "any"
+        },
+        "sample": {
+          "commits": 100,
+          "range": "last 100 non-merge commits on main, 2022-05-19 to 2026-05-31"
+        },
+        "sources": [
+          {
+            "finding": "Measured from the last 100 non-merge commits of main in the checkout (2022-05-19 to 2026-05-31).",
+            "url": "https://github.com/linka-cloud/d2vm/commits/main"
+          },
+          {
+            "finding": "CI does not lint commit messages.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.github/workflows/ci.yaml"
+          }
+        ],
+        "title_lengths": {
+          "max": 181,
+          "median": 37,
+          "p90": 71
+        }
+      },
+      "contributing": {
+        "documents": [],
+        "instructions": [
+          "Cover behavioural changes with an e2e test case in e2e/e2e_test.go (maintainer review of PRs 72 and 90).",
+          "Run make vet and make check-fmt, which CI runs.",
+          "Keep generated docs current: CI runs make docs-up-to-date."
+        ],
+        "searched": [
+          "CONTRIBUTING.md",
+          "CONTRIBUTING.rst",
+          ".github/CONTRIBUTING.md",
+          "docs/contributing*",
+          "DEVELOPMENT.md",
+          "README.md developer section"
+        ],
+        "sources": [
+          {
+            "finding": "No CONTRIBUTING or DEVELOPMENT file at root, .github or docs.",
+            "url": "https://github.com/luhenry/d2vm/tree/main"
+          },
+          {
+            "finding": "README documents usage only; no contributor instructions.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          },
+          {
+            "finding": "The maintainer's review is the only statement of rules: e2e tests must cover changes.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+          }
+        ],
+        "status": "none_found"
+      },
+      "pull_request_template": {
+        "searched": [
+          "PULL_REQUEST_TEMPLATE.md",
+          "pull_request_template.md",
+          ".github/PULL_REQUEST_TEMPLATE.md",
+          ".github/pull_request_template.md",
+          ".github/PULL_REQUEST_TEMPLATE/",
+          ".github/ listing",
+          "docs/PULL_REQUEST_TEMPLATE.md",
+          "docs/pull_request_template.md"
+        ],
+        "sources": [
+          {
+            "finding": "The .github directory contains only the workflows directory; no template.",
+            "url": "https://github.com/luhenry/d2vm/tree/main/.github"
+          },
+          {
+            "finding": "Root listing has no template file; docs/ holds CNAME, content, mkdocs.yml.",
+            "url": "https://github.com/luhenry/d2vm/tree/main"
+          }
+        ],
+        "status": "none_found",
+        "templates": []
+      },
+      "reviewers": {
+        "expectations": [
+          "Add or adjust e2e cases for any behavioural change.",
+          "Keep changes small and focused; maintainer lands his own consolidated PRs when external ones stall."
+        ],
+        "paths": [
+          {
+            "codeowners": [],
+            "path": ".github/workflows/*",
+            "reviewers": [
+              {
+                "expectations": "Expects e2e tests to cover behavioural changes and CI to stay green; no workflow-specific rules stated.",
+                "login": "Adphi",
+                "review_urls": [
+                  "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+                ],
+                "role": "Sole maintainer; authored and merged workflow changes such as the linter step (PR 69)"
+              }
+            ]
+          }
+        ],
+        "searched": [
+          "CODEOWNERS (root, .github, docs)",
+          "reviews of PRs 90, 72, 91",
+          "commit authors for .github/workflows"
+        ],
+        "sources": [
+          {
+            "finding": "Adphi is the reviewer who requests e2e coverage.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+          },
+          {
+            "finding": "Adphi authored nearly all workflow changes.",
+            "url": "https://github.com/linka-cloud/d2vm/commits/main"
+          }
+        ],
+        "status": "found"
+      }
+    },
+    "contribution_id": "luhenry--d2vm/3",
+    "dependency_graph": {
+      "assessment": "The query succeeded but the graph holds no d2vm node, so no direct, transitive or reverse dependencies are available; this is an absence of data, not an empty dependency set. The checkout's go.mod lists Go module dependencies (docker/cli, containerd/go-containerregistry style libraries); there are no Python build or test dependencies, so the PyPI and RISE index audit has nothing to audit (d2vm returns 404 on both pypi.org and pypi.riseproject.dev/simple).",
+      "canonical_project": "luhenry/d2vm (go.linka.cloud/d2vm); not present in graph",
+      "query": {
+        "queries": [
+          "SELECT ?s ?o WHERE {?s <https://purl.org/packagegraph/ontology/core#projectRepository> ?o . FILTER(REGEX(STR(?o),\"d2vm|linka\",\"i\"))} LIMIT 10",
+          "SELECT ?s ?o WHERE {?s <core#projectName> ?o . FILTER(REGEX(STR(?o),\"d2vm\",\"i\"))}",
+          "SELECT ?s ?o WHERE {?s <core#purl> ?o . FILTER(REGEX(STR(?o),\"d2vm\",\"i\"))}",
+          "SELECT ?s ?o WHERE {?s <core#upstreamRepository> ?o . FILTER(REGEX(STR(?o),\"d2vm\",\"i\"))}",
+          "SELECT ?s ?p ?o WHERE {?s ?p ?o . FILTER(REGEX(STR(?s),\"luhenry\",\"i\"))}"
+        ]
+      },
+      "result": {
+        "head": {
+          "vars": [
+            "s",
+            "o"
+          ]
+        },
+        "note": "every query returned zero bindings; the graph does list a gomod ecosystem (6800 packages) but no d2vm node",
+        "results": {
+          "bindings": []
+        }
+      },
+      "success": true,
+      "tool": "project_graph_query"
+    },
+    "ecosystem_report": {
+      "status": "absent"
+    },
+    "expected_revision": 0,
+    "history": [
+      {
+        "decision": "Added arm64 support with grub-efi (closes issue 40); the only architecture-expansion precedent upstream and the template a riscv64 boot path would follow.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/44"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/44"
+      },
+      {
+        "decision": "External Rocky 10 GRUB-EFI PR; maintainer requested e2e coverage and then landed equivalent work in PR 91.",
+        "outcome": "superseded",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/90"
+      },
+      {
+        "decision": "Extra rootfs options PR is stalled because the maintainer asked for an e2e test case that was never added.",
+        "outcome": "open",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/72"
+      },
+      {
+        "decision": "Maintainer fix for RHEL family 8+ grub-bios and grub/grub-efi on Rocky and Alma 9+; shows the project's current focus on x86 and arm64 distro boot support.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/linka-cloud/d2vm/pull/91"
+        ],
+        "reviewers": [
+          "Adphi"
+        ],
+        "url": "https://github.com/linka-cloud/d2vm/pull/91"
+      }
+    ],
+    "maintainers": [
+      {
+        "name": "Adphi",
+        "role": "Sole active maintainer of linka-cloud/d2vm: authored 90 of the last 100 non-merge commits, reviews and merges external PRs, and cuts releases.",
+        "sources": [
+          "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466",
+          "https://github.com/linka-cloud/d2vm/commits/main"
+        ]
+      }
+    ],
+    "proposal": {
+      "admission_class": null,
+      "allowed_paths": [],
+      "architecture_precedent": "Single shared ubuntu-latest host with QEMU for all CI jobs; no native-per-architecture runner rows and no wheel matrix. arm64 precedent is goreleaser goarch plus grub-efi-arm64 (PR 44).",
+      "decision": "park",
+      "existing_riscv64_work": "None upstream (no issue, PR, CI or docs). The luhenry fork's riscv64-draft branch was deliberately not read per the issue instruction.",
+      "fork_guards": "None: ci.yaml has no github.repository conditions; secret-bearing steps are gated by tag or main ref instead.",
+      "path_coverage": [
+        {
+          "area": "build",
+          "assessment": "Go build via Makefile and .goreleaser.yaml (goarch amd64/arm64) with a Dockerfile; no Python wheel build exists, and enabling riscv64 would require Go code and release matrix changes outside wheel scope.",
+          "paths": []
+        },
+        {
+          "area": "test",
+          "assessment": "ci.yaml runs go vet/tests and distro e2e on ubuntu-latest through QEMU; no wheel test job exists to extend.",
+          "paths": []
+        },
+        {
+          "area": "release",
+          "assessment": "Release is goreleaser binaries plus Docker image, gated on tags with project secrets; no PyPI or wheel publication.",
+          "paths": []
+        },
+        {
+          "area": "packaging",
+          "assessment": "No pyproject.toml, setup.py or wheel metadata; distribution is Go binaries, a Docker image and a Homebrew tap.",
+          "paths": []
+        },
+        {
+          "area": "documentation",
+          "assessment": "README and docs/content never mention architectures beyond arm64 and contain no wheel docs.",
+          "paths": []
+        },
+        {
+          "area": "native_sources",
+          "assessment": "The Go code (builder.go, pkg/qemu/qemu.go, cmd/d2vm/run/qemu.go, grub*.go) hardcodes amd64/arm64 and x86 syslinux/grub paths; it is not a native wheel source.",
+          "paths": []
+        }
+      ],
+      "rationale": "d2vm is a Go VM-image builder with no Python package, wheel, PyPI release, or build backend, and no riscv64 discussion upstream. A riscv64 wheel contribution cannot exist; any riscv64 support would be Go and bootloader feature work outside this pipeline's wheel scope. A human can resume with a class and paths if Go riscv64 support is desired.",
+      "release_coverage": "Latest release v0.4.0 ships Go binaries for linux/windows/darwin on amd64 and arm64 and a Docker image; no wheels; riscv64 absent.",
+      "risks": "Not a wheel project; a riscv64 build requires Go, QEMU, grub and extlinux work that upstream has not requested and whose maintainer requires e2e coverage."
+    },
+    "research": {
+      "blogs": {
+        "coverage": {
+          "complete": true,
+          "scope": "README links read. Only the iximiuz article that inspired the project is linked; it predates and does not cover RISC-V."
+        },
+        "findings": "No project blog or release announcement stream exists beyond GitHub release notes.",
+        "justification": "The README and docs identify no project-owned blog; the only linked article is third-party background on the technique and not about the project's architecture support.",
+        "queries": [
+          "README links",
+          "web discovery of d2vm announcements"
+        ],
+        "sources": [
+          {
+            "finding": "README credits an iximiuz article on Docker-to-bootable-disk as inspiration; no project blog or announcements are linked.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "ci_history": {
+        "coverage": {
+          "complete": true,
+          "scope": "Both workflows and the goreleaser/Dockerfile read in full from the main checkout. Run history of luhenry/d2vm is empty (total_count 0); linka-cloud runs were not needed since no wheel or riscv path exists."
+        },
+        "findings": "No Python wheel build, cibuildwheel, or PyPI publishing exists. There is no github.repository fork guard in ci.yaml. grep finds no riscv/rv64 text on main. d2vm is a Go (module go.linka.cloud/d2vm) command-line tool; it publishes no Python package or wheel anywhere.",
+        "queries": [
+          "list_workflow_runs luhenry/d2vm",
+          "read fork/.github/workflows/ci.yaml and docs.yaml",
+          "read fork/.goreleaser.yaml and Dockerfile",
+          "grep -ri riscv|rv64 in checkout on main"
+        ],
+        "sources": [
+          {
+            "finding": "Jobs tests, templates-tests, e2e-tests, docs-up-to-date, build, build-image, release, release-image all run on ubuntu-latest with Go 1.25 and QEMU/Buildx setup; Docker Hub and GPG steps use secrets and are gated on tags or main.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.github/workflows/ci.yaml"
+          },
+          {
+            "finding": "Release binaries target goos linux/windows/darwin and goarch amd64/arm64 only; no riscv64.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.goreleaser.yaml"
+          },
+          {
+            "finding": "Image is multi-stage golang:1.25 to ubuntu:20.04; no Python.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/Dockerfile"
+          },
+          {
+            "finding": "No workflow runs on the fork.",
+            "url": "https://github.com/luhenry/d2vm/actions"
+          }
+        ],
+        "status": "searched"
+      },
+      "documentation": {
+        "coverage": {
+          "complete": true,
+          "scope": "README, docs/mkdocs.yml and docs/content tree inspected; contribution docs and templates searched by directory listing of root, .github and docs."
+        },
+        "findings": "Documentation never mentions riscv64, wheels or Python. builder.go rejects any platform except linux/amd64 and linux/arm64 and pkg/qemu and cmd/d2vm/run/qemu.go map only arm64 to aarch64 and treat s390x specially, so a riscv64 d2vm is Go and boot-loader work, not packaging.",
+        "queries": [
+          "read README.md and docs/content",
+          "search fork for CONTRIBUTING, CODEOWNERS, PR templates",
+          "grep riscv in docs"
+        ],
+        "sources": [
+          {
+            "finding": "Lists supported distros (Ubuntu, Debian, Alpine, CentOS, Rocky, Alma) and states alpha status; prerequisites are Docker, util-linux, parted, e2fsprogs, qemu; no architecture matrix and no mention of riscv.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/README.md"
+          },
+          {
+            "finding": "Docs are mkdocs content; no contributing page.",
+            "url": "https://github.com/luhenry/d2vm/tree/main/docs"
+          }
+        ],
+        "status": "searched"
+      },
+      "ecosystem_report": {
+        "coverage": {
+          "complete": true,
+          "scope": "Directory listing of project-reports read for names matching d2vm, vm, disk and image; projects.yml fetched and searched (it contains no d2vm entry)."
+        },
+        "findings": "No matching project report exists for d2vm, so none could be used.",
+        "justification": "Verified by listing project-reports and searching projects.yml: no report matches d2vm, linka-cloud or a synonym; the absence is recorded in ecosystem_report.status=absent.",
+        "queries": [
+          "list riseproject-dev/sw-ecosystem project-reports",
+          "read projects.yml for d2vm and linka-cloud"
+        ],
+        "sources": [
+          {
+            "finding": "No d2vm.md among the reports; only unrelated vm-like names (crosvm, graalvm, linux-kvm, pkvm, wavm).",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/tree/main/project-reports"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "mailing_lists": {
+        "coverage": {
+          "complete": true,
+          "scope": "README, docs and repo metadata were scanned for communication channels. Only issues and PRs exist; a Matrix chat badge was removed in the latest commit."
+        },
+        "findings": "No mailing list or discussion forum is advertised by the project.",
+        "justification": "Discovery of authoritative project sources (README, docs, repo tabs, latest commit) shows no mailing list, forum or discussion channel; issues and PRs are the only venue.",
+        "queries": [
+          "inspect README, docs and GitHub repo for mailing list links",
+          "docs/mkdocs.yml and README link scan"
+        ],
+        "sources": [
+          {
+            "finding": "Latest commit removes the Matrix chat badge from the README, leaving no chat or list channel.",
+            "url": "https://github.com/luhenry/d2vm/commit/7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "maintainer_reviews": {
+        "coverage": {
+          "complete": true,
+          "scope": "Reviews of PRs 90 and 72 read; the last 100 non-merge commits attributed (90 by Adphi). No review concerns riscv."
+        },
+        "findings": "Adphi is the sole active maintainer and reviewer; a pattern of requiring e2e coverage is consistent. No maintainer position on riscv64 exists.",
+        "queries": [
+          "pull_request_read get_reviews PR 90",
+          "pull_request_read get_comments PRs 90, 72",
+          "list_commits author counts in checkout"
+        ],
+        "sources": [
+          {
+            "finding": "Adphi requested changes: e2e tests must cover the change.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90#pullrequestreview-4153252466"
+          },
+          {
+            "finding": "Adphi again asked for an e2e test case for the new feature.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/72#issuecomment-2902309677"
+          }
+        ],
+        "status": "searched"
+      },
+      "release_repositories": {
+        "coverage": {
+          "complete": true,
+          "scope": "Releases listed (v0.4.0, v0.3.0, v0.2.0, v0.1.0...). Release path read from goreleaser and ci.yaml."
+        },
+        "findings": "No PyPI or wheel release path. Homebrew tap is a downstream consumer of goreleaser archives, not a wheel repo.",
+        "queries": [
+          "list_releases linka-cloud/d2vm",
+          "read .goreleaser.yaml brews section"
+        ],
+        "sources": [
+          {
+            "finding": "Latest release v0.4.0 (2026-01-22) ships Go binaries (linux/windows/darwin, amd64/arm64) and a Docker image; no wheels.",
+            "url": "https://github.com/linka-cloud/d2vm/releases"
+          },
+          {
+            "finding": "Homebrew tap linka-cloud/homebrew-tap is the only separate publication repository; it distributes the same Go binaries.",
+            "url": "https://github.com/luhenry/d2vm/blob/main/.goreleaser.yaml"
+          }
+        ],
+        "status": "searched"
+      },
+      "tracking_issue": {
+        "coverage": {
+          "complete": true,
+          "scope": "Full immutable description read and all comments fetched (zero comments, single page). Route: github-authenticated."
+        },
+        "findings": "The request supplies only the upstream repository. No packages, branch or scope were given. luhenry/d2vm is a fork-style repository that mirrors linka-cloud/d2vm (identical main head 7184ff1, identical history by Adphi); research covered both.",
+        "queries": [
+          "issue_read get riseproject-dev/porting-agent#3",
+          "issue_read get_comments riseproject-dev/porting-agent#3",
+          "task.json context.tracking_issue.description"
+        ],
+        "sources": [
+          {
+            "finding": "Issue names luhenry/d2vm as upstream; Packages and Upstream target branch are empty. The free-text note forbids reading the riscv64-draft branch; that restriction was honoured (branch listing shows it exists but its contents were not opened). It has no comments.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
+          }
+        ],
+        "status": "searched"
+      },
+      "upstream_issues": {
+        "coverage": {
+          "complete": true,
+          "scope": "All 42 issues of linka-cloud/d2vm listed in one page (hasNextPage false) and zero issues in luhenry/d2vm; semantic searches for riscv terms returned nothing. Titles of all issues scanned; issue 40 read in full."
+        },
+        "findings": "No upstream issue requests or discusses riscv64. There is nothing to wheel-port: the issue corpus is entirely about VM image building.",
+        "queries": [
+          "luhenry/d2vm list_issues (all states)",
+          "linka-cloud/d2vm list_issues (all states, 42 total)",
+          "search_issues riscv / risc-v / riscv64 rv64 / architecture / arm64 multi-arch / qemu-user binfmt in linka-cloud/d2vm",
+          "search_issues riscv64 risc-v rv64 architecture in luhenry/d2vm"
+        ],
+        "sources": [
+          {
+            "finding": "42 issues, none mentions RISC-V. Architecture work was only ARM64 EFI (issue 40, closed by PR 44) and EFI/grub work.",
+            "url": "https://github.com/linka-cloud/d2vm/issues"
+          },
+          {
+            "finding": "ARM64 EFI support was added by maintainer Adphi in PR 44 as grub-efi-arm64; it is the only architecture precedent.",
+            "url": "https://github.com/linka-cloud/d2vm/issues/40"
+          },
+          {
+            "finding": "No issues exist in the luhenry fork.",
+            "url": "https://github.com/luhenry/d2vm/issues"
+          }
+        ],
+        "status": "searched"
+      },
+      "upstream_pull_requests": {
+        "coverage": {
+          "complete": true,
+          "scope": "All pull requests of linka-cloud/d2vm listed (single page under 100) plus luhenry/d2vm (zero). Reviews and comments read for PRs 90, 91 and 72, the recent ones touching boot support; none concerns riscv64."
+        },
+        "findings": "No riscv64 PR, accepted or rejected, exists. The recurring maintainer ask is e2e test coverage for any behavioural change.",
+        "queries": [
+          "luhenry/d2vm list_pull_requests state=all",
+          "linka-cloud/d2vm list_pull_requests state=all (perPage 100)",
+          "pull_request_read get_reviews/get_comments on PRs 90, 91, 72",
+          "search_issues architecture queries"
+        ],
+        "sources": [
+          {
+            "finding": "Open PRs: 92, 88, 72, 58 (feature/bugfix/deps). Merged ones are distro support and chore work. No PR mentions RISC-V.",
+            "url": "https://github.com/linka-cloud/d2vm/pulls?q=is%3Apr"
+          },
+          {
+            "finding": "Rocky 10 GRUB-EFI PR by external contributor Raboo; maintainer Adphi requested changes asking for e2e coverage; superseded by maintainer PR 91.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/90"
+          },
+          {
+            "finding": "Maintainer asked the contributor to add an e2e test case for the new feature; PR remains open and stale.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/72"
+          },
+          {
+            "finding": "Maintainer-authored merge of the Rocky/Alma grub work.",
+            "url": "https://github.com/linka-cloud/d2vm/pull/91"
+          }
+        ],
+        "status": "searched"
+      },
+      "website": {
+        "coverage": {
+          "complete": true,
+          "scope": "Site discovered from docs/CNAME (d2vm.linka.cloud) and the mkdocs site; it is generated from docs/content already read."
+        },
+        "findings": "The website duplicates repository docs; it contains no riscv or release-matrix information and no separate download channel beyond GitHub releases and Docker Hub.",
+        "queries": [
+          "fetch https://linka-cloud.github.io/d2vm/ and https://d2vm.linka.cloud (docs/CNAME)",
+          "curl PyPI d2vm"
+        ],
+        "sources": [
+          {
+            "finding": "Project docs site built from the repo docs/content with mkdocs; same content as the repository docs.",
+            "url": "https://d2vm.linka.cloud"
+          },
+          {
+            "finding": "HTTP 404: no PyPI project named d2vm.",
+            "url": "https://pypi.org/pypi/d2vm/json"
+          }
+        ],
+        "status": "searched"
+      }
+    },
+    "schema_version": 2,
+    "summary": "d2vm is a Go VM-image builder from linka-cloud with no Python package, wheel or PyPI release and no riscv64 discussion upstream, so a riscv64 wheel contribution is not possible; recommend park.",
+    "tracking_issue_description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b"
+  },
+  "digests": {
+    "artifact": "sha256:2ecf9287b3618404d1ee4275d10270edc9335ae1726c22108bc35288bef68dd0"
+  },
+  "evidence_id": "dossier-luhenry--d2vm--3-r0",
+  "kind": "dossier",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "d2vm is a Go VM-image builder from linka-cloud with no Python package, wheel or PyPI release and no riscv64 discussion upstream, so a riscv64 wheel contribution is not possible; recommend park."
+}

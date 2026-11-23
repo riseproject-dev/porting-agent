@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 name: Dispatcher
-description: Admit at most one controller-selected porting task and request one investigator
+description: Admit at most one controller-selected porting task and request one planner
 on:
   workflow_dispatch:
 imports:
@@ -24,9 +24,9 @@ tools:
 safe-outputs:
   threat-detection: false
   dispatch-workflow:
-    # One current investigator contract. Development queue resets replace stale
+    # One current planner contract. Development queue resets replace stale
     # contracts rather than accumulating workflow versions.
-    workflows: [investigator, worker]
+    workflows: [planner, worker]
     target-ref: ${{ github.event.repository.default_branch }}
     max: 1
 steps:
@@ -93,7 +93,7 @@ policyless ledger or a tool error is a failure, not an empty backlog.
 
 The trusted preparation step read the task the porting controller
 requested in the committed `.state/` and staged at most one task
-(for the `investigator` or `worker` profile) followed by
+(for the `planner` or `worker` profile) followed by
 `{"pool":"default","max_claims":1,"max_dispatches":1}`. Explain the
 staged plan in one short paragraph: the contribution, the task kind and the
 reason it was selected. Do not submit again, choose a winner, dispatch

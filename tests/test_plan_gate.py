@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Missing research cannot become a completed investigator task."""
+"""Missing research cannot become a completed planner task."""
 import copy
 import hashlib
 import json
@@ -14,7 +14,7 @@ from pathlib import Path
 import capacity
 import collect
 import controller
-import dossier_gate
+import plan_gate
 import schemas
 import work
 from common import sha256_text
@@ -25,7 +25,7 @@ REPORT_URL = "https://github.com/riseproject-dev/sw-ecosystem/blob/main/project-
 
 
 def task():
-    return {"task": "investigation", "contribution_id": "example--proj/12", "revision": 1, "expected_head": None,
+    return {"task": "planning", "contribution_id": "example--proj/12", "revision": 1, "expected_head": None,
             "context": {"tracking_issue": {"id": 5000, "number": 12, "url": ISSUE_URL,
                                            "description": "Full original issue body, including user links.",
                                            "description_digest": sha256_text("Full original issue body, including user links.")}}}
@@ -33,7 +33,7 @@ def task():
 
 def proposal():
     return {"schema_version": 1, "contribution_id": "example--proj/12", "expected_revision": 1,
-            "expected_head": None, "ref": "riscv64", "operation": "none", "outcome": "investigation",
+            "expected_head": None, "ref": "riscv64", "operation": "none", "outcome": "planning",
             "progress": "new_causal_evidence", "reconstruction_base": None, "diagnosis": "Completed upstream research."}
 
 
@@ -41,7 +41,7 @@ REPO = "https://github.com/example/proj"
 
 
 def guidelines(paths=(".github/workflows/*", "README.rst")):
-    """The contribution guidelines of a schema version 2 dossier."""
+    """The contribution guidelines of a schema version 2 plan."""
     template = f"{REPO}/blob/main/.github/PULL_REQUEST_TEMPLATE.md"
     contributing = f"{REPO}/blob/main/CONTRIBUTING.md"
     return {
@@ -85,7 +85,7 @@ def guidelines(paths=(".github/workflows/*", "README.rst")):
     }
 
 
-def dossier():
+def plan():
     entry = {"status": "searched", "queries": ["riscv64 all states"],
              "coverage": {"complete": True, "scope": "All matching open and closed discussions reviewed, including all result pages."},
              "sources": [{"url": ISSUE_URL, "finding": "Read the description and all discussion comments."}],
@@ -93,7 +93,7 @@ def dossier():
     d = {"schema_version": 2, "contribution_id": "example--proj/12", "expected_revision": 1,
          "tracking_issue_description_digest": task()["context"]["tracking_issue"]["description_digest"],
          "summary": "Research covers project history, dependencies, documentation and maintainer review decisions.",
-         "research": {category: copy.deepcopy(entry) for category in dossier_gate.RESEARCH_CATEGORIES},
+         "research": {category: copy.deepcopy(entry) for category in plan_gate.RESEARCH_CATEGORIES},
          "history": [], "maintainers": [{"name": "reviewer", "role": "Release maintainer and architecture reviewer", "sources": [ISSUE_URL]}],
          "dependency_graph": {"tool": "project_graph_query", "success": True, "canonical_project": "proj",
                               "query": {"cypher": "MATCH (p) RETURN p"},
@@ -121,166 +121,166 @@ def dossier():
     return d
 
 
-class TestDossierCompleteness(unittest.TestCase):
-    def test_complete_dossier_accepted(self):
-        dossier_gate.validate(dossier(), proposal(), task())
+class TestPlanCompleteness(unittest.TestCase):
+    def test_complete_plan_accepted(self):
+        plan_gate.validate(plan(), proposal(), task())
 
     def test_agent_preflight_cli_is_fail_closed(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            for name, value in (("dossier", dossier()), ("proposal", proposal()), ("task", task())):
+            for name, value in (("plan", plan()), ("proposal", proposal()), ("task", task())):
                 (root / f"{name}.json").write_text(json.dumps(value))
-            command = [sys.executable, "-m", "dossier_gate",
-                       "--dossier", str(root / "dossier.json"), "--proposal", str(root / "proposal.json"),
+            command = [sys.executable, "-m", "plan_gate",
+                       "--plan", str(root / "plan.json"), "--proposal", str(root / "proposal.json"),
                        "--task", str(root / "task.json")]
             self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
-            invalid = dossier(); invalid["history"] = [[ISSUE_URL, "open"]]
-            (root / "dossier.json").write_text(json.dumps(invalid))
+            invalid = plan(); invalid["history"] = [[ISSUE_URL, "open"]]
+            (root / "plan.json").write_text(json.dumps(invalid))
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
     def test_development_decision_requires_bounded_scope_and_park_is_empty(self):
         for path in ("*", "**", "../setup.py", "/tmp/setup.py", ".git/config", "src/**"):
-            d = dossier(); d["proposal"]["allowed_paths"] = [path]
-            with self.assertRaises((dossier_gate.DossierError, schemas.SchemaError), msg=path):
-                dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+            d = plan(); d["proposal"]["allowed_paths"] = [path]
+            with self.assertRaises((plan_gate.PlanError, schemas.SchemaError), msg=path):
+                plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["proposal"].update(decision="park", admission_class=None, allowed_paths=[],
                              rationale="No concrete patch is actionable until a documented external prerequisite is resolved.")
-        dossier_gate.validate(d, proposal(), task())
+        plan_gate.validate(d, proposal(), task())
         d["proposal"]["allowed_paths"] = ["pyproject.toml"]
         with self.assertRaises(schemas.SchemaError):
-            dossier_gate.validate(d, proposal(), task())
+            plan_gate.validate(d, proposal(), task())
 
     def test_a_close_decision_has_no_class_and_no_paths(self):
-        d = dossier()
+        d = plan()
         d["proposal"].update(decision="close", admission_class=None, allowed_paths=[],
                              rationale="The latest release 2.4.1 publishes a manylinux riscv64 wheel on PyPI.")
-        dossier_gate.validate(d, proposal(), task())
+        plan_gate.validate(d, proposal(), task())
         for change in ({"admission_class": "configuration_integration"},
                        {"allowed_paths": ["pyproject.toml"]}):
             with self.subTest(change=change), self.assertRaises(schemas.SchemaError):
-                dossier_gate.validate(dict(d, proposal=dict(d["proposal"], **change)),
+                plan_gate.validate(dict(d, proposal=dict(d["proposal"], **change)),
                                       proposal(), task())
 
     def test_allowed_paths_cover_every_researched_riscv64_path(self):
-        d = dossier()
+        d = plan()
         d["proposal"]["allowed_paths"] = [".github/workflows/wheels.yml", "README.rst"]
-        with self.assertRaisesRegex(dossier_gate.DossierError, "omit researched"):
-            dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+        with self.assertRaisesRegex(plan_gate.PlanError, "omit researched"):
+            plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["proposal"]["path_coverage"][1]["area"] = "build"
-        with self.assertRaisesRegex(dossier_gate.DossierError, "each required area"):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "each required area"):
+            plan_gate.validate(d, proposal(), task())
 
     def test_the_contribution_guidelines_are_required(self):
-        d = dossier()
+        d = plan()
         del d["contribution_guidelines"]
         with self.assertRaises(schemas.SchemaError):
-            dossier_gate.validate(d, proposal(), task())
+            plan_gate.validate(d, proposal(), task())
         d["schema_version"] = 1
-        with self.assertRaisesRegex(dossier_gate.DossierError, "schema version 2"):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "schema version 2"):
+            plan_gate.validate(d, proposal(), task())
         for section in ("pull_request_template", "contributing", "commit_conventions", "reviewers"):
-            d = dossier()
+            d = plan()
             del d["contribution_guidelines"][section]
             with self.assertRaises(schemas.SchemaError, msg=section):
-                dossier_gate.validate(d, proposal(), task())
+                plan_gate.validate(d, proposal(), task())
 
     def test_none_found_needs_the_record_of_the_search(self):
-        d = dossier()
+        d = plan()
         g = d["contribution_guidelines"]
         g["pull_request_template"].update(status="none_found", templates=[])
         g["contributing"].update(status="none_found", documents=[], instructions=[])
-        dossier_gate.validate(d, proposal(), task())
+        plan_gate.validate(d, proposal(), task())
         for section, missing in (("pull_request_template", "docs/pull_request_template.md"),
                                  ("contributing", "DEVELOPMENT.md")):
             bad = copy.deepcopy(d)
             bad["contribution_guidelines"][section]["searched"].remove(missing)
-            with self.assertRaisesRegex(dossier_gate.DossierError, "does not cover", msg=section):
-                dossier_gate.validate(bad, proposal(), task())
+            with self.assertRaisesRegex(plan_gate.PlanError, "does not cover", msg=section):
+                plan_gate.validate(bad, proposal(), task())
         bad = copy.deepcopy(d)
         bad["contribution_guidelines"]["pull_request_template"]["status"] = "found"
-        with self.assertRaisesRegex(dossier_gate.DossierError, "found template"):
-            dossier_gate.validate(bad, proposal(), task())
-        d = dossier()
+        with self.assertRaisesRegex(plan_gate.PlanError, "found template"):
+            plan_gate.validate(bad, proposal(), task())
+        d = plan()
         for entry in d["contribution_guidelines"]["reviewers"]["paths"]:
             entry["reviewers"] = []
-        with self.assertRaisesRegex(dossier_gate.DossierError, "only when found"):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "only when found"):
+            plan_gate.validate(d, proposal(), task())
         d["contribution_guidelines"]["reviewers"]["status"] = "none_found"
-        dossier_gate.validate(d, proposal(), task())
+        plan_gate.validate(d, proposal(), task())
 
     def test_found_documents_are_cited_and_rules_are_measurable(self):
-        d = dossier()
+        d = plan()
         d["contribution_guidelines"]["pull_request_template"]["templates"][0]["url"] = REPO + "/x"
-        with self.assertRaisesRegex(dossier_gate.DossierError, "not cited"):
-            dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+        with self.assertRaisesRegex(plan_gate.PlanError, "not cited"):
+            plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["contribution_guidelines"]["commit_conventions"]["rules"].update(
             title_prefix_required=True, title_prefixes=[])
-        with self.assertRaisesRegex(dossier_gate.DossierError, "commit_conventions"):
-            dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+        with self.assertRaisesRegex(plan_gate.PlanError, "commit_conventions"):
+            plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["contribution_guidelines"]["commit_conventions"]["title_lengths"]["median"] = 99
-        with self.assertRaisesRegex(dossier_gate.DossierError, "not ordered"):
-            dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+        with self.assertRaisesRegex(plan_gate.PlanError, "not ordered"):
+            plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["contribution_guidelines"]["commit_conventions"]["rules"]["title_max_length"] = 5
         with self.assertRaises(schemas.SchemaError):
-            dossier_gate.validate(d, proposal(), task())
+            plan_gate.validate(d, proposal(), task())
 
     def test_every_changed_path_has_reviewer_research(self):
-        d = dossier()
+        d = plan()
         d["contribution_guidelines"]["reviewers"]["paths"].pop()
-        with self.assertRaisesRegex(dossier_gate.DossierError, "README.rst"):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaisesRegex(plan_gate.PlanError, "README.rst"):
+            plan_gate.validate(d, proposal(), task())
 
     def test_every_category_is_required(self):
-        for category in dossier_gate.RESEARCH_CATEGORIES:
-            d = dossier()
+        for category in plan_gate.RESEARCH_CATEGORIES:
+            d = plan()
             del d["research"][category]
             with self.assertRaises(schemas.SchemaError, msg=category):
-                dossier_gate.validate(d, proposal(), task())
+                plan_gate.validate(d, proposal(), task())
 
     def test_inaccessible_partial_or_unsupported_research_rejected(self):
         for update in ({"status": "unavailable"}, {"sources": []}, {"queries": []},
                        {"coverage": {"complete": False, "scope": "Only the first search page was read."}}):
-            d = dossier()
+            d = plan()
             d["research"]["upstream_pull_requests"].update(update)
             with self.assertRaises(schemas.SchemaError):
-                dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+                plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["research"]["upstream_issues"].update(status="not_applicable", justification="Did not attempt an upstream issue search for this project.")
-        with self.assertRaises(dossier_gate.DossierError):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaises(plan_gate.PlanError):
+            plan_gate.validate(d, proposal(), task())
 
     def test_missing_graph_or_unused_report_rejected(self):
-        d = dossier()
+        d = plan()
         del d["dependency_graph"]
         with self.assertRaises(schemas.SchemaError):
-            dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+            plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["research"]["ecosystem_report"]["sources"][0]["url"] = ISSUE_URL
-        with self.assertRaises(dossier_gate.DossierError):
-            dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+        with self.assertRaises(plan_gate.PlanError):
+            plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["ecosystem_report"] = {"status": "absent"}
-        with self.assertRaises(dossier_gate.DossierError):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaises(plan_gate.PlanError):
+            plan_gate.validate(d, proposal(), task())
         d["research"]["ecosystem_report"].update(status="not_applicable", justification="Searched report index, canonical name, repository and synonyms; no report exists.")
-        dossier_gate.validate(d, proposal(), task())
+        plan_gate.validate(d, proposal(), task())
 
     def test_stale_issue_and_task_identity_rejected(self):
         for field, value in (("expected_revision", 0), ("contribution_id", "other/12"),
                              ("tracking_issue_description_digest", "0" * 64)):
-            d = dossier()
+            d = plan()
             d[field] = value
-            with self.assertRaises(dossier_gate.DossierError):
-                dossier_gate.validate(d, proposal(), task())
-        d = dossier()
+            with self.assertRaises(plan_gate.PlanError):
+                plan_gate.validate(d, proposal(), task())
+        d = plan()
         d["research"]["tracking_issue"]["sources"][0]["url"] = REPORT_URL
-        with self.assertRaises(dossier_gate.DossierError):
-            dossier_gate.validate(d, proposal(), task())
+        with self.assertRaises(plan_gate.PlanError):
+            plan_gate.validate(d, proposal(), task())
 
     def test_exact_claim_staging_and_cancellation(self):
         assignment = {"version": 3, "dispatch_id": "d1", "claims": [{"claim_id": "c1", "work_id": "w1", "handle": "h1", "work": task()}]}
@@ -291,26 +291,26 @@ class TestDossierCompleteness(unittest.TestCase):
             root = Path(tmp)
             stage = root / "claims" / ns / "porting-out"
             stage.mkdir(parents=True)
-            (stage / "dossier.json").write_text(json.dumps(dossier()))
+            (stage / "plan.json").write_text(json.dumps(plan()))
             (stage / "proposal.json").write_text(json.dumps(proposal()))
             finish = root / "work-queue.finish.jsonl"
             finish.write_text(json.dumps({"version": 3, "kind": "finish", "claim_handle": "h1", "parameters": {"outcome": "completed"}}))
-            self.assertIn("eligible", dossier_gate.check_stage(assignment, root, root))
-            (stage / "dossier.json").unlink()
-            with self.assertRaises(dossier_gate.DossierError):
-                dossier_gate.check_stage(assignment, root, root)
+            self.assertIn("eligible", plan_gate.check_stage(assignment, root, root))
+            (stage / "plan.json").unlink()
+            with self.assertRaises(plan_gate.PlanError):
+                plan_gate.check_stage(assignment, root, root)
             finish.write_text(json.dumps({"version": 3, "kind": "finish", "claim_handle": "h1", "parameters": {"outcome": "cancelled"}}))
-            self.assertIn("cancelled", dossier_gate.check_stage(assignment, root, root))
+            self.assertIn("cancelled", plan_gate.check_stage(assignment, root, root))
             finish.write_text(finish.read_text() + "\n" + json.dumps({"version": 3, "kind": "finish", "claim_handle": "h1", "parameters": {"outcome": "completed"}}))
-            with self.assertRaises(dossier_gate.DossierError):
-                dossier_gate.check_stage(assignment, root, root)
+            with self.assertRaises(plan_gate.PlanError):
+                plan_gate.check_stage(assignment, root, root)
 
     def test_symlinked_inputs_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "link").symlink_to(root, target_is_directory=True)
-            with self.assertRaises(dossier_gate.DossierError):
-                dossier_gate._read(root, Path("link/anything.json"))
+            with self.assertRaises(plan_gate.PlanError):
+                plan_gate._read(root, Path("link/anything.json"))
 
 
 class TestImmutableTrackingIssue(unittest.TestCase):
@@ -335,11 +335,11 @@ class TestImmutableTrackingIssue(unittest.TestCase):
                              context={"reason_evidence": [{"evidence_id": "ci-1", "kind": "ci"}]})
         self.assertFalse(complete["payload"]["legacy_scope_extension"])
 
-    def test_refresh_investigation_freezes_reason_and_existing_pr(self):
-        rec = contribution(phase="investigation", activity="agent_running")
+    def test_refresh_planning_freezes_reason_and_existing_pr(self):
+        rec = contribution(phase="planning", activity="agent_running")
         rec["refresh"] = {"command_id": "comment-9", "reason": "audit dependencies",
                           "from_phase": "development", "head_sha": SHA_A, "pr_number": 1}
-        rec["active_work"] = {"task": "investigation", "reason_ids": [],
+        rec["active_work"] = {"task": "planning", "reason_ids": [],
                               "requested_at": NOW, "revision": rec["revision"],
                               "dedupe_key": "refresh", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
         node = work.node(work.request_from_active(rec), rec, control_repo_id="7", allowed_paths=[])
@@ -349,7 +349,7 @@ class TestImmutableTrackingIssue(unittest.TestCase):
 
     def test_full_description_url_and_links_frozen_into_work(self):
         body = "### Additional context\n\nhttps://github.com/example/proj/pull/31488\n" + "user context\n" * 500
-        rec = contribution(phase="investigation", activity="idle")
+        rec = contribution(phase="planning", activity="idle")
         issue = {"id": 5000, "number": 12, "body": body}
         result = controller.tick(contributions={"c": rec}, operations={}, consumed={}, projects={}, policy=policy(read_only=False),
                                  inputs=controller.Inputs(now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True),
@@ -380,7 +380,7 @@ class TestCloseConfirmation(unittest.TestCase):
     RISCV = "proj-2.4.1-cp312-cp312-manylinux_2_39_riscv64.whl"
 
     def confirm(self, documents, names=("proj",)):
-        return dossier_gate.close_confirmation(list(names), documents)
+        return plan_gate.close_confirmation(list(names), documents)
 
     def test_a_riscv64_wheel_confirms_already_released(self):
         for wheel in (self.RISCV, "proj-2.4.1-cp312-cp312-musllinux_1_2_riscv64.whl",

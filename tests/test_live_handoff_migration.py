@@ -19,7 +19,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -423,7 +423,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual(self.events(output), ["resume_pause"])
         self.assertEqual((engine.state_key(resumed), resumed["paused"], resumed["revision"]),
                          ("handoff.awaiting_submission", False, 7))
-        for name in ("fork", "handoff_request", "last_ci_evidence_id", "dossier_evidence_id",
+        for name in ("fork", "handoff_request", "last_ci_evidence_id", "plan_evidence_id",
                      "pending_human_action", "budget"):
             self.assertEqual(resumed[name], record[name], name)
 
@@ -438,7 +438,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         output = self.tick(record, comments=[comment('/upstreaming refresh revision=6 reason="new base"')])
         refreshed = next(r for kind, r in output.staged
                          if kind == "contributions" and r["refresh"])
-        self.assertIn("refresh_investigation", self.events(output))
+        self.assertIn("refresh_planning", self.events(output))
         self.assertEqual(refreshed["refresh"],
                          {"command_id": "comment-900", "reason": "new base", "from_phase": "handoff",
                           "head_sha": HEAD, "pr_number": 2})
@@ -466,7 +466,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual(after["fork"], FORK)
         self.assertEqual((after["handoff_request"], after["pending_human_action"],
                           after["clean_head_sha"]), (None, None, None))
-        self.assertEqual(after["dossier_evidence_id"], record["dossier_evidence_id"])
+        self.assertEqual(after["plan_evidence_id"], record["plan_evidence_id"])
         # The row records the evidence of the failure, and no feedback.
         self.assertEqual(after["last_ci_evidence_id"], CI_EVIDENCE)
         self.assertEqual(after["pending_feedback_evidence_ids"], [])
@@ -622,10 +622,7 @@ class TestRealStateDryRun(unittest.TestCase):
         if not path.exists():
             self.skipTest("no committed live record")
         record = json.loads(path.read_text())
-        after = record
-        if state.needs_field_migration(record):
-            after, _event = state.migrate_record_fields(
-                record, now=datetime.now(timezone.utc).isoformat())
+        after = state.migrated_view("contributions", record)
         self.assertIsNone(engine.state_problem(after))
         self.assertEqual((engine.state_key(after), after["revision"], after["fork"]),
                          (engine.state_key(record), record["revision"], record["fork"]))

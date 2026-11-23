@@ -18,7 +18,7 @@ import submission
 import work
 from tests.helpers import commit_files, git, init_repo
 from tests.test_commit_rules import RULES
-from tests.test_dossier_gate import dossier
+from tests.test_plan_gate import plan
 
 SECTIONS = ["Summary", "Testing"]
 APP_SIGNOFF = "Signed-off-by: " + commit_rules.APP_IDENTITY
@@ -338,14 +338,14 @@ class TestCheck(unittest.TestCase):
         out = self.check(b"From " + b"0" * 40 + b" Mon Sep 17 00:00:00 2001\nnot a patch\n")
         self.assertEqual(out["verdict"], "fail")
 
-    def test_a_legacy_dossier_applies_the_rules_the_review_found(self):
+    def test_a_legacy_plan_applies_the_rules_the_review_found(self):
         mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
         out = self.check(mbox, commit_rules=dict(RULES, max_commits=None),
                          template_sections=["Checklist"])
         self.assertEqual(out["verdict"], "fail")
         self.assertTrue(any("none of the prefixes" in r for r in out["reasons"]))
         self.assertTrue(any("'Checklist'" in r for r in out["reasons"]))
-        # The dossier's rules, when it records them, are the ones applied.
+        # The plan's rules, when it records them, are the ones applied.
         out = self.check(mbox, self.task(commit_rules=commit_rules.normalize({}),
                                          template_sections=[]),
                          commit_rules=dict(RULES, max_commits=None), template_sections=["x"])
@@ -415,9 +415,9 @@ class TestReviewWork(unittest.TestCase):
                              ["upload_artifact"])
 
     def test_the_review_carries_the_rules_and_the_sections(self):
-        data = dossier()
-        self.assertEqual(commit_rules.sections_from_dossier(data), SECTIONS)
-        self.assertEqual(commit_rules.from_dossier(data)["title_max_length"], 72)
+        data = plan()
+        self.assertEqual(commit_rules.sections_from_plan(data), SECTIONS)
+        self.assertEqual(commit_rules.from_plan(data)["title_max_length"], 72)
 
     def test_the_table_rows_of_the_rewrite_and_the_review(self):
         accept = lc.find_edge("handoff.agent_running", "accept_submission_rewrite")

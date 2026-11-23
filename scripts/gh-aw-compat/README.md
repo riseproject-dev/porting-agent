@@ -1,6 +1,6 @@
 # Native artifact compatibility patch for gh-aw v1.2.2
 
-Approved by the operator after investigator run 44415024119 failed native
+Approved by the operator after planner run 44415024119 failed native
 artifact delivery. Base source: github/gh-aw tag v1.2.2, commit
 `399a445fe2d8926c616b54b1b82a16b5b2be4445`.
 
@@ -36,7 +36,7 @@ No credentials, scheduler changes, generic artifact fallback, or direct pushes.
 
 ## Installation
 
-The worker and investigator use `jobs.safe_outputs.pre-steps`, a supported
+The worker and planner use `jobs.safe_outputs.pre-steps`, a supported
 compiler hook, immediately after runtime setup and before artifact downloads
 or handler loading. They check out trusted code at `github.sha` with no persisted
 credentials and run `scripts/gh_aw_compat.py` against the flat runtime modules.

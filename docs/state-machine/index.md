@@ -17,7 +17,7 @@ The contribution lifecycle is defined by one table in `lifecycle.py`. That table
 - every transition that allocates Work charges `work_total`, and every charged budget has a `policy.json` key and an exhaustion transition;
 - exhaustion of an infrastructure budget leads to a human wait of the same phase, and nothing ends the generation from `upstream_review` without a command;
 - the revision is bumped by every resume and by every transition that invalidates requested or approved work, and by no other transition;
-- `resume_stale` and the other resumes of the same states carry complementary guards, so exactly one applies, and `resume_stale` requires the quiescence of `refresh_investigation`;
+- `resume_stale` and the other resumes of the same states carry complementary guards, so exactly one applies, and `resume_stale` requires the quiescence of `refresh_planning`;
 - the resumes of one human wait are guarded by `pending_human_action` so that exactly one applies for every pending action with which the wait is entered;
 - every budget exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, every resume from that wait starts exactly that counter again, and no other transition starts a counter again;
 - every state of kind `gate`, `human_wait`, or `locked` has a reminder from the rule, and a late Result is recorded in every state without changing it;
@@ -40,17 +40,17 @@ A state is `phase.activity`. Each arrow is a transition verb of the table, label
 
 ## Simplified state diagram
 
-This is the expected path when investigation finds useful work, provisioning succeeds, development CI becomes green, upstream accepts the contribution, and an official release publishes the required artifacts.
+This is the expected path when planning finds useful work, provisioning succeeds, development CI becomes green, upstream accepts the contribution, and an official release publishes the required artifacts.
 
 ```mermaid
 flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
@@ -94,15 +94,15 @@ flowchart TB
     end
 
     start_1(( )) -->|accept_request| queued_idle
-    queued_idle -->|begin_investigation| investigation_idle
+    queued_idle -->|begin_planning| planning_idle
     queued_idle -->|withdraw_request| closed_idle
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running -->|reject_dossier| investigation_idle
-    investigation_agent_running -->|exhaust_investigation_recovery| investigation_waiting_human
-    investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
-    investigation_agent_running -->|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation| parked_idle
-    investigation_agent_running -->|close_investigation| closed_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    planning_agent_running -->|reject_plan| planning_idle
+    planning_agent_running -->|exhaust_planning_recovery| planning_waiting_human
+    planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    planning_agent_running -->|admit_development| provisioning_idle
+    planning_agent_running -->|park_planning| parked_idle
+    planning_agent_running -->|close_planning| closed_idle
     provisioning_idle -->|require_provisioning_intervention| provisioning_waiting_human
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
     provisioning_idle -->|confirm_provisioning| development_fix_needed
@@ -154,17 +154,17 @@ flowchart TB
 
 On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and linked from the event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
 
-## Investigation and provisioning failure cases
+## Planning and provisioning failure cases
 
-Investigation and provisioning fail in different ways, and each case has its own recovery path. An infrastructure failure that exhausts its retries waits for a human in the same phase; it never ends the generation.
+Planning and provisioning fail in different ways, and each case has its own recovery path. An infrastructure failure that exhausts its retries waits for a human in the same phase; it never ends the generation.
 
-### Failure case 1: investigation finds no development path
+### Failure case 1: planning finds no development path
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
@@ -179,63 +179,63 @@ flowchart TB
         closed_idle["closed.idle"]
     end
 
-    start_1(( )) --> investigation_idle
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running -->|admit_development| provisioning_idle
-    investigation_agent_running -->|park_investigation| parked_idle
-    investigation_agent_running -->|close_investigation| closed_idle
+    start_1(( )) --> planning_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    planning_agent_running -->|admit_development| provisioning_idle
+    planning_agent_running -->|park_planning| parked_idle
+    planning_agent_running -->|close_planning| closed_idle
     parked_idle -->|restart_generation<br/>/upstreaming resume| queued_idle
     parked_idle -->|abandon<br/>/upstreaming abandon| closed_idle
     closed_idle --> end_2(( ))
 ```
 
-The verified dossier decides between development, park, and close; a close is confirmed from PyPI by the reconciler. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs the complete investigation.
+The verified plan decides between development, park, and close; a close is confirmed from PyPI by the reconciler. `closed` is the single terminal phase for work that is not needed; the reason is `terminal_reason`. A restart may record an `admission_override`; the new generation still runs complete planning.
 
-### Failure case 2: the Result has no usable dossier
+### Failure case 2: the Result has no usable plan
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
     subgraph provisioning["provisioning"]
         provisioning_idle["provisioning.idle"]
     end
 
-    start_1(( )) --> investigation_idle
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running -->|reject_dossier| investigation_idle
-    investigation_agent_running -->|exhaust_investigation_recovery| investigation_waiting_human
-    investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
-    investigation_agent_running -->|admit_development| provisioning_idle
+    start_1(( )) --> planning_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    planning_agent_running -->|reject_plan| planning_idle
+    planning_agent_running -->|exhaust_planning_recovery| planning_waiting_human
+    planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    planning_agent_running -->|admit_development| provisioning_idle
 ```
 
-`reject_dossier` retries automatically while `investigation_attempts` remains; a Result without a dossier counts like an invalid one. An incomplete artifact is never adopted by hand.
+`reject_plan` retries automatically while `planning_attempts` remains; a Result without a plan counts like an invalid one. An incomplete artifact is never adopted by hand.
 
-### Failure case 3: the investigator or dispatcher has an infrastructure failure
+### Failure case 3: the planner or dispatcher has an infrastructure failure
 
 ```mermaid
 flowchart TB
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
-        investigation_waiting_human["investigation.waiting_human"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+        planning_waiting_human["planning.waiting_human"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
     end
 
-    start_1(( )) --> investigation_idle
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running -->|retry_dispatch| investigation_agent_running
-    investigation_agent_running -->|allocate_work_retry| investigation_agent_running
-    investigation_agent_running -->|exhaust_dispatch_recovery| investigation_waiting_human
-    investigation_agent_running -->|exhaust_work_recovery| investigation_waiting_human
-    investigation_idle -->|exhaust_work_total| investigation_waiting_human
-    investigation_waiting_human -->|resume_investigation<br/>/upstreaming resume| investigation_idle
-    investigation_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
+    start_1(( )) --> planning_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    planning_agent_running -->|retry_dispatch| planning_agent_running
+    planning_agent_running -->|allocate_work_retry| planning_agent_running
+    planning_agent_running -->|exhaust_dispatch_recovery| planning_waiting_human
+    planning_agent_running -->|exhaust_work_recovery| planning_waiting_human
+    planning_idle -->|exhaust_work_total| planning_waiting_human
+    planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
+    planning_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
 Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal Work graph is never submitted again under the same identity. Every Work allocation also charges `work_total`.
@@ -379,9 +379,9 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_idle["investigation.idle"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
     end
     subgraph parked["parked"]
         parked_idle["parked.idle"]
@@ -390,13 +390,13 @@ flowchart TB
     start_1(( )) --> development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
     development_fix_needed -->|refresh_on_exhaustion| queued_idle
-    queued_idle -->|begin_investigation| investigation_idle
-    investigation_idle -->|dispatch_investigation| investigation_agent_running
-    investigation_agent_running -->|readmit_development| development_fix_needed
+    queued_idle -->|begin_planning| planning_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    planning_agent_running -->|readmit_development| development_fix_needed
     development_fix_needed -->|exhaust_repair_attempts| parked_idle
 ```
 
-Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs a complete investigation again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains. `repair_attempts_cluster` counts only while a failing CI job is recorded for the head.
+Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs complete planning again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains. `repair_attempts_cluster` counts only while a failing CI job is recorded for the head.
 
 ### Failure case 5: the Work budget is exhausted
 
@@ -420,7 +420,7 @@ flowchart TB
 
 When `work_total` is exhausted at `development.fix_needed`, `exhaust_work_total` waits for a human and names `work_total` in `pending_human_action.counter`, whatever the repair budgets hold. The reply states the number of Work allocations spent in this generation and names both `/upstreaming resume` and `/upstreaming park`. One resume starts `work_total` again and returns to `development.fix_needed`; the repair budgets are not started again.
 
-### Failure case 6: development must be re-investigated
+### Failure case 6: development must be re-planned
 
 ```mermaid
 flowchart TB
@@ -432,17 +432,17 @@ flowchart TB
     subgraph queued["queued"]
         queued_idle["queued.idle"]
     end
-    subgraph investigation["investigation"]
-        investigation_agent_running["investigation.agent_running"]
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
     end
 
-    development_waiting_ci -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
-    development_fix_needed -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
-    development_waiting_human -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
-    investigation_agent_running -->|readmit_development| development_fix_needed
+    development_waiting_ci -->|refresh_planning<br/>/upstreaming refresh| queued_idle
+    development_fix_needed -->|refresh_planning<br/>/upstreaming refresh| queued_idle
+    development_waiting_human -->|refresh_planning<br/>/upstreaming refresh| queued_idle
+    planning_agent_running -->|readmit_development| development_fix_needed
 ```
 
-`refresh` runs a complete investigation without deleting the fork or development PR. A refreshed dossier that decides to develop returns to `development.fix_needed` on the existing fork.
+`refresh` runs complete planning without deleting the fork or development PR. A refreshed plan that decides to develop returns to `development.fix_needed` on the existing fork.
 
 ## Pause, waiting-human, and park cases
 
@@ -483,7 +483,7 @@ flowchart TB
 
 Pause clears the requested Work, so the state in which that Work is due again is entered. A Result that lands during the pause takes `record_late_effect`; after the resume, fresh Work is requested.
 
-### Success case 3: resume after a long stop refreshes the dossier
+### Success case 3: resume after a long stop refreshes the plan
 
 ```mermaid
 flowchart TB
@@ -505,7 +505,7 @@ flowchart TB
     development_waiting_human -->|resume_stale<br/>/upstreaming resume| queued_idle
 ```
 
-In provisioning and development, a pause or human wait longer than `refresh.stale_after_days` days resumes through `resume_stale`, which runs the investigation again. The normal resume verbs carry the complementary guard, so exactly one applies. Handoff, upstream review, and release waits are never refreshed automatically.
+In provisioning and development, a pause or human wait longer than `refresh.stale_after_days` days resumes through `resume_stale`, which runs the planning again. The normal resume verbs carry the complementary guard, so exactly one applies. Handoff, upstream review, and release waits are never refreshed automatically.
 
 ### Failure case 1: waiting for operator action or an external prerequisite
 
@@ -595,7 +595,7 @@ flowchart TB
     handoff_waiting_upstream_pr -->|verify_upstream_pr| upstream_waiting_ci
 ```
 
-`submit-upstream` is the only submission command. The rewrite Work reads the dossier's contribution guidelines and the non-debug commits of the approved `riscv64-dev` series; the project's contributing instructions take precedence over the pipeline's for content and style. It returns the reshaped series and the upstream PR title and description written after the pull request template. Trusted code checks that every commit of the series is valid upstream, that its tree is the tree of the approved series without its debug commits, the attribution trailers, the dossier's measurable commit rules, and the template's required sections. A separate review Work, in a fresh context, reviews exactly that series and text against the reviewers' expectations and blocks on failure. Trusted code then creates `riscv64` from the series, or replaces it under a lease, never while an upstream PR is open from it. The human follows the prefilled link and opens the PR under their own identity; observation verifies it before `upstream_review`. Both human steps are reminded.
+`submit-upstream` is the only submission command. The rewrite Work reads the plan's contribution guidelines and the non-debug commits of the approved `riscv64-dev` series; the project's contributing instructions take precedence over the pipeline's for content and style. It returns the reshaped series and the upstream PR title and description written after the pull request template. Trusted code checks that every commit of the series is valid upstream, that its tree is the tree of the approved series without its debug commits, the attribution trailers, the plan's measurable commit rules, and the template's required sections. A separate review Work, in a fresh context, reviews exactly that series and text against the reviewers' expectations and blocks on failure. Trusted code then creates `riscv64` from the series, or replaces it under a lease, never while an upstream PR is open from it. The human follows the prefilled link and opens the PR under their own identity; observation verifies it before `upstream_review`. Both human steps are reminded.
 
 ### Failure case 1: pre-submission changes versus the locked upstream-PR wait
 
@@ -636,13 +636,13 @@ flowchart TB
     handoff_reviewing -->|reject_submission_review| development_fix_needed
     handoff_building_upstream_branch -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
-    handoff_awaiting_submission -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    handoff_awaiting_submission -->|refresh_planning<br/>/upstreaming refresh| queued_idle
     handoff_waiting_upstream_pr -->|record_audit_observation| handoff_waiting_upstream_pr
     handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
-    handoff_waiting_upstream_pr -->|refresh_investigation<br/>/upstreaming refresh| queued_idle
+    handoff_waiting_upstream_pr -->|refresh_planning<br/>/upstreaming refresh| queued_idle
 ```
 
-Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, or blocking CI on the clean head returns to development; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_investigation` leave it, and none of them changes `riscv64`.
+Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, or blocking CI on the clean head returns to development; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_planning` leave it, and none of them changes `riscv64`.
 
 ### Failure case 2: a handoff step fails repeatedly or needs a human
 
@@ -905,7 +905,7 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming abandon` | `abandon` | `parked.idle` | `closed.idle` |
 | `/upstreaming park` | `park_contribution` | every non-terminal state except `parked.idle`, `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other than `upstream_review.waiting_human` | `parked.idle` |
 | `/upstreaming pause` | `pause` | every non-terminal state | same state |
-| `/upstreaming refresh` | `refresh_investigation` | `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.waiting_upstream_pr` | `queued.idle` |
+| `/upstreaming refresh` | `refresh_planning` | `development.waiting_ci`, `development.fix_needed`, `development.waiting_human`, `handoff.awaiting_submission`, `handoff.waiting_upstream_pr` | `queued.idle` |
 | `/upstreaming resolve-operation` | `resolve_confirmed` | operation `planned`, operation `applying`, operation `uncertain` | operation `confirmed` |
 | `/upstreaming resolve-operation` | `resolve_failed` | operation `planned`, operation `applying`, operation `uncertain` | operation `failed` |
 | `/upstreaming resolve-operation` | `resolve_not_launched` | operation `planned`, operation `applying`, operation `uncertain` | operation `not_launched` |
@@ -914,8 +914,8 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_clean_head_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
-| `/upstreaming resume` | `resume_investigation` | `investigation.waiting_human` | `investigation.idle` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |
+| `/upstreaming resume` | `resume_planning` | `planning.waiting_human` | `planning.idle` |
 | `/upstreaming resume` | `resume_provisioning` | `provisioning.waiting_human` | `provisioning.idle` |
 | `/upstreaming resume` | `resume_release_observation` | `release_wait.waiting_human` | `release_wait.idle` |
 | `/upstreaming resume` | `resume_stale` | every `provisioning.*` and `development.*` state | `queued.idle` |

@@ -86,15 +86,15 @@
             }
           }
         },
-        "evidence_id": "dossier-closeio--ciso8601--1-r2",
-        "kind": "dossier",
+        "evidence_id": "plan-closeio--ciso8601--1-r2",
+        "kind": "plan",
         "limitations": [],
         "reference": {
-          "path": ".state/evidence/dossier-closeio--ciso8601--1-r2.json",
+          "path": ".state/evidence/plan-closeio--ciso8601--1-r2.json",
           "ref": "edf78d27f73fa5cdc2f3779f37f75b53694fe1bb",
           "repository": "riseproject-dev/porting-agent",
           "sha256": "fd87f87ef10226df9927f8e1ad38d7efeba22bc5a372678a1ef0998e5860bd74",
-          "url": "https://raw.githubusercontent.com/riseproject-dev/porting-agent/edf78d27f73fa5cdc2f3779f37f75b53694fe1bb/.state/evidence/dossier-closeio--ciso8601--1-r2.json"
+          "url": "https://raw.githubusercontent.com/riseproject-dev/porting-agent/edf78d27f73fa5cdc2f3779f37f75b53694fe1bb/.state/evidence/plan-closeio--ciso8601--1-r2.json"
         },
         "summary": "develop: add ubuntu-24.04-riscv/riscv64 native row to build-wheels.yml (skip legacy v3.4.1 step there since setup-python lacks riscv64), add riscv64 to pyproject linux archs, CHANGELOG entry. PyPI 2.4.1 has no riscv64 wheel; no deps; precedent is native-runner rows (aarch64, win-arm64); issue #181 open; no sw-ecosystem report."
       }
@@ -147,9 +147,9 @@
   "fork_name": null,
   "fork_repository_id": null,
   "legacy_scope_extension": false,
-  "plan": "Write the smallest patch to the fork's riscv64 branch that makes the upstream project build, test and publish Linux riscv64 wheels through its normal release process, following the nearest existing architecture pattern. The project's own CI must run on the fork: if a job is guarded to the upstream repository (for example `if: github.repository == 'owner/repo'`), lift the guard in a separate {debug} commit. CI must execute natively on `ubuntu-24.04-riscv` and upload the built riscv64 wheel as an artifact. If the project already has such a job, the fix may be only the {debug} commit. Return the proposal and patch series as the artifact.",
+  "instructions": "Write the smallest patch to the fork's riscv64 branch that makes the upstream project build, test and publish Linux riscv64 wheels through its normal release process, following the nearest existing architecture pattern. The project's own CI must run on the fork: if a job is guarded to the upstream repository (for example `if: github.repository == 'owner/repo'`), lift the guard in a separate {debug} commit. CI must execute natively on `ubuntu-24.04-riscv` and upload the built riscv64 wheel as an artifact. If the project already has such a job, the fix may be only the {debug} commit. Return the proposal and patch series as the artifact.",
   "reason_ids": [
-    "dossier-closeio--ciso8601--1-r2"
+    "plan-closeio--ciso8601--1-r2"
   ],
   "ref": "riscv64",
   "resource_scope": {

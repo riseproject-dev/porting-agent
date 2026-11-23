@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Prevent accidental loss of the investigator and CI runtime boundaries."""
+"""Prevent accidental loss of the planner and CI runtime boundaries."""
 from pathlib import Path
 import re
 import unittest
@@ -27,27 +27,27 @@ def run_scripts(value):
 
 
 class TestWorkflowContracts(unittest.TestCase):
-    def test_only_investigator_unsandboxed(self):
-        investigator = source("upstreaming-investigator")
-        self.assertFalse(investigator["strict"])
-        self.assertFalse(investigator["sandbox"]["agent"])
-        self.assertFalse(investigator["safe-outputs"]["threat-detection"])
-        self.assertEqual(investigator["permissions"]["contents"], "read")
-        self.assertNotIn("publish", investigator["jobs"])
-        self.assertEqual(investigator["engine"]["extensions"],
+    def test_only_planner_unsandboxed(self):
+        planner = source("upstreaming-planner")
+        self.assertFalse(planner["strict"])
+        self.assertFalse(planner["sandbox"]["agent"])
+        self.assertFalse(planner["safe-outputs"]["threat-detection"])
+        self.assertEqual(planner["permissions"]["contents"], "read")
+        self.assertNotIn("publish", planner["jobs"])
+        self.assertEqual(planner["engine"]["extensions"],
                          ["npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"])
-        self.assertNotIn("github", investigator["tools"])
-        github = investigator["mcp-servers"]["github-authenticated"]
+        self.assertNotIn("github", planner["tools"])
+        github = planner["mcp-servers"]["github-authenticated"]
         self.assertTrue(github["required"])
         self.assertEqual(github["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "${{ github.token }}")
         self.assertEqual(github["env"]["GITHUB_READ_ONLY"], "1")
         self.assertIn("issue_read", github["allowed"])
         self.assertIn("pull_request_read", github["allowed"])
-        graph = investigator["mcp-servers"]["project-graph"]
+        graph = planner["mcp-servers"]["project-graph"]
         self.assertTrue(graph["required"])
         self.assertEqual(graph["container"], "ghcr.io/riseproject-dev/sw-ecosystem/project-graph-mcp:latest")
         self.assertEqual(graph["allowed"], ["project_graph_query"])
-        current_text = (WF / "upstreaming-investigator.md").read_text()
+        current_text = (WF / "upstreaming-planner.md").read_text()
         self.assertIn("read-only web extension", current_text)
         self.assertIn("Do not use the web extension's anonymous GitHub fetcher", current_text)
         for name in ("upstreaming-worker", "upstreaming-dispatcher"):
@@ -57,7 +57,7 @@ class TestWorkflowContracts(unittest.TestCase):
             self.assertFalse(config.get("features", {}).get("dangerously-disable-sandbox-agent", False))
 
     def test_completeness_gate_precedes_durable_completion(self):
-        lock = yaml.safe_load((WF / "upstreaming-investigator.lock.yml").read_text())
+        lock = yaml.safe_load((WF / "upstreaming-planner.lock.yml").read_text())
         steps = lock["jobs"]["safe_outputs"]["steps"]
         names = [s.get("name") for s in steps]
         self.assertLess(names.index("Require complete research before native queue Completion"),
@@ -69,7 +69,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(set(notify["needs"]), {"safe_outputs", "record"})
         self.assertNotIn("issues", notify["permissions"])
         notify_text = str(notify)
-        self.assertIn("upstreaming.dossier_comment", notify_text)
+        self.assertIn("upstreaming.plan_comment", notify_text)
         self.assertIn("upstreaming-publication", notify_text)
 
     def test_development_pr_writer_is_restricted_to_one_verified_fork(self):
@@ -90,7 +90,7 @@ class TestWorkflowContracts(unittest.TestCase):
 
     def test_native_workers_explicitly_dispatch_controller_after_terminal_jobs(self):
         for profile, needs in (("upstreaming-worker", {"safe_outputs", "publish"}),
-                               ("upstreaming-investigator", {"safe_outputs", "record", "notify"}),
+                               ("upstreaming-planner", {"safe_outputs", "record", "notify"}),
                                ("upstreaming-dispatcher", {"safe_outputs"})):
             config = source(profile)
             job = config["jobs"]["continuation"]
@@ -164,7 +164,7 @@ class TestWorkflowContracts(unittest.TestCase):
         triggers = controller.get("on", controller.get(True))
         self.assertEqual(triggers["schedule"], [{"cron": "*/5 * * * *"}])
         self.assertEqual(set(triggers["workflow_run"]["workflows"]), {
-            "Upstreaming investigator", "Upstreaming worker",
+            "Upstreaming planner", "Upstreaming worker",
             "Upstreaming fork provisioning", "Upstreaming development PR",
             "Upstreaming publish retry"})
         self.assertEqual(triggers["workflow_run"]["types"], ["completed"])
@@ -205,20 +205,20 @@ class TestWorkflowContracts(unittest.TestCase):
         complete_index = reconcile["steps"].index(complete)
         self.assertGreater(complete_index, publish_index)
 
-    def test_worker_fetches_and_verifies_complete_committed_dossier(self):
+    def test_worker_fetches_and_verifies_complete_committed_plan(self):
         worker = source("upstreaming-worker")
         checkout = worker["pre-agent-steps"][1]
         script = checkout["run"]
         self.assertEqual(checkout["env"]["GH_TOKEN"], "${{ github.token }}")
         self.assertIn("upstreaming-state/evidence/", script)
         self.assertIn("application/vnd.github.raw+json", script)
-        self.assertIn("sha256sum /tmp/gh-aw/agent/dossier.json", script)
-        self.assertIn("dossier digest mismatch", script)
-        self.assertIn(".kind == \"dossier\" and .evidence_id == $id", script)
+        self.assertIn("sha256sum /tmp/gh-aw/agent/plan.json", script)
+        self.assertIn("plan digest mismatch", script)
+        self.assertIn(".kind == \"plan\" and .evidence_id == $id", script)
         prompt = (WF / "upstreaming-worker.md").read_text()
-        self.assertIn("identifies the latest verified dossier", prompt)
+        self.assertIn("identifies the latest verified plan", prompt)
         self.assertIn("data` is only its queue-safe index", prompt)
-        self.assertIn("read the latest verified dossier", prompt)
+        self.assertIn("read the latest verified plan", prompt)
 
     def test_worker_brackets_untrusted_output_with_stop_commands(self):
         worker = source("upstreaming-worker")
@@ -235,9 +235,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertNotIn("gh_aw_log_guard", (WF / "upstreaming-worker.md").read_text())
 
     def test_prompts_require_rise_wheels_for_missing_build_and_test_dependencies(self):
-        investigator = (WF / "upstreaming-investigator.md").read_text()
+        planner = (WF / "upstreaming-planner.md").read_text()
         worker = (WF / "upstreaming-worker.md").read_text()
-        for text in (investigator, worker):
+        for text in (planner, worker):
             self.assertIn("PIP_EXTRA_INDEX_URL=https://pypi.riseproject.dev/simple", text)
             self.assertIn("PIP_PREFER_BINARY=true", text)
             self.assertIn("public PyPI", text)
@@ -275,9 +275,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("to that same list", text)
         self.assertIn("Do not introduce", text)
         self.assertIn("Add a dedicated `runs-on: ubuntu-24.04-riscv` row only", text)
-        investigator = (WF / "upstreaming-investigator.md").read_text()
-        self.assertIn("Explicitly classify whether Linux", investigator)
-        self.assertIn("Recommend adding `riscv64` to the", investigator)
+        planner = (WF / "upstreaming-planner.md").read_text()
+        self.assertIn("Explicitly classify whether Linux", planner)
+        self.assertIn("Recommend adding `riscv64` to the", planner)
 
     def test_development_writers_do_not_wait_for_environment_review(self):
         worker = source("upstreaming-worker")
@@ -287,25 +287,25 @@ class TestWorkflowContracts(unittest.TestCase):
             for job in workflow["jobs"].values():
                 self.assertNotIn("environment", job, name)
 
-    def test_dossier_comments_use_the_control_app_identity(self):
-        investigator = source("upstreaming-investigator")
+    def test_plan_comments_use_the_control_app_identity(self):
+        planner = source("upstreaming-planner")
         retry = yaml.safe_load((WF / "upstreaming-publish-retry.yml").read_text())
-        for notify in (investigator["jobs"]["notify"], retry["jobs"]["notify"]):
+        for notify in (planner["jobs"]["notify"], retry["jobs"]["notify"]):
             self.assertNotIn("issues", notify["permissions"])
             token = next(step for step in notify["steps"] if step.get("id") == "comment-token")
             self.assertEqual(token["with"]["owner"], "riseproject-dev")
             self.assertEqual(token["with"]["repositories"], "python-wheels")
             self.assertEqual(token["with"]["permission-issues"], "write")
-            publish = next(step for step in notify["steps"] if "dossier comment" in step.get("name", ""))
+            publish = next(step for step in notify["steps"] if "plan comment" in step.get("name", ""))
             self.assertEqual(publish["env"]["GH_TOKEN"], "${{ steps.comment-token.outputs.token }}")
             self.assertEqual(publish["env"]["UPSTREAMING_COMMENT_AUTHOR"], "riseproject-dev[bot]")
 
-    def test_investigation_retry_also_publishes_verified_comment(self):
+    def test_planning_retry_also_publishes_verified_comment(self):
         retry = yaml.safe_load((WF / "upstreaming-publish-retry.yml").read_text())
         notify = retry["jobs"]["notify"]
         self.assertEqual(notify["needs"], "publish")
         self.assertNotIn("issues", notify["permissions"])
-        self.assertIn("upstreaming.dossier_comment", str(notify))
+        self.assertIn("upstreaming.plan_comment", str(notify))
         self.assertIn("upstreaming-publication", str(notify))
 
     def test_authored_python_ci_invocations_use_uv(self):

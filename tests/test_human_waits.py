@@ -5,7 +5,7 @@
 Multi-tick loops through ``reconcile.tick``: the development human wait that
 ``exhaust_work_total`` and ``exhaust_work_recovery`` enter stays as it is
 under failing, pending, and passing CI, posts nothing again, and is left by
-``resume_development``, ``park_contribution``, or ``refresh_investigation``.
+``resume_development``, ``park_contribution``, or ``refresh_planning``.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ class World:
 
 def failing_record(**fields) -> tuple[dict, dict]:
     record = contribution(activity="fix_needed", last_ci_evidence_id="ci-0",
-                          dossier_evidence_id="dossier-1", scope_paths=["a"],
+                          plan_evidence_id="plan-1", scope_paths=["a"],
                           scope_coverage_complete=True, **fields)
     return record, {"ci-0": ci_record("ci-0", SHA_A, failing=FAILING)}
 
@@ -137,11 +137,11 @@ class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
                            {"development.fix_needed", "development.agent_running"}),
                 "park": ("/upstreaming park reason=done", "park_contribution", {"parked.idle"}),
                 "refresh": ("/upstreaming refresh revision={r} reason=again",
-                            "refresh_investigation",
+                            "refresh_planning",
                             # `work_total` is not started again by a refresh: once
-                            # it is spent, the investigation takes `exhaust_work_total`.
-                            {"queued.idle", "investigation.agent_running",
-                             "investigation.waiting_human"}),
+                            # it is spent, the planning takes `exhaust_work_total`.
+                            {"queued.idle", "planning.agent_running",
+                             "planning.waiting_human"}),
             }
             for name, (body, row, targets) in exits.items():
                 with self.subTest(entered_by=verb, command=name):

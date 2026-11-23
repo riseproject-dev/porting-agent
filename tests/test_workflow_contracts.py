@@ -42,18 +42,18 @@ def run_scripts(value):
 
 
 class TestWorkflowContracts(unittest.TestCase):
-    def test_only_investigator_unsandboxed(self):
-        investigator = source("investigator")
-        self.assertFalse(investigator["strict"])
-        self.assertFalse(investigator["sandbox"]["agent"])
-        self.assertFalse(investigator["safe-outputs"]["threat-detection"])
-        self.assertEqual(investigator["permissions"]["contents"], "read")
-        self.assertNotIn("publish", investigator["jobs"])
+    def test_only_planner_unsandboxed(self):
+        planner = source("planner")
+        self.assertFalse(planner["strict"])
+        self.assertFalse(planner["sandbox"]["agent"])
+        self.assertFalse(planner["safe-outputs"]["threat-detection"])
+        self.assertEqual(planner["permissions"]["contents"], "read")
+        self.assertNotIn("publish", planner["jobs"])
         self.assertEqual(
-            investigator["engine"]["extensions"],
+            planner["engine"]["extensions"],
             ["npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"],
         )
-        github = investigator["mcp-servers"]["github-authenticated"]
+        github = planner["mcp-servers"]["github-authenticated"]
         self.assertTrue(github["required"])
         self.assertEqual(
             github["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "${{ github.token }}"
@@ -61,7 +61,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(github["env"]["GITHUB_READ_ONLY"], "1")
         self.assertIn("issue_read", github["allowed"])
         self.assertIn("pull_request_read", github["allowed"])
-        graph = investigator["mcp-servers"]["project-graph"]
+        graph = planner["mcp-servers"]["project-graph"]
         self.assertTrue(graph["required"])
         self.assertEqual(graph["allowed"], ["project_graph_query"])
         dispatcher = source("dispatcher")
@@ -69,7 +69,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertNotEqual(dispatcher.get("sandbox", {}).get("agent"), False)
 
     def test_completeness_gate_precedes_durable_completion(self):
-        lock = workflow("investigator.lock.yml")
+        lock = workflow("planner.lock.yml")
         steps = lock["jobs"]["safe_outputs"]["steps"]
         names = [step.get("name") for step in steps]
         gate = names.index("Require complete research before native queue Completion")
@@ -79,35 +79,35 @@ class TestWorkflowContracts(unittest.TestCase):
         notify = lock["jobs"]["notify"]
         self.assertEqual(set(notify["needs"]), {"safe_outputs", "record"})
         self.assertNotIn("issues", notify["permissions"])
-        self.assertIn("python -m dossier_comment", str(notify))
+        self.assertIn("python -m plan_comment", str(notify))
         self.assertIn("porting-publication", str(notify))
 
-    def test_dossier_comments_use_the_control_app_identity(self):
-        notify = source("investigator")["jobs"]["notify"]
+    def test_plan_comments_use_the_control_app_identity(self):
+        notify = source("planner")["jobs"]["notify"]
         self.assertNotIn("issues", notify["permissions"])
         token = next(step for step in notify["steps"] if step.get("id") == "comment-token")
         self.assertEqual(token["with"]["owner"], "riseproject-dev")
         self.assertEqual(token["with"]["repositories"], "porting-agent")
         self.assertEqual(token["with"]["permission-issues"], "write")
         publish = next(
-            step for step in notify["steps"] if "dossier comment" in step.get("name", "")
+            step for step in notify["steps"] if "plan comment" in step.get("name", "")
         )
         self.assertEqual(
             publish["env"]["GH_TOKEN"], "${{ steps.comment-token.outputs.token }}"
         )
         self.assertEqual(publish["env"]["PORTING_COMMENT_AUTHOR"], "riseproject-dev[bot]")
 
-    def test_investigation_retry_also_publishes_verified_comment(self):
-        investigator = source("investigator")
-        notify = investigator["jobs"]["notify"]
+    def test_planning_retry_also_publishes_verified_comment(self):
+        planner = source("planner")
+        notify = planner["jobs"]["notify"]
         self.assertEqual(set(notify["needs"]), {"safe_outputs", "record"})
         self.assertEqual(notify["if"], "needs.safe_outputs.outputs.work_queue_outcome == 'completed'")
         self.assertIn("porting-publication", str(notify))
-        self.assertIn("dossier_comment", str(notify))
+        self.assertIn("plan_comment", str(notify))
         self.assertIn("exact-Result marker makes retries idempotent",
-                      (WORKFLOWS / "investigator.md").read_text())
+                      (WORKFLOWS / "planner.md").read_text())
 
-    def test_worker_fetches_and_verifies_complete_committed_dossier(self):
+    def test_worker_fetches_and_verifies_complete_committed_plan(self):
         worker = source("worker")
         checkout = next(
             step
@@ -118,13 +118,13 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(checkout["env"]["GH_TOKEN"], "${{ github.token }}")
         self.assertIn(".state/evidence/", script)
         self.assertIn("application/vnd.github.raw+json", script)
-        self.assertIn("sha256sum /tmp/gh-aw/agent/dossier.json", script)
-        self.assertIn("dossier digest mismatch", script)
-        self.assertIn('.kind == "dossier" and .evidence_id == $id', script)
+        self.assertIn("sha256sum /tmp/gh-aw/agent/plan.json", script)
+        self.assertIn("plan digest mismatch", script)
+        self.assertIn('.kind == "plan" and .evidence_id == $id', script)
         prompt = (WORKFLOWS / "worker.md").read_text()
-        self.assertIn("identifies the latest verified dossier", prompt)
+        self.assertIn("identifies the latest verified plan", prompt)
         self.assertIn("data` is only its queue-safe index", prompt)
-        self.assertIn("read the latest verified dossier", prompt)
+        self.assertIn("read the latest verified plan", prompt)
 
     def test_worker_brackets_untrusted_output_with_stop_commands(self):
         worker = source("worker")
@@ -145,9 +145,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("printf '::%s::", after["run"])
 
     def test_prompts_require_rise_wheels_for_missing_build_and_test_dependencies(self):
-        investigator = (WORKFLOWS / "investigator.md").read_text()
+        planner = (WORKFLOWS / "planner.md").read_text()
         worker = (WORKFLOWS / "worker.md").read_text()
-        for text in (investigator, worker):
+        for text in (planner, worker):
             self.assertIn("PIP_EXTRA_INDEX_URL=https://pypi.riseproject.dev/simple", text)
             self.assertIn("PIP_PREFER_BINARY=true", text)
             self.assertIn("public PyPI", text)
@@ -347,7 +347,7 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_native_workers_explicitly_dispatch_controller_after_terminal_jobs(self):
         expectations = {
             "worker": {"safe_outputs", "publish"},
-            "investigator": {"safe_outputs", "record", "notify"},
+            "planner": {"safe_outputs", "record", "notify"},
             "dispatcher": {"safe_outputs"},
         }
         for profile, needs in expectations.items():
@@ -400,7 +400,7 @@ class TestWorkflowContracts(unittest.TestCase):
         dispatched, and its trusted recovery reads the worker run."""
         text = (WORKFLOWS / "controller.yml").read_text()
         self.assertIn(
-            "for workflow in investigator.lock.yml worker.lock.yml publish-retry.yml", text)
+            "for workflow in planner.lock.yml worker.lock.yml publish-retry.yml", text)
         self.assertIn("filter='&status=completed&branch=main&event=workflow_dispatch'", text)
         self.assertIn('runs?per_page=20$filter"', text)
         self.assertIn('worker_run=$(cat "publications/$run/worker-run-id"', text)
@@ -420,13 +420,13 @@ class TestWorkflowContracts(unittest.TestCase):
                       str(launch))
 
     @unittest.skipUnless(shutil.which("unzip") and shutil.which("jq"), "unzip and jq needed")
-    def test_collector_drops_a_worker_run_id_from_investigator_and_worker_artifacts(self):
+    def test_collector_drops_a_worker_run_id_from_planner_and_worker_artifacts(self):
         """Only a publish-only retry names the worker run it publishes: a
-        `worker-run-id` file in an investigator or worker artifact is
+        `worker-run-id` file in a planner or worker artifact is
         deleted, so the Result is the Result of the run that uploaded it."""
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         script = next(step["run"] for step in steps if str(step.get("name", "")).startswith(
-            "Collect verified investigator, worker, and publish-only retry outcomes"))
+            "Collect verified planner, worker, and publish-only retry outcomes"))
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             bundle = tmp / "artifact.zip"
@@ -467,7 +467,7 @@ class TestWorkflowContracts(unittest.TestCase):
             set(triggers["workflow_run"]["workflows"]),
             {
                 "Dispatcher",
-                "Investigator",
+                "Planner",
                 "Worker",
                 "Reproduction Image",
                 "Fork Provisioning",
@@ -633,8 +633,8 @@ class TestWorkflowContracts(unittest.TestCase):
                 "website.yml",
                 "dispatcher.md",
                 "dispatcher.lock.yml",
-                "investigator.md",
-                "investigator.lock.yml",
+                "planner.md",
+                "planner.lock.yml",
                 "worker.md",
                 "worker.lock.yml",
                 "image.yml",
@@ -648,7 +648,7 @@ class TestWorkflowContracts(unittest.TestCase):
         non_destination = "\n".join(
             (WORKFLOWS / name).read_text()
             for name in (
-                "controller.yml", "dispatcher.md", "investigator.md", "image.yml",
+                "controller.yml", "dispatcher.md", "planner.md", "image.yml",
                 "validate.yml", "website.yml",
             )
         )

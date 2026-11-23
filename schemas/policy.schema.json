@@ -133,7 +133,7 @@
         "max_attempts_per_contribution": {
           "type": "integer"
         },
-        "investigation_attempts": {
+        "planning_attempts": {
           "type": "integer",
           "minimum": 1
         },

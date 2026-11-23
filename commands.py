@@ -45,7 +45,7 @@ GRAMMAR: dict[str, dict[str, str]] = {
     "resume": {"contribution": _ID, "revision": _INT, "reason": _REASON,
                "class": _CLASS, "paths": _PATHS},
     "park": {"contribution": _ID, "revision": _INT, "reason": _REASON},
-    # Re-run investigation on an existing development PR. In
+    # Re-run planning on an existing development PR. In
     # `handoff.waiting_upstream_pr` it names the exact clean head.
     "refresh": {"contribution": _ID, "revision": _INT, "reason": _REASON, "head": _SHA},
     # Only from `parked.idle`; the contribution is then closed.
@@ -87,8 +87,8 @@ RETIRED["block"] = (
     '`/upstreaming pause revision=N reason="..."` records the reason and who set it, and '
     "`/upstreaming resume revision=N reason=\"...\"` ends it")
 RETIRED["approve-scope"] = (
-    "`approve-scope` is retired. The verified investigation dossier decides admission and "
-    "provisioning starts automatically. A contribution parked by its dossier is resumed from "
+    "`approve-scope` is retired. The verified planning plan decides admission and "
+    "provisioning starts automatically. A contribution parked by its plan is resumed from "
     f"`parked.idle` with `{RESUME_FORM}`; `class=` and `paths=` record an admission override")
 RETIRED["provision"] = (
     "`provision` is retired. The fork is provisioned automatically. When provisioning waits "
@@ -102,13 +102,13 @@ RETIRED["clarify"] = (
     "`clarify` is retired. A contribution that waits for a human continues with "
     f"`{RESUME_FORM}` once the cause is corrected")
 RETIRED["revise-scope"] = (
-    "`revise-scope` is retired. A new scope comes from a new investigation: "
+    "`revise-scope` is retired. A new scope comes from a new planning run: "
     f"`{REFRESH_FORM}` keeps the fork and development PR, and a contribution in "
     f"`parked.idle` resumes with `{OVERRIDE_FORM}` to record an admission override")
 
 RETIRED["force-develop"] = (
     "`force-develop` is retired. A contribution in `parked.idle` resumes with an admission "
-    f"override, `{OVERRIDE_FORM}`: a new investigation runs, and a dossier that decides park "
+    f"override, `{OVERRIDE_FORM}`: new planning runs, and a plan that decides park "
     "admits development with the override's class and paths")
 
 # Commands that stop work; processed before everything else in a tick.

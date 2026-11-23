@@ -20,10 +20,10 @@ FORK = "riseproject-upstreaming/proj"
 
 def records(root: Path):
     rec = contribution(phase="development", activity="waiting_ci", revision=2,
-                       dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/build.yml"])
+                       plan_evidence_id="plan-1", scope_paths=[".github/workflows/build.yml"])
     rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
     op = recovery.plan(contribution_id=rec["contribution_id"], revision=2, kind="dev_pr_create",
-                       policy_version="test", reason_ids=["dossier-1", "result-1"],
+                       policy_version="test", reason_ids=["plan-1", "result-1"],
                        target={"repository": FORK, "repository_id": 9, "ref": "riscv64-dev",
                                "expected_head": SHA_B, "base_sha": SHA_C},
                        proposed={"marker": "<!-- development-marker -->", "content_digest": "sha256:x"}, now=NOW)
@@ -92,7 +92,7 @@ class FakeApi:
 class TestDevelopmentPR(unittest.TestCase):
     def test_controller_records_pr_intent_before_launch(self):
         rec = contribution(phase="development", activity="waiting_ci", revision=2,
-                           dossier_evidence_id="dossier-1", scope_paths=[".github/workflows/build.yml"])
+                           plan_evidence_id="plan-1", scope_paths=[".github/workflows/build.yml"])
         rec["fork"] = {"repository_id": 9, "name": FORK, "head_ref": "riscv64-dev", "head_sha": SHA_B, "pr_number": None}
         rec["proposal_artifact"] = {"work_id": "w", "claim_id": "c", "artifact_id": 1, "name": "n",
                                     "run_id": "5", "outcome": "published",

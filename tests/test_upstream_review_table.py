@@ -53,7 +53,7 @@ REVISION_WORK = dict(WORK, task="upstream_revision", dedupe_key="example--proj/1
 
 
 def record(activity="waiting_ci", **fields):
-    rec = contribution(phase="upstream_review", activity=activity, dossier_evidence_id="dossier-1",
+    rec = contribution(phase="upstream_review", activity=activity, plan_evidence_id="plan-1",
                        scope_paths=["a"], scope_coverage_complete=True,
                        upstream_pr=copy.deepcopy(UPSTREAM_PR), **fields)
     schemas.validate("contribution", rec)

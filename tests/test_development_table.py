@@ -57,7 +57,7 @@ HELD = {"worker_run_id": "555", "attempts": 1, "last_reason": "HTTP 502",
 
 
 def record(activity="waiting_ci", **fields):
-    return contribution(activity=activity, dossier_evidence_id="dossier-1", scope_paths=["a"],
+    return contribution(activity=activity, plan_evidence_id="plan-1", scope_paths=["a"],
                         scope_coverage_complete=True, **fields)
 
 
@@ -735,35 +735,35 @@ class TestLateRetryResult(unittest.TestCase):
 
 
 class TestRefreshKeepsFeedback(unittest.TestCase):
-    """Both refresh verbs keep the pending feedback; the investigation that
+    """Both refresh verbs keep the pending feedback; the planning that
     follows carries none, and only patch and revision Work carry it."""
 
-    def assert_investigation_follows(self, refreshed):
+    def assert_planning_follows(self, refreshed):
         self.assertEqual(engine.state_key(refreshed), "queued.idle")
         self.assertEqual(refreshed["pending_feedback_evidence_ids"], ["review-1"])
         out = tick(refreshed, observe=False, now=T + timedelta(minutes=10))
-        self.assertEqual(kinds(out), ["begin_investigation", "dispatch_investigation"])
+        self.assertEqual(kinds(out), ["begin_planning", "dispatch_planning"])
         after = final(out, refreshed)
-        self.assertEqual(after["active_work"]["task"], "investigation")
+        self.assertEqual(after["active_work"]["task"], "planning")
         self.assertEqual(after["active_work"].get("feedback_evidence_ids") or [], [])
         self.assertEqual(after["pending_feedback_evidence_ids"], ["review-1"])
         self.assertNotIn("processing_errors", out.report)
 
-    def test_refresh_on_exhaustion_then_investigation(self):
+    def test_refresh_on_exhaustion_then_planning(self):
         limit = lifecycle.budget_limit("no_progress", POLICY)
         due = record("fix_needed", pending_feedback_evidence_ids=["review-1"],
                      budget=dict(contribution()["budget"], no_progress_streak=limit))
         out = tick(due, observe=False)
         self.assertEqual(kinds(out), ["refresh_on_exhaustion"])
-        self.assert_investigation_follows(final(out, due))
+        self.assert_planning_follows(final(out, due))
 
-    def test_refresh_investigation_then_investigation(self):
+    def test_refresh_planning_then_planning(self):
         waiting = record(pending_feedback_evidence_ids=["review-1"])
         out = apply_command(waiting, commands.parse(
             f'/upstreaming refresh revision={waiting["revision"]} reason="again"'))
         self.assertTrue(out.accepted, out.reason)
-        self.assertEqual(out.event["kind"], "refresh_investigation")
-        self.assert_investigation_follows(out.record)
+        self.assertEqual(out.event["kind"], "refresh_planning")
+        self.assert_planning_follows(out.record)
 
     def test_patch_work_carries_the_pending_feedback(self):
         due = record("fix_needed", pending_feedback_evidence_ids=["review-1"])

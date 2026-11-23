@@ -51,7 +51,7 @@ RULES_BEHIND: tuple[str, ...] = (
     "`upstream_review` automatically.",
     "A Result is reused only while the pipeline ran continuously. Any stop of unknown length "
     "(pause, human wait, park) invalidates it; the next step is fresh Work.",
-    "The dossier is refreshed after a park, and after a pause or human wait longer than 7 days "
+    "The plan is refreshed after a park, and after a pause or human wait longer than 7 days "
     "in provisioning or development. It is never refreshed automatically from "
     "`handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses "
     "`/upstreaming refresh`.",
@@ -140,12 +140,12 @@ DECISIONS: tuple[Item, ...] = (
         "Whether `closed.idle` with `terminal_reason` replaces the separate terminal phases "
         "`no_work`, `deferred`, `abandoned`, and `already_released`.",
         "It does: one `closed.idle` with `terminal_reason`. Existing records are migrated.",
-        ("queued.idle", "investigation.agent_running", "parked.idle", "closed.idle"),
+        ("queued.idle", "planning.agent_running", "parked.idle", "closed.idle"),
         edges=(("queued.idle", "withdraw_request"),
-               ("investigation.agent_running", "close_investigation"),
+               ("planning.agent_running", "close_planning"),
                ("parked.idle", "abandon")),
         highlighted=(("queued.idle", "withdraw_request"),
-                     ("investigation.agent_running", "close_investigation"),
+                     ("planning.agent_running", "close_planning"),
                      ("parked.idle", "abandon")),
     ),
     Item(
@@ -177,18 +177,18 @@ DECISIONS: tuple[Item, ...] = (
                      ("development.fix_needed", "exhaust_repair_attempts")),
     ),
     Item(
-        "Investigation retry budget",
-        "Which budget `reject_dossier` charges.",
-        "A dedicated `investigation_attempts` budget with the key `retries.investigation_attempts` "
-        "(3) and its own counter. A Result without a dossier charges it too instead of going "
-        "straight to `investigation.waiting_human`.",
-        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human"),
-        edges=(("investigation.idle", "dispatch_investigation"),
-               ("investigation.agent_running", "reject_dossier"),
-               ("investigation.agent_running", "exhaust_investigation_recovery"),
-               ("investigation.waiting_human", "resume_investigation")),
-        highlighted=(("investigation.agent_running", "reject_dossier"),
-                     ("investigation.agent_running", "exhaust_investigation_recovery")),
+        "Planning retry budget",
+        "Which budget `reject_plan` charges.",
+        "A dedicated `planning_attempts` budget with the key `retries.planning_attempts` "
+        "(3) and its own counter. A Result without a plan charges it too instead of going "
+        "straight to `planning.waiting_human`.",
+        ("planning.idle", "planning.agent_running", "planning.waiting_human"),
+        edges=(("planning.idle", "dispatch_planning"),
+               ("planning.agent_running", "reject_plan"),
+               ("planning.agent_running", "exhaust_planning_recovery"),
+               ("planning.waiting_human", "resume_planning")),
+        highlighted=(("planning.agent_running", "reject_plan"),
+                     ("planning.agent_running", "exhaust_planning_recovery")),
     ),
     Item(
         "Publication recovery exhaustion and its resume",
@@ -208,7 +208,7 @@ DECISIONS: tuple[Item, ...] = (
         "Dispatch and Work recovery exhaustion targets",
         "Whether dispatch exhaustion and Work exhaustion lead to the same place.",
         "Both wait for a human: `exhaust_work_recovery` leads to the phase's `waiting_human` in "
-        "investigation, development, and upstream review, like `exhaust_dispatch_recovery`. An "
+        "planning, development, and upstream review, like `exhaust_dispatch_recovery`. An "
         "observed development PR that does not match the record takes `record_pr_mismatch` to "
         "`development.waiting_human`.",
         ("development.agent_running", "development.waiting_ci", "development.waiting_human"),
@@ -220,10 +220,10 @@ DECISIONS: tuple[Item, ...] = (
     ),
     Item(
         "Where park and refresh apply",
-        "From which states `park_contribution` and `refresh_investigation` are accepted.",
+        "From which states `park_contribution` and `refresh_planning` are accepted.",
         "`park_contribution` is one rule: every non-terminal state, guarded by no open operation, "
         "except `handoff.waiting_upstream_pr`, `release_wait.*`, and `upstream_review.*` other "
-        "than `upstream_review.waiting_human`. `refresh_investigation` stays explicit: "
+        "than `upstream_review.waiting_human`. `refresh_planning` stays explicit: "
         "`development.fix_needed`, `development.waiting_ci`, "
         "`development.waiting_human`, `handoff.awaiting_submission`, and "
         "`handoff.waiting_upstream_pr`. Both are accepted while paused.",
@@ -231,48 +231,48 @@ DECISIONS: tuple[Item, ...] = (
          "handoff.waiting_upstream_pr", "queued.idle", "parked.idle"),
         edges=(("development.agent_running", "park_contribution"),
                ("development.waiting_ci", "park_contribution"),
-               ("development.waiting_ci", "refresh_investigation"),
+               ("development.waiting_ci", "refresh_planning"),
                ("handoff.awaiting_submission", "park_contribution"),
-               ("handoff.awaiting_submission", "refresh_investigation"),
-               ("handoff.waiting_upstream_pr", "refresh_investigation")),
+               ("handoff.awaiting_submission", "refresh_planning"),
+               ("handoff.waiting_upstream_pr", "refresh_planning")),
         highlighted=(("development.agent_running", "park_contribution"),
-                     ("development.waiting_ci", "refresh_investigation"),
-                     ("handoff.waiting_upstream_pr", "refresh_investigation")),
+                     ("development.waiting_ci", "refresh_planning"),
+                     ("handoff.waiting_upstream_pr", "refresh_planning")),
     ),
     Item(
         "Return path after refresh",
-        "Where a refreshed investigation that decides to develop leads.",
+        "Where a refreshed planning that decides to develop leads.",
         "`readmit_development` leads to `development.fix_needed` on the existing fork. The guard "
         "of `admit_development` is the complement: no refresh recorded, or the recorded fork or "
         "development PR no longer matches.",
-        ("development.fix_needed", "queued.idle", "investigation.agent_running",
+        ("development.fix_needed", "queued.idle", "planning.agent_running",
          "provisioning.idle"),
-        edges=(("development.fix_needed", "refresh_investigation"),
-               ("investigation.agent_running", "admit_development"),
-               ("investigation.agent_running", "readmit_development")),
-        highlighted=(("investigation.agent_running", "admit_development"),
-                     ("investigation.agent_running", "readmit_development")),
+        edges=(("development.fix_needed", "refresh_planning"),
+               ("planning.agent_running", "admit_development"),
+               ("planning.agent_running", "readmit_development")),
+        highlighted=(("planning.agent_running", "admit_development"),
+                     ("planning.agent_running", "readmit_development")),
     ),
     Item(
-        "Park by dossier decision and park by command",
-        "Whether parking from investigation is one verb or two.",
-        "Two verbs. `park_investigation` is the Result transition taken on a dossier decision and "
+        "Park by plan decision and park by command",
+        "Whether parking from planning is one verb or two.",
+        "Two verbs. `park_planning` is the Result transition taken on a plan decision and "
         "no longer carries the `/upstreaming park` label; `park_contribution` is the command.",
-        ("investigation.idle", "investigation.agent_running", "parked.idle"),
-        edges=(("investigation.agent_running", "park_investigation"),
-               ("investigation.agent_running", "park_contribution"),
-               ("investigation.idle", "park_contribution")),
-        highlighted=(("investigation.agent_running", "park_investigation"),),
+        ("planning.idle", "planning.agent_running", "parked.idle"),
+        edges=(("planning.agent_running", "park_planning"),
+               ("planning.agent_running", "park_contribution"),
+               ("planning.idle", "park_contribution")),
+        highlighted=(("planning.agent_running", "park_planning"),),
     ),
     Item(
-        "Beginning the investigation",
-        "Whether `begin_investigation` and `dispatch_investigation` are two writes.",
+        "Beginning the planning",
+        "Whether `begin_planning` and `dispatch_planning` are two writes.",
         "Two transitions, written in two commits.",
-        ("queued.idle", "investigation.idle", "investigation.agent_running"),
-        edges=(("queued.idle", "begin_investigation"),
-               ("investigation.idle", "dispatch_investigation")),
-        highlighted=(("queued.idle", "begin_investigation"),
-                     ("investigation.idle", "dispatch_investigation")),
+        ("queued.idle", "planning.idle", "planning.agent_running"),
+        edges=(("queued.idle", "begin_planning"),
+               ("planning.idle", "dispatch_planning")),
+        highlighted=(("queued.idle", "begin_planning"),
+                     ("planning.idle", "dispatch_planning")),
     ),
     Item(
         "Provisioning failures",
@@ -280,7 +280,7 @@ DECISIONS: tuple[Item, ...] = (
         "commands stay.",
         "`approve-scope` and `provision` are retired. The `provisioning_attempts` budget and "
         "`exhaust_provisioning_attempts` are removed; a human parks explicitly. "
-        "`close_investigation` no longer leaves `provisioning.idle`. Exhausting "
+        "`close_planning` no longer leaves `provisioning.idle`. Exhausting "
         "`operation_launch` waits for a human and does not park.",
         ("provisioning.idle", "provisioning.waiting_human", "development.fix_needed",
          "parked.idle"),
@@ -323,13 +323,13 @@ DECISIONS: tuple[Item, ...] = (
         "from `parked.idle` to `closed.idle` with `terminal_reason=abandoned`. "
         "`/upstreaming resume` from `parked.idle` accepts an optional class, paths, and reason, "
         "stored as `admission_override`; `restart_generation` still runs the complete "
-        "investigation, and `admit_development` accepts a verified dossier decision develop, or "
+        "planning, and `admit_development` accepts a verified plan decision develop, or "
         "a decision park with a recorded override. `authorize-followup` is an intake command outside the table.",
-        ("parked.idle", "closed.idle", "queued.idle", "investigation.agent_running",
+        ("parked.idle", "closed.idle", "queued.idle", "planning.agent_running",
          "provisioning.idle"),
         edges=(("parked.idle", "abandon"),
                ("parked.idle", "restart_generation"),
-               ("investigation.agent_running", "admit_development")),
+               ("planning.agent_running", "admit_development")),
         highlighted=(("parked.idle", "abandon"), ("parked.idle", "restart_generation")),
     ),
     Item(
@@ -369,18 +369,18 @@ DECISIONS: tuple[Item, ...] = (
         "Whether budgets get their own `policy.json` keys.",
         "Keys are split by what is spent. `work_total` reads "
         "`retries.max_attempts_per_contribution`, `work_recovery` reads `retries.work_recovery`, "
-        "`investigation_attempts` reads `retries.investigation_attempts`, and the infrastructure "
+        "`planning_attempts` reads `retries.planning_attempts`, and the infrastructure "
         "budgets share `retries.infrastructure_per_head_failure`. The reminder interval reads "
         "`human_sla_business_days.reminder`. Each Result records its token usage in the events.",
-        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human"),
-        edges=(("investigation.agent_running", "retry_dispatch"),
-               ("investigation.agent_running", "allocate_work_retry"),
-               ("investigation.agent_running", "reject_dossier"),
-               ("investigation.agent_running", "exhaust_dispatch_recovery"),
-               ("investigation.waiting_human", "record_reminder")),
-        highlighted=(("investigation.agent_running", "allocate_work_retry"),
-                     ("investigation.agent_running", "reject_dossier"),
-                     ("investigation.waiting_human", "record_reminder")),
+        ("planning.idle", "planning.agent_running", "planning.waiting_human"),
+        edges=(("planning.agent_running", "retry_dispatch"),
+               ("planning.agent_running", "allocate_work_retry"),
+               ("planning.agent_running", "reject_plan"),
+               ("planning.agent_running", "exhaust_dispatch_recovery"),
+               ("planning.waiting_human", "record_reminder")),
+        highlighted=(("planning.agent_running", "allocate_work_retry"),
+                     ("planning.agent_running", "reject_plan"),
+                     ("planning.waiting_human", "record_reminder")),
     ),
     Item(
         "Flaky CI reruns",
@@ -447,16 +447,16 @@ DECISIONS: tuple[Item, ...] = (
 
 FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
-        "Dossier refresh after a stop",
-        "When a stop of unknown length makes the dossier stale.",
-        "The dossier is refreshed after a park (`restart_generation` always runs the complete "
-        "investigation) and after a pause or human wait longer than `refresh.stale_after_days` "
+        "Plan refresh after a stop",
+        "When a stop of unknown length makes the plan stale.",
+        "The plan is refreshed after a park (`restart_generation` always runs the complete "
+        "planning) and after a pause or human wait longer than `refresh.stale_after_days` "
         "(7) in provisioning or development. There, `resume_stale` (`/upstreaming resume`) leads "
-        "to `queued.idle` with the effects of `refresh_investigation`; the clock is the older of "
+        "to `queued.idle` with the effects of `refresh_planning`; the clock is the older of "
         "`paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry "
         "the complementary guard, so exactly one applies. `resume_stale` also requires that no "
         "Work is requested, no operation is open, and no publication is pending. A pause in "
-        "investigation needs no "
+        "planning needs no "
         "rule because the Work was cleared. Handoff, upstream review, and release waits are "
         "never refreshed automatically; in `handoff.awaiting_submission` and "
         "`handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.",
@@ -477,14 +477,14 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "infrastructure budget leads to a human wait of the same phase and never ends the "
         "generation. The budgets table of the lifecycle table page lists every budget with its "
         "charge, counter, limit, and exhaustion.",
-        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human"),
-        edges=(("investigation.idle", "dispatch_investigation"),
-               ("investigation.idle", "exhaust_work_total"),
-               ("investigation.agent_running", "allocate_work_retry"),
-               ("investigation.agent_running", "exhaust_work_recovery")),
-        highlighted=(("investigation.idle", "dispatch_investigation"),
-                     ("investigation.idle", "exhaust_work_total"),
-                     ("investigation.agent_running", "exhaust_work_recovery")),
+        ("planning.idle", "planning.agent_running", "planning.waiting_human"),
+        edges=(("planning.idle", "dispatch_planning"),
+               ("planning.idle", "exhaust_work_total"),
+               ("planning.agent_running", "allocate_work_retry"),
+               ("planning.agent_running", "exhaust_work_recovery")),
+        highlighted=(("planning.idle", "dispatch_planning"),
+                     ("planning.idle", "exhaust_work_total"),
+                     ("planning.agent_running", "exhaust_work_recovery")),
     ),
     Item(
         "No automatic park from upstream review",
@@ -581,15 +581,15 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
         "Three exits from the locked upstream-PR wait",
         "`handoff.waiting_upstream_pr` was defined as having exactly two exits.",
-        "It has three: `verify_upstream_pr`, `retract_submission`, and `refresh_investigation`, "
+        "It has three: `verify_upstream_pr`, `retract_submission`, and `refresh_planning`, "
         "the last with the guards of `retract_submission` (exact revision, exact clean head, "
         "quiescent). The check enforces the three exits.",
         ("handoff.waiting_upstream_pr", "upstream_review.waiting_ci", "development.fix_needed",
          "queued.idle"),
         edges=(("handoff.waiting_upstream_pr", "verify_upstream_pr"),
                ("handoff.waiting_upstream_pr", "retract_submission"),
-               ("handoff.waiting_upstream_pr", "refresh_investigation")),
-        highlighted=(("handoff.waiting_upstream_pr", "refresh_investigation"),),
+               ("handoff.waiting_upstream_pr", "refresh_planning")),
+        highlighted=(("handoff.waiting_upstream_pr", "refresh_planning"),),
     ),
     Item(
         "An error in one contribution's processing",
@@ -633,7 +633,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "development PR closure, its operation, budget, state, and resume are removed. "
         "`submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` "
         "allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes "
-        "the non-debug commits of the approved series after the dossier's measured commit "
+        "the non-debug commits of the approved series after the plan's measured commit "
         "conventions (squashing or splitting only where the contributing instructions or "
         "reviewers require it) and writes the upstream PR title and description after the pull "
         "request template and contributing instructions, which take precedence over the "
@@ -722,7 +722,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "enters it. `request_repair` applies while a failing CI job is recorded for the head; "
         "`request_patch` applies otherwise. "
         "`development.idle` and its own exhaustion row are removed, also from the states that "
-        "accept `refresh_investigation`.",
+        "accept `refresh_planning`.",
         ("provisioning.idle", "development.fix_needed", "development.agent_running",
          "parked.idle"),
         edges=(("provisioning.idle", "confirm_provisioning"),
@@ -737,16 +737,16 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "State after a pause that clears requested Work",
         "Which state a contribution is in after `pause` cleared its requested Work.",
         "`pause` in an `agent_running` state leads to the state in which the Work is due again: "
-        "`investigation.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. It is "
+        "`planning.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. It is "
         "the one exception to a flag keeping phase and activity, and the description of the "
         "flag states it.",
-        ("investigation.agent_running", "investigation.idle+paused", "development.agent_running",
+        ("planning.agent_running", "planning.idle+paused", "development.agent_running",
          "development.fix_needed+paused", "upstream_review.agent_running",
          "upstream_review.fix_needed+paused"),
-        edges=(("investigation.agent_running", "pause"),
+        edges=(("planning.agent_running", "pause"),
                ("development.agent_running", "pause"),
                ("upstream_review.agent_running", "pause")),
-        highlighted=(("investigation.agent_running", "pause"),
+        highlighted=(("planning.agent_running", "pause"),
                      ("development.agent_running", "pause"),
                      ("upstream_review.agent_running", "pause")),
     ),
@@ -764,7 +764,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "`resume_stale` with an open operation",
-        "Whether `resume_stale` needs quiescence, as `refresh_investigation` does.",
+        "Whether `resume_stale` needs quiescence, as `refresh_planning` does.",
         "It does: `resume_stale` requires that no Work is requested, no operation is open, and "
         "no publication is pending. Until then no resume applies, and the rejection names the "
         "open operation.",
@@ -791,17 +791,17 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "What a resume does to the counter whose exhaustion caused the human wait.",
         "The resume starts again the one counter named in `pending_human_action.counter`, and "
         "no other. The event records the actor, the counter, and its count at that point. It "
-        "was settled for `exhaust_work_total`, `exhaust_investigation_recovery`, and "
+        "was settled for `exhaust_work_total`, `exhaust_planning_recovery`, and "
         "`exhaust_repair_attempts` in upstream review; O14 extends it to every exhaustion that "
         "leads to a human wait.",
-        ("investigation.idle", "investigation.agent_running", "investigation.waiting_human",
+        ("planning.idle", "planning.agent_running", "planning.waiting_human",
          "upstream_review.fix_needed", "upstream_review.waiting_human"),
-        edges=(("investigation.idle", "exhaust_work_total"),
-               ("investigation.agent_running", "exhaust_investigation_recovery"),
-               ("investigation.waiting_human", "resume_investigation"),
+        edges=(("planning.idle", "exhaust_work_total"),
+               ("planning.agent_running", "exhaust_planning_recovery"),
+               ("planning.waiting_human", "resume_planning"),
                ("upstream_review.fix_needed", "exhaust_repair_attempts"),
                ("upstream_review.waiting_human", "resume_upstream_revision")),
-        highlighted=(("investigation.waiting_human", "resume_investigation"),
+        highlighted=(("planning.waiting_human", "resume_planning"),
                      ("upstream_review.waiting_human", "resume_upstream_revision")),
     ),
     Item(
@@ -872,16 +872,16 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "Admission override against a park or close decision",
-        "Which dossier decisions a recorded `admission_override` overrides.",
+        "Which plan decisions a recorded `admission_override` overrides.",
         "A decision park only: with a recorded override, `admit_development` accepts a verified "
-        "dossier that decides park. A verified decision close still takes "
-        "`close_investigation`, and the reply states that the override was not applied.",
-        ("investigation.agent_running", "provisioning.idle", "parked.idle", "closed.idle"),
-        edges=(("investigation.agent_running", "admit_development"),
-               ("investigation.agent_running", "park_investigation"),
-               ("investigation.agent_running", "close_investigation")),
-        highlighted=(("investigation.agent_running", "admit_development"),
-                     ("investigation.agent_running", "close_investigation")),
+        "plan that decides park. A verified decision close still takes "
+        "`close_planning`, and the reply states that the override was not applied.",
+        ("planning.agent_running", "provisioning.idle", "parked.idle", "closed.idle"),
+        edges=(("planning.agent_running", "admit_development"),
+               ("planning.agent_running", "park_planning"),
+               ("planning.agent_running", "close_planning")),
+        highlighted=(("planning.agent_running", "admit_development"),
+                     ("planning.agent_running", "close_planning")),
     ),
     Item(
         "Resume after a reviewer was answered",
@@ -910,13 +910,13 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, "
         "a recorded head change (observed, or read back by a Result), and a rejected Result "
         "after which the same Work is due again. "
-        "Under it `replan_development` bumps and `park_investigation` does not, because a park "
+        "Under it `replan_development` bumps and `park_planning` does not, because a park "
         "is a stop and the restart bumps.",
-        ("investigation.agent_running", "parked.idle", "development.agent_running",
+        ("planning.agent_running", "parked.idle", "development.agent_running",
          "development.fix_needed"),
-        edges=(("investigation.agent_running", "park_investigation"),
+        edges=(("planning.agent_running", "park_planning"),
                ("development.agent_running", "replan_development")),
-        highlighted=(("investigation.agent_running", "park_investigation"),
+        highlighted=(("planning.agent_running", "park_planning"),
                      ("development.agent_running", "replan_development")),
     ),
     Item(
@@ -965,18 +965,18 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`work_total` was the exhausted budget.",
         "It does. When a Work retry cannot be allocated because `work_total` is exhausted, "
         "`exhaust_work_recovery` records `pending_human_action.counter=work_total`, and one "
-        "resume starts it again, in investigation, development, and upstream review. When "
+        "resume starts it again, in planning, development, and upstream review. When "
         "`work_recovery` itself is exhausted, it names `work_recovery`. The slice shows "
-        "investigation and development; in upstream review `resume_upstream_revision` does the "
+        "planning and development; in upstream review `resume_upstream_revision` does the "
         "same.",
-        ("investigation.agent_running", "investigation.waiting_human", "investigation.idle",
+        ("planning.agent_running", "planning.waiting_human", "planning.idle",
          "development.agent_running", "development.waiting_human", "development.fix_needed"),
-        edges=(("investigation.agent_running", "exhaust_work_recovery"),
-               ("investigation.waiting_human", "resume_investigation"),
+        edges=(("planning.agent_running", "exhaust_work_recovery"),
+               ("planning.waiting_human", "resume_planning"),
                ("development.agent_running", "exhaust_work_recovery"),
                ("development.waiting_human", "resume_development")),
-        highlighted=(("investigation.agent_running", "exhaust_work_recovery"),
-                     ("investigation.waiting_human", "resume_investigation"),
+        highlighted=(("planning.agent_running", "exhaust_work_recovery"),
+                     ("planning.waiting_human", "resume_planning"),
                      ("development.agent_running", "exhaust_work_recovery"),
                      ("development.waiting_human", "resume_development")),
     ),
@@ -1140,33 +1140,33 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`admit_development`, so an incomplete patch scope is refused before a fork is "
         "provisioned. No proposal is held without a write to the fork, so a stop clears the "
         "pending publication and nothing is published after it.",
-        ("investigation.agent_running", "provisioning.idle", "development.fix_needed",
+        ("planning.agent_running", "provisioning.idle", "development.fix_needed",
          "development.agent_running", "development.fix_needed+paused"),
-        edges=(("investigation.agent_running", "admit_development"),
+        edges=(("planning.agent_running", "admit_development"),
                ("provisioning.idle", "confirm_provisioning"),
                ("development.fix_needed", "request_patch"),
                ("development.agent_running", "pause")),
-        highlighted=(("investigation.agent_running", "admit_development"),
+        highlighted=(("planning.agent_running", "admit_development"),
                      ("development.fix_needed", "request_patch")),
     ),
     Item(
-        "When an investigation decides close",
-        "When a dossier may decide close, and who confirms it.",
+        "When a planning run decides close",
+        "When a plan may decide close, and who confirms it.",
         "Only when no riscv64 work is needed because PyPI already serves riscv64 for the latest "
         "release of every distribution of the request: a riscv64 wheel, or pure-Python wheels "
-        "only. The reconciler reads PyPI itself before it takes `close_investigation` and sets "
+        "only. The reconciler reads PyPI itself before it takes `close_planning` and sets "
         "`terminal_reason` `already_released` when a riscv64 wheel is published, else "
-        "`no_work`; a close that PyPI does not confirm takes `reject_dossier` within "
-        "`investigation_attempts`. Every other reason to stop is a park, which a human can "
+        "`no_work`; a close that PyPI does not confirm takes `reject_plan` within "
+        "`planning_attempts`. Every other reason to stop is a park, which a human can "
         "resume.",
-        ("investigation.agent_running", "investigation.idle", "investigation.waiting_human",
+        ("planning.agent_running", "planning.idle", "planning.waiting_human",
          "closed.idle"),
-        edges=(("investigation.agent_running", "close_investigation"),
-               ("investigation.agent_running", "reject_dossier"),
-               ("investigation.agent_running", "exhaust_investigation_recovery")),
-        highlighted=(("investigation.agent_running", "close_investigation"),
-                     ("investigation.agent_running", "reject_dossier"),
-                     ("investigation.agent_running", "exhaust_investigation_recovery")),
+        edges=(("planning.agent_running", "close_planning"),
+               ("planning.agent_running", "reject_plan"),
+               ("planning.agent_running", "exhaust_planning_recovery")),
+        highlighted=(("planning.agent_running", "close_planning"),
+                     ("planning.agent_running", "reject_plan"),
+                     ("planning.agent_running", "exhaust_planning_recovery")),
     ),
 )
 

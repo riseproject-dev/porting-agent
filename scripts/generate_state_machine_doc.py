@@ -229,7 +229,7 @@ def render_index() -> str:
         "requested or approved work, and by no other transition;",
         "- `resume_stale` and the other resumes of the same states carry complementary guards, "
         "so exactly one applies, and `resume_stale` requires the quiescence of "
-        "`refresh_investigation`;",
+        "`refresh_planning`;",
         "- the resumes of one human wait are guarded by `pending_human_action` so that exactly "
         "one applies for every pending action with which the wait is entered;",
         "- every budget exhaustion that leads to a human wait names its counter in "

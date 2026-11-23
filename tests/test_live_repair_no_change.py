@@ -47,8 +47,8 @@ R6_KEY = "closeio--ciso8601/1@6:development_repair"
 REASONS = {
     "rehearsal-closeio--ciso8601--1-r3-44982902579": {
         "kind": "rehearsal", "evidence_id": "rehearsal-closeio--ciso8601--1-r3-44982902579"},
-    "dossier-closeio--ciso8601--1-r2": {
-        "kind": "dossier", "evidence_id": "dossier-closeio--ciso8601--1-r2"},
+    "plan-closeio--ciso8601--1-r2": {
+        "kind": "plan", "evidence_id": "plan-closeio--ciso8601--1-r2"},
 }
 DISPATCHERS = [
     {"id": 45009921961, "created_at": "2026-11-22T09:55:57Z", "status": "completed"},
@@ -142,7 +142,7 @@ class TestNoChangeIsPreserved(unittest.TestCase):
 
     def test_genuine_rejections_are_not_reclassified(self):
         def unacknowledged(files):
-            files["proposal.json"]["reason_ids"] = ["dossier-closeio--ciso8601--1-r2"]
+            files["proposal.json"]["reason_ids"] = ["plan-closeio--ciso8601--1-r2"]
 
         def blocked(files):
             files["proposal.json"]["outcome"] = "blocked"
@@ -396,7 +396,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertEqual(out["budget"]["attempts_used"], 0)
         self.assertIsNone(out["parked_reason"])
         self.assertIsNone(out["fork"])
-        self.assertIsNone(out["dossier_evidence_id"])
+        self.assertIsNone(out["plan_evidence_id"])
         self.assertEqual(out["processed_publications"], parked["processed_publications"])
 
 

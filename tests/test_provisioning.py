@@ -19,10 +19,10 @@ UP = "example/proj"
 
 
 def request():
-    rec = contribution(phase="provisioning", activity="idle", dossier_evidence_id="dossier-1",
+    rec = contribution(phase="provisioning", activity="idle", plan_evidence_id="plan-1",
                        scope_paths=[".github/workflows/*"], fork=None)
     op = recovery.plan(contribution_id=rec["contribution_id"], revision=rec["revision"], kind="fork_provision",
-                       policy_version="test", reason_ids=["dossier-1"],
+                       policy_version="test", reason_ids=["plan-1"],
                        target={"repository": FORK, "repository_id": None, "ref": "riscv64-dev", "base_sha": SHA_C, "expected_head": None},
                        proposed={"commit": SHA_C, "marker": "provision"}, now=NOW)
     rec["active_operation_id"] = op["operation_id"]
@@ -153,7 +153,7 @@ class TestProvisioning(unittest.TestCase):
         with self.assertRaises(provisioning.ProvisionError):
             provisioning.initialize(api, plan)
         self.assertIsNone(api.head)
-        for changed in (dict(rec, paused=True), dict(rec, phase="investigation"), dict(rec, dossier_evidence_id=None)):
+        for changed in (dict(rec, paused=True), dict(rec, phase="planning"), dict(rec, plan_evidence_id=None)):
             with self.assertRaises(provisioning.ProvisionError):
                 provisioning.preflight(api, changed, op, policy(read_only=False))
         with self.assertRaises(provisioning.ProvisionError):
@@ -188,7 +188,7 @@ class TestProvisioning(unittest.TestCase):
         self.assertTrue(any(k == "operations" and r["status"] == "confirmed" for k, r in result.staged))
 
     def test_source_snapshots_bind_only_unspecified_fields(self):
-        rec = contribution(phase="investigation", activity="idle")
+        rec = contribution(phase="planning", activity="idle")
         rec["upstream"]["repository_id"] = None
         rec["upstream"]["base_ref"] = None
         rec["upstream"]["base_sha"] = None

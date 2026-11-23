@@ -11,7 +11,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 workflows=""
-for workflow in worker investigator dispatcher; do
+for workflow in worker planner dispatcher; do
     source=.github/workflows/$workflow.md
     lock=.github/workflows/$workflow.lock.yml
     if [ -e "$source" ] || [ -e "$lock" ]; then

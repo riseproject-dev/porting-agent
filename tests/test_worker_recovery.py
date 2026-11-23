@@ -33,7 +33,7 @@ class TestDispatcherAcceptedLaunchRecovery(unittest.TestCase):
             "requested_at": NOW,
             "deadline_at": "2026-11-22T12:00:00+00:00",
             "dispatched_run_id": None,
-            "reason_ids": ["dossier-1"], "generation": 0, "feedback_evidence_ids": []
+            "reason_ids": ["plan-1"], "generation": 0, "feedback_evidence_ids": []
         }
         graph = work.graph_id(record["active_work"]["dedupe_key"])
         relaunch, staged, report = reconcile.dispatch_recovery(
@@ -67,7 +67,7 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
             "dispatched_run_id": None,
             "reason_ids": [
                 "rehearsal-closeio--ciso8601--1-r3-44982902579",
-                "dossier-closeio--ciso8601--1-r2",
+                "plan-closeio--ciso8601--1-r2",
             ], "generation": 0, "feedback_evidence_ids": []
         }
         self.graph = work.graph_id(self.record["active_work"]["dedupe_key"])
@@ -264,7 +264,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
             return res, [item for kind, item in res.staged if kind == "contributions"][-1]
 
         # `no_progress` is exhausted where the next Work is due: the one
-        # automatic refresh of the generation runs a complete investigation.
+        # automatic refresh of the generation runs complete planning.
         res, refreshed = select(record)
         self.assertEqual([e["kind"] for k, e in res.staged if k == "events"][:1],
                          ["refresh_on_exhaustion"])

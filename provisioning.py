@@ -62,8 +62,8 @@ def validate_request(record: dict, operation: dict, policy: dict) -> None:
         raise ProvisionError("the policy is read-only")
     if record["phase"] != "provisioning" or record.get("paused"):
         raise ProvisionError("contribution is not authorized for provisioning")
-    if not record.get("dossier_evidence_id") or not record.get("admission_class"):
-        raise ProvisionError("reviewed dossier and approved scope required")
+    if not record.get("plan_evidence_id") or not record.get("admission_class"):
+        raise ProvisionError("reviewed plan and approved scope required")
     if not record["upstream"].get("repository_id") or not record["upstream"].get("base_sha"):
         raise ProvisionError("upstream identity and immutable base must be verified first")
     # The record names the operation it authorizes. A resume of the wait for

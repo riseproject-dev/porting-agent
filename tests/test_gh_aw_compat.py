@@ -26,7 +26,7 @@ class TestNativeArtifactPatch(unittest.TestCase):
 
     def test_compiler_lock_text_normalization_is_narrow_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
-            lock = Path(tmp) / "investigator.lock.yml"
+            lock = Path(tmp) / "planner.lock.yml"
             lock.write_text(
                 '# gh-aw-manifest: {"version":1}\nmessage: "one '
                 + normalize_gh_aw_locks.EM_DASH

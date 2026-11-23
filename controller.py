@@ -10,7 +10,7 @@ submissions, notifications). Nothing is executed here.
 * In read-only mode (``policy.read_only``, the default) requested effects are
   reported only; trusted code, not a prompt, disables every publisher.
 * No model call happens on an idle tick: work is selected only when there is
-  an actionable investigation, failure, or feedback item.
+  an actionable planning, failure, or feedback item.
 * A tick never waits for workers or builds.
 """
 
@@ -104,8 +104,8 @@ def _actionable(c: dict) -> str | None:
         return work_queue.SUBMISSION_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
-    if c["phase"] in ("queued", "investigation") and c["activity"] == "idle":
-        return "investigation"
+    if c["phase"] in ("queued", "planning") and c["activity"] == "idle":
+        return "planning"
     return None
 
 
@@ -116,15 +116,15 @@ WORK_DEADLINE_HOURS = 6
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
             "development_repair": 1,
-            "development_patch": 2, "investigation": 3}
+            "development_patch": 2, "planning": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
 # The rows of the table that allocate due Work, by the state it is due in, in
 # the order they are tried; their guards are exclusive. A request in
-# `queued.idle` first takes `begin_investigation`, in the tick that allocates
-# the investigation Work.
+# `queued.idle` first takes `begin_planning`, in the tick that allocates
+# the planning Work.
 ALLOCATIONS = {
-    "investigation.idle": ("dispatch_investigation",),
+    "planning.idle": ("dispatch_planning",),
     "development.fix_needed": ("request_repair", "request_patch"),
     "handoff.review_due": ("request_submission_rewrite",),
     "handoff.review_pending": ("request_submission_review",),
@@ -133,7 +133,7 @@ ALLOCATIONS = {
 # The rows taken instead when a budget of that Work is exhausted. They need no
 # worker slot and are taken as soon as their guard holds.
 EXHAUSTIONS = {
-    "investigation.idle": ("exhaust_work_total",),
+    "planning.idle": ("exhaust_work_total",),
     "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
     "handoff.review_due": ("exhaust_work_total",),
@@ -147,8 +147,8 @@ ALLOCATION_FACTS = frozenset({"worker_slot_free", "capacity_available"})
 def task_for(verb: str, record: dict) -> str:
     """The task an allocation row asks a worker for. ``request_patch`` asks
     for a repair when the record holds pending feedback for it to answer."""
-    if verb == "dispatch_investigation":
-        return "investigation"
+    if verb == "dispatch_planning":
+        return "planning"
     if verb == "request_submission_rewrite":
         return work_queue.SUBMISSION_REWRITE
     if verb == "request_submission_review":
@@ -231,7 +231,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             "upstream": {"repository_id": None, "full_name": req.upstream},
             "distributions": list(req.distributions), "parked": False, "parked_reason": None,
             "contribution_ids": [], "active_contribution_id": None, "prerequisites": [],
-            "dossier_evidence_id": None, "release_observation": None, "updated_at": now}
+            "plan_evidence_id": None, "release_observation": None, "updated_at": now}
         proj = dict(proj, contribution_ids=proj["contribution_ids"] + [cid],
                     active_contribution_id=cid, updated_at=now)
         projects[project_id] = proj
@@ -239,7 +239,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # Removing the intake label withdraws only an accepted request that has
     # not requested any Work yet (`withdraw_request`, guarded by no Work, no
-    # dossier, and no fork). Once Work exists, explicit lifecycle commands are
+    # plan, and no fork). Once Work exists, explicit lifecycle commands are
     # required so an unlabeled event cannot silently stop work.
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -270,7 +270,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                   "detail": f"{INTAKE_LABEL} label removed before Work admission"})
 
     # Bind initially unspecified source identities/bases from trusted API data,
-    # never from the model's dossier. Already-bound bases remain immutable.
+    # never from the model's plan. Already-bound bases remain immutable.
     source_blocked: set[str] = set()
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -424,7 +424,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     or (c.get("active_operation_id") and c["active_operation_id"] not in operations) \
                     or cid in source_blocked:
                 continue
-            if not c.get("dossier_evidence_id") or not c.get("admission_class") \
+            if not c.get("plan_evidence_id") or not c.get("admission_class") \
                     or not c.get("scope_paths") \
                     or not c["upstream"].get("repository_id") or not c["upstream"].get("base_sha"):
                 rep["deferred"].append({"contribution": cid, "why": "provisioning prerequisites missing"})
@@ -436,7 +436,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             fork = c.get("fork") or {}
             op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="fork_provision",
-                               policy_version=policy["policy_version"], reason_ids=[c["dossier_evidence_id"]],
+                               policy_version=policy["policy_version"], reason_ids=[c["plan_evidence_id"]],
                                target={"repository": "riseproject-upstreaming/" + c["upstream"]["full_name"].split('/', 1)[1],
                                        "repository_id": fork.get("repository_id"), "ref": DEV_REF,
                                        "expected_head": fork.get("head_sha"), "base_sha": c["upstream"]["base_sha"]},
@@ -502,13 +502,13 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     or not fork.get("repository_id") or not fork.get("head_sha") \
                     or fork.get("head_sha") == c["upstream"].get("base_sha") \
                     or artifact.get("outcome") != "published" or not artifact.get("result_commit") \
-                    or not c.get("dossier_evidence_id") or not c.get("scope_paths") \
+                    or not c.get("plan_evidence_id") or not c.get("scope_paths") \
                     or not pubop or pubop.get("status") != "confirmed":
                 continue
             marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{fork['head_sha']} -->"
             op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_create",
                                policy_version=policy["policy_version"],
-                               reason_ids=[c["dossier_evidence_id"], str(artifact["result_commit"])],
+                               reason_ids=[c["plan_evidence_id"], str(artifact["result_commit"])],
                                target={"repository": fork["name"], "repository_id": fork["repository_id"],
                                        "ref": DEV_REF, "expected_head": fork["head_sha"],
                                        "base_sha": c["upstream"]["base_sha"]},
@@ -649,7 +649,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             slots -= 1
             claimed = c
             if engine.state_key(c) == "queued.idle":
-                claimed = _take(c, "begin_investigation", res, policy, now,
+                claimed = _take(c, "begin_planning", res, policy, now,
                                 cause_id=f"tick-r{c['revision']}")
             ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
             cluster = engine.recorded_failing_job(claimed, ci)[1]
@@ -666,7 +666,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                      **({"cluster": cluster} if cluster else {})})
             # Only the rows that request patch or revision Work carry the
             # pending feedback (`active_work.feedback_evidence_ids`); an
-            # investigation carries none and keeps it pending. The submission
+            # planning carries none and keeps it pending. The submission
             # rewrite and review Work name what they answer in their context.
             carried = claimed["active_work"].get("feedback_evidence_ids") or []
             expected = (list(c.get("pending_feedback_evidence_ids") or [])
@@ -699,7 +699,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or []),
                 "effect_contract": (
                     {"kind": "none"}
-                    if kind == "investigation" or kind in work_queue.SUBMISSION_TASKS
+                    if kind == "planning" or kind in work_queue.SUBMISSION_TASKS
                     else {
                         "kind": "fork_branch",
                         "repository": (claimed.get("fork") or {}).get("name"),
@@ -805,12 +805,12 @@ def _take(record: dict, verb: str, res: TickResult, policy: dict, now: str, **kw
 
 
 def _begun(record: dict, policy: dict, now: str) -> dict | None:
-    """The record as it is once its investigation has begun: a request in
-    `queued.idle` takes `begin_investigation` in the tick that allocates its
+    """The record as it is once its planning has begun: a request in
+    `queued.idle` takes `begin_planning` in the tick that allocates its
     Work or exhausts its budget. ``None`` when it cannot begin."""
     if engine.state_key(record) != "queued.idle":
         return record
-    out = engine.apply_transition(record, "begin_investigation", policy=policy, now=now)
+    out = engine.apply_transition(record, "begin_planning", policy=policy, now=now)
     return out.record if out.accepted else None
 
 
@@ -859,9 +859,9 @@ def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
 def _exhaust(record: dict, due: dict, verb: str, ci: dict | None, by_id: dict, res: TickResult,
              policy: dict, now: str) -> None:
     """Take the exhaustion row ``verb`` from ``due`` (``record`` once its
-    investigation has begun)."""
+    planning has begun)."""
     if due is not record:
-        due = _take(record, "begin_investigation", res, policy, now,
+        due = _take(record, "begin_planning", res, policy, now,
                     cause_id=f"tick-r{record['revision']}")
     values, details = _exhaustion_values(due, verb, ci, policy, now)
     changed = _take(due, verb, res, policy, now, cause_id=f"tick-r{due['revision']}",
@@ -874,23 +874,23 @@ def _exhaust(record: dict, due: dict, verb: str, ci: dict | None, by_id: dict, r
 def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
     """The requested Work (``active_work``) for ``kind`` at the record's
     generation and revision. Its reason ids are the pending feedback it
-    carries, then the CI evidence and the dossier."""
+    carries, then the CI evidence and the plan."""
     from datetime import timedelta
 
     generation, revision = int(record.get("generation", 0)), record["revision"]
     reason_ids: list[str] = []
     if kind in work_queue.SUBMISSION_TASKS:
-        # The dossier (with its contribution guidelines) and the CI evidence
+        # The plan (with its contribution guidelines) and the CI evidence
         # of the candidate head the rewrite and the review describe.
-        reason_ids = [i for i in (record.get("dossier_evidence_id"),
+        reason_ids = [i for i in (record.get("plan_evidence_id"),
                                   record.get("last_ci_evidence_id")) if i]
     if kind in ("development_repair", "upstream_revision"):
         reason_ids = list(dict.fromkeys(
             list(record.get("pending_feedback_evidence_ids") or [])
             + ([record["last_ci_evidence_id"]] if record.get("last_ci_evidence_id") else [])
-            + ([record["dossier_evidence_id"]] if record.get("dossier_evidence_id") else [])))
-    if not reason_ids and record.get("dossier_evidence_id"):
-        reason_ids = [record["dossier_evidence_id"]]
+            + ([record["plan_evidence_id"]] if record.get("plan_evidence_id") else [])))
+    if not reason_ids and record.get("plan_evidence_id"):
+        reason_ids = [record["plan_evidence_id"]]
     request = {
         "dedupe_key": work_queue.work_key(record["contribution_id"], generation, revision, kind,
                                           engine.head_reruns(record)["flaky"]),
@@ -1115,8 +1115,8 @@ def admission_override(cmd: Command) -> dict | None:
     """The admission override a resume from ``parked.idle`` records: its
     ``class`` and ``paths`` with the command's reason, or ``None`` when it
     names neither. Raises ``ValueError`` when it names only one of them (the
-    dossier fold refuses such an override against every decision park, so
-    each investigation it starts would be wasted) and for an unsafe scope
+    plan fold refuses such an override against every decision park, so
+    each planning it starts would be wasted) and for an unsafe scope
     path."""
     if "class" not in cmd.args and "paths" not in cmd.args:
         return None
@@ -1138,7 +1138,7 @@ def _command_values(rec: dict, verb: str, cmd: Command, receipt: dict, operation
     if verb == "submit_upstream":
         return {"handoff_approval": handoff.approval(
             rec, command_id=receipt["command_id"], actor=receipt["actor"], head=cmd.args["head"])}
-    if verb not in ("refresh_investigation", "resume_stale"):
+    if verb not in ("refresh_planning", "resume_stale"):
         return {}
     fork = rec.get("fork") or {}
     return {"refresh": {"command_id": receipt["command_id"], "reason": cmd.args["reason"],

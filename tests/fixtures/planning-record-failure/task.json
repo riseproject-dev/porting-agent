@@ -56,7 +56,7 @@
   "fork_name": null,
   "fork_repository_id": null,
   "legacy_scope_extension": false,
-  "plan": "Investigate this upstream project and produce the dossier for a riscv64 wheel contribution. Read the full tracking issue description in context.tracking_issue and fetch its comments. Research upstream issues, open/closed PRs, CI/history, docs, websites, mailing lists, blogs, maintainers and their past reviews before recommending scope. Query project_graph_query for the dependency graph. Check sw-ecosystem/project-reports and extensively use any matching report, cross-checking it with current upstream sources. The dossier must satisfy schemas/dossier.schema.json, including complete research records with source URLs and findings for every category. Missing or unavailable required research is incomplete work: do not finish completed. Do not modify any repository. Return the dossier JSON as the proposal artifact.",
+  "instructions": "Plan this upstream project and produce the plan for a riscv64 wheel contribution. Read the full tracking issue description in context.tracking_issue and fetch its comments. Research upstream issues, open/closed PRs, CI/history, docs, websites, mailing lists, blogs, maintainers and their past reviews before recommending scope. Query project_graph_query for the dependency graph. Check sw-ecosystem/project-reports and extensively use any matching report, cross-checking it with current upstream sources. The plan must satisfy schemas/plan.schema.json, including complete research records with source URLs and findings for every category. Missing or unavailable required research is incomplete work: do not finish completed. Do not modify any repository. Return the plan JSON as the proposal artifact.",
   "reason_ids": [],
   "ref": "riscv64",
   "resource_scope": {
@@ -71,7 +71,7 @@
   },
   "review_scope_extension": false,
   "revision": 0,
-  "task": "investigation",
+  "task": "planning",
   "tracking_issue": 1,
   "upstream": "closeio/ciso8601",
   "upstream_facing": false,

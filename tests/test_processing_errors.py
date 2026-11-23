@@ -84,12 +84,12 @@ def other(**fields):
 
 
 def waiting(**fields):
-    return contribution(**{"activity": "waiting_ci", "dossier_evidence_id": "dossier-1",
+    return contribution(**{"activity": "waiting_ci", "plan_evidence_id": "plan-1",
                            "scope_paths": ["a"], "scope_coverage_complete": True, **fields})
 
 
 def other_waiting(**fields):
-    return other(**{"activity": "waiting_ci", "dossier_evidence_id": "dossier-1",
+    return other(**{"activity": "waiting_ci", "plan_evidence_id": "plan-1",
                     "scope_paths": ["a"], "scope_coverage_complete": True, **fields})
 
 
@@ -276,7 +276,7 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assert_isolated(output, a, baseline, "observation")
 
     def test_work_selection(self):
-        a = contribution(activity="fix_needed", dossier_evidence_id="dossier-1",
+        a = contribution(activity="fix_needed", plan_evidence_id="plan-1",
                          scope_paths=["a"], scope_coverage_complete=True)
         b = other_waiting()
         baseline = tick([a, b])
@@ -291,7 +291,7 @@ class TestOneContributionErrors(unittest.TestCase):
         deferred silently: the error is attributed to it, it is paused with
         ``pause_on_processing_error``, and the other contribution is
         processed."""
-        a = contribution(activity="fix_needed", dossier_evidence_id="dossier-1",
+        a = contribution(activity="fix_needed", plan_evidence_id="plan-1",
                          scope_paths=["a"], scope_coverage_complete=True,
                          last_ci_evidence_id="ci-gone")
         b = other_waiting()
@@ -309,7 +309,7 @@ class TestOneContributionErrors(unittest.TestCase):
     def test_the_other_contribution_gets_the_worker_slot(self):
         """The errored contribution requests nothing; the slot it would have
         taken goes to the next candidate in the same tick."""
-        fields = dict(activity="fix_needed", dossier_evidence_id="dossier-1", scope_paths=["a"],
+        fields = dict(activity="fix_needed", plan_evidence_id="plan-1", scope_paths=["a"],
                       scope_coverage_complete=True)
         a, b = contribution(**fields), other(**fields)
         output = tick([a, b], patches=[
@@ -321,7 +321,7 @@ class TestOneContributionErrors(unittest.TestCase):
     def test_command_application_and_stop_command_failure(self):
         """A stop command that cannot be applied: the contribution is errored,
         nothing is launched for it, and the command stays unconsumed."""
-        fields = dict(activity="fix_needed", dossier_evidence_id="dossier-1", scope_paths=["a"],
+        fields = dict(activity="fix_needed", plan_evidence_id="plan-1", scope_paths=["a"],
                       scope_coverage_complete=True)
         a, b = contribution(**fields), other_waiting()
         for body in ("/upstreaming pause", '/upstreaming park reason="stop"'):
@@ -763,9 +763,9 @@ class TestReconcileCommand(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.a = contribution(activity="fix_needed", dossier_evidence_id="dossier-1",
+        self.a = contribution(activity="fix_needed", plan_evidence_id="plan-1",
                               scope_paths=["a"], scope_coverage_complete=True)
-        self.b = other(activity="fix_needed", dossier_evidence_id="dossier-1", scope_paths=["a"],
+        self.b = other(activity="fix_needed", plan_evidence_id="plan-1", scope_paths=["a"],
                        scope_coverage_complete=True)
         for record in (self.a, self.b):
             path = self.root / state.record_path("contributions", record)

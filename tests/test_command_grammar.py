@@ -22,9 +22,9 @@ def record_in(state: str, revision: int = 3) -> dict:
     """A record in ``state`` as the table enters it, quiescent."""
     phase, activity = state.split(".")
     rec = contribution(phase=phase, activity=activity, revision=revision,
-                       dossier_evidence_id="dossier-1", scope_paths=["a"],
+                       plan_evidence_id="plan-1", scope_paths=["a"],
                        scope_coverage_complete=True)
-    if phase in ("queued", "investigation", "provisioning"):
+    if phase in ("queued", "planning", "provisioning"):
         rec["fork"] = None
     if phase in ("upstream_review", "release_wait", "released"):
         rec["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
@@ -130,7 +130,7 @@ class TestCommandsApplyWhereTheTableSays(unittest.TestCase):
                 self.assertEqual(out.accepted, state in rows, out.reason)
                 if out.accepted:
                     self.assertEqual(engine.state_key(out.record), "queued.idle")
-                    self.assertEqual(out.event["kind"], "refresh_investigation")
+                    self.assertEqual(out.event["kind"], "refresh_planning")
 
     def test_refresh_names_the_exact_clean_head_where_the_table_requires_it(self):
         rec = record_in("handoff.waiting_upstream_pr")

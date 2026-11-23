@@ -166,7 +166,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             "name": "porting-out", "digest": "sha256:" + "0" * 64,
             "run_id": "45006566517", "result_commit": "result", "outcome": "published",
         }
-        rec["dossier_evidence_id"] = "dossier-closeio--ciso8601--1-r2"
+        rec["plan_evidence_id"] = "plan-closeio--ciso8601--1-r2"
         rec["pending_feedback_evidence_ids"] = []
         return rec
 
@@ -198,8 +198,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
     OBSOLETE_REASONS = {
         "rehearsal-closeio--ciso8601--1-r3-44982902579": {
             "kind": "rehearsal", "evidence_id": "rehearsal-closeio--ciso8601--1-r3-44982902579"},
-        "dossier-closeio--ciso8601--1-r2": {
-            "kind": "dossier", "evidence_id": "dossier-closeio--ciso8601--1-r2"},
+        "plan-closeio--ciso8601--1-r2": {
+            "kind": "plan", "evidence_id": "plan-closeio--ciso8601--1-r2"},
     }
 
     def undispatched_repair(self):
@@ -210,7 +210,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
             "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
             "dispatched_run_id": None,
             "reason_ids": ["rehearsal-closeio--ciso8601--1-r3-44982902579",
-                           "dossier-closeio--ciso8601--1-r2"], "generation": 0, "feedback_evidence_ids": []
+                           "plan-closeio--ciso8601--1-r2"], "generation": 0, "feedback_evidence_ids": []
         }
         return rec
 
@@ -706,7 +706,7 @@ class TestTriggers(unittest.TestCase):
 
 class TestTick(unittest.TestCase):
     def test_removed_intake_label_cancels_only_pre_work_request(self):
-        rec = contribution(phase="queued", activity="idle", fork=None, dossier_evidence_id=None,
+        rec = contribution(phase="queued", activity="idle", fork=None, plan_evidence_id=None,
                            admission_class=None)
         raw = {"id": rec["tracking_issue"]["id"], "number": rec["tracking_issue"]["number"],
                "body": "request", "labels": []}
@@ -721,18 +721,18 @@ class TestTick(unittest.TestCase):
         self.assertEqual(tick.requested_effects, [])
         self.assertEqual(tick.report["intake"][-1]["decision"], "cancelled")
 
-        active = contribution(phase="investigation", activity="agent_running")
-        active["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 0,
+        active = contribution(phase="planning", activity="agent_running")
+        active["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                                  "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         tick = controller.tick(contributions={"c": active}, operations={}, consumed={}, projects={},
                                policy=policy(), inputs=controller.Inputs(now=T,
                                tracking_issues={raw["number"]: raw}, pressure=capacity.Pressure(ok=True)))
         self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
                              for kind, value in tick.staged))
-        # A request with a dossier is not withdrawn by the label: the table's
-        # guard requires no Work, no dossier, and no fork.
-        investigated = dict(rec, dossier_evidence_id="dossier-1")
-        tick = controller.tick(contributions={"c": investigated}, operations={}, consumed={},
+        # A request with a plan is not withdrawn by the label: the table's
+        # guard requires no Work, no plan, and no fork.
+        planned = dict(rec, plan_evidence_id="plan-1")
+        tick = controller.tick(contributions={"c": planned}, operations={}, consumed={},
                                projects={}, policy=policy(), inputs=controller.Inputs(now=T,
                                tracking_issues={raw["number"]: raw}, pressure=capacity.Pressure(ok=True)))
         self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
@@ -815,8 +815,8 @@ class TestTick(unittest.TestCase):
             for k, r in out.staged:
                 if k == "contributions":
                     contribs = {"c": r}
-        self.assertEqual(dispatched, ["investigation"])
-        self.assertEqual(contribs["c"]["phase"], "investigation")
+        self.assertEqual(dispatched, ["planning"])
+        self.assertEqual(contribs["c"]["phase"], "planning")
         self.assertEqual(contribs["c"]["activity"], "agent_running")
         # No outcome past the recorded deadline: no row reads the deadline,
         # so nothing changes and nothing is dispatched again; a terminal
@@ -828,17 +828,17 @@ class TestTick(unittest.TestCase):
         self.assertNotIn("timed_out_work", out.report)
         self.assertEqual([r for k, r in out.staged if k == "contributions"], [])
 
-    def test_investigation_outcome_auto_admits_development(self):
+    def test_planning_outcome_auto_admits_development(self):
         import reconcile
-        from tests.test_dossier_gate import dossier
-        rec = contribution(phase="investigation", activity="agent_running")
-        rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 0,
+        from tests.test_plan_gate import plan
+        rec = contribution(phase="planning", activity="agent_running")
+        rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                               "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
-        pub = {"status": "investigation", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
+        pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
                "worker_run_id": "7", "publication_artifact_id": 3,
-               "dossier": dossier(), "proposal": {"diagnosis": "Bounded wheel integration work is actionable."},
+               "plan": plan(), "proposal": {"diagnosis": "Bounded wheel integration work is actionable."},
                "artifact": {"digest": "sha256:" + "0" * 64}}
-        legacy = dict(pub, publication_artifact_id=2, worker_run_id="6", dossier={"legacy": "missing decision"})
+        legacy = dict(pub, publication_artifact_id=2, worker_run_id="6", plan={"legacy": "missing decision"})
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})
         out = reconcile.tick(
             None,
@@ -850,10 +850,10 @@ class TestTick(unittest.TestCase):
             observe=False,
         )
         ev = [r for k, r in out.staged if k == "evidence"]
-        self.assertEqual(ev[0]["kind"], "dossier")
-        self.assertEqual(ev[0]["data"], dossier())
+        self.assertEqual(ev[0]["kind"], "plan")
+        self.assertEqual(ev[0]["data"], plan())
         final = [r for k, r in out.staged if k == "contributions"][-1]
-        self.assertEqual(final["dossier_evidence_id"], ev[0]["evidence_id"])
+        self.assertEqual(final["plan_evidence_id"], ev[0]["evidence_id"])
         # `admit_development`: the fork is provisioned before any patch Work.
         self.assertEqual(
             (final["phase"], final["activity"], final["revision"]),
@@ -874,24 +874,24 @@ class TestTick(unittest.TestCase):
         self.assertIn("admit_development", kinds)
         self.assertIn("start_operation", kinds)
 
-    def test_refresh_dossier_returns_to_existing_pr_and_requires_worker_pass(self):
+    def test_refresh_plan_returns_to_existing_pr_and_requires_worker_pass(self):
         import commands
         import reconcile
-        from tests.test_dossier_gate import dossier
-        rec = contribution(activity="waiting_ci", revision=7, dossier_evidence_id="old-dossier",
+        from tests.test_plan_gate import plan
+        rec = contribution(activity="waiting_ci", revision=7, plan_evidence_id="old-plan",
                            scope_paths=[".github/workflows/wheels.yml"],
                            scope_coverage_complete=True)
         refreshed = apply_command(
             rec, commands.parse('/upstreaming refresh revision=7 reason="audit dependencies"'),
             command_id="comment-9", actor=OWNER, now=NOW).record
-        refreshed["phase"] = "investigation"
+        refreshed["phase"] = "planning"
         refreshed["activity"] = "agent_running"
-        refreshed["active_work"] = {"dedupe_key": "refresh", "task": "investigation",
+        refreshed["active_work"] = {"dedupe_key": "refresh", "task": "planning",
                                     "revision": 8, "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
-        pub = {"status": "investigation",
+        pub = {"status": "planning",
                "task": {"contribution_id": rec["contribution_id"], "revision": 8},
                "worker_run_id": "9", "publication_artifact_id": 5,
-               "dossier": dossier(), "proposal": {"diagnosis": "Fresh complete dossier."},
+               "plan": plan(), "proposal": {"diagnosis": "Fresh complete plan."},
                "artifact": {"digest": "sha256:" + "2" * 64}}
         snap = reconcile.Snapshot(contributions={"c": refreshed}, operations={}, consumed={},
                                   projects={}, evidence={})
@@ -904,30 +904,30 @@ class TestTick(unittest.TestCase):
         self.assertEqual(final["fork"], rec["fork"])
         self.assertEqual(final["scope_paths"], [".github/workflows/*", "README.rst"])
         self.assertIsNone(final["refresh"])
-        self.assertEqual(final["dossier_evidence_id"], evidence["evidence_id"])
+        self.assertEqual(final["plan_evidence_id"], evidence["evidence_id"])
         # The refresh cleared the CI evidence and no feedback is pending:
-        # `request_patch` asks for a patch against the refreshed dossier.
+        # `request_patch` asks for a patch against the refreshed plan.
         self.assertEqual(out.report["controller"]["selected"][0]["task"], "development_patch")
         self.assertIn(evidence["evidence_id"], out.report["requested_effects"][0]["reason_ids"])
         self.assertEqual(out.report["provision_requests"], [])
 
-    def test_investigation_can_park_without_human_gate(self):
+    def test_planning_can_park_without_human_gate(self):
         import reconcile
-        from tests.test_dossier_gate import dossier
-        rec = contribution(phase="investigation", activity="agent_running")
-        rec["active_work"] = {"dedupe_key": "k", "task": "investigation", "revision": 0,
+        from tests.test_plan_gate import plan
+        rec = contribution(phase="planning", activity="agent_running")
+        rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                               "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
-        research = dossier()
+        research = plan()
         research["proposal"].update(decision="park", admission_class=None, allowed_paths=[],
                                     rationale="No concrete upstream patch is currently actionable; retain verified evidence and wait for a new prerequisite.")
-        pub = {"status": "investigation", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
-               "worker_run_id": "8", "publication_artifact_id": 4, "dossier": research,
+        pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
+               "worker_run_id": "8", "publication_artifact_id": 4, "plan": research,
                "proposal": {"diagnosis": "No actionable patch."}, "artifact": {"digest": "sha256:" + "1" * 64}}
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})
         out = reconcile.tick(None, snap, policy=policy(read_only=False), now=T, publications=[pub],
                              pressure=capacity.Pressure(ok=True), observe=False)
         final = [r for k, r in out.staged if k == "contributions"][-1]
-        # `park_investigation` ends the generation without a revision bump.
+        # `park_planning` ends the generation without a revision bump.
         self.assertEqual((final["phase"], final["activity"], final["active_work"], final["revision"]),
                          ("parked", "idle", None, 0))
         self.assertIn("No concrete upstream patch", final["parked_reason"])
@@ -958,7 +958,7 @@ class TestTick(unittest.TestCase):
         kinds = [k for k, _ in res.staged]
         self.assertIn("contributions", kinds)
         self.assertIn("projects", kinds)
-        # Investigation is selected; it needs no write admission.
+        # Planning is selected; it needs no write admission.
         self.assertEqual(res.requested_effects[0]["effect_contract"], {"kind": "none"})
 
 

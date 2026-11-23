@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Upstream investigation research-completeness contract",
+  "title": "Upstream planning research-completeness contract",
   "type": "object",
   "required": ["schema_version", "contribution_id", "expected_revision", "tracking_issue_description_digest", "summary", "research", "history", "maintainers", "dependency_graph", "ecosystem_report", "proposal"],
   "properties": {

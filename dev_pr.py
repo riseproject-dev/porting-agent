@@ -28,7 +28,7 @@ def body(record: dict, operation: dict) -> str:
         "This same-fork pull request is the automated development and CI workspace for a bounded riscv64 wheel contribution.",
         "",
         f"Tracking issue: https://github.com/{CONTROL_REPO}/issues/{record['tracking_issue']['number']}",
-        f"Verified dossier: `{record['dossier_evidence_id']}`",
+        f"Verified plan: `{record['plan_evidence_id']}`",
         f"Allowed paths: {', '.join(record['scope_paths'] or [])}",
         "",
         "This is not an upstream submission. Human approval is required before upstream handoff.",
