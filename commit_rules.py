@@ -24,6 +24,7 @@ from __future__ import annotations
 import email
 import email.policy
 import re
+import unicodedata
 from typing import Any
 
 from common import APP_COMMIT_EMAIL, APP_COMMIT_NAME, DEBUG_PREFIX
@@ -39,8 +40,15 @@ MAX_SECTIONS = 30
 _SIGNED_OFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>$")
 # An attribution trailer: any ``<token>-by:`` line (Signed-off-by,
 # Co-authored-by, Reviewed-by, Acked-by, Tested-by, Reported-by,
-# Suggested-by, and every other).
-_ATTRIBUTION = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9-]*-by)\s*:(.*)$", re.IGNORECASE)
+# Suggested-by, and every other), matched on the line's lookalike-folded
+# form (``_fold``): a key of any letters without white space that ends in
+# ``-by``, then optional white space and a colon.
+_ATTRIBUTION = re.compile(r"^\s*([^\s:]*-by)\s*:(.*)$")
+# Characters folded to a hyphen or a colon before a line is matched, after
+# NFKC (which already folds the fullwidth and small forms of most of them).
+_HYPHENS = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d_"
+_COLONS = "\uff1a\ufe55\ufe13\u2236\ua789\u02d0\u02f8\u0589\u05c3\u1361\u1804\u205a\u2e2c"
+_FOLD = str.maketrans({**{ch: "-" for ch in _HYPHENS}, **{ch: ":" for ch in _COLONS}})
 APP_IDENTITY = f"{APP_COMMIT_NAME} <{APP_COMMIT_EMAIL}>"
 _PATCH_PREFIX = re.compile(r"^\[PATCH[^\]]*\]\s*")
 _MBOX_FROM = re.compile(rb"^From [0-9a-f]{40} Mon Sep 17 00:00:00 2001$", re.M)
@@ -212,30 +220,56 @@ def series_problems(messages: list[str], rules: dict | None, *,
     return problems
 
 
+def _fold(line: str) -> str:
+    """A line in the form attribution trailers are matched on: NFKC,
+    case-folded, with every hyphen-like character and the underscore as
+    ``-`` and every colon-like character as ``:``."""
+    return unicodedata.normalize("NFKC", line).casefold().translate(_FOLD)
+
+
+def _is_attribution(line: str) -> bool:
+    return bool(_ATTRIBUTION.match(_fold(line)))
+
+
 def attribution_trailers(message: str) -> list[str]:
-    """The attribution trailer lines of a commit message, exactly as written
-    (anywhere in its body)."""
+    """The attribution trailer lines of a commit message, exactly as written:
+    the title when it is one, and any line of its body."""
+    title, body = split_message(message)
+    return [line.rstrip("\r") for line in [title, *body] if _is_attribution(line)]
+
+
+def _continued(message: str) -> list[str]:
+    """The attribution trailers of a message that a white-space-led line
+    continues: ``git interpret-trailers`` folds that line into the trailer's
+    value, so it could name someone the trailer as written does not."""
     _title, body = split_message(message)
-    return [line.rstrip("\r") for line in body if _ATTRIBUTION.match(line)]
+    return [line.rstrip("\r") for line, after in zip(body, body[1:])
+            if _is_attribution(line) and after[:1].isspace() and after.strip()]
 
 
 def attribution_problems(messages: list[str], approved: list[str]) -> list[str]:
     """Why the attribution trailers of a series are not admitted. Each one
     must name the App's commit identity, or be byte-identical to a trailer of
     the ``approved`` commit messages: no commit attributes work to anyone the
-    approved series does not already name."""
+    approved series does not already name. A trailer is recognized under
+    Unicode lookalikes of its key and colon and as a title, and no trailer
+    may be continued on a white-space-led line."""
     allowed = {t for m in approved for t in attribution_trailers(m)}
     problems = []
     for message in messages:
         title = split_message(message)[0]
         shown = title if len(title) <= 80 else title[:77] + "..."
         for trailer in attribution_trailers(message):
-            value = _ATTRIBUTION.match(trailer).group(2).strip()
+            raw = re.match(r"^\s*([A-Za-z0-9-]+-by)\s*:(.*)$", trailer, re.IGNORECASE)
+            value = raw.group(2).strip() if raw else None
             if value == APP_IDENTITY or trailer in allowed:
                 continue
             problems.append(f"the commit {shown!r} carries the attribution trailer "
                             f"{trailer[:200]!r}, which is neither the App's commit identity nor "
                             "a trailer of the approved commits")
+        for trailer in _continued(message):
+            problems.append(f"the commit {shown!r} continues the attribution trailer "
+                            f"{trailer[:200]!r} on a line that starts with white space")
     return problems
 
 

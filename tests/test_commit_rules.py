@@ -154,6 +154,52 @@ class TestWorkerGate(unittest.TestCase):
             ["Rebuild\n\nSigned-off-by: Ann  <ann@example.org>",
              "Rebuild\n\nAcked-by: Ann <ann@example.org>"], approved)), 2)
 
+    def test_a_lookalike_trailer_is_an_attribution_trailer(self):
+        """Every lookalike of a key or colon that GitHub or a reader could
+        take for an attribution trailer is one: case, white space before the
+        colon, Unicode hyphens and the underscore, fullwidth and other
+        colon forms, compatibility characters, another script, and a title
+        that is itself a trailer."""
+        evil = "Evil <e@x>"
+        for line in ("co-AUTHORED-by: " + evil, "Co-authored-by  : " + evil,
+                     "Co‐authored‐by: " + evil, "Co‑authored‑by: " + evil,
+                     "Co‒authored–by: " + evil, "Co―authored−by: " + evil,
+                     "Co﹘authored﹣by: " + evil, "Co－authored－by: " + evil,
+                     "Co_authored_by: " + evil, "Co-authored-by： " + evil,
+                     "Co-authored-by﹕ " + evil, "Co-authored-by︓ " + evil,
+                     "Co-authored-by∶ " + evil, "Co-authored-by꞉ " + evil,
+                     "Ｃｏ-authored-ｂｙ: " + evil, "Cо-authored-by: " + evil,
+                     "Co-authored-by:\t" + evil, " Co-authored-by: " + evil,
+                     "Co-authored-by: " + commit_rules.APP_IDENTITY + " " + evil):
+            with self.subTest(line=line):
+                self.assertEqual(len(commit_rules.attribution_problems(
+                    ["Add riscv64\n\nBody.\n\n" + line], [])), 1)
+        title = commit_rules.attribution_problems(["Co-authored-by: " + evil], [])
+        self.assertEqual(len(title), 1)
+        self.assertIn("Co-authored-by: Evil", title[0])
+        # A lookalike is admitted only when it is byte-identical to an
+        # approved trailer, never by its folded form.
+        approved = ["Build\n\nCo-authored-by: Ann <ann@example.org>"]
+        self.assertEqual(len(commit_rules.attribution_problems(
+            ["Rebuild\n\nCo‐authored-by: Ann <ann@example.org>"], approved)), 1)
+        self.assertEqual(len(commit_rules.attribution_problems(
+            ["Rebuild\n\nCo-authored-by： " + commit_rules.APP_IDENTITY], [])), 1)
+
+    def test_a_continued_attribution_trailer_is_refused(self):
+        """``git interpret-trailers`` folds a white-space-led line into the
+        trailer before it, so a continuation could name someone else."""
+        for after in ("  Co-authored-by: Evil <e@x>", " and Evil <e@x>", "\tEvil <e@x>",
+                      " Evil <e@x>"):
+            with self.subTest(after=after):
+                problems = commit_rules.attribution_problems(
+                    ["Add riscv64\n\nBody.\n\n" + APP_SIGNOFF + "\n" + after], [])
+                self.assertTrue(any("continues the attribution trailer" in p for p in problems),
+                                problems)
+        self.assertEqual(commit_rules.attribution_problems(
+            ["Add riscv64\n\nBody.\n\n" + APP_SIGNOFF + "\n\n  indented text"], []), [])
+        self.assertEqual(commit_rules.attribution_problems(
+            ["Add riscv64\n\n  indented body\n\n" + APP_SIGNOFF], []), [])
+
     def test_without_rules_nothing_is_checked(self):
         self.assertEqual(self.gate(series("anything goes"), None)["status"], "accepted")
 
