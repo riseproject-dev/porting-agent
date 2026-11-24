@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-24T16:46:34.669482+00:00",
+  "cause": {
+    "id": "luhenry--d2vm/3@g1.r9:planning",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "charged": [
+      "work_total"
+    ],
+    "from_state": "planning.idle",
+    "task": "planning",
+    "to_state": "planning.agent_running",
+    "verb": "dispatch_planning",
+    "work": "luhenry--d2vm/3@g1.r9:planning"
+  },
+  "from": {
+    "activity": "idle"
+  },
+  "kind": "dispatch_planning",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45440832662
+  },
+  "schema_version": 1,
+  "sequence": 36,
+  "to": {
+    "activity": "agent_running"
+  }
+}
