@@ -263,8 +263,8 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                 rec = dict(record, active_work=copy.deepcopy(work))
                 for name in RESULTS:
                     with self.subTest(state=state, work=bool(work), result=name):
-                        if state == "queued.idle" and not work:
-                            self.assert_recorded_before_new_work(rec, name)
+                        if state == "queued.idle":
+                            self.assert_recorded_before_planning_begins(rec, name)
                         else:
                             self.assert_recorded_only(rec, name)
 
@@ -284,6 +284,20 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         for name in RESULTS:
             with self.subTest(state="planning.idle", result=name):
                 self.assert_recorded_before_new_work(idle, name)
+
+    def assert_recorded_before_planning_begins(self, record, name):
+        """A request in `queued.idle` begins its planning in the tick that
+        records the Result, in a commit of its own, and requests no Work in
+        it. Nothing of the Result reaches the record."""
+        output = tick(record, [publication(record, name)])
+        after = final(output, record)
+        self.assertEqual([e["kind"] for e in events(output)],
+                         ["record_late_effect", "begin_planning"])
+        self.assertEqual(engine.state_key(after), "planning.idle")
+        self.assertEqual(output.report["requested_effects"], [])
+        self.assertEqual(dict(after, phase="queued", processed_publications=[]),
+                         dict(record, processed_publications=[], updated_at=after["updated_at"]))
+        self.assertEqual(after["processed_publications"], [999])
 
     def assert_recorded_before_new_work(self, record, name):
         """Where a planning run is due, the same tick requests it after the

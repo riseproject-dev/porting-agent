@@ -197,6 +197,7 @@ class TestEndedContributions(unittest.TestCase):
                   if e.target in lc.TERMINAL_STATES and e.source not in lc.TERMINAL_STATES]
         self.assertEqual({(e.source, e.verb) for e in ending},
                          {("queued.idle", "withdraw_request"),
+                          ("planning.idle", "withdraw_request"),
                           ("planning.agent_running", "close_planning"),
                           ("release_wait.idle", "verify_release"),
                           ("parked.idle", "abandon")})

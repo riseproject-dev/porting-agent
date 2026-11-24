@@ -2661,6 +2661,71 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                ("provisioning.waiting_human", "resume_provisioning")),
         highlighted=(("provisioning.idle", "require_provisioning_intervention"),),
     ),
+    Item(
+        "When planning begins",
+        "When does a request in `queued.idle` take `begin_planning`, and can it still be "
+        "withdrawn while it waits for a worker slot?",
+        "In the first tick that processes it while it is not paused, whether or not a worker "
+        "slot is free, and never in the commit that allocates its Work: `dispatch_planning` or "
+        "`exhaust_work_total` is taken from `planning.idle` in a later tick, as decision 14 "
+        "states (two transitions, written in two commits). A request that waits for a worker "
+        "slot waits in `planning.idle`, where `withdraw_request` applies with the same guards "
+        "as in `queued.idle` (intake label removed, no Work requested, no plan, no fork), so "
+        "removing the intake label still withdraws it. This completes decision 14.",
+        ("queued.idle", "planning.idle", "planning.agent_running", "closed.idle"),
+        edges=(("queued.idle", "begin_planning"), ("planning.idle", "dispatch_planning"),
+               ("queued.idle", "withdraw_request"), ("planning.idle", "withdraw_request")),
+        highlighted=(("queued.idle", "begin_planning"), ("planning.idle", "withdraw_request")),
+    ),
+    Item(
+        "What `no_progress` counts and what starts it again",
+        "Which outcomes charge `no_progress`, and what starts it again?",
+        "Every rejected or blocked worker outcome (`reject_patch_proposal`) charges "
+        "`no_progress`, whatever `progress` the proposal reports: that field is the worker's "
+        "own untrusted claim, and letting it stop the streak would let a worker extend its own "
+        "retries without bound. A published Result starts `no_progress` and `dev_reviews` "
+        "again as an effect of its row (`record_publish_success` in both development states, "
+        "`record_revision_publish_success`), which `lifecycle check` enforces; only "
+        "`scope_paths` stays beside the row. `budget.review_rejections` is cleared by "
+        "`record_revision_publish_success` as well, although nothing reads it in upstream "
+        "review. `refresh_on_exhaustion` starts both again too.",
+        ("development.agent_running", "development.publishing", "development.fix_needed",
+         "development.waiting_ci", "upstream_review.agent_running",
+         "upstream_review.waiting_ci"),
+        edges=(("development.agent_running", "reject_patch_proposal"),
+               ("development.agent_running", "record_publish_success"),
+               ("development.publishing", "record_publish_success"),
+               ("upstream_review.agent_running", "record_revision_publish_success")),
+        highlighted=(("development.agent_running", "reject_patch_proposal"),
+                     ("development.publishing", "record_publish_success")),
+    ),
+    Item(
+        "The task a development allocation asks for",
+        "What does a worker run asked for by `request_patch` or `request_repair` do?",
+        "`request_repair` always asks for a repair (`development_repair`). `request_patch` "
+        "asks for a repair when feedback is pending for the Work to answer, and for a patch "
+        "(`development_patch`) otherwise: it covers the first patch, the patch after a rejected "
+        "proposal, and a repair driven only by review feedback. A refreshed plan that returns "
+        "to the fork (`readmit_development`) with no failing CI job and no pending feedback has "
+        "nothing to diagnose, so a patch against the new plan is the answer.",
+        ("development.fix_needed", "development.agent_running", "planning.agent_running"),
+        edges=(("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair"),
+               ("planning.agent_running", "readmit_development")),
+        highlighted=(("development.fix_needed", "request_patch"),),
+    ),
+    Item(
+        "A command field its row does not read",
+        "What happens to a command field that the row taken does not read?",
+        "It is refused with the place where it applies, and the record is not changed; it is "
+        "never ignored, since ignoring it would silently drop what the human asked for, for "
+        "example a head they meant to bind. `class`, `paths` and `branch` apply only to a "
+        "refresh from `parked.idle` that starts a generation (`restart_generation`); `head` "
+        "applies only to a row guarded by the exact candidate head or the exact clean head.",
+        ("parked.idle", "queued.idle"),
+        edges=(("parked.idle", "restart_generation"),),
+        highlighted=(("parked.idle", "restart_generation"),),
+    ),
 )
 
 OPEN_ITEMS: tuple[Item, ...] = ()

@@ -115,10 +115,36 @@ class TestCanonicalIssueBody(unittest.TestCase):
             record["tracking_issue"]["notes"],
             REQUEST_FIXTURE["fields"]["additional-notes"],
         )
-        self.assertEqual(
-            record["active_work"]["tracking_issue"]["description_digest"], BODY_SHA256
-        )
+        # Planning begins in the tick that accepts the request; its Work is
+        # requested in the next tick, from the description frozen at intake.
+        self.assertEqual((record["phase"], record["activity"]), ("planning", "idle"))
+        self.assertIsNone(record["active_work"])
         issue["body"] = "edited after intake"
+        later = reconcile.tick(
+            None,
+            reconcile.Snapshot({record["contribution_id"]: record}, {}, {}, {}, {}),
+            policy=self.policy,
+            now=datetime.fromisoformat(NOW),
+            publications=[],
+            pressure=capacity.Pressure(ok=True),
+            issues=[issue],
+            comments=[],
+            acceptances={},
+            observe=False,
+            tracking_issues={issue["number"]: issue},
+            upstream_snapshots={
+                "closeio/ciso8601": {
+                    "repository_id": 4242,
+                    "base_ref": "master",
+                    "base_sha": SHA_C,
+                }
+            },
+        )
+        requested = [r for kind, r in later.staged if kind == "contributions"][-1]
+        self.assertEqual(
+            requested["active_work"]["tracking_issue"]["description_digest"], BODY_SHA256
+        )
+        result.staged.extend(later.staged)
         self.assertEqual(record["tracking_issue"]["description"], BODY_PATH.read_text())
 
         with tempfile.TemporaryDirectory() as directory:

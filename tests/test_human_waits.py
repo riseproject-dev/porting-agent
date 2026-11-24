@@ -143,7 +143,7 @@ class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
                             "refresh_planning",
                             # `work_total` is not started again by a refresh: once
                             # it is spent, the planning takes `exhaust_work_total`.
-                            {"queued.idle", "planning.agent_running",
+                            {"queued.idle", "planning.idle", "planning.agent_running",
                              "planning.waiting_human"}),
             }
             for name, (body, row, targets) in exits.items():

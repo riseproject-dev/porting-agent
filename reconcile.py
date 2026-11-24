@@ -1615,8 +1615,8 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
 
     * published (confirmed, as above): ``record_publish_success`` (clears
       exactly the feedback the Work carried); the published files that no
-      admitted path matches join ``scope_paths`` (``extended_scope``) and
-      ``no_progress`` starts again beside the row;
+      admitted path matches join ``scope_paths`` (``extended_scope``) beside
+      the row, and the row starts ``no_progress`` again;
     * rejected in trusted validation, blocked, or a ``proposal`` (no
       publisher produces one any more): ``reject_patch_proposal``; a blocked
       Result's rehearsal evidence is recorded and named in the event;
@@ -1880,11 +1880,9 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         # Beside the row: the published files that no admitted path matches
         # join the admitted scope (the extension the trusted publisher
         # admitted for a repair backed by review feedback, which may change
-        # a path the plan missed), and a published patch starts
-        # `no_progress` and `dev_reviews` again.
-        new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope,
-                                   budget=dict(new["budget"], no_progress_streak=0,
-                                               review_rejections=0))
+        # a path the plan missed). The row starts `no_progress` and
+        # `dev_reviews` again.
+        new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope)
     schemas.validate("contribution", new)
     staged.extend([("contributions", new), ("events", out.event)])
     return new, staged

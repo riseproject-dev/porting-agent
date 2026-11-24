@@ -813,6 +813,34 @@ class TestTick(unittest.TestCase):
         self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
                              for kind, value in tick.staged))
 
+    def test_removed_intake_label_withdraws_a_request_waiting_for_a_worker_slot(self):
+        rec = contribution(phase="planning", activity="idle", fork=None, plan_evidence_id=None,
+                           admission_class=None)
+        raw = {"id": rec["tracking_issue"]["id"], "number": rec["tracking_issue"]["number"],
+               "body": "request", "labels": []}
+
+        def tick(record):
+            return controller.tick(
+                contributions={"c": record}, operations={}, consumed={}, projects={},
+                policy=policy(), inputs=controller.Inputs(
+                    now=T, tracking_issues={raw["number"]: raw},
+                    pressure=capacity.Pressure(ok=True)))
+
+        res = tick(rec)
+        final = [value for kind, value in res.staged if kind == "contributions"][-1]
+        self.assertEqual((final["phase"], final["activity"], final["terminal_reason"]),
+                         ("closed", "idle", "withdrawn"))
+        self.assertEqual([value["kind"] for kind, value in res.staged if kind == "events"],
+                         ["withdraw_request"])
+        self.assertEqual(res.requested_effects, [])
+        # A plan or a fork keeps it: the guard requires no plan and no fork.
+        for held in (dict(rec, plan_evidence_id="plan-1"),
+                     contribution(phase="planning", activity="idle", plan_evidence_id=None,
+                                  admission_class=None)):
+            res = tick(held)
+            self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
+                                 for kind, value in res.staged))
+
     def test_unlabeled_issue_without_state_is_a_noop(self):
         tick = controller.tick(contributions={}, operations={}, consumed={}, projects={}, policy=policy(),
                                inputs=controller.Inputs(now=T, issues=[], tracking_issues={},
@@ -1038,14 +1066,24 @@ class TestTick(unittest.TestCase):
         kinds = [k for k, _ in res.staged]
         self.assertIn("contributions", kinds)
         self.assertIn("projects", kinds)
-        # Planning is selected; it needs no write admission.
-        self.assertEqual(res.requested_effects[0]["effect_contract"], {"kind": "none"})
+        # Planning begins in the tick that accepts the request, and its Work
+        # is requested in the next one; it needs no write admission.
+        begun = [r for k, r in res.staged if k == "contributions"][-1]
+        self.assertEqual((begun["phase"], begun["activity"]), ("planning", "idle"))
+        self.assertEqual(res.requested_effects, [])
+        later = controller.tick(contributions={begun["contribution_id"]: begun}, operations={},
+                                consumed={}, projects={}, policy=policy(),
+                                inputs=controller.Inputs(now=T, upstream_snapshots={
+                                    "example/proj": {"repository_id": 99, "base_ref": "main",
+                                                     "base_sha": "a" * 40}}))
+        self.assertEqual(later.requested_effects[0]["effect_contract"], {"kind": "none"})
 
     def test_work_waits_for_a_bound_upstream_identity(self):
         # Every row that allocates Work is guarded by the bound upstream
-        # identity and base: without a snapshot no Work is requested and the
-        # record is deferred with that guard; a later tick binds them and
-        # requests it.
+        # identity and base: planning begins in the tick that accepts the
+        # request, whatever the upstream; without a snapshot no Work is
+        # requested and the record is deferred with that guard; a later tick
+        # binds them and requests it.
         from tests.test_commands_intake import issue
         res = controller.tick(contributions={}, operations={}, consumed={}, projects={},
                               policy=policy(), inputs=controller.Inputs(
@@ -1053,10 +1091,19 @@ class TestTick(unittest.TestCase):
         self.assertEqual(res.requested_effects, [])
         why = [d["why"] for d in res.report["deferred"] if d["contribution"] == "example--proj/12"]
         self.assertEqual(len(why), 1)
+        self.assertIn("planning began in this tick", why[0])
+        begun = [r for k, r in res.staged if k == "contributions"][-1]
+        self.assertEqual((begun["phase"], begun["activity"], begun["active_work"]),
+                         ("planning", "idle", None))
+        waiting = controller.tick(contributions={begun["contribution_id"]: begun}, operations={},
+                                  consumed={}, projects={}, policy=policy(),
+                                  inputs=controller.Inputs(now=T))
+        self.assertEqual(waiting.requested_effects, [])
+        why = [d["why"] for d in waiting.report["deferred"]
+               if d["contribution"] == "example--proj/12"]
+        self.assertEqual(len(why), 1)
         self.assertIn("upstream identity and base not bound", why[0])
-        queued = [r for k, r in res.staged if k == "contributions"][-1]
-        self.assertEqual((queued["phase"], queued["active_work"]), ("queued", None))
-        again = controller.tick(contributions={queued["contribution_id"]: queued}, operations={},
+        again = controller.tick(contributions={begun["contribution_id"]: begun}, operations={},
                                 consumed={}, projects={}, policy=policy(), inputs=controller.Inputs(
                                     now=T, upstream_snapshots={"example/proj": {
                                         "repository_id": 99, "base_ref": "main",
@@ -1088,11 +1135,25 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
     def final(self, res):
         return [r for k, r in res.staged if k == "contributions"][-1]
 
-    def test_refresh_requests_planning_with_identity_in_the_same_tick(self):
+    def next_tick(self, rec, snapshots):
+        """The tick after the restart: planning has begun and its Work is
+        allocated."""
+        return controller.tick(
+            contributions={rec["contribution_id"]: rec}, operations={}, consumed={}, projects={},
+            policy=policy(), inputs=controller.Inputs(now=T, upstream_snapshots=snapshots))
+
+    def test_refresh_begins_planning_with_identity_and_requests_it_in_the_next_tick(self):
         res = self.tick(self.parked(), {"example/proj": dict(self.SNAPSHOT)})
         self.assertEqual(res.report["commands"][0]["result"], "accepted")
         self.assertEqual([e["kind"] for k, e in res.staged if k == "events"],
-                         ["restart_generation", "begin_planning", "dispatch_planning"])
+                         ["restart_generation", "begin_planning"])
+        begun = self.final(res)
+        self.assertEqual((begun["phase"], begun["activity"], begun["generation"]),
+                         ("planning", "idle", 2))
+        self.assertEqual(res.requested_effects, [])
+        res = self.next_tick(begun, {"example/proj": dict(self.SNAPSHOT)})
+        self.assertEqual([e["kind"] for k, e in res.staged if k == "events"],
+                         ["dispatch_planning"])
         final = self.final(res)
         self.assertEqual((final["phase"], final["activity"], final["generation"]),
                          ("planning", "agent_running", 2))
@@ -1109,7 +1170,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
                 res = self.tick(self.parked(), snapshots)
                 self.assertEqual(res.report["commands"][0]["result"], "accepted")
                 final = self.final(res)
-                self.assertEqual((final["phase"], final["activity"]), ("queued", "idle"))
+                self.assertEqual((final["phase"], final["activity"]), ("planning", "idle"))
                 self.assertIsNone(final["active_work"])
                 self.assertEqual(final["upstream"]["repository_id"], None)
                 self.assertEqual(res.requested_effects, [])
@@ -1221,17 +1282,22 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
 
     def test_a_restart_keeps_the_requested_target_branch(self):
         rec = self.parked_from("release-2")
-        res = self.tick(rec, {"example/proj": dict(self.SNAPSHOT, base_ref="release-2")})
+        snapshot = dict(self.SNAPSHOT, base_ref="release-2")
+        res = self.tick(rec, {"example/proj": snapshot})
         final = self.final(res)
         self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
                                              "base_ref": "release-2", "base_sha": SHA_B})
-        self.assertEqual(final["activity"], "agent_running")
+        self.assertEqual(engine.state_key(final), "planning.idle")
+        res = self.next_tick(final, {"example/proj": snapshot})
+        self.assertEqual(self.final(res)["activity"], "agent_running")
         self.assertEqual(len(res.requested_effects), 1)
         # A snapshot of another branch binds nothing: the record waits.
         res = self.tick(rec, {"example/proj": dict(self.SNAPSHOT)})
         final = self.final(res)
         self.assertEqual(final["upstream"], {"repository_id": None, "full_name": "example/proj",
                                              "base_ref": "release-2", "base_sha": None})
+        self.assertEqual(res.requested_effects, [])
+        res = self.next_tick(final, {"example/proj": dict(self.SNAPSHOT)})
         self.assertEqual(res.requested_effects, [])
         self.assertIn({"contribution": "example--proj/12",
                        "why": "upstream snapshot is not of the requested base branch"},
@@ -1241,6 +1307,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
         res = self.tick(self.parked_from(None), {"example/proj": dict(self.SNAPSHOT)})
         final = self.final(res)
         self.assertEqual(final["upstream"]["base_ref"], "trunk")
+        res = self.next_tick(final, {"example/proj": dict(self.SNAPSHOT)})
         self.assertEqual(len(res.requested_effects), 1)
 
     def test_a_restart_while_paused_binds_the_identity_and_allocates_nothing(self):
@@ -1324,6 +1391,11 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                                      "base_ref": "main", "base_sha": None})
         rec.update(over)
         return rec
+
+    def idle(self, **over):
+        """A request whose planning began: it waits in `planning.idle` for its
+        Work, where the same base-branch rows apply as in `queued.idle`."""
+        return self.queued(phase="planning", **over)
 
     def reviewing(self, activity="fix_needed", **over):
         """A record in upstream review on `master`, its PR open."""
@@ -1409,17 +1481,17 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         for status in ("HTTP 404", "HTTP 403"):
             with self.subTest(status):
                 got = collect.upstream_snapshots(self.Api(repo_fail=status),
-                                                 [self.queued()], [], policy())
+                                                 [self.idle()], [], policy())
                 self.assertEqual(got, {"example/proj": {
                     "error": f"GET /repos/example/proj: {status}", "ref": "main",
                     "scope": "repository"}})
-                res = self.tick(self.queued(), got["example/proj"])
-                final = self.final(res, self.queued())
-                self.assertEqual(engine.state_key(final), "queued.idle")
+                res = self.tick(self.idle(), got["example/proj"])
+                final = self.final(res, self.idle())
+                self.assertEqual(engine.state_key(final), "planning.idle")
                 self.assertEqual([e["kind"] for e in self.events(res)],
                                  ["record_source_unavailable"])
         moved = collect.upstream_snapshots(self.Api(full_name="other/proj"),
-                                           [self.queued()], [], policy())
+                                           [self.idle()], [], policy())
         self.assertEqual(moved, {"example/proj": dict(self.MOVED)})
 
     def test_the_collector_does_not_read_while_the_contribution_waits(self):
@@ -1521,20 +1593,20 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         limit, minutes = 3, 60
         slot = timedelta(minutes=minutes) / limit
         start = T + timedelta(seconds=20)
-        rec = self.queued()
+        rec = self.idle()
         # A burst: one counted read, and nothing written for the others.
         for i in range(8 * limit):
             res = self.tick(rec, dict(self.TRANSIENT), now=start + timedelta(seconds=10 * i))
             rec = self.final(res, rec)
-            self.assertEqual(engine.state_key(rec), "queued.idle", i)
+            self.assertEqual(engine.state_key(rec), "planning.idle", i)
             self.assertEqual(rec["budget"]["source_unavailable"], 1)
             self.assertEqual(res.requested_effects, [])
             if i == 0:
                 self.assertEqual([e["kind"] for e in self.events(res)],
                                  ["record_source_unavailable"])
                 [event] = self.events(res)
-                self.assertFalse(status_ledger.notifies(dict(event, sequence=1), "queued.idle",
-                                                        "queued.idle"))
+                self.assertFalse(status_ledger.notifies(dict(event, sequence=1), "planning.idle",
+                                                        "planning.idle"))
             else:
                 self.assertEqual(res.staged, [])
                 # One deferred entry for the contribution, which names why.
@@ -1550,7 +1622,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
             rec = self.final(res, rec)
             self.assertEqual([e["kind"] for e in self.events(res)], ["record_source_unavailable"])
             self.assertEqual(rec["budget"]["source_unavailable"], n + 1)
-            self.assertEqual(engine.state_key(rec), "queued.idle")
+            self.assertEqual(engine.state_key(rec), "planning.idle")
         self.assertEqual(rec["budget"]["source_unavailable_since"], start.isoformat())
         self.assertEqual(rec["budget"]["source_unavailable_at"],
                          (start + (limit - 1) * slot).isoformat())
@@ -1636,12 +1708,12 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         # wait begins at the third spaced read, the minimum time having
         # passed long before.
         start = T + timedelta(seconds=20)
-        rec = self.queued()
+        rec = self.idle()
         for n in range(3):
             at = start + timedelta(hours=8 * n)
             rec = self.final(self.tick(rec, dict(self.TRANSIENT), now=at), rec)
             if n < 2:
-                self.assertEqual(engine.state_key(rec), "queued.idle", n)
+                self.assertEqual(engine.state_key(rec), "planning.idle", n)
                 self.assertEqual(rec["budget"]["source_unavailable"], n + 1)
                 res = self.tick(rec, dict(self.TRANSIENT), now=at + timedelta(seconds=30))
                 self.assertEqual(res.staged, [])
@@ -1649,7 +1721,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertEqual(rec["pending_human_action"]["counter"], "source_reads")
 
     def test_the_count_alone_reached_after_a_long_run_waits(self):
-        rec = self.queued()
+        rec = self.idle()
         rec["budget"] = dict(rec["budget"], source_unavailable=3,
                              source_unavailable_since=(T - timedelta(hours=2)).isoformat())
         res = self.tick(rec, dict(self.TRANSIENT))
@@ -1724,7 +1796,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         self.assertEqual(len(res.requested_effects), 1)
 
     def test_a_snapshot_of_another_branch_never_escalates(self):
-        rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",
+        rec = self.idle(upstream={"repository_id": None, "full_name": "example/proj",
                                     "base_ref": "release-2", "base_sha": None})
         rec["budget"] = dict(rec["budget"], source_unavailable=12,
                              source_unavailable_since=(T - timedelta(hours=2)).isoformat())
@@ -1834,6 +1906,10 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         final = self.final(res, rec)
         self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
                                              "base_ref": "trunk", "base_sha": SHA_B})
+        # Planning begins in that tick; its Work is requested in the next one.
+        self.assertEqual(engine.state_key(final), "planning.idle")
+        self.assertEqual(res.requested_effects, [])
+        res = self.tick(final, dict(self.SNAPSHOT, base_ref="trunk"))
         self.assertEqual(len(res.requested_effects), 1)
         for body, cid in (("/upstreaming refresh revision=4 branch=a..b reason=r", 65),):
             with self.subTest(body=body):
@@ -1859,7 +1935,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
             self.assertIn("branch=", text)
 
     def test_a_snapshot_of_another_branch_is_deferred_once(self):
-        rec = self.queued(upstream={"repository_id": None, "full_name": "example/proj",
+        rec = self.idle(upstream={"repository_id": None, "full_name": "example/proj",
                                     "base_ref": "release-2", "base_sha": None})
         res = self.tick(rec, dict(self.SNAPSHOT))
         self.assertEqual([d for d in res.report["deferred"]

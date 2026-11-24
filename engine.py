@@ -1824,9 +1824,8 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
                       "budget.source_unavailable_at", "budget.source_unavailable_repository"),
     # Work held in a handoff state that requests none is dropped.
     "handoff_work_dropped": ("active_work",),
-    # A published patch: its files join the admitted scope, and `no_progress`
-    # and `dev_reviews` start again.
-    "patch_published": ("scope_paths", "budget.no_progress_streak", "budget.review_rejections"),
+    # A published patch: its files join the admitted scope.
+    "patch_published": ("scope_paths",),
     # A verified receipt of a `ci_rerun` operation the collector planned
     # releases it; no row is fired by it.
     "ci_rerun_recorded": ("active_operation_id",),

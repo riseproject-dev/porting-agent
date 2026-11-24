@@ -165,6 +165,23 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertTrue(any(p.startswith("parked.idle: generation_end state has a "
                                          "`/upstreaming resume` row") for p in problems), problems)
 
+    def test_a_published_row_starts_no_progress_and_dev_reviews_again(self):
+        for state, verb in (("development.agent_running", "record_publish_success"),
+                            ("development.publishing", "record_publish_success"),
+                            ("upstream_review.agent_running", "record_revision_publish_success")):
+            clears = lc.find_edge(state, verb).transition.effects.clears
+            for name in lc.PUBLISHED_RESTARTS:
+                with self.subTest(state=state, verb=verb, field=name):
+                    problems = self.mutated(state, verb, clears=self.without(clears, name))
+                    self.assertTrue(any(p.startswith(f"{state} --{verb}-->") and name in p
+                                        for p in problems), problems)
+        # No other row taken on a worker Result starts the streak again.
+        row = lc.find_edge("development.agent_running", "reject_patch_proposal").transition
+        problems = self.mutated("development.agent_running", "reject_patch_proposal",
+                                clears=(*row.effects.clears, "budget.no_progress_streak"))
+        self.assertTrue(any("start budget.no_progress_streak again" in p for p in problems),
+                        problems)
+
     def mutated(self, state, verb, **changes):
         """The problems the check reports when one row is changed."""
         edge = lc.find_edge(state, verb)
@@ -1358,7 +1375,7 @@ class TestDiagrams(unittest.TestCase):
         for d in (*DECISIONS, *FURTHER_CHANGES):
             self.assertTrue(d.text and not d.options and not d.candidates, d.title)
             self.assertTrue(d.operations or d.highlighted, d.title)
-        self.assertEqual(len(SETTLED_OPEN_ITEMS), 34)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 38)
         self.assertEqual(OPEN_ITEMS, ())
         for d in SETTLED_OPEN_ITEMS:
             self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)

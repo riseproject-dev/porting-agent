@@ -681,6 +681,9 @@ WORK_FEEDBACK = "active_work.feedback_evidence_ids"
 # Rerun counts of the current head. They start again whenever the recorded
 # head changes: on every row of ``RERUN_RESTART_VERBS``.
 RERUNS = "budget.reruns"
+# A published Result starts the streaks of rejected outcomes again.
+PUBLISHED_RESTARTS = ("budget.no_progress_streak", "budget.review_rejections")
+PUBLISHED_VERBS = ("record_publish_success", "record_revision_publish_success")
 RERUN_RESTART_VERBS = ("record_publish_success", "record_head_change", "confirm_clean_head")
 
 # Transitions shared by several states. The key under each state names the
@@ -980,16 +983,20 @@ PLAN_REJECTED = ("the Result has no plan, the plan is invalid, its decision is n
                     "develop, park, or close, or PyPI does not confirm a decision close")
 
 
+# Removing the intake label withdraws a request that has requested no Work,
+# in `queued.idle` and in `planning.idle`, where it waits for a worker slot.
+_WITHDRAW_REQUEST = Transition(
+    _O, None,
+    ("intake label removed", "no Work requested", "no plan", "no fork"),
+    _E(sets=("terminal_reason=withdrawn",), clears=_FLAG_FIELDS))
+
 LIFECYCLE: dict[str, State] = {
     "queued.idle": State(
         "auto_wait", True, False,
         "An accepted request is recorded; planning has not started.",
         transitions={
             ("begin_planning", "planning.idle"): Transition(_K, None, (NOT_PAUSED,)),
-            ("withdraw_request", "closed.idle"): Transition(
-                _O, None,
-                ("intake label removed", "no Work requested", "no plan", "no fork"),
-                _E(sets=("terminal_reason=withdrawn",), clears=_FLAG_FIELDS)),
+            ("withdraw_request", "closed.idle"): _WITHDRAW_REQUEST,
         }),
     "planning.idle": State(
         "auto_wait", True, False,
@@ -1004,6 +1011,7 @@ LIFECYCLE: dict[str, State] = {
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
                         f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",)),
+            ("withdraw_request", "closed.idle"): _WITHDRAW_REQUEST,
         }),
     "planning.agent_running": State(
         "work", False, False,
@@ -1152,7 +1160,7 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 ("the Result is published, or uncertain and later confirmed", NO_REVIEW_CONTRACT),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
-                  clears=(CARRIED_FEEDBACK, HELD_RESULT)),
+                  clears=(CARRIED_FEEDBACK, HELD_RESULT, *PUBLISHED_RESTARTS)),
                 description="Taken only for Work dispatched before development patches were "
                             "reviewed, whose worker still pushes in its own run; every other "
                             "patch is held for its review (`hold_patch_for_review`). "
@@ -1292,7 +1300,7 @@ LIFECYCLE: dict[str, State] = {
                 ("the Result is published, or uncertain and later confirmed",),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS,
                                        REVIEW_COMMENT),
-                   clears=(CARRIED_FEEDBACK, HELD_RESULT, HELD_PATCH)),
+                   clears=(CARRIED_FEEDBACK, HELD_RESULT, HELD_PATCH, *PUBLISHED_RESTARTS)),
                 description="The published patch answers exactly the feedback its Work "
                             "carried. An `uncertain` publication is confirmed as in "
                             "`development.agent_running`. The report stored at the hold is "
@@ -1966,7 +1974,7 @@ LIFECYCLE: dict[str, State] = {
                 ("the revision is published to the upstream PR head",),
                 _E(revision="bump", work="clear",
                   sets=("proposal_artifact", "publication_operation_id", "upstream_pr.head_sha"),
-                  clears=(CARRIED_FEEDBACK, HELD_RESULT)),
+                  clears=(CARRIED_FEEDBACK, HELD_RESULT, *PUBLISHED_RESTARTS)),
                 description="The published revision answers exactly the feedback its Work "
                             "carried. `upstream_pr.head_sha` records the head the publisher read "
                             "back on `riscv64` after its push. A publication whose push was not "
@@ -2479,14 +2487,15 @@ BUDGETS: dict[str, Budget] = {
     "no_progress": Budget(
         "retries.no_progress_review_after", 0,
         "one successive rejected or blocked outcome without progress",
-        "`budget.no_progress_streak`, started again by a published patch and by "
-        "`refresh_on_exhaustion`",
+        "`budget.no_progress_streak`, started again by `record_publish_success`, "
+        "`record_revision_publish_success`, and `refresh_on_exhaustion`",
         ("refresh_on_exhaustion", "exhaust_repair_attempts")),
     "dev_reviews": Budget(
         "retries.patch_review_rejections", 0,
         "one failed review of a held development patch in succession, which returns it for "
         "repair",
-        "`budget.review_rejections`, started again by a passing review, a published patch, "
+        "`budget.review_rejections`, started again by a passing review, "
+        "`record_publish_success` and `record_revision_publish_success` (a published patch), "
         "a patch to be published anyway that is discarded unpublished, and "
         "`refresh_on_exhaustion`", ("publish_after_failed_reviews",)),
     "flaky_reruns": Budget(
@@ -2748,6 +2757,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
             Diagram(None, _SIMPLIFIED_NODES, (
                 ("queued.idle", "begin_planning"),
                 ("queued.idle", "withdraw_request"),
+                ("planning.idle", "withdraw_request"),
                 ("planning.idle", "dispatch_planning"),
                 ("planning.agent_running", "reject_plan"),
                 ("planning.agent_running", "exhaust_planning_recovery"),
@@ -4538,6 +4548,23 @@ def counters_named(edge: Edge) -> set[str]:
     return {value} if value else set(exhausted_budgets(edge))
 
 
+def _check_published_restarts(problems: list[str]) -> None:
+    """A published Result starts the streaks of rejected outcomes again, as
+    an effect of its row: every row that records a publication clears both
+    fields, and no other row taken on a worker Result clears the streak."""
+    for e in table_edges():
+        where = f"{e.source} --{e.verb}--> {e.target}"
+        clears = set(e.transition.effects.clears)
+        if e.verb in PUBLISHED_VERBS:
+            for name in PUBLISHED_RESTARTS:
+                if name not in clears:
+                    problems.append(f"{where}: a published Result starts {name} again: "
+                                    "it must be cleared by this row")
+        elif e.transition.trigger == _R and "budget.no_progress_streak" in clears:
+            problems.append(f"{where}: only {_one_of(PUBLISHED_VERBS)} start "
+                            "budget.no_progress_streak again on a worker Result")
+
+
 def _check_counter_restarts(problems: list[str]) -> None:
     """A resume after a budget was exhausted starts that counter again, with
     no exception: every exhaustion that leads to a human wait names its
@@ -4820,6 +4847,7 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_stops(problems)
     _check_feedback(problems)
     _check_reruns(problems)
+    _check_published_restarts(problems)
     _check_held_patch(problems)
     _check_held_result(problems)
     _check_settled_rows(problems)

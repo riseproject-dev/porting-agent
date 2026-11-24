@@ -120,7 +120,7 @@ def _actionable(c: dict) -> str | None:
         return work_queue.DEVELOPMENT_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
-    if c["phase"] in ("queued", "planning") and c["activity"] == "idle":
+    if engine.state_key(c) == "planning.idle":
         return "planning"
     return None
 
@@ -140,8 +140,8 @@ WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
 # The rows of the table that allocate due Work, by the state it is due in, in
 # the order they are tried; their guards are exclusive. A request in
-# `queued.idle` first takes `begin_planning`, in the tick that allocates
-# the planning Work.
+# `queued.idle` takes `begin_planning` in a tick of its own, before any of
+# these rows is taken from `planning.idle` in a later tick.
 ALLOCATIONS = {
     "planning.idle": ("dispatch_planning",),
     "development.fix_needed": ("request_repair", "request_patch"),
@@ -569,8 +569,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         res.stage("projects", proj)
 
     # Removing the intake label withdraws only an accepted request that has
-    # not requested any Work yet (`withdraw_request`, guarded by no Work, no
-    # plan, and no fork). Once Work exists, explicit lifecycle commands are
+    # not requested any Work yet, in `queued.idle` or while it waits for a
+    # worker slot in `planning.idle` (`withdraw_request`, guarded by no Work,
+    # no plan, and no fork). Once Work exists, explicit lifecycle commands are
     # required so an unlabeled event cannot silently stop work.
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -580,7 +581,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             labels = {label.get("name") if isinstance(label, dict) else label
                       for label in (issue or {}).get("labels", [])}
             if issue is None or INTAKE_LABEL in labels \
-                    or engine.state_key(c) != "queued.idle":
+                    or engine.state_key(c) not in ("queued.idle", "planning.idle"):
                 continue
             out = engine.apply_transition(c, "withdraw_request", policy=policy, now=now,
                                           cause_id=f"issue-{c['tracking_issue']['id']}",
@@ -986,6 +987,22 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # state of the table, Work is allocated by the row the table names for
     # it, and an exhausted budget takes its exhaustion row instead.
     evidence = evidence or {}
+    # Planning begins: a request in `queued.idle` that is not paused takes
+    # `begin_planning` in a commit of its own, whatever the worker slot,
+    # capacity, upstream binding or source read. Its Work is allocated from
+    # `planning.idle` in a later tick.
+    begun: set[str] = set()
+    for cid, c in list(by_id.items()):
+        if cid in skip or engine.state_key(c) != "queued.idle":
+            continue
+        with isolation.contribution(cid, "begin_planning"):
+            out = engine.apply_transition(c, "begin_planning", policy=policy, now=now,
+                                          cause_id=f"tick-r{c['revision']}")
+            if out.accepted:
+                by_id[cid] = out.record
+                res.stage("contributions", out.record)
+                res.stage("events", out.event)
+                begun.add(cid)
     candidates = []
     for c in by_id.values():
         if c["contribution_id"] in skip:
@@ -996,14 +1013,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             kind = _actionable(c)
             if kind is None:
                 continue
+            if c["contribution_id"] in begun:
+                rep["deferred"].append({"contribution": c["contribution_id"],
+                                        "why": "planning began in this tick; its Work is "
+                                               "allocated in a later tick"})
+                continue
             if c["contribution_id"] in blocked_by_op:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
                 continue
             if engine.state_key(c) not in lifecycle.LIFECYCLE:
                 continue  # a state the table does not have requests no Work
-            due = _begun(c, policy, now)
-            if due is None:
-                continue
+            due = c
             moved = _unrecorded_head(due, inputs)
             if moved:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": moved})
@@ -1048,7 +1068,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                           if engine.refusal(due, verb, policy=policy, now=now, ci_evidence=ci,
                                             open_operations=ops) is None), None)
             if spent:
-                _exhaust(c, due, spent, ci, by_id, res, policy, now)
+                _exhaust(due, spent, ci, by_id, res, policy, now)
                 continue
             verb, why = _allocation_verb(due, ci, ops, policy, now, facts)
             if verb is None:
@@ -1079,9 +1099,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     continue
             slots -= 1
             claimed = c
-            if engine.state_key(c) == "queued.idle":
-                claimed = _take(c, "begin_planning", res, policy, now,
-                                cause_id=f"tick-r{c['revision']}")
             ci = evidence.get(claimed.get("last_ci_evidence_id") or "")
             cluster = engine.recorded_failing_job(claimed, ci)[1]
             request = _work_request(claimed, kind, inputs, now)
@@ -1267,16 +1284,6 @@ def _take(record: dict, verb: str, res: TickResult, policy: dict, now: str, **kw
     return out.record
 
 
-def _begun(record: dict, policy: dict, now: str) -> dict | None:
-    """The record as it is once its planning has begun: a request in
-    `queued.idle` takes `begin_planning` in the tick that allocates its
-    Work or exhausts its budget. ``None`` when it cannot begin."""
-    if engine.state_key(record) != "queued.idle":
-        return record
-    out = engine.apply_transition(record, "begin_planning", policy=policy, now=now)
-    return out.record if out.accepted else None
-
-
 def _allocation_verb(record: dict, ci: dict | None, ops: tuple[str, ...], policy: dict,
                      now: str, facts: frozenset = ALLOCATION_FACTS) -> tuple[str | None, str | None]:
     """The row that allocates the Work due in this state, once a worker slot
@@ -1319,19 +1326,15 @@ def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
     return {"parked_reason": f"{text}, after the automatic refresh"}, details
 
 
-def _exhaust(record: dict, due: dict, verb: str, ci: dict | None, by_id: dict, res: TickResult,
+def _exhaust(due: dict, verb: str, ci: dict | None, by_id: dict, res: TickResult,
              policy: dict, now: str) -> None:
-    """Take the exhaustion row ``verb`` from ``due`` (``record`` once its
-    planning has begun)."""
-    if due is not record:
-        due = _take(record, "begin_planning", res, policy, now,
-                    cause_id=f"tick-r{record['revision']}")
+    """Take the exhaustion row ``verb`` from ``due``."""
     values, details = _exhaustion_values(due, verb, ci, policy, now)
     changed = _take(due, verb, res, policy, now, cause_id=f"tick-r{due['revision']}",
                     values=values, ci_evidence=ci, details=details)
-    by_id[record["contribution_id"]] = changed
+    by_id[due["contribution_id"]] = changed
     res.report.setdefault("exhausted", []).append(
-        {"contribution": record["contribution_id"], "verb": verb, **details})
+        {"contribution": due["contribution_id"], "verb": verb, **details})
 
 
 def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:

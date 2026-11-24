@@ -96,18 +96,26 @@ class TestNativeQueueContracts(unittest.TestCase):
             "body": contribution["tracking_issue"]["description"],
             "labels": [{"name": "upstreaming-request"}],
         }
-        result = controller.tick(
-            contributions={"c": contribution},
-            operations={operation["operation_id"]: operation},
-            consumed={},
-            projects={project["project_id"]: project},
-            policy=load_policy(),
-            inputs=controller.Inputs(
-                now=datetime.fromisoformat("2026-11-22T02:30:00+00:00"),
-                pressure=capacity.Pressure(ok=True),
-                tracking_issues={1: issue},
-            ),
-        )
+        def tick(record):
+            return controller.tick(
+                contributions={"c": record},
+                operations={operation["operation_id"]: operation},
+                consumed={},
+                projects={project["project_id"]: project},
+                policy=load_policy(),
+                inputs=controller.Inputs(
+                    now=datetime.fromisoformat("2026-11-22T02:30:00+00:00"),
+                    pressure=capacity.Pressure(ok=True),
+                    tracking_issues={1: issue},
+                ),
+            )
+
+        # Planning begins in a tick of its own; its Work is selected in the next.
+        begun = tick(contribution)
+        self.assertEqual(begun.requested_effects, [])
+        contribution = [r for k, r in begun.staged if k == "contributions"][-1]
+        self.assertEqual((contribution["phase"], contribution["activity"]), ("planning", "idle"))
+        result = tick(contribution)
         self.assertEqual(
             result.report["selected"],
             [{"contribution": "closeio--ciso8601/1", "task": "planning"}],

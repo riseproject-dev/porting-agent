@@ -30,6 +30,7 @@ import state
 import work
 from tests import helpers
 from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, apply_command, ci_record, contribution, policy
+from tests.test_engine import scenario
 from tests.test_late_results import UPSTREAM_PR, events, final, publication, tick
 
 T = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
@@ -268,17 +269,85 @@ class TestLateResultMatrix(unittest.TestCase):
 class TestAllocation(unittest.TestCase):
     """Work is allocated by the table's rows; each allocation charges once."""
 
-    def test_planning_begins_and_is_dispatched_in_one_tick(self):
+    def test_planning_begins_in_a_commit_of_its_own(self):
         record = contribution(phase="queued", activity="idle", fork=None)
-        res, after = select(record)
-        self.assertEqual(kinds(res), ["begin_planning", "dispatch_planning"])
+        res, begun = select(record)
+        self.assertEqual(kinds(res), ["begin_planning"])
+        self.assertEqual(engine.state_key(begun), "planning.idle")
+        self.assertIsNone(begun["active_work"])
+        self.assertEqual(begun["budget"]["attempts_used"], 0)
+        self.assertEqual(res.requested_effects, [])
+        # The Work is allocated from `planning.idle` in a later tick.
+        res, after = select(begun)
+        self.assertEqual(kinds(res), ["dispatch_planning"])
         self.assertEqual(engine.state_key(after), "planning.agent_running")
         self.assertEqual(after["budget"]["attempts_used"], 1)
         self.assertEqual(after["active_work"]["dedupe_key"], "example--proj/12@g0.r0:planning")
         self.assertEqual(res.requested_effects[0]["generation"], 0)
-        # Without a worker slot nothing begins.
+        # Without a worker slot planning still begins, and waits in `planning.idle`.
         res, waiting = select(record, slots=0)
-        self.assertEqual((kinds(res), waiting), ([], record))
+        self.assertEqual((kinds(res), engine.state_key(waiting)),
+                         (["begin_planning"], "planning.idle"))
+        res, still = select(waiting, slots=0)
+        self.assertEqual((kinds(res), still), ([], waiting))
+        # A paused request changes nothing.
+        paused = dict(record, paused=True, paused_at=NOW, paused_reason="x", paused_by="u")
+        res, same = select(paused)
+        self.assertEqual((kinds(res), same), ([], paused))
+
+    def test_work_total_spent_waits_after_planning_begins(self):
+        limit = lc.budget_limit("work_total", POLICY)
+        record = contribution(phase="queued", activity="idle", fork=None)
+        record = dict(record, budget=dict(record["budget"], attempts_used=limit))
+        res, begun = select(record)
+        self.assertEqual(kinds(res), ["begin_planning"])
+        res, waiting = select(begun)
+        self.assertEqual(kinds(res), ["exhaust_work_total"])
+        self.assertEqual(waiting["activity"], "waiting_human")
+
+    def test_the_task_follows_the_row_and_the_pending_feedback(self):
+        # A refreshed plan that returns to the fork with no failing CI job and
+        # no pending feedback is answered by a patch.
+        base = contribution(phase="planning", activity="agent_running", plan_evidence_id="plan-1",
+                            refresh={"command_id": "c", "reason": "r", "from_phase": "development",
+                                     "head_sha": SHA_A, "pr_number": 7})
+        fix = dict(base, phase="development", activity="fix_needed", refresh=None)
+        res, after = select(fix)
+        self.assertEqual(kinds(res), ["request_patch"])
+        self.assertEqual(after["active_work"]["task"], "development_patch")
+        # Pending feedback to answer: a repair, still by `request_patch`.
+        feedback = dict(fix, pending_feedback_evidence_ids=["review-1"])
+        res, after = select(feedback, evidence={"review-1": {"evidence_id": "review-1",
+                                                             "kind": "human_relay"}})
+        self.assertEqual(kinds(res), ["request_patch"])
+        self.assertEqual(after["active_work"]["task"], "development_repair")
+        # A failing job: `request_repair`.
+        failing = dict(fix, last_ci_evidence_id="ci-9")
+        res, after = select(failing, evidence={"ci-9": ci_record("ci-9", SHA_A,
+                                                                 failing="build riscv64")})
+        self.assertEqual(kinds(res), ["request_repair"])
+        self.assertEqual(after["active_work"]["task"], "development_repair")
+
+    def test_a_rejected_outcome_charges_no_progress_whatever_progress_it_reports(self):
+        for name in ("rejected_validation", "worker_blocked"):
+            for phase in ("development", "upstream_review"):
+                with self.subTest(result=name, phase=phase):
+                    extra = {"upstream_pr": copy.deepcopy(UPSTREAM_PR)} \
+                        if phase == "upstream_review" else {}
+                    record = requested(contribution(phase=phase, activity="fix_needed",
+                                                    plan_evidence_id="plan-1", **extra),
+                                       "upstream_revision" if phase == "upstream_review"
+                                       else "development_patch")
+                    pub = publication(record, name)
+                    pub = dict(pub, proposal=dict(pub.get("proposal") or {},
+                                                  progress="new_causal_evidence"),
+                               task={"contribution_id": record["contribution_id"],
+                                     "revision": record["revision"], "generation": 0,
+                                     "dedupe_key": record["active_work"]["dedupe_key"]})
+                    folded, _staged = reconcile.apply_publication(record, pub, now=NOW,
+                                                                  policy=POLICY)
+                    self.assertEqual(folded["budget"]["no_progress_streak"],
+                                     record["budget"]["no_progress_streak"] + 1)
 
     def test_repair_charges_its_failing_job_once_at_allocation(self):
         record = contribution(activity="fix_needed", last_ci_evidence_id="ci-9",
@@ -375,6 +444,10 @@ class TestExhaustion(unittest.TestCase):
                 record = self.spent(record, attempts_used=limit, no_progress_streak=1,
                                     planning_attempts=1)
                 res, waiting = select(record)
+                if engine.state_key(record) == "queued.idle":
+                    # Planning begins first, in a commit of its own.
+                    self.assertEqual(kinds(res), ["begin_planning"])
+                    res, waiting = select(waiting)
                 self.assertEqual(res.requested_effects, [])
                 self.assertEqual(kinds(res)[-1], "exhaust_work_total")
                 self.assertEqual(waiting["activity"], "waiting_human")
@@ -558,6 +631,23 @@ class TestExhaustion(unittest.TestCase):
         new, _staged = reconcile.apply_publication(record, result(record, "published"), now=NOW,
                                                    policy=POLICY)
         self.assertEqual(new["budget"]["no_progress_streak"], 0)
+
+    def test_every_published_row_starts_the_streaks_again_as_a_row_effect(self):
+        for source, verb in (("development.agent_running", "record_publish_success"),
+                            ("development.publishing", "record_publish_success"),
+                            ("upstream_review.agent_running", "record_revision_publish_success")):
+            with self.subTest(state=source, verb=verb):
+                edge = lc.find_edge(source, verb)
+                rec, kwargs = scenario(source, verb, edge.transition)
+                rec["budget"] = dict(rec["budget"], no_progress_streak=2, review_rejections=1)
+                out = engine.apply_transition(rec, verb, **kwargs)
+                self.assertTrue(out.accepted, out.reason)
+                self.assertEqual((out.record["budget"]["no_progress_streak"],
+                                  out.record["budget"]["review_rejections"]), (0, 0))
+        # The write beside the row keeps to the admitted scope.
+        with self.assertRaises(lc.TransitionError):
+            engine.record_beside(contribution(), "patch_published", now=NOW,
+                                 budget=dict(contribution()["budget"], no_progress_streak=0))
 
 
 class TestFailingJob(unittest.TestCase):

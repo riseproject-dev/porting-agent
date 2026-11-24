@@ -100,6 +100,7 @@ flowchart TB
     start_1(( )) -->|accept_request| queued_idle
     queued_idle -->|begin_planning| planning_idle
     queued_idle -->|withdraw_request| closed_idle
+    planning_idle -->|withdraw_request| closed_idle
     planning_idle -->|dispatch_planning| planning_agent_running
     planning_agent_running -->|reject_plan| planning_idle
     planning_agent_running -->|exhaust_planning_recovery| planning_waiting_human

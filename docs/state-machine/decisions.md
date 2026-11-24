@@ -1396,6 +1396,95 @@ flowchart TB
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
 ```
 
+### O35. When planning begins
+
+When does a request in `queued.idle` take `begin_planning`, and can it still be withdrawn while it waits for a worker slot?
+
+**Decision.** In the first tick that processes it while it is not paused, whether or not a worker slot is free, and never in the commit that allocates its Work: `dispatch_planning` or `exhaust_work_total` is taken from `planning.idle` in a later tick, as decision 14 states (two transitions, written in two commits). A request that waits for a worker slot waits in `planning.idle`, where `withdraw_request` applies with the same guards as in `queued.idle` (intake label removed, no Work requested, no plan, no fork), so removing the intake label still withdraws it. This completes decision 14.
+
+```mermaid
+flowchart TB
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+    subgraph planning["planning"]
+        planning_idle["planning.idle"]
+        planning_agent_running["planning.agent_running"]
+    end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
+
+    queued_idle ==>|begin_planning| planning_idle
+    planning_idle -->|dispatch_planning| planning_agent_running
+    queued_idle -->|withdraw_request| closed_idle
+    planning_idle ==>|withdraw_request| closed_idle
+```
+
+### O36. What `no_progress` counts and what starts it again
+
+Which outcomes charge `no_progress`, and what starts it again?
+
+**Decision.** Every rejected or blocked worker outcome (`reject_patch_proposal`) charges `no_progress`, whatever `progress` the proposal reports: that field is the worker's own untrusted claim, and letting it stop the streak would let a worker extend its own retries without bound. A published Result starts `no_progress` and `dev_reviews` again as an effect of its row (`record_publish_success` in both development states, `record_revision_publish_success`), which `lifecycle check` enforces; only `scope_paths` stays beside the row. `budget.review_rejections` is cleared by `record_revision_publish_success` as well, although nothing reads it in upstream review. `refresh_on_exhaustion` starts both again too.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_publishing["development.publishing"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_agent_running["upstream_review.agent_running"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+    end
+
+    development_agent_running ==>|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|record_publish_success| development_waiting_ci
+    development_publishing ==>|record_publish_success| development_waiting_ci
+    upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
+```
+
+### O37. The task a development allocation asks for
+
+What does a worker run asked for by `request_patch` or `request_repair` do?
+
+**Decision.** `request_repair` always asks for a repair (`development_repair`). `request_patch` asks for a repair when feedback is pending for the Work to answer, and for a patch (`development_patch`) otherwise: it covers the first patch, the patch after a rejected proposal, and a repair driven only by review feedback. A refreshed plan that returns to the fork (`readmit_development`) with no failing CI job and no pending feedback has nothing to diagnose, so a patch against the new plan is the answer.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+    end
+
+    development_fix_needed ==>|request_patch| development_agent_running
+    development_fix_needed -->|request_repair| development_agent_running
+    planning_agent_running -->|readmit_development| development_fix_needed
+```
+
+### O38. A command field its row does not read
+
+What happens to a command field that the row taken does not read?
+
+**Decision.** It is refused with the place where it applies, and the record is not changed; it is never ignored, since ignoring it would silently drop what the human asked for, for example a head they meant to bind. `class`, `paths` and `branch` apply only to a refresh from `parked.idle` that starts a generation (`restart_generation`); `head` applies only to a row guarded by the exact candidate head or the exact clean head.
+
+```mermaid
+flowchart TB
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+
+    parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

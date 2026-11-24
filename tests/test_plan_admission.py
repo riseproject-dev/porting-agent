@@ -518,7 +518,9 @@ class TestOverrideEndToEnd(unittest.TestCase):
                          ("restart_generation", "queued.idle"))
         self.assertEqual(resumed.record["admission_override"], OVERRIDE)
         # The new generation's planning is requested, then answered by a park.
-        running, out = self.tick(resumed.record)
+        begun, out = self.tick(resumed.record)
+        self.assertEqual(engine.state_key(begun), "planning.idle")
+        running, out = self.tick(begun)
         self.assertEqual(engine.state_key(running), "planning.agent_running")
         task = {"contribution_id": running["contribution_id"], "revision": running["revision"],
                 "generation": running["generation"],

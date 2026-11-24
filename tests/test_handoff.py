@@ -1495,8 +1495,7 @@ class TestLockedWait(unittest.TestCase):
         world = through("handoff.waiting_upstream_pr")
         out = world.tick(at(30), comments=[comment(
             f'/upstreaming refresh revision=7 head={CLEAN} reason="new base"', cid=971)])
-        self.assertEqual(world.kinds(out), ["refresh_planning", "begin_planning",
-                                            "dispatch_planning"])
+        self.assertEqual(world.kinds(out), ["refresh_planning", "begin_planning"])
         self.assertEqual(world.record["refresh"]["head_sha"], HEAD)
         self.assertEqual(world.record["fork"], FORK)
         self.assertEqual(world.gh.branches["riscv64"], CLEAN)
