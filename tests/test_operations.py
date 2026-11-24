@@ -22,7 +22,17 @@ import lifecycle as lc
 import reconcile
 import recovery
 import schemas
-from tests.helpers import NOW, OWNER, SHA_A, SHA_C, STRANGER, apply_command, contribution, policy
+from tests.helpers import (
+    NOW,
+    OWNER,
+    SHA_A,
+    SHA_C,
+    STRANGER,
+    apply_command,
+    contribution,
+    holding_work,
+    policy,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = policy(read_only=False)
@@ -866,10 +876,11 @@ class TestOpenOperationFence(unittest.TestCase):
             self.assertTrue(out.accepted, out.reason)
 
     def test_no_second_writer_while_an_operation_is_open(self):
-        rec = contribution(activity="waiting_ci", active_operation_id="op-" + "1" * 24)
+        rec, identity = holding_work(contribution(activity="waiting_ci",
+                                                  active_operation_id="op-" + "1" * 24))
         why = lc.publication_check(rec, expected_revision=0, expected_head=SHA_A,
                                    observed_head=SHA_A, ref="riscv64-dev",
-                                   repository="riseproject-upstreaming/proj")
+                                   repository="riseproject-upstreaming/proj", **identity)
         self.assertIn("another writer operation", why)
 
 

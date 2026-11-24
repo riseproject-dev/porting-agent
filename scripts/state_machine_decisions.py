@@ -1048,6 +1048,28 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                ("development.fix_needed", "record_head_change")),
         highlighted=(("development.fix_needed", "record_head_change"),),
     ),
+    Item(
+        "The Work identity has no pre-identity reading",
+        "Whether a Work payload that names neither `generation` nor `dedupe_key`, or "
+        "requested Work recorded without a generation, is still read as generation 0.",
+        "No. A Work payload names its identity only with an integer `generation` and a string "
+        "`dedupe_key`; one that lacks either, also one that names neither, names no Work "
+        "identity in any generation. Its Result is late and takes `record_late_effect`, and "
+        "the publisher refuses its write as stale. Requested Work whose recorded generation "
+        "is absent or not the record's is never dispatched and matches no Result; the field "
+        "migration carries Work recorded without a generation as generation 0. The Work such "
+        "a Result leaves requested is terminal without a usable Result and is answered by "
+        "`allocate_work_retry` within `work_recovery` and `work_total`, then "
+        "`exhaust_work_recovery` to the human wait of the phase. This completes decision 2 "
+        "(the generation fence) and decision 19 (late Results): a Result that differs in the "
+        "generation, the revision, or the Work id is never folded and never published.",
+        ("development.agent_running", "development.waiting_human"),
+        edges=(("development.agent_running", "record_late_effect"),
+               ("development.agent_running", "allocate_work_retry"),
+               ("development.agent_running", "exhaust_work_recovery")),
+        highlighted=(("development.agent_running", "record_late_effect"),
+                     ("development.agent_running", "allocate_work_retry")),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (

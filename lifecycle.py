@@ -85,7 +85,7 @@ def recorded_head(record: dict) -> str | None:
 
 def publication_check(record: dict, *, expected_revision: int, expected_head: str | None,
                       observed_head: str | None, ref: str, repository: str,
-                      expected_generation: int = 0, work_key: str | None = None,
+                      expected_generation: int, work_key: str,
                       reviewed: bool = False) -> str | None:
     """Re-read immediately before a fork write. Returns None when the write
     may proceed, otherwise the reason it must not. An effect that already
@@ -94,8 +94,7 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
 
     The Result must match the Work identity: the generation and revision of
     the record, and the Work id of the requested Work (``work_key``), or a
-    pending publication of a held Result. A payload written before the Work
-    identity carried the Work id passes ``work_key=None`` and generation 0.
+    pending publication of a held Result.
 
     A development patch whose Work carries the review contract
     (``reviewed``) is written only from ``development.publishing``, and
@@ -136,19 +135,18 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
         # review took since.
         if held.get("revision") != expected_revision:
             return "the Result is not the held patch (revision)"
-        if work_key is not None and held.get("work") != work_key:
+        if held.get("work") != work_key:
             return "the Result is not the held patch (Work id)"
         if not record.get("pending_publication"):
             return "no pending publication of the held patch"
     else:
         if record["revision"] != expected_revision:
             return "work revision changed"
-        if work_key is not None:
-            work = record.get("active_work")
-            if work is not None and work.get("dedupe_key") != work_key:
-                return "the requested Work is other Work"
-            if work is None and not record.get("pending_publication"):
-                return "no requested Work or pending publication"
+        work = record.get("active_work")
+        if work is not None and work.get("dedupe_key") != work_key:
+            return "the requested Work is other Work"
+        if work is None and not record.get("pending_publication"):
+            return "no requested Work or pending publication"
     if observed_head != expected_head:
         return "fork head changed since the proposal was made"
     if record.get("active_operation_id"):

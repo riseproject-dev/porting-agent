@@ -9,7 +9,15 @@ import controller
 import engine
 import lifecycle
 import schemas
-from tests.helpers import NOW, SHA_A, SHA_B, apply_command, contribution, policy
+from tests.helpers import (
+    NOW,
+    SHA_A,
+    SHA_B,
+    apply_command,
+    contribution,
+    holding_work,
+    policy,
+)
 
 
 def cmd(text):
@@ -32,28 +40,31 @@ class TestRevision(unittest.TestCase):
         self.assertIsNone(out.record["last_ci_evidence_id"])
 
     def test_a_moved_head_stales_a_proposal(self):
-        rec = contribution()
+        rec, identity = holding_work(contribution())
         self.assertIsNone(lifecycle.publication_check(rec, expected_revision=rec["revision"],
                                                       expected_head=SHA_A, observed_head=SHA_A,
-                                                      ref="riscv64-dev", repository="riseproject-upstreaming/proj"))
+                                                      ref="riscv64-dev", repository="riseproject-upstreaming/proj",
+                                                      **identity))
         moved = engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
                                         facts={"fork_head_changed"},
                                         values={"fork.head_sha": SHA_B}).record
         self.assertEqual(lifecycle.publication_check(moved, expected_revision=rec["revision"],
                                                      expected_head=SHA_A, observed_head=SHA_B,
-                                                     ref="riscv64-dev", repository="riseproject-upstreaming/proj"),
+                                                     ref="riscv64-dev", repository="riseproject-upstreaming/proj",
+                                                     **identity),
                          "work revision changed")
 
 
 class TestPublicationCheck(unittest.TestCase):
     def args(self, **kw):
         a = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A, ref="riscv64-dev",
-                 repository="riseproject-upstreaming/proj")
+                 repository="riseproject-upstreaming/proj", **holding_work(contribution())[1])
         a.update(kw)
         return a
 
     def test_ok(self):
-        self.assertIsNone(lifecycle.publication_check(contribution(), **self.args()))
+        self.assertIsNone(lifecycle.publication_check(holding_work(contribution())[0],
+                                                      **self.args()))
 
     def test_rejects(self):
         cases = {

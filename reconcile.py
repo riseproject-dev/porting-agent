@@ -430,9 +430,8 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
 def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
     """The committed ``work_history`` evidence of the requested Work ``aw``,
     ``False`` when it carries a history that is not committed yet, ``None``
-    when it carries none (Work requested before the identity carried the
-    generation) or ``evidence`` is not known."""
-    if evidence is None or "generation" not in aw or not aw.get("dedupe_key"):
+    when it names no Work id or ``evidence`` is not known."""
+    if evidence is None or not aw.get("dedupe_key"):
         return None
     return evidence.get(work_history.evidence_id(aw["dedupe_key"])) or False
 
@@ -632,10 +631,6 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     ``record_late_effect``. Park, abandon, and
     pause clear the Work and the pending publication, so a matching revision
     alone does not prove a match.
-
-    A Result whose payload names no generation and no Work id was requested
-    before the Work identity carried them: it is generation 0 and its Work is
-    recognized by the revision (``work.task_identity``).
     """
     if rec["phase"] == "handoff" and engine.state_key(rec) not in SUBMISSION_WORK_STATES:
         return "late Result during handoff"
@@ -699,9 +694,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         # phase has no row of this one.
         return (f"late Result: {requested.get('task')} Work is not requested in the "
                 f"{rec['phase']} phase")
-    if requested and work.work_generation(requested) == current \
+    if requested and requested.get("generation") == current \
             and requested.get("revision") == revision \
-            and (requested.get("dedupe_key") == key if key is not None else True) \
+            and requested.get("dedupe_key") == key \
             and task.get("task", requested.get("task")) == requested.get("task") \
             and (pub.get("status") == "planning") == (requested.get("task") == "planning"):
         # The Work id names the task; a plan answers planning Work
@@ -2986,9 +2981,7 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
         record = latest[cid]
         with isolation.contribution(cid, "work_history"):
             request = work.request_from_active(record)
-            if request is None or "generation" not in request:
-                # Nothing to dispatch, or Work requested before the identity
-                # carried the generation, whose payload carries no history.
+            if request is None:
                 continue
             eid = work_history.evidence_id(request["dedupe_key"])
             if eid in evidence:

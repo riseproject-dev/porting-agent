@@ -184,7 +184,8 @@ class TestBlockIsRetired(unittest.TestCase):
         self.assertTrue(schemas.errors("contribution", contribution(blocked_reason="x")))
         self.assertFalse(lc.publication_check(
             contribution(paused=True), expected_revision=0, expected_head=SHA_A,
-            observed_head=SHA_A, ref="riscv64", repository="riseproject-upstreaming/proj") is None)
+            observed_head=SHA_A, ref="riscv64", repository="riseproject-upstreaming/proj",
+            expected_generation=0, work_key="example--proj/12@g0.r0:x") is None)
 
 
 class TestPauseMask(unittest.TestCase):

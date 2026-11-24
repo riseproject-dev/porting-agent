@@ -12,8 +12,10 @@ that names it, so the resume starts exactly that counter again.
 from __future__ import annotations
 
 import copy
+import subprocess
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import capacity
 import ci_evidence
@@ -24,6 +26,7 @@ import isolation
 import lifecycle as lc
 import reconcile
 import schemas
+import state
 import work
 from tests import helpers
 from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, apply_command, ci_record, contribution, policy
@@ -46,9 +49,7 @@ def requested(record, task="development_repair"):
 def result(record, name="published", **task):
     """A Result of the Work ``record`` holds, with ``task`` overriding its payload."""
     pub = publication(record, name)
-    work_request = record["active_work"]
-    pub["task"] = dict(dict(pub["task"], generation=work_request["generation"],
-                            dedupe_key=work_request["dedupe_key"]), **task)
+    pub["task"].update(task)
     return pub
 
 
@@ -106,45 +107,117 @@ class TestLateResultMatrix(unittest.TestCase):
                     self.assertEqual(dict(after, processed_publications=[]),
                                      dict(record, processed_publications=[]))
 
-    def test_a_payload_without_the_identity_is_generation_zero(self):
-        """A worker started before the identity carried the generation."""
-        old = {"contribution_id": "example--proj/12", "revision": 5}
-        self.assertEqual(work.task_identity(old), (0, None))
-        self.assertEqual(work.task_identity(dict(old, generation=0)), (None, None))
-        self.assertEqual(work.task_identity(dict(old, dedupe_key="k")), (None, None))
-        # In generation 0 its Work is recognized by the revision; in-flight
-        # Work recorded without a generation is generation 0 too.
-        zero = requested(contribution(revision=5))
-        del zero["active_work"]["generation"]
-        self.assertEqual(work.work_generation(zero["active_work"]), 0)
-        pub = dict(publication(zero, "published"), task=dict(old))
-        self.assertIsNone(reconcile.result_mismatch(zero, pub))
-        output = tick(zero, [pub], capacity_ok=False)
-        self.assertEqual(final(output, zero)["activity"], "waiting_ci")
-        # It is never folded into a later generation, whatever its revision.
-        later = self.record(generation=1, revision=5)
-        self.assertEqual(reconcile.result_mismatch(later, dict(pub)),
-                         "late Result of generation 0, current is 1")
-        output = tick(later, [dict(pub)], capacity_ok=False)
-        self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
-        self.assertEqual(final(output, later)["active_work"], later["active_work"])
+    def test_a_payload_without_the_identity_names_no_work(self):
+        """Only an integer generation and a string Work id name a Work
+        identity; every other payload, also one that names neither, names
+        none, and its Result is late in every generation."""
+        bare = {"contribution_id": "example--proj/12", "revision": 5}
+        self.assertEqual(work.task_identity(dict(bare, generation=0, dedupe_key="k")), (0, "k"))
+        for task in (bare, dict(bare, generation=0), dict(bare, dedupe_key="k"),
+                     dict(bare, generation=True, dedupe_key="k"),
+                     dict(bare, generation="0", dedupe_key="k"),
+                     dict(bare, generation=0, dedupe_key=7),
+                     dict(bare, generation=0, dedupe_key=None)):
+            with self.subTest(task=task):
+                self.assertEqual(work.task_identity(task), (None, None))
+        for generation in (0, 1):
+            with self.subTest(generation=generation):
+                record = self.record(generation=generation, revision=5)
+                pub = dict(publication(record, "published"), task=dict(bare))
+                self.assertEqual(reconcile.result_mismatch(record, pub),
+                                 "late Result: its task names no Work identity")
+                output = tick(record, [pub], capacity_ok=False)
+                self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
+                late = events(output)[0]["details"]
+                self.assertEqual((late["task_generation"], late["task_work"]), (None, None))
+                after = final(output, record)
+                self.assertEqual(dict(after, processed_publications=[]),
+                                 dict(record, processed_publications=[]))
+                self.assertEqual(after["processed_publications"], [999])
 
-    def test_work_in_flight_keeps_the_payload_it_was_submitted_with(self):
-        """A replay of Work requested before the identity existed submits the
-        same payload, so the queue sees the same Work."""
-        old = requested(contribution(revision=5))
-        for name in ("generation", "feedback_evidence_ids"):
-            del old["active_work"][name]
-        old["active_work"]["dedupe_key"] = "example--proj/12@5:development_repair"
-        payload = work.node(work.request_from_active(old), old, control_repo_id="1",
-                            allowed_paths=["a"])["payload"]
-        for name in ("generation", "dedupe_key", "feedback_evidence_ids"):
-            self.assertNotIn(name, payload)
-        self.assertEqual(work.task_identity(payload), (0, None))
-        new = requested(contribution(revision=5))
-        payload = work.node(work.request_from_active(new), new, control_repo_id="1",
-                            allowed_paths=["a"])["payload"]
-        self.assertEqual(work.task_identity(payload), (0, new["active_work"]["dedupe_key"]))
+    def test_every_payload_carries_the_identity(self):
+        """Every Work the dispatcher submits names its generation and Work
+        id, and the pending feedback ids it answers."""
+        tasks = sorted(work.WRITE_TASKS) + list(work.SUBMISSION_TASKS) + [
+            "planning", work.DEVELOPMENT_REVIEW]
+        for task in tasks:
+            for generation in (0, 2):
+                with self.subTest(task=task, generation=generation):
+                    record = requested(contribution(generation=generation, revision=5), task)
+                    payload = work.node(work.request_from_active(record), record,
+                                        control_repo_id="1", allowed_paths=["a"])["payload"]
+                    for name in ("generation", "dedupe_key", "feedback_evidence_ids"):
+                        self.assertIn(name, payload)
+                    self.assertEqual(work.task_identity(payload),
+                                     (generation, record["active_work"]["dedupe_key"]))
+
+    def test_work_of_no_or_another_generation_is_not_dispatched(self):
+        record = self.record(generation=1, revision=5)
+        self.assertIsNotNone(work.request_from_active(record))
+        for generation in (None, 0, 2, "1"):
+            with self.subTest(generation=generation):
+                other = copy.deepcopy(record)
+                if generation is None:
+                    del other["active_work"]["generation"]
+                else:
+                    other["active_work"]["generation"] = generation
+                self.assertIsNone(work.request_from_active(other))
+        # The field migration carries Work recorded without a generation as
+        # generation 0: it is then dispatched in generation 0 only.
+        for generation in (0, 1):
+            with self.subTest(migrated=generation):
+                old = copy.deepcopy(self.record(generation=generation, revision=5))
+                del old["active_work"]["generation"]
+                migrated, _event = state.migrate_record_fields(old, now=NOW)
+                self.assertEqual(migrated["active_work"]["generation"], 0)
+                self.assertEqual(work.request_from_active(migrated) is not None,
+                                 generation == 0)
+
+    def test_work_left_by_a_result_without_identity_is_retried_then_waits(self):
+        """The Work an identity-less Result leaves requested is terminal
+        without a usable Result once its graph completed: it takes
+        ``allocate_work_retry`` within ``work_recovery``, then
+        ``exhaust_work_recovery`` to the human wait of the phase."""
+        record = self.record(generation=0, revision=5)
+        pub = dict(publication(record, "published"),
+                   task={"contribution_id": record["contribution_id"], "revision": 5})
+        after = final(tick(record, [pub], capacity_ok=False), record)
+        self.assertEqual(after["active_work"], record["active_work"])
+        graph = work.graph_id(after["active_work"]["dedupe_key"])
+        _, staged, _ = reconcile.dispatch_recovery(
+            {"c": copy.deepcopy(after)}, runs=[], queue_works={graph: "completed"}, now=T,
+            policy=POLICY, work_results=None, collected=frozenset({graph}))
+        self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
+                         ["allocate_work_retry"])
+        retried = [r for kind, r in staged if kind == "contributions"][-1]
+        self.assertNotEqual(retried["active_work"]["dedupe_key"],
+                            after["active_work"]["dedupe_key"])
+        # `work_recovery` counts the attempts of the Work, `work_total` the
+        # attempts of the contribution: each is charged once.
+        self.assertEqual(retried["active_work"]["attempt"], after["active_work"]["attempt"] + 1)
+        self.assertEqual(retried["budget"]["attempts_used"],
+                         after["budget"]["attempts_used"] + 1)
+        exhausted = copy.deepcopy(after)
+        exhausted["active_work"]["attempt"] = lc.budget_limit("work_recovery", POLICY)
+        _, staged, _ = reconcile.dispatch_recovery(
+            {"c": exhausted}, runs=[], queue_works={graph: "completed"}, now=T,
+            policy=POLICY, work_results=None, collected=frozenset({graph}))
+        self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
+                         ["exhaust_work_recovery"])
+        waiting = [r for kind, r in staged if kind == "contributions"][-1]
+        self.assertEqual(engine.state_key(waiting), "development.waiting_human")
+
+    def test_no_pre_identity_reading_is_left(self):
+        self.assertFalse(hasattr(work, "work_generation"))
+        root = Path(__file__).resolve().parents[1]
+        tracked = subprocess.run(["git", "ls-files", "*.py"], cwd=root, capture_output=True,
+                                 text=True, check=True).stdout.split()
+        phrases = ("before the Work identity " + "carried", "before the identity " + "carried")
+        for name in tracked:
+            text = (root / name).read_text(encoding="utf-8")
+            for phrase in phrases:
+                with self.subTest(file=name, phrase=phrase):
+                    self.assertNotIn(phrase, text)
 
     def test_an_older_artifact_of_the_same_work_is_late_once_the_newest_is_folded(self):
         record = self.record()

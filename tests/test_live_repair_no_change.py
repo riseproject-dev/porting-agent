@@ -82,6 +82,9 @@ def publication_dir(temporary, run_id, mutate=None):
 def as_r6_result(files):
     """The same no_change answer, delivered for the claimed r6 Work."""
     files["task.json"]["revision"] = 6
+    # The recorded payload predates the Work identity in the payload; the
+    # replay stands for the same Work under the current identity.
+    files["task.json"].update(generation=0, dedupe_key=R6_KEY)
     files["proposal.json"]["expected_revision"] = 6
     files["result.json"]["run_id"] = R6_RUN
     files["record.json"] = load("contribution-r6.json")

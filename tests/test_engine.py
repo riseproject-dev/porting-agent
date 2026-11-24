@@ -22,6 +22,7 @@ from tests.helpers import (
     awaiting_submission,
     ci_record,
     contribution,
+    holding_work,
     policy,
 )
 
@@ -1200,9 +1201,10 @@ class TestSingleWritePath(unittest.TestCase):
                     phase=key.split(".")[0], activity=key.split(".")[1])))
 
     def test_no_fork_write_is_admitted_at_the_submission_gate(self):
+        running, identity = holding_work(contribution(activity="agent_running"))
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
-                    ref="riscv64-dev", repository="riseproject-upstreaming/proj")
-        self.assertIsNone(lc.publication_check(contribution(activity="agent_running"), **args))
+                    ref="riscv64-dev", repository="riseproject-upstreaming/proj", **identity)
+        self.assertIsNone(lc.publication_check(running, **args))
         self.assertEqual(lc.publication_check(awaiting_submission(), **args),
                          "state handoff.awaiting_submission does not permit fork writes")
         for activity in ("review_due", "agent_running", "waiting_ci", "preparing_submission"):
@@ -1211,20 +1213,36 @@ class TestSingleWritePath(unittest.TestCase):
                              f"state handoff.{activity} does not permit fork writes")
         # The build of `riscv64` is the one handoff state that writes, and only
         # `riscv64`: never the development branch.
-        building = awaiting_submission(activity="building_upstream_branch",
-                                       pending_human_action=None)
+        building = dict(awaiting_submission(activity="building_upstream_branch",
+                                            pending_human_action=None),
+                        active_work=running["active_work"])
         self.assertEqual(lc.publication_check(building, **args),
                          "ref 'riscv64-dev' is not 'riscv64'")
         self.assertIsNone(lc.publication_check(building, **dict(args, ref="riscv64")))
 
     def test_development_writes_only_the_development_branch(self):
+        rec, identity = holding_work(contribution(activity="agent_running"))
         args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
-                    ref="riscv64", repository="riseproject-upstreaming/proj")
-        rec = contribution(activity="agent_running")
+                    ref="riscv64", repository="riseproject-upstreaming/proj", **identity)
         self.assertEqual(lc.publication_check(rec, **args), "ref 'riscv64' is not 'riscv64-dev'")
         legacy = dict(rec, fork=dict(rec["fork"], head_ref="riscv64"))
         self.assertEqual(lc.publication_check(legacy, **dict(args, ref="riscv64-dev")),
                          "the recorded development branch is not 'riscv64-dev'")
+
+    def test_the_publication_check_always_compares_the_work_id(self):
+        rec, identity = holding_work(contribution(activity="agent_running"))
+        args = dict(expected_revision=0, expected_head=SHA_A, observed_head=SHA_A,
+                    ref="riscv64-dev", repository="riseproject-upstreaming/proj")
+        self.assertIsNone(lc.publication_check(rec, **args, **identity))
+        self.assertEqual(lc.publication_check(rec, **args, **dict(identity, work_key="other")),
+                         "the requested Work is other Work")
+        self.assertEqual(lc.publication_check(dict(rec, active_work=None), **args, **identity),
+                         "no requested Work or pending publication")
+        # The Work identity is required: no call skips the Work id.
+        for missing in ("work_key", "expected_generation"):
+            with self.subTest(missing=missing), self.assertRaises(TypeError):
+                lc.publication_check(rec, **args, **{k: v for k, v in identity.items()
+                                                     if k != missing})
 
     def test_handoff_waits_carry_the_pending_action_the_table_names(self):
         self.assertIsNone(engine.state_problem(awaiting_submission()))

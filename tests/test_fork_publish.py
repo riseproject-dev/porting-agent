@@ -10,9 +10,12 @@ from pathlib import Path
 
 import fork_publish
 import publisher
+import work
 from tests.helpers import commit_files, contribution, git, init_repo, policy
 
 NOW = "2026-11-18T12:00:00+00:00"
+# The Work the publisher's task answers.
+KEY = work.work_key("example--proj/12", 0, 0, "development_repair")
 
 
 class _ForkFixture:
@@ -45,7 +48,13 @@ class _ForkFixture:
         self.task = {"contribution_id": self.record["contribution_id"], "revision": 0, "expected_head": self.base,
                      "fork": "riseproject-upstreaming/proj", "fork_repository_id": 2,
                      "allowed_operations": ["append", "rewrite"],
-                     "allowed_paths": [".github/workflows/*"], "reason_ids": ["ci-1"], "ref": "riscv64-dev"}
+                     "allowed_paths": [".github/workflows/*"], "reason_ids": ["ci-1"], "ref": "riscv64-dev",
+                     "generation": 0, "dedupe_key": KEY}
+        # The Work the task answers is the Work the record holds.
+        self.record["active_work"] = {
+            "dedupe_key": KEY, "task": "development_repair", "revision": 0, "generation": 0,
+            "attempt": 1, "requested_at": NOW, "deadline_at": "2026-11-24T09:00:00+00:00",
+            "dispatched_run_id": None, "reason_ids": ["ci-1"], "feedback_evidence_ids": []}
         self.ops = []
         self.invocations = 0
 
@@ -292,6 +301,23 @@ class TestFailureClasses(_ForkFixture, unittest.TestCase):
         self.assertEqual((out.status, out.failure_class), ("infra_error", "infrastructure"))
         self.assertEqual(self.fork_head(), self.base)
 
+    def test_a_task_without_the_work_identity_is_stale_and_never_written(self):
+        for drop in (("generation", "dedupe_key"), ("generation",), ("dedupe_key",)):
+            with self.subTest(drop=drop):
+                task = {k: v for k, v in self.task.items() if k not in drop}
+                pushes = []
+                self.invocations += 1
+                out = fork_publish.publish(
+                    record=self.record, task=task, proposal=self.proposal(), mbox=self.mbox,
+                    token=None, observe_head=self.fork_head,
+                    scope=publisher.Scope(allowed_globs=[".github/workflows/*"]),
+                    policy=policy(read_only=False), now=NOW, save_operation=pushes.append,
+                    workdir=self.root / f"pub-{self.invocations}")
+                self.assertEqual((out.status, out.reason, out.failure_class),
+                                 ("rejected", "publication check: the task names no Work identity",
+                                  "stale"))
+                self.assertEqual((pushes, self.fork_head()), ([], self.base))
+
     def test_validation_and_stale_classes(self):
         out = self.run_publish(scope=publisher.Scope(allowed_globs=["src/*"]))
         self.assertEqual(out.failure_class, "validation")
@@ -411,7 +437,7 @@ class TestReviewedPublication(_ForkFixture, unittest.TestCase):
         self.record.update(activity="publishing", pending_publication={
             "worker_run_id": "7", "attempts": 0, "last_reason": "", "next_attempt_at": NOW})
         self.record["held_patch"] = {
-            "worker_run_id": "7", "artifact_id": 8, "work": None, "revision": 0,
+            "worker_run_id": "7", "artifact_id": 8, "work": KEY, "generation": 0, "revision": 0,
             "patch_digest": hashlib.sha256(self.mbox).hexdigest(), "candidate": candidate,
             "expected_head": self.base}
 

@@ -28,6 +28,13 @@ class TestPlanningRecordRecovery(unittest.TestCase):
         and the project a plan must now record."""
         directory = Path(temporary) / RUN_ID
         shutil.copytree(FIXTURE, directory)
+        # The recorded payload predates the Work identity in the payload;
+        # the replay stands for the same Work under the current identity,
+        # that of the Work the canary record holds.
+        path = directory / "task.json"
+        task = json.loads(path.read_text())
+        task.update(generation=0, dedupe_key="closeio--ciso8601/1@0:planning")
+        path.write_text(json.dumps(task))
         if version == 4:
             path = directory / "plan.json"
             plan = json.loads(path.read_text())

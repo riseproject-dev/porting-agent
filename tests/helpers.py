@@ -63,6 +63,22 @@ SHA_B = "b" * 40
 SHA_C = "c" * 40
 
 
+def holding_work(record: dict, task: str = "development_repair") -> tuple[dict, dict]:
+    """``record`` holding requested Work of ``task`` at its generation and
+    revision, and the Work identity a publication of that Work names
+    (``lifecycle.publication_check``'s ``expected_generation`` and
+    ``work_key``)."""
+    import work
+    generation = int(record.get("generation", 0))
+    key = work.work_key(record["contribution_id"], generation, record["revision"], task)
+    held = dict(record, active_work={
+        "dedupe_key": key, "task": task, "revision": record["revision"],
+        "generation": generation, "attempt": 1, "requested_at": NOW,
+        "deadline_at": "2026-11-19T12:00:00+00:00", "dispatched_run_id": None,
+        "reason_ids": [], "feedback_evidence_ids": []})
+    return held, {"expected_generation": generation, "work_key": key}
+
+
 def result_missing(*graphs: str) -> dict[str, dict]:
     """``work_results`` readings (``reconcile.work_result_readings``) of the
     completed Work ``graphs``: each worker run ended without a publication

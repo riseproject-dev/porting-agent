@@ -149,11 +149,7 @@ def _identity(request: dict) -> dict:
     """The Work identity a payload carries: a Result is folded only when the
     generation, the revision, and the Work id it carries back match the
     requested Work. The Work also carries the pending feedback ids recorded
-    when it was allocated, which the published patch answers. A request
-    without a generation was first submitted before these fields existed; its
-    payload stays the one the queue already holds."""
-    if "generation" not in request:
-        return {}
+    when it was allocated, which the published patch answers."""
     return {"generation": request["generation"], "dedupe_key": request["dedupe_key"],
             "feedback_evidence_ids": list(request.get("feedback_evidence_ids") or [])}
 
@@ -186,27 +182,16 @@ def work_key(contribution_id: str, generation: int, revision: int, task: str,
     return f"{contribution_id}@g{generation}.r{revision}{rerun}:{task}"
 
 
-def work_generation(work: dict) -> int:
-    """The generation requested Work was allocated in. Work allocated before
-    the Work identity carried the generation has none; it is generation 0
-    (a fallback for Work in flight across that deployment)."""
-    return int(work.get("generation", 0))
-
-
 def task_identity(task: dict) -> tuple[int | None, str | None]:
     """The generation and Work id a Work payload (``task.json``) names.
 
-    A payload written before the Work identity carried them names neither:
-    it is generation 0 with no Work id, and its Work is recognized by its
-    revision (the fallback for a worker in flight across that deployment).
-    A payload that names only one of them names no identity: ``(None, None)``,
-    which matches no requested Work."""
-    has_generation, has_key = "generation" in task, "dedupe_key" in task
-    if not has_generation and not has_key:
-        return 0, None
+    A payload names its Work identity only with an integer ``generation``
+    and a string ``dedupe_key``. Every other payload, including one that
+    names neither, names no identity: ``(None, None)``, which matches no
+    requested Work."""
     generation, key = task.get("generation"), task.get("dedupe_key")
-    if not has_generation or not has_key or not isinstance(generation, int) \
-            or isinstance(generation, bool) or not isinstance(key, str):
+    if not isinstance(generation, int) or isinstance(generation, bool) \
+            or not isinstance(key, str):
         return None, None
     return generation, key
 
@@ -217,17 +202,14 @@ def request_from_active(rec: dict) -> dict | None:
     pause, or Work of another generation or revision."""
     aw = rec.get("active_work")
     if not aw or rec.get("paused") or aw.get("revision") != rec["revision"] \
-            or work_generation(aw) != int(rec.get("generation", 0)):
+            or aw.get("generation") != int(rec.get("generation", 0)):
         return None
     request = {"type": "submit_work", "dedupe_key": aw["dedupe_key"],
                "contribution_id": rec["contribution_id"], "revision": rec["revision"],
                "expected_head": lifecycle.recorded_head(rec), "task": aw["task"],
-               "reason_ids": aw.get("reason_ids") or []}
-    if "generation" in aw:
-        # Work requested before the identity carried the generation keeps the
-        # payload it was first submitted with, so a replay is the same Work.
-        request.update(generation=aw["generation"],
-                       feedback_evidence_ids=list(aw.get("feedback_evidence_ids") or []))
+               "reason_ids": aw.get("reason_ids") or [],
+               "generation": aw["generation"],
+               "feedback_evidence_ids": list(aw.get("feedback_evidence_ids") or [])}
     return request
 
 
@@ -696,11 +678,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         # Every Work carries its history, which the controller tick records
         # when it allocates the Work. Work whose history is not committed
         # yet is not dispatched in this run; the next tick records it.
-        # Work requested before the identity carried the generation keeps the
-        # payload it was first submitted with, without a history.
-        history_id = (work_history.evidence_id(request["dedupe_key"])
-                      if "generation" in request else None)
-        if history_id is not None and history_id not in snapshot.evidence:
+        history_id = work_history.evidence_id(request["dedupe_key"])
+        if history_id not in snapshot.evidence:
             deferred.append({"contribution": record["contribution_id"], "task": request["task"],
                              "reason": "history not recorded yet"})
             continue

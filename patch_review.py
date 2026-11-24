@@ -227,7 +227,9 @@ def held_patch(record: dict, outcome: dict, *, run: str, now: str,
         # retry of it that verified the patch again and carries the series.
         "worker_run_id": str(run), "artifact_run_id": str(outcome.get("publication_run_id") or ""),
         "artifact_id": artifact,
-        "work": task.get("dedupe_key"), "generation": int(task.get("generation", 0)),
+        # Reached only after the Result matched the Work identity, which
+        # names both.
+        "work": task["dedupe_key"], "generation": task["generation"],
         "revision": task.get("revision"), "patch_digest": outcome.get("patch_digest"),
         "candidate": outcome.get("candidate"), "tree": outcome.get("tree"),
         "expected_head": task.get("expected_head"), "operation": outcome.get("operation_kind"),

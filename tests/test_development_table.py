@@ -365,8 +365,7 @@ class TestPatchResults(unittest.TestCase):
             directory.mkdir()
             (directory / "outcome.json").write_text(json.dumps(
                 {"status": "published", "failure_class": None, "reason": None}))
-            (directory / "task.json").write_text(json.dumps(
-                {"contribution_id": rec["contribution_id"], "revision": rec["revision"]}))
+            (directory / "task.json").write_text(json.dumps(publication(rec, "published")["task"]))
             (directory / "worker-run-id").write_text("555")
             (directory / "artifact-id").write_text("2")
             publications = reconcile._publication_outcomes(tmp)

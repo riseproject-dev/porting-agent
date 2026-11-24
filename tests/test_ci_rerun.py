@@ -334,6 +334,17 @@ class TestPublish(unittest.TestCase):
                           op["target"]["expected_head"]), ("ci_rerun", "confirmed", 2, SHA_A))
         self.assertIsNone(ci_rerun.receipt_problem(out, repair_record()))
 
+    def test_a_task_without_the_work_identity_is_stale_and_never_written(self):
+        for drop in (("generation", "dedupe_key"), ("generation",), ("dedupe_key",)):
+            with self.subTest(drop=drop):
+                api = FakeApi([run(5)])
+                t = {k: v for k, v in task().items() if k not in drop}
+                out = self.publish(api, t=t)
+                self.assertEqual((out["status"], out["reason"], out["failure_class"]),
+                                 ("rejected", "publication check: the task names no Work identity",
+                                  "stale"))
+                self.assertEqual(api.posts, [])
+
     def test_the_other_outcomes(self):
         out = self.publish(FakeApi([run(5, attempt=2, status="in_progress", conclusion=None)]))
         self.assertEqual((out["status"], out["rerun"]["status"]), ("no_change", "superseded"))

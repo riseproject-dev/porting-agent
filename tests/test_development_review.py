@@ -871,7 +871,8 @@ class TestHeldPatchEnds(unittest.TestCase):
         task = published(publishing)["task"]
         args = dict(expected_revision=task["revision"], expected_head=SHA_A, observed_head=SHA_A,
                     ref="riscv64-dev", repository=publishing["fork"]["name"],
-                    work_key=task["dedupe_key"], reviewed=True)
+                    expected_generation=task["generation"], work_key=task["dedupe_key"],
+                    reviewed=True)
         self.assertIsNone(lc.publication_check(publishing, **args))
         self.assertIn("revision", lc.publication_check(publishing, **dict(args,
                                                                          expected_revision=9)))

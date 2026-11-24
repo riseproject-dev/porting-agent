@@ -1674,9 +1674,9 @@ BUDGET_DEFAULTS: dict[str, Any] = {
     "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
     "spent_estimate_usd_cents": 0,
 }
-# The fields of requested Work a record may lack: Work requested before the
-# Work identity carried the generation is generation 0 (``work.work_generation``),
-# its first attempt, undispatched, and carries no reason or feedback.
+# The fields of requested Work a record may lack: Work recorded without a
+# generation is carried as generation 0 by the field migration, as its first
+# attempt, undispatched, and with no reason or feedback.
 WORK_DEFAULTS: dict[str, Any] = {
     "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [],
     "feedback_evidence_ids": [],

@@ -83,9 +83,26 @@ FEEDBACK = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [
             "inquiry_comments": [], "inquiry_conversation_comments": []}
 
 
+def identity(record):
+    """The Work identity a Result of ``record`` carries back: that of the
+    Work it holds (the held patch's Work while it publishes), else that of
+    the Work ``running`` held before a stop cleared it."""
+    held_work = record.get("active_work") or {}
+    held = record.get("held_patch") or {}
+    if engine.state_key(record) == lifecycle.PUBLISHING and held.get("work"):
+        return {"generation": held.get("generation", record.get("generation", 0)),
+                "dedupe_key": held["work"]}
+    generation = held_work.get("generation", record.get("generation", 0))
+    if held_work.get("dedupe_key"):
+        return {"generation": generation, "dedupe_key": held_work["dedupe_key"]}
+    task = "planning" if record.get("phase") == "planning" else "development_repair"
+    return {"generation": generation, "dedupe_key": f"{record['contribution_id']}@0:{task}"}
+
+
 def publication(record, name, artifact_id=999):
     return dict(RESULTS[name],
-                task={"contribution_id": record["contribution_id"], "revision": record["revision"]},
+                task={"contribution_id": record["contribution_id"], "revision": record["revision"],
+                      **identity(record)},
                 worker_run_id="555", publication_artifact_id=artifact_id, operation=None,
                 artifact=None)
 
@@ -194,7 +211,8 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         self.assertEqual(details,
                          {"verb": "record_late_effect", "from_state": state, "to_state": state,
                           "result_status": pub["status"], "task_revision": record["revision"],
-                          "task_generation": 0, "task_work": None})
+                          "task_generation": pub["task"]["generation"],
+                          "task_work": pub["task"]["dedupe_key"]})
         self.assertEqual([k for k, _ in output.staged if k in ("operations", "evidence")], [])
         self.assertEqual(output.report["requested_effects"], [])
         self.assertTrue(output.report["publications"][0]["ignored"].startswith("late Result"))
@@ -519,7 +537,9 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
     INJECTIONS = {
         "publication": "reconcile.apply_publication",
         "late_result": "reconcile.engine.record_late_effect",
-        "dispatch_recovery": "work.graph_id",
+        # Not ``work.graph_id``: the tick also derives the graphs of the
+        # Work ids the publications name, outside any contribution's step.
+        "dispatch_recovery": "reconcile._committed_history",
         "observed_head": "observe_ci.collect.branch_head",
         "observed_ci": "observe_ci.collect.evaluate_snapshot",
         "command": "controller.authorize_followup",

@@ -1926,3 +1926,21 @@ flowchart TB
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
     development_fix_needed ==>|record_head_change| development_waiting_ci
 ```
+
+### The Work identity has no pre-identity reading
+
+Whether a Work payload that names neither `generation` nor `dedupe_key`, or requested Work recorded without a generation, is still read as generation 0.
+
+**Change.** No. A Work payload names its identity only with an integer `generation` and a string `dedupe_key`; one that lacks either, also one that names neither, names no Work identity in any generation. Its Result is late and takes `record_late_effect`, and the publisher refuses its write as stale. Requested Work whose recorded generation is absent or not the record's is never dispatched and matches no Result; the field migration carries Work recorded without a generation as generation 0. The Work such a Result leaves requested is terminal without a usable Result and is answered by `allocate_work_retry` within `work_recovery` and `work_total`, then `exhaust_work_recovery` to the human wait of the phase. This completes decision 2 (the generation fence) and decision 19 (late Results): a Result that differs in the generation, the revision, or the Work id is never folded and never published.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_agent_running ==>|record_late_effect| development_agent_running
+    development_agent_running ==>|allocate_work_retry| development_agent_running
+    development_agent_running -->|exhaust_work_recovery| development_waiting_human
+```

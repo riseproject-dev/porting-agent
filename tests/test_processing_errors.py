@@ -473,7 +473,9 @@ class TestReportPauses(unittest.TestCase):
         out = tick([a, b], publications=[publication(a, "published", artifact_id=1),
                                          dict(publication(b, "published", artifact_id=2),
                                               task={"contribution_id": B,
-                                                    "revision": b["revision"]})],
+                                                    "revision": b["revision"],
+                                                    "generation": 0,
+                                                    "dedupe_key": f"{B}@0:x"})],
                    patches=[("reconcile.apply_publication", refuse)])
         self.assertEqual(kinds(out, A), [VERB])
         self.assertEqual(kinds(out, B), [VERB])

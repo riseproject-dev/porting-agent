@@ -846,7 +846,8 @@ class TestTick(unittest.TestCase):
         rec = contribution(phase="planning", activity="agent_running")
         rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                               "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
-        pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
+        pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0,
+                                                "generation": 0, "dedupe_key": "k"},
                "worker_run_id": "7", "publication_artifact_id": 3,
                "plan": plan(), "proposal": {"diagnosis": "Bounded wheel integration work is actionable."},
                "artifact": {"digest": "sha256:" + "0" * 64}}
@@ -901,7 +902,8 @@ class TestTick(unittest.TestCase):
         refreshed["active_work"] = {"dedupe_key": "refresh", "task": "planning",
                                     "revision": 8, "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         pub = {"status": "planning",
-               "task": {"contribution_id": rec["contribution_id"], "revision": 8},
+               "task": {"contribution_id": rec["contribution_id"], "revision": 8,
+                        "generation": 0, "dedupe_key": "refresh"},
                "worker_run_id": "9", "publication_artifact_id": 5,
                "plan": plan(), "proposal": {"diagnosis": "Fresh complete plan."},
                "artifact": {"digest": "sha256:" + "2" * 64}}
@@ -932,7 +934,8 @@ class TestTick(unittest.TestCase):
         research = plan()
         research["proposal"].update(decision="park", admission_class=None, allowed_paths=[],
                                     rationale="No concrete upstream patch is currently actionable; retain verified evidence and wait for a new prerequisite.")
-        pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0},
+        pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0,
+                                                "generation": 0, "dedupe_key": "k"},
                "worker_run_id": "8", "publication_artifact_id": 4, "plan": research,
                "proposal": {"diagnosis": "No actionable patch."}, "artifact": {"digest": "sha256:" + "1" * 64}}
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})

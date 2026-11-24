@@ -163,7 +163,8 @@ class TestHeldPatch(unittest.TestCase):
                    "patch_digest": DIGEST, "operation_kind": "append", "changed_files": [],
                    "publication_artifact_id": 21, "publication_run_id": "12",
                    "publication_series_digest": DIGEST,
-                   "task": {"dedupe_key": "w", "revision": 0, "expected_head": SHA_A}}
+                   "task": {"dedupe_key": "w", "generation": 0, "revision": 0,
+                            "expected_head": SHA_A}}
         self.assertEqual(patch_review.held_patch(rec, outcome, run="11", now=NOW,
                                                  report_evidence_id=None)["candidate"], "c" * 40)
         for broken in ({"publication_artifact_id": None}, {"patch_digest": None},
