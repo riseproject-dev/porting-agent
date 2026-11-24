@@ -1,0 +1,35 @@
+{
+  "at": "2026-11-24T16:43:39.621537+00:00",
+  "cause": {
+    "id": "tick-r8",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "cluster": "Test Templates (debian)",
+    "exhausted": [
+      "no_progress"
+    ],
+    "from_state": "development.fix_needed",
+    "to_state": "queued.idle",
+    "verb": "refresh_on_exhaustion"
+  },
+  "from": {
+    "activity": "fix_needed",
+    "phase": "development",
+    "revision": 8
+  },
+  "kind": "refresh_on_exhaustion",
+  "revision_bumped": true,
+  "run": {
+    "attempt": 1,
+    "id": 45440261360
+  },
+  "schema_version": 1,
+  "sequence": 34,
+  "to": {
+    "activity": "idle",
+    "phase": "queued",
+    "revision": 9
+  }
+}
