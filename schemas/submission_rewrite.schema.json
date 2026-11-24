@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Submission rewrite Result of the uncredentialed rewrite Work (untrusted)",
+  "title": "Submission rewrite Result of the uncredentialed rewrite task (untrusted)",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "contribution_id", "expected_revision", "expected_head", "verdict", "reasons", "title", "body", "series_digest"],

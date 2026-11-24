@@ -45,7 +45,7 @@ steps:
   # gh-aw refuses every dispatch once the compiled queue policy drops an
   # installed worker profile (a renamed worker workflow). Its remedy is an
   # administrator Policy update on a quiescent queue: this run publishes the
-  # compiled policy as a new Policy epoch before it stages any Work. On a busy
+  # compiled policy as a new Policy epoch before it stages any queue Work. On a busy
   # queue nothing is changed, and the controller charges no dispatch.
   - name: Mint a queue token for the Policy reinstall
     id: queue-token
@@ -101,8 +101,8 @@ steps:
   # No `if: hashFiles(...)` here: hashFiles only sees the workspace, so a
   # plan under /tmp always looked absent and the step was skipped. The
   # script checks for the file itself.
-  # A Work is immutable in the queue, and the payload built for one Work
-  # changes with the pinned control commit and its history: Work the queue
+  # A queue Work is immutable, and the payload built for one task changes
+  # with the pinned control commit and its history: queue Work the queue
   # already holds (a retry after a cancelled worker run, a relaunch after
   # its history was recorded) is never submitted again, only dispatched.
   - name: Stage the plan as trusted queue intents
@@ -238,14 +238,14 @@ strict: true
 
 Read `/tmp/gh-aw/agent/porting-plan.json`, then call `work_queue_read`
 with `{"pool":"default","limit":8}`. An absent queue is empty; the
-trusted submission installs Policy and Work together. An existing
+trusted submission installs Policy and queue Work together. An existing
 policyless ledger or a tool error is a failure, not an empty backlog.
 
 The trusted preparation step read the task the porting controller
 requested in the committed `.state/` and staged at most one task
 (for the `planner` or `worker` profile) followed by
 `{"pool":"default","max_claims":1,"max_dispatches":1}`. When the queue
-already holds that task's Work, it staged only the dispatch request: the
+already holds queue Work for that task, it staged only the dispatch request: the
 queued Work is dispatched as it was first submitted. Explain the
 staged plan in one short paragraph: the contribution, the task kind and the
 reason it was selected. Do not submit again, choose a winner, dispatch

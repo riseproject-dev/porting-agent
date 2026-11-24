@@ -131,7 +131,7 @@ pre-agent-steps:
       if jq -e '.context.history != null' "$task" >/dev/null; then
         # Everything tried before and the owner's steering: the committed
         # work_history evidence at the pinned control commit, checked against
-        # the digest and the Work id the trusted payload names. Only its id
+        # the digest and the task id the trusted payload names. Only its id
         # is printed, never its content.
         repository=$(jq -r '.context.history.repository' "$task")
         ref=$(jq -r '.context.history.ref' "$task")
@@ -252,7 +252,7 @@ jobs:
           printf '%s' "$ASSIGNMENT" > ../in/assignment.json
           printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/claim.json
           # Until its task file is resolved (`queue_result`), task.json is the
-          # claim's payload, which names the Work in every form it has.
+          # claim's payload, which names the task in every form it has.
           cp ../in/claim.json ../in/task.json
           [ "$(jq -r .task ../in/claim.json)" = planning ] || { echo "the planner only takes planning tasks"; exit 1; }
           rc=0
@@ -377,7 +377,7 @@ sandbox:
 # riscv64 porting planner
 
 You plan the riscv64 contribution of one upstream project for the RISE riscv64 porting pipeline. The trusted pre-agent step resolved the immutable task from its task file in
-the control repository, checked against its SHA-256 and the Work identity of the claim,
+the control repository, checked against its SHA-256 and the task identity of the claim,
 wrote it to `/tmp/gh-aw/agent/task.json` and checked out the upstream project in
 `./fork` (read-only: nothing you change there is used). The task's `instructions`
 field says what to do; `reason_ids` and `context` say why.
@@ -416,7 +416,7 @@ server. Do not use mutation tools or omit inaccessible history.
 
 Read the ENTIRE issue description in `task.context.tracking_issue.description`.
 When `task.context.history` is present, the trusted pre-agent step fetched the
-history of this Work at its pinned commit, checked its SHA-256 and its Work id,
+history of this task at its pinned commit, checked its SHA-256 and its task id,
 and wrote it to `/tmp/gh-aw/agent/history.json`. Read its `steering` section
 first: the edits of the issue description and the comments by the accounts
 authorized to steer this contribution, oldest first, which say what the owner

@@ -51,10 +51,10 @@ The trusted gate refuses a plan that:
 
 ## How the rules are enforced
 
-**Commit rules.** The task of the Work carries the plan's measurable commit rules as `context.commit_rules`, taken by the trusted planner from the committed plan evidence. Before any token, the worker gate checks every non-debug commit of the proposed series against them and rejects the series with the rule each commit breaks. A plan of schema version 1 records none.
+**Commit rules.** The task file carries the plan's measurable commit rules as `context.commit_rules`, taken by the trusted planner from the committed plan evidence. Before any token, the worker gate checks every non-debug commit of the proposed series against them and rejects the series with the rule each commit breaks. A plan of schema version 1 records none.
 
 **Attribution trailers.** The gate also rejects any attribution trailer that does not name the App's commit identity. That covers `Signed-off-by:`, `Co-authored-by:`, `Reviewed-by:`, and every other `*-by:` line, including a trailer in the title and trailers written with Unicode lookalikes of the key or the colon. It rejects an attribution trailer continued on a line that starts with white space. The worker commits as the App and attributes work to nobody else.
 
 **Commit count.** The number of commits is checked at submission, where the review may squash. See [Submission and Handoff]({{ '/pipeline/submission/' | relative_url }}).
 
-**Series requirements.** They are checked on the exact head when CI passes in development, before the contribution is nominated for submission. An unmet requirement returns the series to development as Work that carries it, as `context.series_requirements`. The worker gate then rejects a patch of that Work whose non-debug commits change no file matching one of the paths of each requirement. See [Development]({{ '/state-machine/engine/' | relative_url }}#development) in the transition engine.
+**Series requirements.** They are checked on the exact head when CI passes in development, before the contribution is nominated for submission. An unmet requirement returns the series to development as a task that carries it, as `context.series_requirements`. The worker gate then rejects a patch of that task whose non-debug commits change no file matching one of the paths of each requirement. See [Development]({{ '/state-machine/engine/' | relative_url }}#development) in the transition engine.

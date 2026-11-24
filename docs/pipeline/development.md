@@ -41,7 +41,7 @@ The worker holds no destination credential and cannot push. See [Agent Isolation
 
 ## The review loop
 
-The worker reviews its own patch before trusted code publishes it, in the same run, with a review loop that its prompt describes and that runs on the `subagent` tool of `pi-subagents`. Development, review and fixes are one workflow; there is no separate review Work and no unpublished patch.
+The worker reviews its own patch before trusted code publishes it, in the same run, with a review loop that its prompt describes and that runs on the `subagent` tool of `pi-subagents`. Development, review and fixes are one workflow; there is no separate review task and no unpublished patch.
 
 Once the series is committed and validated in the image, the worker runs the loop its prompt describes. The worker is the controller and the only decision-maker; its children only review or implement, one writer at a time, always in the foreground.
 
@@ -99,4 +99,4 @@ The first published patch has no development PR yet: the controller opens it onc
 
 ## Infrastructure blockers
 
-Exact Docker-infrastructure blockers are normalized into durable rehearsal evidence and charged to the bounded `no_progress` budget. The fresh Work revision that follows is charged to the attempt budget when it is allocated.
+Exact Docker-infrastructure blockers are normalized into durable rehearsal evidence and charged to the bounded `no_progress` budget. The fresh task revision that follows is charged to the attempt budget when it is allocated.

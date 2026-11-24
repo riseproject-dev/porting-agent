@@ -29,7 +29,7 @@ See [Requesting upstream submission]({{ '/state-machine/engine/' | relative_url 
 
 ## The rewrite
 
-An uncredentialed rewrite Work reshapes the non-debug commits of the approved `riscv64-dev` series after the plan's commit conventions. It also writes the pull request title and description after the project's template and contributing instructions.
+An uncredentialed rewrite task reshapes the non-debug commits of the approved `riscv64-dev` series after the plan's commit conventions. It also writes the pull request title and description after the project's template and contributing instructions.
 
 ## Trusted checks without a token
 
@@ -44,7 +44,7 @@ Trusted code checks the rewrite without a token:
 
 ## The review of the rewrite
 
-Before it returns, the rewrite Work reviews its own series and text with the review loop (fresh reviewers, at most 3 rounds), against:
+Before it returns, the rewrite task reviews its own series and text with the review loop (fresh reviewers, at most 3 rounds), against:
 
 - the pull request template;
 - the contributing instructions;

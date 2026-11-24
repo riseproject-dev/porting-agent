@@ -730,7 +730,7 @@ class TestWorkflowContracts(unittest.TestCase):
         reconcile_job = workflow("controller.yml")["jobs"]["reconcile"]
         self.assertEqual(reconcile_job["env"]["PORTING_APP_ACTOR"], "riseproject-dev[bot]")
         self.assertIn("${MANUAL:+--manual}", step["run"])
-        warn = next(s for s in steps if s.get("name") == "Report Work held for a failure of the "
+        warn = next(s for s in steps if s.get("name") == "Report a task held for a failure of the "
                                                          "pipeline")
         self.assertIn("::warning", warn["run"])
         self.assertLess(steps.index(step), steps.index(warn))
@@ -738,7 +738,7 @@ class TestWorkflowContracts(unittest.TestCase):
 
     def test_the_dispatcher_launch_is_confirmed_to_be_listed(self):
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
-        launch = next(s for s in steps if s.get("name") == "Launch dispatcher for durable selected Work")
+        launch = next(s for s in steps if s.get("name") == "Launch dispatcher for a durable selected task")
         confirm = next(s for s in steps if s.get("name") == "Confirm that the dispatcher run is listed")
         self.assertEqual(launch["id"], "dispatcher-launch")
         self.assertLess(launch["run"].index("since="), launch["run"].index("gh workflow run"))
@@ -780,7 +780,7 @@ class TestWorkflowContracts(unittest.TestCase):
         report = reconcile.state_text_migration_report([".state/evidence/example.json"])
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         consumers = {
-            "Launch dispatcher for durable selected Work": [
+            "Launch dispatcher for a durable selected task": [
                 (".requested_effects", report["requested_effects"]),
                 (".dispatch_relaunch", report["dispatch_relaunch"]),
             ],

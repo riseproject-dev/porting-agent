@@ -8,7 +8,7 @@ permalink: /pipeline/history/
 # Reports and History
 {: .no_toc }
 
-Each worker reports what it attempted, and every Work receives the contribution's history. Together they let a repair start from what was already tried instead of from nothing.
+Each worker reports what it attempted, and every task receives the contribution's history. Together they let a repair start from what was already tried instead of from nothing.
 
 <details open markdown="block">
   <summary>Contents</summary>
@@ -19,7 +19,7 @@ Each worker reports what it attempted, and every Work receives the contribution'
 
 ## The worker report
 
-Every patch, repair, revision, and submission rewrite Work also uploads `report.json` in its `porting-out` artifact. It follows `schemas/worker_report.schema.json` and is at most 32 KiB. It records:
+Every patch, repair, revision, and submission rewrite task also uploads `report.json` in its `porting-out` artifact. It follows `schemas/worker_report.schema.json` and is at most 32 KiB. It records:
 
 - what the worker attempted and why;
 - each approach and its outcome;
@@ -29,12 +29,12 @@ Every patch, repair, revision, and submission rewrite Work also uploads `report.
 
 ## When a report is required
 
-The worker gate and the submission checks (`--report`) require the report whenever the task carries `context.history`. It must name the contribution, revision, task, and the digest of the history the Work carried. The publish job and the publish-only retry pass it on in `porting-publication`.
+The worker gate and the submission checks (`--report`) require the report whenever the task carries `context.history`. It must name the contribution, revision, task, and the digest of the history the task carried. The publish job and the publish-only retry pass it on in `porting-publication`.
 
 ## How reports are stored
 
 - The reconciler stores the report as `worker_report` evidence only when the Result is accepted by a success row, and checks the bytes of the file as the gate did.
-- A success Result of Work that carries a history, whose report cannot be stored, pauses that one contribution (`pause_on_processing_error`, naming the Work and the reason) instead of being folded without it. It never stops the tick for the others.
+- A success Result of a task that carries a history, whose report cannot be stored, pauses that one contribution (`pause_on_processing_error`, naming the task and the reason) instead of being folded without it. It never stops the tick for the others.
 - A Result that arrives late although its push landed stores its report too, so the repair of a failing head reads what was tried on it.
 - The report of a failed, rejected, or blocked worker is discarded.
 
@@ -42,11 +42,11 @@ Two [Known Gaps]({{ '/state-machine/known-gaps/' | relative_url }}) concern repo
 
 ## The contribution history
 
-The task of every Work, planning included, carries `context.history`:
+The task of every task, planning included, carries `context.history`:
 
 - the repository and the pinned control commit, which the reference to the task file names;
 - the path, `.state/evidence/history-<32 hex>.json`;
-- the SHA-256 and the evidence id of the `work_history` evidence the controller recorded when it allocated the Work.
+- the SHA-256 and the evidence id of the `work_history` evidence the controller recorded when it allocated the task.
 
 A trusted pre-agent step fetches the file at that commit, verifies it, and writes `/tmp/gh-aw/agent/history.json`. It holds:
 

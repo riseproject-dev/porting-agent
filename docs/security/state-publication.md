@@ -35,16 +35,16 @@ The controller's `reconcile` job, the only job that runs in the `state` environm
 
 The commit is validated against the trusted parent by `state.validate_state_diff` and `python -m state check-diff`. Publishing is refused unless the reviewed policy has `read_only: false`.
 
-## The task file of a Work
+## The task file of a task
 
-The controller commits the whole task of every requested Work as one `task` evidence file (addressed by the task id, pinned by commit and SHA-256) under `.state/evidence/`, in the same commit as the history of the Work, and the work queue carries only a reference to it: the control repository, the commit, the path, the SHA-256, and the evidence id. The id is derived from the Work id, the file is never changed or removed, and every reader resolves the reference with `task_file.resolve` before it trusts anything in it. The commit pins the file and the SHA-256 binds its bytes, so neither the queue payload nor a later edit of state can change the task of a Work that was dispatched. The resolver refuses a file that is of another kind, id or Work, and takes the resource scope and the effect contract from the queue, never from the file. A payload that carries the task inline is accepted unchanged, as it always was.
+The controller commits the whole content of every requested task as one `task` evidence file (addressed by the task id, pinned by commit and SHA-256) under `.state/evidence/`, in the same commit as the history of the task, and the work queue carries only a reference to it: the control repository, the commit, the path, the SHA-256, and the evidence id. The id is derived from the task id, the file is never changed or removed, and every reader resolves the reference with `task_file.resolve` before it trusts anything in it. The commit pins the file and the SHA-256 binds its bytes, so neither the queue payload nor a later edit of state can change the content of a task that was dispatched. The resolver refuses a file that is of another kind, id or a task, and takes the resource scope and the effect contract from the queue, never from the file. A payload that carries the task inline is accepted unchanged, as it always was.
 
 ## Moving `main`
 
 State publication never force-pushes, deletes, merges, or uses a ruleset bypass. When an unrelated commit lands and moves the tip of `main`, the publisher:
 
 1. fetches the new tip;
-2. rechecks the stale revision preconditions of the affected Work;
+2. rechecks the stale revision preconditions of the affected task;
 3. rebuilds the commit on the new tip and validates the complete candidate tree;
 4. tries again, at most 4 attempts in all (`state_commit.MAX_ATTEMPTS`).
 

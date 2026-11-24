@@ -35,7 +35,7 @@ Display names are title case without a prefix.
 
 ## What the queue carries
 
-The Dispatcher stages one node per requested Work whose payload is a fixed-size reference (the Work identity, the reference to its task file, the resource scope and the effect contract), not the task. The Planner and Worker resolve it in their trusted pre-agent step (`task_file.py resolve`, which prints only the evidence id of the task file) and again in the trusted job after the agent (`queue_result`), and Publish Retry resolves it again from the assignment of the original run. A task file that is missing, or is not the task file of the claim, fails the run in a step of its own that is not a contribution step, so it is a failure of the pipeline and charges nothing to the Work.
+The Dispatcher stages one node per requested task whose payload is a fixed-size reference (the task identity, the reference to its task file, the resource scope and the effect contract), not the task. The Planner and Worker resolve it in their trusted pre-agent step (`task_file.py resolve`, which prints only the evidence id of the task file) and again in the trusted job after the agent (`queue_result`), and Publish Retry resolves it again from the assignment of the original run. A task file that is missing, or is not the task file of the claim, fails the run in a step of its own that is not a contribution step, so it is a failure of the pipeline and charges nothing to the task.
 
 ## Names are load-bearing
 

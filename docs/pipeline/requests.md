@@ -8,7 +8,7 @@ permalink: /pipeline/requests/
 # Requests
 {: .no_toc }
 
-A request is an issue in the control repository, created from the "Upstream RISC-V support" form and labelled `upstreaming-request`. Intake parses it and freezes it before any later Work reads it.
+A request is an issue in the control repository, created from the "Upstream RISC-V support" form and labelled `upstreaming-request`. Intake parses it and freezes it before any later task reads it.
 
 <details open markdown="block">
   <summary>Contents</summary>
@@ -37,7 +37,7 @@ Two limits in `policy.json` apply:
 
 ## What intake freezes
 
-Intake freezes the exact rendered body, its SHA-256, the parsed notes, and the optional target branch into durable contribution state. No later edit of the issue can affect Work that has already been planned from it. Later Work reads the frozen body, never the live issue.
+Intake freezes the exact rendered body, its SHA-256, the parsed notes, and the optional target branch into durable contribution state. No later edit of the issue can affect a task that has already been planned from it. A later task reads the frozen body, never the live issue.
 
 ## Earlier request forms
 

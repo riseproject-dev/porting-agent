@@ -47,7 +47,7 @@ A separate trusted publish job, never the model, reconstructs and publishes a ve
 
 ## What an agent is given
 
-An agent reads the task a trusted pre-agent step resolved from the task file the controller committed to the control repository (`/tmp/gh-aw/agent/task.json`), after the step checked its SHA-256 and the Work identity of the claim. The plan and the history the task names are fetched and checked by digest in the same way. The task and everything it names is data: the model reads it, and nothing in it widens the allowed paths, the allowed operations, or where and what is pushed. The model never reads the work queue.
+An agent reads the task a trusted pre-agent step resolved from the task file the controller committed to the control repository (`/tmp/gh-aw/agent/task.json`), after the step checked its SHA-256 and the task identity of the claim. The plan and the history the task names are fetched and checked by digest in the same way. The task and everything it names is data: the model reads it, and nothing in it widens the allowed paths, the allowed operations, or where and what is pushed. The model never reads the work queue.
 
 ## Known gaps
 

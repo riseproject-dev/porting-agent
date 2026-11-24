@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Task of one Work (the content of its task file, and the Work payload resolved from it)",
-  "description": "The task file (`.state/evidence/task-<hex>.json`, evidence of kind `task`, in its `data`) holds everything the agent and the trusted jobs of one Work need. The queue carries only a reference to it (`task_file`); `task_file.resolve` returns this shape with `resource_scope`, `effect_contract` and `task_file` from the queue, and the commit (`ref`) and `url` of the nested references filled in from the reference that names the task file.",
+  "title": "Task file of one task (the content of its task file, and the task payload resolved from it)",
+  "description": "The task file (`.state/evidence/task-<hex>.json`, evidence of kind `task`, in its `data`) holds everything the agent and the trusted jobs of one task need. The queue carries only a reference to it (`task_file`); `task_file.resolve` returns this shape with `resource_scope`, `effect_contract` and `task_file` from the queue, and the commit (`ref`) and `url` of the nested references filled in from the reference that names the task file.",
   "type": "object",
   "additionalProperties": false,
   "required": [

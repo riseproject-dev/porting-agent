@@ -50,20 +50,20 @@ A Python project is also audited against public PyPI and the RISE index. That a 
 
 1. The controller selects a queued contribution and commits an immutable `active_work` request.
 2. It launches `dispatcher.lock.yml`.
-3. Trusted dispatcher preparation replays that exact request into the native queue. The model never selects or mutates Work.
-4. Each dispatcher run admits at most one Claim, for the planner or the worker profile (`dispatch-workflow` with `max: 1`). Planning dispatches the planner profile through gh-aw native Work.
+3. Trusted dispatcher preparation replays that exact request into the native queue. The model never selects or mutates queue Work.
+4. Each dispatcher run admits at most one Claim, for the planner or the worker profile (`dispatch-workflow` with `max: 1`). Planning dispatches the planner profile through gh-aw native queue Work.
 
 A requested task that cannot be replayed is reported and skipped, so it never blocks the dispatch of another contribution. That happens when its upstream identity or base is not bound, or when it has no frozen tracking-issue description.
 
 ## Queue policy
 
-Before it stages any Work, the dispatcher compares the compiled queue policy of its lock with the Policy installed in the ledger. When the compiled policy drops an installed worker profile, which gh-aw refuses on every dispatch, and the queue is quiescent, the dispatcher publishes the compiled policy as a new Policy epoch through an administrator `policy` request authenticated as its own run.
+Before it stages any queue Work, the dispatcher compares the compiled queue policy of its lock with the Policy installed in the ledger. When the compiled policy drops an installed worker profile, which gh-aw refuses on every dispatch, and the queue is quiescent, the dispatcher publishes the compiled policy as a new Policy epoch through an administrator `policy` request authenticated as its own run.
 
 The compiled policy has the `planner` and `worker` profiles only. A queue installed when it also had a `reviewer` profile drops that profile, and the dispatcher reinstalls the compiled policy on a quiescent queue.
 
 ## What the planner reads
 
-Its Work carries a history (`context.history`), which a trusted pre-agent step fetches at the pinned commit and checks. See [Reports and History]({{ '/pipeline/history/' | relative_url }}). The planner reads, in order:
+Its task carries a history (`context.history`), which a trusted pre-agent step fetches at the pinned commit and checks. See [Reports and History]({{ '/pipeline/history/' | relative_url }}). The planner reads, in order:
 
 1. The owner's steering: edits of the tracking issue description and comments by accounts in the command authority. This is how the owner steers planning.
 2. The tracking issue comments, as untrusted research.
@@ -77,7 +77,7 @@ The plan's proposal decides one of three outcomes:
 | Decision | Meaning |
 |:---------|:--------|
 | `develop` | A bounded patch, with its admission class and allowed paths. |
-| `park` | Work stops. A human can restart it with `/upstreaming refresh`, optionally with an admission override. |
+| `park` | A task stops. A human can restart it with `/upstreaming refresh`, optionally with an admission override. |
 | `close` | Final. Only for a project that needs no riscv64 work. |
 
 A `close` is only for a project released on PyPI whose latest release of every requested distribution already installs on riscv64 from PyPI: a riscv64 wheel, or pure-Python wheels only. PyPI is the one registry a close is confirmed from.

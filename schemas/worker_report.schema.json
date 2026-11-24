@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Worker report of one Work run (untrusted)",
+  "title": "Worker report of one task run (untrusted)",
   "description": "What the worker attempted and why, each approach and its outcome, what failed with its evidence, what remains open and the verification done. The file is refused, and the Result with it, when it is larger than 32 KiB (32768 bytes) as written, so not every list and field can be at its maximum: summarise logs and cite commands, exit statuses, digests and links instead of pasting output. Trusted code stores it as worker_report evidence only when the Result of the run is accepted.",
   "type": "object",
   "additionalProperties": false,

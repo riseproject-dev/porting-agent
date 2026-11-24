@@ -158,8 +158,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p publications
-          # What this step could not collect, for the dispatch recovery of a
-          # completed Work: `<run> <reason>` lines, and the runs it listed
+          # What this step could not collect, for the dispatch recovery of
+          # a completed task: `<run> <reason>` lines, and the runs it listed
           # when it listed all of them.
           uncollected() { printf '%s %s\n' "$1" "$2" >> publications/.uncollected; }
           listed=true
@@ -395,7 +395,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/porting-http-cache
           key: porting-http-cache-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Report Work held for a failure of the pipeline
+      - name: Report a task held for a failure of the pipeline
         run: |
           set -euo pipefail
           jq -r '(.dispatch_recovery // [])[] | select(.held) | "::warning title=Held for a failure of the pipeline::\(.contribution): \(.alert)"' report.json
@@ -490,7 +490,7 @@ jobs:
           repositories: porting-agent
           permission-contents: read
           permission-actions: write
-      - name: Launch dispatcher for durable selected Work
+      - name: Launch dispatcher for a durable selected task
         id: dispatcher-launch
         if: steps.policy.outputs.read_only == 'false'
         env:
@@ -543,7 +543,7 @@ jobs:
               -f operation-id="$operation"
           done
       - name: Follow up after a state commit
-        # A commit can make Work due that only a later tick sees. The follow-up
+        # A commit can make a task due that only a later tick sees. The follow-up
         # run commits only if it changes something, so the chain stops by
         # itself, and the concurrency group coalesces it with any other
         # pending run.

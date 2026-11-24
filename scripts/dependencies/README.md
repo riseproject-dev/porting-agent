@@ -12,4 +12,4 @@ scripts/compile_gh_aw.sh /path/to/reviewed-gh-aw worker planner dispatcher
 uv run python -m unittest discover -s tests -t .
 ```
 
-Do not hand-edit generated locks. A gh-aw upgrade must separately review installer hashes, `scripts/check_gh_aw.sh`, Result reader behavior, the `scripts/gh-aw-compat/` patch, detector behavior, generated locks, and native Work contracts. The v1.2.2 compatibility patch remains pinned through rollout.
+Do not hand-edit generated locks. A gh-aw upgrade must separately review installer hashes, `scripts/check_gh_aw.sh`, Result reader behavior, the `scripts/gh-aw-compat/` patch, detector behavior, generated locks, and native queue Work contracts. The v1.2.2 compatibility patch remains pinned through rollout.
