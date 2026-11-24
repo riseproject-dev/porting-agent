@@ -3102,11 +3102,12 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     return report
 
 
-def load_snapshot(root: Path, policy: dict):
-    """Load validated lifecycle state relative to an explicit repository root."""
+def load_snapshot(root: Path, policy: dict, run: dict | None = None):
+    """Load validated lifecycle state relative to an explicit repository root.
+    ``run`` is the workflow run recorded on every event the store stages."""
     import state
 
-    store = state.StateStore(root, policy)
+    store = state.StateStore(root, policy, run=run)
     contributions = dict(store.load_all("contributions"))
     return store, Snapshot(
         contributions=contributions,
@@ -3350,7 +3351,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         else:
             print(text)
         return 0
-    store, snapshot = load_snapshot(root, policy)
+    store, snapshot = load_snapshot(root, policy, run=state.run_from_env())
     api = collect.Api()
     publications = _publication_outcomes(args.publications)
     development_prs = _receipt_outcomes(args.development_prs, kind="development_pr")

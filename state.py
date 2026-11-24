@@ -281,12 +281,30 @@ def validate_state_diff(repo: Path, base: str, candidate: str, policy: dict) -> 
 # Working-tree store
 
 
+def run_from_env(environ=None) -> dict | None:
+    """The workflow run named by `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`, as
+    `{"id", "attempt"}`, or None when either is missing or not a positive
+    integer (a local run)."""
+    import os
+
+    environ = os.environ if environ is None else environ
+    try:
+        run = {"id": int(environ.get("GITHUB_RUN_ID") or ""),
+               "attempt": int(environ.get("GITHUB_RUN_ATTEMPT") or "")}
+    except ValueError:
+        return None
+    return run if run["id"] > 0 and run["attempt"] > 0 else None
+
+
 class StateStore:
     """Load and stage lifecycle records in a checkout of the control repo."""
 
-    def __init__(self, root: Path, policy: dict):
+    def __init__(self, root: Path, policy: dict, run: dict | None = None):
         self.root = Path(root)
         self.policy = policy
+        # The workflow run that stages the records, `{"id", "attempt"}`;
+        # recorded on every event staged through this store.
+        self.run = dict(run) if run else None
         self._staged: dict[str, dict] = {}
 
     def _ensure_no_symlink(self, path: Path) -> None:
@@ -347,6 +365,8 @@ class StateStore:
         record = normalize_state_text(record)
         if kind == "events":
             record = dict(record, sequence=self.next_event_sequence(record["contribution_id"]))
+            if self.run:
+                record["run"] = dict(self.run)
         schemas.validate(STATE_KINDS[kind], record)
         path = record_path(kind, record)
         data = canonical_json(record).encode("utf-8")
