@@ -28,7 +28,7 @@
     "patch_attempts_per_cluster": 3,
     "no_progress_review_after": 2,
     "max_attempts_per_contribution": 36,
-    "patch_review_rejections": 2,
+    "patch_review_rejections": 1,
     "planning_attempts": 3,
     "work_recovery": 2,
     "source_unavailable_reads": 3,

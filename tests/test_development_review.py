@@ -11,7 +11,8 @@ repair with the review as pending feedback (``reject_patch_review``), until
 (``publish_after_failed_reviews``). Only ``development.publishing``
 publishes it, pinned to the reviewed commit. Every review is evidence that
 the history of every later Work carries, and nothing about it is posted on
-the tracking issue."""
+the tracking issue. ``dev_reviews`` allows one failed review in succession:
+the second publishes the patch anyway."""
 
 from __future__ import annotations
 
@@ -365,9 +366,11 @@ class TestVerdicts(unittest.TestCase):
 
     def test_successive_failed_reviews_publish_the_patch_anyway(self):
         rec = running(feedback=["review-1"])
+        # The owner's decision: the second failed review in succession
+        # publishes the patch anyway.
         limit = lc.budget_limit("dev_reviews", POLICY)
-        self.assertEqual(limit, 2)
-        for attempt in range(limit + 1):
+        self.assertEqual(limit, 1)
+        for attempt in range(2):
             reviewing, _ = held(rec, run=str(4242 + attempt), artifact=901 + attempt)
             out = tick(reviewing, [review_result(reviewing, severity="major",
                                                  run=str(5000 + attempt),
