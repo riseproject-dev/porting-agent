@@ -1302,6 +1302,11 @@ class TestReviewerSandbox(unittest.TestCase):
         shim.mkdir(exist_ok=True)
         (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
         (shim / "sudo").chmod(0o755)
+        if os.geteuid() == 0:
+            # The step runs as the runner's user (uid 1001), who owns what
+            # create_gh_aw_tmp_dir.sh made; the test runs it as root.
+            (shim / "id").write_text('#!/bin/sh\n[ "$1" = -u ] && { echo 1001; exit 0; }\nexec /usr/bin/id "$@"\n')
+            (shim / "id").chmod(0o755)
         tmp_gh_aw = tmp_gh_aw or temp.parent / "tmp-gh-aw"
         if prepare:
             (temp / "gh-aw/safeoutputs").mkdir(parents=True, exist_ok=True)
@@ -1437,26 +1442,50 @@ class TestReviewerSandbox(unittest.TestCase):
                     self.assertEqual(secret.stat().st_mode & 0o777, 0o644)
                     continue
                 self.assertEqual(attacks, [False] * 5)
-                for directory in (gh_aw, gh_aw / "sandbox", firewall, firewall / "logs", firewall / "audit"):
+                # The modes per directory: sticky for the two above the
+                # firewall, root's 755 for the firewall, the runner's own
+                # for what AWF writes in.
+                for directory, owner, mode in ((gh_aw, 0, 0o1777), (gh_aw / "sandbox", 0, 0o1777),
+                                               (firewall, 0, 0o755), (firewall / "logs", 1001, 0o755),
+                                               (firewall / "audit", 1001, 0o755)):
                     status = directory.stat()
-                    self.assertEqual((status.st_uid, status.st_mode & 0o7777), (0, 0o1777), directory)
+                    self.assertEqual((status.st_uid, status.st_mode & 0o7777), (owner, mode), directory)
                     self.assertFalse(directory.is_symlink())
-                    # The runner's uid still creates entries in each, and
-                    # removes its own, as AWF, Squid and the steps do.
-                    made = subprocess.run([*agent, "sh", "-c", f'touch "{directory}/f" && rm "{directory}/f"'])
-                    self.assertEqual(made.returncode, 0, directory)
+                    # The runner's uid creates entries in each but the
+                    # firewall directory, and removes its own, as AWF, Squid
+                    # and the steps do.
+                    made = subprocess.run([*agent, "sh", "-c", f'touch "{directory}/f" && rm "{directory}/f"'],
+                                          capture_output=True)
+                    self.assertEqual(made.returncode == 0, directory != firewall, directory)
                     removed = subprocess.run([*agent, "sh", "-c", f'rmdir "{directory}" || rm -rf "{directory}"'],
                                              capture_output=True)
                     self.assertNotEqual(removed.returncode, 0, directory)
+                # The renames the agent needs for the attack fail for the
+                # directories it owns, because the firewall directory is root's.
+                for name in ("logs", "audit"):
+                    renamed = subprocess.run([*agent, "mv", str(firewall / name), str(firewall / (name + ".moved"))],
+                                             capture_output=True)
+                    self.assertNotEqual(renamed.returncode, 0, name)
+                    self.assertTrue((firewall / name).is_dir() and not (firewall / name).is_symlink())
+                # AWF's writeConfigs makes the audit directory and chmods it,
+                # as the runner's uid, before any container starts.
+                awf = subprocess.run([*agent, "sh", "-c",
+                                      f'mkdir -p -m 755 "{firewall}/audit" && chmod 755 "{firewall}/audit" '
+                                      f'&& mkdir -p "{firewall}/logs" && touch "{firewall}/audit/a" "{firewall}/logs/l"'],
+                                     capture_output=True, text=True)
+                self.assertEqual(awf.returncode, 0, awf.stderr)
                 # What the steps do as root, with links the agent can still
                 # plant inside the directories: -R follows none of them.
-                for directory in (firewall, firewall / "audit"):
+                for directory in (firewall / "logs", firewall / "audit"):
                     subprocess.run([*agent, "ln", "-s", str(victim), str(directory / "planted")], check=True)
                 for command in (["chmod", "-R", "a+rX", str(firewall)],
                                 ["chown", "-R", "1001:1001", str(firewall)],
                                 ["chmod", "-R", "a+rX", str(os.path.dirname(firewall / "logs"))]):
                     subprocess.run(command, check=True)
                 self.assertEqual((secret.stat().st_uid, secret.stat().st_mode & 0o777), (0, 0o600))
+                # "Print firewall logs" gave the firewall directory back to the
+                # runner; the later awf-reflect.json write works.
+                self.assertEqual(subprocess.run([*agent, "touch", str(firewall / "awf-reflect.json")]).returncode, 0)
                 self.assertEqual(victim.stat().st_uid, 0)
 
     @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
@@ -1528,18 +1557,38 @@ class TestReviewerSandbox(unittest.TestCase):
                 status = path.stat()
                 self.assertEqual((status.st_uid, status.st_mode & 0o022), (0, 0), path)
             # A link whose target the agent could create in a directory that
-            # cannot be taken over (the home directory) is refused, and so is
-            # a link to a file there.
-            for name, target in (("home-new", home / "new-file"), ("home-file", home / "existing")):
-                with self.subTest(link=name):
-                    (home / "existing").write_text("x")
-                    os.chown(home / "existing", 1001, 1001)
-                    scratch = root / f"path-{name}"
-                    scratch.mkdir()
-                    (scratch / name).symlink_to(target)
-                    refused = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
-                    self.assertEqual(refused.returncode, 1, refused.stderr)
-                    self.assertIn("too wide", refused.stderr)
+            # cannot be taken over (the home directory) is refused.
+            scratch = root / "path-home-new"
+            scratch.mkdir()
+            (scratch / "home-new").symlink_to(home / "new-file")
+            refused = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
+            self.assertEqual(refused.returncode, 1, refused.stderr)
+            self.assertIn("too wide", refused.stderr)
+            # So is a link to a too wide directory itself.
+            scratch = root / "path-home-dir"
+            scratch.mkdir()
+            (scratch / "home-dir").symlink_to(home)
+            refused = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
+            self.assertEqual(refused.returncode, 1, refused.stderr)
+            self.assertIn("too wide", refused.stderr)
+            # A link to an existing file below a too wide directory ends the walk
+            # there: the file and the directories between are taken over, the
+            # home directory is left as it is.
+            (home / "sub").mkdir()
+            existing = home / "sub/existing"
+            existing.write_text("x")
+            for made in (home / "sub", existing):
+                os.chown(made, 1001, 1001)
+            scratch = root / "path-home-file"
+            scratch.mkdir()
+            (scratch / "home-file").symlink_to(existing)
+            home_status = home.stat()
+            (temp / "gh-aw/safeoutputs/send_otlp_span.cjs").unlink()  # the first run made it
+            accepted = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            for path in (existing, home / "sub"):
+                self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o022 & ~0o1000), (0, 0), path)
+            self.assertEqual((home.stat().st_uid, home.stat().st_mode), (home_status.st_uid, home_status.st_mode))
 
     def test_the_dispatcher_agent_has_no_way_to_plant_a_link(self):
         # No shell and no file writes: the audit of the post-agent steps that

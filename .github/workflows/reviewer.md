@@ -180,8 +180,9 @@ safe-outputs:
 # that step and nothing else. It changes only the entries that are not
 # root-owned already (a system directory holds the setuid sudo), follows the
 # links directly in a PATH directory and hardens what they lead to and the
-# directories above it, or refuses (a missing target whose directory the
-# agent could write, a directory too wide to take over). gh-aw has no hook
+# directories above it up to the first one too wide to take over, or refuses
+# (a missing target whose nearest directory the agent could write, a target
+# that is itself too wide). gh-aw has no hook
 # between the agent and its copy steps (post-steps come after them), so the
 # links themselves cannot be removed first. The step order matters: the home
 # directories, this step and the sealing come last among the authored
@@ -191,8 +192,9 @@ safe-outputs:
 # runner-owned), is not hardened: AWF mounts ${RUNNER_TEMP}/gh-aw read-only,
 # so the agent cannot write there.
 #
-# The same step makes /tmp/gh-aw, /tmp/gh-aw/sandbox, the firewall directory
-# and its logs and audit directories root-owned with the sticky bit. Two
+# The same step makes /tmp/gh-aw and /tmp/gh-aw/sandbox root-owned with the
+# sticky bit and the firewall directory root-owned with mode 755, leaving its
+# logs and audit directories the runner's. Two
 # steps after the agent act as root on them: "Print firewall logs" runs
 # `sudo chown -R` and `sudo chmod -R a+rX` on the firewall directory, and
 # GNU chmod follows a link given on the command line, so a firewall
@@ -200,7 +202,9 @@ safe-outputs:
 # open /etc to everyone; AWF's cleanup runs a root container with the audit
 # directory bind-mounted, and Docker resolves a link given as the source.
 # The runner's uid, which the agent shares, can create entries in a sticky
-# directory but cannot rename or remove what root owns. The safe-outputs
+# directory but cannot rename or remove what root owns, and can do nothing in
+# a root-owned 755 directory, whose logs and audit stay writable (AWF chmods
+# the audit directory as the runner, so it cannot be root's). The safe-outputs
 # server's directory also lacks send_otlp_span.cjs, which otlp.cjs requires
 # lazily from there inside a try; the upload staging copy can create a file
 # there through a link in the staging directory, so the step puts a
@@ -420,10 +424,21 @@ pre-agent-steps:
           exit 1
         fi
       }
-      declare -A seen=()
+      # Directories above a link's target already checked, and trees already
+      # hardened: a checked directory is not hardened as a tree.
+      declare -A checked=() hardened=()
       # What a link leads to must be as safe as the link's directory: the file or
-      # tree, every directory above it and, when it is missing, the nearest
-      # directory that exists (the agent could create it there).
+      # tree, the directories above it and, when it is missing, the nearest
+      # directory that exists (the agent could create it there; that one is
+      # refused when too wide). The walk up the parents ends at the first
+      # directory too wide to take over ($HOME, /home, the workspace,
+      # $RUNNER_TEMP, /tmp, /): the writers that follow these links only create or
+      # overwrite files and never rename a directory, and the sandbox does not
+      # mount $HOME writable. A file is hardened alone, not the siblings it
+      # loads (a link to a script in /usr/local/lib/node_modules/x/bin leaves
+      # the modules next to it as they are): harmless today because such
+      # libraries are root's on the runner image and the sandbox mounts the
+      # system read-only, so the agent cannot write them.
       secure_target() {
         local path=$1 near dir
         near=$path
@@ -434,20 +449,23 @@ pre-agent-steps:
           secure "$near" strict
         fi
         dir=$(dirname -- "$near")
-        while true; do
-          if [ -z "${seen[$dir]+x}" ]; then
+        while ! too_wide "$dir"; do
+          if [ -z "${checked[$dir]+x}" ]; then
             if weak "$dir" sticky; then
               secure "$dir" sticky
             fi
-            seen[$dir]=1
+            checked[$dir]=1
           fi
-          [ "$dir" = / ] && break
           dir=$(dirname -- "$dir")
         done
         if [ -d "$path" ]; then
-          if [ -z "${seen[$path]+x}" ]; then
+          if too_wide "$path"; then
+            echo "$path is too wide to make read-only" >&2
+            exit 1
+          fi
+          if [ -z "${hardened[$path]+x}" ]; then
             harden "$path"
-            seen[$path]=1
+            hardened[$path]=1
           fi
         elif [ -e "$path" ] && weak "$path" strict; then
           secure "$path" strict
@@ -496,7 +514,7 @@ pre-agent-steps:
             exit 1
           fi
           harden "$dir"
-          seen[$dir]=1
+          hardened[$dir]=1
         fi
         follow_links "$dir"
       done
@@ -530,20 +548,40 @@ pre-agent-steps:
       # directory ("Print firewall logs"), and AWF's cleanup mounts the audit
       # directory into a container that may change any file; both follow a link
       # given as the directory, which the agent (the runner's uid) could plant by
-      # renaming a directory it owns. Owned by root with the sticky bit, a
-      # directory is still writable by the runner's uid (AWF, Squid and the steps
-      # create files in it) but its entries cannot be renamed or removed by the
-      # agent, nor its own replaced.
-      for dir in /tmp/gh-aw /tmp/gh-aw/sandbox /tmp/gh-aw/sandbox/firewall \
-        /tmp/gh-aw/sandbox/firewall/logs /tmp/gh-aw/sandbox/firewall/audit; do
+      # renaming a directory it owns. /tmp/gh-aw and its sandbox directory are
+      # root's with the sticky bit, writable by the runner's uid (the steps and
+      # the agent create files there) but not renamable by it. The firewall
+      # directory is root's with mode 755: the runner's uid cannot create, rename
+      # or remove anything in it, so logs and audit stay the directories that
+      # gh-aw's create_gh_aw_tmp_dir.sh made for the runner. They must stay the
+      # runner's: AWF's writeConfigs makes the audit directory and then chmods it
+      # as the runner's uid, and a root-owned one fails with EPERM before any
+      # container starts. AWF writes only inside them, and the one file of the
+      # firewall directory itself, awf-reflect.json, is written after "Print
+      # firewall logs" has given the directory back to the runner.
+      uid=$(id -u)
+      for dir in /tmp/gh-aw /tmp/gh-aw/sandbox /tmp/gh-aw/sandbox/firewall; do
         if [ -L "$dir" ] || [ ! -d "$dir" ]; then
           echo "$dir is not a directory" >&2
           exit 1
         fi
+      done
+      for dir in /tmp/gh-aw/sandbox/firewall/logs /tmp/gh-aw/sandbox/firewall/audit; do
+        if [ -L "$dir" ]; then
+          echo "$dir is a link" >&2
+          exit 1
+        fi
+        [ -d "$dir" ] || mkdir -- "$dir"
+        [ "$(stat -c '%u' -- "$dir")" = "$uid" ] || { echo "$dir is not the runner's" >&2; exit 1; }
+      done
+      for dir in /tmp/gh-aw /tmp/gh-aw/sandbox; do
         sudo chown -h root:root -- "$dir"
         sudo chmod 1777 -- "$dir"
         [ "$(stat -c '%U %a' -- "$dir")" = "root 1777" ] || { echo "$dir is not sealed" >&2; exit 1; }
       done
+      sudo chown -h root:root -- /tmp/gh-aw/sandbox/firewall
+      sudo chmod 0755 -- /tmp/gh-aw/sandbox/firewall
+      [ "$(stat -c '%U %a' -- /tmp/gh-aw/sandbox/firewall)" = "root 755" ] || { echo "the firewall directory is not sealed" >&2; exit 1; }
   - name: Seal the workspace's git checkout against the agent
     run: |
       set -euo pipefail
