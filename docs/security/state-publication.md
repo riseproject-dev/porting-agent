@@ -1,11 +1,11 @@
 ---
-title: State publication
-parent: Security model
+title: State Publication
+parent: Security Model
 nav_order: 3
 permalink: /security/state-publication/
 ---
 
-# State publication
+# State Publication
 {: .no_toc }
 
 <details open markdown="block">
@@ -48,8 +48,8 @@ It never repeats a remote effect to obtain a receipt.
 
 ## The ruleset
 
-The `protect-main-history` ruleset on the default branch forbids force pushes and deletion and has no bypass actors. Its full declaration is in [Repository setup]({{ '/operations/setup/' | relative_url }}#bootstrap-resources).
+The `protect-main-history` ruleset on the default branch forbids force pushes and deletion and has no bypass actors. Its full declaration is in [Repository Setup]({{ '/operations/setup/' | relative_url }}#bootstrap-resources).
 
 ## After the commit
 
-Tracking-issue entries, failure replies, and reactions follow the commit and are repaired by a later tick when one fails. See [Recovery and retries]({{ '/operations/recovery/' | relative_url }}#repairing-tracking-issue-output).
+Tracking-issue entries, failure replies, and reactions follow the commit and are repaired by a later tick when one fails. See [Recovery and Retries]({{ '/operations/recovery/' | relative_url }}#repairing-tracking-issue-output).

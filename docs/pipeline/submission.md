@@ -1,11 +1,11 @@
 ---
-title: Submission and handoff
+title: Submission and Handoff
 parent: Pipeline
 nav_order: 7
 permalink: /pipeline/submission/
 ---
 
-# Submission and handoff
+# Submission and Handoff
 {: .no_toc }
 
 When CI passes on the development head, a human decides whether to submit upstream. Trusted workflows then prepare a clean branch and a submission package; the human opens the upstream pull request under their own identity. No workflow holds a credential that can write an upstream repository. See [Credentials]({{ '/security/credentials/' | relative_url }}).

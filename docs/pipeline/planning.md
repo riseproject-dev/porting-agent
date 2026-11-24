@@ -63,7 +63,7 @@ The `reviewer` profile is added to the compiled policy, which gh-aw installs on 
 
 ## What the planner reads
 
-Its Work carries a history (`context.history`), which a trusted pre-agent step fetches at the pinned commit and checks. See [Reports and history]({{ '/pipeline/history/' | relative_url }}). The planner reads, in order:
+Its Work carries a history (`context.history`), which a trusted pre-agent step fetches at the pinned commit and checks. See [Reports and History]({{ '/pipeline/history/' | relative_url }}). The planner reads, in order:
 
 1. The owner's steering: edits of the tracking issue description and comments by accounts in the command authority. This is how the owner steers planning.
 2. The tracking issue comments, as untrusted research.
@@ -86,7 +86,7 @@ A `close` is only for a project released on PyPI whose latest release of every r
 - The controller confirms the close from PyPI itself, requires each PyPI project to name the upstream repository in its metadata, and rejects a close that PyPI does not confirm.
 - A project of another ecosystem that already serves riscv64 is parked with that evidence.
 
-The [transition engine]({{ '/state-machine/engine/' | relative_url }}#the-plan-decides) lists the row each case takes.
+The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#the-plan-decides) lists the row each case takes.
 
 ## Plan schema versions
 
@@ -107,4 +107,4 @@ Plans stored under an older version stay readable.
 
 ## When planning fails
 
-A failed or interrupted planning run fails closed and is recovered by the controller. See [Recovery and retries]({{ '/operations/recovery/' | relative_url }}).
+A failed or interrupted planning run fails closed and is recovered by the controller. See [Recovery and Retries]({{ '/operations/recovery/' | relative_url }}).

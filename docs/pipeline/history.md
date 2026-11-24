@@ -1,11 +1,11 @@
 ---
-title: Reports and history
+title: Reports and History
 parent: Pipeline
 nav_order: 6
 permalink: /pipeline/history/
 ---
 
-# Reports and history
+# Reports and History
 {: .no_toc }
 
 Each worker reports what it attempted, and every Work receives the contribution's history. Together they let a repair start from what was already tried instead of from nothing.
@@ -38,7 +38,7 @@ The worker gate and the submission checks (`--report`) require the report whenev
 - A Result that arrives late although its push landed stores its report too, so the repair of a failing head reads what was tried on it.
 - The report of a failed, rejected, or blocked worker is discarded.
 
-Two [known gaps]({{ '/state-machine/known-gaps/' | relative_url }}) concern reports: [an accepted Result whose report cannot be stored]({{ '/state-machine/known-gaps/' | relative_url }}#an-accepted-result-whose-report-cannot-be-stored-pauses-the-contribution), and [a publication job lost after its push]({{ '/state-machine/known-gaps/' | relative_url }}#a-publication-job-lost-after-its-push-leaves-no-report).
+Two [Known Gaps]({{ '/state-machine/known-gaps/' | relative_url }}) concern reports: [an accepted Result whose report cannot be stored]({{ '/state-machine/known-gaps/' | relative_url }}#an-accepted-result-whose-report-cannot-be-stored-pauses-the-contribution), and [a publication job lost after its push]({{ '/state-machine/known-gaps/' | relative_url }}#a-publication-job-lost-after-its-push-leaves-no-report).
 
 ## The contribution history
 
@@ -64,4 +64,4 @@ by accounts in the command authority. The reviews of upstream maintainers are in
 
 ## Treated as untrusted
 
-All of it is untrusted data: redacted, bounded, never rendered on the tracking issue or the status page, and unable to widen any path, operation, or credential. See [Untrusted input]({{ '/security/untrusted-input/' | relative_url }}).
+All of it is untrusted data: redacted, bounded, never rendered on the tracking issue or the status page, and unable to widen any path, operation, or credential. See [Untrusted Input]({{ '/security/untrusted-input/' | relative_url }}).

@@ -1,11 +1,11 @@
 ---
-title: Reproduction image
+title: Reproduction Image
 parent: Operations
 nav_order: 3
 permalink: /operations/reproduction-image/
 ---
 
-# Reproduction image
+# Reproduction Image
 {: .no_toc }
 
 `image.yml` and `image/` own the exact-base, `linux/riscv64` reproduction image the worker builds and tests in. The workflow also verifies the published image anonymously by its exact digest.

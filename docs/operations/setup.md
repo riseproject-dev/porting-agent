@@ -1,11 +1,11 @@
 ---
-title: Repository setup
+title: Repository Setup
 parent: Operations
 nav_order: 1
 permalink: /operations/setup/
 ---
 
-# Repository setup
+# Repository Setup
 {: .no_toc }
 
 The reviewed repository settings are declared in `.github/repository-settings.json`. This page lists what the declaration requires and how it is audited.

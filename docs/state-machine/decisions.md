@@ -1,6 +1,6 @@
 ---
 title: Decisions
-parent: State machine
+parent: State Machine
 nav_order: 2
 permalink: /state-machine/decisions/
 ---

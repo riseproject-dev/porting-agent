@@ -1,11 +1,11 @@
 ---
-title: Recovery and retries
+title: Recovery and Retries
 parent: Operations
 nav_order: 4
 permalink: /operations/recovery/
 ---
 
-# Recovery and retries
+# Recovery and Retries
 {: .no_toc }
 
 The pipeline is built to continue after a failure without duplicating a remote effect and without inventing a result. This page summarizes how.
@@ -48,6 +48,6 @@ Human-facing ledger entries, failure replies, and terminal reactions scan durabl
 
 ## Where the details are
 
-- [State publication]({{ '/security/state-publication/' | relative_url }}) covers retries when `main` moves.
+- [State Publication]({{ '/security/state-publication/' | relative_url }}) covers retries when `main` moves.
 - [Errors while a tick runs]({{ '/state-machine/engine/' | relative_url }}#errors-while-a-tick-runs) covers how an error in one contribution pauses only that contribution.
 - [Remote operations]({{ '/state-machine/engine/' | relative_url }}#remote-operations) covers operation receipts, discovery, and resolving an operation by hand.

@@ -7,14 +7,14 @@ has_children: true
 
 # Pipeline
 
-A contribution moves through a fixed sequence of stages. Trusted code decides when each stage starts, authorizes every remote effect, and records the outcome in `.state/`. Models only judge: they plan, write patches, and review them. The [Security model]({{ '/security/' | relative_url }}) explains the separation.
+A contribution moves through a fixed sequence of stages. Trusted code decides when each stage starts, authorizes every remote effect, and records the outcome in `.state/`. Models only judge: they plan, write patches, and review them. The [Security Model]({{ '/security/' | relative_url }}) explains the separation.
 
 ## Overview
 
 ```mermaid
 flowchart LR
   request["Request<br/>issue with the form"] --> planning["Planning<br/>verified plan"]
-  planning --> development
+  planning --> worker
   subgraph development["Development"]
     direction LR
     worker["Worker patch"] --> review["Patch review"] --> ci["Development PR and CI"]
@@ -28,12 +28,12 @@ flowchart LR
 | Stage | What happens | Page |
 |:------|:-------------|:-----|
 | Request | An issue labelled `upstreaming-request` is parsed and frozen. | [Requests]({{ '/pipeline/requests/' | relative_url }}) |
-| Planning | The planner researches the project and returns a plan that trusted code verifies. | [Planning]({{ '/pipeline/planning/' | relative_url }}), [Contribution guidelines]({{ '/pipeline/contribution-guidelines/' | relative_url }}) |
+| Planning | The planner researches the project and returns a plan that trusted code verifies. | [Planning]({{ '/pipeline/planning/' | relative_url }}), [Contribution Guidelines]({{ '/pipeline/contribution-guidelines/' | relative_url }}) |
 | Development | The worker proposes a bounded patch on a fork, reproduced in the `riscv64` image. | [Development]({{ '/pipeline/development/' | relative_url }}) |
-| Patch review | A separate reviewer checks every development patch before it is published. | [Patch review]({{ '/pipeline/patch-review/' | relative_url }}) |
-| Reports and history | Each Work reports what it tried, and later Work reads that history. | [Reports and history]({{ '/pipeline/history/' | relative_url }}) |
-| Submission | A human requests submission; trusted workflows prepare the upstream branch and a package. | [Submission and handoff]({{ '/pipeline/submission/' | relative_url }}) |
-| Upstream review and release | The controller observes the upstream PR, its review, and its release. | [Transition engine]({{ '/state-machine/engine/' | relative_url }}#upstream-review-and-release) |
+| Patch Review | A separate reviewer checks every development patch before it is published. | [Patch Review]({{ '/pipeline/patch-review/' | relative_url }}) |
+| Reports and History | Each Work reports what it tried, and later Work reads that history. | [Reports and History]({{ '/pipeline/history/' | relative_url }}) |
+| Submission | A human requests submission; trusted workflows prepare the upstream branch and a package. | [Submission and Handoff]({{ '/pipeline/submission/' | relative_url }}) |
+| Upstream review and release | The controller observes the upstream PR, its review, and its release. | [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#upstream-review-and-release) |
 
 ## Branches
 

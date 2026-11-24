@@ -1,6 +1,6 @@
 ---
-title: Known gaps
-parent: State machine
+title: Known Gaps
+parent: State Machine
 nav_order: 4
 permalink: /state-machine/known-gaps/
 ---
@@ -8,7 +8,7 @@ permalink: /state-machine/known-gaps/
 # Known gaps between the code and the table
 {: .no_toc }
 
-The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the source of truth. The places below are where the code does not yet do what the table says, or where `lifecycle check` does not yet catch a violation. Each entry names the table rows involved and the behavior the table requires. Remove an entry in the change that fixes it.
+The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the source of truth. The places below are where the code does not yet do what the table says, or where `lifecycle check` does not yet catch a violation. Each entry names the table rows involved and the behavior the table requires. Remove an entry in the change that fixes it.
 
 <details open markdown="block">
 <summary>Contents</summary>

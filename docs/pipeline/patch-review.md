@@ -1,11 +1,11 @@
 ---
-title: Patch review
+title: Patch Review
 parent: Pipeline
 nav_order: 5
 permalink: /pipeline/patch-review/
 ---
 
-# Patch review
+# Patch Review
 {: .no_toc }
 
 Every development patch is reviewed before it is published. The reviewer is a separate agent on its own model, with no destination credential and no ability to write anything but its review.

@@ -1,11 +1,11 @@
 ---
-title: Security model
+title: Security Model
 nav_order: 5
 permalink: /security/
 has_children: true
 ---
 
-# Security model
+# Security Model
 
 ## Separation of authority
 
@@ -31,7 +31,7 @@ Pull-request validation is read-only. It receives no App private key, destinatio
 
 ## Accepted risks and open gaps
 
-The [known gaps]({{ '/state-machine/known-gaps/' | relative_url }}) page records every place where the code does not yet match the lifecycle table, including the accepted risks of the agents:
+The [Known Gaps]({{ '/state-machine/known-gaps/' | relative_url }}) page records every place where the code does not yet match the lifecycle table, including the accepted risks of the agents:
 
 - [The planner and worker agents run on the runner, outside the sandbox]({{ '/state-machine/known-gaps/' | relative_url }}#the-planner-and-worker-agents-run-on-the-runner-outside-the-sandbox)
 - [The reviewer agent has a shell, file writes and web search inside the sandbox]({{ '/state-machine/known-gaps/' | relative_url }}#the-reviewer-agent-has-a-shell-file-writes-and-web-search-inside-the-sandbox)
@@ -44,6 +44,6 @@ The [known gaps]({{ '/state-machine/known-gaps/' | relative_url }}) page records
 | Page | Contents |
 |:-----|:---------|
 | [Credentials]({{ '/security/credentials/' | relative_url }}) | The two Apps, and which job mints which token. |
-| [Agent isolation]({{ '/security/agents/' | relative_url }}) | The sandbox, network, tools, and credentials of each agent. |
-| [State publication]({{ '/security/state-publication/' | relative_url }}) | How `.state/` reaches `main`. |
-| [Untrusted input]({{ '/security/untrusted-input/' | relative_url }}) | How requests, upstream text, history, reviews, and previews are treated as data. |
+| [Agent Isolation]({{ '/security/agents/' | relative_url }}) | The sandbox, network, tools, and credentials of each agent. |
+| [State Publication]({{ '/security/state-publication/' | relative_url }}) | How `.state/` reaches `main`. |
+| [Untrusted Input]({{ '/security/untrusted-input/' | relative_url }}) | How requests, upstream text, history, reviews, and previews are treated as data. |

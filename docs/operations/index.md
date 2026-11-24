@@ -20,10 +20,10 @@ This section is for the people who run the porting agent.
 
 | Page | Contents |
 |:-----|:---------|
-| [Repository setup]({{ '/operations/setup/' | relative_url }}) | Reviewed repository settings, bootstrap resources, and the canonical request. |
+| [Repository Setup]({{ '/operations/setup/' | relative_url }}) | Reviewed repository settings, bootstrap resources, and the canonical request. |
 | [Workflows]({{ '/operations/workflows/' | relative_url }}) | Every workflow, who owns it, and what renaming one involves. |
-| [Reproduction image]({{ '/operations/reproduction-image/' | relative_url }}) | The `riscv64` image the worker reproduces builds in. |
-| [Recovery and retries]({{ '/operations/recovery/' | relative_url }}) | How the pipeline continues and recovers after a failure. |
+| [Reproduction Image]({{ '/operations/reproduction-image/' | relative_url }}) | The `riscv64` image the worker reproduces builds in. |
+| [Recovery and Retries]({{ '/operations/recovery/' | relative_url }}) | How the pipeline continues and recovers after a failure. |
 | [Website]({{ '/operations/website/' | relative_url }}) | How these pages and the status page are built, previewed, and deployed. |
 
 ## Repository layout

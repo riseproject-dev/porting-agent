@@ -1,11 +1,11 @@
 ---
-title: Contribution guidelines
+title: Contribution Guidelines
 parent: Pipeline
 nav_order: 3
 permalink: /pipeline/contribution-guidelines/
 ---
 
-# Contribution guidelines
+# Contribution Guidelines
 {: .no_toc }
 
 A plan records, as `contribution_guidelines`, how the project wants a contribution shaped. Trusted code then applies the measurable parts to every patch and to the submission.
@@ -35,7 +35,7 @@ A part may be "none found" only with the record of the search.
 
 ## Precedence
 
-The project's contributing instructions take precedence over the pipeline's own instructions to the worker, and to the submission rewrite and review, for the content and style of a contribution. No upstream text widens the trusted gates, the scope, or the credentials, or changes where or what is pushed. See [Untrusted input]({{ '/security/untrusted-input/' | relative_url }}).
+The project's contributing instructions take precedence over the pipeline's own instructions to the worker, and to the submission rewrite and review, for the content and style of a contribution. No upstream text widens the trusted gates, the scope, or the credentials, or changes where or what is pushed. See [Untrusted Input]({{ '/security/untrusted-input/' | relative_url }}).
 
 ## What the plan gate refuses
 
@@ -55,6 +55,6 @@ The trusted gate refuses a plan that:
 
 **Attribution trailers.** The gate also rejects any attribution trailer that does not name the App's commit identity. That covers `Signed-off-by:`, `Co-authored-by:`, `Reviewed-by:`, and every other `*-by:` line, including a trailer in the title and trailers written with Unicode lookalikes of the key or the colon. It rejects an attribution trailer continued on a line that starts with white space. The worker commits as the App and attributes work to nobody else.
 
-**Commit count.** The number of commits is checked at submission, where the review may squash. See [Submission and handoff]({{ '/pipeline/submission/' | relative_url }}).
+**Commit count.** The number of commits is checked at submission, where the review may squash. See [Submission and Handoff]({{ '/pipeline/submission/' | relative_url }}).
 
 **Series requirements.** They are checked on the exact head when CI passes in development, before the contribution is nominated for submission. An unmet requirement returns the series to development as Work that carries it, as `context.series_requirements`. The worker gate then rejects a patch of that Work whose non-debug commits change no file matching one of the paths of each requirement. See [Development]({{ '/state-machine/engine/' | relative_url }}#development) in the transition engine.

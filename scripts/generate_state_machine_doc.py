@@ -180,7 +180,7 @@ def front_matter(title: str, nav_order: int, permalink: str, *, parent: bool = F
                  children: bool = False) -> list[str]:
     lines = ["---", f"title: {title}"]
     if parent:
-        lines.append("parent: State machine")
+        lines.append("parent: State Machine")
     lines.append(f"nav_order: {nav_order}")
     if children:
         lines.append("has_children: true")
@@ -207,7 +207,7 @@ TRANSITION_HEADER = ["| Verb | Trigger | To | Guard | Effects | Charges |",
 
 
 def render_index() -> str:
-    lines = front_matter("State machine", 7, "/state-machine/", children=True)
+    lines = front_matter("State Machine", 7, "/state-machine/", children=True)
     lines += [
         "# Contribution state machine", "{: .no_toc }", "",
         "The contribution lifecycle is defined by one table in `lifecycle.py`. That table is the "
@@ -302,7 +302,7 @@ def render_index() -> str:
 
 
 def render_table(policy: dict) -> str:
-    lines = front_matter("Lifecycle table", 1, "/state-machine/table/", parent=True)
+    lines = front_matter("Lifecycle Table", 1, "/state-machine/table/", parent=True)
     states = len(lc.LIFECYCLE)
     rows = sum(len(s.transitions) for s in lc.LIFECYCLE.values())
     rule_rows = sum(1 for e in lc.table_edges() if lc.is_rule_row(e))

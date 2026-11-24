@@ -1,6 +1,6 @@
 ---
 title: Credentials
-parent: Security model
+parent: Security Model
 nav_order: 1
 permalink: /security/credentials/
 ---
@@ -69,4 +69,4 @@ Every handoff job mints its token only after checking that the state it checked 
 
 The planner uses the scoped `GITHUB_TOKEN` and a server-enforced read-only GitHub MCP server. It has no control App private key, destination token, package credential, fork writer, or repository mutation tool.
 
-The worker and the reviewer hold no destination credential either. How each is isolated is on [Agent isolation]({{ '/security/agents/' | relative_url }}).
+The worker and the reviewer hold no destination credential either. How each is isolated is on [Agent Isolation]({{ '/security/agents/' | relative_url }}).

@@ -1,6 +1,6 @@
 ---
-title: Lifecycle table
-parent: State machine
+title: Lifecycle Table
+parent: State Machine
 nav_order: 1
 permalink: /state-machine/table/
 ---

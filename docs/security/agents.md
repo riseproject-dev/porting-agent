@@ -1,11 +1,11 @@
 ---
-title: Agent isolation
-parent: Security model
+title: Agent Isolation
+parent: Security Model
 nav_order: 2
 permalink: /security/agents/
 ---
 
-# Agent isolation
+# Agent Isolation
 {: .no_toc }
 
 Four agentic workflows run models: the dispatcher, the planner, the worker, and the reviewer. Each has a different amount of isolation, chosen for what it needs to do. None holds a destination credential; trusted jobs verify and publish their results.

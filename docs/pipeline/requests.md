@@ -84,7 +84,7 @@ How each wait ends:
 - The wait a renamed repository caused ends on its own once GitHub answers for the repository under its recorded name again.
 - A missing or renamed base branch needs a human: resume once it can be read again, or park the contribution and then post `/upstreaming refresh revision=N branch=NAME reason="..."` with the new branch.
 
-A base branch renamed while the upstream PR is open is followed without a human once the verified PR targets the new name. A rename before the PR is opened is followed once the PR targets the name GitHub redirects the base to. The [transition engine]({{ '/state-machine/engine/' | relative_url }}#the-upstream-base-branch) describes the rows in full.
+A base branch renamed while the upstream PR is open is followed without a human once the verified PR targets the new name. A rename before the PR is opened is followed once the PR targets the name GitHub redirects the base to. The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#the-upstream-base-branch) describes the rows in full.
 
 ## Withdrawing a request
 

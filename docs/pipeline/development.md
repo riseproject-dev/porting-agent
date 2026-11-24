@@ -36,7 +36,7 @@ It initializes the exact `riscv64-dev` base from the frozen base, and verifies t
 - direct build and test reproduction in the [reproduction image]({{ '/operations/reproduction-image/' | relative_url }});
 - bounded proposal evidence.
 
-The worker holds no destination credential and cannot push. See [Agent isolation]({{ '/security/agents/' | relative_url }}).
+The worker holds no destination credential and cannot push. See [Agent Isolation]({{ '/security/agents/' | relative_url }}).
 
 ## Reproduction evidence
 
@@ -67,11 +67,11 @@ A separate trusted publish job publishes the verified proposal. It:
 - persists operation evidence;
 - pushes under an exact-head lease.
 
-A development patch is first held for review, and its publish job mints no token; see [Patch review]({{ '/pipeline/patch-review/' | relative_url }}). A repair worker's report of a failure not caused by the patch is published by rerunning the failed jobs on the exact head, with a one-fork token that carries only `actions: write`.
+A development patch is first held for review, and its publish job mints no token; see [Patch Review]({{ '/pipeline/patch-review/' | relative_url }}). A repair worker's report of a failure not caused by the patch is published by rerunning the failed jobs on the exact head, with a one-fork token that carries only `actions: write`.
 
 ## Development PR and CI
 
-`dev-pr.yml` creates or discovers one marked same-fork pull request, bootstraps inherited Actions safely, and executes the CI reruns the collector records for interrupted CI. The controller observes CI on the exact head. The [transition engine]({{ '/state-machine/engine/' | relative_url }}#development) lists the rows, and [CI reruns]({{ '/state-machine/engine/' | relative_url }}#ci-reruns) describes how reruns are requested and read back.
+`dev-pr.yml` creates or discovers one marked same-fork pull request, bootstraps inherited Actions safely, and executes the CI reruns the collector records for interrupted CI. The controller observes CI on the exact head. The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#development) lists the rows, and [CI reruns]({{ '/state-machine/engine/' | relative_url }}#ci-reruns) describes how reruns are requested and read back.
 
 ## Infrastructure blockers
 

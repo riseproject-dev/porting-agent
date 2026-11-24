@@ -1,5 +1,5 @@
 ---
-title: State machine
+title: State Machine
 nav_order: 7
 has_children: true
 permalink: /state-machine/

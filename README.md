@@ -47,8 +47,8 @@ The documentation is published at <https://riseproject-dev.github.io/porting-age
 
 - [Pipeline](https://riseproject-dev.github.io/porting-agent/pipeline/): requests, planning, development, patch review, and submission
 - [Operations](https://riseproject-dev.github.io/porting-agent/operations/): repository setup, workflows, recovery, and the website
-- [Security model](https://riseproject-dev.github.io/porting-agent/security/): credentials, agent isolation, state publication, and untrusted input
-- [State machine](https://riseproject-dev.github.io/porting-agent/state-machine/), its [lifecycle table](https://riseproject-dev.github.io/porting-agent/state-machine/table/), the [transition engine](https://riseproject-dev.github.io/porting-agent/state-machine/engine/), and the [known gaps](https://riseproject-dev.github.io/porting-agent/state-machine/known-gaps/)
+- [Security Model](https://riseproject-dev.github.io/porting-agent/security/): credentials, agent isolation, state publication, and untrusted input
+- [State Machine](https://riseproject-dev.github.io/porting-agent/state-machine/), its [Lifecycle Table](https://riseproject-dev.github.io/porting-agent/state-machine/table/), the [Transition Engine](https://riseproject-dev.github.io/porting-agent/state-machine/engine/), and the [Known Gaps](https://riseproject-dev.github.io/porting-agent/state-machine/known-gaps/)
 
 ## License
 
