@@ -880,20 +880,29 @@ def pi_command_args(run: str) -> list[str]:
 
 
 class TestAgentToolPolicy(unittest.TestCase):
-    """A sandboxed agent has no shell and no file writes."""
+    """The dispatcher is the one agent with no shell and no file writes."""
 
-    def test_no_sandboxed_agent_has_a_shell_or_file_writes(self):
+    def test_only_the_dispatcher_has_no_shell_or_file_writes(self):
         sandboxed = set()
         for name in ("dispatcher", "planner", "reviewer", "worker"):
             with self.subTest(workflow=name):
                 policy, run = pi_tool_policy(workflow(f"{name}.lock.yml"))
-                if "awf --config" not in run:
-                    # Unsandboxed by operator decision (known-gaps.md): the
-                    # agent runs on the runner with a full shell.
-                    self.assertEqual(source(name)["sandbox"]["agent"], False)
+                if name != "dispatcher":
+                    # The owner's decision: the planner, worker and reviewer
+                    # have Pi's read, bash, edit and write. The planner and
+                    # worker run unsandboxed (known-gaps.md), the reviewer in
+                    # the sandbox.
                     self.assertIn("*", policy["bash"])
+                    self.assertIn("edit", policy)
+                    self.assertNotIn("--exclude-tools", run)
+                    self.assertNotIn("GH_AW_PI_SUBAGENT_ARGS", json.dumps(source(name)["engine"]))
+                    if "awf --config" in run:
+                        sandboxed.add(name)
+                    else:
+                        self.assertEqual(source(name)["sandbox"]["agent"], False)
                     continue
                 sandboxed.add(name)
+                self.assertIn("awf --config", run)
                 # gh-aw merges its default commands (sort, uniq, yq, ...)
                 # into every non-empty list, so a sandboxed agent's bash
                 # must be off, not narrowed.
@@ -908,7 +917,19 @@ class TestAgentToolPolicy(unittest.TestCase):
                 child = json.loads(step["env"]["GH_AW_PI_SUBAGENT_ARGS"])
                 self.assertLessEqual({"bash", "edit", "write"}, excluded_tools(child))
                 self.assertEqual(exec_or_write_entries(policy["bash"]), [])
+                self.assertEqual(source(name)["tools"]["bash"], False)
+                self.assertEqual(source(name)["tools"]["edit"], False)
         self.assertEqual(sandboxed, {"dispatcher", "reviewer"})
+
+    def test_the_dispatcher_has_no_extension_no_web_and_no_extra_network(self):
+        engine = source("dispatcher")["engine"]
+        self.assertNotIn("extensions", engine)
+        self.assertNotIn("config", engine)
+        self.assertEqual(source("dispatcher")["network"], {"allowed": []})
+        self.assertNotIn("mcp-servers", source("dispatcher"))
+        self.assertNotIn("mcp-scripts", source("dispatcher"))
+        steps = [s.get("name") for s in workflow("dispatcher.lock.yml")["jobs"]["agent"]["steps"]]
+        self.assertFalse([n for n in steps if "extension" in (n or "").lower()])
 
     def test_a_list_with_an_exec_or_write_command_is_refused(self):
         # The dispatcher's former list: gh-aw's defaults plus one cat.
@@ -945,9 +966,10 @@ class TestAgentToolPolicy(unittest.TestCase):
         # The same step, so the behavior tests below cover both. The
         # reviewer's comes after its trusted steps that still use the home
         # directories (gh, git, node).
-        self.assertEqual(runs["dispatcher"], runs["reviewer"])
+        self.assertEqual(runs["dispatcher"].rstrip("\n"), runs["reviewer"].rstrip("\n"))
         authored = [step["name"] for step in source("reviewer")["pre-agent-steps"]]
-        self.assertEqual(authored[-1], "Make the home directories the sandbox mounts read-only to the agent")
+        self.assertEqual(authored[-2:], ["Make the home directories the sandbox mounts read-only to the agent",
+                                         "Seal the workspace's git checkout against the agent"])
 
     def test_excluded_tools_reads_the_last_flag_as_pi_does(self):
         self.assertEqual(excluded_tools(["--exclude-tools", "bash", "--exclude-tools", "edit,write"]),
@@ -997,24 +1019,27 @@ class TestAgentToolPolicy(unittest.TestCase):
             self.assertEqual(outside.stat().st_uid, 1001)
 
 class TestReviewerSandbox(unittest.TestCase):
-    """The reviewer reads in the sandbox and writes only its review."""
+    """The reviewer has a shell, file writes and web search inside the sandbox."""
 
     def lock(self) -> dict:
         return workflow("reviewer.lock.yml")
 
-    def test_the_reviewer_reaches_only_what_its_servers_need(self):
+    def test_the_reviewer_reaches_only_the_hosts_its_tools_need(self):
         steps = self.lock()["jobs"]["agent"]["steps"]
         run = next(s for s in steps if s.get("name") == "Execute Pi CLI")["run"]
         self.assertIn("awf --config", run)
-        # The AWF configuration the agent step writes allows one host.
+        # api.github.com (the container MCP server's host, which strict mode
+        # wants listed) and the three keyless search providers of
+        # pi-web-access 0.48.0; no ecosystem and no wildcard.
+        hosts = ["api.github.com", "mcp.exa.ai", "api.keenable.ai", "html.duckduckgo.com"]
         allowed = re.findall(r'\\"allowDomains\\":(\[[^\]]*\])', run)
-        self.assertEqual([json.loads(a.replace('\\"', '"')) for a in allowed], [["api.github.com"]])
-        self.assertEqual(source("reviewer")["network"], {"allowed": ["api.github.com"]})
-        # The reviewer's own servers: the GitHub read servers and the
-        # review writer; it has no web tool and no Docker.
+        self.assertEqual([sorted(json.loads(a.replace('\\"', '"'))) for a in allowed], [sorted(hosts)])
+        self.assertEqual(source("reviewer")["network"], {"allowed": hosts})
+        # Its own servers: the GitHub read server and the review writer; no
+        # browser and no Docker.
         self.assertEqual(set(source("reviewer")["mcp-servers"]), {"github-authenticated"})
         self.assertEqual(set(source("reviewer")["mcp-scripts"]), {"submit_review"})
-        for absent in ("web-fetch", "web-search", "playwright", "--enable-dind", "docker-sudo"):
+        for absent in ("playwright", "--enable-dind", "docker-sudo"):
             self.assertNotIn(absent, json.dumps(source("reviewer")))
 
     def test_no_threat_detection_job_reads_the_agent_output(self):
@@ -1031,14 +1056,10 @@ class TestReviewerSandbox(unittest.TestCase):
         self.assertEqual(jobs["publish"]["if"], "needs.safe_outputs.outputs.work_queue_outcome == 'completed'")
         self.assertEqual(jobs["continuation"]["if"], "always()")
 
-    def test_the_agent_has_exactly_the_read_only_file_tools(self):
+    def test_the_agent_has_the_basic_file_and_shell_tools(self):
         step = next(s for s in self.lock()["jobs"]["agent"]["steps"] if s.get("name") == "Execute Pi CLI")
-        expected = {"read", "ls", "grep", "find", "codemode", "tool_search"}
+        expected = {"read", "bash", "edit", "write", "ls", "grep", "find", "codemode", "tool_search"}
         self.assertEqual(enabled_tools(pi_command_args(step["run"])), expected)
-        self.assertEqual(enabled_tools(json.loads(step["env"]["GH_AW_PI_SUBAGENT_ARGS"])), expected)
-        # No setting replaces the defaultTools the selection starts from.
-        self.assertNotIn("defaultTools", step["env"].get("GH_AW_PI_CONFIG", ""))
-        self.assertNotIn("config", source("reviewer")["engine"])
         # Pi finds rg and fd on PATH and never downloads them.
         self.assertEqual(str(step["env"]["PI_OFFLINE"]), "1")
         self.assertEqual(self.lock()["jobs"]["agent"]["runs-on"], "ubuntu-24.04")
@@ -1050,7 +1071,132 @@ class TestReviewerSandbox(unittest.TestCase):
                        "/usr/bin/rg --version", "/usr/bin/fdfind --version"):
             self.assertIn(needle, steps[install]["run"])
         prompt = (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2]
-        self.assertIn("read the files above\nwith your read, find, grep and ls tools", prompt)
+        self.assertIn("Pi's `read`, `bash`, `edit`, `write`,\n`ls`, `grep` and `find`", prompt)
+
+    def seal(self, workspace: Path, home: Path) -> subprocess.CompletedProcess:
+        step = next(s for s in workflow("reviewer.lock.yml")["jobs"]["agent"]["steps"]
+                    if s.get("name") == "Seal the workspace's git checkout against the agent")
+        shim = workspace.parent / "shim"
+        shim.mkdir(exist_ok=True)
+        (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+        (shim / "sudo").chmod(0o755)
+        return subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True, cwd=workspace,
+                              env={**os.environ, "HOME": str(home), "GITHUB_WORKSPACE": str(workspace),
+                                   "PATH": f"{shim}:{os.environ['PATH']}",
+                                   # The test builds the checkout as another user than the one that runs the step.
+                                   "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
+                                   "GIT_CONFIG_VALUE_0": "*"})
+
+    def test_the_seal_comes_after_the_trusted_steps_and_before_the_agent(self):
+        steps = self.lock()["jobs"]["agent"]["steps"]
+        names = [s.get("name") for s in steps]
+        seal = names.index("Seal the workspace's git checkout against the agent")
+        self.assertLess(names.index("Check out the fork and rebuild the held patch (read-only)"), seal)
+        self.assertLess(names.index("Checkout repository (gh-aw default)"), seal)
+        self.assertLess(seal, names.index("Execute Pi CLI"))
+        run = steps[seal]["run"]
+        for needle in ("git remote remove origin", 'sudo chown -RHh root:root -- .git/',
+                       'sudo chown root:root -- "$GITHUB_WORKSPACE"', 'sudo chmod 1777 -- "$GITHUB_WORKSPACE"',
+                       "! -user root -o -perm /022", "exit 1"):
+            self.assertIn(needle, run)
+
+    def test_the_seal_refuses_a_git_directory_that_is_a_link_or_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            for make in (lambda ws: None, lambda ws: (ws / ".git").symlink_to(Path(tmp))):
+                workspace = Path(tmp) / f"ws{id(make)}"
+                workspace.mkdir()
+                make(workspace)
+                result = self.seal(workspace, home)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(".git is not a directory", result.stderr)
+
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("git") and shutil.which("setpriv"),
+                         "chown to root needs root, and the check runs git as another user")
+    def test_the_seal_leaves_the_agent_no_way_to_plant_a_git_configuration(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            os.chmod(tmp, 0o755)
+            workspace, home = Path(tmp) / "ws", Path(tmp) / "home"
+            workspace.mkdir()
+            home.mkdir()
+            os.chown(home, 1001, 1001)
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+            subprocess.run([*git, "init", "-q"], cwd=workspace, check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "i"], cwd=workspace, check=True)
+            subprocess.run([*git, "remote", "add", "origin", "https://github.com/x/y.git"], cwd=workspace, check=True)
+            os.chown(workspace, 1001, 1001)
+            for path in (workspace, *workspace.rglob("*")):
+                os.lchown(path, 1001, 1001)
+            result = self.seal(workspace, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((workspace.stat().st_uid, workspace.stat().st_mode & 0o7777), (0, 0o1777))
+            self.assertEqual((workspace / ".git").stat().st_uid, 0)
+            # The agent, as the sandbox's user, can neither change the
+            # checkout nor replace it, and git still reads it for the
+            # steps after the agent (no origin, so credentials are skipped).
+            agent = ["setpriv", "--reuid=1001", "--regid=1001", "--clear-groups"]
+            env = {**os.environ, "HOME": str(home)}
+            subprocess.run([*agent, "git", "config", "--global", "--add", "safe.directory", str(workspace)],
+                           env=env, check=True)
+            for command in ("echo '[core]\nfsmonitor=x' >> .git/config", "mv .git .git.orig",
+                            "rm -rf .git", "touch .git/commondir", "echo x > .git/index"):
+                with self.subTest(command=command):
+                    attempt = subprocess.run([*agent, "sh", "-c", command], cwd=workspace, env=env,
+                                             capture_output=True, text=True)
+                    self.assertNotEqual(attempt.returncode, 0)
+            self.assertEqual(subprocess.run([*agent, "sh", "-c", "mkdir porting-out && echo ok > porting-out/f"],
+                                            cwd=workspace, env=env).returncode, 0)
+            for command in (["git", "rev-parse", "--is-inside-work-tree"],
+                            ["git", "submodule", "foreach", "--recursive", "git config --local --list"]):
+                self.assertEqual(subprocess.run([*agent, *command], cwd=workspace, env=env,
+                                                capture_output=True).returncode, 0, command)
+            self.assertEqual(subprocess.run([*agent, "git", "config", "--get-all", "remote.origin.url"],
+                                            cwd=workspace, env=env, capture_output=True).returncode, 1)
+
+    def test_every_agent_but_the_dispatcher_has_the_github_server_and_both_extensions(self):
+        for name in ("planner", "worker", "reviewer"):
+            with self.subTest(workflow=name):
+                src = source(name)
+                if name != "worker":
+                    self.assertEqual(src["engine"]["extensions"],
+                                     ["npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"])
+                # Child sessions load no ambient extension, so the web tools
+                # reach the builtin researcher through the child-only default.
+                self.assertEqual(json.loads(src["engine"]["config"]),
+                                 {"settings": {"subagents": {"defaultSubagentOnlyExtensions": [
+                                     "/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}})
+                server = src["mcp-servers"]["github-authenticated"]
+                self.assertEqual(server["container"], "ghcr.io/github/github-mcp-server:v2.1.0")
+                self.assertEqual(server["env"]["GITHUB_READ_ONLY"], "1")
+                self.assertEqual(server["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"], "${{ github.token }}")
+                self.assertEqual(server["env"]["GITHUB_TOOLSETS"], "context,repos,issues,pull_requests,actions")
+                self.assertTrue(server["required"])
+                self.assertEqual(src["permissions"].get("contents"), "read")
+                self.assertFalse([v for v in src["permissions"].values() if v != "read"])
+                lock = workflow(f"{name}.lock.yml")
+                step_names = [s.get("name", "") for s in lock["jobs"]["agent"]["steps"]]
+                if name == "worker":
+                    # Its wrapper does not exist when gh-aw's own install
+                    # steps run, so the wrapper step installs them.
+                    self.assertNotIn("extensions", src["engine"])
+                    install = next(s for s in lock["jobs"]["agent"]["steps"]
+                                   if s.get("name", "").startswith("Install pinned Pi"))["run"]
+                    for extension in ("npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"):
+                        self.assertIn(extension, install)
+                    self.assertIn("PI_CODING_AGENT_DIR=/tmp/gh-aw/pi-agent-dir", install)
+                else:
+                    for extension in ("npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"):
+                        self.assertIn(f"Install Pi extension {extension}", step_names)
+
+    def test_the_extensions_install_where_the_child_default_points(self):
+        # `pi install npm:<name>` puts a package at <agent dir>/npm/node_modules/<name>
+        # (Pi 1.5.0, dist/core/package-manager.js).
+        for name in ("planner", "reviewer"):
+            lock = workflow(f"{name}.lock.yml")
+            step = next(s for s in lock["jobs"]["agent"]["steps"]
+                        if s.get("name") == "Install Pi extension npm:pi-web-access@0.48.0")
+            self.assertEqual(step["env"]["PI_CODING_AGENT_DIR"], "/tmp/gh-aw/pi-agent-dir")
 
     def test_enabled_tools_follows_pi(self):
         self.assertEqual(enabled_tools(["--print"]), {"read", "bash", "edit", "write", "codemode", "tool_search"})

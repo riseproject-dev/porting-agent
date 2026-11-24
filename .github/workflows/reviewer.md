@@ -13,46 +13,61 @@ permissions:
 engine:
   id: pi
   version: "1.5.0"
-  # Pi 1.5.0 keeps only the last --exclude-tools value, and gh-aw passes
-  # `bash` and `edit,write` as two flags, so bash would stay registered.
-  # These args come last for the agent; the sub-agents' arguments, which
-  # gh-aw builds without engine.args, are set whole in the same way.
+  # The same pinned extensions as the planner: pi-subagents (bounded
+  # delegation to Pi's builtin read, research and review agents) and
+  # pi-web-access (web_search, fetch_content). `pi install` puts them under
+  # the agent directory, /tmp/gh-aw/pi-agent-dir/npm/node_modules, which is
+  # on the sandbox's /tmp/gh-aw mount. A foreground sub-agent loads no
+  # ambient extension, so its web tools come from the child-only default
+  # below (the builtin `researcher` and `evidence-auditor` need them).
+  extensions:
+    - npm:pi-web-access@0.48.0
+    - npm:pi-subagents@0.89.0
+  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}}'
   # Pi enables read, bash, edit and write by default, and gh-aw adds
   # codemode and tool_search through the defaultTools setting; Pi's
-  # read-only ls, grep and find are off unless enabled. `--tools` (also
-  # last-wins) with only `+name` entries adds them to that selection, and
-  # the exclusion then leaves read, ls, grep, find, codemode and
-  # tool_search. A list of plain names would instead be an allowlist that
-  # also hides the MCP tools gh-aw exposes directly.
-  args: ["--exclude-tools", "bash,edit,write", "--tools", "+ls,+grep,+find"]
-  env:
-    GH_AW_PI_SUBAGENT_ARGS: '["--print","--mode","json","--no-session","--no-approve","--exclude-tools","bash,edit,write","--tools","+ls,+grep,+find"]'
+  # read-only ls, grep and find are off unless enabled. `--tools` with only
+  # `+name` entries adds them to that selection (a list of plain names would
+  # be an allowlist that also hides the MCP tools gh-aw exposes directly).
+  args: ["--tools", "+ls,+grep,+find"]
 model: anthropic/claude-fable-5-2
 # The Ubuntu release the pinned ripgrep and fd-find packages below are from.
 runs-on: ubuntu-24.04
 concurrency:
   job-discriminator: ${{ github.run_id }}
-# The agent reaches no host itself: it has no shell and no web tool, its
-# model calls go through AWF's API proxy and its MCP tools through the
-# gateway, whose servers run outside the sandbox. gh-aw's strict mode still
-# wants a non-empty list beside a container MCP server; api.github.com is
-# the host that server reads.
+# The agent runs a shell and Pi's web tools inside the sandbox, so the
+# firewall allows exactly the hosts they need and nothing else: api.github.com
+# (the host the container MCP server reads, which gh-aw's strict mode wants
+# listed) and the keyless search providers of pi-web-access 0.48.0, in its
+# fallback order: mcp.exa.ai (Exa's MCP endpoint), api.keenable.ai (Keenable's
+# public search) and html.duckduckgo.com (DuckDuckGo's HTML search). No API
+# key is configured, so no other provider is tried. fetch_content reaches
+# only these hosts: a page elsewhere is refused by the firewall, and GitHub
+# is read through github-authenticated. Model calls go through AWF's API
+# proxy and the MCP tools through the gateway, whose servers run outside the
+# sandbox.
 network:
   allowed:
     - api.github.com
+    - mcp.exa.ai
+    - api.keenable.ai
+    - html.duckduckgo.com
 tools:
   work-queue:
     require-assignment: true
     worker: true
-  bash: false
-  edit: false
+  bash:
+    - "*"
+  edit:
   cli-proxy: false
-# The agent has no file writes, so its one output reaches the workspace
-# through this tool: gh-aw runs it on the runner, outside the sandbox, in a
+# The review reaches the workspace through this tool, though the agent can
+# write files too: gh-aw runs it on the runner, outside the sandbox, in a
 # separate Node.js process that sees only GITHUB_WORKSPACE and the other
-# runtime variables gh-aw keeps. It writes one fixed file, a JSON object
-# of at most 256 KiB, through a new file renamed over it, and follows no
-# link; the publish job checks the review itself.
+# runtime variables gh-aw keeps. It validates the review, writes one fixed
+# file, a JSON object of at most 256 KiB, through a new file renamed over it,
+# and follows no link. The agent could write porting-out/proposal.json
+# itself, so the tool is a convenience, not a control: the publish job checks
+# the review against the trusted task.
 mcp-scripts:
   submit_review:
     description: "Write the review, a JSON object matching schemas/patch_review.schema.json, to porting-out/proposal.json (replacing an earlier one)"
@@ -144,8 +159,10 @@ safe-outputs:
   threat-detection: false
   # gh-aw mounts its staging directory read-write into the sandbox whenever
   # upload-artifact is configured (not configurable in v1.2.2); the agent
-  # has no tool that writes there, and the safe-outputs server that stages
-  # runs outside the sandbox. allowed-paths matches the staged path, and an
+  # can write there with its shell, which only lets it stage what it could
+  # upload anyway (staging rejects links and the artifact is size-bounded),
+  # and the safe-outputs server that stages runs outside the sandbox.
+  # allowed-paths matches the staged path, and an
   # absolute request is staged under its last component, so gh-aw cannot
   # tell ./porting-out from another directory named porting-out in the
   # workspace (./fork/porting-out); either way the agent chooses what it
@@ -165,23 +182,39 @@ safe-outputs:
 # ~/.local/bin first on PATH; ~/.cargo/bin and ~/.config/composer/vendor/bin
 # are on the runner's PATH too. A file planted there would run on the
 # runner after the agent: awf at its teardown and in "Print firewall logs",
-# and any command a later step finds on PATH. Owned by root, they cannot be
+# and any command a later step finds on PATH. The agent has a shell and file
+# writes, so these must be unwritable for it: owned by root, they cannot be
 # changed by the sandbox's user, with one exception: since the API proxy
 # holds ANTHROPIC_API_KEY, AWF's entrypoint makes ~/.claude mode 777 again
 # (and its settings.json 666) for Claude Code's key helper. That is benign:
 # ~/.claude is not on PATH and nothing on the runner runs from it. A listed
 # directory that is a link fails the step; inside the trees, chown changes
 # a link itself, not what it points to, and the final check follows none.
-# The agent has no shell and no file writes either (`bash: false`,
-# `edit: false`): it reads, and writes its review only through the
-# submit_review tool above. This step covers only these home directories:
-# if a tool that writes were given back, the sandbox could still write
-# /tmp/gh-aw and the workspace with its .git and ./fork, where gh-aw's
-# "Configure Git credentials" step and the post step of the checkout run
-# git. ~/.copilot is left as it is: the MCP gateway writes it, nothing runs
-# from it, and it is not on PATH. The step comes last among the authored
-# pre-agent steps, after the trusted steps that still use the home
-# directories (gh, git, node, apt).
+# ~/.copilot is left as it is: the MCP gateway writes it, nothing runs from
+# it, and it is not on PATH. The sandbox's own home is an empty volume, so
+# nothing else of the runner's home is reachable.
+#
+# The sandbox also mounts the workspace and all of /tmp read-write. The
+# post step of actions/checkout runs `git submodule foreach` in the
+# workspace, which reads the index, and git runs the program named by
+# core.fsmonitor when it reads an index (tested with git 2.43: a gitlink in
+# the index and core.fsmonitor in .git/config made the foreach run the
+# program). With a shell the agent could plant both and have its program run
+# on the runner after the sandbox, with the job's runtime tokens. The
+# sealing step below stops that: .git is owned by root, so its config, index
+# and hooks cannot be written, and the workspace directory is owned by root
+# with the sticky bit (mode 1777), so the agent can create files there but
+# cannot rename or remove the root-owned .git, nor put its own in its place.
+# gh-aw's "Configure Git credentials" step after the agent would then fail
+# writing the token into the sealed .git/config, but it skips a checkout
+# with no `origin` remote, so the step removes the remote first (nothing
+# else in the job uses it; the trusted steps read the repository through
+# gh and the API). /tmp/gh-aw is written by the agent and read by gh-aw's
+# later steps, which treat it as untrusted already (they gate artifact
+# uploads on a scan for links out of /tmp/gh-aw, so a link planted there only
+# fails the run). The step order matters: the sealing and the home
+# directories come last among the authored pre-agent steps, after the trusted
+# steps that still use the home directories (gh, git, node, apt).
 pre-agent-steps:
   - name: Fetch and verify the held patch, its report, the plan and the history
     env:
@@ -287,7 +320,7 @@ pre-agent-steps:
       fi
       [ "$(git rev-parse 'HEAD^{tree}')" = "$tree" ] \
         || { echo "the held series does not rebuild to the verified tree"; exit 1; }
-      # The agent has no shell: what it would ask git, it reads here.
+      # What the agent would ask git is written here too, so it reads files.
       git diff head patch > "$patch/diff.patch"
       git diff --stat=200 head patch > "$patch/diffstat.txt"
       git log --format='%H %s' head..patch > "$patch/commits.txt"
@@ -343,6 +376,34 @@ pre-agent-steps:
           exit 1
         fi
       done
+  - name: Seal the workspace's git checkout against the agent
+    run: |
+      set -euo pipefail
+      cd "$GITHUB_WORKSPACE"
+      if [ -L .git ] || [ ! -d .git ]; then
+        echo ".git is not a directory" >&2
+        exit 1
+      fi
+      rc=0
+      git config --get-all remote.origin.url >/dev/null || rc=$?
+      case "$rc" in
+        0) git remote remove origin ;;
+        1) ;;
+        *) echo "the checkout's configuration cannot be read" >&2; exit 1 ;;
+      esac
+      sudo chown -RHh root:root -- .git/
+      sudo chmod -R go-w -- .git/
+      sudo chown root:root -- "$GITHUB_WORKSPACE"
+      sudo chmod 1777 -- "$GITHUB_WORKSPACE"
+      if [ -L .git ] || [ -n "$(find -H .git/ \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
+        echo ".git is still writable by the agent's user" >&2
+        exit 1
+      fi
+      [ "$(stat -c '%U %a' -- "$GITHUB_WORKSPACE")" = "root 1777" ] || { echo "the workspace is not sealed" >&2; exit 1; }
+      rc=0
+      git config --get-all remote.origin.url >/dev/null || rc=$?
+      [ "$rc" = 1 ] || { echo "origin is still set" >&2; exit 1; }
+      git rev-parse --is-inside-work-tree
 jobs:
   safe_outputs:
     pre-steps:
@@ -459,7 +520,7 @@ You review one development patch of the RISE riscv64 porting pipeline before
 it is published. The worker that wrote it is done; trusted code verified that
 the patch rebuilds on the expected head and passes the trusted validation,
 and holds it unpublished until your review. You read and diff; you change
-nothing, run no reproduction, and write no code.
+no repository, run no reproduction, and write no code for the patch.
 
 The trusted pre-agent steps wrote the immutable task to
 `/tmp/gh-aw/agent/task.json` and prepared, each checked against the digest
@@ -485,11 +546,19 @@ the task names:
 - `/tmp/gh-aw/agent/plan.json`: the verified plan, when the task names one;
 - `/tmp/gh-aw/agent/history.json`: the history of the contribution.
 
-You run in a sandbox with no shell and no file writes: read the files above
-with your read, find, grep and ls tools, and read upstream history,
-conventions and earlier reviews through `github-authenticated`. You cannot
-run git, build or test anything; what you could not check goes in
-`limitations`.
+You run in a sandbox whose firewall allows only `api.github.com` and the
+search hosts of the web tools. You have Pi's `read`, `bash`, `edit`, `write`,
+`ls`, `grep` and `find`; use them to read the files above and the patched
+tree in `./fork`, and `bash` for git on `./fork` and other read-only
+inspection. Nothing you write outside `porting-out` reaches anything: the
+sandbox is discarded. Read upstream history, conventions and earlier reviews
+through `github-authenticated`. Use `subagent` (pi-subagents) for bounded,
+independent read-only checks, and `web_search`, `fetch_content` and
+`get_search_content` (pi-web-access) for what the web says about the
+project's conventions; GitHub pages go through `github-authenticated`, and a
+page on another host than the search providers is refused by the firewall.
+There is no compiler, toolchain or riscv64 emulation, so what you could not
+check goes in `limitations`.
 
 Only process the compiler-supplied `work_queue_assignment`. It has exactly
 one Claim; use its `handle` as `claim_handle` on every safe output and on

@@ -14,6 +14,14 @@ engine:
   id: pi
   version: "1.5.0"
   command: /tmp/gh-aw/agent/pi-scrubbed
+  # The planner's pinned extensions, installed by the pre-agent step that
+  # creates the wrapper: gh-aw's own `engine.extensions` install steps run
+  # `<command> install` before any pre-agent step, when the wrapper does not
+  # exist yet. They land in the agent directory, where Pi finds them. A
+  # foreground sub-agent loads no ambient extension, so the web tools of
+  # pi-subagents' builtin `researcher` and `evidence-auditor` come from the
+  # child-only default below.
+  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}}'
   # The MCP gateway's session lifetime, stated rather than left to gh-aw's
   # default: it must outlast the agent step (330 minutes) and its job (350).
   mcp:
@@ -172,6 +180,12 @@ pre-agent-steps:
       exec "$real" "\$@"
       SH
       chmod 0755 /tmp/gh-aw/agent/pi-scrubbed
+      for extension in npm:pi-web-access@0.48.0 npm:pi-subagents@0.89.0; do
+        PI_CODING_AGENT_DIR=/tmp/gh-aw/pi-agent-dir PI_OFFLINE=1 NPM_CONFIG_IGNORE_SCRIPTS=true \
+          "$real" install "$extension"
+      done
+      [ -d /tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access ] || { echo "pi-web-access missing"; exit 1; }
+      [ -d /tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-subagents ] || { echo "pi-subagents missing"; exit 1; }
   - name: Suspend workflow commands around untrusted agent output
     id: suspend_commands
     run: |
@@ -617,6 +631,13 @@ languages, build systems, release channels and riscv64 toolchain.
 Only process the compiler-supplied `work_queue_assignment`. It has exactly
 one Claim; use its `handle` as `claim_handle` on every safe output and on
 `work_queue_claim_finish`.
+
+You may use bounded research subagents through the installed extension
+(`subagent`): give them independent read-only tasks, and write the patch and
+the proposal yourself. The installed web extension (`web_search`,
+`fetch_content`, `get_search_content`) is for non-GitHub websites, mailing
+lists and general discovery; GitHub goes through `github-authenticated`.
+Neither replaces the history research below.
 
 ## History and steering: read this first
 

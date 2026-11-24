@@ -16,6 +16,10 @@ engine:
   extensions:
     - npm:pi-web-access@0.48.0
     - npm:pi-subagents@0.89.0
+  # A foreground sub-agent loads no ambient extension, so the web tools of
+  # pi-subagents' builtin `researcher` and `evidence-auditor` come from this
+  # child-only default (the extensions are installed in the agent directory).
+  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}}'
 model: anthropic/claude-fable-5-2
 concurrency:
   job-discriminator: ${{ github.run_id }}

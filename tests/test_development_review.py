@@ -1573,7 +1573,7 @@ class TestLiveRecords(unittest.TestCase):
 
 
 class TestWorkflows(unittest.TestCase):
-    """The reviewer workflow writes nothing; the worker verifies instead of
+    """The reviewer workflow pushes nothing; the worker verifies instead of
     pushing a development patch; the publish-only retry pushes a reviewed
     patch and posts the comment of a patch published after failed reviews."""
 
@@ -1596,7 +1596,9 @@ class TestWorkflows(unittest.TestCase):
         # provider key and the gateway the GitHub tokens: gh-aw's own Pi.
         self.assertNotIn("command", source["engine"])
         self.assertTrue(source["strict"])
-        self.assertEqual((source["tools"]["bash"], source["tools"]["edit"]), (False, False))
+        # Pi's bash and edit, like the planner and the worker (the owner's
+        # decision of 2026-11-24; only the dispatcher is locked down).
+        self.assertEqual((source["tools"]["bash"], source["tools"]["edit"]), (["*"], None))
         self.assertTrue(source["tools"]["work-queue"]["worker"])
         self.assertEqual(source["mcp-servers"]["github-authenticated"]["env"]["GITHUB_READ_ONLY"], "1")
         text = (self.root / "reviewer.md").read_text()
