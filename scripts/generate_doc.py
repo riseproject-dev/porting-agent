@@ -524,14 +524,7 @@ def _current_state(key):
     return now
 
 
-def _first_sentence(text: str, limit: int = 240) -> str:
-    """The first sentence of a table description as plain text."""
-    text = " ".join(str(text or "").replace("`", "").split())
-    if m := re.search(r"[.!?](?=\s+[A-Z])", text):
-        text = text[:m.end()]
-    if len(text) > limit:
-        text = text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "..."
-    return text
+_first_sentence = lifecycle.first_sentence
 
 
 def _flag_transition(verb: str):
@@ -566,10 +559,7 @@ def event_summary(verb: str, source: str | None, target: str | None, kind: str) 
     else what the pipeline recorded for an event it no longer writes."""
     transition, _ = find_verb(verb, source)
     if transition is not None:
-        text = _first_sentence(transition.description)
-        if not text and target in lifecycle.LIFECYCLE:
-            text = _first_sentence(lifecycle.LIFECYCLE[target].description)
-        return text
+        return lifecycle.row_summary(transition, target)
     import status_ledger
 
     return _first_sentence(status_ledger.RECORDED_KINDS.get(kind, ""))

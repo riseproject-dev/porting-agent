@@ -18,6 +18,7 @@ heartbeats and routine CI observations never increment it.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Callable, NamedTuple
@@ -5295,6 +5296,25 @@ def masked_while_paused(verb: str, t: Transition, source: str, target: str) -> b
         moves = target != source and LIFECYCLE[target].kind != "terminal"
         return moves or t.effects.revision == "bump" or bool(t.charges)
     return False
+
+
+def first_sentence(text: str, limit: int = 240) -> str:
+    """The first sentence of a table description as plain text."""
+    text = " ".join(str(text or "").replace("`", "").split())
+    if m := re.search(r"[.!?](?=\s+[A-Z])", text):
+        text = text[:m.end()]
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "..."
+    return text
+
+
+def row_summary(t: Transition, target: str | None) -> str:
+    """What a row does, in one plain sentence: the first sentence of its
+    description, else the description of the state it leads to."""
+    text = first_sentence(t.description)
+    if not text and target in LIFECYCLE:
+        text = first_sentence(LIFECYCLE[target].description)
+    return text
 
 
 def requirement_edges():
