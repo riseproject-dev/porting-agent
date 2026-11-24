@@ -562,6 +562,26 @@ class TestObservation(unittest.TestCase):
     """`development.waiting_ci` is observed by its rows; `development.fix_needed`
     only for a moved head and for review feedback on the recorded head."""
 
+    def test_a_head_that_moved_while_work_ran_is_recorded_after_the_stale_result(self):
+        rec = running()
+        self.assertNotEqual(rec["fork"]["head_sha"], SHA_B)
+        stale = publication(rec, "rejected_stale")
+        # The stale Result is folded first (`replan_development`, nothing
+        # charged); the observation of the same tick then records the head in
+        # `development.fix_needed` before any Work is requested.
+        out = tick(rec, [stale], head=SHA_B)
+        self.assertEqual(kinds(out), ["replan_development", "record_head_change"])
+        self.assertEqual(out.report["requested_effects"], [])
+        after = final(out, rec)
+        self.assertEqual(engine.state_key(after), "development.waiting_ci")
+        self.assertEqual(after["fork"]["head_sha"], SHA_B)
+        self.assertEqual(after["budget"]["attempts_used"], rec["budget"]["attempts_used"])
+        self.assertEqual(after["budget"]["clusters"], rec["budget"]["clusters"])
+        self.assertEqual(after["budget"]["no_progress_streak"], rec["budget"]["no_progress_streak"])
+        # The next tick waits for CI on the recorded head.
+        later = tick(after, head=SHA_B)
+        self.assertEqual(later.report["requested_effects"], [])
+
     def test_a_review_while_work_is_due_is_carried_by_the_next_work(self):
         failed = next(e for kind, e in tick(record(), verdict="failed").staged
                       if kind == "evidence")

@@ -233,6 +233,36 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                                  "development.agent_running has no observation row")
                 self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
 
+    def test_a_moved_head_is_not_recorded_while_work_is_requested(self):
+        """No state that requests Work or holds a Result for publication has
+        a head row: a moved fork head is recorded from
+        `development.fix_needed` once the stale Result is replanned."""
+        held = self.undispatched_repair()
+        held["active_work"] = None
+        held["pending_publication"] = {"worker_run_id": "5", "attempts": 1, "last_reason": "x",
+                                       "next_attempt_at": NOW, "exhausted": False}
+        moved = "c" * 40
+        for label, rec in (("requested Work", self.undispatched_repair()),
+                           ("held publication", held)):
+            with self.subTest(case=label):
+                self.assertNotEqual(rec["fork"]["head_sha"], moved)
+                with mock.patch("observe_ci.collect.branch_head", return_value={"head": moved}), \
+                     mock.patch("observe_ci.collect.development_review_feedback",
+                                return_value=None), \
+                     mock.patch("observe_ci.collect.ci_snapshot",
+                                return_value=self.snapshot(pending=False)), \
+                     mock.patch("observe_ci.collect.classify_runner_loss",
+                                side_effect=runner_loss()):
+                    observation = observe_ci.observe(
+                        object(), contributions={"c": rec}, operations={}, contracts={},
+                        policy=policy(), now=NOW, evidence=self.OBSOLETE_REASONS)
+                self.assertEqual([item for kind, item in observation.staged
+                                  if kind in ("contributions", "events")], [])
+                self.assertEqual(observation.report[0]["note"],
+                                 "development.agent_running has no observation row")
+                self.assertEqual(self.final(observation, rec)["fork"]["head_sha"],
+                                 rec["fork"]["head_sha"])
+
     def test_pending_feedback_with_green_ci_returns_to_due_work(self):
         """Nomination requires that no actionable feedback is pending; with
         feedback pending, `return_for_feedback` makes Work due again."""

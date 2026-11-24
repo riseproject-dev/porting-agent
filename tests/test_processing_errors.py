@@ -582,6 +582,24 @@ class TestCollectorFailure(unittest.TestCase):
         self.assertEqual(kinds(output, A), [VERB])
         self.assertEqual(staged_for(output, B), [])
 
+    def test_commands_of_a_skipped_contribution_wait_for_the_next_tick(self):
+        a = waiting(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold")
+        b = other_waiting()
+        resume = [comment("/upstreaming resume revision=0 reason=go", 12)]
+        output = tick([a, b], comments=resume,
+                      head=branch_head(FORK_A, collect.CollectError("HTTP 502")))
+        self.assertEqual(staged_for(output, A), [])
+        self.assertEqual([r for kind, r in output.staged if kind == "commands"], [])
+        self.assertEqual(output.report["controller"]["commands"],
+                         [{"comment": 900, "result": "deferred",
+                           "reason": "the contribution is not processed in this tick"}])
+        # The next tick that processes the contribution applies it, once.
+        later = tick([a, b], comments=resume)
+        self.assertEqual(kinds(later, A), ["resume_pause"])
+        receipts = [r for kind, r in later.staged if kind == "commands"]
+        self.assertEqual([(r["comment_id"], r["result"]) for r in receipts], [(900, "accepted")])
+        self.assertFalse(record_of(later, A)["paused"])
+
     def test_receipt_readback_failure_skips_the_contribution(self):
         a = waiting()
 
@@ -719,6 +737,54 @@ class TestRepeatedErrorAndResume(unittest.TestCase):
                 self.assertIn("not paused again: contribution is paused", alert)
                 self.assertEqual(again.report["processing_errors"][0]["decision"],
                                  "not paused again: contribution is paused")
+
+    def test_a_resume_waits_while_the_stopped_contribution_errors(self):
+        a = waiting(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold")
+        b = other_waiting()
+        resume = [comment("/upstreaming resume revision=0 reason=go", 12)]
+        failing = [("controller.apply_command", only_for(A, REAL["apply_command"]))]
+        output = tick([a, b], comments=resume, patches=failing)
+        # No event, no receipt, and so no post on the tracking issue: only
+        # the tick report and its alert.
+        self.assertEqual(staged_for(output, A), [])
+        self.assertEqual([r for kind, r in output.staged if kind == "commands"], [])
+        self.assertIn("not paused again: contribution is paused",
+                      output.report["controller"]["alerts"][0]["alert"])
+        self.assertEqual(output.report["controller"]["commands"][0]["result"], "deferred")
+        # Once the error is gone the same comment applies the resume.
+        later = tick([a, b], comments=resume)
+        self.assertEqual(kinds(later, A), ["resume_pause"])
+        self.assertFalse(record_of(later, A)["paused"])
+
+    def test_an_error_in_a_contribution_the_tick_would_create(self):
+        from tests.test_commands_intake import issue
+        cid = "example--proj/12"
+        snapshots = {"example/proj": {"repository_id": 99, "base_ref": "main",
+                                      "base_sha": "a" * 40}}
+
+        def run(patches=()):
+            snapshot = reconcile.Snapshot({}, {}, {}, {}, {})
+            with contextlib.ExitStack() as stack:
+                for target, replacement in patches:
+                    stack.enter_context(mock.patch(target, side_effect=replacement))
+                stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                return reconcile.tick(helpers.NoReadApi(), snapshot, policy=POLICY, now=T,
+                                      run_id="4242", publications=[], issues=[issue()],
+                                      acceptances={77: OWNER["id"]}, observe=False,
+                                      pressure=capacity.Pressure(ok=True),
+                                      upstream_snapshots=snapshots)
+        output = run([("controller._actionable", only_for(cid, REAL["_actionable"]))])
+        self.assertEqual(staged_for(output, cid), [])
+        self.assertEqual(output.report["processing_errors"][0]["decision"],
+                         "not paused: no committed record")
+        self.assertIn("not paused: no committed record",
+                      output.report["controller"]["alerts"][0]["alert"])
+        self.assertEqual([i["decision"] for i in output.report["controller"]["intake"]],
+                         ["deferred"])
+        # The next tick creates it.
+        later = run()
+        self.assertEqual(kinds(later, cid)[0], "intake:accepted")
+        self.assertIsNotNone(record_of(later, cid))
 
     def test_terminal_contribution_is_not_paused(self):
         a = contribution(phase="closed", activity="idle", terminal_reason="abandoned")

@@ -836,7 +836,9 @@ _EXHAUST_WORK_RECOVERY = Transition(
     ("the Work graph is terminal without a usable Result", "work_recovery or work_total exhausted"),
     _E(work="clear", sets=("pending_human_action=work_failed", PENDING_COUNTER)),
     description="`pending_human_action.counter` names `work_total` when that budget is "
-                "exhausted, and `work_recovery` otherwise.",
+                "exhausted, also when `work_recovery` is exhausted too, and `work_recovery` "
+                "otherwise: the resume starts `work_total` again, and `work_recovery` starts "
+                "again with the fresh Work.",
     exhausts=("work_recovery", "work_total"))
 _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
@@ -962,7 +964,7 @@ LIFECYCLE: dict[str, State] = {
             ("withdraw_request", "closed.idle"): Transition(
                 _O, None,
                 ("intake label removed", "no Work requested", "no plan", "no fork"),
-                _E(sets=("terminal_reason=withdrawn",))),
+                _E(sets=("terminal_reason=withdrawn",), clears=_FLAG_FIELDS)),
         }),
     "planning.idle": State(
         "auto_wait", True, False,
@@ -1023,7 +1025,7 @@ LIFECYCLE: dict[str, State] = {
             ("close_planning", "closed.idle"): Transition(
                 _R, None,
                 ("verified plan decision close", CLOSE_CONFIRMED),
-                _E(work="clear", sets=("terminal_reason",), clears=_HELD),
+                _E(work="clear", sets=("terminal_reason",), clears=(*_HELD, *_FLAG_FIELDS)),
                 description="The reconciler reads PyPI itself; `terminal_reason` is `already_released` "
                 "when a riscv64 wheel is published, else `no_work`. A project that is not released "
                 "on PyPI is never closed by its plan: it is parked with the evidence. A recorded "
@@ -1133,7 +1135,9 @@ LIFECYCLE: dict[str, State] = {
                 description="The pending feedback is kept. The worker's report is discarded, "
                             "unless this is a publish-only retry whose earlier attempt's "
                             "operation is still open: that push may have landed, so the report "
-                            "is stored with the commit it proposed."),
+                            "is stored with the commit it proposed. A head that moved while the "
+                            "Work ran is not recorded in this state; `record_head_change` "
+                            "records it from `development.fix_needed`."),
             ("request_ci_rerun", "development.waiting_ci"): Transition(
                 _R, None,
                 ("the worker reports a failure not caused by the patch", WORK_WITHOUT_FEEDBACK,
@@ -1975,7 +1979,7 @@ LIFECYCLE: dict[str, State] = {
             ("verify_release", "released.idle"): Transition(
                 _O, None,
                 ("verified release coverage satisfies the acceptance contract",),
-                _E(sets=("release_acceptance",))),
+                _E(sets=("release_acceptance",), clears=_FLAG_FIELDS)),
         }),
     "release_wait.waiting_human": State(
         "human_wait", False, False,
@@ -2007,7 +2011,9 @@ LIFECYCLE: dict[str, State] = {
             ("abandon", "closed.idle"): Transition(
                 _C, "/upstreaming abandon",
                 ("a reason is given", ANY_REVISION),
-                _E(sets=("terminal_reason=abandoned",), clears=_HELD)),
+                _E(sets=("terminal_reason=abandoned",), clears=(*_HELD, *_FLAG_FIELDS)),
+                description="Accepted while paused; it ends the pause. `terminal_reason` is "
+                            "`abandoned`; the reason the human gave is kept in the event only."),
         }),
     "closed.idle": State(
         "terminal", False, False,
@@ -2308,7 +2314,8 @@ FLAGS: dict[str, Flag] = {
         "package. `verify_upstream_pr` binds to the exact head only, so the revision bump "
         "does not invalidate the posted package; `submit_upstream` and `retract_submission` "
         "also name the exact revision, so after the bump they name the new revision with the "
-        "same head, as the tracking-issue entries offer them.",
+        "same head, as the tracking-issue entries offer them. A row that ends the contribution "
+        "(`closed.idle`, `released.idle`) clears the flag.",
         {
             "pause": Transition(
                 _C, "/upstreaming pause",
@@ -2338,7 +2345,8 @@ FLAGS: dict[str, Flag] = {
                             "the record as it was committed before the tick. `paused_reason` "
                             "states the error class, the bounded and sanitized message, and the "
                             "run id. The tick continues with the other contributions. A "
-                            "contribution that is already paused is not paused again."),
+                            "contribution that is already paused is not paused again. Commands "
+                            "posted for the contribution are left unconsumed for the tick."),
         },
         {
             "resume_pause": Transition(
@@ -2348,7 +2356,9 @@ FLAGS: dict[str, Flag] = {
                             "`record_late_effect`. In a human wait the resume clears the flag "
                             "only: the reply states that the contribution still waits for a "
                             "human and names the pending action, and a second resume leaves "
-                            "the wait."),
+                            "the wait. No row leaves an ended contribution paused; a record "
+                            "that is paused and ended all the same has the flag cleared by a "
+                            "resume and nothing else."),
         },
         {
             "planning.agent_running": "planning.idle",
@@ -2393,7 +2403,10 @@ BUDGETS: dict[str, Budget] = {
         "retries.patch_attempts_per_cluster", 0,
         "one repair or revision Work allocation for one failing CI job; Work that is due "
         "without a failing CI job charges none",
-        "`budget.clusters[<job>]`, started again by `refresh_on_exhaustion`",
+        "`budget.clusters[<job>]`, started again by `refresh_on_exhaustion`; the failing CI job "
+        "is the first executed blocking job of the recorded CI evidence of the head that did "
+        "not succeed, else the first job that evidence names as failing the runner-label check; "
+        "the counts of other jobs are kept",
         ("refresh_on_exhaustion", "exhaust_repair_attempts")),
     "no_progress": Budget(
         "retries.no_progress_review_after", 0,
@@ -4204,6 +4217,12 @@ def _check_stale_resume(policy: dict, problems: list[str]) -> None:
 
 
 def _check_flags(problems: list[str]) -> None:
+    for e in table_edges():
+        if e.target in TERMINAL_STATES and e.source not in TERMINAL_STATES:
+            for field in _FLAG_FIELDS:
+                if field not in e.transition.effects.clears:
+                    problems.append(f"{e.source} --{e.verb}--> {e.target}: ends the contribution "
+                                    f"without clearing {field}")
     allocated = {e.target for e in table_edges() if e.transition.effects.work == "allocate"}
     table_verbs = {e.verb for e in table_edges()}
     for name, f in FLAGS.items():

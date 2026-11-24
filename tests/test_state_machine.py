@@ -618,8 +618,9 @@ class TestLifecycleTable(unittest.TestCase):
             edge = lc.find_edge(f"{phase}.agent_running", "exhaust_work_recovery")
             self.assertEqual(edge.target, f"{phase}.waiting_human")
             self.assertEqual(lc.counters_named(edge), {"work_total", "work_recovery"})
-            self.assertIn("names `work_total` when that budget is exhausted, and `work_recovery` "
-                          "otherwise", edge.transition.description)
+            self.assertIn("names `work_total` when that budget is exhausted, also when "
+                          "`work_recovery` is exhausted too, and `work_recovery` otherwise",
+                          edge.transition.description)
             restarts = lc.find_edge(edge.target, resume).transition.effects.restarts
             self.assertIn("work_total", restarts)
             self.assertIn("work_recovery", restarts)
@@ -885,6 +886,23 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             self.with_row("development.fix_needed", "request_patch", charges=()),
             "development.fix_needed --request_patch--> development.agent_running: allocates Work "
             "without charging 'work_total'")
+
+    def test_a_row_that_ends_the_contribution_without_clearing_the_flag(self):
+        edge = lc.find_edge("parked.idle", "abandon")
+        self.assertReports(
+            self.with_row("parked.idle", "abandon", effects=dataclasses.replace(
+                edge.transition.effects, clears=lc._HELD)),
+            "parked.idle --abandon--> closed.idle: ends the contribution without clearing paused",
+            "parked.idle --abandon--> closed.idle: ends the contribution without clearing "
+            "paused_by")
+
+    def test_no_head_row_while_work_runs(self):
+        # A fork head that moves while Work is requested is recorded from
+        # `development.fix_needed` once the stale Result is replanned.
+        for key, state in lc.LIFECYCLE.items():
+            if state.kind == "work":
+                with self.subTest(state=key):
+                    self.assertNotIn("record_head_change", {v for v, _ in state.transitions})
 
     def test_resume_without_bump_and_bump_without_reason(self):
         edge = lc.find_edge("handoff.waiting_human", "resume_submission_preparation")

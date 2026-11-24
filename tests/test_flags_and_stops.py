@@ -183,6 +183,72 @@ class TestCommandsByTheTable(unittest.TestCase):
         self.assertEqual(engine.state_key(second.record), "development.fix_needed")
 
 
+class TestEndedContributions(unittest.TestCase):
+    """An ended contribution is never paused: every row that ends one clears
+    the flag, and a resume of it is answered that nothing resumes it."""
+
+    FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
+
+    def test_a_contribution_that_ends_is_not_paused(self):
+        from scripts import generate_doc
+        from tests.test_engine import scenario
+
+        ending = [e for e in lc.table_edges()
+                  if e.target in lc.TERMINAL_STATES and e.source not in lc.TERMINAL_STATES]
+        self.assertEqual({(e.source, e.verb) for e in ending},
+                         {("queued.idle", "withdraw_request"),
+                          ("planning.agent_running", "close_planning"),
+                          ("release_wait.idle", "verify_release"),
+                          ("parked.idle", "abandon")})
+        for e in ending:
+            rec, kwargs = scenario(e.source, e.verb, e.transition)
+            rec.update(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold")
+            with self.subTest(row=f"{e.source} {e.verb}"):
+                out = engine.apply_transition(rec, e.verb, **kwargs)
+                if e.transition.trigger == lc.Trigger.RESULT:
+                    # A Result of a paused record is late: the row is not taken.
+                    self.assertFalse(out.accepted)
+                    self.assertEqual(out.record, rec)
+                    continue
+                self.assertTrue(out.accepted, out.reason)
+                self.assertEqual(engine.state_key(out.record), e.target)
+                self.assertEqual([out.record[f] for f in self.FLAG_FIELDS],
+                                 [False, None, None, None])
+                self.assertIs(out.event["to"]["paused"], False)
+                self.assertFalse(generate_doc.status_label(out.record).startswith("Paused ("))
+                resume = apply_command(out.record, commands.parse(
+                    f'/upstreaming resume revision={out.record["revision"]} reason="go"'))
+                self.assertFalse(resume.accepted)
+                self.assertEqual(resume.reason, commands.ENDED_RESUME)
+                self.assertEqual(resume.record, out.record)
+
+    def test_a_record_abandoned_while_paused_is_answered_that_it_has_ended(self):
+        record = table_record("parked.idle", paused=True)
+        closed = apply_command(record, commands.parse(
+            f'/upstreaming abandon revision={record["revision"]} reason="not needed"'))
+        self.assertEqual(closed.event["kind"], "abandon")
+        self.assertFalse(closed.record["paused"])
+        out = apply_command(closed.record, commands.parse(
+            f'/upstreaming resume revision={closed.record["revision"]} reason="go"'))
+        self.assertFalse(out.accepted)
+        self.assertEqual(out.reason, commands.ENDED_RESUME)
+
+    def test_a_paused_ended_record_is_healed_by_one_resume(self):
+        # No row produces it; a record that is paused and ended all the same
+        # has the flag cleared by a resume, and nothing else changes.
+        record = table_record("closed.idle", paused=True)
+        out = apply_command(record, commands.parse(
+            f'/upstreaming resume revision={record["revision"]} reason="go"'))
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(out.event["kind"], "resume_pause")
+        self.assertEqual(engine.state_key(out.record), "closed.idle")
+        self.assertEqual([out.record[f] for f in self.FLAG_FIELDS], [False, None, None, None])
+        again = apply_command(out.record, commands.parse(
+            f'/upstreaming resume revision={out.record["revision"]} reason="go"'))
+        self.assertFalse(again.accepted)
+        self.assertEqual(again.reason, commands.ENDED_RESUME)
+
+
 class TestBlockIsRetired(unittest.TestCase):
     def test_block_is_rejected_naming_pause(self):
         with self.assertRaises(commands.CommandError) as raised:

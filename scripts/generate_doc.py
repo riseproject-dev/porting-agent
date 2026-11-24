@@ -388,7 +388,7 @@ def render_event(event: dict, states, record: dict, data: StateData) -> str:
     flags = ""
     if to.get("paused") is True:
         flags = ' <span class="event-log__flag">paused</span>'
-    elif to.get("paused") is False:
+    elif to.get("paused") is False and to.get("phase") not in lifecycle.TERMINAL:
         flags = ' <span class="event-log__flag">resumed</span>'
     if old_revision is not None and old_revision != revision:
         revision_text = f"r{old_revision} &rarr; r{revision}"

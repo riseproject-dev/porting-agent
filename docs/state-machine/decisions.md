@@ -2031,3 +2031,88 @@ flowchart TB
 
     parked_idle ==>|abandon<br/>/upstreaming abandon| closed_idle
 ```
+
+### A contribution that ends while paused
+
+Whether a contribution that is paused stays paused when it ends.
+
+**Change.** Every row that ends a contribution (`abandon`, `withdraw_request`, `close_planning`, `verify_release`) clears `paused`, `paused_at`, `paused_reason`, and `paused_by`, so an ended contribution is never shown as paused and no resume is offered for it; `lifecycle check` verifies this. `abandon` is accepted while paused and ends the pause; `terminal_reason` is `abandoned` and the reason the human gave is kept in the event only. A record that is paused and ended all the same, which no row produces, has the flag cleared by a resume (`resume_pause`) and nothing else.
+
+```mermaid
+flowchart TB
+    subgraph parked["parked"]
+        parked_idle_paused["parked.idle, paused=true"]
+    end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
+
+    parked_idle_paused ==>|abandon<br/>/upstreaming abandon| closed_idle
+```
+
+### Commands of a contribution a tick leaves out
+
+What happens to the commands of a contribution that a tick does not process.
+
+**Change.** Staging is all or nothing per contribution. When a collector failure or an unexpected error leaves a contribution out of a tick, every command on its tracking issue, `resume` included, stays unconsumed and without a reply; the tick report lists each as `deferred` ("the contribution is not processed in this tick"). The first tick that processes the contribution applies or rejects them, so nothing is lost and nothing is applied twice. An error in a contribution that is already stopped, or that the same tick would have created, is reported in the tick report (`controller.alerts`, `processing_errors`) and the workflow annotation only, with no event and no post on the tracking issue: `pause_on_processing_error` requires that the contribution is not paused and not ended, and a request without a committed record has nothing to pause. No row, state, or record field changes.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_ci_paused["development.waiting_ci, paused=true"]
+    end
+
+    development_waiting_ci ==>|pause_on_processing_error| development_waiting_ci_paused
+    development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
+```
+
+### Which CI job a repair is charged to
+
+Which job names the cluster that `repair_attempts_cluster` counts.
+
+**Change.** The failing CI job is the first executed blocking job of the evidence at `last_ci_evidence_id` (for the head, or the clean head built from it) that did not succeed, leaving out the publication jobs that run without credentials; else the first job a `limitations` entry of that evidence names as failing the runner-label check; else none, and the Work charges no cluster. The job name is the key of `budget.clusters`: a charge increments only that key, and the counts of other jobs are kept across heads until `refresh_on_exhaustion` or a new generation starts them again. A job named by a limitation is used as a key and in event details only. No row, state, or record field changes.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+
+    development_fix_needed ==>|request_repair| development_agent_running
+```
+
+### A fork head that moves while Work runs
+
+Whether a changed fork head is recorded while Work or a held Result is pending.
+
+**Change.** No head row is added to a state that requests Work or holds a Result for publication (`development.agent_running`, `development.review_pending`, `development.reviewing`, `development.publishing`): recording the head there would race the Result and need a second writer of `fork.head_sha`. The moved head heals without a human. The publisher's final check rejects a Result built on the old head as stale, which takes `replan_development` to `development.fix_needed` and charges nothing; the observation that follows, in the same tick, takes `record_head_change` there before any Work is requested. A publish-only retry reads the branch first and never pushes over a push that landed; a confirmed earlier push takes `record_publish_success`, and a later head is recorded by `record_head_change`. Branch operation discovery runs in every state. No row, state, or record field changes.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+
+    development_agent_running ==>|replan_development| development_fix_needed
+    development_fix_needed ==>|record_head_change| development_waiting_ci
+```
+
+### The counter a failed Work recovery names
+
+Which counter `exhaust_work_recovery` names when both of its budgets are spent.
+
+**Change.** `pending_human_action.counter` names `work_total` when that budget is exhausted, also when `work_recovery` is exhausted too, and `work_recovery` otherwise. A resume starts exactly the counter the wait names. `work_recovery` is counted in `active_work.attempt`, which the exhaustion clears with the Work, so the next Work starts at attempt 1 anyway; naming `work_total` is the only choice with which one resume makes Work possible again. No row, state, or record field changes.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_agent_running ==>|exhaust_work_recovery| development_waiting_human
+```

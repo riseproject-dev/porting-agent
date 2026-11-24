@@ -199,6 +199,22 @@ class TestEventLog(unittest.TestCase):
                       '<span class="event-log__revision">r0 &rarr; r1</span>', log)
         self.assertIn('<span class="event-log__flag">paused</span>', log)
 
+    def test_an_event_that_ends_a_paused_contribution_is_not_shown_as_a_resume(self):
+        rec = record(phase="closed", activity="idle", terminal_reason="abandoned")
+        events = [
+            event(0, "pause", "command", "c-1", to={"paused": True}),
+            event(1, "abandon", "command", "c-2",
+                  **{"from": {"phase": "parked", "paused": True},
+                     "to": {"phase": "closed", "paused": False}}),
+            event(2, "resume_pause", "command", "c-3",
+                  **{"from": {"paused": True}, "to": {"paused": False}}),
+        ]
+        log = self.log(self.render(rec, events))
+        self.assertEqual(log.count('<span class="event-log__flag">resumed</span>'), 1)
+        abandon = log[log.index('event-log__kind">abandon<'):]
+        abandon = abandon[:abandon.index("</li>")]
+        self.assertNotIn("event-log__flag", abandon)
+
     def test_links_resolve_every_reference_from_committed_data(self):
         log = self.log(self.render())
         control = "https://github.com/riseproject-dev/porting-agent"

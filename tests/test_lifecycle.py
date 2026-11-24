@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Section 21: lifecycle, pause/park, handoff and revision rules."""
 
+import json
 import re
 import unittest
 
@@ -322,7 +323,8 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertEqual(out.record, parked)
 
     def test_abandon_closes_only_a_parked_contribution(self):
-        rec = self.parked(paused=True, paused_at=NOW, paused_by="human", proposal_artifact=None)
+        rec = self.parked(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold",
+                          proposal_artifact=None)
         out = apply(rec, f'/upstreaming abandon contribution={CID} revision=5 reason="not needed"')
         self.assertTrue(out.accepted, out.reason)
         closed = out.record
@@ -332,15 +334,15 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertEqual(out.event["kind"], "abandon")
         self.assertEqual(out.event["details"]["reason"], "not needed")
         schemas.validate("contribution", closed)
-        self.assertTrue(closed["paused"])
-        # Closed is final. A resume of the paused record clears the flag only
-        # (`resume_pause` has no other effect); the next resume is refused.
-        cleared = apply(closed, f"/upstreaming resume contribution={CID} revision=8 reason=r")
-        self.assertTrue(cleared.accepted, cleared.reason)
-        self.assertEqual(cleared.event["kind"], "resume_pause")
-        self.assertEqual((cleared.record["phase"], cleared.record["paused"]), ("closed", False))
-        self.assertFalse(apply(cleared.record, f"/upstreaming resume contribution={CID} revision=9 "
-                                               "reason=r").accepted)
+        # An abandon ends the pause: an ended contribution is never paused.
+        self.assertEqual([closed.get(f) for f in ("paused", "paused_at", "paused_reason",
+                                                  "paused_by")], [False, None, None, None])
+        self.assertIs(out.event["to"]["paused"], False)
+        self.assertNotIn("not needed", json.dumps(closed))
+        # Closed is final: a resume is refused and changes nothing.
+        refused = apply(closed, f"/upstreaming resume contribution={CID} revision=8 reason=r")
+        self.assertFalse(refused.accepted)
+        self.assertEqual(refused.record, closed)
         for rec in (contribution(activity="waiting_ci"), contribution(activity="idle"),
                     contribution(phase="queued", activity="idle")):
             with self.subTest(state=f"{rec['phase']}.{rec['activity']}"):

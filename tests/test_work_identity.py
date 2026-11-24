@@ -415,6 +415,37 @@ class TestExhaustion(unittest.TestCase):
                                                           now=T, policy=POLICY)
         self.assertEqual(new["pending_human_action"]["counter"], "work_total")
 
+    def test_exhausted_recovery_names_work_total_when_both_are_spent(self):
+        total = lc.budget_limit("work_total", POLICY)
+        recovery = lc.budget_limit("work_recovery", POLICY)
+        cases = (("both", total, recovery, "work_total", ["work_total", "work_recovery"]),
+                 ("work_recovery", 1, recovery, "work_recovery", ["work_recovery"]),
+                 ("work_total", total, 1, "work_total", ["work_total"]))
+        for label, used, attempt, counter, exhausted in cases:
+            with self.subTest(spent=label):
+                record = self.spent(requested(contribution(revision=2)), attempts_used=used)
+                record["active_work"]["attempt"] = attempt
+                new, event, _decision = controller.terminal_work(
+                    record, record["active_work"], "completed", now=T, policy=POLICY)
+                self.assertEqual(event["kind"], "exhaust_work_recovery")
+                self.assertEqual(new["pending_human_action"]["counter"], counter)
+                self.assertEqual(sorted(event["details"]["exhausted"]), sorted(exhausted))
+        # One resume from the wait with both spent makes Work possible again.
+        record = self.spent(requested(contribution(revision=2)), attempts_used=total)
+        record["active_work"]["attempt"] = recovery
+        waiting, _event, _decision = controller.terminal_work(
+            record, record["active_work"], "completed", now=T, policy=POLICY)
+        out = self.resume(waiting)
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(out.event["details"]["restarted"]["counter"], "work_total")
+        self.assertEqual(out.record["budget"]["attempts_used"], 0)
+        res, allocated = select(out.record)
+        self.assertEqual(kinds(res), ["request_patch"])
+        self.assertEqual(allocated["active_work"]["attempt"], 1)
+        _new, event, _decision = controller.terminal_work(
+            allocated, allocated["active_work"], "completed", now=T, policy=POLICY)
+        self.assertEqual(event["kind"], "allocate_work_retry")
+
     def test_terminal_work_retry_is_refused_without_the_bound_identity(self):
         # A record holding Work always has the identity bound (see
         # `controller.terminal_work`); were it unbound, the controller
@@ -550,6 +581,45 @@ class TestFailingJob(unittest.TestCase):
         label["limitations"] = [
             "job 'build riscv64' failed runner-label check 'ubuntu-24.04-riscv': labels []"]
         self.assertEqual(ci_evidence.failing_job(label, SHA_A), "build riscv64")
+
+    def test_a_charge_keeps_the_counts_of_other_jobs(self):
+        limit = lc.budget_limit("repair_attempts_cluster", POLICY)
+        evidence = {"ci-9": ci_record("ci-9", SHA_A, failing="build riscv64")}
+        record = contribution(activity="fix_needed", last_ci_evidence_id="ci-9")
+        record["budget"]["clusters"] = {"lint": 2}
+        res, after = select(record, evidence=evidence)
+        self.assertEqual(kinds(res), ["request_repair"])
+        self.assertEqual(after["budget"]["clusters"], {"lint": 2, "build riscv64": 1})
+        # Another job at its limit does not stop the repair of this one.
+        record["budget"]["clusters"] = {"lint": limit}
+        res, after = select(record, evidence=evidence)
+        self.assertEqual(kinds(res), ["request_repair"])
+        self.assertEqual(after["budget"]["clusters"], {"lint": limit, "build riscv64": 1})
+        # This job at its limit takes the exhaustion row.
+        record["budget"]["clusters"] = {"lint": 1, "build riscv64": limit}
+        res, _after = select(record, evidence=evidence)
+        self.assertEqual(kinds(res), ["refresh_on_exhaustion"])
+
+    def test_an_executed_failure_comes_before_a_runner_label_limitation(self):
+        failing = ci_record("ci-1", SHA_A, failing="test")
+        failing["limitations"] = [
+            "job 'build riscv64' failed runner-label check 'ubuntu-24.04-riscv': labels []"]
+        self.assertEqual(ci_evidence.failing_job(failing, SHA_A), "test")
+
+    def test_a_job_named_by_a_limitation_is_a_key_only(self):
+        name = "build riscv64; rm -rf /"
+        label = ci_record("ci-9", SHA_A)
+        label["limitations"] = [
+            f"job '{name}' failed runner-label check 'ubuntu-24.04-riscv': labels []"]
+        record = contribution(activity="fix_needed", last_ci_evidence_id="ci-9")
+        res, after = select(record, evidence={"ci-9": label})
+        self.assertEqual(kinds(res), ["request_repair"])
+        self.assertEqual(after["budget"]["clusters"], {name: 1})
+        details = [e for k, e in res.staged if k == "events"][0]["details"]
+        self.assertEqual(details["cluster"], name)
+        # The name is a counter key and an event detail; the Work request
+        # carries no job to run.
+        self.assertNotIn(name, repr(res.requested_effects))
 
     def test_the_engine_decides_it_from_the_recorded_evidence(self):
         rec = contribution(activity="fix_needed", last_ci_evidence_id="ci-1")
