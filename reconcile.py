@@ -2632,6 +2632,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          ci_reruns: list[dict] | None = None,
          handoff_runs: dict[str, int] | None = None,
          development_pr_runs: dict[str, int] | None = None,
+         provision_runs: dict[str, int] | None = None,
          review_comment_receipts: list[dict] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
          queue_policy: dict | None = None, pipeline: str | None = None) -> TickOutput:
@@ -2971,7 +2972,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    acceptances=acceptances or {},
                                                    spent_graphs=spent_graphs,
                                                    handoff_runs=handoff_runs,
-                                                   development_pr_runs=development_pr_runs),
+                                                   development_pr_runs=development_pr_runs,
+                                                   provision_runs=provision_runs),
                           skip=skip, evidence=evidence)
     out.staged.extend(res.staged)
     # The steps below write beside the records as the controller left them,
@@ -3524,9 +3526,11 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
 
 
 # The run names `handoff.yml` and `dev-pr.yml` give a run:
-# `Handoff <operation id>` and `Development PR <operation id>`.
+# `Handoff <operation id>`, `Development PR <operation id>` and
+# `Fork Provisioning <operation id>`.
 HANDOFF_RUN_PREFIX = "Handoff "
 DEVELOPMENT_PR_RUN_PREFIX = "Development PR "
+PROVISION_RUN_PREFIX = "Fork Provisioning "
 
 
 def _handoff_runs(path: str | None, prefix: str = HANDOFF_RUN_PREFIX) -> dict[str, int] | None:
@@ -3670,6 +3674,8 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     handoff_runs = None if args.offline else _handoff_runs(getattr(args, "handoff_runs", None))
     development_pr_runs = None if args.offline else _handoff_runs(
         getattr(args, "development_pr_runs", None), DEVELOPMENT_PR_RUN_PREFIX)
+    provision_runs = None if args.offline else _handoff_runs(
+        getattr(args, "provision_runs", None), PROVISION_RUN_PREFIX)
     comment_receipts = _review_comment_receipts(getattr(args, "review_comments", None))
     issues = [] if args.offline else collect.intake_issues(api)
     tracking = sorted(
@@ -3753,6 +3759,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             ci_reruns=ci_reruns,
             handoff_runs=handoff_runs,
             development_pr_runs=development_pr_runs,
+            provision_runs=provision_runs,
             review_comment_receipts=comment_receipts,
         )
     except isolation.TickFailure as failure:
@@ -3814,6 +3821,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--handoffs")
     parser.add_argument("--handoff-runs")
     parser.add_argument("--development-pr-runs")
+    parser.add_argument("--provision-runs")
     parser.add_argument("--report")
     parser.add_argument("--since")
     parser.add_argument("--offline", action="store_true")

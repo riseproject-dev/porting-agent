@@ -341,12 +341,15 @@ def provisioning_record(**over):
     return rec
 
 
-def inputs(at=T, ok=True, comments=()):
-    return controller.Inputs(now=at, pressure=capacity.Pressure(ok=ok), comments=list(comments))
+def inputs(at=T, ok=True, comments=(), provision_runs=None):
+    """``provision_runs`` is the provisioning run list: read and empty by
+    default."""
+    return controller.Inputs(now=at, pressure=capacity.Pressure(ok=ok), comments=list(comments),
+                             provision_runs={} if provision_runs is None else provision_runs)
 
 
-def tick(rec, operations, at=T, ok=True, comments=()):
-    i = inputs(at, ok, comments)
+def tick(rec, operations, at=T, ok=True, comments=(), provision_runs=None):
+    i = inputs(at, ok, comments, provision_runs)
     return controller.tick(contributions={"c": copy.deepcopy(rec)},
                            operations=copy.deepcopy(operations), consumed={}, projects={},
                            policy=POLICY, inputs=i)
@@ -376,6 +379,43 @@ class TestProvisioningLaunch(unittest.TestCase):
         self.assertEqual(result.report["provision_requests"],
                          [{"operation_id": op["operation_id"], "contribution_id": rec["contribution_id"],
                            "attempt": 1}])
+
+    def test_a_run_in_flight_holds_the_launches_and_the_exhaustion(self):
+        _result, rec, op = self.first()
+        oid = op["operation_id"]
+        ops = {oid: op}
+        limit = lc.budget_limit("operation_launch", POLICY)
+        # A run queued behind another fork write: relaunched never, however
+        # long the launch interval has passed, until the hold ends.
+        at = T + timedelta(seconds=controller.LAUNCH_INTERVAL_SECONDS)
+        for runs, why in (({oid: 7}, "provisioning run 7 is still in flight"),
+                          (None, None)):
+            held = tick(rec, ops, at, provision_runs=runs) if runs else \
+                controller.tick(contributions={"c": copy.deepcopy(rec)},
+                                operations=copy.deepcopy(ops), consumed={}, projects={},
+                                policy=POLICY, inputs=controller.Inputs(
+                                    now=at, pressure=capacity.Pressure(ok=True)))
+            self.assertEqual((held.report["provision_requests"], staged(held, "operations"),
+                              staged(held, "events")), ([], [], []))
+            [deferred] = [d for d in held.report["deferred"] if d.get("operation") == oid]
+            self.assertEqual(deferred["why"], why or "provisioning run status not observed")
+        # The hold also covers the exhaustion: the spent launches of a run
+        # that is still queued are not a failure of the operation.
+        spent = dict(op, external_ids={**op["external_ids"], "launch_attempts": limit})
+        spent_rec = rec
+        late = T + timedelta(seconds=controller.PROVISION_RUN_SECONDS - 1)
+        out = tick(spent_rec, {oid: spent}, late, provision_runs={oid: 7})
+        self.assertEqual(staged(out, "events"), [])
+        # After the hold the exhaustion row and the relaunch apply as before.
+        after = T + timedelta(seconds=controller.PROVISION_RUN_SECONDS)
+        out = tick(spent_rec, {oid: spent}, after, provision_runs={oid: 7})
+        [event] = staged(out, "events")
+        self.assertEqual(event["kind"], "require_provisioning_intervention")
+        out = tick(rec, ops, after, provision_runs={oid: 7})
+        self.assertEqual(out.report["provision_requests"][0]["attempt"], 2)
+        # A run that is gone from the list ends the hold at once.
+        out = tick(rec, ops, at, provision_runs={})
+        self.assertEqual(out.report["provision_requests"][0]["attempt"], 2)
 
     def test_launches_are_counted_until_operation_launch_is_exhausted(self):
         _result, rec, op = self.first()

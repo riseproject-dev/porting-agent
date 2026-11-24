@@ -212,6 +212,22 @@ jobs:
               fi
             done
           done
+      - name: Observe the provisioning runs still in flight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Read before the receipts: a run that completes in between is seen
+          # in flight or as a receipt, never as neither. Without the list the
+          # controller holds a launched provisioning operation as possibly
+          # in flight.
+          if gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/provision.yml/runs?branch=main&event=workflow_dispatch&per_page=100" \
+            --jq '[.workflow_runs[] | select(.status != "completed") | {id, status, title: .display_title}]' > provision-runs.tmp; then
+            mv provision-runs.tmp provision-runs.json
+          else
+            rm -f provision-runs.tmp provision-runs.json
+            echo "provisioning run inventory unavailable this tick" >&2
+          fi
       - name: Collect trusted provisioning receipts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -350,6 +366,7 @@ jobs:
           uv run --locked python -m reconcile --publications publications \
             --provisions provisions --development-prs development-prs --handoffs handoffs \
             --handoff-runs handoff-runs.json --development-pr-runs development-pr-runs.json \
+            --provision-runs provision-runs.json \
             --ci-reruns ci-reruns \
             --review-comments review-comments \
             --report report.json \

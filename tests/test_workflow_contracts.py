@@ -1811,6 +1811,30 @@ class TestHandoffRunObservation(unittest.TestCase):
                              {op: 1})
             self.assertEqual(reconcile._handoff_runs(str(path)), {op: 2})
 
+    def test_the_controller_observes_provisioning_runs_before_their_receipts(self):
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        names = [step.get("name") for step in steps]
+        observe = names.index("Observe the provisioning runs still in flight")
+        self.assertLess(observe, names.index("Collect trusted provisioning receipts"))
+        step = steps[observe]
+        self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertIn("workflows/provision.yml/runs?branch=main&event=workflow_dispatch",
+                      step["run"])
+        self.assertIn('select(.status != "completed")', step["run"])
+        self.assertIn("rm -f provision-runs.tmp provision-runs.json", step["run"])
+        command = steps[names.index("Reconcile deterministic state locally")]["run"]
+        self.assertIn("--provision-runs provision-runs.json", command)
+        self.assertEqual(workflow("provision.yml")["run-name"],
+                         "Fork Provisioning ${{ inputs.operation-id }}")
+        op = "op-" + "c" * 24
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runs.json"
+            path.write_text(json.dumps([
+                {"id": 1, "status": "queued", "title": f"Fork Provisioning {op}"},
+                {"id": 2, "status": "queued", "title": f"Handoff {op}"}]))
+            self.assertEqual(reconcile._handoff_runs(str(path), reconcile.PROVISION_RUN_PREFIX),
+                             {op: 1})
+
     def test_the_run_list_is_read_strictly(self):
         op = "op-" + "a" * 24
         with tempfile.TemporaryDirectory() as tmp:

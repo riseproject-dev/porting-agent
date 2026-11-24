@@ -79,6 +79,9 @@ class Inputs:
     # The development PR workflow runs that are not completed, by operation
     # (run id); None when the run list was not read this tick.
     development_pr_runs: dict[str, int] | None = None
+    # The fork provisioning workflow runs that are not completed, by
+    # operation (run id); None when the run list was not read this tick.
+    provision_runs: dict[str, int] | None = None
     # The head of the development branch the observation of this tick read,
     # by contribution, in every state it reads the branch (a human wait
     # too). Development Work is not requested on a recorded head this read
@@ -1661,6 +1664,13 @@ DEVELOPMENT_PR_LAUNCH_EXHAUSTED = lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED
 # shares its concurrency group with the handoff workflow, whose run can
 # hold the group for most of this time.
 DEV_PR_RUN_SECONDS = 1800
+# A launched fork provisioning operation whose run is still queued or in
+# progress (or whose run list was not read) is neither launched again nor
+# exhausted for at most this long after its last launch: `provision.yml`
+# shares the concurrency group `porting-fork-writer` with the handoff
+# workflow, so its run can be queued behind a handoff run for as long as
+# `handoff.RUN_SECONDS`, and then runs for its own timeout (15 minutes).
+PROVISION_RUN_SECONDS = handoff.RUN_SECONDS + 900
 # The bound on re-plans of one development PR intent at one revision.
 MAX_REPLANS = 20
 
@@ -1936,13 +1946,26 @@ def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict
     """Launch the planned fork provisioning operation of a record in
     `provisioning.idle` by the table: `start_operation`, which charges
     `operation_launch` (counted on the operation), or, once that budget is
-    exhausted, `require_provisioning_intervention`. Returns whether a launch
-    was requested."""
+    exhausted, `require_provisioning_intervention`. A launched operation
+    whose run is still listed in flight, or whose run list was not read, is
+    held for at most `PROVISION_RUN_SECONDS` after its last launch, so a run
+    queued behind another fork write is neither launched again nor charged
+    toward the exhaustion. Returns whether a launch was requested."""
     cid, oid = c["contribution_id"], operation["operation_id"]
     if engine.state_key(c) != "provisioning.idle":
         return False  # no other state has a row that launches it
     counts = recovery.launch_count(operation)
     attempts = recovery.launch_attempts(operation)
+    if attempts:
+        runs = inputs.provision_runs
+        run = None if runs is None else runs.get(oid)
+        age = (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds()
+        if (runs is None or run is not None) and age < PROVISION_RUN_SECONDS:
+            why = ("provisioning run status not observed" if runs is None
+                   else f"provisioning run {run} is still in flight")
+            res.report.setdefault("deferred", []).append(
+                {"contribution": cid, "operation": oid, "why": why})
+            return False
     open_ops = recovery.open_operations(cid, {**operations, oid: operation}, oid)
     facts = {"fork_provision_planned"}
     if capacity_checked:
