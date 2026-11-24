@@ -35,7 +35,7 @@ import state
 import status_ledger
 import work
 import work_history
-from tests.helpers import NOW, SHA_A, contribution, policy
+from tests.helpers import NOW, SHA_A, contribution, policy, take
 from tests.test_worker_report import HISTORY, report
 
 POLICY = policy(read_only=False)
@@ -660,7 +660,7 @@ class TestHeldPatchEnds(unittest.TestCase):
                              {"work_terminal_without_result"})):
             with self.subTest(verb=verb, facts=facts):
                 rec = dict(reviewing, active_work=dict(reviewing["active_work"], attempt=9))
-                out = engine.apply_transition(rec, verb, policy=POLICY, now=NOW, facts=facts,
+                out = take(rec, verb, policy=POLICY, now=NOW, facts=facts,
                                               counts={"dispatch_recovery": 99})
                 self.assertTrue(out.accepted, out.reason)
                 waiting = out.record
@@ -699,7 +699,7 @@ class TestHeldPatchEnds(unittest.TestCase):
                                  "expire_held_patch")
                 # A stop during the wait discards the patch; the resume then
                 # leads to fresh development Work too.
-                paused = engine.apply_transition(
+                paused = take(
                     waiting, "pause", policy=POLICY, now=NOW,
                     command=commands.Command("pause", {"revision": str(waiting["revision"])}),
                     open_operations=()).record
@@ -722,7 +722,7 @@ class TestHeldPatchEnds(unittest.TestCase):
                     command = commands.Command(lc.FLAGS["paused"].set_by["pause"].command.split()[-1]
                                                if verb == "pause" else "park",
                                                {"revision": str(rec["revision"]), **extra})
-                    out = engine.apply_transition(rec, verb, policy=POLICY, now=NOW,
+                    out = take(rec, verb, policy=POLICY, now=NOW,
                                                   command=command,
                                                   open_operations=())
                     self.assertTrue(out.accepted, out.reason)
@@ -807,24 +807,24 @@ class TestHeldPatchEnds(unittest.TestCase):
         anyway["budget"]["review_rejections"] = 1
         import commands
         pause = commands.Command("pause", {"revision": str(anyway["revision"])})
-        paused = engine.apply_transition(anyway, "pause", policy=POLICY, now=NOW, command=pause,
+        paused = take(anyway, "pause", policy=POLICY, now=NOW, command=pause,
                                          open_operations=())
         self.assertTrue(paused.accepted, paused.reason)
         self.assertEqual(paused.record["budget"]["review_rejections"], 0)
         # Its recovery exhausted, the wait keeps the patch; the resume that
         # discards it restarts the count.
-        waiting = engine.apply_transition(
+        waiting = take(
             dict(anyway, pending_publication=dict(anyway["pending_publication"], attempts=99)),
             "exhaust_recovery", policy=POLICY, now=NOW, cause_id="x",
             facts={"publication_infrastructure_error"}).record
         self.assertEqual(waiting["budget"]["review_rejections"], 1)
         resume = commands.Command("resume", {"revision": str(waiting["revision"])})
-        resumed = engine.apply_transition(waiting, "resume_development", policy=POLICY, now=NOW,
+        resumed = take(waiting, "resume_development", policy=POLICY, now=NOW,
                                           command=resume, open_operations=())
         self.assertTrue(resumed.accepted, resumed.reason)
         self.assertEqual(resumed.record["budget"]["review_rejections"], 0)
         # A patch that passed its review never counts.
-        passed = engine.apply_transition(
+        passed = take(
             dict(reviewing, budget=dict(reviewing["budget"], review_rejections=1)),
             "accept_patch_review", policy=POLICY, now=NOW, cause_id="x",
             facts={"patch_review_passed"},
@@ -972,7 +972,7 @@ class TestLateResults(unittest.TestCase):
     def test_a_review_after_a_pause_is_late(self):
         reviewing, _ = held(running())
         import commands
-        paused = engine.apply_transition(
+        paused = take(
             reviewing, "pause", policy=POLICY, now=NOW,
             command=commands.Command("pause", {"revision": str(reviewing["revision"])})).record
         out = tick(paused, [review_result(reviewing)])

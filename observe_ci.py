@@ -165,13 +165,19 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
     if head != clean:
         # No CI verdict: the recorded evidence of the candidate head is kept.
         kept = rec.get("last_ci_evidence_id")
-        out = engine.apply_transition(
-            rec, "return_for_repair", policy=policy, now=now, cause_id=f"branch:{head[:12]}",
-            facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": kept},
-            details={"head": head, "clean_head": clean, "kept_evidence_id": kept})
-        obs.staged.extend([("contributions", out.record), ("events", out.event)])
-        entry.update(returned_to_development=True,
-                     reason=f"the {UPSTREAM_REF} head is not the clean head")
+        match engine.dispatch(engine.try_apply_transition(
+                rec, "return_for_repair", policy=policy, now=now, cause_id=f"branch:{head[:12]}",
+                facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": kept},
+                details={"head": head, "clean_head": clean, "kept_evidence_id": kept}),
+                ("observe_ci", "_observe_clean_head_ci")):
+            case engine.Applied() as out:
+                _stage(obs, out)
+                entry.update(returned_to_development=True,
+                             reason=f"the {UPSTREAM_REF} head is not the clean head")
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_clean_head_ci"))
         return
     clean = handoff.ci_head(rec, evidence.get(rec.get("submission_review_id") or "") or {})
     entry["ci_head"] = clean
@@ -198,12 +204,19 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
             # `riscv64` has no pull request: CI that was not dispatched, or
             # that never completes (also interrupted CI that could not be
             # rerun), waits for a human after a bounded wait.
-            out = engine.apply_transition(
-                rec, "require_clean_head_ci", policy=policy, now=now,
-                cause_id=f"clean-head-ci-{clean[:12]}", facts={"clean_head_ci_missing"},
-                details={"head": clean, "ci_state": verdict.state})
-            obs.staged.extend([("contributions", out.record), ("events", out.event)])
-            entry["waiting_for_human"] = "clean_head_ci_missing"
+            match engine.dispatch(engine.try_apply_transition(
+                    rec, "require_clean_head_ci", policy=policy, now=now,
+                    cause_id=f"clean-head-ci-{clean[:12]}", facts={"clean_head_ci_missing"},
+                    details={"head": clean, "ci_state": verdict.state}),
+                    ("observe_ci", "_observe_clean_head_ci")):
+                case engine.Applied() as out:
+                    _stage(obs, out)
+                    entry["waiting_for_human"] = "clean_head_ci_missing"
+                case engine.Skip(refused):
+                    _deferred(entry, refused)
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused,
+                                                   ("observe_ci", "_observe_clean_head_ci"))
         return
     if verdict.state == "failed":
         # Failing evidence of a clean head that is another commit names the
@@ -219,20 +232,27 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
         entry["accept_deferred"] = f"operation {active} is open"
         return
     obs.staged.append(("evidence", ev))
+    entry["evidence"] = eid
     if verdict.state == "passed":
-        out = engine.apply_transition(
+        outcome = engine.try_apply_transition(
             rec, "accept_clean_head_ci", policy=policy, now=now, cause_id=eid,
             facts={"ci_passed_on_clean_head"}, values={"last_ci_evidence_id": eid},
             details={"evidence_id": eid, "head": clean, "clean_head": rec["clean_head_sha"]})
     else:
-        out = engine.apply_transition(
+        outcome = engine.try_apply_transition(
             rec, "return_for_repair", policy=policy, now=now, cause_id=eid,
             facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": eid},
             details={"evidence_id": eid, "head": clean,
                      "candidate_head": rec["fork"]["head_sha"]})
-        entry["returned_to_development"] = True
-    obs.staged.extend([("contributions", out.record), ("events", out.event)])
-    entry["evidence"] = eid
+    match engine.dispatch(outcome, ("observe_ci", "_observe_clean_head_ci")):
+        case engine.Applied() as out:
+            _stage(obs, out)
+            if out.verb == "return_for_repair":
+                entry["returned_to_development"] = True
+        case engine.Skip(refused):
+            _deferred(entry, refused)
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("observe_ci", "_observe_clean_head_ci"))
 
 
 def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
@@ -272,13 +292,21 @@ def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: d
         if base_ref != rec["upstream"].get("base_ref"):
             details.update({"base_ref": rec["upstream"].get("base_ref"), "renamed_to": base_ref,
                             "base_sha": rec["upstream"].get("base_sha")})
-        out = engine.apply_transition(
-            rec, "verify_upstream_pr", policy=policy, now=now, cause_id=f"upstream-pr-{pr['id']}",
-            facts={"upstream_pr_open_on_base", "upstream_pr_at_clean_head",
-                   "upstream_pr_human_author"},
-            values={"upstream_pr": handoff.upstream_pr_value(pr), "upstream.base_ref": base_ref},
-            details=details)
-        obs.staged.extend([("contributions", out.record), ("events", out.event)])
+        match engine.dispatch(engine.try_apply_transition(
+                rec, "verify_upstream_pr", policy=policy, now=now,
+                cause_id=f"upstream-pr-{pr['id']}",
+                facts={"upstream_pr_open_on_base", "upstream_pr_at_clean_head",
+                       "upstream_pr_human_author"},
+                values={"upstream_pr": handoff.upstream_pr_value(pr),
+                        "upstream.base_ref": base_ref},
+                details=details), ("observe_ci", "_observe_upstream_pr")):
+            case engine.Applied() as out:
+                _stage(obs, out)
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+                return
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_pr"))
         entry["verified_upstream_pr"] = pr["number"]
         if base_ref != rec["upstream"].get("base_ref"):
             entry["base_branch_renamed"] = base_ref
@@ -288,11 +316,18 @@ def _observe_upstream_pr(api: collect.Api, obs: Observation, entry: dict, rec: d
     entry["handoff"] = {"observed_head": head, "mismatch": mismatch}
     if key is None or key in audited.get(cid, set()):
         return
-    out = engine.apply_transition(
-        rec, "record_audit_observation", policy=policy, now=now, cause_id=f"audit-{key}",
-        facts={"unverified_upstream_observation"},
-        details={"observation_key": key, "observed_head": head, "mismatch": mismatch})
-    obs.staged.append(("events", out.event))
+    match engine.dispatch(engine.try_apply_transition(
+            rec, "record_audit_observation", policy=policy, now=now, cause_id=f"audit-{key}",
+            facts={"unverified_upstream_observation"},
+            details={"observation_key": key, "observed_head": head, "mismatch": mismatch}),
+            ("observe_ci", "_observe_upstream_pr")):
+        case engine.Applied() as out:
+            obs.staged.append(("events", out.event))
+        case engine.Skip(refused):
+            _deferred(entry, refused)
+            return
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_pr"))
     audited.setdefault(cid, set()).add(key)
     entry["audit_observation"] = key
 
@@ -483,15 +518,16 @@ def landed_comment(obs: Observation, entry: dict, record: dict,
     return new
 
 
-def _take(obs: Observation, record: dict, verb: str, *, policy: dict, now: str,
-          **kwargs: Any) -> dict:
-    """Take a table row the observation established and stage the record
-    and the event. A refusal here is a bug of the caller."""
-    out = engine.apply_transition(record, verb, policy=policy, now=now, **kwargs)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"{verb} refused in {engine.state_key(record)}: {out.reason}")
+def _stage(obs: Observation, out: engine.Applied) -> dict:
+    """Stage the record and the event of a row the observation took."""
     obs.staged.extend([("contributions", out.record), ("events", out.event)])
     return out.record
+
+
+def _deferred(entry: dict, refused: engine.Refused | engine.Refusals, key: str = "deferred") -> None:
+    """Report a row the observation does not take now (``engine.Skip``):
+    it reads again on the next tick."""
+    entry[key] = refused.detail
 
 
 def _poll(obs: Observation, record: dict, next_poll_at: str | None) -> dict:
@@ -579,12 +615,13 @@ def _record_explanation(obs: Observation, entry: dict, record: dict,
     iid, iev, processed, items = inquiry
     obs.staged.append(("evidence", iev))
     entry["review_inquiry"] = iid
-    return _take(obs, record, "record_explanation", policy=policy, now=now, cause_id=iid,
-                 facts={"explanation_inquiry"}, values=processed,
-                 details={"evidence_id": iid,
-                          # Shown on the tracking issue by the ledger.
-                          "comments": [{"url": item.get("url"), "body": item["body"][:500]}
-                                       for item in items[:8]]})
+    return _stage(obs, engine.applied(engine.try_apply_transition(
+        record, "record_explanation", policy=policy, now=now, cause_id=iid,
+        facts={"explanation_inquiry"}, values=processed,
+        details={"evidence_id": iid,
+                 # Shown on the tracking issue by the ledger.
+                 "comments": [{"url": item.get("url"), "body": item["body"][:500]}
+                              for item in items[:8]]}), ("observe_ci", "_record_explanation")))
 
 
 def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[str, dict, dict],
@@ -597,7 +634,7 @@ def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[st
     ``None`` when the row does not apply: the ids are then left unfenced and
     read again on the next tick."""
     eid, ev, feedback = review
-    recorded = engine.apply_transition(
+    recorded = engine.try_apply_transition(
         record, "record_actionable_review", policy=policy, now=now, cause_id=eid,
         facts=facts,
         values={"pending_feedback_evidence_ids": list(dict.fromkeys(
@@ -611,13 +648,16 @@ def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[st
                     (record.get("processed_pr_conversation_comment_ids") or [])
                     + feedback["conversation_comment_ids"])[-512:]},
         details={"evidence_id": eid})
-    if not recorded.accepted:
-        entry["review_feedback_deferred"] = recorded.reason
-        return None
-    obs.staged.extend([("evidence", ev), ("contributions", recorded.record),
-                       ("events", recorded.event)])
-    entry.update(review_feedback=eid)
-    return recorded.record
+    match engine.dispatch(recorded, ("observe_ci", "_record_review")):
+        case engine.Applied() as out:
+            obs.staged.append(("evidence", ev))
+            entry.update(review_feedback=eid)
+            return _stage(obs, out)
+        case engine.Skip(refused):
+            _deferred(entry, refused, "review_feedback_deferred")
+            return None
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("observe_ci", "_record_review"))
 
 
 def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
@@ -677,9 +717,19 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         return
     cur = rec
     if head != recorded:
-        cur = _take(obs, cur, "record_head_change", policy=policy, now=now,
-                    cause_id=f"branch:{head[:12]}", facts={"fork_head_changed"},
-                    values={"fork.head_sha": head}, details={"head": head})
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "record_head_change", policy=policy, now=now,
+                cause_id=f"branch:{head[:12]}", facts={"fork_head_changed"},
+                values={"fork.head_sha": head}, details={"head": head}),
+                ("observe_ci", "_observe_development")):
+            case engine.Applied() as out:
+                cur = _stage(obs, out)
+            case engine.Skip(refused):
+                # The head is read again on the next tick.
+                _deferred(entry, refused)
+                return
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
         entry["head_changed"] = True
         cur = landed_comment(obs, entry, cur, {head}, evidence or {}, now=now)
     ops = recovery.open_operations(cur["contribution_id"], operations, cur.get("active_operation_id"))
@@ -687,10 +737,19 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         review, inquiry, mismatch = _feedback(api, cur, head, policy=policy, now=now,
                                               check_pull=True, operation_open=bool(ops))
         if mismatch:
-            _take(obs, cur, "record_pr_mismatch", policy=policy, now=now,
-                  cause_id=f"pr-{cur['fork']['pr_number']}", facts={"development_pr_mismatch"},
-                  details={"mismatch": mismatch[:500]})
-            entry.update(activity="waiting_human", pr_mismatch=mismatch)
+            match engine.dispatch(engine.try_apply_transition(
+                    cur, "record_pr_mismatch", policy=policy, now=now,
+                    cause_id=f"pr-{cur['fork']['pr_number']}",
+                    facts={"development_pr_mismatch"}, details={"mismatch": mismatch[:500]}),
+                    ("observe_ci", "_observe_development")):
+                case engine.Applied() as out:
+                    _stage(obs, out)
+                    entry.update(activity="waiting_human", pr_mismatch=mismatch)
+                case engine.Skip(refused):
+                    _deferred(entry, refused)
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused,
+                                                   ("observe_ci", "_observe_development"))
             return
         if inquiry:
             cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
@@ -723,10 +782,20 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         _rerun_interrupted(obs, entry, cur, head, ev, snap, operations, policy=policy, now=now)
         return
     if verdict.state == "failed" and ev is not None:
-        cur = _take(obs, cur, "record_ci_failure", policy=policy, now=now,
-                    cause_id=ev["evidence_id"], facts={"ci_failed_on_head"},
-                    values={"last_ci_evidence_id": ev["evidence_id"]},
-                    details={"evidence_id": ev["evidence_id"]})
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "record_ci_failure", policy=policy, now=now,
+                cause_id=ev["evidence_id"], facts={"ci_failed_on_head"},
+                values={"last_ci_evidence_id": ev["evidence_id"]},
+                details={"evidence_id": ev["evidence_id"]}),
+                ("observe_ci", "_observe_development")):
+            case engine.Applied() as out:
+                cur = _stage(obs, out)
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+                _poll(obs, cur, _next_ci_observation(now, policy))
+                return
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
         if review:
             # The review observed with the failure is recorded in
             # development.fix_needed, so the repair Work carries the failing
@@ -744,60 +813,70 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         elif pending:
             # Only a published Result clears pending feedback: Work that
             # carries it is due again rather than the nomination waiting.
-            returned = engine.apply_transition(
-                cur, "return_for_feedback", policy=policy, now=now, cause_id=ev["evidence_id"],
-                facts={"ci_passed_on_head"}, open_operations=ops,
-                values={"last_ci_evidence_id": ev["evidence_id"],
-                        "pending_feedback_evidence_ids": pending},
-                details={"evidence_id": ev["evidence_id"], "head": head,
-                         "feedback": pending[:8]})
-            if returned.accepted:
-                obs.staged.extend([("contributions", returned.record),
-                                   ("events", returned.event)])
-                _poll(obs, returned.record, None)
-                entry.update(activity="fix_needed", feedback_due=pending[:8])
-                return
-            entry["handoff_deferred"] = returned.reason
+            match engine.dispatch(engine.try_apply_transition(
+                    cur, "return_for_feedback", policy=policy, now=now,
+                    cause_id=ev["evidence_id"], facts={"ci_passed_on_head"}, open_operations=ops,
+                    values={"last_ci_evidence_id": ev["evidence_id"],
+                            "pending_feedback_evidence_ids": pending},
+                    details={"evidence_id": ev["evidence_id"], "head": head,
+                             "feedback": pending[:8]}), ("observe_ci", "_observe_development")):
+                case engine.Applied() as out:
+                    _poll(obs, _stage(obs, out), None)
+                    entry.update(activity="fix_needed", feedback_due=pending[:8])
+                    return
+                case engine.Skip(refused):
+                    _deferred(entry, refused, "handoff_deferred")
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
         else:
             unmet, note, sev = _series_requirements(api, cur, head, ev, evidence or {},
                                                     policy=policy, now=now)
             if sev is not None:
-                returned = engine.apply_transition(
-                    cur, "return_for_feedback", policy=policy, now=now,
-                    cause_id=sev["evidence_id"], open_operations=ops,
-                    facts={"ci_passed_on_head", "series_requirements_unmet"},
-                    values={"last_ci_evidence_id": ev["evidence_id"],
-                            "pending_feedback_evidence_ids": list(dict.fromkeys(
-                                (cur.get("pending_feedback_evidence_ids") or [])
-                                + [sev["evidence_id"]]))[-64:]},
-                    details={"evidence_id": sev["evidence_id"], "head": head,
-                             "series_requirements_unmet": unmet})
-                if returned.accepted:
-                    obs.staged.extend([("evidence", sev), ("contributions", returned.record),
-                                       ("events", returned.event)])
-                    _poll(obs, returned.record, None)
-                    entry.update(activity="fix_needed", series_requirements_unmet=unmet)
-                    return
-                entry["handoff_deferred"] = returned.reason
-                _poll(obs, cur, next_poll_at)
-                return
+                match engine.dispatch(engine.try_apply_transition(
+                        cur, "return_for_feedback", policy=policy, now=now,
+                        cause_id=sev["evidence_id"], open_operations=ops,
+                        facts={"ci_passed_on_head", "series_requirements_unmet"},
+                        values={"last_ci_evidence_id": ev["evidence_id"],
+                                "pending_feedback_evidence_ids": list(dict.fromkeys(
+                                    (cur.get("pending_feedback_evidence_ids") or [])
+                                    + [sev["evidence_id"]]))[-64:]},
+                        details={"evidence_id": sev["evidence_id"], "head": head,
+                                 "series_requirements_unmet": unmet}),
+                        ("observe_ci", "_observe_development")):
+                    case engine.Applied() as out:
+                        obs.staged.append(("evidence", sev))
+                        _poll(obs, _stage(obs, out), None)
+                        entry.update(activity="fix_needed", series_requirements_unmet=unmet)
+                        return
+                    case engine.Skip(refused):
+                        _deferred(entry, refused, "handoff_deferred")
+                        _poll(obs, cur, next_poll_at)
+                        return
+                    case engine.Bug(refused):
+                        raise engine.TransitionRefused(refused,
+                                                       ("observe_ci", "_observe_development"))
             details = {"head": head, "revision": cur["revision"]}
             if note:
                 details["series_requirements"] = note
-            nominated = engine.apply_transition(
-                cur, "nominate_for_handoff", policy=policy, now=now, cause_id=ev["evidence_id"],
-                facts={"ci_passed_on_head", "series_requirements_met"}, open_operations=ops,
-                values={"last_ci_evidence_id": ev["evidence_id"],
-                        "handoff_request": {"command_id": f"observation-{ev['evidence_id']}",
-                                            "head": head, "revision": cur["revision"]}},
-                details=details)
-            if nominated.accepted:
-                cur = _poll(obs, nominated.record, None)
-                obs.staged.append(("events", nominated.event))
-                obs.staged.append(("contributions", cur))
-                entry["handoff_ready"] = True
-                return
-            entry["handoff_deferred"] = nominated.reason
+            match engine.dispatch(engine.try_apply_transition(
+                    cur, "nominate_for_handoff", policy=policy, now=now,
+                    cause_id=ev["evidence_id"],
+                    facts={"ci_passed_on_head", "series_requirements_met"}, open_operations=ops,
+                    values={"last_ci_evidence_id": ev["evidence_id"],
+                            "handoff_request": {
+                                "command_id": f"observation-{ev['evidence_id']}",
+                                "head": head, "revision": cur["revision"]}},
+                    details=details), ("observe_ci", "_observe_development")):
+                case engine.Applied() as out:
+                    cur = _poll(obs, out.record, None)
+                    obs.staged.append(("events", out.event))
+                    obs.staged.append(("contributions", cur))
+                    entry["handoff_ready"] = True
+                    return
+                case engine.Skip(refused):
+                    _deferred(entry, refused, "handoff_deferred")
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
     if verdict.state == "access_wait":
         entry["note"] = "a CI run waits for approval; CI is read again"
     _poll(obs, cur, next_poll_at)
@@ -889,26 +968,38 @@ def _rerun_interrupted(obs: Observation, entry: dict, cur: dict, head: str, ev: 
     cause = ev["evidence_id"]
     jobs = [str(j["name"])[:200] for j in ev["ci"]["jobs"] if j.get("interrupted")]
     details = {"evidence_id": cause, "head": head, "interrupted_jobs": jobs[:10]}
-    if engine.refusal(cur, "rerun_interrupted_ci", policy=policy, now=now, facts=facts):
-        cur = _take(obs, cur, "exhaust_interrupted_reruns", policy=policy, now=now,
-                    cause_id=cause, facts=facts, details=details)
-        again(cur, None)
-        entry["waiting_for_human"] = "ci_interrupted"
-        return True
     runs, _in_progress = ci_rerun.targets(snap, head, interrupted_only=True)
-    if not runs:
+    count = engine.head_reruns(cur)["interrupted"]
+    op = ci_rerun.operation(cur, head, runs or [], [cause, f"rerun:{count}"], policy, now,
+                            ref=ci_rerun.target_ref(cur, head)) if runs else None
+    if op is not None and op["operation_id"] in operations:
+        raise lifecycle.TransitionError(
+            f"the CI rerun operation {op['operation_id']} of {cause} is already recorded")
+    rerun = engine.try_apply_transition(
+        cur, "rerun_interrupted_ci", policy=policy, now=now, cause_id=cause, facts=facts,
+        details=details | ({"operation": op["operation_id"], "runs": runs} if op else {}))
+    if isinstance(rerun, engine.Applied) and op is None:
+        # No completed run on the head holds an interrupted job: nothing to
+        # rerun yet, so the row is not taken.
         entry["note"] = "no completed run on the head holds an interrupted job; CI is read again"
         again(cur, later)
         return False
-    count = engine.head_reruns(cur)["interrupted"]
-    op = ci_rerun.operation(cur, head, runs, [cause, f"rerun:{count}"], policy, now,
-                            ref=ci_rerun.target_ref(cur, head))
-    if op["operation_id"] in operations:
-        raise lifecycle.TransitionError(
-            f"the CI rerun operation {op['operation_id']} of {cause} is already recorded")
-    cur = _take(obs, cur, "rerun_interrupted_ci", policy=policy, now=now, cause_id=cause,
-                facts=facts, details=details | {"operation": op["operation_id"],
-                                                 "runs": runs})
+    match engine.dispatch(rerun, ("observe_ci", "_rerun_interrupted")):
+        case engine.Applied() as out:
+            cur = _stage(obs, out)
+        case engine.Take(verb="exhaust_interrupted_reruns"):
+            cur = _stage(obs, engine.applied(engine.try_apply_transition(
+                cur, "exhaust_interrupted_reruns", policy=policy, now=now, cause_id=cause,
+                facts=facts, details=details), ("observe_ci", "_rerun_interrupted")))
+            again(cur, None)
+            entry["waiting_for_human"] = "ci_interrupted"
+            return True
+        case engine.Skip(refused):
+            _deferred(entry, refused)
+            again(cur, later)
+            return False
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("observe_ci", "_rerun_interrupted"))
     cur = engine.record_beside(cur, "operation_planned", now=now,
                                active_operation_id=op["operation_id"])
     operations[op["operation_id"]] = op
@@ -935,9 +1026,18 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
     Passing CI keeps the gate and its recorded evidence."""
     cur = rec
     if head != rec["fork"].get("head_sha"):
-        cur = _take(obs, cur, "record_head_change", policy=policy, now=now,
-                    cause_id=f"branch:{head[:12]}", facts={"candidate_head_changed"},
-                    values={"fork.head_sha": head}, details={"head": head})
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "record_head_change", policy=policy, now=now,
+                cause_id=f"branch:{head[:12]}", facts={"candidate_head_changed"},
+                values={"fork.head_sha": head}, details={"head": head}),
+                ("observe_ci", "_observe_gate")):
+            case engine.Applied() as out:
+                cur = _stage(obs, out)
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+                return
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_gate"))
         entry["head_changed"] = True
         cur = landed_comment(obs, entry, cur, {head}, evidence or {}, now=now)
         _observe_development(api, obs, entry, cur, head, contracts=contracts, policy=policy,
@@ -959,10 +1059,18 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
         entry["evidence"] = ev["evidence_id"]
     if verdict.state == "failed" and ev is not None:
         # Only an executed failure on the candidate head leaves the gate.
-        cur = _take(obs, cur, "return_for_repair", policy=policy, now=now,
-                    cause_id=ev["evidence_id"], facts={"candidate_head_failed"},
-                    values={"last_ci_evidence_id": ev["evidence_id"]},
-                    details={"evidence_id": ev["evidence_id"]})
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "return_for_repair", policy=policy, now=now,
+                cause_id=ev["evidence_id"], facts={"candidate_head_failed"},
+                values={"last_ci_evidence_id": ev["evidence_id"]},
+                details={"evidence_id": ev["evidence_id"]}), ("observe_ci", "_observe_gate")):
+            case engine.Applied() as out:
+                cur = _stage(obs, out)
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+                return
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_gate"))
         if review:
             # The review observed with the failure is recorded in
             # development.fix_needed: once the repair publishes, it is bound
@@ -1034,19 +1142,34 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
               "digests": {"head": pr["head_sha"]}}
         schemas.validate("evidence", ev)
         obs.staged.append(("evidence", ev))
-        _take(obs, rec, "record_merge", policy=policy, now=now, cause_id=eid,
-              facts={"upstream_pr_merged"},
-              values={"merge": {"merge_sha": merge_sha, "merged_at": merged_at,
-                                "target_ref": pr["base_ref"], "evidence_id": eid}},
-              details={"evidence_id": eid, "merge_sha": merge_sha})
-        entry["merged"] = merge_sha
+        match engine.dispatch(engine.try_apply_transition(
+                rec, "record_merge", policy=policy, now=now, cause_id=eid,
+                facts={"upstream_pr_merged"},
+                values={"merge": {"merge_sha": merge_sha, "merged_at": merged_at,
+                                  "target_ref": pr["base_ref"], "evidence_id": eid}},
+                details={"evidence_id": eid, "merge_sha": merge_sha}),
+                ("observe_ci", "_observe_upstream_review")):
+            case engine.Applied() as out:
+                _stage(obs, out)
+                entry["merged"] = merge_sha
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_review"))
         return
     if pr["state"] != "open":
-        _take(obs, rec, "record_pr_closed_unmerged", policy=policy, now=now, cause_id=cause,
-              facts={"upstream_pr_closed_unmerged"},
-              values={"pending_human_action": "pr_closed_unmerged"},
-              details={"pr_number": pr["number"]})
-        entry["activity"] = "waiting_human"
+        match engine.dispatch(engine.try_apply_transition(
+                rec, "record_pr_closed_unmerged", policy=policy, now=now, cause_id=cause,
+                facts={"upstream_pr_closed_unmerged"},
+                values={"pending_human_action": "pr_closed_unmerged"},
+                details={"pr_number": pr["number"]}), ("observe_ci", "_observe_upstream_review")):
+            case engine.Applied() as out:
+                _stage(obs, out)
+                entry["activity"] = "waiting_human"
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_review"))
         return
     cur = rec
     head = pr["head_sha"]
@@ -1054,12 +1177,20 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
         # The head a revision of the pipeline published is recorded by
         # `record_revision_publish_success` when its Result is folded, so any
         # other head is a change the pipeline did not publish.
-        _take(obs, cur, "record_head_change", policy=policy, now=now,
-              cause_id=f"upstream-head:{head[:12]}",
-              facts={"upstream_head_changed_externally"},
-              values={"upstream_pr.head_sha": head},
-              details={"head": head, "previous_head": lifecycle.recorded_head(cur)})
-        entry.update(head_changed=True, activity="waiting_human")
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "record_head_change", policy=policy, now=now,
+                cause_id=f"upstream-head:{head[:12]}",
+                facts={"upstream_head_changed_externally"},
+                values={"upstream_pr.head_sha": head},
+                details={"head": head, "previous_head": lifecycle.recorded_head(cur)}),
+                ("observe_ci", "_observe_upstream_review")):
+            case engine.Applied() as out:
+                _stage(obs, out)
+                entry.update(head_changed=True, activity="waiting_human")
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_review"))
         return
     review, inquiry = _upstream_feedback(api, cur, policy=policy, now=now)
     if inquiry:
@@ -1090,13 +1221,21 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
             entry["note"] = f"{ev['evidence_id']} is already recorded for this head"
             _poll(obs, cur, None)
             return
-        cur = _take(obs, cur, "record_upstream_ci_failure", policy=policy, now=now,
-                    cause_id=ev["evidence_id"],
-                    facts={"upstream_ci_failed", "upstream_failure_not_recorded"},
-                    values={"last_ci_evidence_id": ev["evidence_id"]},
-                    details={"evidence_id": ev["evidence_id"]})
-        _poll(obs, cur, None)
-        entry["activity"] = "fix_needed"
+        match engine.dispatch(engine.try_apply_transition(
+                cur, "record_upstream_ci_failure", policy=policy, now=now,
+                cause_id=ev["evidence_id"],
+                facts={"upstream_ci_failed", "upstream_failure_not_recorded"},
+                values={"last_ci_evidence_id": ev["evidence_id"]},
+                details={"evidence_id": ev["evidence_id"]}),
+                ("observe_ci", "_observe_upstream_review")):
+            case engine.Applied() as out:
+                _poll(obs, _stage(obs, out), None)
+                entry["activity"] = "fix_needed"
+            case engine.Skip(refused):
+                _deferred(entry, refused)
+                _poll(obs, cur, next_poll_at)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("observe_ci", "_observe_upstream_review"))
         return
     if verdict.state == "access_wait":
         entry["note"] = "a CI run waits for approval; CI is read again"
@@ -1162,11 +1301,9 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
     if decision.verb == "record_release_incomplete":
         cid = rec["contribution_id"]
         if decision.key not in audited.get(cid, set()):
-            out = engine.apply_transition(rec, decision.verb, policy=policy, now=now,
-                                          cause_id=f"{cause}-{decision.key}",
-                                          facts=decision.facts, details=decision.details)
-            if not out.accepted:
-                raise lifecycle.TransitionError(f"{decision.verb} refused: {out.reason}")
+            out = engine.applied(engine.try_apply_transition(
+                rec, decision.verb, policy=policy, now=now, cause_id=f"{cause}-{decision.key}",
+                facts=decision.facts, details=decision.details), ("observe_ci", "_observe_release"))
             obs.staged.append(("events", out.event))
             audited.setdefault(cid, set()).add(decision.key)
         _poll(obs, rec, (datetime.fromisoformat(now)
@@ -1187,8 +1324,9 @@ def _observe_release(api: collect.Api, obs: Observation, entry: dict, rec: dict,
         obs.staged.append(("evidence", ev))
         values["release_acceptance"] = {"evidence_id": eid, "as_of": now, "complete": True}
         cause = eid
-    cur = _take(obs, rec, decision.verb, policy=policy, now=now, cause_id=cause,
-                facts=decision.facts, values=values, details=decision.details)
+    cur = _stage(obs, engine.applied(engine.try_apply_transition(
+        rec, decision.verb, policy=policy, now=now, cause_id=cause, facts=decision.facts,
+        values=values, details=decision.details), ("observe_ci", "_observe_release")))
     _poll(obs, cur, None)
 
 

@@ -32,6 +32,7 @@ from tests.helpers import (
     comment,
     contribution,
     policy,
+    refusal,
     runner_loss,
 )
 
@@ -2197,7 +2198,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
                           wait["pending_human_action"]["counter"]), ("upstream_unavailable", None))
         # One row ends the waits failed reads and a rename caused; it applies
         # to this one once the repository is read under its recorded name.
-        self.assertIsNone(engine.refusal(wait, "resume_upstream_read", policy=policy(), now=NOW,
+        self.assertIsNone(refusal(wait, "resume_upstream_read", policy=policy(), now=NOW,
                                          facts={"upstream_read_again"}, open_operations=()))
         # Still named otherwise: it is read, and the wait stays.
         api = self.Api(full_name="other/proj")

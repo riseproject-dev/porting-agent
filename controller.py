@@ -95,6 +95,14 @@ class TickResult:
         self.staged.append((kind, record))
 
 
+def _stage(res: TickResult, by_id: dict[str, dict], out: engine.Applied) -> dict:
+    """Stage the record and the event of a row the tick took."""
+    by_id[out.record["contribution_id"]] = out.record
+    res.stage("contributions", out.record)
+    res.stage("events", out.event)
+    return out.record
+
+
 def _iso(t: datetime) -> str:
     return t.isoformat()
 
@@ -228,13 +236,16 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
         # what is held for publication, and keeps the state (from an
         # `agent_running` state, the state in which the Work is due).
         cause = f"upstream-identity-{snapshot['repository_id']}"
-        out = engine.apply_transition(
-            c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
-            facts={"upstream_identity_changed"})
-        if out.accepted:
-            by_id[cid] = out.record
-            res.stage("contributions", out.record)
-            res.stage("events", out.event)
+        match engine.dispatch(engine.try_apply_transition(
+                c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
+                facts={"upstream_identity_changed"}), ("controller", "_bind_source")):
+            case engine.Applied() as out:
+                _stage(res, by_id, out)
+            case engine.Skip():
+                # Already paused or terminal: not paused again.
+                pass
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("controller", "_bind_source"))
         return
     if c["upstream"].get("base_sha") is None \
             and c["upstream"].get("base_ref") not in (None, snapshot["base_ref"]):
@@ -279,17 +290,19 @@ def _follow_renamed_base(c: dict, snapshot: dict, by_id: dict[str, dict], operat
         return False
     details = {"base_ref": upstream["base_ref"], "renamed_to": pr_base["base_ref"],
                "pr_number": pr.get("number"), "base_sha": upstream["base_sha"]}
-    out = engine.apply_transition(
-        c, verb, policy=policy, now=now, facts={"base_renamed_in_pr"},
-        open_operations=_open_operations(c, operations),
-        values={"upstream.base_ref": pr_base["base_ref"],
-                "upstream_pr.base_ref": pr_base["base_ref"]},
-        cause_id=f"base-renamed-{pr_base['base_ref'][:100]}", details=details)
-    if not out.accepted:
-        return False
-    by_id[c["contribution_id"]] = out.record
-    res.stage("contributions", out.record)
-    res.stage("events", out.event)
+    match engine.dispatch(engine.try_apply_transition(
+            c, verb, policy=policy, now=now, facts={"base_renamed_in_pr"},
+            open_operations=_open_operations(c, operations),
+            values={"upstream.base_ref": pr_base["base_ref"],
+                    "upstream_pr.base_ref": pr_base["base_ref"]},
+            cause_id=f"base-renamed-{pr_base['base_ref'][:100]}", details=details),
+            ("controller", "_follow_renamed_base")):
+        case engine.Applied() as out:
+            _stage(res, by_id, out)
+        case engine.Skip():
+            return False
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_follow_renamed_base"))
     res.report.setdefault("base_branch_renamed", []).append(
         {"contribution": c["contribution_id"], **details})
     return True
@@ -325,20 +338,20 @@ def _resume_upstream_read(c: dict, snapshot: dict, by_id: dict[str, dict], opera
             or snapshot.get("repository_id") != c["upstream"].get("repository_id"):
         return
     ops = _open_operations(c, operations)
-    if engine.refusal(c, verb, policy=policy, now=now,
-                      facts={"upstream_read_again"}, open_operations=ops):
-        return
     pending = c["pending_human_action"]
     details = {"base_ref": c["upstream"].get("base_ref"), "pending_human_action": pending["kind"],
                "repository": c["upstream"]["full_name"], "cause": cause}
-    out = engine.apply_transition(c, verb, policy=policy, now=now,
-                                  facts={"upstream_read_again"}, open_operations=ops,
-                                  cause_id=f"upstream-read-r{c['revision']}", details=details)
-    if not out.accepted:
-        return
-    by_id[c["contribution_id"]] = out.record
-    res.stage("contributions", out.record)
-    res.stage("events", out.event)
+    match engine.dispatch(engine.try_apply_transition(
+            c, verb, policy=policy, now=now, facts={"upstream_read_again"}, open_operations=ops,
+            cause_id=f"upstream-read-r{c['revision']}", details=details),
+            ("controller", "_resume_upstream_read")):
+        case engine.Applied() as out:
+            _stage(res, by_id, out)
+        case engine.Skip():
+            # Paused, or behind an open operation: the wait is kept.
+            return
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_resume_upstream_read"))
     res.report.setdefault("upstream_read_again", []).append(
         {"contribution": c["contribution_id"], **details})
 
@@ -371,15 +384,17 @@ def _replace_rename_wait(c: dict, snapshot: dict, by_id: dict[str, dict], operat
     details: dict[str, Any] = {"base_ref": snapshot["base_ref"], "why": snapshot["error"]}
     if snapshot.get("renamed_to"):
         details["renamed_to"] = snapshot["renamed_to"]
-    out = engine.apply_transition(c, "require_base_branch", policy=policy, now=now,
-                                  facts={"base_branch_missing"},
-                                  open_operations=_open_operations(c, operations),
-                                  cause_id=f"source-r{c['revision']}", details=details)
-    if not out.accepted:
-        return
-    by_id[c["contribution_id"]] = out.record
-    res.stage("contributions", out.record)
-    res.stage("events", out.event)
+    match engine.dispatch(engine.try_apply_transition(
+            c, "require_base_branch", policy=policy, now=now, facts={"base_branch_missing"},
+            open_operations=_open_operations(c, operations),
+            cause_id=f"source-r{c['revision']}", details=details),
+            ("controller", "_replace_rename_wait")):
+        case engine.Applied() as out:
+            _stage(res, by_id, out)
+        case engine.Skip():
+            return
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_replace_rename_wait"))
     res.report.setdefault("base_branch_unavailable", []).append(
         {"contribution": c["contribution_id"], "verb": "require_base_branch",
          **{k: v for k, v in details.items() if k != "why"}})
@@ -477,14 +492,17 @@ def _source_unavailable(c: dict, snapshot: dict, by_id: dict[str, dict], operati
             details["repository"] = c["upstream"]["full_name"]
             if snapshot.get("renamed_repository"):
                 details["renamed_repository"] = snapshot["renamed_repository"]
-    out = engine.apply_transition(c, verb, policy=policy, now=now, facts=facts, values=values,
-                                  open_operations=ops, cause_id=f"source-r{c['revision']}",
-                                  details=details)
-    if not out.accepted:
-        return
-    by_id[cid] = out.record
-    res.stage("contributions", out.record)
-    res.stage("events", out.event)
+    match engine.dispatch(engine.try_apply_transition(
+            c, verb, policy=policy, now=now, facts=facts, values=values, open_operations=ops,
+            cause_id=f"source-r{c['revision']}", details=details),
+            ("controller", "_source_unavailable")):
+        case engine.Applied() as out:
+            _stage(res, by_id, out)
+        case engine.Skip(refused):
+            _defer(res, cid, f"upstream read failed; {verb} is not taken: {refused.detail}")
+            return
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_source_unavailable"))
     if verb != "record_source_unavailable":
         res.report.setdefault("base_branch_unavailable", []).append(
             {"contribution": cid, "verb": verb,
@@ -583,12 +601,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if issue is None or INTAKE_LABEL in labels \
                     or engine.state_key(c) not in ("queued.idle", "planning.idle"):
                 continue
-            out = engine.apply_transition(c, "withdraw_request", policy=policy, now=now,
-                                          cause_id=f"issue-{c['tracking_issue']['id']}",
-                                          facts={"intake_label_removed"})
-            if not out.accepted:
-                continue
-            changed = out.record
+            match engine.dispatch(engine.try_apply_transition(
+                    c, "withdraw_request", policy=policy, now=now,
+                    cause_id=f"issue-{c['tracking_issue']['id']}",
+                    facts={"intake_label_removed"}), ("controller", "tick")):
+                case engine.Applied() as out:
+                    changed = out.record
+                case engine.Skip():
+                    # Work, a plan or a fork exists: only commands stop it.
+                    continue
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused, ("controller", "tick"))
             by_id[cid] = changed
             active.pop(c["upstream"]["full_name"], None)
             res.stage("contributions", changed)
@@ -699,16 +722,20 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         if cid in skip or engine.state_key(c) not in reminder_states:
             continue
         with isolation.contribution(cid, "reminder"):
-            if engine.refusal(c, "record_reminder", policy=policy, now=now):
-                continue
-            out = engine.apply_transition(c, "record_reminder", policy=policy, now=now,
-                                          cause_id=f"reminder-{c['revision']}",
-                                          details=reminder_details(
-                                              c, operations, inputs.handoff_observations.get(cid),
-                                              policy))
-            by_id[cid] = out.record
-            res.stage("contributions", out.record)
-            res.stage("events", out.event)
+            # The details are read only once the reminder is due.
+            match engine.dispatch(engine.try_apply_one_of(
+                    c, ("record_reminder",), policy=policy, now=now,
+                    cause_id=f"reminder-{c['revision']}",
+                    prepare=lambda _verb, c=c, cid=cid: {"details": reminder_details(
+                        c, operations, inputs.handoff_observations.get(cid), policy)}),
+                    ("controller", "tick"), "record_reminder"):
+                case engine.Applied() as out:
+                    _stage(res, by_id, out)
+                case engine.Skip():
+                    # Not due yet, or suppressed while paused.
+                    continue
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused, ("controller", "tick"))
             reminders.append({"contribution": cid, "state": engine.state_key(c),
                               "pending_human_action": c["pending_human_action"]["kind"]})
     if reminders:
@@ -996,13 +1023,16 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         if cid in skip or engine.state_key(c) != "queued.idle":
             continue
         with isolation.contribution(cid, "begin_planning"):
-            out = engine.apply_transition(c, "begin_planning", policy=policy, now=now,
-                                          cause_id=f"tick-r{c['revision']}")
-            if out.accepted:
-                by_id[cid] = out.record
-                res.stage("contributions", out.record)
-                res.stage("events", out.event)
-                begun.add(cid)
+            match engine.dispatch(engine.try_apply_transition(
+                    c, "begin_planning", policy=policy, now=now,
+                    cause_id=f"tick-r{c['revision']}"), ("controller", "tick")):
+                case engine.Applied() as out:
+                    _stage(res, by_id, out)
+                    begun.add(cid)
+                case engine.Skip():
+                    pass
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused, ("controller", "tick"))
     candidates = []
     for c in by_id.values():
         if c["contribution_id"] in skip:
@@ -1035,15 +1065,24 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 # The review reads the rewritten series from its artifact:
                 # an expired one is never reviewed, a fresh rewrite is due.
                 if handoff.rewrite_expired(due, evidence, inputs.now):
-                    out = engine.apply_transition(
-                        due, "expire_submission_rewrite", policy=policy, now=now,
-                        facts={"submission_rewrite_expired"}, open_operations=ops,
-                        cause_id=f"expired-{due.get('submission_rewrite_id')}")
-                    if out.accepted:
-                        by_id[c["contribution_id"]] = out.record
-                        res.stage("contributions", out.record)
-                        res.stage("events", out.event)
-                        continue
+                    match engine.dispatch(engine.try_apply_transition(
+                            due, "expire_submission_rewrite", policy=policy, now=now,
+                            facts={"submission_rewrite_expired"}, open_operations=ops,
+                            cause_id=f"expired-{due.get('submission_rewrite_id')}"),
+                            ("controller", "tick")):
+                        case engine.Applied() as out:
+                            _stage(res, by_id, out)
+                            continue
+                        case engine.Take(verb="exhaust_work_total"):
+                            # The rewrite is due again but `work_total` is
+                            # spent: the exhaustion below takes it.
+                            pass
+                        case engine.Skip(refused):
+                            rep["deferred"].append({"contribution": c["contribution_id"],
+                                                    "why": refused.detail})
+                            continue
+                        case engine.Bug(refused):
+                            raise engine.TransitionRefused(refused, ("controller", "tick"))
                 else:
                     facts = ALLOCATION_FACTS | {"submission_rewrite_current"}
             if engine.state_key(due) == "development.review_pending":
@@ -1053,24 +1092,51 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 # during a wait the review's recovery caused; fresh
                 # development Work is due.
                 if not due.get("held_patch") or patch_review.held_patch_expired(due, inputs.now):
-                    out = engine.apply_transition(
-                        due, "expire_held_patch", policy=policy, now=now,
-                        facts={"held_patch_expired"}, open_operations=ops,
-                        cause_id=f"expired-{(due.get('held_patch') or {}).get('worker_run_id')}")
-                    if out.accepted:
-                        by_id[c["contribution_id"]] = out.record
-                        res.stage("contributions", out.record)
-                        res.stage("events", out.event)
-                        continue
+                    match engine.dispatch(engine.try_apply_transition(
+                            due, "expire_held_patch", policy=policy, now=now,
+                            facts={"held_patch_expired"}, open_operations=ops,
+                            cause_id=f"expired-{(due.get('held_patch') or {}).get('worker_run_id')}"),
+                            ("controller", "tick")):
+                        case engine.Applied() as out:
+                            _stage(res, by_id, out)
+                            continue
+                        case engine.Take(verb="exhaust_work_total"):
+                            # `work_total` is spent: the exhaustion below
+                            # discards the held patch.
+                            pass
+                        case engine.Skip(refused):
+                            rep["deferred"].append({"contribution": c["contribution_id"],
+                                                    "why": refused.detail})
+                            continue
+                        case engine.Bug(refused):
+                            raise engine.TransitionRefused(refused, ("controller", "tick"))
                 else:
                     facts = ALLOCATION_FACTS | {"held_patch_current"}
-            spent = next((verb for verb in EXHAUSTIONS.get(engine.state_key(due), ())
-                          if engine.refusal(due, verb, policy=policy, now=now, ci_evidence=ci,
-                                            open_operations=ops) is None), None)
-            if spent:
-                _exhaust(due, spent, ci, by_id, res, policy, now)
+            state = engine.state_key(due)
+            exhaustions = EXHAUSTIONS.get(state, ())
+            if exhaustions:
+                # The exhaustion row of a spent budget is taken instead of
+                # the allocation; it needs no worker slot.
+                match engine.dispatch(engine.try_apply_one_of(
+                        due, exhaustions, policy=policy, now=now, ci_evidence=ci,
+                        open_operations=ops, cause_id=f"tick-r{due['revision']}",
+                        prepare=lambda verb, due=due, ci=ci: _exhaustion_kwargs(
+                            due, verb, ci, policy, now)),
+                        ("controller", "tick"), "|".join(exhaustions)):
+                    case engine.Applied() as out:
+                        _exhaust(due, out, ci, by_id, res, policy, now)
+                        continue
+                    case engine.Skip():
+                        # Every budget remains: the Work is allocated below.
+                        pass
+                    case engine.Bug(refused):
+                        raise engine.TransitionRefused(refused, ("controller", "tick"))
+            allocations = ALLOCATIONS.get(state, ())
+            if not allocations:
+                rep["deferred"].append({"contribution": c["contribution_id"],
+                                        "why": f"no Work is allocated in {state}"})
                 continue
-            verb, why = _allocation_verb(due, ci, ops, policy, now, facts)
+            verb, why = _due_allocation(due, allocations, facts, ci, ops, inputs, policy, now)
             if verb is None:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                 continue
@@ -1103,17 +1169,17 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             cluster = engine.recorded_failing_job(claimed, ci)[1]
             request = _work_request(claimed, kind, inputs, now)
             source = engine.state_key(claimed)
-            claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
-                            facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
-                                                      if verb == "request_submission_review"
-                                                      else {"held_patch_current"}
-                                                      if verb == "request_patch_review"
-                                                      else set()),
-                            values={"active_work": request},
-                            ci_evidence=ci,
-                            open_operations=_open_operations(claimed, operations),
-                            details={"task": kind, "work": request["dedupe_key"],
-                                     **({"cluster": cluster} if cluster else {})})
+            claimed = _stage(res, by_id, engine.applied(engine.try_apply_transition(
+                claimed, verb, policy=policy, now=now, cause_id=request["dedupe_key"],
+                facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
+                                          if verb == "request_submission_review"
+                                          else {"held_patch_current"}
+                                          if verb == "request_patch_review"
+                                          else set()),
+                values={"active_work": request}, ci_evidence=ci,
+                open_operations=_open_operations(claimed, operations),
+                details={"task": kind, "work": request["dedupe_key"],
+                         **({"cluster": cluster} if cluster else {})}), ("controller", "tick")))
             # Only the rows that request patch or revision Work carry the
             # pending feedback (`active_work.feedback_evidence_ids`); an
             # planning carries none and keeps it pending. The submission
@@ -1185,28 +1251,32 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                  generation=generation, revision=revision, requested_at=iso,
                  deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
                  dispatched_run_id=None)
-    # `allocate_work_retry` is guarded by the bound upstream identity, and a
-    # refusal here would fall through to `exhaust_recovery`. A record
-    # without it never reaches this point: it holds Work only once a row
-    # guarded by the same identity allocated it, the identity is cleared
+    # `allocate_work_retry` is guarded by the bound upstream identity. A
+    # record without it never reaches this point: it holds Work only once a
+    # row guarded by the same identity allocated it, the identity is cleared
     # only by `restart_generation`, which clears the Work in the same row,
     # and binding fills unbound fields only. Were it unbound all the same,
-    # the exhaustion row refuses too while its budgets remain, and nothing
-    # is decided for the record.
-    out = engine.apply_transition(c, "allocate_work_retry", policy=policy, now=iso,
-                                  cause_id=f"queue-{queue_state}", facts=facts,
-                                  values={"active_work": fresh}, details=details)
-    if out.accepted:
-        attempt = out.record["active_work"]["attempt"]
-        limit = lifecycle.budget_limit("work_recovery", policy)
-        return out.record, out.event, f"new revision for terminal Work, attempt {attempt} of {limit}"
-    spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
-    out = engine.apply_transition(c, "exhaust_recovery", policy=policy, now=iso,
-                                  cause_id=f"queue-{queue_state}", facts=facts,
-                                  details=details | {"exhausted": spent})
-    if not out.accepted:
-        return None, None, f"terminal Work: {out.reason}"
-    return out.record, out.event, "automatic Work recovery exhausted; waiting for a human"
+    # nothing is decided for the record (``Skip``).
+    match engine.dispatch(engine.try_apply_transition(
+            c, "allocate_work_retry", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
+            facts=facts, values={"active_work": fresh}, details=details),
+            ("controller", "terminal_work")):
+        case engine.Applied() as out:
+            attempt = out.record["active_work"]["attempt"]
+            limit = lifecycle.budget_limit("work_recovery", policy)
+            return (out.record, out.event,
+                    f"new revision for terminal Work, attempt {attempt} of {limit}")
+        case engine.Take(verb="exhaust_recovery"):
+            spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
+            out = engine.applied(engine.try_apply_transition(
+                c, "exhaust_recovery", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
+                facts=facts, details=details | {"exhausted": spent}),
+                ("controller", "terminal_work"))
+            return out.record, out.event, "automatic Work recovery exhausted; waiting for a human"
+        case engine.Skip(refused):
+            return None, None, f"terminal Work: {refused.detail}"
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
 
 
 def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
@@ -1272,31 +1342,6 @@ def _recorded_ci_evidence(record: dict, evidence: dict[str, dict]) -> dict | Non
     return evidence.get(evidence_id or "")
 
 
-def _take(record: dict, verb: str, res: TickResult, policy: dict, now: str, **kwargs) -> dict:
-    """Take a table row the caller established, and stage the record and the
-    event. A refusal here is a bug of the caller."""
-    out = engine.apply_transition(record, verb, policy=policy, now=now, **kwargs)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"{verb} refused in {engine.state_key(record)}: {out.reason}")
-    res.stage("contributions", out.record)
-    res.stage("events", out.event)
-    return out.record
-
-
-def _allocation_verb(record: dict, ci: dict | None, ops: tuple[str, ...], policy: dict,
-                     now: str, facts: frozenset = ALLOCATION_FACTS) -> tuple[str | None, str | None]:
-    """The row that allocates the Work due in this state, once a worker slot
-    and capacity are free, or the reason none applies."""
-    reasons = []
-    for verb in ALLOCATIONS.get(engine.state_key(record), ()):
-        why = engine.refusal(record, verb, policy=policy, now=now, facts=facts,
-                             ci_evidence=ci, open_operations=ops)
-        if why is None:
-            return verb, None
-        reasons.append(why)
-    if not reasons:
-        return None, f"no Work is allocated in {engine.state_key(record)}"
-    return None, "; ".join(dict.fromkeys(reasons))
 
 
 def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
@@ -1325,15 +1370,40 @@ def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
     return {"parked_reason": f"{text}, after the automatic refresh"}, details
 
 
-def _exhaust(due: dict, verb: str, ci: dict | None, by_id: dict, res: TickResult,
+def _due_allocation(due: dict, allocations: tuple[str, ...], facts: frozenset, ci: dict | None,
+                    ops: tuple[str, ...], inputs: Inputs, policy: dict,
+                    now: str) -> tuple[str | None, str | None]:
+    """The row that allocates the Work due in this state once a worker slot
+    and capacity are free, or why none applies: evaluated here (nothing is
+    staged), and taken by the selection once the slot is assigned."""
+    match engine.dispatch(engine.try_apply_one_of(
+            due, allocations, policy=policy, now=now, facts=facts, ci_evidence=ci,
+            open_operations=ops,
+            prepare=lambda verb: {"values": {"active_work": _work_request(
+                due, task_for(verb, due), inputs, now)}}),
+            ("controller", "_due_allocation"), "|".join(allocations)):
+        case engine.Applied() as allocation:
+            return allocation.verb, None
+        case engine.Skip(refused):
+            return None, refused.detail
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_due_allocation"))
+
+
+def _exhaustion_kwargs(record: dict, verb: str, ci: dict | None, policy: dict,
+                       now: str) -> dict:
+    """The arguments of the exhaustion row ``verb`` that depend on it."""
+    values, details = _exhaustion_values(record, verb, ci, policy, now)
+    return {"values": values, "details": details}
+
+
+def _exhaust(due: dict, out: engine.Applied, ci: dict | None, by_id: dict, res: TickResult,
              policy: dict, now: str) -> None:
-    """Take the exhaustion row ``verb`` from ``due``."""
-    values, details = _exhaustion_values(due, verb, ci, policy, now)
-    changed = _take(due, verb, res, policy, now, cause_id=f"tick-r{due['revision']}",
-                    values=values, ci_evidence=ci, details=details)
-    by_id[due["contribution_id"]] = changed
+    """Stage the exhaustion row ``out`` taken from ``due``."""
+    _stage(res, by_id, out)
+    _values, details = _exhaustion_values(due, out.verb, ci, policy, now)
     res.report.setdefault("exhausted", []).append(
-        {"contribution": due["contribution_id"], "verb": verb, **details})
+        {"contribution": due["contribution_id"], "verb": out.verb, **details})
 
 
 def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
@@ -1454,15 +1524,18 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
             and handoff.rewrite_expired(c, evidence, inputs.now, review=True):
         # The series `riscv64` would be built from is no longer available: a
         # fresh rewrite and review are due, never an endless wait.
-        out = engine.apply_transition(
-            c, "expire_submission_rewrite", policy=policy, now=now,
-            facts={"submission_rewrite_expired"}, open_operations=_open_operations(c, operations),
-            cause_id=f"expired-{c.get('submission_rewrite_id')}")
-        if not out.accepted:
-            raise lifecycle.TransitionError(f"expire_submission_rewrite refused: {out.reason}")
-        by_id[cid] = out.record
-        res.stage("contributions", out.record)
-        res.stage("events", out.event)
+        match engine.dispatch(engine.try_apply_transition(
+                c, "expire_submission_rewrite", policy=policy, now=now,
+                facts={"submission_rewrite_expired"},
+                open_operations=_open_operations(c, operations),
+                cause_id=f"expired-{c.get('submission_rewrite_id')}"),
+                ("controller", "_launch_handoff")):
+            case engine.Applied() as out:
+                _stage(res, by_id, out)
+            case engine.Skip(refused):
+                rep["deferred"].append({"contribution": cid, "why": refused.detail})
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("controller", "_launch_handoff"))
         return
     if op is None:
         op = handoff.plan_attempt(c, operations, policy=policy, now=now, evidence=evidence)
@@ -1619,49 +1692,44 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
             rep.setdefault("deferred", []).append(
                 {"contribution": cid, "operation": oid, "why": why})
             return False
-    why = engine.refusal(c, "launch_development_pr", policy=policy, now=now, facts=facts,
-                         counts=counts, open_operations=open_ops)
-    if why is None:
-        out = engine.apply_transition(c, "launch_development_pr", policy=policy, now=now,
-                                      cause_id=oid, facts=facts, counts=counts,
-                                      open_operations=open_ops,
-                                      details={"operation": oid, "kind": operation["kind"],
-                                               "attempt": attempts + 1})
-        if out.charged != ("operation_launch",):
-            raise lifecycle.TransitionError(f"launch_development_pr charged {out.charged}")
-        launched = recovery.charge_launch(operation, now)
-        operations[oid] = launched
-        by_id[cid] = out.record
-        res.stage("operations", launched)
-        res.stage("contributions", out.record)
-        res.stage("events", out.event)
-        rep["dev_pr_requests"].append({
-            "operation_id": oid, "contribution_id": cid, "kind": operation["kind"],
-            "attempt": attempts + 1})
-        return True
-    if not c.get("paused") and attempts >= lifecycle.budget_limit("operation_launch", policy):
-        out = engine.apply_transition(
-            c, "exhaust_development_pr_launches", policy=policy, now=now, cause_id=oid,
-            facts=facts, counts=counts, open_operations=open_ops,
-            values={"pending_human_action": DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
-                    lifecycle.PENDING_COUNTER: "operation_launch"},
-            details={"operation": oid, "kind": operation["kind"], "launches": attempts})
-        if not out.accepted:
-            raise lifecycle.TransitionError(
-                f"exhaust_development_pr_launches refused: {out.reason}")
-        closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
-        operations[oid] = closed
-        released = recovery.release(out.record, closed, now)
-        by_id[cid] = released
-        res.stage("operations", closed)
-        res.stage("contributions", released)
-        res.stage("events", out.event)
-        rep.setdefault("alerts", []).append(
-            {"contribution": cid, "operation": oid,
-             "alert": f"{operation['kind']} operation_launch is spent without a receipt"})
-        return False
-    rep.setdefault("deferred", []).append({"contribution": cid, "why": why})
-    return False
+    match engine.dispatch(engine.try_apply_transition(
+            c, "launch_development_pr", policy=policy, now=now, cause_id=oid, facts=facts,
+            counts=counts, open_operations=open_ops,
+            details={"operation": oid, "kind": operation["kind"], "attempt": attempts + 1}),
+            ("controller", "_launch_development_pr")):
+        case engine.Applied() as out:
+            if out.charged != ("operation_launch",):
+                raise lifecycle.TransitionError(f"launch_development_pr charged {out.charged}")
+            launched = recovery.charge_launch(operation, now)
+            operations[oid] = launched
+            res.stage("operations", launched)
+            _stage(res, by_id, out)
+            rep["dev_pr_requests"].append({
+                "operation_id": oid, "contribution_id": cid, "kind": operation["kind"],
+                "attempt": attempts + 1})
+            return True
+        case engine.Take(verb="exhaust_development_pr_launches"):
+            out = engine.applied(engine.try_apply_transition(
+                c, "exhaust_development_pr_launches", policy=policy, now=now, cause_id=oid,
+                facts=facts, counts=counts, open_operations=open_ops,
+                details={"operation": oid, "kind": operation["kind"], "launches": attempts}),
+                ("controller", "_launch_development_pr"))
+            closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
+            operations[oid] = closed
+            released = recovery.release(out.record, closed, now)
+            by_id[cid] = released
+            res.stage("operations", closed)
+            res.stage("contributions", released)
+            res.stage("events", out.event)
+            rep.setdefault("alerts", []).append(
+                {"contribution": cid, "operation": oid,
+                 "alert": f"{operation['kind']} operation_launch is spent without a receipt"})
+            return False
+        case engine.Skip(refused):
+            rep.setdefault("deferred", []).append({"contribution": cid, "why": refused.detail})
+            return False
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_launch_development_pr"))
 
 
 def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict,
@@ -1714,41 +1782,38 @@ def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict
             reserved=capacity.reserved_jobs(others), estimated_jobs=1, policy=policy)
         if ok:
             facts.add("capacity_available")
-    why = engine.refusal(c, "start_operation", policy=policy, now=now, facts=facts, counts=counts,
-                         open_operations=open_ops)
-    if why is None:
-        out = engine.apply_transition(c, "start_operation", policy=policy, now=now, cause_id=oid,
-                                      facts=facts, counts=counts, open_operations=open_ops,
-                                      details={"operation": oid, "attempt": attempts + 1})
-        if out.charged != ("operation_launch",):
-            raise lifecycle.TransitionError(f"start_operation charged {out.charged}")
-        launched = recovery.charge_launch(operation, now)
-        operations[oid] = launched
-        by_id[cid] = out.record
-        res.stage("operations", launched)
-        res.stage("contributions", out.record)
-        res.stage("events", out.event)
-        res.report["provision_requests"].append({
-            "operation_id": oid, "contribution_id": cid, "attempt": attempts + 1})
-        return True
-    if engine.refusal(c, "require_provisioning_intervention", policy=policy, now=now,
-                      counts=counts, open_operations=open_ops) is None:
-        # The exhausted launches, not while paused, by the row's guard.
-        out = engine.apply_transition(
-            c, "require_provisioning_intervention", policy=policy, now=now, cause_id=oid,
+    match engine.dispatch(engine.try_apply_transition(
+            c, "start_operation", policy=policy, now=now, cause_id=oid, facts=facts,
             counts=counts, open_operations=open_ops,
-            values={"pending_human_action": LAUNCH_EXHAUSTED,
-                    lifecycle.PENDING_COUNTER: "operation_launch"},
-            details={"operation": oid, "launches": attempts,
-                     "stale_after_days": policy["refresh"]["stale_after_days"]})
-        if not out.accepted:
-            raise lifecycle.TransitionError(f"require_provisioning_intervention refused: {out.reason}")
-        by_id[cid] = out.record
-        res.stage("contributions", out.record)
-        res.stage("events", out.event)
-        return False
-    res.report.setdefault("deferred", []).append({"contribution": cid, "why": why})
-    return False
+            details={"operation": oid, "attempt": attempts + 1}),
+            ("controller", "_launch_provisioning")):
+        case engine.Applied() as out:
+            if out.charged != ("operation_launch",):
+                raise lifecycle.TransitionError(f"start_operation charged {out.charged}")
+            launched = recovery.charge_launch(operation, now)
+            operations[oid] = launched
+            res.stage("operations", launched)
+            _stage(res, by_id, out)
+            res.report["provision_requests"].append({
+                "operation_id": oid, "contribution_id": cid, "attempt": attempts + 1})
+            return True
+        case engine.Take(verb="require_provisioning_intervention"):
+            # The exhausted launches, not while paused, by the row's guard.
+            _stage(res, by_id, engine.applied(engine.try_apply_transition(
+                c, "require_provisioning_intervention", policy=policy, now=now, cause_id=oid,
+                counts=counts, open_operations=open_ops,
+                values={"pending_human_action": LAUNCH_EXHAUSTED,
+                        lifecycle.PENDING_COUNTER: "operation_launch"},
+                details={"operation": oid, "launches": attempts,
+                         "stale_after_days": policy["refresh"]["stale_after_days"]}),
+                ("controller", "_launch_provisioning")))
+            return False
+        case engine.Skip(refused):
+            res.report.setdefault("deferred", []).append({"contribution": cid,
+                                                          "why": refused.detail})
+            return False
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("controller", "_launch_provisioning"))
 
 
 def _exhaust_provisioning_replans(c: dict, last: dict, by_id: dict, operations: dict,
@@ -1758,20 +1823,14 @@ def _exhaust_provisioning_replans(c: dict, last: dict, by_id: dict, operations: 
     the fork: the launches of the intent are spent (`operation_launch`), and
     the resume of the wait starts a new revision, whose operations have new
     ids."""
-    cid = c["contribution_id"]
     limit = lifecycle.budget_limit("operation_launch", policy)
-    out = engine.apply_transition(
+    _stage(res, by_id, engine.applied(engine.try_apply_transition(
         c, "require_provisioning_intervention", policy=policy, now=now,
         cause_id=last["operation_id"], counts={"operation_launch": limit},
         open_operations=_open_operations(c, operations),
         values={"pending_human_action": LAUNCH_EXHAUSTED,
                 lifecycle.PENDING_COUNTER: "operation_launch"},
-        details={"replans": MAX_REPLANS})
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"require_provisioning_intervention refused: {out.reason}")
-    by_id[cid] = out.record
-    res.stage("contributions", out.record)
-    res.stage("events", out.event)
+        details={"replans": MAX_REPLANS}), ("controller", "_exhaust_provisioning_replans")))
 
 
 def _command_target(decision, by_id: dict, operations: dict) -> str | None:
@@ -1918,46 +1977,71 @@ def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> 
     return frozenset()
 
 
+@dataclass(frozen=True)
+class Rejected:
+    """The reply to a command that takes no row (``engine.Reply``), or that
+    is not the table's; ``kind`` is the refusal of the table's rows."""
+
+    reason: str
+    kind: engine.Refusal | None = None
+
+
+class _NotTaken(ValueError):
+    """A command the table admits but the controller does not take: a field
+    the row does not read, a held command, or a value it cannot use."""
+
+
 def _apply_table_command(rec: dict, cmd: Command, receipt: dict, operations: dict,
-                         policy: dict, now: str, upstream_pr: dict | None = None) -> engine.Outcome:
-    """Apply a command to a record in a table state, as the table defines it."""
+                         policy: dict, now: str,
+                         upstream_pr: dict | None = None) -> engine.Applied | Rejected:
+    """Apply a command to a record in a table state, as the table defines it:
+    the one row the command takes now (``engine.try_apply_command``), or the
+    reply that names why none is taken."""
     open_ops = _open_operations(rec, operations)
     counts = {**recovery.launch_count(operations.get(rec.get("active_operation_id"))),
               **handoff.counts(rec, operations)}
     facts = _command_facts(rec, cmd, upstream_pr)
-    verb, why = engine.resolve_command(rec, cmd, policy=policy, now=now, counts=counts,
-                                       open_operations=open_ops, facts=facts)
-    if verb is None:
-        return engine.Outcome(rec, False, _refusal(rec, cmd, why, open_ops), None)
-    unread = _unread_field(cmd, verb, engine.state_key(rec))
-    if unread:
-        return engine.Outcome(rec, False, unread, None, verb)
-    if cmd.verb in engine.HELD_COMMANDS:
-        return engine.Outcome(rec, False, engine.HELD_COMMANDS[cmd.verb], None, verb)
+
+    def prepare(verb: str) -> dict:
+        unread = _unread_field(cmd, verb, engine.state_key(rec))
+        if unread:
+            raise _NotTaken(unread)
+        if cmd.verb in engine.HELD_COMMANDS:
+            raise _NotTaken(engine.HELD_COMMANDS[cmd.verb])
+        try:
+            values = _command_values(rec, verb, cmd, receipt, operations, policy, now)
+        except ValueError as error:
+            raise _NotTaken(str(error)) from None
+        details = {}
+        pending = (rec.get("pending_human_action") or {}).get("kind")
+        if verb == "resume_pause" and pending:
+            # A resume clears the flag only; the reply names the wait that remains.
+            details["pending_human_action"] = pending
+        if verb == "abandon":
+            # The table records `terminal_reason=abandoned`; the event keeps
+            # the reason the human gave.
+            details["reason"] = cmd.args["reason"]
+        if values.get("admission_override"):
+            details["admission_override"] = values["admission_override"]
+        return {"values": values, "details": details}
+
     try:
-        values = _command_values(rec, verb, cmd, receipt, operations, policy, now)
-    except ValueError as error:
-        return engine.Outcome(rec, False, str(error), None, verb)
-    details = {}
-    pending = (rec.get("pending_human_action") or {}).get("kind")
-    if verb == "resume_pause" and pending:
-        # A resume clears the flag only; the reply names the wait that remains.
-        details["pending_human_action"] = pending
-    if verb == "abandon":
-        # The table records `terminal_reason=abandoned`; the event keeps the
-        # reason the human gave.
-        details["reason"] = cmd.args["reason"]
-    if values.get("admission_override"):
-        details["admission_override"] = values["admission_override"]
-    return engine.apply_transition(rec, verb, policy=policy, now=now,
-                                   cause_id=receipt["command_id"], command=cmd,
-                                   facts=facts, values=values, counts=counts,
-                                   open_operations=open_ops, actor=receipt["actor"],
-                                   details=details)
+        outcome = engine.try_apply_command(
+            rec, cmd, policy=policy, now=now, counts=counts, open_operations=open_ops,
+            facts=facts, prepare=prepare, cause_id=receipt["command_id"],
+            actor=receipt["actor"])
+    except _NotTaken as error:
+        return Rejected(str(error))
+    match engine.dispatch(outcome, ("controller", "_apply_table_command"), "command"):
+        case engine.Applied() as out:
+            return out
+        case engine.Reply(refused):
+            return Rejected(_refusal(rec, cmd, refused.detail, open_ops),
+                            engine.refusal_kind(refused))
 
 
 def apply_command(rec: dict, cmd: Command, receipt: dict, *, operations: dict, policy: dict,
-                  now: str, upstream_pr: dict | None = None) -> engine.Outcome:
+                  now: str, upstream_pr: dict | None = None) -> engine.Applied | Rejected:
     """Apply an authenticated command to the record it concerns: through the
     transition engine where the table defines it (``engine.takes_command``);
     the intake command ``authorize-followup`` otherwise. ``upstream_pr`` is
@@ -1973,14 +2057,14 @@ FOLLOWUP_COMMANDS = frozenset({"authorize-followup"})
 
 
 def authorize_followup(record: dict, cmd: Command, *, command_id: str,
-                       now: str) -> engine.Outcome:
+                       now: str) -> engine.Applied | Rejected:
     """Apply an authenticated command the engine does not take: only
     ``authorize-followup`` on a merged contribution, which records an event
     and leaves the record intact. Any other command is rejected with the
     states it applies in. Actor authority, replay and digest checks happen in
     ``intake.accept_command`` before this is called."""
-    def reject(reason: str) -> engine.Outcome:
-        return engine.Outcome(record, False, reason, None)
+    def reject(reason: str) -> Rejected:
+        return Rejected(reason)
 
     if cmd.contribution is not None and cmd.contribution != record["contribution_id"]:
         return reject("command names another contribution than this issue's")
@@ -1995,8 +2079,9 @@ def authorize_followup(record: dict, cmd: Command, *, command_id: str,
         return reject("follow-ups need a merged contribution")
     rec = dict(record, updated_at=now)
     schemas.validate("contribution", rec)
-    return engine.Outcome(rec, True, None, lifecycle._event(
-        record, rec, "command:authorize-followup", "command", command_id, now, False))
+    return engine.Applied(rec, lifecycle._event(
+        record, rec, "command:authorize-followup", "command", command_id, now, False),
+        "command:authorize-followup")
 
 
 # What a human resolution, or a trusted receipt of a definite failure,
@@ -2087,13 +2172,22 @@ def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dic
     res.stage("evidence", evidence)
     res.stage("operations", new)
     facts, values = RESOLUTION_FIRES.get((new["kind"], new["status"]), (frozenset(), {}))
-    fired = None
+    fired, not_taken = None, None
     if engine.state_key(rec) in lifecycle.LIFECYCLE and recovery.fired_verbs(rec, new) \
             and (facts or values):
-        fired = recovery.fire(rec, new, policy=policy, now=now, facts=facts, values=values,
-                              cause_id=receipt["command_id"],
-                              open_operations=_open_operations(rec, operations))
-    changed = fired.record if fired is not None and fired.accepted else recovery.release(rec, new, now)
+        match engine.dispatch(recovery.fire(
+                rec, new, policy=policy, now=now, facts=facts, values=values,
+                cause_id=receipt["command_id"], open_operations=_open_operations(rec, operations)),
+                ("controller", "_resolve_operation"), recovery.fired_group(rec, new)):
+            case engine.Applied() as fired:
+                pass
+            case engine.Skip(refused):
+                # The resolution does not establish the row's guards: the
+                # operation is released without a row.
+                not_taken = refused.detail
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("controller", "_resolve_operation"))
+    changed = fired.record if fired is not None else recovery.release(rec, new, now)
     # A branch operation a human confirms whose commit a `publish_anyway`
     # review pinned: the patch published anyway is on the branch, so its
     # comment is due, in any state.
@@ -2102,10 +2196,10 @@ def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dic
     if changed is not rec:
         by_id[rec["contribution_id"]] = changed
         res.stage("contributions", changed)
-    if fired is not None and fired.accepted:
+    if fired is not None:
         res.stage("events", fired.event)
-    elif fired is not None:
-        return dict(receipt, reason=f"the lifecycle row is not taken: {fired.reason}")
+    elif not_taken is not None:
+        return dict(receipt, reason=f"the lifecycle row is not taken: {not_taken}")
     return receipt
 
 
@@ -2128,7 +2222,12 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
                             upstream_pr=inputs.upstream_pr_observations.get(rec["contribution_id"]))
     except lifecycle.TransitionError as e:
         return dict(receipt, result="rejected", reason=str(e))
-    if not out.accepted:
+    if isinstance(out, Rejected):
+        if out.kind in (engine.Refusal.SOURCE_INVALID, engine.Refusal.TARGET_INVALID):
+            # The record breaks the requirements of its state, or the row
+            # would leave it so: the command is answered and an alert raised.
+            res.report["alerts"].append({"contribution": rec["contribution_id"],
+                                         "alert": f"/upstreaming {cmd.verb}: {out.reason}"})
         return dict(receipt, result="rejected", reason=out.reason)
     moved = out.record
     if engine.state_key(moved) != engine.state_key(rec):
@@ -2169,7 +2268,7 @@ def _landed_due(rec: dict, heads, evidence: dict[str, dict], res: TickResult,
     return engine.record_beside(rec, "review_comment_due", now=now, review_comments=due)
 
 
-def _restart_launches(out: engine.Outcome, operations: dict, res: TickResult, now: str) -> None:
+def _restart_launches(out: engine.Applied, operations: dict, res: TickResult, now: str) -> None:
     """A resume that starts `operation_launch` again starts the launches of
     the record's planned operation again: that is where the counter lives."""
     op = operations.get(out.record.get("active_operation_id"))

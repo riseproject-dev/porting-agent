@@ -16,7 +16,17 @@ import engine
 import lifecycle
 import reconcile
 import recovery
-from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, apply_command, contribution, policy
+from tests.helpers import (
+    NOW,
+    SHA_A,
+    SHA_B,
+    SHA_C,
+    apply_command,
+    contribution,
+    policy,
+    refusal,
+    take,
+)
 
 FORK = "riseproject-upstreaming/proj"
 MARKER = f"<!-- upstreaming-development:example--proj/12:r2:{SHA_B} -->"
@@ -294,7 +304,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
         self.assertEqual((op["kind"], op["status"], recovery.launch_attempts(op)),
                          ("dev_pr_create", "planned", 1))
         self.assertEqual(engine.state_key(current), "development.waiting_ci")
-        out = engine.apply_transition(rec, "launch_development_pr", policy=policy(), now=NOW,
+        out = take(rec, "launch_development_pr", policy=policy(), now=NOW,
                                       facts={"development_pr_operation_planned"},
                                       counts={"operation_launch": 0})
         self.assertEqual(out.charged, ("operation_launch",))
@@ -358,12 +368,12 @@ class TestDevelopmentPRRows(unittest.TestCase):
 
     def test_each_resume_applies_to_its_own_pending_action(self):
         _res, rec, ops, _events = self.exhaust()
-        self.assertIsNotNone(engine.refusal(rec, "resume_development", policy=policy(), now=NOW))
+        self.assertIsNotNone(refusal(rec, "resume_development", policy=policy(), now=NOW))
         for kind in ("ci_interrupted", "development_pr_mismatch"):
             with self.subTest(kind=kind):
                 other = dict(rec, pending_human_action=dict(rec["pending_human_action"],
                                                             kind=kind, counter=None))
-                self.assertIsNotNone(engine.refusal(other, "resume_ci",
+                self.assertIsNotNone(refusal(other, "resume_ci",
                                                     policy=policy(), now=NOW))
 
     def test_a_verified_receipt_confirms_also_while_paused(self):

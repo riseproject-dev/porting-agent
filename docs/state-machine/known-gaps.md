@@ -123,6 +123,13 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Today:** the REST API does not name who last edited a comment, a review or an issue description, and the collector reads no GraphQL (whose `userContentEdits` would name the editor). On the control repository and the fork, write access is part of the command authority's trust: an edited description, comment or review of an authority account steers whoever edited it. On the upstream PR, an authority account's comment or review comment edited after it was written, and a new version of its review, is recorded with `authority` false (`edit_unverified`) and never steers, even when the owner edited it: the owner steers again by writing a new comment, and the version recorded before the edit still steers. A comment there edited before it was first collected is not trusted either (its `updated_at` differs from its `created_at`), but a review carries no edit time, so one edited before it was first collected looks unedited and is trusted.
 - **Required:** a read of the last editor (GraphQL `userContentEdits` with the workflow token) so that an edit on the upstream PR by the author steers and an edit by anyone else does not.
 
+## The rows of an operation are taken through their own engine
+
+- **Where:** `recovery.apply_operation`, `recovery.mark_applying`, `recovery.mark_result`, `recovery.record_discovery`, `recovery.resolve` (the operation table, `lifecycle.OPERATIONS`).
+- **Today:** a row of the contribution table is taken only through `engine.try_apply_transition`, whose refusals are a closed set that every call site handles as `engine.HANDLING` declares. The rows of the operation table are taken by `recovery.apply_operation`, which still returns an accepted flag and a free-text reason; its callers raise on a refusal, or try the next row of a resolution.
+- **Table:** every status change of an operation is a row of `lifecycle.OPERATIONS`.
+- **Required:** the same closed set of refusals and declared handling for the operation table.
+
 ## Readings to confirm
 
 These follow the literal reading of a decision and are kept until a decision says otherwise:

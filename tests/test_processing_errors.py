@@ -43,7 +43,16 @@ import state
 import status_ledger
 from common import canonical_json
 from tests import helpers
-from tests.helpers import NOW, OWNER, SHA_A, awaiting_submission, contribution, policy, runner_loss
+from tests.helpers import (
+    NOW,
+    OWNER,
+    SHA_A,
+    awaiting_submission,
+    contribution,
+    policy,
+    runner_loss,
+    take,
+)
 from tests.test_collect_read_errors import Response
 from tests.test_late_results import WORK, ci_snapshot, publication
 
@@ -57,12 +66,12 @@ FORK_B = "riseproject-upstreaming/lib"
 VERB = "pause_on_processing_error"
 REAL = {name: getattr(module, name) for module, name in (
     (reconcile, "apply_publication"), (controller, "_actionable"), (controller, "apply_command"),
-    (observe_ci, "_take"),)}
+    (observe_ci, "_stage"),)}
 
 
 def expected_pause(before, reason):
     """``pause_on_processing_error`` on ``before``, through the engine."""
-    return engine.apply_transition(before, VERB, policy=POLICY, now=ISO, cause_id="4242",
+    return take(before, VERB, policy=POLICY, now=ISO, cause_id="4242",
                                    facts={"processing_error"},
                                    values={"paused_reason": reason}).record
 
@@ -271,11 +280,9 @@ class TestOneContributionErrors(unittest.TestCase):
         b = other_waiting(paused=True, paused_by="human", paused_at=NOW)
         baseline = tick([a, b], verdict="failed")
         self.assertIn("evidence", [kind for kind, _r in staged_for(baseline, A)])
-        real_take = only_for(A, lambda record, obs, *args, **kwargs:
-                             REAL["_take"](obs, record, *args, **kwargs))
+        real_stage = only_for(A, lambda record, obs, out: REAL["_stage"](obs, out))
         output = tick([a, b], verdict="failed", patches=[
-            ("observe_ci._take", lambda obs, record, *args, **kwargs:
-             real_take(record, obs, *args, **kwargs))])
+            ("observe_ci._stage", lambda obs, out: real_stage(out.record, obs, out))])
         self.assert_isolated(output, a, baseline, "observation")
 
     def test_work_selection(self):
@@ -467,7 +474,7 @@ class TestPipelineFailures(unittest.TestCase):
             reconcile.pause_on_processing_error(strange, description, policy=POLICY, now=ISO)
         # The controller always states the reason.
         with self.assertRaises(lifecycle.TransitionError):
-            engine.apply_transition(waiting(), VERB, policy=POLICY, now=ISO,
+            take(waiting(), VERB, policy=POLICY, now=ISO,
                                     facts={"processing_error"}, values={"paused_reason": " "})
 
 

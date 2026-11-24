@@ -5,7 +5,7 @@
 The lifecycle table at the end of this module (``LIFECYCLE``, ``RULES``,
 ``FLAGS``, ``BUDGETS`` and ``OPERATIONS``) is the definition of the contribution
 state machine. Documentation and tests are derived from it, and
-``engine.apply_transition`` is the write path that applies it to a record.
+``engine.try_apply_transition`` is the write path that applies it to a record.
 
 Nothing here performs remote effects or changes a record's state. The trusted
 state publisher persists the engine's outcome; remote writers call
@@ -4852,6 +4852,31 @@ def _check_diagrams(problems: list[str]) -> None:
                     problems.append(f"{title}: candidate node {node!r} is not drawn")
 
 
+# The transition engine's private names: a row is taken only by
+# ``engine.try_apply_transition`` (and ``try_apply_one_of``,
+# ``try_apply_command``), whose pure ``preconditions`` only the engine, the
+# tests and this check use.
+PRIVATE_ENGINE_NAMES = ("_apply_transition", "preconditions", "_evaluate", "_guards",
+                        "apply_transition", "refusal", "resolve_command", "apply_command")
+
+
+def private_engine_uses(root) -> list[str]:
+    """Where a module of the repository, other than ``engine.py``, names a
+    private name of the engine (``PRIVATE_ENGINE_NAMES``)."""
+    import ast
+    from pathlib import Path
+
+    found = []
+    for path in sorted(Path(root).glob("*.py")):
+        if path.name == "engine.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                    and node.value.id == "engine" and node.attr in PRIVATE_ENGINE_NAMES:
+                found.append(f"{path.name}:{node.lineno}: engine.{node.attr}")
+    return found
+
+
 def check_table(policy: dict | None = None) -> list[str]:
     """Every consistency problem of the lifecycle tables; empty when coherent."""
     import json
@@ -4883,6 +4908,8 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_human_waits(problems)
     _check_counter_restarts(problems)
     _check_operations(problems)
+    for use in private_engine_uses(Path(__file__).resolve().parent):
+        problems.append(f"{use}: a row is taken only through engine.try_apply_transition")
 
     # Constants used elsewhere in this module.
     writes = {state_phase(k) for k, s in LIFECYCLE.items() if s.writes}

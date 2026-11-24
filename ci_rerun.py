@@ -399,10 +399,10 @@ def preflight(*, record: dict, task: dict, proposal: dict, policy: dict, now: st
         return no(f"proposal check: {error}")
     if policy.get("read_only"):
         return no("policy is read-only")
-    why = engine.refusal(record, "request_ci_rerun", policy=policy, now=now,
-                         facts={"failure_not_caused_by_patch"})
+    why = engine.row_admitted(record, "request_ci_rerun", policy=policy, now=now,
+                              facts={"failure_not_caused_by_patch"})
     if why:
-        return no(f"request_ci_rerun does not apply: {why}")
+        return no(f"request_ci_rerun does not apply: {why.detail}")
     try:
         repo = fork_lookup(task["fork"])
     except Exception as error:  # noqa: BLE001 - any read failure is reported

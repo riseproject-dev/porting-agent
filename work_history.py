@@ -682,7 +682,7 @@ def _work_order(entry: dict) -> tuple:
 
     This order is the order the Work was requested in only because a
     contribution's generation and revision never decrease: every row that
-    bumps the revision adds one (``engine.apply_transition``) and a new
+    bumps the revision adds one (``engine.try_apply_transition``) and a new
     generation (``restart_generation``) bumps the revision as well.
     The newest report and the newest-published fallback of
     ``protected_reports`` rely on it, so a report stored late (a late

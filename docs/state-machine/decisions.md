@@ -3116,6 +3116,24 @@ flowchart TB
     handoff_building_upstream_branch ==>|require_branch_intervention| handoff_waiting_human
 ```
 
+### Rows are taken through one call with a closed set of refusals
+
+How a caller takes a row and what it does when the row is refused (the owner's decision of 2026-11-24: one public call, no two-step process, a fixed set of errors that every caller handles).
+
+**Change.** `engine.try_apply_transition` is the only public way to take a row: when the pure `engine.preconditions` holds it applies the row, else it returns one refusal of the closed set `engine.Refusal` (`not_applicable`, `paused`, `command_mismatch`, `fenced`, `budget_exhausted`, `fact_missing`, `guard_unmet`, `source_invalid`, `target_invalid`), with the record untouched and nothing emitted. A row whose guard is `always` always applies. The kind of a refusal is registered with each predicate, never read from its wording, and the effects are simulated on a copy, so a record the schema refuses is `target_invalid` before anything is applied. Every call site declares in `engine.HANDLING` what it does with each kind (`Skip`, `Take` of a row of the same state, `LateEffect`, `Reply`, `Bug`) and acts on it in a `match` over `engine.dispatch`; the "try one row, else another" chains are `Take` entries (the exhaustion row of a spent budget), the choice among exclusive rows is `engine.try_apply_one_of`, and commands take `engine.try_apply_command`. A read-only query of the guards, `engine.row_admitted`, is asked only by the trusted CI rerun workflow and by the fold of a patch Result. Tests check the table and every call site, and `lifecycle check` fails on a use of the private names outside the engine.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_fix_needed ==>|request_patch| development_agent_running
+    development_fix_needed -->|exhaust_work_total| development_waiting_human
+```
+
 ### Seven verbs merged into three
 
 Which verbs of the table name the same transition under two names, and may be one row each (the owner's decision of 2026-11-24)?

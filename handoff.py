@@ -791,24 +791,21 @@ def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str
     special = SPECIAL_FACTS.get((kind, failure))
     facts = {special} if special else {FAILURE_FACTS[kind]}
     counts = {} if special else {kind: attempt_count(op)}
-    verbs = [verb for verb in recovery.fired_verbs(record, op, "failed")
-             if engine.refusal(record, verb, policy=policy, now=now, facts=facts,
-                               counts=counts) is None]
-    if len(verbs) != 1:
+    verbs = recovery.fired_verbs(record, op, "failed")
+    if not verbs:
         raise lifecycle.TransitionError(
-            f"a failed {kind} attempt fires {verbs or 'no row'} in {engine.state_key(record)}")
-    exhausted = verbs[0] in lifecycle.BUDGETS[kind].exhaustion_verbs
+            f"a failed {kind} attempt fires no row in {engine.state_key(record)}")
+    # The one row of the state the failure establishes: the retry within the
+    # budget, its exhaustion at the limit, or the row of a special failure.
+    exhausted = not special and attempt_count(op) >= lifecycle.budget_limit(kind, policy)
     new_op = recovery.fold_failure_receipt(
         op, external_ids=dict(external_ids or {}, failure=str(failure or "unknown")[:40],
                               exhausted=int(exhausted)), now=now)
-    fired = recovery.fire(
+    fired = engine.applied(recovery.fire(
         record, new_op, policy=policy, now=now, facts=facts, counts=counts,
         details={"attempt": int(reason_value(op, "attempt") or 0), "count": attempt_count(op),
-                 "reason": isolation.clean_text(reason or "", 300), **(details or {})})
-    if fired is None or not fired.accepted:
-        raise lifecycle.TransitionError(
-            f"a failed {kind} attempt fires no row in {engine.state_key(record)}: "
-            f"{fired.reason if fired else 'none bound'}")
+                 "reason": isolation.clean_text(reason or "", 300), **(details or {})}),
+        ("handoff", "fail_attempt"), "|".join(verbs))
     return new_op, fired
 
 

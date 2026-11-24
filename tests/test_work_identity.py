@@ -29,7 +29,17 @@ import schemas
 import state
 import work
 from tests import helpers
-from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, apply_command, ci_record, contribution, policy
+from tests.helpers import (
+    NOW,
+    SHA_A,
+    SHA_B,
+    SHA_C,
+    apply_command,
+    ci_record,
+    contribution,
+    policy,
+    take,
+)
 from tests.test_engine import scenario
 from tests.test_late_results import UPSTREAM_PR, events, final, publication, tick
 
@@ -527,7 +537,7 @@ class TestExhaustion(unittest.TestCase):
         for missing in ("repository_id", "base_ref", "base_sha"):
             with self.subTest(missing=missing):
                 unbound = dict(record, upstream=dict(record["upstream"], **{missing: None}))
-                out = engine.apply_transition(
+                out = take(
                     unbound, "allocate_work_retry", policy=POLICY, now=T.isoformat(),
                     facts={"work_terminal_without_result"},
                     values={"active_work": dict(unbound["active_work"])})
@@ -640,7 +650,7 @@ class TestExhaustion(unittest.TestCase):
                 edge = lc.find_edge(source, verb)
                 rec, kwargs = scenario(source, verb, edge.transition)
                 rec["budget"] = dict(rec["budget"], no_progress_streak=2, review_rejections=1)
-                out = engine.apply_transition(rec, verb, **kwargs)
+                out = take(rec, verb, **kwargs)
                 self.assertTrue(out.accepted, out.reason)
                 self.assertEqual((out.record["budget"]["no_progress_streak"],
                                   out.record["budget"]["review_rejections"]), (0, 0))

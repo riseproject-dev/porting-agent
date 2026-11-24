@@ -8,7 +8,9 @@ import copy
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import collect
 import lifecycle
@@ -170,6 +172,78 @@ def commit_files(repo: Path, files: dict[str, str | None], msg="c", mode=None) -
     return git(repo, "rev-parse", "HEAD")
 
 
+@dataclass
+class Taken:
+    """What a test reads of a row it took or that was refused: the record
+    (the same record when refused), whether it was applied, the reason of a
+    refusal, the event, the verb, and the refusal itself."""
+
+    record: dict
+    accepted: bool
+    reason: str | None
+    event: dict | None
+    verb: str | None
+    charged: tuple = ()
+    restarted: dict | None = None
+    refused: Any = None
+
+
+def taken(record: dict, outcome) -> Taken:
+    """The test view of an outcome of the engine or of a command."""
+    import controller
+    import engine
+
+    if isinstance(outcome, engine.Applied):
+        return Taken(outcome.record, True, None, outcome.event, outcome.verb, outcome.charged,
+                     outcome.restarted)
+    if isinstance(outcome, controller.Rejected):
+        return Taken(record, False, outcome.reason, None, None, refused=outcome)
+    verb = outcome.verb if isinstance(outcome, engine.Refused) else None
+    return Taken(record, False, outcome.detail, None, verb, refused=outcome)
+
+
+def take(record: dict, verb: str, **kwargs) -> Taken:
+    """``engine.try_apply_transition``, read as a test reads it."""
+    import engine
+
+    return taken(record, engine.try_apply_transition(record, verb, **kwargs))
+
+
+def refusal(record: dict, verb: str, **kwargs) -> str | None:
+    """Why the guards of ``verb`` do not hold, or ``None`` (the effects,
+    and the values they need, are not evaluated)."""
+    import engine
+
+    found = engine.row_admitted(record, verb, **kwargs)
+    return found.detail if found else None
+
+
+def command(record: dict, cmd, *, command_id: str = "c", **kwargs) -> Taken:
+    """``engine.try_apply_command``, read as a test reads it."""
+    import engine
+
+    return taken(record, engine.try_apply_command(record, cmd, cause_id=command_id, **kwargs))
+
+
+def resolve_command(record: dict, cmd, **kwargs) -> tuple[str | None, str | None]:
+    """The one verb a command takes now by its guards, or the reasons none
+    does (``engine.row_admitted`` over ``engine.command_verbs``)."""
+    import engine
+
+    verbs = engine.command_verbs(record, cmd)
+    if not verbs:
+        return None, engine.not_applicable(cmd.verb, engine.state_key(record))
+    reasons, admitted = [], []
+    for verb in verbs:
+        why = engine.row_admitted(record, verb, command=cmd, **kwargs)
+        (reasons if why else admitted).append(why.detail if why else verb)
+    if len(admitted) > 1:
+        raise AssertionError(f"{admitted} apply together")
+    if admitted:
+        return admitted[0], None
+    return None, "; ".join(dict.fromkeys(reasons))
+
+
 def apply_command(record, cmd, *, command_id="c", actor=OWNER, now=NOW, policy_=None,
                   operations=None, upstream_pr=None):
     """A command applied as the controller applies it: through the engine
@@ -177,8 +251,10 @@ def apply_command(record, cmd, *, command_id="c", actor=OWNER, now=NOW, policy_=
     import controller
 
     receipt = {"command_id": command_id, "actor": dict(actor)}
-    return controller.apply_command(record, cmd, receipt, operations=operations or {},
-                                    policy=policy_ or policy(), now=now, upstream_pr=upstream_pr)
+    return taken(record, controller.apply_command(record, cmd, receipt,
+                                                  operations=operations or {},
+                                                  policy=policy_ or policy(), now=now,
+                                                  upstream_pr=upstream_pr))
 
 
 def runner_loss(lost=()):

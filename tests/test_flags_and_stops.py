@@ -37,6 +37,8 @@ from tests.helpers import (
     contribution,
     plan,
     policy,
+    resolve_command,
+    take,
 )
 from tests.test_late_results import RESULTS, WORK, events, final, publication, running, tick
 from tests.test_live_handoff_migration import HEAD, migrated
@@ -91,7 +93,7 @@ class TestCommandsByTheTable(unittest.TestCase):
             cmd = commands.parse(body.format(revision=record["revision"]))
             with self.subTest(state=state, paused=paused, command=verb):
                 self.assertTrue(engine.takes_command(record, cmd.verb))
-                expected, _why = engine.resolve_command(record, cmd, policy=POLICY, now=NOW,
+                expected, _why = resolve_command(record, cmd, policy=POLICY, now=NOW,
                                                         open_operations=())
                 out = apply_command(record, cmd)
                 self.assertEqual(out.accepted, expected is not None, out.reason)
@@ -205,7 +207,7 @@ class TestEndedContributions(unittest.TestCase):
             rec, kwargs = scenario(e.source, e.verb, e.transition)
             rec.update(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold")
             with self.subTest(row=f"{e.source} {e.verb}"):
-                out = engine.apply_transition(rec, e.verb, **kwargs)
+                out = take(rec, e.verb, **kwargs)
                 if e.transition.trigger == lc.Trigger.RESULT:
                     # A Result of a paused record is late: the row is not taken.
                     self.assertFalse(out.accepted)

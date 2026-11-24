@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import lifecycle
 import status_ledger
-from tests.helpers import NOW, SHA_A, contribution
+from tests.helpers import NOW, SHA_A, contribution, take
 
 
 class FakeApi:
@@ -70,10 +70,9 @@ class TestStatusLedger(unittest.TestCase):
                                  paused)
 
     def test_gate_review_rows_render_what_they_did(self):
-        import engine
         from tests.helpers import awaiting_submission, policy
         gate = awaiting_submission()
-        explained = engine.apply_transition(
+        explained = take(
             gate, "record_explanation", policy=policy(), now=NOW, cause_id="inquiry-1",
             facts={"explanation_inquiry"},
             values={"processed_review_ids": [], "processed_review_comment_ids": [],
@@ -91,7 +90,7 @@ class TestStatusLedger(unittest.TestCase):
         self.assertIn("([comment](https://github.com/o/r/pull/1#issuecomment-88))", body)
         self.assertEqual(body.count("<!--"), 1)   # only the ledger marker
         self.assertIn("/upstreaming submit-upstream revision=0", body)
-        reviewed = engine.apply_transition(
+        reviewed = take(
             gate, "record_actionable_review", policy=policy(), now=NOW, cause_id="review-1",
             facts={"actionable_review", "candidate_head_not_failed"},
             values={"pending_feedback_evidence_ids": ["review-1"], "processed_review_ids": [1],
@@ -114,11 +113,10 @@ class TestStatusLedger(unittest.TestCase):
         self.assertIn('/upstreaming refresh revision=7 reason="..."', body)
 
     def test_closed_ledger_offers_no_command(self):
-        import engine
         from tests.helpers import policy
         parked = contribution(phase="parked", activity="idle", revision=8, parked_reason="x",
                               previous_phase="development")
-        out = engine.apply_transition(parked, "abandon", policy=policy(), now=NOW, cause_id="c",
+        out = take(parked, "abandon", policy=policy(), now=NOW, cause_id="c",
                                       command=__import__("commands").parse(
                                           '/upstreaming abandon revision=8 reason="done"'))
         self.assertTrue(out.accepted, out.reason)
@@ -368,14 +366,13 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
         self.assertEqual(api.calls, [])
 
     def test_an_already_posted_event_is_not_posted_again_and_a_reminder_is(self):
-        import engine
         from tests.helpers import awaiting_submission, policy
         record = awaiting_submission(revision=6)
         gate = table_event("nominate_for_handoff", "development.waiting_ci",
                            "handoff.awaiting_submission", sequence=0, bumped=True)
         late = table_event("record_late_effect", "handoff.awaiting_submission",
                            "handoff.awaiting_submission", sequence=1)
-        reminder = engine.apply_transition(record, "record_reminder", policy=policy(),
+        reminder = take(record, "record_reminder", policy=policy(),
                                            now="2026-11-30T12:00:00+00:00", cause_id="reminder-6")
         self.assertTrue(reminder.accepted)
         reminder_event = dict(reminder.event, sequence=2)

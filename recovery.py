@@ -11,7 +11,7 @@ declares nonlaunch, or frees capacity.
 
 The states and transitions of an operation are the table
 ``lifecycle.OPERATIONS``; this module is its engine, the one write path of an
-operation's ``status``, as ``engine.apply_transition`` is the one write path
+operation's ``status``, as ``engine.try_apply_transition`` is the one write path
 of a contribution's state:
 
 * ``plan`` takes the initial verb ``record_intent`` (``planned``);
@@ -24,7 +24,7 @@ of a contribution's state:
   controller writes from the authorized ``/upstreaming resolve-operation``;
 * ``mark_applying``, ``mark_result``, ``record_discovery``, ``fold_receipt``
   and ``resolve`` name the rows a caller's observation takes;
-* ``fire`` takes, through ``engine.apply_transition``, the lifecycle row with
+* ``fire`` takes, through ``engine.try_apply_one_of``, the lifecycle row with
   the ``operation`` trigger that an operation of a kind takes when it closes
   (``FIRES``), and releases the contribution's ``active_operation_id``.
 
@@ -504,33 +504,33 @@ def release(record: dict, op: dict, now: str) -> dict:
 def fire(record: dict, op: dict, *, policy: dict, now: str, facts=(), values=None,
          cause_id: str | None = None, details: dict | None = None,
          open_operations: tuple[str, ...] | None = None,
-         counts: dict[str, int] | None = None) -> engine.Outcome | None:
-    """Take the lifecycle row an operation fires on reaching ``confirmed`` or
-    ``failed``, through the transition engine, and release the record's
-    reference to the closed operation. ``None`` when no row is bound to the
-    operation in the record's state. A refused row leaves the record as it
-    is (the reason is in the outcome). ``counts`` are the counts of budgets
-    that live outside the record (the operation's launches by default)."""
+         counts: dict[str, int] | None = None) -> engine.Applied | engine.Refusals | None:
+    """Take the one lifecycle row an operation fires on reaching
+    ``confirmed`` or ``failed`` (``engine.try_apply_one_of`` over the rows
+    bound to it in the record's state), and release the record's reference
+    to the closed operation. ``None`` when no row is bound to the operation
+    in the record's state; the refusals of every bound row when none is
+    taken, with the record as it is: each caller handles them as
+    ``engine.HANDLING`` declares (the group of verbs is the key).
+    ``counts`` are the counts of budgets that live outside the record (the
+    operation's launches by default)."""
     verbs = fired_verbs(record, op)
     if not verbs:
         return None
     counts = launch_count(op) if counts is None else counts
-    reasons, admitted = [], []
-    for verb in verbs:
-        why = engine.refusal(record, verb, policy=policy, now=now, facts=facts,
-                             counts=counts, open_operations=open_operations)
-        (reasons if why else admitted).append(why or verb)
-    if len(admitted) > 1:
-        raise RecoveryError(f"{', '.join(admitted)} apply together")
-    if not admitted:
-        return engine.Outcome(record, False, "; ".join(dict.fromkeys(reasons)), None)
-    out = engine.apply_transition(record, admitted[0], policy=policy, now=now,
-                                  cause_id=cause_id or op["operation_id"], facts=facts,
-                                  values=values, counts=counts,
-                                  open_operations=open_operations,
-                                  details={"operation": op["operation_id"], **(details or {})})
-    out.record = release(out.record, op, now)
+    out = engine.try_apply_one_of(
+        record, verbs, policy=policy, now=now, cause_id=cause_id or op["operation_id"],
+        facts=facts, values=values, counts=counts, open_operations=open_operations,
+        details={"operation": op["operation_id"], **(details or {})})
+    if isinstance(out, engine.Applied):
+        out.record = release(out.record, op, now)
     return out
+
+
+def fired_group(record: dict, op: dict, status: str | None = None) -> str:
+    """The ``engine.HANDLING`` key of the rows ``op`` fires in the record's
+    state: their verbs joined by ``|``."""
+    return "|".join(fired_verbs(record, op, status))
 
 
 def reachable(status: str) -> frozenset[str]:

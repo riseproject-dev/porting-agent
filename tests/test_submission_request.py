@@ -9,7 +9,7 @@ import command_feedback
 import commands
 import engine
 import status_ledger
-from tests.helpers import OWNER, SHA_A, awaiting_submission, policy
+from tests.helpers import OWNER, SHA_A, awaiting_submission, policy, take
 from tests.test_live_handoff_migration import HEAD, NOW, SUBMIT
 
 
@@ -26,7 +26,7 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
     def test_nomination_entry_asks_for_the_exact_command(self):
         before = awaiting_submission(phase="development", activity="waiting_ci", revision=5,
                                      handoff_request=None, pending_human_action=None)
-        out = engine.apply_transition(
+        out = take(
             before, "nominate_for_handoff", policy=policy(), now=NOW, cause_id="ci-2-7-1",
             facts={"ci_passed_on_head", "series_requirements_met"},
             values={"last_ci_evidence_id": "ci-2-7-1",
@@ -45,7 +45,7 @@ class TestLedgerAsksForSubmission(unittest.TestCase):
 
     def test_entries_at_the_gate_offer_the_table_commands(self):
         record = awaiting_submission(revision=7)
-        event = dict(engine.apply_transition(
+        event = dict(take(
             dict(record, paused=True, paused_at=NOW, paused_by="human", revision=6),
             "resume_pause", policy=policy(), now=NOW,
             command=commands.parse("/upstreaming resume revision=6 reason=r")).event, sequence=30)

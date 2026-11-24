@@ -24,7 +24,11 @@ from tests.helpers import (
     contribution,
     holding_work,
     policy,
+    refusal,
+    resolve_command,
+    take,
 )
+from tests.helpers import command as take_command
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = policy()
@@ -256,7 +260,7 @@ class TestTableIsExercised(unittest.TestCase):
             with self.subTest(verb=verb):
                 self.assertIn("engine.", source)
                 command = any(t.command for _s, v, t, _t in all_rows() if v == verb)
-                self.assertTrue(f'"{verb}"' in source or (command and "resolve_command" in source),
+                self.assertTrue(f'"{verb}"' in source or (command and "try_apply_command" in source),
                                 f"{module} does not take {verb}")
 
     def test_coverage_report_counts_the_table(self):
@@ -274,7 +278,7 @@ class TestTableIsExercised(unittest.TestCase):
             with self.subTest(state=state, verb=verb):
                 rec, kwargs = scenario(state, verb, t)
                 before = copy.deepcopy(rec)
-                out = engine.apply_transition(rec, verb, **kwargs)
+                out = take(rec, verb, **kwargs)
                 self.assertTrue(out.accepted, out.reason)
                 self.assertEqual(rec, before, "the input record is never changed")
                 new, e = out.record, t.effects
@@ -342,14 +346,17 @@ class TestTableIsExercised(unittest.TestCase):
             self.assertIn("no open operation", t.guard, (state, verb))
             rec, kwargs = scenario(state, verb, t)
             kwargs = {k: v for k, v in kwargs.items() if k != "open_operations"}
-            self.assertTrue(engine.apply_transition(rec, verb, **kwargs).accepted)
+            self.assertIsInstance(engine.try_apply_transition(rec, verb, **kwargs),
+                                  engine.Applied)
             with self.subTest(state=state, verb=verb, via="record"):
                 busy = dict(rec, active_operation_id="op-7")
-                out = engine.apply_transition(busy, verb, **kwargs)
-                self.assertEqual((out.accepted, out.reason), (False, "operation op-7 is open"))
+                out = engine.try_apply_transition(busy, verb, **kwargs)
+                self.assertEqual((out.kind, out.detail),
+                                 (engine.Refusal.FENCED, "operation op-7 is open"))
             with self.subTest(state=state, verb=verb, via="store"):
-                out = engine.apply_transition(rec, verb, open_operations=("op-8",), **kwargs)
-                self.assertEqual((out.accepted, out.reason), (False, "operation op-8 is open"))
+                out = engine.try_apply_transition(rec, verb, open_operations=("op-8",), **kwargs)
+                self.assertEqual((out.kind, out.detail),
+                                 (engine.Refusal.FENCED, "operation op-8 is open"))
         self.assertEqual(seen, waiting)
 
     def test_no_row_is_taken_without_each_of_its_facts(self):
@@ -364,7 +371,7 @@ class TestTableIsExercised(unittest.TestCase):
                         fewer["counts"] = {"operation_launch": 0}
                     if verb == "reject_patch_proposal":
                         fewer["counts"] = dict(kwargs["counts"], flaky_reruns=0)
-                    out = engine.apply_transition(rec, verb, **fewer)
+                    out = take(rec, verb, **fewer)
                     self.assertFalse(out.accepted)
                     self.assertIs(out.record, rec)
                     self.assertIsNone(out.event)
@@ -379,7 +386,7 @@ class TestTableIsExercised(unittest.TestCase):
                                      (4, "revision is not a known revision")):
                 with self.subTest(state=state, verb=verb, revision=revision):
                     args = dict(kwargs["command"].args, revision=str(revision))
-                    out = engine.apply_transition(
+                    out = take(
                         rec, verb, **dict(kwargs, command=commands.Command(kwargs["command"].verb, args)))
                     self.assertEqual((out.accepted, out.reason), (False, reason))
 
@@ -394,7 +401,7 @@ class TestTableIsExercised(unittest.TestCase):
                       or (t.trigger == lc.Trigger.COMMAND and t.command not in engine.PAUSED_COMMANDS)
                       or lc.NOT_PAUSED in t.guard)
             with self.subTest(state=state, verb=verb):
-                out = engine.apply_transition(paused, verb, **kwargs)
+                out = take(paused, verb, **kwargs)
                 self.assertEqual(out.accepted, not masked, out.reason)
 
 
@@ -407,7 +414,7 @@ class TestProcessingErrorStop(unittest.TestCase):
     def take(self, rec, **kwargs):
         kwargs.setdefault("values", {"paused_reason": self.REASON})
         kwargs.setdefault("facts", {"processing_error"})
-        return engine.apply_transition(rec, "pause_on_processing_error", policy=POLICY, now=NOW,
+        return take(rec, "pause_on_processing_error", policy=POLICY, now=NOW,
                                        cause_id="7", **kwargs)
 
     def test_sets_the_flag_with_reason_setter_and_time_in_the_same_state(self):
@@ -428,7 +435,7 @@ class TestProcessingErrorStop(unittest.TestCase):
         self.assertEqual(engine.state_key(paused), "development.fix_needed")
         self.assertEqual((paused["active_work"], paused["pending_publication"],
                           paused["revision"]), (None, None, rec["revision"]))
-        resumed = engine.apply_command(
+        resumed = take_command(
             paused, commands.parse("/upstreaming resume revision=0 reason=fixed"), policy=POLICY,
             now=NOW, command_id="c")
         self.assertEqual((resumed.verb, resumed.record["revision"], resumed.record["paused"],
@@ -475,7 +482,7 @@ class TestTableDecisions(unittest.TestCase):
         return contribution(phase="development", activity="fix_needed", **fields)
 
     def request(self, rec, verb, **kwargs):
-        return engine.apply_transition(rec, verb, policy=POLICY, now=NOW, facts=self.FACTS,
+        return take(rec, verb, policy=POLICY, now=NOW, facts=self.FACTS,
                                        values={"active_work": dict(SAMPLE["active_work"])},
                                        **kwargs)
 
@@ -493,7 +500,7 @@ class TestTableDecisions(unittest.TestCase):
         running = self.request(rec, "request_patch").record
         # Feedback recorded while the Work runs is not answered by its Result.
         running = dict(running, pending_feedback_evidence_ids=["review-1", "review-9"])
-        published = engine.apply_transition(
+        published = take(
             running, "record_publish_success", policy=POLICY, now=NOW,
             facts={"result_published", "no_review_contract"},
             values={"proposal_artifact": dict(SAMPLE["proposal_artifact"]),
@@ -507,7 +514,7 @@ class TestTableDecisions(unittest.TestCase):
                                 pending_feedback_evidence_ids=["review-1", "review-9"],
                                 active_work=dict(SAMPLE["active_work"],
                                                  feedback_evidence_ids=["review-1"]))
-        revised = engine.apply_transition(
+        revised = take(
             upstream, "record_revision_publish_success", policy=POLICY, now=NOW,
             facts={"revision_published"},
             values={"proposal_artifact": dict(SAMPLE["proposal_artifact"]),
@@ -522,19 +529,19 @@ class TestTableDecisions(unittest.TestCase):
     def test_a_publish_retry_and_a_fresh_work_graph_carry_the_same_feedback(self):
         running = self.request(self.fix_needed(pending_feedback_evidence_ids=["review-1"]),
                                "request_patch").record
-        retry = engine.apply_transition(
+        retry = take(
             running, "schedule_publish_retry", policy=POLICY, now=NOW,
             facts={"publication_infrastructure_error"},
             values={"pending_publication": dict(SAMPLE["pending_publication"], attempts=0)})
         self.assertTrue(retry.accepted, retry.reason)
         self.assertEqual(retry.record["pending_publication"]["feedback_evidence_ids"], ["review-1"])
-        published = engine.apply_transition(
+        published = take(
             retry.record, "record_publish_success", policy=POLICY, now=NOW,
             facts={"result_published", "no_review_contract"},
             values={"proposal_artifact": dict(SAMPLE["proposal_artifact"]),
                     "publication_operation_id": "op-publish-1"})
         self.assertEqual(published.record["pending_feedback_evidence_ids"], [])
-        again = engine.apply_transition(
+        again = take(
             running, "allocate_work_retry", policy=POLICY, now=NOW,
             facts={"work_terminal_without_result"},
             values={"active_work": dict(SAMPLE["active_work"], attempt=1)})
@@ -546,7 +553,7 @@ class TestTableDecisions(unittest.TestCase):
         running = self.request(rec, "request_patch").record
         for verb, facts in (("reject_patch_proposal", {"proposal_rejected_or_blocked"}),
                             ("replan_development", {"proposal_stale"})):
-            out = engine.apply_transition(running, verb, policy=POLICY, now=NOW, facts=facts)
+            out = take(running, verb, policy=POLICY, now=NOW, facts=facts)
             self.assertTrue(out.accepted, out.reason)
             self.assertEqual(out.record["pending_feedback_evidence_ids"], ["review-1"])
         for e in lc.table_edges():
@@ -559,20 +566,20 @@ class TestTableDecisions(unittest.TestCase):
     def test_work_that_carries_feedback_takes_no_ci_rerun(self):
         fact = {"failure_not_caused_by_patch"}
         plain = self.request(self.fix_needed(), "request_patch").record
-        rerun = engine.apply_transition(plain, "request_ci_rerun", policy=POLICY, now=NOW,
+        rerun = take(plain, "request_ci_rerun", policy=POLICY, now=NOW,
                                         facts=fact)
         self.assertTrue(rerun.accepted, rerun.reason)
         self.assertEqual(rerun.record["budget"]["reruns"],
                          {"head_sha": plain["fork"]["head_sha"], "flaky": 1, "interrupted": 0})
-        rejected = engine.apply_transition(plain, "reject_patch_proposal", policy=POLICY,
+        rejected = take(plain, "reject_patch_proposal", policy=POLICY,
                                            now=NOW, facts=fact)
         self.assertFalse(rejected.accepted)
         carrying = self.request(self.fix_needed(pending_feedback_evidence_ids=["review-1"]),
                                 "request_patch").record
-        refused = engine.apply_transition(carrying, "request_ci_rerun", policy=POLICY, now=NOW,
+        refused = take(carrying, "request_ci_rerun", policy=POLICY, now=NOW,
                                           facts=fact)
         self.assertEqual((refused.accepted, refused.reason), (False, "the Work carries feedback"))
-        counted = engine.apply_transition(carrying, "reject_patch_proposal", policy=POLICY,
+        counted = take(carrying, "reject_patch_proposal", policy=POLICY,
                                           now=NOW, facts=fact)
         self.assertTrue(counted.accepted, counted.reason)
         self.assertEqual(engine.state_key(counted.record), "development.fix_needed")
@@ -582,7 +589,7 @@ class TestTableDecisions(unittest.TestCase):
         gate = awaiting_submission()
         values = {"pending_feedback_evidence_ids": ["review-2-1-5"], "processed_review_ids": [5],
                   "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": []}
-        review = engine.apply_transition(
+        review = take(
             gate, "record_actionable_review", policy=POLICY, now=NOW,
             facts={"actionable_review", "candidate_head_not_failed"}, values=values)
         self.assertTrue(review.accepted, review.reason)
@@ -595,7 +602,7 @@ class TestTableDecisions(unittest.TestCase):
         # A caller that does not give the fences is refused.
         with self.assertRaisesRegex(lc.TransitionError,
                                     "sets processed_review_ids; a value is required"):
-            engine.apply_transition(
+            take(
                 gate, "record_actionable_review", policy=POLICY, now=NOW,
                 facts={"actionable_review", "candidate_head_not_failed"},
                 values={"pending_feedback_evidence_ids": ["review-2-1-5"]})
@@ -603,10 +610,10 @@ class TestTableDecisions(unittest.TestCase):
                           after["pending_human_action"]), (None, None, None))
         self.assertEqual(after["last_ci_evidence_id"], gate["last_ci_evidence_id"])
         # Without the fact that CI did not fail, the review row does not apply.
-        self.assertFalse(engine.apply_transition(
+        self.assertFalse(take(
             gate, "record_actionable_review", policy=POLICY, now=NOW,
             facts={"actionable_review"}, values=values).accepted)
-        failed = engine.apply_transition(
+        failed = take(
             gate, "return_for_repair", policy=POLICY, now=NOW, facts={"candidate_head_failed"},
             values={"last_ci_evidence_id": "ci-2-9-1"})
         self.assertEqual(engine.state_key(failed.record), "development.fix_needed")
@@ -617,7 +624,7 @@ class TestTableDecisions(unittest.TestCase):
         b = lc.find_edge("handoff.awaiting_submission", "record_actionable_review").transition
         self.assertTrue(lc.excluded(a, b))
         # The review observed with the failure is recorded in fix_needed.
-        both = engine.apply_transition(
+        both = take(
             failed.record, "record_actionable_review", policy=POLICY, now=NOW,
             facts={"actionable_review"}, values=values)
         self.assertTrue(both.accepted, both.reason)
@@ -625,14 +632,14 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(both.record["revision"], gate["revision"] + 2)
         self.assertEqual(both.record["pending_feedback_evidence_ids"], ["review-2-1-5"])
         self.assertEqual(both.record["last_ci_evidence_id"], "ci-2-9-1")
-        self.assertFalse(engine.apply_transition(
+        self.assertFalse(take(
             failed.record, "record_actionable_review", policy=POLICY, now=NOW,
             values=values).accepted)
 
     def test_a_failure_on_the_clean_head_records_its_evidence(self):
         waiting = awaiting_submission(activity="waiting_ci", pending_human_action=None,
                                       clean_head_sha=SHA_B, clean_head_ci_since=NOW)
-        failed = engine.apply_transition(
+        failed = take(
             waiting, "return_for_repair", policy=POLICY, now=NOW,
             facts={"clean_head_needs_repair"}, values={"last_ci_evidence_id": "ci-2-9-1"})
         self.assertTrue(failed.accepted, failed.reason)
@@ -642,30 +649,30 @@ class TestTableDecisions(unittest.TestCase):
         for name in lc._LEAVE_HANDOFF:
             self.assertIsNone(failed.record.get(name), name)
         with self.assertRaisesRegex(lc.TransitionError, "a value is required"):
-            engine.apply_transition(waiting, "return_for_repair", policy=POLICY, now=NOW,
+            take(waiting, "return_for_repair", policy=POLICY, now=NOW,
                                     facts={"clean_head_needs_repair"})
         # The return from the build of `riscv64` read no CI: it sets none.
         building = dict(waiting, activity="building_upstream_branch", clean_head_sha=None,
                         clean_head_ci_since=None)
         with self.assertRaisesRegex(lc.TransitionError, "does not set last_ci_evidence_id"):
-            engine.apply_transition(building, "return_for_repair", policy=POLICY, now=NOW,
+            take(building, "return_for_repair", policy=POLICY, now=NOW,
                                     facts={"upstream_branch_invalid"},
                                     values={"last_ci_evidence_id": "ci-2-9-1"})
-        back = engine.apply_transition(building, "return_for_repair", policy=POLICY, now=NOW,
+        back = take(building, "return_for_repair", policy=POLICY, now=NOW,
                                        facts={"upstream_branch_invalid"})
         self.assertTrue(back.accepted, back.reason)
         self.assertEqual(back.record["last_ci_evidence_id"], "ci-2-7-1")
         # A package attempt that finds `riscv64` off the clean head returns
         # without a CI verdict too, only with that fact.
         preparing = dict(waiting, activity="preparing_submission", clean_head_ci_since=None)
-        self.assertFalse(engine.apply_transition(
+        self.assertFalse(take(
             preparing, "return_for_repair", policy=POLICY, now=NOW,
             facts={"submission_comment_failed"}).accepted)
         with self.assertRaisesRegex(lc.TransitionError, "does not set last_ci_evidence_id"):
-            engine.apply_transition(preparing, "return_for_repair", policy=POLICY, now=NOW,
+            take(preparing, "return_for_repair", policy=POLICY, now=NOW,
                                     facts={"clean_head_moved"},
                                     values={"last_ci_evidence_id": "ci-2-9-1"})
-        moved = engine.apply_transition(preparing, "return_for_repair", policy=POLICY, now=NOW,
+        moved = take(preparing, "return_for_repair", policy=POLICY, now=NOW,
                                         facts={"clean_head_moved"})
         self.assertTrue(moved.accepted, moved.reason)
         self.assertEqual(engine.state_key(moved.record), "development.fix_needed")
@@ -677,7 +684,7 @@ class TestTableDecisions(unittest.TestCase):
 
     def test_explanation_at_the_gate_keeps_everything(self):
         gate = awaiting_submission()
-        out = engine.apply_transition(
+        out = take(
             gate, "record_explanation", policy=POLICY, now=NOW, facts={"explanation_inquiry"},
             values={"processed_review_ids": [], "processed_review_comment_ids": [6],
                     "processed_pr_conversation_comment_ids": [7]})
@@ -692,23 +699,23 @@ class TestTableDecisions(unittest.TestCase):
         waiting = contribution(phase="development", activity="waiting_ci")
         head = waiting["fork"]["head_sha"]
         fact = {"ci_interrupted_on_head"}
-        once = engine.apply_transition(waiting, "rerun_interrupted_ci", policy=POLICY, now=NOW,
+        once = take(waiting, "rerun_interrupted_ci", policy=POLICY, now=NOW,
                                        facts=fact)
         self.assertTrue(once.accepted, once.reason)
         self.assertEqual(once.charged, ())
         self.assertEqual(once.record["budget"]["reruns"],
                          {"head_sha": head, "flaky": 0, "interrupted": 1})
-        twice = engine.apply_transition(once.record, "rerun_interrupted_ci", policy=POLICY,
+        twice = take(once.record, "rerun_interrupted_ci", policy=POLICY,
                                         now=NOW, facts=fact).record
         limit = lc.budget_limit("interrupted_reruns", POLICY)
         self.assertEqual(twice["budget"]["reruns"]["interrupted"], limit)
-        refused = engine.apply_transition(twice, "rerun_interrupted_ci", policy=POLICY, now=NOW,
+        refused = take(twice, "rerun_interrupted_ci", policy=POLICY, now=NOW,
                                           facts=fact)
         self.assertEqual(refused.reason, "interrupted_reruns is exhausted")
-        waited = engine.apply_transition(twice, "exhaust_interrupted_reruns", policy=POLICY,
+        waited = take(twice, "exhaust_interrupted_reruns", policy=POLICY,
                                          now=NOW, facts=fact).record
         self.assertEqual(waited["pending_human_action"]["counter"], "interrupted_reruns")
-        resumed = engine.apply_command(
+        resumed = take_command(
             dict(waited, budget=dict(waited["budget"],
                                      reruns=dict(waited["budget"]["reruns"], flaky=1))),
             commands.parse("/upstreaming resume revision=0 reason=r"), policy=POLICY, now=NOW,
@@ -719,18 +726,18 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(resumed.event["details"]["restarted"],
                          {"counter": "interrupted_reruns", "count": limit})
         # A new recorded head starts both counts again.
-        moved = engine.apply_transition(twice, "record_head_change", policy=POLICY, now=NOW,
+        moved = take(twice, "record_head_change", policy=POLICY, now=NOW,
                                         facts={"fork_head_changed"},
                                         values={"fork.head_sha": SHA_B})
         self.assertEqual(moved.record["budget"]["reruns"],
                          {"head_sha": SHA_B, "flaky": 0, "interrupted": 0})
         # Counts recorded for another head are not counts of this one.
         other = dict(twice, fork=dict(twice["fork"], head_sha=SHA_C))
-        self.assertTrue(engine.apply_transition(other, "rerun_interrupted_ci", policy=POLICY,
+        self.assertTrue(take(other, "rerun_interrupted_ci", policy=POLICY,
                                                 now=NOW, facts=fact).accepted)
         # A record without the field counts from zero.
         bare = dict(waiting, budget={k: v for k, v in waiting["budget"].items() if k != "reruns"})
-        self.assertEqual(engine.apply_transition(
+        self.assertEqual(take(
             bare, "rerun_interrupted_ci", policy=POLICY, now=NOW,
             facts=fact).record["budget"]["reruns"]["interrupted"], 1)
         setters = {e.verb for e in lc.table_edges() if lc.RERUNS in e.transition.effects.sets}
@@ -769,7 +776,7 @@ class TestTableDecisions(unittest.TestCase):
         # Exactly one of the rows of the state applies in each case.
         for rec, evidence in ((review_only, passing), (failing, bad), (stuck, passing)):
             applying = [e.verb for e in lc.due_work_edges("development.fix_needed")
-                        if engine.refusal(rec, e.verb, policy=POLICY, now=NOW, facts=self.FACTS,
+                        if refusal(rec, e.verb, policy=POLICY, now=NOW, facts=self.FACTS,
                                           ci_evidence=evidence) is None]
             self.assertEqual(len(applying), 1, applying)
 
@@ -781,23 +788,23 @@ class TestTableDecisions(unittest.TestCase):
         facts = {"worker_slot_free"}
         args = dict(policy=POLICY, now=NOW, facts=facts,
                     values={"active_work": dict(SAMPLE["active_work"])})
-        self.assertFalse(engine.apply_transition(rec, "request_upstream_revision", **args).accepted)
-        out = engine.apply_transition(rec, "request_review_revision", **args)
+        self.assertFalse(take(rec, "request_upstream_revision", **args).accepted)
+        out = take(rec, "request_review_revision", **args)
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(out.event["details"]["charged"], ["work_total"])
         self.assertEqual(out.record["active_work"]["feedback_evidence_ids"], ["review-1"])
         self.assertEqual(engine.state_key(out.record), "upstream_review.agent_running")
         failing = dict(rec, last_ci_evidence_id="ci-1-7-1", budget=dict(rec["budget"], clusters={}))
         bad = failing_evidence(failing, "ci-1-7-1")
-        self.assertFalse(engine.apply_transition(failing, "request_review_revision",
+        self.assertFalse(take(failing, "request_review_revision",
                                                  ci_evidence=bad, **args).accepted)
-        revision = engine.apply_transition(failing, "request_upstream_revision",
+        revision = take(failing, "request_upstream_revision",
                                            ci_evidence=bad, **args)
         self.assertEqual(revision.event["details"]["charged"],
                          ["repair_attempts_cluster", "work_total"])
         for record, evidence in ((rec, None), (failing, bad)):
             applying = [e.verb for e in lc.due_work_edges("upstream_review.fix_needed")
-                        if engine.refusal(record, e.verb, policy=POLICY, now=NOW, facts=facts,
+                        if refusal(record, e.verb, policy=POLICY, now=NOW, facts=facts,
                                           ci_evidence=evidence) is None]
             self.assertEqual(len(applying), 1, applying)
 
@@ -813,19 +820,19 @@ class TestTableDecisions(unittest.TestCase):
                   "admission_class": "configuration_integration",
                   "scope_coverage_complete": True}
         facts = {"development_admitted", "fresh_fork_required"}
-        refused = engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
+        refused = take(running, "admit_development", policy=POLICY, now=NOW,
                                           facts=facts, values=values)
         self.assertFalse(refused.accepted)
-        admitted = engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
+        admitted = take(running, "admit_development", policy=POLICY, now=NOW,
                                            facts=facts | {"patch_scope_complete"}, values=values)
         self.assertEqual(engine.state_key(admitted.record), "provisioning.idle")
         # The row sets `scope_coverage_complete`: a value is required, and
         # nothing writes it beside the row.
         partial = {k: v for k, v in values.items() if k != "scope_coverage_complete"}
         with self.assertRaisesRegex(lc.TransitionError, "a value is required"):
-            engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
+            take(running, "admit_development", policy=POLICY, now=NOW,
                                     facts=facts | {"patch_scope_complete"}, values=partial)
-        uncovered = engine.apply_transition(
+        uncovered = take(
             running, "admit_development", policy=POLICY, now=NOW,
             facts=facts | {"patch_scope_complete"},
             values=dict(values, scope_coverage_complete=False))
@@ -839,10 +846,10 @@ class TestTableDecisions(unittest.TestCase):
                                           "from_phase": "development", "head_sha": SHA_A,
                                           "pr_number": 1})
         facts = {"development_admitted", "recorded_fork_matches"}
-        refused = engine.apply_transition(refreshed, "readmit_development", policy=POLICY,
+        refused = take(refreshed, "readmit_development", policy=POLICY,
                                           now=NOW, facts=facts, values=values)
         self.assertFalse(refused.accepted)
-        readmitted = engine.apply_transition(refreshed, "readmit_development", policy=POLICY,
+        readmitted = take(refreshed, "readmit_development", policy=POLICY,
                                              now=NOW, facts=facts | {"patch_scope_complete"},
                                              values=values)
         self.assertTrue(readmitted.accepted, readmitted.reason)
@@ -855,21 +862,26 @@ class TestTableDecisions(unittest.TestCase):
 class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
     def test_unknown_verb_state_fact_and_value(self):
         rec = awaiting_submission()
+        # A verb of the table that no row of the state takes is refused, a
+        # verb the table does not have is a programming error.
+        out = take(rec, "request_patch", policy=POLICY, now=NOW)
+        self.assertEqual(out.refused.kind, engine.Refusal.NOT_APPLICABLE)
+        self.assertEqual(out.record, rec)
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(rec, "request_patch", policy=POLICY, now=NOW)
+            take(rec, "made_up_verb", policy=POLICY, now=NOW)
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(contribution(activity="idle"), "nominate_for_handoff",
+            take(contribution(activity="idle"), "nominate_for_handoff",
                                     policy=POLICY, now=NOW)
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(rec, "return_for_repair", policy=POLICY, now=NOW,
+            take(rec, "return_for_repair", policy=POLICY, now=NOW,
                                     facts={"made_up"})
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(rec, "return_for_repair", policy=POLICY, now=NOW,
+            take(rec, "return_for_repair", policy=POLICY, now=NOW,
                                     facts={"candidate_head_failed"},
                                     values={"last_ci_evidence_id": "ci-9", "clean_head_sha": SHA_A})
         with self.assertRaises(lc.TransitionError):
             # A caller that asserts a failure and its absence established neither.
-            engine.apply_transition(rec, "record_actionable_review", policy=POLICY, now=NOW,
+            take(rec, "record_actionable_review", policy=POLICY, now=NOW,
                                     facts={"actionable_review", "candidate_head_failed",
                                            "candidate_head_not_failed"},
                                     values={"pending_feedback_evidence_ids": ["review-1"],
@@ -879,13 +891,13 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         with self.assertRaises(lc.TransitionError):
             # The engine derives what the Work carries; the caller cannot state it.
             fix = contribution(phase="development", activity="fix_needed")
-            engine.apply_transition(
+            take(
                 fix, "request_patch", policy=POLICY, now=NOW,
                 facts={"worker_slot_free", "capacity_available"},
                 values={"active_work": dict(SAMPLE["active_work"]),
                         lc.WORK_FEEDBACK: ["review-1"]})
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(rec, "record_head_change", policy=POLICY, now=NOW,
+            take(rec, "record_head_change", policy=POLICY, now=NOW,
                                     facts={"candidate_head_changed"})
 
     def test_work_is_allocated_only_with_the_bound_upstream_identity(self):
@@ -894,7 +906,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         for missing in ("repository_id", "base_ref", "base_sha"):
             with self.subTest(missing=missing):
                 unbound = dict(rec, upstream=dict(rec["upstream"], **{missing: None}))
-                out = engine.apply_transition(unbound, "dispatch_planning", policy=POLICY,
+                out = take(unbound, "dispatch_planning", policy=POLICY,
                                               now=NOW, facts={"worker_slot_free"},
                                               values={"active_work": work})
                 self.assertFalse(out.accepted)
@@ -905,26 +917,26 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
     def test_charges_and_external_counters(self):
         rec = contribution(phase="planning", activity="idle", fork=None)
         work = dict(SAMPLE["active_work"])
-        out = engine.apply_transition(rec, "dispatch_planning", policy=POLICY, now=NOW,
+        out = take(rec, "dispatch_planning", policy=POLICY, now=NOW,
                                       facts={"worker_slot_free"}, values={"active_work": work})
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(out.record["budget"]["attempts_used"], 1)
         self.assertEqual(out.event["details"]["charged"], ["work_total"])
         self.assertEqual(out.charged, ())
         spent = dict(rec, budget=dict(rec["budget"], attempts_used=lc.budget_limit("work_total", POLICY)))
-        refused = engine.apply_transition(spent, "dispatch_planning", policy=POLICY, now=NOW,
+        refused = take(spent, "dispatch_planning", policy=POLICY, now=NOW,
                                           facts={"worker_slot_free"}, values={"active_work": work})
         self.assertEqual((refused.accepted, refused.reason), (False, "work_total is exhausted"))
-        waiting = engine.apply_transition(spent, "exhaust_work_total", policy=POLICY, now=NOW)
+        waiting = take(spent, "exhaust_work_total", policy=POLICY, now=NOW)
         self.assertEqual(engine.state_key(waiting.record), "planning.waiting_human")
         self.assertEqual(waiting.record["pending_human_action"]["kind"], "work_budget_exhausted")
         self.assertEqual(waiting.record["pending_human_action"]["counter"], "work_total")
         # A budget counted outside the record is refused until its count is supplied.
         running = dict(out.record)
-        unknown = engine.apply_transition(running, "retry_dispatch", policy=POLICY, now=NOW,
+        unknown = take(running, "retry_dispatch", policy=POLICY, now=NOW,
                                           facts={"dispatch_lost"})
         self.assertEqual(unknown.reason, "the count of dispatch_recovery is not known")
-        retried = engine.apply_transition(running, "retry_dispatch", policy=POLICY, now=NOW,
+        retried = take(running, "retry_dispatch", policy=POLICY, now=NOW,
                                           facts={"dispatch_lost"}, counts={"dispatch_recovery": 1},
                                           values={"active_work.dispatched_run_id": "77"})
         self.assertEqual(retried.charged, ("dispatch_recovery",))
@@ -939,7 +951,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                        "reminded_at": None, "escalated_at": None,
                                        "counter": "work_total"}
         resume = commands.parse("/upstreaming resume revision=0 reason=r")
-        out = engine.apply_command(rec, resume, policy=POLICY, now=NOW, command_id="comment-9",
+        out = take_command(rec, resume, policy=POLICY, now=NOW, command_id="comment-9",
                                    actor=OWNER)
         self.assertEqual(out.verb, "resume_planning")
         self.assertEqual(out.record["budget"]["attempts_used"], 0)
@@ -949,7 +961,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(out.event["details"]["actor"], OWNER)
         self.assertEqual(out.event["cause"], {"type": "command", "id": "comment-9"})
         unnamed = dict(rec, pending_human_action=dict(rec["pending_human_action"], counter=None))
-        kept = engine.apply_command(unnamed, resume, policy=POLICY, now=NOW, command_id="c")
+        kept = take_command(unnamed, resume, policy=POLICY, now=NOW, command_id="c")
         self.assertEqual(kept.record["budget"]["attempts_used"], 24)
         self.assertNotIn("restarted", kept.event["details"])
 
@@ -957,14 +969,14 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         rec = contribution(phase="development", activity="agent_running",
                            active_work=dict(SAMPLE["active_work"]))
         pause = commands.parse('/upstreaming pause reason="hold on"')
-        out = engine.apply_command(rec, pause, policy=POLICY, now=NOW, command_id="c1")
+        out = take_command(rec, pause, policy=POLICY, now=NOW, command_id="c1")
         paused = out.record
         self.assertEqual(engine.state_key(paused), "development.fix_needed")
         self.assertIsNone(paused["active_work"])
         self.assertEqual((paused["paused"], paused["paused_at"], paused["paused_by"],
                           paused["paused_reason"]), (True, NOW, "human", "hold on"))
         self.assertEqual(paused["revision"], rec["revision"])
-        again = engine.apply_command(paused, pause, policy=POLICY, now=NOW, command_id="c2")
+        again = take_command(paused, pause, policy=POLICY, now=NOW, command_id="c2")
         self.assertEqual((again.accepted, again.reason), (False, "contribution is paused"))
         # In a human wait the first resume clears the flag only.
         waiting = contribution(phase="development", activity="waiting_human", paused=True,
@@ -973,12 +985,12 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                            "reminded_at": None, "escalated_at": None,
                                            "counter": "work_recovery"}
         resume = commands.parse("/upstreaming resume revision=0 reason=r")
-        first = engine.apply_command(waiting, resume, policy=POLICY, now=NOW, command_id="c3")
+        first = take_command(waiting, resume, policy=POLICY, now=NOW, command_id="c3")
         self.assertEqual(first.verb, "resume_pause")
         self.assertEqual(engine.state_key(first.record), "development.waiting_human")
         self.assertEqual((first.record["paused"], first.record["paused_at"]), (False, None))
         self.assertEqual(first.record["pending_human_action"], waiting["pending_human_action"])
-        second = engine.apply_command(
+        second = take_command(
             first.record, commands.parse("/upstreaming resume revision=1 reason=r"),
             policy=POLICY, now=NOW, command_id="c4")
         self.assertEqual(second.verb, "resume_development")
@@ -993,22 +1005,22 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         pause = commands.parse("/upstreaming pause")
         refresh = commands.parse("/upstreaming refresh revision=0 reason=r")
         self.assertEqual(
-            engine.refusal(dict(held, phase="parked", activity="idle"), "restart_generation",
+            refusal(dict(held, phase="parked", activity="idle"), "restart_generation",
                            policy=POLICY, now=NOW, command=refresh, open_operations=()),
             "a publication is pending")
 
-        parked = engine.apply_command(held, park, policy=POLICY, now=NOW, command_id="c",
+        parked = take_command(held, park, policy=POLICY, now=NOW, command_id="c",
                                       open_operations=())
         self.assertEqual((parked.verb, engine.state_key(parked.record)),
                          ("park_contribution", "parked.idle"))
         self.assertIsNone(parked.record["pending_publication"])
         self.assertEqual(parked.record["revision"], held["revision"])
-        restarted = engine.apply_command(parked.record, refresh, policy=POLICY, now=NOW,
+        restarted = take_command(parked.record, refresh, policy=POLICY, now=NOW,
                                          command_id="c", open_operations=())
         self.assertEqual((restarted.verb, engine.state_key(restarted.record)),
                          ("restart_generation", "queued.idle"))
 
-        paused = engine.apply_command(held, pause, policy=POLICY, now=NOW, command_id="c")
+        paused = take_command(held, pause, policy=POLICY, now=NOW, command_id="c")
         self.assertEqual((paused.verb, engine.state_key(paused.record)),
                          ("pause", "development.fix_needed"))
         self.assertEqual((paused.record["paused"], paused.record["pending_publication"]),
@@ -1020,19 +1032,19 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
             "kind": "publication_infrastructure_failure", "requested_at": NOW,
             "reminded_at": None, "escalated_at": None, "counter": "publish_recovery"}
         for command in (pause, park):
-            out = engine.apply_command(waiting, command, policy=POLICY, now=NOW, command_id="c",
+            out = take_command(waiting, command, policy=POLICY, now=NOW, command_id="c",
                                        open_operations=())
             self.assertTrue(out.accepted, out.reason)
             self.assertIsNone(out.record["pending_publication"])
 
-        identity = engine.apply_transition(held, "pause_on_identity_change", policy=POLICY,
+        identity = take(held, "pause_on_identity_change", policy=POLICY,
                                            now=NOW, facts={"upstream_identity_changed"})
         self.assertEqual((identity.record["paused_by"], identity.record["pending_publication"]),
                          ("controller", None))
         # A record parked before the stop cleared the publication is still abandoned cleanly.
         left = contribution(phase="parked", activity="idle", parked_reason="x",
                             previous_phase="development", pending_publication=dict(pending))
-        abandoned = engine.apply_command(left, commands.parse('/upstreaming abandon reason="x"'),
+        abandoned = take_command(left, commands.parse('/upstreaming abandon reason="x"'),
                                          policy=POLICY, now=NOW, command_id="c")
         self.assertEqual((engine.state_key(abandoned.record),
                           abandoned.record["pending_publication"]), ("closed.idle", None))
@@ -1059,7 +1071,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                         "counter": "publish_recovery"}
                     values = {"refresh": dict(SAMPLE["refresh"])} if verb == "resume_stale" \
                         else None
-                    out = engine.apply_command(waiting, resume, policy=POLICY, now=NOW,
+                    out = take_command(waiting, resume, policy=POLICY, now=NOW,
                                                command_id="c", open_operations=(),
                                                values=values)
                     self.assertTrue(out.accepted, out.reason)
@@ -1068,7 +1080,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                     if verb == "resume_upstream_revision":
                         continue  # guarded by the pending action alone
                     held = dict(waiting, pending_publication=dict(pending, exhausted=False))
-                    refused = engine.apply_command(held, resume, policy=POLICY, now=NOW,
+                    refused = take_command(held, resume, policy=POLICY, now=NOW,
                                                    command_id="c", open_operations=(),
                                                    values=values)
                     self.assertFalse(refused.accepted)
@@ -1087,14 +1099,14 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         values = {"pending_feedback_evidence_ids": ["review-1"], "processed_review_ids": [1],
                   "processed_review_comment_ids": [],
                   "processed_pr_conversation_comment_ids": []}
-        refused = engine.apply_transition(rec, "record_actionable_review", policy=POLICY,
+        refused = take(rec, "record_actionable_review", policy=POLICY,
                                           now=NOW, facts={"actionable_review"}, values=values)
         self.assertFalse(refused.accepted)
         with self.assertRaises(lc.TransitionError):
-            engine.apply_transition(rec, "record_actionable_review", policy=POLICY, now=NOW,
+            take(rec, "record_actionable_review", policy=POLICY, now=NOW,
                                     facts={"actionable_review", "head_not_failed",
                                            "ci_failed_on_head"}, values=values)
-        out = engine.apply_transition(rec, "record_actionable_review", policy=POLICY, now=NOW,
+        out = take(rec, "record_actionable_review", policy=POLICY, now=NOW,
                                       facts={"actionable_review", "head_not_failed"},
                                       values=values)
         self.assertTrue(out.accepted, out.reason)
@@ -1110,12 +1122,12 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         for command in (commands.parse('/upstreaming park reason="stop"'),
                         commands.parse("/upstreaming pause")):
             with self.subTest(command=command.verb):
-                kept = engine.apply_command(published, command, policy=POLICY, now=NOW,
+                kept = take_command(published, command, policy=POLICY, now=NOW,
                                             command_id="c", open_operations=())
                 self.assertTrue(kept.accepted, kept.reason)
                 self.assertEqual(kept.record["proposal_artifact"],
                                  published["proposal_artifact"])
-        identity = engine.apply_transition(published, "pause_on_identity_change", policy=POLICY,
+        identity = take(published, "pause_on_identity_change", policy=POLICY,
                                            now=NOW, facts={"upstream_identity_changed"})
         self.assertEqual(identity.record["proposal_artifact"], published["proposal_artifact"])
 
@@ -1124,31 +1136,31 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                              paused_at=LONG_AGO, paused_by="human")
         resume = commands.parse("/upstreaming resume revision=0 reason=r")
         refresh = dict(SAMPLE["refresh"])
-        out = engine.apply_command(stale, resume, policy=POLICY, now=NOW, command_id="c",
+        out = take_command(stale, resume, policy=POLICY, now=NOW, command_id="c",
                                    values={"refresh": refresh})
         self.assertEqual(out.verb, "resume_stale")
         self.assertEqual(engine.state_key(out.record), "queued.idle")
         self.assertEqual((out.record["paused"], out.record["refresh"]), (False, refresh))
         fresh = dict(stale, paused_at=NOW)
-        self.assertEqual(engine.resolve_command(fresh, resume, policy=POLICY, now=NOW)[0],
+        self.assertEqual(resolve_command(fresh, resume, policy=POLICY, now=NOW)[0],
                          "resume_pause")
         # The handoff gate is never refreshed by a resume.
         gate = awaiting_submission(paused=True, paused_at=LONG_AGO, paused_by="human")
-        self.assertEqual(engine.resolve_command(gate, resume, policy=POLICY, now=NOW)[0],
+        self.assertEqual(resolve_command(gate, resume, policy=POLICY, now=NOW)[0],
                          "resume_pause")
 
     def test_park_needs_a_reason_and_no_open_operation(self):
         rec = contribution(phase="development", activity="waiting_ci", revision=4)
         stale_park = commands.parse('/upstreaming park revision=2 reason="stop"')
-        out = engine.apply_command(rec, stale_park, policy=POLICY, now=NOW, command_id="c")
+        out = take_command(rec, stale_park, policy=POLICY, now=NOW, command_id="c")
         self.assertEqual(engine.state_key(out.record), "parked.idle")
         self.assertEqual((out.record["parked_reason"], out.record["previous_phase"]),
                          ("stop", "development"))
-        busy = engine.apply_command(rec, stale_park, policy=POLICY, now=NOW, command_id="c",
+        busy = take_command(rec, stale_park, policy=POLICY, now=NOW, command_id="c",
                                     open_operations=("op-7",))
         self.assertEqual((busy.accepted, busy.reason), (False, "operation op-7 is open"))
         locked = contribution(phase="release_wait", activity="idle")
-        verb, why = engine.resolve_command(locked, stale_park, policy=POLICY, now=NOW)
+        verb, why = resolve_command(locked, stale_park, policy=POLICY, now=NOW)
         self.assertIsNone(verb)
         self.assertTrue(why.startswith("`/upstreaming park` does not apply in `release_wait.idle`; "
                                        "it applies in `development.agent_running`, "), why)
@@ -1158,7 +1170,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                            plan_evidence_id="plan-1", last_ci_evidence_id="ci-1",
                            processed_publications=[5])
         refresh = commands.parse("/upstreaming refresh revision=7 reason=r")
-        out = engine.apply_command(rec, refresh, policy=POLICY, now=NOW, command_id="c")
+        out = take_command(rec, refresh, policy=POLICY, now=NOW, command_id="c")
         new = out.record
         self.assertEqual(out.verb, "restart_generation")
         self.assertEqual((engine.state_key(new), new["generation"], new["revision"]),
@@ -1168,11 +1180,11 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
         self.assertEqual(new["processed_publications"], [5])
         self.assertEqual(new["contribution_id"], rec["contribution_id"])
         with_pr = dict(rec, upstream_pr=SAMPLE["upstream_pr"])
-        refused = engine.apply_command(with_pr, refresh, policy=POLICY, now=NOW, command_id="c")
+        refused = take_command(with_pr, refresh, policy=POLICY, now=NOW, command_id="c")
         self.assertFalse(refused.accepted)
         resume = commands.parse("/upstreaming resume revision=7 reason=r")
         self.assertEqual(engine.command_verbs(rec, resume), ["resume_pause"])
-        self.assertFalse(engine.apply_command(rec, resume, policy=POLICY, now=NOW,
+        self.assertFalse(take_command(rec, resume, policy=POLICY, now=NOW,
                                               command_id="c").accepted)
 
 
@@ -1184,7 +1196,7 @@ class TestSubmitUpstream(unittest.TestCase):
                                    "revision": 0, "evidence_ids": ["ci-2-7-1"]}}
 
     def submit(self, rec, text, **kw):
-        return engine.apply_command(rec, commands.parse(text), policy=POLICY, now=NOW,
+        return take_command(rec, commands.parse(text), policy=POLICY, now=NOW,
                                     command_id="comment-1", actor=OWNER, values=self.VALUES, **kw)
 
     def test_grammar_requires_revision_and_full_head(self):
@@ -1239,7 +1251,7 @@ class TestSubmitUpstream(unittest.TestCase):
 
     def test_a_resume_from_pause_keeps_the_submission(self):
         rec = awaiting_submission(paused=True, paused_at=NOW, paused_by="human")
-        out = engine.apply_command(rec, commands.parse("/upstreaming resume revision=0 reason=r"),
+        out = take_command(rec, commands.parse("/upstreaming resume revision=0 reason=r"),
                                    policy=POLICY, now=NOW, command_id="c")
         new = out.record
         self.assertEqual((engine.state_key(new), new["revision"], new["paused"]),

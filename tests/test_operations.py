@@ -32,6 +32,7 @@ from tests.helpers import (
     contribution,
     holding_work,
     policy,
+    refusal,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1435,9 +1436,9 @@ class TestDecidedOperationRows(ReceiptWorld, unittest.TestCase):
         paused = dict(rec, paused=True, paused_at=NOW, paused_by="human", paused_reason="x")
         self.assertEqual(tick(paused, ops, at).staged, [])
         counts = recovery.launch_count(spent)
-        self.assertIn("paused", engine.refusal(paused, "require_provisioning_intervention",
+        self.assertIn("paused", refusal(paused, "require_provisioning_intervention",
                                                policy=POLICY, now=NOW, counts=counts))
-        self.assertIsNone(engine.refusal(paused, "require_provisioning_intervention",
+        self.assertIsNone(refusal(paused, "require_provisioning_intervention",
                                          policy=POLICY, now=NOW, counts=counts,
                                          facts={"provisioning_blocked"}))
         # The first tick after the pause ends takes the row.

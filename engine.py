@@ -2,10 +2,18 @@
 # SPDX-License-Identifier: MIT
 """The transition engine: the one write path of the contribution lifecycle.
 
-``apply_transition(record, verb, ...)`` takes a contribution record and a verb
-of the lifecycle table (``lifecycle.LIFECYCLE``, ``RULES`` and ``FLAGS``) and
-returns the new record with the semantic event to persist. It does exactly
-what the table row states and nothing else:
+``try_apply_transition(record, verb, ...)`` takes a contribution record and a
+verb of the lifecycle table (``lifecycle.LIFECYCLE``, ``RULES`` and ``FLAGS``)
+and returns either ``Applied`` (the new record with the semantic event to
+persist) or ``Refused``, one of a closed set of refusals (``Refusal``), with
+the record untouched and nothing emitted. It is the only public way to take a
+row: it evaluates the row's preconditions with the pure ``preconditions``
+and, only when they hold, applies the row (the private ``_apply_transition``).
+A row whose preconditions always hold (the guard ``always``) always applies.
+Every caller handles every kind of refusal explicitly: ``HANDLING`` declares
+what each call site does with each kind, ``dispatch`` returns it, and a test
+checks the table and the call sites. The transition does exactly what the
+table row states and nothing else:
 
 * it resolves the verb from the record's state (``phase.activity``), from a
   flag setter or from a flag clearer;
@@ -37,6 +45,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from typing import Any, Callable
 
 import ci_evidence
@@ -49,7 +58,7 @@ from common import UPSTREAM_REF
 # The fields only this module assigns: the state, the flag, the revision and
 # the generation, the requested Work, and every field an effect of the table
 # names (by its top-level name). Pipeline code changes them through
-# ``apply_transition``, or beside a row through ``record_beside``.
+# ``try_apply_transition``, or beside a row through ``record_beside``.
 STATE_FIELDS = ("phase", "activity", "paused", "revision", "generation")
 
 
@@ -71,20 +80,86 @@ FENCED_FIELDS = tuple(dict.fromkeys((*STATE_FIELDS, "active_work", *_effect_fiel
 TransitionError = lc.TransitionError
 
 
+class Refusal(StrEnum):
+    """Why a row is not taken: a closed set. Every precondition of a row
+    refuses with exactly one of these, whatever its wording."""
+
+    NOT_APPLICABLE = "not_applicable"      # no row for this verb in this state
+    PAUSED = "paused"                      # the mask of the paused flag, or "not paused"
+    COMMAND_MISMATCH = "command_mismatch"  # wrong revision, head or operation, no reason
+    FENCED = "fenced"                      # an open operation, a pending publication, Work
+    BUDGET_EXHAUSTED = "budget_exhausted"  # a "remains" guard is false
+    FACT_MISSING = "fact_missing"          # a fact the row needs was not asserted
+    GUARD_UNMET = "guard_unmet"            # another record predicate of the row is false
+    SOURCE_INVALID = "source_invalid"      # the record violates the requirements of its state
+    TARGET_INVALID = "target_invalid"      # the record after the row fails its schema or state
+
+
+@dataclass(frozen=True)
+class Ok:
+    """The preconditions of ``verb`` hold: it leads to ``target``."""
+
+    verb: str
+    target: str
+
+
+@dataclass(frozen=True)
+class Refused:
+    """``verb`` is not taken: the kind, the guard (or requirement) that does
+    not hold, and why. The record is untouched and nothing is emitted."""
+
+    kind: Refusal
+    verb: str | None
+    guard: str | None
+    detail: str
+
+    def __str__(self) -> str:
+        return self.detail
+
+
+@dataclass(frozen=True)
+class Refusals:
+    """No candidate of ``try_apply_one_of`` is taken: one refusal each."""
+
+    refused: tuple[Refused, ...]
+
+    @property
+    def detail(self) -> str:
+        return "; ".join(dict.fromkeys(r.detail for r in self.refused)) or "no row applies"
+
+    def kinds(self) -> frozenset[Refusal]:
+        return frozenset(r.kind for r in self.refused)
+
+    def __str__(self) -> str:
+        return self.detail
+
+
 @dataclass
-class Outcome:
-    """The result of taking, or refusing, one transition."""
+class Applied:
+    """A row taken: the new record and the event to persist."""
 
     record: dict[str, Any]
-    accepted: bool
-    reason: str | None
-    event: dict[str, Any] | None
-    verb: str | None = None
+    event: dict[str, Any]
+    verb: str
     # Budgets charged whose counter lives outside the record (an operation's
     # attempts, dispatcher runs); the caller persists them.
     charged: tuple[str, ...] = ()
     # The counter a resume started again: {"counter", "count"}.
     restarted: dict[str, Any] | None = None
+
+
+class TransitionRefused(lc.TransitionError):
+    """A refusal whose disposition at its call site is ``Bug``: the caller
+    raises it, and the tick pauses the contribution for a processing error."""
+
+    def __init__(self, refused: Refused | Refusals, site: tuple[str, str] | None = None):
+        self.refused = refused
+        where = f" at {site[0]}.{site[1]}" if site else ""
+        kind = refused.kind if isinstance(refused, Refused) else \
+            ", ".join(sorted(refused.kinds()))
+        verb = refused.verb if isinstance(refused, Refused) else \
+            ", ".join(r.verb or "?" for r in refused.refused)
+        super().__init__(f"{verb} refused ({kind}){where}: {refused.detail}")
 
 
 @dataclass
@@ -122,14 +197,46 @@ def state_key(record: dict) -> str:
 class Predicate:
     """A named guard. ``check`` returns ``None`` when the guard holds and the
     reason it does not otherwise. A ``fact`` predicate holds when the caller
-    asserts its name."""
+    asserts its name. ``refusal`` is the kind of refusal it gives when it
+    does not hold."""
 
     name: str
     kind: str
     check: Callable[[Context], str | None]
+    refusal: Refusal = Refusal.GUARD_UNMET
 
 
 PREDICATES: dict[str, Predicate] = {}
+
+# The refusal of each record predicate that is not ``GUARD_UNMET``, by its
+# name; every fact predicate refuses with ``FACT_MISSING``, and every budget
+# that "remains" with ``BUDGET_EXHAUSTED``.
+PREDICATE_REFUSALS: dict[str, Refusal] = {
+    "exact_revision": Refusal.COMMAND_MISMATCH,
+    "any_revision": Refusal.COMMAND_MISMATCH,
+    "reason_given": Refusal.COMMAND_MISMATCH,
+    "exact_candidate_head": Refusal.COMMAND_MISMATCH,
+    "exact_clean_head": Refusal.COMMAND_MISMATCH,
+    "not_paused": Refusal.PAUSED,
+    "no_open_operation": Refusal.FENCED,
+    "quiescent": Refusal.FENCED,
+    "no_requested_work": Refusal.FENCED,
+    "no_work_requested": Refusal.FENCED,
+    "repair_budgets_remain": Refusal.BUDGET_EXHAUSTED,
+    "revision_budgets_remain": Refusal.BUDGET_EXHAUSTED,
+    "review_revision_budgets_remain": Refusal.BUDGET_EXHAUSTED,
+    "work_recovery_and_work_total_remain": Refusal.BUDGET_EXHAUSTED,
+}
+
+
+def _refusal_of(name: str, kind: str) -> Refusal:
+    if kind == "fact":
+        return Refusal.FACT_MISSING
+    if name in PREDICATE_REFUSALS:
+        return PREDICATE_REFUSALS[name]
+    if name.endswith("_remains"):
+        return Refusal.BUDGET_EXHAUSTED
+    return Refusal.GUARD_UNMET
 
 
 def _register(guard: str, name: str, kind: str, check: Callable[[Context], str | None]) -> None:
@@ -137,7 +244,7 @@ def _register(guard: str, name: str, kind: str, check: Callable[[Context], str |
         raise ValueError(f"guard {guard!r} is registered twice")
     if any(p.name == name for p in PREDICATES.values()):
         raise ValueError(f"predicate name {name!r} is registered twice")
-    PREDICATES[guard] = Predicate(name, kind, check)
+    PREDICATES[guard] = Predicate(name, kind, check, _refusal_of(name, kind))
 
 
 def _record(guard: str, name: str):
@@ -950,7 +1057,7 @@ def table_guards() -> set[str]:
 PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
     "resume", "park", "refresh", "retract-pr", "abandon", "resolve-operation"))
 
-# Verbs that pipeline code takes through ``apply_transition``, with the module
+# Verbs that pipeline code takes through ``try_apply_transition``, with the module
 # that takes them. ``return_for_repair`` is taken by observation at the gate
 # and in ``handoff.waiting_ci``, and fired by a build of `riscv64` whose
 # reviewed series does not rebuild or whose lease conflicts, and by a package
@@ -1202,24 +1309,53 @@ def _mask(ctx: Context, verb: str, t: lc.Transition) -> str | None:
     return None
 
 
-def refusal(record: dict, verb: str, *, policy: dict, now: str, command: Command | None = None,
-            facts=(), counts: dict[str, int] | None = None,
-            open_operations: tuple[str, ...] | None = None,
-            ci_evidence: dict | None = None) -> str | None:
-    """Why ``verb`` cannot be taken now, or ``None`` when every guard holds."""
-    state = state_key(record)
-    t, _target = resolve(state, verb)
-    ctx = Context(record, state, policy, now, command, frozenset(facts), dict(counts or {}),
-                  open_operations, ci_evidence)
+@dataclass
+class _Evaluation:
+    """The preconditions of a row and, when they hold, the record after it."""
+
+    result: Ok | Refused
+    ctx: Context | None = None
+    transition: lc.Transition | None = None
+    record: dict[str, Any] | None = None
+    charged: tuple[str, ...] = ()
+    restarted: dict[str, Any] | None = None
+
+
+_TABLE_VERBS: set[str] | None = None
+
+
+def _check_facts(facts) -> None:
     unknown = set(facts) - FACT_NAMES
     if unknown:
         raise TransitionError(f"unknown facts: {', '.join(sorted(unknown))}")
     for pair in CONTRADICTORY_FACTS:
         if set(pair) <= set(facts):
             raise TransitionError(f"contradictory facts: {' and '.join(pair)}")
+
+
+def _guards(record: dict, verb: str, *, policy: dict, now: str, command: Command | None,
+            facts, counts, open_operations, ci_evidence
+            ) -> tuple[Refused | None, Context | None, lc.Transition | None, str | None]:
+    """The guards of the row of ``verb``: the first refusal, or ``None`` and
+    the context, transition and target."""
+    global _TABLE_VERBS
+    if _TABLE_VERBS is None:
+        _TABLE_VERBS = table_verbs()
+    if verb not in _TABLE_VERBS:
+        raise TransitionError(f"{verb} is not a verb of the lifecycle table")
+    _check_facts(facts)
+    state = state_key(record)
+    try:
+        t, target = resolve(state, verb)
+    except TransitionError as error:
+        if state not in lc.LIFECYCLE:
+            raise
+        return Refused(Refusal.NOT_APPLICABLE, verb, None, str(error)), None, None, None
+    ctx = Context(record, state, policy, now, command, frozenset(facts), dict(counts or {}),
+                  open_operations, ci_evidence)
     masked = _mask(ctx, verb, t)
     if masked:
-        return masked
+        return Refused(Refusal.PAUSED, verb, None, masked), ctx, t, target
     if not t.guard:
         raise TransitionError(f"{state} --{verb}-->: the row states no guard")
     for guard in t.guard:
@@ -1228,8 +1364,72 @@ def refusal(record: dict, verb: str, *, policy: dict, now: str, command: Command
             raise TransitionError(f"guard {guard!r} has no predicate")
         why = predicate.check(ctx)
         if why:
-            return why
-    return None
+            return Refused(predicate.refusal, verb, guard, why), ctx, t, target
+    return None, ctx, t, target
+
+
+def _evaluate(record: dict, verb: str, *, policy: dict, now: str, command: Command | None = None,
+              facts=(), values: dict[str, Any] | None = None,
+              counts: dict[str, int] | None = None,
+              open_operations: tuple[str, ...] | None = None,
+              ci_evidence: dict | None = None) -> _Evaluation:
+    refused, ctx, t, target = _guards(record, verb, policy=policy, now=now, command=command,
+                                      facts=facts, counts=counts,
+                                      open_operations=open_operations, ci_evidence=ci_evidence)
+    if refused is not None:
+        return _Evaluation(refused)
+    # The effects are simulated on a copy: a record the schema refuses is
+    # a refusal, known before anything is applied.
+    rec, charged, restarted = _apply_effects(ctx, verb, t, target, dict(values or {}))
+    if rec != record:
+        rec["updated_at"] = now
+    try:
+        schemas.validate("contribution", rec)
+    except schemas.SchemaError as error:
+        return _Evaluation(Refused(Refusal.TARGET_INVALID, verb, None, str(error)[:2000]))
+    bumped = rec["revision"] != record["revision"]
+    if bumped != (t.effects.revision == "bump"):
+        raise TransitionError(f"{verb}: the revision rule is violated")
+    return _Evaluation(Ok(verb, target), ctx, t, rec, charged, restarted)
+
+
+def preconditions(record: dict, verb: str, *, policy: dict, now: str,
+                  command: Command | None = None, facts=(),
+                  values: dict[str, Any] | None = None, counts: dict[str, int] | None = None,
+                  open_operations: tuple[str, ...] | None = None,
+                  ci_evidence: dict | None = None) -> Ok | Refused:
+    """Whether ``verb`` can be taken now: ``Ok`` with the state it leads to,
+    or ``Refused`` with its kind. Pure: the record is never changed. The
+    effects are simulated on a copy, so a record the schema would refuse is
+    found here (``TARGET_INVALID``). Only ``try_apply_transition``, the tests
+    and ``lifecycle check`` call it; a caller that wants a row takes it with
+    ``try_apply_transition``. Raises ``TransitionError`` only for a call
+    the table does not allow: a verb that is not in the table, an unknown or
+    contradictory fact, a value for a field the row does not set, or a
+    missing value."""
+    return _evaluate(record, verb, policy=policy, now=now, command=command, facts=facts,
+                     values=values, counts=counts, open_operations=open_operations,
+                     ci_evidence=ci_evidence).result
+
+
+# The call sites outside the engine that may ask, without taking it, whether
+# a row would be admitted (``row_admitted``): the trusted CI rerun workflow,
+# which cannot take the row the reconciler takes later, and the fold of a
+# patch Result, which chooses its row by it.
+ROW_QUERY_SITES = frozenset({("ci_rerun", "preflight"), ("reconcile", "fold_patch_result")})
+
+
+def row_admitted(record: dict, verb: str, *, policy: dict, now: str, facts=(),
+                 command: Command | None = None, counts: dict[str, int] | None = None,
+                 open_operations: tuple[str, ...] | None = None,
+                 ci_evidence: dict | None = None) -> Refused | None:
+    """The read-only query of ``ROW_QUERY_SITES``: ``None`` when the guards
+    of ``verb`` hold, else its refusal. It evaluates the guards only (the
+    effects need the values the row would set)."""
+    refused, *_rest = _guards(record, verb, policy=policy, now=now, command=command, facts=facts,
+                              counts=counts, open_operations=open_operations,
+                              ci_evidence=ci_evidence)
+    return refused
 
 
 # --------------------------------------------------------------------------
@@ -1532,50 +1732,82 @@ _CAUSE = {lc.Trigger.COMMAND: "command", lc.Trigger.OBSERVATION: "observation",
           lc.Trigger.TICK: "tick"}
 
 
-def apply_transition(record: dict, verb: str, *, policy: dict, now: str,
-                     cause_id: str | None = None, command: Command | None = None,
-                     facts=(), values: dict[str, Any] | None = None,
-                     counts: dict[str, int] | None = None,
-                     open_operations: tuple[str, ...] | None = None,
-                     ci_evidence: dict | None = None, actor: dict | None = None,
-                     details: dict[str, Any] | None = None) -> Outcome:
-    """Take the table transition ``verb`` from the state ``record`` is in.
+def _apply_transition(evaluation: _Evaluation, record: dict, *, now: str,
+                      cause_id: str | None, actor: dict | None,
+                      details: dict[str, Any] | None) -> Applied:
+    """Apply a row whose preconditions hold: the record after it and its
+    event. Private: ``try_apply_transition`` is the one way to take a row."""
+    ctx, t, rec = evaluation.ctx, evaluation.transition, evaluation.record
+    verb, target = evaluation.result.verb, evaluation.result.target
+    bumped = rec["revision"] != record["revision"]
+    event = lc._event(record, rec, verb, _CAUSE[t.trigger], cause_id, now, bumped)
+    info: dict[str, Any] = {"verb": verb, "from_state": ctx.state, "to_state": target}
+    if t.charges:
+        info["charged"] = list(t.charges)
+    if evaluation.restarted:
+        info["restarted"] = evaluation.restarted
+    if actor:
+        info["actor"] = {"id": actor["id"], "login": actor["login"]}
+    info.update(details or {})
+    event["details"] = info
+    return Applied(rec, event, verb, evaluation.charged, evaluation.restarted)
+
+
+def try_apply_transition(record: dict, verb: str, *, policy: dict, now: str,
+                         cause_id: str | None = None, command: Command | None = None,
+                         facts=(), values: dict[str, Any] | None = None,
+                         counts: dict[str, int] | None = None,
+                         open_operations: tuple[str, ...] | None = None,
+                         ci_evidence: dict | None = None, actor: dict | None = None,
+                         details: dict[str, Any] | None = None) -> Applied | Refused:
+    """Take the table transition ``verb`` from the state ``record`` is in when
+    its preconditions hold (``preconditions``), else return the refusal.
 
     ``facts`` names the observations the caller established; ``values`` gives
     the value of each field the row sets that the engine cannot derive;
     ``counts`` supplies the counts of budgets that live outside the record;
     ``ci_evidence`` is the evidence record ``last_ci_evidence_id`` names, from
-    which the failing CI job of the head is decided.
-    A guard that does not hold refuses the transition and leaves the record
-    unchanged. A call the table does not allow (an unknown verb, a value for
-    a field the row does not set, a missing value) raises ``TransitionError``.
-    """
-    state = state_key(record)
-    t, target = resolve(state, verb)
-    why = refusal(record, verb, policy=policy, now=now, command=command, facts=facts,
-                  counts=counts, open_operations=open_operations, ci_evidence=ci_evidence)
-    if why:
-        return Outcome(record, False, why, None, verb)
-    ctx = Context(record, state, policy, now, command, frozenset(facts), dict(counts or {}),
-                  open_operations, ci_evidence)
-    rec, charged, restarted = _apply_effects(ctx, verb, t, target, dict(values or {}))
-    if rec != record:
-        rec["updated_at"] = now
-    schemas.validate("contribution", rec)
-    bumped = rec["revision"] != record["revision"]
-    if bumped != (t.effects.revision == "bump"):
-        raise TransitionError(f"{verb}: the revision rule is violated")
-    event = lc._event(record, rec, verb, _CAUSE[t.trigger], cause_id, now, bumped)
-    info: dict[str, Any] = {"verb": verb, "from_state": state, "to_state": target}
-    if t.charges:
-        info["charged"] = list(t.charges)
-    if restarted:
-        info["restarted"] = restarted
-    if actor:
-        info["actor"] = {"id": actor["id"], "login": actor["login"]}
-    info.update(details or {})
-    event["details"] = info
-    return Outcome(rec, True, None, event, verb, charged, restarted)
+    which the failing CI job of the head is decided. A refusal leaves the
+    record unchanged and emits nothing; the caller handles its kind as
+    ``HANDLING`` declares for the call site. A call the table does not
+    allow (an unknown verb or fact, a value for a field the row does not
+    set, a missing value) raises ``TransitionError``."""
+    evaluation = _evaluate(record, verb, policy=policy, now=now, command=command, facts=facts,
+                           values=values, counts=counts, open_operations=open_operations,
+                           ci_evidence=ci_evidence)
+    if isinstance(evaluation.result, Refused):
+        return evaluation.result
+    return _apply_transition(evaluation, record, now=now, cause_id=cause_id, actor=actor,
+                             details=details)
+
+
+def try_apply_one_of(record: dict, verbs, *, policy: dict, now: str,
+                     prepare: Callable[[str], dict[str, Any]] | None = None,
+                     **kwargs: Any) -> Applied | Refusals:
+    """Take the one row among ``verbs`` whose guards hold, or return a
+    refusal for each. ``prepare(verb)`` gives the arguments that depend on
+    the row taken (``values``, ``details``, ``cause_id``); the others are
+    common. More than one admitted row is a table error
+    (``TransitionError``)."""
+    common = {k: v for k, v in kwargs.items()
+              if k in ("command", "facts", "counts", "open_operations", "ci_evidence")}
+    refused: list[Refused] = []
+    admitted = []
+    for verb in dict.fromkeys(verbs):
+        why, *_rest = _guards(record, verb, policy=policy, now=now,
+                              command=common.get("command"), facts=common.get("facts", ()),
+                              counts=common.get("counts"),
+                              open_operations=common.get("open_operations"),
+                              ci_evidence=common.get("ci_evidence"))
+        (refused if why else admitted).append(why or verb)
+    if len(admitted) > 1:
+        raise TransitionError(f"{state_key(record)}: {', '.join(admitted)} apply together")
+    if not admitted:
+        return Refusals(tuple(refused))
+    verb = admitted[0]
+    out = try_apply_transition(record, verb, policy=policy, now=now,
+                               **(kwargs | (prepare(verb) if prepare else {})))
+    return out if isinstance(out, Applied) else Refusals((out,))
 
 
 # --------------------------------------------------------------------------
@@ -1611,41 +1843,19 @@ def not_applicable(verb: str, state: str) -> str:
     return f"`/upstreaming {verb}` does not apply in `{state}`{where}"
 
 
-def resolve_command(record: dict, command: Command, *, policy: dict, now: str, facts=(),
-                    counts: dict[str, int] | None = None,
-                    open_operations: tuple[str, ...] | None = None) -> tuple[str | None, str | None]:
-    """The one verb ``command`` takes now, or the reason it takes none."""
+def try_apply_command(record: dict, command: Command, *, policy: dict, now: str,
+                      prepare: Callable[[str], dict[str, Any]] | None = None,
+                      **kwargs: Any) -> Applied | Refusals:
+    """Take the one row an authenticated command takes now, as the table
+    defines it (``try_apply_one_of`` over ``command_verbs``), or the
+    refusals: ``NOT_APPLICABLE`` naming where the command applies when no
+    row of the state takes it."""
     verbs = command_verbs(record, command)
-    state = state_key(record)
     if not verbs:
-        return None, not_applicable(command.verb, state)
-    reasons, admitted = [], []
-    for verb in verbs:
-        why = refusal(record, verb, policy=policy, now=now, command=command, facts=facts,
-                      counts=counts, open_operations=open_operations)
-        if why:
-            reasons.append(why)
-        else:
-            admitted.append(verb)
-    if len(admitted) > 1:
-        raise TransitionError(f"{state}: {', '.join(admitted)} apply together")
-    if admitted:
-        return admitted[0], None
-    return None, reasons[0] if len(set(reasons)) == 1 else "; ".join(dict.fromkeys(reasons))
-
-
-def apply_command(record: dict, command: Command, *, policy: dict, now: str, command_id: str,
-                  actor: dict | None = None, facts=(), values: dict[str, Any] | None = None,
-                  counts: dict[str, int] | None = None,
-                  open_operations: tuple[str, ...] | None = None) -> Outcome:
-    """Take the transition an authenticated command names, per the table."""
-    verb, why = resolve_command(record, command, policy=policy, now=now, facts=facts,
-                                counts=counts, open_operations=open_operations)
-    if verb is None:
-        return Outcome(record, False, why, None)
-    return apply_transition(record, verb, policy=policy, now=now, cause_id=command_id,
-                            command=command, facts=facts, values=values, counts=counts,
-                            open_operations=open_operations, actor=actor)
+        return Refusals((Refused(Refusal.NOT_APPLICABLE, None, None,
+                                 not_applicable(command.verb, state_key(record))),))
+    return try_apply_one_of(record, verbs, policy=policy, now=now, command=command,
+                            prepare=prepare, **kwargs)
 
 
 # --------------------------------------------------------------------------
@@ -1700,12 +1910,15 @@ def record_late_effect(record: dict, *, policy: dict, now: str, cause_id: str | 
     """The audit event of the table's ``record_late_effect`` for ``record``:
     the rule applies in every state, under the stop flag too, and never
     changes the record."""
-    outcome = apply_transition(record, "record_late_effect", policy=policy, now=now,
-                               cause_id=cause_id, facts={"result_mismatch"}, details=details)
-    if not outcome.accepted or outcome.record != record:
-        raise TransitionError(f"record_late_effect in {state_key(record)}: "
-                              f"{outcome.reason or 'the record changed'}")
-    return outcome.event
+    outcome = try_apply_transition(record, "record_late_effect", policy=policy, now=now,
+                                   cause_id=cause_id, facts={"result_mismatch"}, details=details)
+    match dispatch(outcome, ("engine", "record_late_effect")):
+        case Applied() as applied if applied.record == record:
+            return applied.event
+        case Applied():
+            raise TransitionError(f"record_late_effect in {state_key(record)}: the record changed")
+        case Bug(refused):
+            raise TransitionRefused(refused, ("engine", "record_late_effect"))
 
 
 # --------------------------------------------------------------------------
@@ -1915,6 +2128,270 @@ def record_beside(record: dict, write: str, *, now: str, **fields: Any) -> dict:
         new["updated_at"] = now
     schemas.validate("contribution", new)
     return new
+
+
+# --------------------------------------------------------------------------
+# Handling of refusals
+#
+# Every call site outside the engine that takes a row declares here what it
+# does with each kind of refusal, and acts on it in a ``match`` over
+# ``dispatch``: ``Skip`` (the row is not taken now; the site reports why),
+# ``Take`` (the site takes the named row of the same state instead),
+# ``LateEffect`` (a Result that matches nothing: ``record_late_effect``),
+# ``Reply`` (a command: the reply names the refusal) or ``Bug`` (the caller
+# raises ``TransitionRefused``, a processing error of the contribution).
+# ``tests/test_handling.py`` checks that every entry names all the kinds,
+# that every ``Take`` names a row of the same state and, for a budget that
+# is exhausted, its exhaustion row, and that every call site has its entry
+# and matches every disposition its entry uses. A site is ``(module,
+# function)``; an entry is keyed by the site and the verb (several verbs
+# that ``try_apply_one_of`` takes together are joined by ``|``).
+
+
+@dataclass(frozen=True)
+class Skip:
+    refused: Refused | Refusals
+
+
+@dataclass(frozen=True)
+class Take:
+    verb: str
+    refused: Refused | Refusals | None = None
+
+
+@dataclass(frozen=True)
+class LateEffect:
+    refused: Refused | Refusals
+
+
+@dataclass(frozen=True)
+class Reply:
+    refused: Refused | Refusals
+
+
+@dataclass(frozen=True)
+class Bug:
+    refused: Refused | Refusals
+
+
+Disposition = Skip | Take | LateEffect | Reply | Bug
+# A declaration of ``HANDLING``: a disposition class, or ``Take`` of a verb.
+SKIP, LATE, REPLY, BUG = Skip, LateEffect, Reply, Bug
+
+
+def TAKE(verb: str) -> Take:  # noqa: N802 - a declaration, like the classes
+    return Take(verb)
+
+
+# The kind of a group of refusals (``Refusals``): the one they share, else
+# the first of this order. The rows ``try_apply_one_of`` chooses among are
+# exclusive by their guards, so all but the one that is due fail on the
+# guard that tells them apart (``GUARD_UNMET``, ``FACT_MISSING``,
+# ``NOT_APPLICABLE``); the refusal of the row that is due comes first.
+GROUP_ORDER = (Refusal.PAUSED, Refusal.COMMAND_MISMATCH, Refusal.FENCED, Refusal.SOURCE_INVALID,
+               Refusal.TARGET_INVALID, Refusal.BUDGET_EXHAUSTED, Refusal.FACT_MISSING,
+               Refusal.GUARD_UNMET, Refusal.NOT_APPLICABLE)
+
+
+def refusal_kind(refused: Refused | Refusals) -> Refusal:
+    """The kind of a refusal, or of a group of refusals (``GROUP_ORDER``)."""
+    if isinstance(refused, Refused):
+        return refused.kind
+    kinds = refused.kinds()
+    return next(kind for kind in GROUP_ORDER if kind in kinds)
+
+
+def _verb_key(refused: Refused | Refusals) -> str:
+    if isinstance(refused, Refused):
+        return refused.verb or ""
+    return "|".join(r.verb or "" for r in refused.refused)
+
+
+def dispatch(outcome: Applied | Refused | Refusals, site: tuple[str, str],
+             verb: str | None = None) -> Applied | Disposition:
+    """``outcome`` itself when it is ``Applied``, else the disposition that
+    ``HANDLING`` declares for the site, the verb (``verb`` names a group of
+    ``try_apply_one_of``, or a command's verbs) and the kind of refusal."""
+    if isinstance(outcome, Applied):
+        return outcome
+    key = (site[0], site[1], verb or _verb_key(outcome))
+    entry = HANDLING.get(key)
+    if entry is None:
+        raise TransitionError(f"no handling is declared for {key}")
+    declared = entry[refusal_kind(outcome)]
+    if isinstance(declared, Take):
+        return Take(declared.verb, outcome)
+    return declared(outcome)
+
+
+def applied(outcome: Applied | Refused | Refusals, site: tuple[str, str],
+            verb: str | None = None) -> Applied:
+    """The applied row at a site whose every refusal is a ``Bug``
+    (``tests/test_handling.py`` checks that only such sites call it)."""
+    match dispatch(outcome, site, verb):
+        case Applied() as done:
+            return done
+        case Bug(refused):
+            raise TransitionRefused(refused, site)
+        case other:
+            raise TransitionError(f"{site}: {type(other).__name__} is not handled here")
+
+
+# The declarations by the family of the trigger (the defaults of each site;
+# a site states what differs).
+_ALL_BUG = dict.fromkeys(Refusal, BUG)
+D_TICK = {**_ALL_BUG, Refusal.PAUSED: SKIP, Refusal.FENCED: SKIP, Refusal.FACT_MISSING: SKIP,
+          Refusal.GUARD_UNMET: SKIP}
+D_OBS = {**_ALL_BUG, Refusal.NOT_APPLICABLE: SKIP, Refusal.PAUSED: SKIP, Refusal.FENCED: SKIP,
+         Refusal.GUARD_UNMET: SKIP}
+D_RESULT = {**_ALL_BUG, Refusal.NOT_APPLICABLE: LATE, Refusal.PAUSED: LATE,
+            Refusal.COMMAND_MISMATCH: LATE}
+D_OP = {**_ALL_BUG, Refusal.PAUSED: SKIP, Refusal.FENCED: SKIP}
+D_COMMAND = dict.fromkeys(Refusal, REPLY)
+
+
+def _handling(base: dict, **overrides) -> dict:
+    entry = dict(base)
+    for name, declared in overrides.items():
+        entry[Refusal[name]] = declared
+    return entry
+
+
+HANDLING: dict[tuple[str, str, str], dict[Refusal, Any]] = {}
+
+
+def handles(module: str, function: str, verbs, base: dict, **overrides) -> None:
+    """Declare the handling of ``verbs`` (each, or a group joined by ``|``)
+    at the site ``(module, function)``."""
+    for verb in ([verbs] if isinstance(verbs, str) else verbs):
+        key = (module, function, verb)
+        if key in HANDLING:
+            raise ValueError(f"handling of {key} is declared twice")
+        HANDLING[key] = _handling(base, **overrides)
+
+
+# The handling of every call site, by module. ``Bug`` is the default for a
+# kind a site never expects (the observation or the fold established what
+# the row needs).
+_OBS_STRICT = _handling(D_OBS, GUARD_UNMET=BUG)
+_TAKE_WORK_TOTAL = TAKE("exhaust_work_total")
+
+# engine
+handles("engine", "record_late_effect", "record_late_effect", _ALL_BUG)
+
+# observe_ci: observations. A row an observation does not take now is read
+# again on the next tick (``Skip``).
+handles("observe_ci", "_observe_clean_head_ci", "return_for_repair", _OBS_STRICT)
+handles("observe_ci", "_observe_clean_head_ci", ("require_clean_head_ci", "accept_clean_head_ci"),
+        D_OBS)
+handles("observe_ci", "_observe_upstream_pr", ("verify_upstream_pr", "record_audit_observation"),
+        _OBS_STRICT)
+handles("observe_ci", "_record_explanation", "record_explanation", _ALL_BUG)
+handles("observe_ci", "_record_review", "record_actionable_review", D_OBS, FACT_MISSING=SKIP)
+handles("observe_ci", "_observe_development",
+        ("record_head_change", "record_pr_mismatch", "record_ci_failure"), _OBS_STRICT)
+handles("observe_ci", "_observe_development", ("return_for_feedback", "nominate_for_handoff"),
+        D_OBS)
+handles("observe_ci", "_rerun_interrupted", "rerun_interrupted_ci", D_OBS,
+        BUDGET_EXHAUSTED=TAKE("exhaust_interrupted_reruns"))
+handles("observe_ci", "_rerun_interrupted", "exhaust_interrupted_reruns", _ALL_BUG)
+handles("observe_ci", "_observe_gate", ("record_head_change", "return_for_repair"), _OBS_STRICT)
+handles("observe_ci", "_observe_upstream_review",
+        ("record_merge", "record_pr_closed_unmerged", "record_head_change",
+         "record_upstream_ci_failure"), _OBS_STRICT)
+handles("observe_ci", "_observe_release",
+        ("record_release_incomplete", "require_release_intervention", "verify_release"), _ALL_BUG)
+
+# reconcile: Results, receipts and the recovery of Work.
+handles("reconcile", "queue_policy_recovery", "rearm_dispatch", D_TICK)
+handles("reconcile", "_lost_dispatch", "retry_dispatch", D_TICK, FACT_MISSING=BUG,
+        BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
+handles("reconcile", "_lost_dispatch", "exhaust_recovery", _ALL_BUG)
+handles("reconcile", "_reject_plan", "reject_plan", D_RESULT,
+        BUDGET_EXHAUSTED=TAKE("exhaust_planning_recovery"))
+handles("reconcile", "_reject_plan", "exhaust_planning_recovery", _ALL_BUG)
+handles("reconcile", "fold_plan",
+        ("close_planning", "park_planning", "readmit_development", "admit_development"), D_RESULT)
+handles("reconcile", "fold_submission_rewrite",
+        ("accept_submission_rewrite", "reject_submission_rewrite"), D_RESULT)
+handles("reconcile", "fold_submission_review",
+        ("accept_submission_review", "reject_submission_review"), D_RESULT)
+handles("reconcile", "fold_patch_review", "accept_patch_review", D_RESULT)
+handles("reconcile", "fold_patch_review", "reject_patch_review", D_RESULT,
+        BUDGET_EXHAUSTED=TAKE("publish_after_failed_reviews"))
+handles("reconcile", "fold_patch_review", "publish_after_failed_reviews", _ALL_BUG)
+handles("reconcile", "_fail_publication", "schedule_publish_retry", _ALL_BUG,
+        BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
+handles("reconcile", "_fail_publication", "exhaust_recovery", _ALL_BUG)
+handles("reconcile", "fold_patch_result",
+        ("record_publish_success", "hold_patch_for_review", "reject_patch_proposal",
+         "replan_development", "request_ci_rerun", "record_revision_publish_success",
+         "require_reviewer_answer"), D_RESULT)
+# The stop after a processing error is the last resort: a refusal (already
+# paused or terminal) is reported, never raised.
+handles("reconcile", "tick", "pause_on_processing_error", dict.fromkeys(Refusal, SKIP))
+handles("reconcile", "fold_handoff_receipts", ("confirm_clean_head", "confirm_submission_package"),
+        _ALL_BUG)
+handles("reconcile", "fold_provisioning_receipts",
+        ("confirm_provisioning", "require_provisioning_intervention"), _ALL_BUG)
+handles("reconcile", "_tick", ("confirm_development_pr", "expire_held_patch"), _ALL_BUG)
+
+# handoff: a failed attempt fires the one row of its state.
+handles("handoff", "fail_attempt",
+        ("retry_upstream_branch|exhaust_upstream_branch_retries|return_for_repair"
+         "|require_branch_intervention",
+         "retry_submission_comment|exhaust_comment_retries|return_for_repair"), _ALL_BUG)
+
+# controller: the tick, the commands, and the rows operations fire.
+handles("controller", "_bind_source", "pause_on_identity_change", D_OBS)
+handles("controller", "_follow_renamed_base", ("follow_renamed_base", "resume_renamed_base"),
+        D_OBS, FACT_MISSING=SKIP)
+handles("controller", "_resume_upstream_read", "resume_upstream_read", D_TICK)
+handles("controller", "_replace_rename_wait", "require_base_branch", D_TICK)
+handles("controller", "_source_unavailable",
+        ("record_source_unavailable", "require_base_branch", "exhaust_source_reads",
+         "require_upstream_access", "require_renamed_upstream"), D_TICK)
+handles("controller", "tick", "withdraw_request", D_OBS, FACT_MISSING=SKIP)
+handles("controller", "tick", "record_reminder", D_TICK)
+handles("controller", "tick", ("expire_submission_rewrite", "expire_held_patch"), D_TICK,
+        BUDGET_EXHAUSTED=_TAKE_WORK_TOTAL)
+handles("controller", "tick",
+        ("exhaust_work_total", "exhaust_work_total|refresh_on_exhaustion|exhaust_repair_attempts",
+         "exhaust_repair_attempts"), D_TICK, BUDGET_EXHAUSTED=SKIP)
+handles("controller", "_due_allocation",
+        ("dispatch_planning", "request_repair|request_patch", "request_patch_review",
+         "request_submission_rewrite", "request_submission_review",
+         "request_upstream_revision|request_review_revision"), D_TICK, BUDGET_EXHAUSTED=SKIP)
+# A paused request does not begin planning.
+handles("controller", "tick", "begin_planning", D_TICK)
+handles("controller", "tick",
+        ("dispatch_planning", "request_repair", "request_patch",
+         "request_patch_review", "request_submission_rewrite", "request_submission_review",
+         "request_upstream_revision", "request_review_revision"), _ALL_BUG)
+handles("controller", "terminal_work", "allocate_work_retry", D_TICK,
+        BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
+handles("controller", "terminal_work", "exhaust_recovery", _ALL_BUG)
+handles("controller", "_launch_handoff", "expire_submission_rewrite", _ALL_BUG,
+        PAUSED=SKIP, FENCED=SKIP)
+handles("controller", "_launch_development_pr", "launch_development_pr", D_TICK,
+        BUDGET_EXHAUSTED=TAKE("exhaust_development_pr_launches"))
+handles("controller", "_launch_development_pr", "exhaust_development_pr_launches", _ALL_BUG)
+handles("controller", "_launch_provisioning", "start_operation", D_TICK,
+        BUDGET_EXHAUSTED=TAKE("require_provisioning_intervention"))
+handles("controller", "_launch_provisioning", "require_provisioning_intervention", _ALL_BUG)
+handles("controller", "_exhaust_provisioning_replans", "require_provisioning_intervention",
+        _ALL_BUG)
+handles("controller", "_apply_table_command", "command", D_COMMAND)
+# A resolution that does not establish the guards of the row its operation
+# fires releases the operation without a row.
+handles("controller", "_resolve_operation",
+        ("confirm_provisioning", "require_provisioning_intervention", "confirm_development_pr",
+         "confirm_clean_head",
+         "retry_upstream_branch|exhaust_upstream_branch_retries|return_for_repair"
+         "|require_branch_intervention",
+         "confirm_submission_package",
+         "retry_submission_comment|exhaust_comment_retries|return_for_repair"),
+        D_OP, NOT_APPLICABLE=SKIP, FACT_MISSING=SKIP, GUARD_UNMET=SKIP)
 
 
 # --------------------------------------------------------------------------

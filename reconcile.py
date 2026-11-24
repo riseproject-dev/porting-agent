@@ -477,19 +477,24 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
                 report.append({"contribution": c["contribution_id"],
                                "decision": "no Policy reinstall since the dispatch failed"})
                 continue
-            out = engine.apply_transition(
-                c, "rearm_dispatch", policy=policy, now=iso,
-                cause_id=f"queue-policy-{queue_policy.get('epoch')}",
-                facts={"queue_policy_reinstalled"},
-                details={"policy_epoch": queue_policy.get("epoch"), "installed_at": installed})
-            if not out.accepted:
-                report.append({"contribution": c["contribution_id"],
-                               "decision": f"not re-armed: {out.reason}"})
-                continue
-            contributions[key] = out.record
-            staged.extend([("contributions", out.record), ("events", out.event)])
-            report.append({"contribution": c["contribution_id"],
-                           "decision": "dispatch re-armed after the Policy reinstall"})
+            match engine.dispatch(engine.try_apply_transition(
+                    c, "rearm_dispatch", policy=policy, now=iso,
+                    cause_id=f"queue-policy-{queue_policy.get('epoch')}",
+                    facts={"queue_policy_reinstalled"},
+                    details={"policy_epoch": queue_policy.get("epoch"),
+                             "installed_at": installed}),
+                    ("reconcile", "queue_policy_recovery")):
+                case engine.Applied() as out:
+                    contributions[key] = out.record
+                    staged.extend([("contributions", out.record), ("events", out.event)])
+                    report.append({"contribution": c["contribution_id"],
+                                   "decision": "dispatch re-armed after the Policy reinstall"})
+                case engine.Skip(refused):
+                    report.append({"contribution": c["contribution_id"],
+                                   "decision": f"not re-armed: {refused.detail}"})
+                case engine.Bug(refused):
+                    raise engine.TransitionRefused(refused,
+                                                   ("reconcile", "queue_policy_recovery"))
     if waiting and not queue_policy["preserved"] and queue_policy["quiescent"] and runs is not None:
         recent = [r for r in runs if r.get("status") != "completed" or now - datetime.fromisoformat(
             r["created_at"].replace("Z", "+00:00")) < timedelta(minutes=POLICY_REINSTALL_LAUNCH_MINUTES)]
@@ -545,19 +550,25 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     if cause:
         details["why"] = cause
     limit = lifecycle.budget_limit("dispatch_recovery", policy)
-    out = engine.apply_transition(c, "retry_dispatch", policy=policy, now=iso,
-                                  cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
-                                  counts=counts,
-                                  values={"active_work.dispatched_run_id": str(run["id"])},
-                                  details=details | {"attempt": count + 1, "limit": limit})
-    if out.accepted:
-        return out.record, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
-    out = engine.apply_transition(c, "exhaust_recovery", policy=policy, now=iso,
-                                  cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
-                                  counts=counts, details=details | {"count": count, "limit": limit})
-    if not out.accepted:
-        return None, None, f"dispatch lost: {out.reason}"
-    return out.record, out.event, "dispatch failed; waiting for a human"
+    match engine.dispatch(engine.try_apply_transition(
+            c, "retry_dispatch", policy=policy, now=iso, cause_id=f"dispatcher-{run['id']}",
+            facts={"dispatch_lost"}, counts=counts,
+            values={"active_work.dispatched_run_id": str(run["id"])},
+            details=details | {"attempt": count + 1, "limit": limit}),
+            ("reconcile", "_lost_dispatch")):
+        case engine.Applied() as out:
+            return out.record, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
+        case engine.Take(verb="exhaust_recovery"):
+            out = engine.applied(engine.try_apply_transition(
+                c, "exhaust_recovery", policy=policy, now=iso,
+                cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"}, counts=counts,
+                details=details | {"count": count, "limit": limit}),
+                ("reconcile", "_lost_dispatch"))
+            return out.record, out.event, "dispatch failed; waiting for a human"
+        case engine.Skip(refused):
+            return None, None, f"dispatch lost: {refused.detail}"
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "_lost_dispatch"))
 
 
 def payload_cause(record: dict, evidence: dict[str, dict] | None = None) -> str | None:
@@ -722,6 +733,17 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
                  **(extra or {})})
 
 
+def late_fold(rec: dict, outcome: dict, refused: engine.Refused | engine.Refusals, *, now: str,
+              policy: dict, worker_run_id: str | None,
+              staged: list[tuple[str, dict]]) -> tuple[dict, list[tuple[str, dict]]]:
+    """A Result whose row the record no longer admits (it is paused, in
+    another state, or at another revision: ``engine.LateEffect``) is
+    recorded for audit by ``record_late_effect`` and never folded."""
+    event = _late_effect(rec, dict(outcome, worker_run_id=worker_run_id),
+                         f"the row is refused: {refused.detail}"[:500], policy=policy, now=now)
+    return rec, staged + [("contributions", rec), ("events", event)]
+
+
 def late_report_evidence(rec: dict, pub: dict, *, now: str, policy: dict,
                          known: dict[str, dict], details: dict) -> list[tuple[str, dict]]:
     """The report of a Result that takes ``record_late_effect`` although its
@@ -794,14 +816,22 @@ def _reject_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
                "why": why[:500],
                **({"evidence_id": evidence["evidence_id"]} if evidence else {})}
     cause = _result_cause(outcome, worker_run_id)
-    for verb in ("reject_plan", "exhaust_planning_recovery"):
-        out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
-                                      facts=facts, details=details)
-        if out.accepted:
-            staged.extend([("events", out.event), ("contributions", out.record)])
-            return out.record, staged
-    raise lifecycle.TransitionError(f"no row takes a planning run Result without a usable "
-                                    f"plan in {engine.state_key(rec)}: {out.reason}")
+    match engine.dispatch(engine.try_apply_transition(
+            rec, "reject_plan", policy=policy, now=now, cause_id=cause, facts=facts,
+            details=details), ("reconcile", "_reject_plan")):
+        case engine.Applied() as out:
+            pass
+        case engine.Take(verb="exhaust_planning_recovery"):
+            out = engine.applied(engine.try_apply_transition(
+                rec, "exhaust_planning_recovery", policy=policy, now=now, cause_id=cause,
+                facts=facts, details=details), ("reconcile", "_reject_plan"))
+        case engine.LateEffect(refused):
+            return late_fold(rec, outcome, refused, now=now, policy=policy,
+                             worker_run_id=worker_run_id, staged=staged)
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "_reject_plan"))
+    staged.extend([("events", out.event), ("contributions", out.record)])
+    return out.record, staged
 
 
 def _admitted_scope(rec: dict, decision: dict) -> tuple[str | None, list | None]:
@@ -891,13 +921,13 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
     if kind == "close":
         if override:
             details["admission_override_not_applied"] = override
-        out = engine.apply_transition(
+        outcome_row = engine.try_apply_transition(
             rec, "close_planning", policy=policy, now=now, cause_id=cause,
             facts={"plan_decision_close", "close_confirmed_by_pypi"},
             values={"terminal_reason": close_reason},
             details=details | {"rationale": rationale, "pypi": close_finding})
     elif kind == "park" and not override:
-        out = engine.apply_transition(
+        outcome_row = engine.try_apply_transition(
             rec, "park_planning", policy=policy, now=now, cause_id=cause,
             facts={"plan_decision_park"},
             values={"parked_reason": rationale or "the plan decided park"},
@@ -932,22 +962,26 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
                   "scope_paths": list(paths) if isinstance(paths, list) else paths,
                   "scope_coverage_complete": problem is None}
         if readmit:
-            out = engine.apply_transition(
+            outcome_row = engine.try_apply_transition(
                 rec, "readmit_development", policy=policy, now=now, cause_id=cause,
                 facts={"development_admitted", "patch_scope_complete", "recorded_fork_matches"},
                 values=values,
                 details=details)
         else:
-            out = engine.apply_transition(
+            outcome_row = engine.try_apply_transition(
                 rec, "admit_development", policy=policy, now=now, cause_id=cause,
                 facts={"development_admitted", "patch_scope_complete", "fresh_fork_required"},
                 values=values, details=details)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"the plan decision {kind} is refused in "
-                                        f"{engine.state_key(rec)}: {out.reason}")
-    new = out.record
-    staged.extend([("events", out.event), ("contributions", new)])
-    return new, staged
+    match engine.dispatch(outcome_row, ("reconcile", "fold_plan")):
+        case engine.Applied() as out:
+            new = out.record
+            staged.extend([("events", out.event), ("contributions", new)])
+            return new, staged
+        case engine.LateEffect(refused):
+            return late_fold(rec, outcome, refused, now=now, policy=policy,
+                             worker_run_id=worker_run_id, staged=staged)
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "fold_plan"))
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1087,18 +1121,24 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
         details = dict(details, head=outcome["head"])
         reports = report_evidence(rec, outcome, "accept_submission_rewrite", now=now,
                                   policy=policy, run=worker_run_id, details=details)
-        out = engine.apply_transition(
+        outcome_row = engine.try_apply_transition(
             rec, "accept_submission_rewrite", policy=policy, now=now, cause_id=cause,
             facts={"submission_rewrite_passed"}, values={"submission_rewrite_id": eid},
             details=details)
     else:
         pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
-        out = engine.apply_transition(
+        outcome_row = engine.try_apply_transition(
             rec, "reject_submission_rewrite", policy=policy, now=now, cause_id=cause,
             facts={"submission_rewrite_failed"},
             values={"pending_feedback_evidence_ids": pending[-64:]}, details=details)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"{out.verb} refused: {out.reason}")
+    match engine.dispatch(outcome_row, ("reconcile", "fold_submission_rewrite")):
+        case engine.Applied() as out:
+            pass
+        case engine.LateEffect(refused):
+            return late_fold(rec, outcome, refused, now=now, policy=policy,
+                             worker_run_id=worker_run_id, staged=[])
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "fold_submission_rewrite"))
     return out.record, [("evidence", evidence), *reports, ("events", out.event),
                         ("contributions", out.record)]
 
@@ -1148,18 +1188,24 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
         details = dict(details, head=data.get("head"))
         reports = report_evidence(rec, outcome, "accept_submission_review", now=now,
                                   policy=policy, run=worker_run_id, details=details)
-        out = engine.apply_transition(
+        outcome_row = engine.try_apply_transition(
             rec, "accept_submission_review", policy=policy, now=now, cause_id=cause,
             facts={"submission_review_passed"}, values={"submission_review_id": eid},
             details=details)
     else:
         pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
-        out = engine.apply_transition(
+        outcome_row = engine.try_apply_transition(
             rec, "reject_submission_review", policy=policy, now=now, cause_id=cause,
             facts={"submission_review_failed"},
             values={"pending_feedback_evidence_ids": pending[-64:]}, details=details)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"{out.verb} refused: {out.reason}")
+    match engine.dispatch(outcome_row, ("reconcile", "fold_submission_review")):
+        case engine.Applied() as out:
+            pass
+        case engine.LateEffect(refused):
+            return late_fold(rec, outcome, refused, now=now, policy=policy,
+                             worker_run_id=worker_run_id, staged=[])
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "fold_submission_review"))
     return out.record, [("evidence", review), *reports, ("events", out.event),
                         ("contributions", out.record)]
 
@@ -1210,38 +1256,49 @@ def fold_patch_review(rec: dict, outcome: dict, *, now: str, policy: dict,
     cause = _result_cause(outcome, worker_run_id)
     passed = outcome["verdict"] == patch_review.PASS
     rejections = int(rec["budget"].get("review_rejections", 0))
-    if passed:
-        verb, facts, disposition = "accept_patch_review", {"patch_review_passed"}, "publish"
-    else:
-        facts = {"patch_review_failed"}
-        verb = ("reject_patch_review" if engine.refusal(
-            rec, "reject_patch_review", policy=policy, now=now, facts=facts) is None
-            else "publish_after_failed_reviews")
-        disposition = "return_for_repair" if verb == "reject_patch_review" else "publish_anyway"
-        rejections += 1
-    review = patch_review.evidence(rec, outcome, now=now, policy=policy, run=run,
-                                   disposition=disposition,
-                                   rejections=0 if passed else rejections)
-    eid = review["evidence_id"]
-    blocking = [f for f in outcome["findings"] if f.get("severity") in patch_review.BLOCKING]
-    details = {"evidence_id": eid, "verdict": outcome["verdict"], "disposition": disposition,
-               "candidate": held.get("candidate"),
-               "findings": [isolation.clean_text(f"{f['severity']}: {f['title']}", 300)
-                            for f in (blocking or outcome["findings"])[:8]]}
-    if verb == "reject_patch_review":
-        pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
-        values: dict[str, Any] = {"pending_feedback_evidence_ids": pending[-64:]}
-    else:
-        values = {"pending_publication": {
-            "worker_run_id": held["worker_run_id"], "attempts": 0, "last_reason": "",
-            "next_attempt_at": now,
-            "feedback_evidence_ids": list(held.get("feedback_evidence_ids") or []),
-            "patch_review": {"evidence_id": eid, "verdict": outcome["verdict"],
-                             "published_anyway": verb == "publish_after_failed_reviews"}}}
-    out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
-                                  facts=facts, values=values, details=details)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"{verb} refused: {out.reason}")
+
+    def row(verb: str) -> tuple[engine.Applied | engine.Refused, dict]:
+        """The row ``verb`` with the review evidence of its disposition."""
+        disposition = {"accept_patch_review": "publish",
+                       "reject_patch_review": "return_for_repair"}.get(verb, "publish_anyway")
+        review = patch_review.evidence(rec, outcome, now=now, policy=policy, run=run,
+                                       disposition=disposition,
+                                       rejections=0 if passed else rejections + 1)
+        eid = review["evidence_id"]
+        blocking = [f for f in outcome["findings"] if f.get("severity") in patch_review.BLOCKING]
+        details = {"evidence_id": eid, "verdict": outcome["verdict"], "disposition": disposition,
+                   "candidate": held.get("candidate"),
+                   "findings": [isolation.clean_text(f"{f['severity']}: {f['title']}", 300)
+                                for f in (blocking or outcome["findings"])[:8]]}
+        if verb == "reject_patch_review":
+            pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or [])
+                                         + [eid]))
+            values: dict[str, Any] = {"pending_feedback_evidence_ids": pending[-64:]}
+        else:
+            values = {"pending_publication": {
+                "worker_run_id": held["worker_run_id"], "attempts": 0, "last_reason": "",
+                "next_attempt_at": now,
+                "feedback_evidence_ids": list(held.get("feedback_evidence_ids") or []),
+                "patch_review": {"evidence_id": eid, "verdict": outcome["verdict"],
+                                 "published_anyway": verb == "publish_after_failed_reviews"}}}
+        facts = {"patch_review_passed"} if passed else {"patch_review_failed"}
+        return engine.try_apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
+                                           facts=facts, values=values,
+                                           details=details), review
+
+    first, review = row("accept_patch_review" if passed else "reject_patch_review")
+    match engine.dispatch(first, ("reconcile", "fold_patch_review")):
+        case engine.Applied() as out:
+            pass
+        case engine.Take(verb="publish_after_failed_reviews"):
+            # `dev_reviews` is exhausted: the held patch is published anyway.
+            anyway, review = row("publish_after_failed_reviews")
+            out = engine.applied(anyway, ("reconcile", "fold_patch_review"))
+        case engine.LateEffect(refused):
+            return late_fold(rec, outcome, refused, now=now, policy=policy,
+                             worker_run_id=worker_run_id, staged=[])
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "fold_patch_review"))
     return out.record, [("evidence", review), ("events", out.event),
                         ("contributions", out.record)]
 
@@ -1382,7 +1439,7 @@ def _rehearsal_evidence(rec: dict, outcome: dict, run: str, policy: dict, now: s
 
 
 def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dict,
-                      cause: str | None, details: dict) -> engine.Outcome:
+                      cause: str | None, details: dict) -> engine.Applied:
     """A publication of the Result of ``run`` failed: ``schedule_publish_retry``
     holds the Result for a publish-only retry and charges ``publish_recovery``;
     ``exhaust_recovery`` once it is spent."""
@@ -1393,15 +1450,20 @@ def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dic
                    minutes=publish_retry_delay(before + 1))).isoformat(),
                # The review a held patch was published after stays with it.
                **({"patch_review": held["patch_review"]} if held.get("patch_review") else {})}
-    out = engine.apply_transition(
-        rec, "schedule_publish_retry", policy=policy, now=now, cause_id=cause,
-        facts={"publication_infrastructure_error"}, values={"pending_publication": pending},
-        details=details | {"next_attempt_at": pending["next_attempt_at"]})
-    if not out.accepted:
-        out = engine.apply_transition(
-            rec, "exhaust_recovery", policy=policy, now=now, cause_id=cause,
-            facts={"publication_infrastructure_error"}, details=details | {"attempts": before})
-    return out
+    match engine.dispatch(engine.try_apply_transition(
+            rec, "schedule_publish_retry", policy=policy, now=now, cause_id=cause,
+            facts={"publication_infrastructure_error"}, values={"pending_publication": pending},
+            details=details | {"next_attempt_at": pending["next_attempt_at"]}),
+            ("reconcile", "_fail_publication")):
+        case engine.Applied() as out:
+            return out
+        case engine.Take(verb="exhaust_recovery"):
+            return engine.applied(engine.try_apply_transition(
+                rec, "exhaust_recovery", policy=policy, now=now, cause_id=cause,
+                facts={"publication_infrastructure_error"},
+                details=details | {"attempts": before}), ("reconcile", "_fail_publication"))
+        case engine.Bug(refused):
+            raise engine.TransitionRefused(refused, ("reconcile", "_fail_publication"))
 
 
 def _charged_launch(held: dict, outcome: dict) -> bool:
@@ -1698,7 +1760,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                                        "series")
         details["reason"] = outcome["reason"]
     rerun_missing = None
-    if status == "no_change" and "no_change" not in rows and not engine.refusal(
+    if status == "no_change" and "no_change" not in rows and not engine.row_admitted(
             rec, "request_ci_rerun", policy=policy, now=now,
             facts={"failure_not_caused_by_patch"}):
         # `request_ci_rerun` reruns the failed jobs: the trusted publication
@@ -1734,7 +1796,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         if status == "uncertain":
             # The push may have landed: the report is kept whatever ends
             # the hold (`pushed_report_evidence`).
-            holds = "exhaust_recovery" if engine.refusal(
+            holds = "exhaust_recovery" if engine.row_admitted(
                 rec, "schedule_publish_retry", policy=policy, now=now,
                 facts={"publication_infrastructure_error"}) else "schedule_publish_retry"
             staged.extend(pushed_report_evidence(
@@ -1776,7 +1838,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             # the rerun), else the outcome counts as `reject_patch_proposal`,
             # as both rows state.
             facts = {"failure_not_caused_by_patch"}
-            verb = ("reject_patch_proposal" if engine.refusal(
+            verb = ("reject_patch_proposal" if engine.row_admitted(
                 rec, "request_ci_rerun", policy=policy, now=now, facts=facts)
                 else "request_ci_rerun")
             if verb == "request_ci_rerun":
@@ -1864,11 +1926,16 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 details["scope_extension"] = added
             elif problem:
                 details["scope_extension_not_recorded"] = problem[:200]
-        out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
-                                      facts=facts, values=values, details=details)
-    if not out.accepted:
-        raise lifecycle.TransitionError(f"no row folds the patch Result ({status}) in "
-                                        f"{engine.state_key(rec)}: {out.reason}")
+        match engine.dispatch(engine.try_apply_transition(
+                rec, verb, policy=policy, now=now, cause_id=cause, facts=facts, values=values,
+                details=details), ("reconcile", "fold_patch_result")):
+            case engine.Applied() as out:
+                pass
+            case engine.LateEffect(refused):
+                return late_fold(rec, outcome, refused, now=now, policy=policy,
+                                 worker_run_id=worker_run_id, staged=staged)
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("reconcile", "fold_patch_result"))
     new = out.record
     if landed_due is not None and landed_due != (new.get("review_comments") or []):
         new = engine.record_beside(new, "review_comment_due", now=now,
@@ -1989,13 +2056,16 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     f"pause_on_processing_error could not be applied to {cid} after "
                     f"{description['error_class']} in {description['step']}: "
                     f"{isolation.clean_text(error)}") from error
-        if outcome is not None and outcome.accepted:
-            out.staged.extend([("contributions", outcome.record), ("events", outcome.event)])
-            decision = "paused by the controller"
-        elif outcome is not None:
-            decision = f"not paused again: {outcome.reason}"
-        else:
-            decision = "not paused: no committed record"
+        decision = "not paused: no committed record"
+        if outcome is not None:
+            # The last resort: no refusal of the pause raises.
+            match engine.dispatch(outcome, ("reconcile", "tick"), PROCESSING_ERROR_VERB):
+                case engine.Applied() as paused:
+                    out.staged.extend([("contributions", paused.record),
+                                       ("events", paused.event)])
+                    decision = "paused by the controller"
+                case engine.Skip(refused):
+                    decision = f"not paused again: {refused.detail}"
         errored.append(description | {"decision": decision})
         alerts.append({"contribution": cid,
                        "alert": (f"processing error in {description['step']}: "
@@ -2028,21 +2098,22 @@ PROCESSING_ERROR_VERB = "pause_on_processing_error"
 
 
 def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
-                              now: str) -> engine.Outcome:
+                              now: str) -> engine.Applied | engine.Refused:
     """Take the table's ``pause_on_processing_error`` on the committed record.
 
     It sets ``paused`` with the error as ``paused_reason``, ``paused_by``
     ``controller`` and ``paused_at``, and clears the requested Work and the
     pending publication; from an ``agent_running`` state
-    it leads to the state in which the Work is due. The outcome is not
-    accepted, and nothing changes, when the
-    contribution is already paused or terminal.
+    it leads to the state in which the Work is due. The row is refused,
+    and nothing changes, when the contribution is already paused or
+    terminal; its caller handles every refusal (``engine.HANDLING``).
     """
     reason = isolation.pause_reason(description)
     details = {k: description[k] for k in ("step", "error_class", "message", "run_id")}
-    return engine.apply_transition(record, PROCESSING_ERROR_VERB, policy=policy, now=now,
-                                   cause_id=description["run_id"], facts={"processing_error"},
-                                   values={"paused_reason": reason}, details=details)
+    return engine.try_apply_transition(record, PROCESSING_ERROR_VERB, policy=policy, now=now,
+                                       cause_id=description["run_id"],
+                                       facts={"processing_error"},
+                                       values={"paused_reason": reason}, details=details)
 
 
 def fold_ci_rerun_receipts(api: collect.Api, receipts: list[dict], contributions: dict[str, dict],
@@ -2175,9 +2246,13 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
                                                   "revision": c["revision"]}}
                     details.update(package_url=external_ids["comment_url"],
                                    head=c["clean_head_sha"])
-                fired = recovery.fire(c, new_op, policy=policy, now=now,
-                                      facts={handoff.CONFIRM_FACTS[kind]}, values=values,
-                                      counts={}, details=details)
+                outcome = recovery.fire(c, new_op, policy=policy, now=now,
+                                        facts={handoff.CONFIRM_FACTS[kind]}, values=values,
+                                        counts={}, details=details)
+                if outcome is None:
+                    raise lifecycle.TransitionError(
+                        f"{kind} receipt fires no row in {engine.state_key(c)}: none bound")
+                fired = engine.applied(outcome, ("reconcile", "fold_handoff_receipts"))
             elif result == "failed":
                 failure = str(receipt.get("failure") or "unknown")
                 reason = str(receipt.get("reason") or "")
@@ -2197,10 +2272,6 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
                 report.append(dict(entry, outcome=f"not folded: {str(result)[:40]}",
                                    detail=isolation.clean_text(receipt.get("reason") or "", 300)))
                 continue
-            if fired is None or not fired.accepted:
-                raise lifecycle.TransitionError(
-                    f"{kind} receipt fires no row in {engine.state_key(c)}: "
-                    f"{fired.reason if fired else 'none bound'}")
             contributions[key] = fired.record
             snap.operations[op["operation_id"]] = new_op
             out.staged.extend([("operations", new_op), ("contributions", fired.record),
@@ -2286,14 +2357,11 @@ def fold_provisioning_receipts(api: collect.Api, receipts: list[dict], contribut
                 new_op = recovery.fold_failure_receipt(op, external_ids=external_ids, now=now)
                 if recovery.fired_verbs(c, new_op):
                     facts, values = controller.RESOLUTION_FIRES[(new_op["kind"], new_op["status"])]
-                    fired = recovery.fire(c, new_op, policy=policy, now=now, facts=facts,
-                                          values=values,
-                                          details={"receipt_status": "failed", "failure": code,
-                                                   "stage": stage})
-                    if not fired.accepted:
-                        raise lifecycle.TransitionError(
-                            f"require_provisioning_intervention refused in {engine.state_key(c)}: "
-                            f"{fired.reason}")
+                    fired = engine.applied(recovery.fire(
+                        c, new_op, policy=policy, now=now, facts=facts, values=values,
+                        details={"receipt_status": "failed", "failure": code, "stage": stage}),
+                        ("reconcile", "fold_provisioning_receipts"),
+                        recovery.fired_group(c, new_op))
                     new = fired.record
                 else:
                     new = recovery.release(c, new_op, now)
@@ -2327,16 +2395,14 @@ def fold_provisioning_receipts(api: collect.Api, receipts: list[dict], contribut
             if recovery.fired_verbs(c, new_op):
                 # The receipt matches the operation and the fork and ref were
                 # read back: the operation fires `confirm_provisioning`.
-                fired = recovery.fire(
+                fired = engine.applied(recovery.fire(
                     c, new_op, policy=policy, now=now,
                     facts={"receipt_matches_operation", "fork_and_ref_read_back"},
                     values={"fork": fork,
                             "upstream.repository_id": c["upstream"]["repository_id"],
                             "upstream.base_ref": c["upstream"]["base_ref"],
-                            "upstream.base_sha": c["upstream"]["base_sha"]})
-                if not fired.accepted:
-                    raise lifecycle.TransitionError(
-                        f"confirm_provisioning refused in {engine.state_key(c)}: {fired.reason}")
+                            "upstream.base_sha": c["upstream"]["base_sha"]}),
+                    ("reconcile", "fold_provisioning_receipts"), recovery.fired_group(c, new_op))
                 new, event = fired.record, fired.event
             else:
                 # The provisioning wait has no row for the operation: the
@@ -2460,14 +2526,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 dev_pr_report.append({"contribution": cid, "status": "closed outside the CI wait",
                                       "pr_number": pr["number"]})
                 continue
-            fired = recovery.fire(c, new_op, policy=policy, now=iso,
-                                  facts={"receipt_matches_operation", "development_pr_read_back"},
-                                  values={"fork.pr_number": int(pr["number"])},
-                                  details={"pr_number": int(pr["number"]), "kind": op["kind"]})
-            if fired is None or not fired.accepted:
-                raise lifecycle.TransitionError(
-                    "confirm_development_pr refused: "
-                    + (fired.reason if fired is not None else "no row is bound"))
+            outcome = recovery.fire(c, new_op, policy=policy, now=iso,
+                                    facts={"receipt_matches_operation", "development_pr_read_back"},
+                                    values={"fork.pr_number": int(pr["number"])},
+                                    details={"pr_number": int(pr["number"]), "kind": op["kind"]})
+            if outcome is None:
+                raise lifecycle.TransitionError("confirm_development_pr: no row is bound")
+            fired = engine.applied(outcome, ("reconcile", "_tick"), recovery.fired_group(c, new_op))
             contributions[key] = fired.record
             out.staged.extend([("contributions", fired.record), ("events", fired.event)])
             dev_pr_report.append({"contribution": cid, "status": "confirmed", "pr_number": pr["number"]})
@@ -2700,15 +2765,12 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     # not a retry was lost, the held patch is
                     # discarded and fresh development Work is due.
                     held = c.get("held_patch") or {}
-                    fired = engine.apply_transition(
+                    fired = engine.applied(engine.try_apply_transition(
                         c, "expire_held_patch", policy=policy, now=now.isoformat(),
                         cause_id=f"expired-{held.get('worker_run_id')}",
                         facts={"held_patch_expired"},
                         details={"expires_at": held.get("expires_at"),
-                                 "candidate": held.get("candidate")})
-                    if not fired.accepted:
-                        raise lifecycle.TransitionError(
-                            f"no row discards the expired held patch: {fired.reason}")
+                                 "candidate": held.get("candidate")}), ("reconcile", "_tick"))
                     schemas.validate("contribution", fired.record)
                     contributions[key] = fired.record
                     out.staged.extend([("contributions", fired.record), ("events", fired.event)])
@@ -2720,9 +2782,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                         f"Result within {PUBLISH_RESULT_WAIT_MINUTES} minutes",
                         now=now.isoformat(), policy=policy, cause=pp["worker_run_id"],
                         details={"result_status": "no_result", "launched_at": pp["launched_at"]})
-                    if not fired.accepted:
-                        raise lifecycle.TransitionError(
-                            f"no row records the lost publish-only retry: {fired.reason}")
                     schemas.validate("contribution", fired.record)
                     contributions[key] = fired.record
                     out.staged.extend([("contributions", fired.record), ("events", fired.event)])

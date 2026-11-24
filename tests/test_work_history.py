@@ -20,7 +20,7 @@ import work
 import work_history
 from common import canonical_json
 from tests import test_development_table as dev
-from tests.helpers import NOW, SHA_A, SHA_B, ci_record, contribution, policy
+from tests.helpers import NOW, SHA_A, SHA_B, ci_record, command, contribution, policy
 from tests.test_worker_report import report
 
 POLICY = policy()
@@ -588,7 +588,6 @@ class TestCondensationOrder(unittest.TestCase):
         guarantees: a bumping row adds one, and a new generation bumps the
         revision too."""
         import commands
-        import engine
         late = report_evidence("report-late", at="2026-11-22T12:00:00+00:00",
                                head_before=_sha(1), head_after=_sha(2))
         late["data"]["work"]["revision"] = 2
@@ -605,7 +604,7 @@ class TestCondensationOrder(unittest.TestCase):
         # The engine never makes a revision or a generation go back.
         parked = contribution(phase="parked", activity="idle", parked_reason="x",
                               previous_phase="development", revision=4)
-        out = engine.apply_command(parked, commands.parse(
+        out = command(parked, commands.parse(
             '/upstreaming refresh revision=4 reason="r"'), policy=policy(), now=NOW,
             command_id="c", open_operations=())
         self.assertEqual(out.verb, "restart_generation")

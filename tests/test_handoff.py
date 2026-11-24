@@ -38,7 +38,7 @@ import status_ledger
 import submission
 import work as work_plan
 from common import CONTROL_REPO, canonical_json, contribution_file_id
-from tests.helpers import OWNER, STRANGER, policy, steering_list
+from tests.helpers import OWNER, STRANGER, policy, refusal, steering_list, take
 from tests.test_live_handoff_migration import (
     CI_EVIDENCE,
     CID,
@@ -1477,7 +1477,7 @@ class TestLockedWait(unittest.TestCase):
         self.assertEqual(world.kinds(world.tick(at(41))), [])
         for key in ("handoff_requests", "requested_effects", "dev_pr_requests"):
             self.assertEqual(world.reports[-1][key], [], key)
-        self.assertIsNone(engine.refusal(world.record, "record_late_effect", policy=world.policy,
+        self.assertIsNone(refusal(world.record, "record_late_effect", policy=world.policy,
                                          now=T0, facts={"result_mismatch"}))
 
     def test_retract_leaves_riscv64_and_the_next_submission_replaces_it(self):
@@ -1507,7 +1507,7 @@ class TestLockedWait(unittest.TestCase):
         # Development continues on `riscv64-dev`, CI passes again, and a new
         # submission is reviewed and built.
         self.assertEqual(world.state, "development.agent_running")
-        world.record = engine.apply_transition(
+        world.record = take(
             world.record, "record_publish_success", policy=world.policy, now=T0,
             facts={"result_published", "no_review_contract"}, values={
                 "proposal_artifact": {"work_id": "w", "claim_id": "c", "artifact_id": 1,

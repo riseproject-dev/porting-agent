@@ -46,6 +46,7 @@ from tests.helpers import (
     contribution,
     policy,
     runner_loss,
+    take,
 )
 from tests.test_late_results import WORK, ci_snapshot, publication
 
@@ -460,7 +461,7 @@ class TestPatchResults(unittest.TestCase):
         for verb, facts in (("record_publish_success", {"result_published", "no_review_contract"}),
                             ("replan_development", {"proposal_stale"})):
             with self.subTest(row=verb):
-                out = engine.apply_transition(
+                out = take(
                     held, verb, policy=POLICY, now=NOW, facts=facts,
                     values={"proposal_artifact": None, "publication_operation_id": None}
                     if verb == "record_publish_success" else None)
@@ -1676,7 +1677,7 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
     def test_nomination_reads_pending_feedback_from_the_record(self):
         self.assertEqual(engine.PREDICATES["no pending actionable feedback"].kind, "record")
         rec = record(pending_feedback_evidence_ids=["review-1"])
-        out = engine.apply_transition(
+        out = take(
             rec, "nominate_for_handoff", policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
             values={"last_ci_evidence_id": "ci-1",
                     "handoff_request": {"command_id": "c", "head": SHA_A, "revision": 0}})
@@ -1687,12 +1688,12 @@ class TestNoLegacyDevelopmentWrites(unittest.TestCase):
         self.assertEqual(engine.PREDICATES[lifecycle.FEEDBACK_OR_UNMET].kind, "record")
         self.assertEqual(engine.PREDICATES[lifecycle.NO_PENDING_FEEDBACK].kind, "record")
         rec = record(pending_feedback_evidence_ids=[])
-        out = engine.apply_transition(
+        out = take(
             rec, "return_for_feedback", policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
             values={"last_ci_evidence_id": "ci-1", "pending_feedback_evidence_ids": []})
         self.assertFalse(out.accepted)
         self.assertIn("no actionable feedback is pending", out.reason)
-        out = engine.apply_transition(
+        out = take(
             dict(rec, pending_feedback_evidence_ids=["review-1"]), "return_for_feedback",
             policy=POLICY, now=NOW, facts={"ci_passed_on_head"},
             values={"last_ci_evidence_id": "ci-1", "pending_feedback_evidence_ids": ["review-1"]})

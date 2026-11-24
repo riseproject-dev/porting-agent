@@ -19,6 +19,7 @@ from tests.helpers import (
     contribution,
     holding_work,
     policy,
+    take,
 )
 
 
@@ -36,7 +37,7 @@ CID = "example--proj/12"
 class TestRevision(unittest.TestCase):
     def test_head_change_bumps_and_invalidates(self):
         rec = contribution(last_ci_evidence_id="ev-1")
-        out = engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
+        out = take(rec, "record_head_change", policy=policy(), now=NOW,
                                       facts={"fork_head_changed"}, values={"fork.head_sha": SHA_B})
         self.assertEqual(out.record["revision"], rec["revision"] + 1)
         self.assertIsNone(out.record["last_ci_evidence_id"])
@@ -47,7 +48,7 @@ class TestRevision(unittest.TestCase):
                                                       expected_head=SHA_A, observed_head=SHA_A,
                                                       ref="riscv64-dev", repository="riseproject-upstreaming/proj",
                                                       **identity))
-        moved = engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
+        moved = take(rec, "record_head_change", policy=policy(), now=NOW,
                                         facts={"fork_head_changed"},
                                         values={"fork.head_sha": SHA_B}).record
         self.assertEqual(lifecycle.publication_check(moved, expected_revision=rec["revision"],
@@ -86,7 +87,7 @@ class TestPublicationCheck(unittest.TestCase):
 class TestPauseParkResume(unittest.TestCase):
     @staticmethod
     def head_changed(rec):
-        return engine.apply_transition(rec, "record_head_change", policy=policy(), now=NOW,
+        return take(rec, "record_head_change", policy=policy(), now=NOW,
                                        facts={"fork_head_changed"},
                                        values={"fork.head_sha": SHA_B}).record
 
@@ -384,7 +385,7 @@ class TestHandoff(unittest.TestCase):
         out = controller.authorize_followup(
             rec, cmd(f"/upstreaming authorize-followup contribution={CID} revision=0 proposal=p-1"),
             command_id="c", now=NOW)
-        self.assertEqual((out.accepted, out.record), (False, rec))
+        self.assertIsInstance(out, controller.Rejected)
         self.assertEqual(out.reason, "follow-ups need a merged contribution")
 
     def test_a_write_beside_a_row_names_its_fields(self):

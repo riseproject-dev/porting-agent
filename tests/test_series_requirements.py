@@ -23,7 +23,7 @@ import status_ledger
 import work
 import worker_gate
 from tests import helpers, test_plan_gate
-from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, policy
+from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, policy, take
 from tests.test_development_table import final, kinds, record, tick
 from tests.test_milestone5_worker import proposal, task
 
@@ -184,7 +184,7 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(engine.state_key(final(out, rec)), "development.waiting_ci")
 
     def test_a_nomination_needs_the_fact(self):
-        out = engine.apply_transition(
+        out = take(
             record(), "nominate_for_handoff", policy=POLICY, now=NOW,
             facts={"ci_passed_on_head"},
             values={"last_ci_evidence_id": "ci-1",
