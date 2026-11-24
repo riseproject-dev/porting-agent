@@ -2,8 +2,101 @@
 // SPDX-License-Identifier: MIT
 //
 // The event log of the status page: a native <details> disclosure under each
-// project row, closed by default. Compiled once per color scheme, so the
-// scheme's variables give its light and dark colors.
+// project row, closed by default, holding one table. Each state is a badge colored by
+// the kind of the state (never by color alone: the kind is also written for screen
+// readers); every event is a card. Compiled once per
+// color scheme, so the scheme's variables give its light and dark colors.
+
+// A state badge: a tinted background and a colored left border by the kind of the
+// state. The text keeps the body color, so it reads on both color schemes.
+@mixin state-kind($color) {
+  background: rgba($color, 0.18);
+  border-left-color: $color;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.state {
+  display: inline-block;
+  padding: 1px $sp-2;
+  color: $body-text-color;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  background: rgba($border-color, 0.4);
+  border: 1px solid rgba($body-text-color, 0.25);
+  border-left: 4px solid $grey-dk-000;
+  border-radius: 4px;
+
+  @include fs-2;
+
+  &--work {
+    @include state-kind($blue-100);
+  }
+
+  &--auto_wait {
+    @include state-kind($grey-dk-000);
+  }
+
+  &--human_wait {
+    @include state-kind($yellow-200);
+  }
+
+  &--gate {
+    @include state-kind($purple-100);
+  }
+
+  &--locked {
+    border-left-style: dashed;
+
+    @include state-kind($purple-100);
+  }
+
+  &--generation_end {
+    @include state-kind($red-100);
+  }
+
+  &--terminal {
+    @include state-kind($grey-dk-000);
+  }
+
+  &--released {
+    @include state-kind($green-200);
+  }
+
+  &--unknown {
+    border-style: dotted;
+  }
+
+  &--derived {
+    border-style: dotted;
+  }
+}
+
+a.state {
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.state-legend {
+  @include fs-2;
+
+  .state {
+    margin-right: $sp-1;
+  }
+}
 
 .status-table {
   .event-log-row td {
@@ -62,49 +155,131 @@
     opacity: 0.8;
   }
 
-  &__list {
-    padding: 0;
-    margin: $sp-2 0 0;
-    list-style: none;
-
-    > li::before {
-      display: none;
-      content: none;
-    }
-  }
-
-  &__event {
-    padding: $sp-2 0;
-    margin: 0;
-    overflow-wrap: anywhere;
-    border-top: $border rgba($border-color, 0.6);
+  &__path,
+  &__filter {
+    margin: $sp-1 0;
 
     @include fs-2;
   }
 
-  &__head,
-  &__change,
-  &__links {
-    margin-top: $sp-1;
-
-    &:first-child {
-      margin-top: 0;
-    }
-  }
-
-  &__seq,
-  &__cause,
-  &__revision,
   &__flag {
+    margin-left: $sp-1;
+    font-weight: 500;
     color: $body-text-color;
     opacity: 0.8;
   }
 
-  &__flag {
-    font-weight: 500;
-  }
-
   code {
     white-space: normal;
+  }
+
+  // "State changes only" hides the muted rows where :has() is supported; without
+  // it every row stays visible.
+  &:has(&__toggle:checked) .event-table__event--minor,
+  &:has(&__toggle:checked) .event-table__event--bookkeeping {
+    display: none;
+  }
+}
+
+.event-table {
+  display: block;
+  width: 100%;
+  margin: $sp-2 0 0;
+  overflow-wrap: anywhere;
+  border: 0;
+
+  @include fs-2;
+
+  thead {
+    @extend .sr-only;
+  }
+
+  tbody {
+    display: block;
+  }
+
+  // Every event is a card: the transition across the top, the other facts
+  // in a grid below it. The content column of the theme is too narrow for six table columns.
+  tr {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 2px $sp-3;
+  }
+
+  td {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px 0;
+    border: 0;
+
+    &::before {
+      display: block;
+      font-size: 0.75em;
+      font-weight: 600;
+      color: $body-text-color;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      content: attr(data-label);
+      opacity: 0.7;
+    }
+  }
+
+  td:nth-child(2) {
+    grid-column: 1 / -1;
+    order: -1;
+  }
+
+  &__event {
+    padding: $sp-2;
+    margin: 0 0 $sp-2;
+    border: $border rgba($border-color, 0.8);
+    border-radius: 4px;
+
+    &--minor,
+    &--bookkeeping {
+      opacity: 0.72;
+    }
+
+    &--same-run {
+      border-top-color: transparent;
+    }
+  }
+
+  &__seq {
+    color: $body-text-color;
+    opacity: 0.8;
+  }
+
+  &__tag {
+    padding: 0 $sp-1;
+    font-size: 0.8em;
+    color: $body-text-color;
+    border: 1px dashed rgba($body-text-color, 0.5);
+    border-radius: 3px;
+  }
+
+  .transition__verb {
+    margin: 0 2px;
+  }
+
+  .transition__count {
+    font-weight: 600;
+  }
+
+  .transition__summary,
+  .transition__recorded {
+    margin-top: 2px;
+    color: $body-text-color;
+    opacity: 0.85;
+  }
+
+  .transition__recorded {
+    font-size: 0.85em;
+    opacity: 0.7;
+  }
+
+  .cause__type {
+    font-weight: 500;
   }
 }

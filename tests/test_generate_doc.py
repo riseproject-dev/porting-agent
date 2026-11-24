@@ -38,6 +38,12 @@ def event(sequence, kind, cause_type, cause_id, **over):
     return out
 
 
+def git(root: Path, *args: str) -> str:
+    import subprocess
+    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
+                          text=True).stdout
+
+
 def write_state(root: Path, rec: dict, events: list[dict], evidence=(), operations=()):
     state = root / ".state"
     for kind, items, key in (("evidence", evidence, "evidence_id"),
@@ -167,7 +173,7 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
 
 
 class TestEventLog(unittest.TestCase):
-    def render(self, rec=None, events=EVENTS):
+    def render(self, rec=None, events=EVENTS, root=None):
         rec = rec or record()
         with tempfile.TemporaryDirectory() as directory:
             state = write_state(Path(directory), rec, events, evidence=[CI], operations=[OPERATION])
@@ -176,28 +182,213 @@ class TestEventLog(unittest.TestCase):
     def log(self, page):
         return page[page.index('<details class="event-log">'):page.index("</details>")]
 
+    def rows(self, log):
+        return re.findall(r'<tr class="event-table__event[^"]*".*?</tr>', log)
+
     def test_each_row_has_a_closed_disclosure_with_a_chevron(self):
         page = self.render()
         self.assertEqual(page.count('<details class="event-log">'), 1)
         self.assertNotIn("<details open", page)
         self.assertIn('<summary><svg class="event-log__chevron"', page)
-        self.assertIn("(8 events)", page)
+        self.assertIn("(8 events, 5 state changes)", page)
         self.assertRegex(page, r'<tr class="event-log-row"><td colspan="6">')
-        # The project row is unchanged: one <tr> before the log row.
-        body = page[page.index("<tbody>"):page.index("</tbody>")]
-        self.assertEqual(body.count("<tr"), 2)
 
-    def test_events_are_listed_newest_first_with_time_kind_states_and_revision(self):
+    def test_the_log_is_a_table_with_accessible_headers_and_labels(self):
         log = self.log(self.render())
-        sequences = [int(n) for n in re.findall(r'event-log__seq">#(\d+)<', log)]
+        self.assertIn("<caption class=\"sr-only\">", log)
+        for header in generate_doc.EVENT_HEADERS:
+            self.assertIn(f'<th scope="col">{header}</th>', log)
+        for row in self.rows(log):
+            self.assertEqual(row.count("<td "), 6)
+            self.assertEqual(len(re.findall(r'<td data-label="[^"]+">', row)), 6)
+        self.assertIn("State changes only", log)
+        self.assertIn('class="event-log__path"', log)
+
+    def test_events_are_listed_newest_first_with_time_states_and_revision(self):
+        log = self.log(self.render())
+        sequences = [int(n) for n in re.findall(r'event-table__seq">#(\d+)<', log)]
         self.assertEqual(sequences, list(range(7, -1, -1)))
         self.assertIn('<time datetime="2026-11-22T01:02:03+00:00">2026-11-22 01:02:03</time>', log)
-        self.assertIn('<code class="event-log__kind">record_ci_failure</code>', log)
-        self.assertIn("<code>development.waiting_ci</code> &rarr; <code>development.fix_needed</code>",
-                      log)
-        self.assertIn("<code>provisioning.idle</code> &rarr; <code>development.idle</code> "
-                      '<span class="event-log__revision">r0 &rarr; r1</span>', log)
+        fail = next(row for row in self.rows(log) if "record_ci_failure" in row)
+        self.assertIn('class="state state--auto_wait"', fail)
+        self.assertIn('href="../state-machine/table/#state-development-waiting_ci"', fail)
+        self.assertIn('href="../state-machine/table/#state-development-fix_needed"', fail)
+        self.assertIn("&rarr; <a href=\"../state-machine/table/#state-development-waiting_ci\">"
+                      "<code>record_ci_failure</code></a> &rarr;", fail)
+        bump = next(row for row in self.rows(log) if "development_pr_created" in row)
+        self.assertIn("<strong>r0 &rarr; r1</strong>", bump)
         self.assertIn('<span class="event-log__flag">paused</span>', log)
+
+    def test_every_state_of_the_table_has_a_badge_of_its_kind_and_an_anchor(self):
+        table = (Path(generate_doc.ROOT) / "docs/state-machine/table.md").read_text()
+        for key, spec in lifecycle.LIFECYCLE.items():
+            badge = generate_doc.state_badge(key)
+            with self.subTest(state=key):
+                self.assertIn(f"state--{spec.kind}", badge)
+                self.assertIn("(", badge.split('class="sr-only">')[1])
+                anchor = generate_doc.state_anchor(key)
+                self.assertIn(f'href="../state-machine/table/#{anchor}"', badge)
+                self.assertIn(f"{{: #{anchor} }}", table)
+        unknown = generate_doc.state_badge("nowhere.idle")
+        self.assertIn("state--unknown", unknown)
+        self.assertNotIn("href=", unknown)
+        self.assertIn("state--derived", generate_doc.state_badge("queued.idle", derived=True))
+
+    def test_a_historic_name_is_shown_under_its_current_name_and_recorded_as(self):
+        events = [event(0, "park_investigation", "result", "44982902579",
+                        details={"verb": "park_investigation",
+                                 "from_state": "investigation.agent_running",
+                                 "to_state": "parked.idle"})]
+        log = self.log(self.render(events=events))
+        self.assertIn("<code>park_planning</code>", log)
+        self.assertIn("planning.agent_running", log)
+        self.assertIn("#state-planning-agent_running", log)
+        self.assertIn("(recorded as <code>park_investigation</code>, "
+                      "<code>investigation.agent_running</code>)", log)
+        self.assertNotIn("<code>park_investigation</code></a>", log)
+
+    def test_summary_is_the_first_sentence_of_the_row_description(self):
+        edge = next(e for e in lifecycle.table_edges()
+                    if e.transition.description and e.target != e.source
+                    and e.verb not in lifecycle.RULES and "`" in e.transition.description)
+        first = generate_doc._first_sentence(edge.transition.description)
+        events = [event(0, edge.verb, "result", "1",
+                        details={"verb": edge.verb, "from_state": edge.source,
+                                 "to_state": edge.target})]
+        log = self.log(self.render(events=events))
+        self.assertIn(f'<div class="transition__summary">{generate_doc.escape_cell(first)}</div>', log)
+        self.assertNotIn("`", log)
+
+    def test_an_empty_description_falls_back_to_the_destination_state(self):
+        edge = next(e for e in lifecycle.table_edges()
+                    if not e.transition.description and e.target in lifecycle.LIFECYCLE
+                    and e.target != e.source and e.verb not in lifecycle.RULES)
+        text = generate_doc.event_summary(edge.verb, edge.source, edge.target, edge.verb)
+        self.assertEqual(text, generate_doc._first_sentence(
+            lifecycle.LIFECYCLE[edge.target].description))
+        self.assertEqual(generate_doc.event_summary("nothing", None, None, "nothing"), "")
+
+    def test_minor_and_bookkeeping_rows_are_muted_and_self_transitions_say_so(self):
+        events = [
+            event(0, "retry_dispatch", "tick", "dispatcher-5",
+                  details={"verb": "retry_dispatch", "from_state": "planning.agent_running",
+                           "to_state": "planning.agent_running"}),
+            event(1, "record_fields_migrated", "migration", "strict-record-schema",
+                  details={"from_state": "planning.agent_running",
+                           "to_state": "planning.agent_running"}),
+            event(2, "park_planning", "result", "9",
+                  details={"verb": "park_planning", "from_state": "planning.agent_running",
+                           "to_state": "parked.idle"}),
+        ]
+        log = self.log(self.render(events=events))
+        rows = {int(re.search(r"#(\d+)<", row)[1]): row for row in self.rows(log)}
+        self.assertIn("event-table__event--minor", rows[0])
+        self.assertIn("&#8635;", rows[0])
+        self.assertIn("stays in this state", rows[0])
+        self.assertIn("event-table__event--bookkeeping", rows[1])
+        self.assertIn("bookkeeping</span>", rows[1])
+        self.assertNotIn("--minor", rows[2])
+        self.assertNotIn("--bookkeeping", rows[2])
+        self.assertIn("(3 events, 1 state change)", log)
+
+    def test_identical_events_of_one_run_are_folded_listing_every_sequence(self):
+        late = dict(details={"verb": "record_late_effect", "from_state": "handoff.awaiting_submission",
+                             "to_state": "handoff.awaiting_submission"})
+        same = [event(n, "record_late_effect", "result", "4400", at="2026-11-23T13:28:18+00:00",
+                      run={"id": 77, "attempt": 1}, **late) for n in (0, 1, 2)]
+        log = self.log(self.render(events=same))
+        self.assertEqual(len(self.rows(log)), 1)
+        self.assertIn("&times;3", log)
+        self.assertIn("#2, #1, #0", log)
+        # Another run, another cause or another state is not folded.
+        other_run = [dict(e, run={"id": 78, "attempt": 1}) if e["sequence"] == 1 else e
+                     for e in same]
+        self.assertEqual(len(self.rows(self.log(self.render(events=other_run)))), 3)
+        other_cause = [dict(e, cause={"type": "result", "id": "4401"}) if e["sequence"] == 1 else e
+                       for e in same]
+        self.assertEqual(len(self.rows(self.log(self.render(events=other_cause)))), 3)
+        # Without a recorded run the exact time of the tick tells events apart.
+        no_run = [{k: v for k, v in e.items() if k != "run"} for e in same]
+        self.assertEqual(len(self.rows(self.log(self.render(events=no_run)))), 1)
+        later = [dict(e, at="2026-11-23T13:30:00+00:00") if e["sequence"] == 2 else e
+                 for e in no_run]
+        self.assertEqual(len(self.rows(self.log(self.render(events=later)))), 2)
+
+    def test_rows_of_one_run_are_grouped(self):
+        events = [event(n, kind, "tick", "dispatcher-1", run={"id": 5, "attempt": 1})
+                  for n, kind in enumerate(("a_kind", "b_kind"))]
+        log = self.log(self.render(events=events))
+        rows = self.rows(log)
+        self.assertNotIn("--same-run", rows[0])
+        self.assertIn("event-table__event--same-run", rows[1])
+
+    def test_cause_labels_name_what_the_cause_is(self):
+        log = self.log(self.render())
+        self.assertIn(">worker run 44982902579<", log)
+        self.assertIn(">comment 321<", log)
+        self.assertIn(">controller run 4600<", log)
+        self.assertIn('<span class="cause__type">worker Result</span>', log)
+        dispatcher = self.log(self.render(events=[
+            event(0, "retry_dispatch", "tick", "dispatcher-4500")]))
+        self.assertIn(">dispatcher run 4500<", dispatcher)
+
+    def test_the_controller_run_comes_from_the_event_then_its_details(self):
+        control = "https://github.com/riseproject-dev/porting-agent/actions/runs"
+        recorded = event(0, "a_kind", "tick", None, run={"id": 900, "attempt": 3},
+                         details={"run_id": "901"})
+        details = event(1, "b_kind", "tick", None, details={"run_id": "902"})
+        none = event(2, "c_kind", "tick", None)
+        log = self.log(self.render(events=[recorded, details, none]))
+        rows = {int(re.search(r"#(\d+)<", row)[1]): row for row in self.rows(log)}
+        self.assertIn(f'<a href="{control}/900/attempts/3">run 900 (attempt 3)</a>', rows[0])
+        self.assertIn(f'<a href="{control}/902">run 902</a>', rows[1])
+        self.assertIn('data-label="Controller run">-</td>', rows[2])
+
+    def test_the_controller_run_of_an_older_event_comes_from_its_state_commit(self):
+        rec = record()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = write_state(root, rec, [], evidence=[CI], operations=[OPERATION])
+            events_dir = state / "events" / "example--bravo--1"
+
+            def commit(subject, author, sequence):
+                (events_dir / f"{sequence:08d}.json").write_text(json.dumps(
+                    event(sequence, "a_kind", "tick", None)))
+                git(root, "add", "-A")
+                git(root, "-c", f"user.name={author}", "-c", "user.email=a@b.c",
+                    "commit", "-q", "-m", subject)
+                return git(root, "rev-parse", "HEAD").strip()
+
+            git(root, "init", "-q")
+            ok = commit("porting-agent: reconcile state (run 123)", "porting[bot]", 0)
+            commit("porting-agent: reconcile state (run 124)", "Someone", 1)
+            commit("another subject (run 125)", "porting[bot]", 2)
+            commit("porting-agent: confirm canary (run 126)", "porting[bot]", 3)
+            commits = generate_doc.state_commits(state)
+            self.assertEqual(commits["events/example--bravo--1/00000000.json"], (ok, 123))
+            self.assertEqual(commits["events/example--bravo--1/00000001.json"][1], None)
+            self.assertEqual(commits["events/example--bravo--1/00000002.json"][1], None)
+            self.assertEqual(commits["events/example--bravo--1/00000003.json"][1], 126)
+            log = self.log(generate_doc.render([rec], state))
+            rows = {int(re.search(r"#(\d+)<", row)[1]): row for row in self.rows(log)}
+            self.assertIn("actions/runs/123\">run 123</a>", rows[0])
+            self.assertIn(f"commit/{ok}\">state commit {ok[:7]}</a>", rows[0])
+            self.assertIn('data-label="Controller run">', rows[1])
+            self.assertNotIn("run 124", rows[1])
+            self.assertIn("state commit", rows[1])
+            # An event that records its own run keeps it.
+            (events_dir / "00000000.json").write_text(json.dumps(
+                event(0, "a_kind", "tick", None, run={"id": 5, "attempt": 1})))
+            log = self.log(generate_doc.render([rec], state))
+            self.assertIn("actions/runs/5/attempts/1", log)
+
+    def test_missing_or_shallow_history_never_fails_the_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(generate_doc.state_commits(Path(directory) / "missing"), {})
+            self.assertEqual(generate_doc.state_commits(Path(directory)), {})
+            self.assertEqual(generate_doc.state_commits(None), {})
+        log = self.log(self.render())
+        self.assertIn('data-label="Controller run">-</td>', log)
 
     def test_an_event_that_ends_a_paused_contribution_is_not_shown_as_a_resume(self):
         rec = record(phase="closed", activity="idle", terminal_reason="abandoned")
@@ -211,9 +402,16 @@ class TestEventLog(unittest.TestCase):
         ]
         log = self.log(self.render(rec, events))
         self.assertEqual(log.count('<span class="event-log__flag">resumed</span>'), 1)
-        abandon = log[log.index('event-log__kind">abandon<'):]
-        abandon = abandon[:abandon.index("</li>")]
+        abandon = next(row for row in self.rows(log) if "<code>abandon</code>" in row)
         self.assertNotIn("event-log__flag", abandon)
+
+    def test_states_of_older_events_are_marked_derived(self):
+        log = self.log(self.render())
+        old = next(row for row in self.rows(log) if "development_pr_created" in row)
+        self.assertIn("state--derived", old)
+        self.assertIn(">derived</span>", old)
+        named = next(row for row in self.rows(log) if "record_ci_failure" in row)
+        self.assertNotIn("derived", named)
 
     def test_links_resolve_every_reference_from_committed_data(self):
         log = self.log(self.render())
@@ -238,6 +436,7 @@ class TestEventLog(unittest.TestCase):
 
     def test_no_free_text_and_everything_is_escaped(self):
         page = self.render()
+        page = page[page.index('<table class="status-table">'):]
         for text in ("<script>", "alert", "@everyone", "@someone", "{%", "{{", "<img", "<b>build",
                      "free text", "raw"):
             with self.subTest(text=text):
@@ -245,7 +444,7 @@ class TestEventLog(unittest.TestCase):
         hostile = record(upstream={"full_name": "a/b<i>{{x}}"})
         page = self.render(hostile, [event(0, "<b>{{kind}}</b>", "observation", "x\"><y")])
         self.assertNotIn("<b>", page)
-        self.assertNotIn("{{", page)
+        self.assertNotIn("{{", page[page.index('<table class="status-table">'):])
         self.assertIn("&lt;b&gt;&#123;&#123;kind&#125;&#125;&lt;/b&gt;", page)
         self.assertNotIn('href="https://github.com/a/b', page)
 
@@ -265,9 +464,9 @@ class TestEventLog(unittest.TestCase):
                                  "evidence_id": CI["evidence_id"], "head": HEAD,
                                  "feedback": ["review-<b>1</b>"]})]
         log = self.log(self.render(events=events))
-        self.assertIn('<code class="event-log__kind">return_for_feedback</code>', log)
-        self.assertIn("<code>development.waiting_ci</code> &rarr; "
-                      "<code>development.fix_needed</code>", log)
+        self.assertIn("<code>return_for_feedback</code>", log)
+        self.assertIn("#state-development-waiting_ci", log)
+        self.assertIn("#state-development-fix_needed", log)
         self.assertIn(f'href="https://github.com/riseproject-dev/porting-agent/blob/main/'
                       f'.state/evidence/{CI["evidence_id"]}.json"', log)
         self.assertNotIn("review-", log)
@@ -279,7 +478,7 @@ class TestEventLog(unittest.TestCase):
 
     def test_a_contribution_without_events_says_so(self):
         page = self.render(events=[])
-        self.assertIn("(0 events)", page)
+        self.assertIn("(0 events, 0 state changes)", page)
         self.assertIn("No events are recorded.", page)
 
     def test_main_reads_the_state_directory_beside_the_records(self):
@@ -296,7 +495,7 @@ class TestEventLog(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv):
                 generate_doc.main()
             self.assertEqual(out.read_bytes(), first)
-            self.assertIn(b"(8 events)", first)
+            self.assertIn(b"(8 events, 5 state changes)", first)
             self.assertNotIn("\u2014".encode(), first)
 
 
