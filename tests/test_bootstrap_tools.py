@@ -39,6 +39,40 @@ class TestRepositorySettingsAudit(unittest.TestCase):
             self.assertTrue(any("ruleset.rules" in issue for issue in issues))
 
 
+    def test_a_gh_aw_secret_fails_even_when_declared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = json.loads((ROOT / "tests/fixtures/repository-settings.json").read_text())
+            snapshot["selectedOrganizationSecrets"].append("GH_AW_GITHUB_TOKEN")
+            snapshot["environments"]["state"]["secrets"].append("GH_AW_GITHUB_MCP_SERVER_TOKEN")
+            path = Path(tmp) / "settings.json"
+            path.write_text(json.dumps(snapshot))
+            issues = audit_repository_settings.audit(path, path)
+            self.assertEqual(len(issues), 4)
+            self.assertTrue(any(issue.startswith("$.selectedOrganizationSecrets: GH_AW_GITHUB_TOKEN")
+                                for issue in issues))
+            self.assertTrue(any(issue.startswith(
+                "$.environments.state.secrets: GH_AW_GITHUB_MCP_SERVER_TOKEN") for issue in issues))
+
+    def test_the_live_audit_reads_every_secret_the_repository_can_use(self):
+        pages = {
+            "repos/o/r/environments": [{"environments": [{"name": "state"}]}, {"environments": []}],
+            "repos/o/r/actions/secrets": [{"secrets": []}],
+            "repos/o/r/actions/organization-secrets": [
+                {"secrets": [{"name": "ANTHROPIC_API_KEY"}]},
+                {"secrets": [{"name": "GH_AW_GITHUB_TOKEN"}]}],
+            "repos/o/r/environments/state/secrets": [{"secrets": []}],
+        }
+        settings = audit_repository_settings.live_settings("o/r", pages.__getitem__)
+        self.assertEqual(settings["selectedOrganizationSecrets"],
+                         ["ANTHROPIC_API_KEY", "GH_AW_GITHUB_TOKEN"])
+        self.assertEqual(settings["environments"], {"state": {"secrets": []}})
+        [issue] = audit_repository_settings.forbidden_secrets(settings)
+        self.assertIn("GH_AW_GITHUB_TOKEN", issue)
+        pages["repos/o/r/actions/organization-secrets"] = [{"secrets": [{"name": "ANTHROPIC_API_KEY"}]}]
+        self.assertEqual(audit_repository_settings.forbidden_secrets(
+            audit_repository_settings.live_settings("o/r", pages.__getitem__)), [])
+
+
 class TestDependencySynchronization(unittest.TestCase):
     def test_milestone_one_inventory_matches_without_agent_workflows(self):
         self.assertEqual(sync.synchronize(ROOT), [])

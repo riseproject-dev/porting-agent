@@ -63,10 +63,11 @@ safe-outputs:
   # native threat detection requires the agent sandbox, which is disabled
   # below. The reviewer reads and diffs a patch and runs no reproduction; the
   # custom engine wrapper removes every credential before the model runs, and
-  # trusted post-processing keeps its separately scoped tokens. No operator
-  # decision for the reviewer itself is recorded yet.
-  # TODO: docs/state-machine/known-gaps.md, "The reviewer runs without the
-  # agent sandbox".
+  # trusted post-processing keeps its separately scoped tokens. The owner
+  # accepted this posture on 2026-11-24 ("Keep running planner and worker
+  # outside of the sandbox"); the risk is described in
+  # docs/state-machine/known-gaps.md, "The reviewer runs without the agent
+  # sandbox".
   threat-detection: false
   upload-artifact:
     max-uploads: 1
@@ -336,7 +337,7 @@ jobs:
 timeout-minutes: 45
 max-turns: 150
 # The same sandbox posture as the planner and the worker (see the
-# safe-outputs comment above and its TODO). The custom engine wrapper above
+# safe-outputs comment above). The custom engine wrapper above
 # strips and verifies model credentials first.
 strict: false
 features:

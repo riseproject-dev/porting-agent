@@ -6,7 +6,7 @@ permalink: /setup/
 
 # Repository setup
 
-The reviewed repository settings are declared in `.github/repository-settings.json`. `scripts/audit_repository_settings.py` compares a normalized read-only settings snapshot with that declaration. Local tests use the deterministic snapshot in `tests/fixtures/repository-settings.json`; a live audit is a separate read-only operation after the first commit reaches GitHub.
+The reviewed repository settings are declared in `.github/repository-settings.json`. `scripts/audit_repository_settings.py` compares a normalized read-only settings snapshot with that declaration. It fails on any `GH_AW_*` secret in the declaration or the snapshot, since the planner and worker agents run outside the sandbox and gh-aw would hand such a token to their job. Local tests use the deterministic snapshot in `tests/fixtures/repository-settings.json`; a live audit is a separate read-only operation after the first commit reaches GitHub, and `--live riseproject-dev/porting-agent` reads the names of the repository's own secrets, the organization secrets visible to it and its environment secrets with `gh api` and fails on any `GH_AW_*` name.
 
 Required bootstrap resources include the `upstreaming-request` label, Pages through Actions, read-only default workflow permissions, squash-only merges, automatic head-branch deletion, the `protect-main-history` ruleset, branch-scoped `state` and reviewed `publish` environments, selected organization secrets and variables, and the two-App installation boundary.
 
