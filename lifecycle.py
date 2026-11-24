@@ -624,11 +624,16 @@ def pending_is_not(*kinds: str) -> str:
     return guard
 
 
+# A patch published after successive failed reviews that is discarded
+# unpublished ends the succession: the failed reviews it overrode no longer
+# count (a qualified clear, see ``QUALIFIED_CLEARS``).
+OVERRIDDEN_REVIEWS = "overridden budget.review_rejections"
 _REFRESH_EFFECTS = _E(
     revision="bump", sets=("refresh",),
     clears=("plan_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
-            "pending_human_action", "publication_operation_id", "held_patch"))
+            "pending_human_action", "publication_operation_id", "held_patch",
+            OVERRIDDEN_REVIEWS))
 _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
 # The guard of the controller's stop after a processing error, and the stops
 # set by the controller whose reason the caller states: the engine refuses
@@ -660,9 +665,14 @@ QUALIFIED_CLEARS: dict[str, tuple[str, str]] = {
         "exactly the ids in `active_work.feedback_evidence_ids`, the pending feedback present "
         "when the Work was allocated; feedback recorded later stays pending"),
 }
+QUALIFIED_CLEARS[OVERRIDDEN_REVIEWS] = (
+    "budget.review_rejections",
+    "the count of failed reviews in succession, only when the pending publication the row "
+    "discards is a patch to be published after them (`patch_review.published_anyway`)")
 # What every stop clears beside the requested Work. `proposal_artifact` only
-# ever holds a published Result, which a stop keeps.
-_HELD = (HELD_RESULT, HELD_PATCH)
+# ever holds a published Result, which a stop keeps; a discarded patch to be
+# published anyway starts the count of failed reviews again.
+_HELD = (HELD_RESULT, HELD_PATCH, OVERRIDDEN_REVIEWS)
 # The pending feedback a Work request carries: the ids present at allocation.
 # A fresh Work graph for the same task and a publish retry of its Result carry
 # the same ids.
@@ -1183,7 +1193,7 @@ LIFECYCLE: dict[str, State] = {
             ("accept_patch_review", PUBLISHING): Transition(
                 _R, None,
                 (PATCH_REVIEW_PASSED,),
-                _E(work="clear", sets=(HELD_RESULT,)),
+                _E(work="clear", sets=(HELD_RESULT,), clears=("budget.review_rejections",)),
                 description="The trusted check of the Result requires a review of exactly the "
                             "held patch (its digest and commit) and derives the verdict from "
                             "the findings: a blocker or a major finding fails the review "
@@ -1191,7 +1201,8 @@ LIFECYCLE: dict[str, State] = {
                             "recorded. The review is stored as `patch_review` evidence, which "
                             "the history of every later Work carries. The held patch is "
                             "pending publication at once, with the feedback its Work carried. "
-                            "Nothing is posted."),
+                            "A passing review ends the succession of failed reviews, so "
+                            "`dev_reviews` starts again. Nothing is posted."),
             ("reject_patch_review", "development.fix_needed"): Transition(
                 _R, None,
                 (PATCH_REVIEW_FAILED, "dev_reviews remains"),
@@ -1247,16 +1258,19 @@ LIFECYCLE: dict[str, State] = {
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
-                _E(revision="bump", work="clear", clears=(HELD_PATCH,)),
+                _E(revision="bump", work="clear", clears=(HELD_PATCH, OVERRIDDEN_REVIEWS)),
                 description="The fork head moved while the patch was held: it is discarded, "
-                            "and the pending feedback is kept."),
+                            "and the pending feedback is kept. A patch to be published after "
+                            "successive failed reviews starts `dev_reviews` again."),
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
                 (HELD_PATCH_REJECTED, "no_progress remains"),
-                _E(revision="bump", work="clear", clears=("clean_head_sha", HELD_PATCH)),
+                _E(revision="bump", work="clear",
+                   clears=("clean_head_sha", HELD_PATCH, OVERRIDDEN_REVIEWS)),
                 ("no_progress",),
                 "Nothing is pushed: only exactly the reviewed commit is ever published. The "
-                "pending feedback is kept."),
+                "pending feedback is kept. A patch to be published after successive failed "
+                "reviews starts `dev_reviews` again."),
         }),
     "development.waiting_ci": State(
         "auto_wait", False, True,
@@ -2356,7 +2370,8 @@ BUDGETS: dict[str, Budget] = {
         "retries.patch_review_rejections", 0,
         "one failed review of a held development patch in succession, which returns it for "
         "repair",
-        "`budget.review_rejections`, started again by a published patch and by "
+        "`budget.review_rejections`, started again by a passing review, a published patch, "
+        "a patch to be published anyway that is discarded unpublished, and "
         "`refresh_on_exhaustion`", ("publish_after_failed_reviews",)),
     "flaky_reruns": Budget(
         "retries.flaky_reruns", 0,
@@ -2889,7 +2904,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`dev_reviews` is exhausted, the next failed review, the second in "
                      "succession, takes `publish_after_failed_reviews`: the held patch is "
                      "published anyway, and trusted code posts on the development PR the latest "
-                     "review and why it failed. A published patch starts `dev_reviews` again. "
+                     "review and why it failed. A passing review, a published patch, and a "
+                     "patch to be published anyway that a stop, a resume, or a rejected "
+                     "publication discards start `dev_reviews` again. "
                      "Every review, passed or failed, is stored as evidence that the history of "
                      "every later Work and review carries; nothing about a review is posted on "
                      "the tracking issue. A review Work that fails to dispatch or returns no "

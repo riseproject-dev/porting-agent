@@ -1790,13 +1790,6 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope,
                                    budget=dict(new["budget"], no_progress_streak=0,
                                                review_rejections=0))
-    if out.verb in ("replan_development", "reject_patch_proposal") \
-            and ((held or {}).get("patch_review") or {}).get("published_anyway"):
-        # A patch to be published after successive failed reviews that is
-        # not published after all: the reviews it overrode no longer count,
-        # so the next failed review returns the next patch for repair.
-        new = engine.record_beside(new, "review_rejections_restarted", now=now,
-                                   budget=dict(new["budget"], review_rejections=0))
     if held and out.verb not in ("schedule_publish_retry", "exhaust_publish_recovery"):
         # The held Result is answered: the publication is no longer pending.
         new = engine.record_beside(new, "publication_answered", now=now,

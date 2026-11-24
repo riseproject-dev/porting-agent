@@ -1049,7 +1049,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertEqual(stop.guard, (lc.NOT_PAUSED, "not terminal", lc.PROCESSING_ERROR))
         self.assertEqual(stop.effects, lc.Effects(
             work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller"),
-            clears=(lc.HELD_RESULT, lc.HELD_PATCH)))
+            clears=(lc.HELD_RESULT, lc.HELD_PATCH, lc.OVERRIDDEN_REVIEWS)))
         self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))
 
         def problems_with(**changes):

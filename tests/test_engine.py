@@ -1178,7 +1178,8 @@ class TestSingleWritePath(unittest.TestCase):
             transitions += [*flag.set_by.values(), *flag.cleared_by.values()]
         for t in transitions:
             for entry in (*t.effects.sets, *t.effects.clears):
-                named.add(lc._field_name(entry).removeprefix("carried ").split(".")[0])
+                name = lc.QUALIFIED_CLEARS.get(entry, (lc._field_name(entry),))[0]
+                named.add(name.split(".")[0])
         self.assertLessEqual(named, set(engine.FENCED_FIELDS))
         self.assertLessEqual(set(engine.STATE_FIELDS) | {"active_work"}, set(engine.FENCED_FIELDS))
 

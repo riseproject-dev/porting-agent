@@ -615,9 +615,69 @@ class TestHeldPatchEnds(unittest.TestCase):
         for pub in (stale, off):
             with self.subTest(status=pub["failure_class"]):
                 self.assertEqual(final(tick(anyway, [pub]))["budget"]["review_rejections"], 0)
-        kept = dict(copy.deepcopy(publishing), budget=dict(publishing["budget"],
-                                                           review_rejections=1))
-        self.assertEqual(final(tick(kept, [stale]))["budget"]["review_rejections"], 1)
+
+    def test_only_successive_failed_reviews_publish_a_patch_anyway(self):
+        # A failed review, then a passing one whose publication is
+        # rejected: the next failed review is the first in succession, so
+        # the patch is returned for repair, not published anyway.
+        t0 = datetime.fromisoformat(NOW)
+        ev = {}
+
+        def step(rec, pubs, minutes):
+            out = tick(rec, pubs, now=t0 + timedelta(minutes=minutes), evidence=ev)
+            ev.update({r["evidence_id"]: r for k, r in out.staged if k == "evidence"})
+            return final(out), out
+
+        reviewing, _ = held(running())
+        first, _ = step(reviewing, [review_result(reviewing, severity="major")], 1)
+        self.assertEqual(first["budget"]["review_rejections"], 1)
+        again, _ = step(first, [verified(first, run="4300", artifact=910)], 5)
+        publishing, _ = step(again, [review_result(again, run="5001", artifact=911,
+                                                   evidence=ev)], 10)
+        self.assertEqual(engine.state_key(publishing), lc.PUBLISHING)
+        self.assertEqual(publishing["budget"]["review_rejections"], 0)
+        off = dict(published(publishing, run="4300", artifact=912), status="rejected",
+                   failure_class="validation", reason="the series rebuilds to X",
+                   operation=None, publication_stage="publish")
+        rejected, out = step(publishing, [off], 12)
+        self.assertEqual(kinds(out)[0], "reject_patch_proposal")
+        third, _ = step(rejected, [verified(rejected, run="4400", artifact=920)], 20)
+        fourth, out = step(third, [review_result(third, severity="major", run="5002",
+                                                 artifact=921, evidence=ev)], 25)
+        self.assertEqual(kinds(out)[0], "reject_patch_review")
+        self.assertEqual([(e["data"]["disposition"], e["data"]["failed_in_succession"])
+                          for e in staged(out, "patch_review")], [("return_for_repair", 1)])
+
+    def test_every_exit_that_discards_a_patch_published_anyway_restarts_dev_reviews(self):
+        reviewing, _ = held(running())
+        anyway = final(tick(reviewing, [review_result(reviewing)]))
+        anyway["pending_publication"]["patch_review"]["published_anyway"] = True
+        anyway["budget"]["review_rejections"] = 1
+        import commands
+        pause = commands.Command("pause", {"revision": str(anyway["revision"])})
+        paused = engine.apply_transition(anyway, "pause", policy=POLICY, now=NOW, command=pause,
+                                         open_operations=())
+        self.assertTrue(paused.accepted, paused.reason)
+        self.assertEqual(paused.record["budget"]["review_rejections"], 0)
+        # Its recovery exhausted, the wait keeps the patch; the resume that
+        # discards it restarts the count.
+        waiting = engine.apply_transition(
+            dict(anyway, pending_publication=dict(anyway["pending_publication"], attempts=99)),
+            "exhaust_publish_recovery", policy=POLICY, now=NOW, cause_id="x").record
+        self.assertEqual(waiting["budget"]["review_rejections"], 1)
+        resume = commands.Command("resume", {"revision": str(waiting["revision"])})
+        resumed = engine.apply_transition(waiting, "resume_development", policy=POLICY, now=NOW,
+                                          command=resume, open_operations=())
+        self.assertTrue(resumed.accepted, resumed.reason)
+        self.assertEqual(resumed.record["budget"]["review_rejections"], 0)
+        # A patch that passed its review never counts.
+        passed = engine.apply_transition(
+            dict(reviewing, budget=dict(reviewing["budget"], review_rejections=1)),
+            "accept_patch_review", policy=POLICY, now=NOW, cause_id="x",
+            facts={"patch_review_passed"},
+            values={"pending_publication": anyway["pending_publication"]})
+        self.assertTrue(passed.accepted, passed.reason)
+        self.assertEqual(passed.record["budget"]["review_rejections"], 0)
 
     def test_the_publication_check_pins_the_held_patch(self):
         reviewing, _ = held(running())

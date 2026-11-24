@@ -1353,6 +1353,10 @@ def _clear(rec: dict, before: dict, name: str) -> None:
         carried = set(carried_feedback(before))
         rec["pending_feedback_evidence_ids"] = [
             i for i in before.get("pending_feedback_evidence_ids") or [] if i not in carried]
+    elif name == lc.OVERRIDDEN_REVIEWS:
+        if (((before.get("pending_publication") or {}).get("patch_review") or {})
+                .get("published_anyway")):
+            rec["budget"] = dict(rec["budget"], review_rejections=0)
     elif name in lc.QUALIFIED_CLEARS:
         raise TransitionError(f"the qualified clear {name!r} is not implemented")
     else:
@@ -1807,9 +1811,6 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # A published patch: its files join the admitted scope, and `no_progress`
     # and `dev_reviews` start again.
     "patch_published": ("scope_paths", "budget.no_progress_streak", "budget.review_rejections"),
-    # A patch to be published anyway after successive failed reviews that is
-    # replanned or rejected instead: `dev_reviews` starts again.
-    "review_rejections_restarted": ("budget.review_rejections",),
     # A verified receipt of a `ci_rerun` operation the collector planned
     # releases it; no row is fired by it.
     "ci_rerun_recorded": ("active_operation_id",),
