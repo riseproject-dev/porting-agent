@@ -45,9 +45,12 @@ def body(record: dict, operation: dict) -> str:
 
 # The states whose rows launch each kind of development PR operation: the
 # PR of a published head is opened before CI is awaited (from the state the
-# head is in), and `development.waiting_ci`, which requires the PR, runs the
-# CI bootstrap of the recorded PR.
-INTENT_STATES = {"dev_pr_create": ("development.fix_needed", "development.publishing"),
+# head is in; in `development.waiting_ci` for a record that waits for CI
+# without one, which `launch_development_pr` and `confirm_development_pr`
+# heal), and `development.waiting_ci`, which requires the PR, runs the CI
+# bootstrap of the recorded PR.
+INTENT_STATES = {"dev_pr_create": ("development.fix_needed", "development.publishing",
+                                   "development.waiting_ci"),
                  "dev_pr_update": ("development.waiting_ci",)}
 
 
@@ -79,6 +82,8 @@ def intent_problem(record: dict, op: dict) -> str | None:
     if state == "development.publishing" \
             and head != (record.get("held_patch") or {}).get("candidate"):
         return "the head is not the commit of the held patch"
+    if state == "development.waiting_ci" and head != fork.get("head_sha"):
+        return "the head is not the recorded head"
     return None
 
 

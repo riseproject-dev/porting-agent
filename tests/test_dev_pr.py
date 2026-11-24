@@ -568,7 +568,7 @@ class TestDevelopmentPRAdoption(unittest.TestCase):
     def test_the_request_is_only_loaded_in_a_state_whose_rows_launch_it(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); rec, op = records(root)
-            moved = dict(rec, activity="waiting_ci")
+            moved = dict(rec, activity="waiting_human")
             (root / ".state/contributions/example--proj--12.json").write_text(json.dumps(moved))
             with self.assertRaises(dev_pr.DevPRError):
                 dev_pr.load_request(root, op["operation_id"])

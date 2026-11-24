@@ -957,7 +957,13 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 prior = operations.get(op["operation_id"])
                 if prior is None or recovery.is_open(prior):
                     break
-            if op["operation_id"] in operations:
+            prior = operations.get(op["operation_id"])
+            if prior is not None and not recovery.is_open(prior):
+                # Every re-plan of this intent at this revision is spent: a
+                # human wait, whose resume starts a new revision.
+                _exhaust_development_pr_replans(c, prior, by_id, operations, res, now, policy)
+                continue
+            if prior is not None:
                 rep["deferred"].append({"contribution": cid,
                                         "why": "existing development PR operation requires "
                                                "reconciliation"})
@@ -1653,8 +1659,10 @@ def published_head_without_pr(record: dict, operations: dict,
     held patch once a branch operation of the contribution confirmed it on
     the branch (its Result is folded once the PR is recorded); in
     `development.fix_needed`, the head on the branch (the observed one, else
-    the recorded one) when it is not the base. Only a record without a PR
-    has one."""
+    the recorded one) when it is not the base; in `development.waiting_ci`,
+    which requires the PR, the recorded head of a record that waits for CI
+    without one (a loaded record the invariant heals) when it is not the
+    base. Only a record without a PR has one."""
     fork = record.get("fork") or {}
     if fork.get("pr_number") is not None or not fork.get("repository_id"):
         return None
@@ -1670,6 +1678,9 @@ def published_head_without_pr(record: dict, operations: dict,
         return candidate if candidate and landed else None
     if state == "development.fix_needed":
         head = observed or fork.get("head_sha")
+        return head if head and head != base else None
+    if state == "development.waiting_ci":
+        head = fork.get("head_sha")
         return head if head and head != base else None
     return None
 
@@ -1767,11 +1778,23 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
                 "attempt": attempts + 1})
             return True
         case engine.Take(verb="exhaust_development_pr_launches"):
-            out = engine.applied(engine.try_apply_transition(
-                c, "exhaust_development_pr_launches", policy=policy, now=now, cause_id=oid,
-                facts=facts, counts=counts, open_operations=open_ops,
-                details={"operation": oid, "kind": operation["kind"], "launches": attempts}),
-                ("controller", "_launch_development_pr"))
+            if _waits_without_pr(c):
+                # No PR can be opened for the head a record waits on for CI
+                # without one: the wait on a development PR that does not
+                # match, whose resume opens it again from `development.fix_needed`.
+                out = engine.applied(engine.try_apply_transition(
+                    c, "record_pr_mismatch", policy=policy, now=now, cause_id=oid,
+                    facts={"development_pr_mismatch"},
+                    details={"mismatch": _NO_PR_MISMATCH, "operation": oid,
+                             "launches": attempts}),
+                    ("controller", "_launch_development_pr"))
+            else:
+                out = engine.applied(engine.try_apply_transition(
+                    c, "exhaust_development_pr_launches", policy=policy, now=now, cause_id=oid,
+                    facts=facts, counts=counts, open_operations=open_ops,
+                    details={"operation": oid, "kind": operation["kind"],
+                             "launches": attempts}),
+                    ("controller", "_launch_development_pr"))
             closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
             operations[oid] = closed
             released = recovery.release(out.record, closed, now)
@@ -1788,6 +1811,44 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
             return False
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("controller", "_launch_development_pr"))
+
+
+_NO_PR_MISMATCH = ("the development PR of the recorded head could not be opened: no PR is "
+                   "recorded")
+
+
+def _waits_without_pr(record: dict) -> bool:
+    """Whether the record waits for CI on a head without a development PR."""
+    return engine.state_key(record) == "development.waiting_ci" \
+        and (record.get("fork") or {}).get("pr_number") is None
+
+
+def _exhaust_development_pr_replans(c: dict, last: dict, by_id: dict, operations: dict,
+                                    res: TickResult, now: str, policy: dict) -> None:
+    """The row that waits for a human once `MAX_REPLANS` re-plans of the
+    development PR intent of a published head at one revision have all
+    closed without a PR: the launches of the intent are spent. A record that
+    waits for CI without a PR takes `record_pr_mismatch`, any other
+    `exhaust_development_pr_launches`; the resume starts a new revision,
+    whose operations have new ids."""
+    cid, oid = c["contribution_id"], last["operation_id"]
+    details = {"operation": oid, "replans": MAX_REPLANS}
+    if _waits_without_pr(c):
+        out = engine.applied(engine.try_apply_transition(
+            c, "record_pr_mismatch", policy=policy, now=now, cause_id=oid,
+            facts={"development_pr_mismatch"}, details=details | {"mismatch": _NO_PR_MISMATCH}),
+            ("controller", "_exhaust_development_pr_replans"))
+    else:
+        out = engine.applied(engine.try_apply_transition(
+            c, "exhaust_development_pr_launches", policy=policy, now=now, cause_id=oid,
+            facts={"development_pr_operation_planned"},
+            counts={"operation_launch": lifecycle.budget_limit("operation_launch", policy)},
+            open_operations=_open_operations(c, operations), details=details),
+            ("controller", "_exhaust_development_pr_replans"))
+    _stage(res, by_id, out)
+    res.report.setdefault("alerts", []).append(
+        {"contribution": cid, "operation": oid,
+         "alert": f"the development PR of the head was not opened after {MAX_REPLANS} re-plans"})
 
 
 def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict,

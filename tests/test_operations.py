@@ -879,14 +879,15 @@ class TestFiresBindings(unittest.TestCase):
                     self.assertIn(verb, engine.PIPELINE_VERBS)
 
     def test_the_development_pr_operation_fires_only_its_confirmation(self):
-        # The PR of a published head is opened before CI is awaited; the CI
+        # The PR of a published head is opened before CI is awaited (in the
+        # CI wait too, for a loaded record that waits without one); the CI
         # bootstrap of a recorded PR runs in the CI wait.
         for state, kind in (("development.fix_needed", "dev_pr_create"),
                             ("development.publishing", "dev_pr_create"),
+                            ("development.waiting_ci", "dev_pr_create"),
                             ("development.waiting_ci", "dev_pr_update")):
             self.assertEqual(recovery.FIRES[(state, kind)],
                              {"confirmed": ("confirm_development_pr",)})
-        self.assertNotIn(("development.waiting_ci", "dev_pr_create"), recovery.FIRES)
         self.assertNotIn(("dev_pr_create", "confirmed"), controller.RESOLUTION_FIRES)
 
 

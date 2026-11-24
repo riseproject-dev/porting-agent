@@ -460,12 +460,14 @@ FIRES: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
     # The development PR operation: the PR of a published head, opened from
     # `development.fix_needed` or `development.publishing` before CI is
     # awaited, and the CI bootstrap of a recorded PR in
-    # `development.waiting_ci`. It fires no row when it fails: the controller
+    # `development.waiting_ci` (where a loaded record that waits without a PR
+    # also opens it). It fires no row when it fails: the controller
     # takes the exhaustion row itself once its launches are spent, and closes
     # a stale or paused one without a row. A verified receipt in another
     # state closes it and keeps the state.
     ("development.fix_needed", "dev_pr_create"): {"confirmed": ("confirm_development_pr",)},
     ("development.publishing", "dev_pr_create"): {"confirmed": ("confirm_development_pr",)},
+    ("development.waiting_ci", "dev_pr_create"): {"confirmed": ("confirm_development_pr",)},
     ("development.waiting_ci", "dev_pr_update"): {"confirmed": ("confirm_development_pr",)},
     # The handoff operations. A failed attempt takes its retry row within the
     # budget of its state and the exhaustion row beyond it; the caller

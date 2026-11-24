@@ -1377,7 +1377,7 @@ def invariant_problems(record: dict) -> list[tuple[str, str]]:
 def exempt_from_requirements(verb: str, t: lc.Transition, name: str) -> bool:
     """Whether ``verb`` is taken from a record that violates the invariant
     ``name`` of its state."""
-    if verb == "record_late_effect" or verb == lc.INVARIANTS[name].heal:
+    if verb == "record_late_effect" or verb in lc.INVARIANTS[name].heal:
         return True
     if any(verb in flag.set_by or verb in flag.cleared_by for flag in lc.FLAGS.values()):
         return True
@@ -2469,7 +2469,10 @@ handles("controller", "_launch_handoff", "expire_submission_rewrite", _ALL_BUG,
         PAUSED=SKIP, FENCED=SKIP)
 handles("controller", "_launch_development_pr", "launch_development_pr", D_TICK,
         BUDGET_EXHAUSTED=TAKE("exhaust_development_pr_launches"))
-handles("controller", "_launch_development_pr", "exhaust_development_pr_launches", _ALL_BUG)
+handles("controller", "_launch_development_pr",
+        ("exhaust_development_pr_launches", "record_pr_mismatch"), _ALL_BUG)
+handles("controller", "_exhaust_development_pr_replans",
+        ("exhaust_development_pr_launches", "record_pr_mismatch"), _ALL_BUG)
 handles("controller", "_launch_provisioning", "start_operation", D_TICK,
         BUDGET_EXHAUSTED=TAKE("require_provisioning_intervention"))
 handles("controller", "_launch_provisioning", "require_provisioning_intervention", _ALL_BUG)

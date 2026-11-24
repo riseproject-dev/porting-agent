@@ -2535,26 +2535,36 @@ DEFAULT_HEAL = "pause_on_processing_error"
 
 
 def heal_verb(record: dict, name: str) -> str:
-    """The row that heals the invariant ``name`` the record breaks: the
-    invariant's own (``Invariant.heal``) when its state has that row, else
-    the controller's stop (``DEFAULT_HEAL``)."""
+    """The row that heals the invariant ``name`` the record breaks when the
+    controller plans nothing that establishes it: the last of the
+    invariant's (``Invariant.heal``) when its state has that row, else the
+    controller's stop (``DEFAULT_HEAL``)."""
     heal = lifecycle.INVARIANTS[name].heal
     state = engine.state_key(record)
-    if heal and any(e.verb == heal for e in lifecycle.state_edges(state)):
-        return heal
+    if heal and any(e.verb == heal[-1] for e in lifecycle.state_edges(state)):
+        return heal[-1]
     return DEFAULT_HEAL
 
 
 def _heal_invariant(record: dict, name: str, why: str, *, policy: dict, now: str,
-                    version: str | None) -> engine.Applied | str:
+                    version: str | None, operations: dict | None = None) -> engine.Applied | str:
     """Take the row that heals a loaded record that breaks the invariant
     ``name`` of its state, never an edit by hand: the invariant's row, or
     the controller's stop with the reason `invariant_violation: <state>
-    requires <name>`. Why not, when it is not taken: a paused record is
-    healed by the first tick after the resume, and a stopped or ended one
-    is not stopped again."""
+    requires <name>`. A record that waits for CI on a published head without
+    its development PR takes no row here: the controller plans the PR of
+    that head and launches it in this tick (`launch_development_pr`), and the
+    verified receipt records it (`confirm_development_pr`); only when no
+    such head exists does it wait for a human (`record_pr_mismatch`). Why
+    not, when no row is taken: ``HEALING`` for the planned PR, a paused
+    record is healed by the first tick after the resume, and a stopped or
+    ended one is not stopped again."""
     state = engine.state_key(record)
     reason = f"invariant_violation: {state} requires {name}: {why}"[:2000]
+    if name == "dev_pr" and not record.get("paused"):
+        head = controller.published_head_without_pr(record, operations or {}, None)
+        if head:
+            return f"{HEALING}: the development PR of {head} is planned"
     verb = heal_verb(record, name)
     if verb == DEFAULT_HEAL:
         outcome = engine.try_apply_transition(
@@ -2574,6 +2584,10 @@ def _heal_invariant(record: dict, name: str, why: str, *, policy: dict, now: str
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("reconcile", "_heal_invariant"))
 
+
+# The prefix of what `_heal_invariant` returns for a record that the
+# controller heals by planning an operation, with no row taken in the load.
+HEALING = "healing"
 
 # What a heal row establishes about the record it heals: a record that names
 # no development PR cannot match one on GitHub.
@@ -2649,16 +2663,19 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 resumed.append({"contribution": cid, "revision": c["revision"]})
         with isolation.contribution(cid, "invariants"):
             for name, why in engine.invariant_problems(c)[:1]:
-                healed = _heal_invariant(c, name, why, policy=policy, now=iso, version=pipeline)
+                healed = _heal_invariant(c, name, why, policy=policy, now=iso, version=pipeline,
+                                         operations=snap.operations)
                 applied = isinstance(healed, engine.Applied)
+                planned = not applied and healed.startswith(HEALING)
                 entry = {"contribution": cid, "state": engine.state_key(c), "invariant": name,
-                         "why": why, "heal": healed.verb if applied else None}
+                         "why": why, "heal": healed.verb if applied else
+                         "launch_development_pr" if planned else None}
                 violations.append(entry)
                 load_alerts.append({
                     "contribution": cid,
                     "alert": (f"invariant violation: {entry['state']} requires {name}: {why}; "
                               + (f"healed by {healed.verb}" if applied else
-                                 f"not healed in this tick: {healed}"))})
+                                 healed if planned else f"not healed in this tick: {healed}"))})
                 if applied:
                     c = contributions[key] = healed.record
                     out.staged.extend([("contributions", c), ("events", healed.event)])

@@ -2083,24 +2083,36 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "after the controller's resume of its own stop, a record for which "
         "`engine.invariant_problems` names a broken invariant is listed under "
         "`invariant_violations` in the tick report, with an alert, and takes the row that "
-        "heals it: the existing verb the invariant names (`Invariant.heal`) when its state "
+        "heals it: the existing verbs the invariant names (`Invariant.heal`, which a record "
+        "that breaks it may still take; the last is the one taken at load) when its state "
         "has that row, else the controller's stop `pause_on_processing_error` with the reason "
         "`invariant_violation: <state> requires <invariant>: <why>`, which the controller "
         "resumes after the next change of the code. The development PR of "
-        "`development.waiting_ci` heals by `record_pr_mismatch`: a record that names no PR "
-        "matches none, and the wait `development_pr_mismatch` explains in plain words that "
-        "CI is awaited only on a development PR; its resume `resume_development` opens the PR "
-        "from `development.fix_needed`. A paused record is healed by the first tick after "
+        "`development.waiting_ci` heals by the development PR rows `launch_development_pr` and "
+        "`confirm_development_pr`, with `record_pr_mismatch` as the fallback: a record that "
+        "waits for CI on a head that is not the base takes no row at load, the report and the "
+        "alert say that the development PR of the head is planned, and the same tick plans "
+        "`dev_pr_create` for it from the stored report of the Work that pushed the head and "
+        "launches it; the verified receipt records the PR in place. Launches spent without a "
+        "receipt, or `MAX_REPLANS` re-plans all closed, take `record_pr_mismatch` (whose "
+        "resume `resume_development` opens the PR again from `development.fix_needed`) and "
+        "not `exhaust_development_pr_launches`, whose resume `resume_ci` needs a PR. A record "
+        "whose head is the base cannot get one and takes the wait `development_pr_mismatch` "
+        "at once, which explains in plain words that CI is awaited only on a development PR. "
+        "A paused record is healed by the first tick after "
         "its resume. Nothing is added to `state.validate`, so one broken record never blocks "
         "the commit of the others; every other row refuses it (`source_invalid`). The live "
         "record luhenry--d2vm/3 (paused by the controller in `development.waiting_ci` at "
-        "revision 4 without a PR) heals this way in its first tick, with no hand edit.",
+        "revision 4 without a PR) heals this way in its first tick, with no hand edit: it "
+        "resumes, and its development PR is planned and launched in that tick.",
         ("development.waiting_ci", "development.waiting_human", "development.fix_needed"),
-        edges=(("development.waiting_ci", "record_pr_mismatch"),
+        edges=(("development.waiting_ci", "launch_development_pr"),
+               ("development.waiting_ci", "confirm_development_pr"),
+               ("development.waiting_ci", "record_pr_mismatch"),
                ("development.waiting_human", "resume_development"),
                ("development.fix_needed", "confirm_development_pr")),
-        highlighted=(("development.waiting_ci", "record_pr_mismatch"),
-                     ("development.waiting_human", "resume_development")),
+        highlighted=(("development.waiting_ci", "launch_development_pr"),
+                     ("development.waiting_ci", "record_pr_mismatch")),
     ),
     Item(
         "Seven verbs merged into three",

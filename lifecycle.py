@@ -994,7 +994,8 @@ _LAUNCH_DEVELOPMENT_PR = Transition(
                 "held patch is confirmed, in `development.fix_needed` for a head on the "
                 "branch that no PR shows), and a `dev_pr_update` operation (the CI bootstrap) "
                 "in `development.waiting_ci` when the PR was created at the recorded head and "
-                "no CI evidence is recorded. It records the intent and takes this row in the "
+                "no CI evidence is recorded (also a `dev_pr_create` there, for a loaded "
+                "record that waits for CI on a head without a PR). It records the intent and takes this row in the "
                 "same tick, and again for each launch after `LAUNCH_INTERVAL_SECONDS` without a "
                 "verified receipt. The trusted workflow creates or adopts the same-fork PR "
                 "`riscv64-dev` -> base at exactly the planned head; it never repeats a create "
@@ -2226,7 +2227,7 @@ LIFECYCLE: dict[str, State] = {
 # (``State.requires``). An invariant is a pure predicate of the record, with
 # what makes it true and false: the guards that imply it (``IMPLIES``), the
 # effect entries that establish it, the effect entries that destroy it, and
-# the existing verb that heals a loaded record that violates it. ``lifecycle
+# the existing verbs that heal a loaded record that violates it. ``lifecycle
 # check`` proves that no row enters a state without its requirements: for
 # every row and every requirement of its target, the requirement held in the
 # source and the effects keep it, a guard of the row implies it, or the
@@ -2234,22 +2235,24 @@ LIFECYCLE: dict[str, State] = {
 # row from a record that violates the requirements of its state
 # (``source_invalid``) and a row whose record after it violates those of its
 # target (``target_invalid``); a loaded record that violates one is healed
-# by the invariant's row, never edited by hand.
+# by the invariant's rows, never edited by hand.
 
 
 @dataclass(frozen=True)
 class Invariant:
     """``check(record)`` is ``None`` when the invariant holds and why not
     otherwise. ``establish``/``destroy`` decide from a row's effects (and the
-    flag verb) whether the row makes it true or false; ``heal`` is the verb
-    that a loaded record violating it takes (``None``: the controller's
-    stop after a processing error)."""
+    flag verb) whether the row makes it true or false; ``heal`` are the
+    verbs a record violating it may still take (``exempt_from_requirements``),
+    the last of which is the one a loaded record takes when the controller
+    plans nothing that establishes it (empty: the controller's stop after a
+    processing error)."""
 
     description: str
     check: Callable[[dict], str | None]
     establish: Callable[[Transition, str], bool]
     destroy: Callable[[Transition, str], bool]
-    heal: str | None = None
+    heal: tuple[str, ...] = ()
 
 
 def _sets(t: Transition) -> set[str]:
@@ -2348,7 +2351,7 @@ INVARIANTS: dict[str, Invariant] = {
         lambda t, verb: "fork.pr_number" in _sets(t),
         lambda t, verb: _bumps(t) or bool(_clears(t) & {"fork", "fork.pr_number"})
         or "fork" in _sets(t),
-        heal="record_pr_mismatch"),
+        heal=("launch_development_pr", "confirm_development_pr", "record_pr_mismatch")),
     "work": Invariant(
         "Work is requested", _present("active_work", "no Work is requested"),
         lambda t, verb: _row_sets_work(t),
@@ -2399,7 +2402,7 @@ INVARIANTS: dict[str, Invariant] = {
 IMPLIES: dict[str, tuple[str, ...]] = {
     UPSTREAM_BOUND: ("bound",),
     NOT_PAUSED: ("not_paused",),
-    "development PR and head recorded": ("dev_pr", "fork"),
+    "development PR and head recorded": ("dev_pr",),
     # A refresh is recorded only from a state with the fork and its
     # development PR, and a new generation clears it.
     "refresh recorded": ("fork",),
@@ -3403,7 +3406,10 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`development.fix_needed`, which plans a new operation that adopts a PR a "
                      "lost launch created. In `development.waiting_ci` the same rows run the CI "
                      "bootstrap of a PR created at the recorded head with no CI evidence, and "
-                     "`resume_ci` follows the exhaustion of its launches."),
+                     "`resume_ci` follows the exhaustion of its launches. A loaded record that waits "
+                     "for CI on a head without a PR runs `dev_pr_create` here too (its "
+                     "invariant is healed by these rows, `record_pr_mismatch` being the "
+                     "fallback)."),
             Diagram(
                 "Failure case 3: the review of a held patch fails, or its Work fails",
                 ("development.fix_needed", "development.agent_running",
@@ -5325,8 +5331,9 @@ def _check_state_requirements(problems: list[str]) -> None:
             if name not in INVARIANTS:
                 problems.append(f"{key}: requires {name!r}, which is not an invariant")
     for name, invariant in INVARIANTS.items():
-        if invariant.heal is not None and invariant.heal not in verbs:
-            problems.append(f"invariant {name}: heals by {invariant.heal}, not a verb of the table")
+        for verb in invariant.heal:
+            if verb not in verbs:
+                problems.append(f"invariant {name}: heals by {verb}, not a verb of the table")
     for guard, names in IMPLIES.items():
         for name in names:
             if name not in INVARIANTS:

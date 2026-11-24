@@ -351,7 +351,7 @@ def render_table(policy: dict) -> str:
     for name, inv in lc.INVARIANTS.items():
         implied = "; ".join(g for g, names in lc.IMPLIES.items() if name in names)
         lines.append(f"| `{name}` | {cell(inv.description)} | {cell(implied) or '-'} | "
-                     f"{f'`{inv.heal}`' if inv.heal else 'the stop after a processing error'} |")
+                     f"{', '.join(f'`{v}`' for v in inv.heal) if inv.heal else 'the stop after a processing error'} |")
     lines += ["", "| State | Requires |", "|:------|:---------|"]
     lines += [f"| `{key}` | {code(s.requires)} |" for key, s in lc.LIFECYCLE.items()]
     lines += ["", "## Partial clears", "",

@@ -156,55 +156,104 @@ class TestTheLiveRecordHeals(unittest.TestCase):
                          [("dev_pr", "no development PR and head are recorded")])
         self.assertNotIn("paused_at_commit", rec)
 
-    def test_the_first_tick_resumes_and_heals_without_a_hand_edit(self):
+    def test_the_first_tick_resumes_and_opens_the_development_pr_of_its_head(self):
         out = tick(live())
-        self.assertEqual(kinds(out), ["resume_pause", "record_pr_mismatch"])
+        self.assertEqual(kinds(out), ["resume_pause", "launch_development_pr"])
         rec = final(out, live())
         self.assertEqual((engine.state_key(rec), rec["revision"], rec["paused"]),
-                         ("development.waiting_human", 5, False))
-        self.assertEqual(rec["pending_human_action"]["kind"], "development_pr_mismatch")
-        self.assertEqual(engine.invariant_problems(rec), [])
+                         ("development.waiting_ci", 5, False))
+        self.assertIsNone(rec["fork"]["pr_number"])
         self.assertEqual(out.report["resumed_after_error"], [{"contribution": CID, "revision": 5}])
         [violation] = out.report["invariant_violations"]
         self.assertEqual((violation["invariant"], violation["heal"]),
-                         ("dev_pr", "record_pr_mismatch"))
-        # The tracking issue explains the wait in plain words.
-        [event] = [e for k, e in out.staged if k == "events" and e["kind"] == "record_pr_mismatch"]
-        self.assertEqual(event["details"]["invariant"], "dev_pr")
-        text = status_ledger.render(event, rec, "https://github.com/o/r/actions/runs/1")
-        self.assertIn("CI is awaited only on a development PR", text)
-        self.assertIn("`/upstreaming resume`", text)
-        [resume] = [e for k, e in out.staged if k == "events" and e["kind"] == "resume_pause"]
-        self.assertIn("since the pipeline code changed",
-                      status_ledger.render(resume, rec, "https://github.com/o/r/actions/runs/1"))
-        # The next tick changes nothing.
-        again = tick(rec, now=T + timedelta(minutes=10))
-        self.assertEqual(kinds(again), [])
-        self.assertNotIn("invariant_violations", again.report)
-
-    def test_the_resume_opens_the_development_pr_of_the_head(self):
-        rec = final(tick(live()), live())
-        resumed = apply_command(rec, commands.parse(
-            f"/upstreaming resume contribution={CID} revision=5 reason=open-the-pr"),
-            actor=OWNER, now=T.isoformat())
-        self.assertTrue(resumed.accepted, resumed.reason)
-        self.assertEqual((resumed.verb, engine.state_key(resumed.record)),
-                         ("resume_development", "development.fix_needed"))
-        out = tick(resumed.record, now=T + timedelta(minutes=20), observe=True)
-        self.assertEqual(kinds(out), ["launch_development_pr"])
+                         ("dev_pr", "launch_development_pr"))
+        [alert] = [a for a in out.report["controller"]["alerts"]
+                   if "invariant violation" in a.get("alert", "")]
+        self.assertIn(f"healing: the development PR of {HEAD} is planned", alert["alert"])
+        # The PR of the recorded head is planned from the stored report of
+        # the Work that pushed it, and launched in the same tick.
         [request] = out.report["dev_pr_requests"]
         [op] = [r for k, r in out.staged if k == "operations"]
         self.assertEqual((op["kind"], op["target"]["expected_head"]), ("dev_pr_create", HEAD))
         self.assertIn(report()["evidence_id"], op["reason_ids"])
         self.assertEqual(request["operation_id"], op["operation_id"])
-        # Its verified receipt enters the CI wait with the PR recorded.
-        held = final(out, resumed.record)
+        self.assertEqual(rec["active_operation_id"], op["operation_id"])
+        [resume] = [e for k, e in out.staged if k == "events" and e["kind"] == "resume_pause"]
+        self.assertIn("since the pipeline code changed",
+                      status_ledger.render(resume, rec, "https://github.com/o/r/actions/runs/1"))
+        # The next tick plans nothing more while the launch is in flight.
+        again = tick(rec, now=T + timedelta(minutes=10), operations={op["operation_id"]: op})
+        self.assertEqual(kinds(again), [])
+        self.assertEqual(again.report["controller"]["dev_pr_requests"], [])
+        # Its verified receipt records the PR in place and heals the record.
         confirmed = engine.try_apply_transition(
-            dict(held, active_operation_id=None), "confirm_development_pr", policy=POLICY,
+            dict(rec, active_operation_id=None), "confirm_development_pr", policy=POLICY,
             now=T.isoformat(), facts={"receipt_matches_operation", "development_pr_read_back"},
             values={"fork.pr_number": 3})
         self.assertEqual(engine.state_key(confirmed.record), "development.waiting_ci")
         self.assertEqual(engine.invariant_problems(confirmed.record), [])
+
+    def test_the_heal_rows_are_the_development_pr_rows_with_the_wait_as_the_fallback(self):
+        self.assertEqual(lc.INVARIANTS["dev_pr"].heal,
+                         ("launch_development_pr", "confirm_development_pr",
+                          "record_pr_mismatch"))
+
+    def test_a_head_that_cannot_get_a_pr_waits_for_a_human(self):
+        rec = live()
+        rec["fork"] = dict(rec["fork"], head_sha=BASE)
+        out = tick(rec)
+        self.assertEqual(kinds(out), ["resume_pause", "record_pr_mismatch"])
+        healed = final(out, rec)
+        self.assertEqual((engine.state_key(healed), healed["pending_human_action"]["kind"]),
+                         ("development.waiting_human", "development_pr_mismatch"))
+        self.assertEqual(engine.invariant_problems(healed), [])
+        [event] = [e for k, e in out.staged if k == "events" and e["kind"] == "record_pr_mismatch"]
+        self.assertEqual(event["details"]["invariant"], "dev_pr")
+        text = status_ledger.render(event, healed, "https://github.com/o/r/actions/runs/1")
+        self.assertIn("CI is awaited only on a development PR", text)
+        resumed = apply_command(healed, commands.parse(
+            f"/upstreaming resume contribution={CID} revision=5 reason=retry"),
+            actor=OWNER, now=T.isoformat())
+        self.assertTrue(resumed.accepted, resumed.reason)
+        self.assertEqual(engine.state_key(resumed.record), "development.fix_needed")
+
+    def test_launches_spent_without_a_receipt_wait_for_a_human_who_resumes_to_fix_needed(self):
+        import recovery
+        first = tick(live())
+        rec = final(first, live())
+        [op] = [r for k, r in first.staged if k == "operations"]
+        limit = lc.budget_limit("operation_launch", POLICY)
+        while recovery.launch_attempts(op) < limit:
+            op = recovery.charge_launch(op, (T - timedelta(hours=2)).isoformat())
+        op = dict(op, updated_at=(T - timedelta(hours=2)).isoformat())
+        out = tick(rec, now=T + timedelta(hours=1), operations={op["operation_id"]: op})
+        self.assertEqual(kinds(out), ["record_pr_mismatch"])
+        waiting = final(out, rec)
+        self.assertEqual((engine.state_key(waiting), waiting["pending_human_action"]["kind"],
+                          waiting["active_operation_id"]),
+                         ("development.waiting_human", "development_pr_mismatch", None))
+        resumed = apply_command(waiting, commands.parse(
+            f"/upstreaming resume contribution={CID} revision={waiting['revision']} "
+            "reason=retry"), actor=OWNER, now=T.isoformat())
+        self.assertTrue(resumed.accepted, resumed.reason)
+        self.assertEqual(engine.state_key(resumed.record), "development.fix_needed")
+
+
+    def test_a_spent_replan_count_waits_for_a_human_instead_of_deferring_forever(self):
+        import recovery
+        first = tick(live())
+        rec = final(first, live())
+        [op] = [r for k, r in first.staged if k == "operations"]
+        closed = recovery.fold_failure_receipt(op, external_ids={}, now=T.isoformat())
+        rec = recovery.release(rec, closed, T.isoformat())
+        with mock.patch("controller.MAX_REPLANS", 0):
+            out = tick(rec, now=T + timedelta(hours=1), operations={closed["operation_id"]: closed})
+        self.assertEqual(kinds(out), ["record_pr_mismatch"])
+        waiting = final(out, rec)
+        self.assertEqual((engine.state_key(waiting), waiting["pending_human_action"]["kind"]),
+                         ("development.waiting_human", "development_pr_mismatch"))
+        self.assertTrue([a for a in out.report["controller"]["alerts"]
+                         if "re-plans" in a.get("alert", "")])
 
 
 class TestTheAutomaticResume(unittest.TestCase):
