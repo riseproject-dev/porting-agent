@@ -1863,3 +1863,25 @@ flowchart TB
     development_publishing -->|record_publish_success| development_waiting_ci
     development_agent_running -->|record_publish_success| development_waiting_ci
 ```
+
+### The comment of a patch published anyway, whatever stops its record
+
+When the comment of a patch published after successive failed reviews becomes due if the record stops before the Result of its push is folded, and whether a pause or a missing development PR holds its post.
+
+**Change.** The comment is due whenever a `published` Result is the publication of a patch published anyway: the `patch_review` evidence with the disposition `publish_anyway` whose pin names the Result's worker run, Work, and commit makes it due in the write that records the Result, once per review, on time (`record_publish_success`) or late (`record_late_effect`, in any state: after a pause, a processing error, a stop, or the exhaustion of `publish_recovery`), since the patch is on the fork either way. Posting the comment is not development Work. A pause holds it on a record that is not terminal, and the resume launches it; a terminal record is never resumed, so its pause holds nothing and the comment is posted. A post waits, spending no attempt, until a development PR is recorded. A held comment is alerted on in every tick once held for 24 hours, and at once on a terminal record. The attempts end at 999, the last the workflow input admits; the comment then stays due and alerted on. No row, state, or budget changes.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_publishing["development.publishing"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+    subgraph closed["closed"]
+        closed_idle["closed.idle"]
+    end
+
+    development_publishing ==>|record_publish_success| development_waiting_ci
+    development_publishing -->|exhaust_publish_recovery| development_waiting_human
+```

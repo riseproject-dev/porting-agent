@@ -1827,6 +1827,9 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # once `record_publish_success` published it: its posts launched and
     # their receipts folded, until it is posted or its attempts are spent.
     "review_comment_launched": ("review_comments",),
+    # A late `published` Result of a patch published anyway makes the
+    # comment of its review due all the same.
+    "review_comment_due": ("review_comments",),
     "review_comment_answered": ("review_comments",),
 }
 

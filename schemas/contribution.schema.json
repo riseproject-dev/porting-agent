@@ -1360,7 +1360,8 @@
           },
           "attempts": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 999
           },
           "next_attempt_at": {
             "type": "string",

@@ -962,6 +962,229 @@ class TestLateResults(unittest.TestCase):
         self.assertEqual(kinds(out), ["record_late_effect"])
 
 
+class TestCommentOfALatePublication(unittest.TestCase):
+    """A patch published anyway whose `published` Result is folded late (the
+    record stopped, paused, or exhausted the publication first) is on the
+    fork all the same: the comment of its review becomes due in the write
+    that records the late Result, end to end through ticks that carry the
+    evidence store as the committed state does."""
+
+    def setUp(self):
+        self.at = datetime.fromisoformat(NOW)
+        self.evidence: dict = {}
+
+    def run_tick(self, rec, pubs=(), *, minutes=0, comments=(), receipts=()):
+        from tests.helpers import OWNER
+
+        snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
+                                  projects={}, evidence=dict(self.evidence))
+        out = reconcile.tick(
+            None, snap, policy=POLICY, now=self.at + timedelta(minutes=minutes),
+            publications=list(pubs), pressure=capacity.Pressure(ok=True), observe=False,
+            review_comment_receipts=list(receipts),
+            comments=[{"issue_number": 12, "comment": {"id": 900 + i + minutes, "body": body,
+                                                        "user": dict(OWNER)}}
+                      for i, body in enumerate(comments)])
+        self.evidence.update({r["evidence_id"]: r for k, r in out.staged if k == "evidence"})
+        records = [r for k, r in out.staged if k == "contributions"]
+        return (records[-1] if records else rec), out
+
+    def publishing_anyway(self):
+        rec = running(feedback=["review-1"])
+        for attempt in range(2):
+            reviewing, _ = self.run_tick(rec, [verified(rec, run=str(4242 + attempt),
+                                                         artifact=901 + attempt)])
+            rec, _ = self.run_tick(reviewing, [review_result(
+                reviewing, severity="major", run=str(5000 + attempt), artifact=950 + attempt)])
+        self.assertEqual(engine.state_key(rec), "development.publishing")
+        [review] = [e for e in self.evidence.values()
+                    if e["data"].get("disposition") == "publish_anyway"]
+        return rec, review["evidence_id"]
+
+    def result(self, rec, **over):
+        pub = published(rec, run=rec["held_patch"]["worker_run_id"])
+        return dict(pub, **over)
+
+    def assert_due_and_held_by_the_pause(self, rec, eid, minutes):
+        [due] = rec["review_comments"]
+        self.assertEqual((due["evidence_id"], due["head"], due["attempts"], due["launched_at"]),
+                         (eid, CANDIDATE, 0, None))
+        # Held by the pause: no attempt is spent, and once it has been held
+        # for the bound every tick alerts on it.
+        held_, out = self.run_tick(rec, minutes=minutes + 5)
+        self.assertEqual(out.report["review_comment_requests"], [])
+        self.assertEqual(out.report["review_comment_posts"][0]["status"], "held")
+        self.assertFalse(out.report["controller"]["alerts"])
+        later = minutes + 60 * patch_review.COMMENT_HELD_ALERT_HOURS
+        _, out = self.run_tick(held_, minutes=later)
+        self.assertEqual(out.report["review_comment_requests"], [])
+        self.assertIn("the contribution is paused",
+                      out.report["controller"]["alerts"][0]["alert"])
+        # The resume launches it, at its first attempt.
+        resumed, out = self.run_tick(held_, minutes=later + 5, comments=[
+            f'/upstreaming resume revision={held_["revision"]} reason="checked"'])
+        self.assertFalse(resumed["paused"])
+        self.assertEqual([(r["evidence_id"], r["attempt"])
+                          for r in out.report["review_comment_requests"]], [(eid, 1)])
+
+    def test_a_pause_folded_before_the_published_result(self):
+        # Path X: the pause discards the held patch and its pending
+        # publication before the Result of the push is collected.
+        rec, eid = self.publishing_anyway()
+        paused, out = self.run_tick(rec, minutes=3, comments=['/upstreaming pause reason="x"'])
+        self.assertEqual((kinds(out), paused["held_patch"], paused["pending_publication"]),
+                         (["pause"], None, None))
+        late, out = self.run_tick(paused, [self.result(rec)], minutes=6)
+        self.assertEqual(kinds(out), ["record_late_effect"])
+        [event] = [e for k, e in out.staged if k == "events"]
+        self.assertEqual(event["details"]["review_comments_due"], [eid])
+        self.assert_due_and_held_by_the_pause(late, eid, 6)
+        # The same Result collected again in another artifact adds nothing.
+        again, _ = self.run_tick(late, [self.result(rec, publication_artifact_id=904)],
+                                 minutes=7)
+        self.assertEqual([d["evidence_id"] for d in again["review_comments"]], [eid])
+
+    def test_a_published_result_whose_report_cannot_be_stored(self):
+        # Path Y: the publish-only retry published, but its Work carries a
+        # history and its artifact no storable report: the fold pauses the
+        # record, discarding everything it staged; the next tick records
+        # the Result late, and the comment is due all the same.
+        rec, eid = self.publishing_anyway()
+        pub = self.result(rec)
+        pub["task"]["context"]["history"] = {"sha256": HISTORY}
+        paused, out = self.run_tick(rec, [pub], minutes=3)
+        self.assertEqual(kinds(out), ["pause_on_processing_error"])
+        self.assertEqual(paused["review_comments"], [])
+        late, out = self.run_tick(paused, [pub], minutes=6)
+        self.assertEqual(kinds(out), ["record_late_effect"])
+        self.assert_due_and_held_by_the_pause(late, eid, 6)
+
+    def test_a_retry_lost_before_the_publication_was_exhausted(self):
+        # The publish-only retry's Result is lost until `publish_recovery`
+        # is exhausted; its late `published` Result makes the comment due
+        # in the human wait, and it is posted.
+        rec, eid = self.publishing_anyway()
+        minutes = 0
+        while engine.state_key(rec) == "development.publishing":
+            minutes += 61
+            rec, _ = self.run_tick(rec, minutes=minutes)
+            self.assertLess(minutes, 61 * 40)
+        self.assertEqual(rec["pending_human_action"]["kind"], "publication_infrastructure_failure")
+        late, out = self.run_tick(rec, [self.result(rec, publication_artifact_id=990)],
+                                  minutes=minutes + 5)
+        self.assertEqual(kinds(out), ["record_late_effect"])
+        self.assertEqual([(r["evidence_id"], r["attempt"])
+                          for r in out.report["review_comment_requests"]], [(eid, 1)])
+        self.assertEqual(late["review_comments"][0]["head"], CANDIDATE)
+
+    def test_only_the_publication_of_the_reviewed_patch_makes_it_due(self):
+        rec, eid = self.publishing_anyway()
+        paused, _ = self.run_tick(rec, minutes=3, comments=['/upstreaming pause reason="x"'])
+        for name, pub in (
+                ("another worker run", self.result(rec, worker_run_id="9999")),
+                ("another commit", self.result(rec, candidate="f" * 40, operation=None)),
+                ("not published", self.result(rec, status="uncertain"))):
+            with self.subTest(name):
+                late, out = self.run_tick(paused, [pub], minutes=6)
+                self.assertEqual(kinds(out), ["record_late_effect"])
+                self.assertEqual(late["review_comments"], [], name)
+
+
+class TestCommentHolds(unittest.TestCase):
+    def run_tick(self, rec, minutes=0, receipts=()):
+        snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
+                                  projects={}, evidence={})
+        out = reconcile.tick(None, snap, policy=POLICY,
+                             now=datetime.fromisoformat(NOW) + timedelta(minutes=minutes),
+                             publications=[], pressure=capacity.Pressure(ok=True),
+                             observe=False, review_comment_receipts=list(receipts))
+        records = [r for k, r in out.staged if k == "contributions"]
+        return (records[-1] if records else rec), out
+
+    @staticmethod
+    def due(**over):
+        return {"evidence_id": "patch-review-x", "head": CANDIDATE, "repository": None,
+                "pr_number": None, "attempts": 0, "next_attempt_at": NOW, "launched_at": None,
+                "last_reason": "", "exhausted": False, **over}
+
+    def test_the_first_patch_published_anyway_waits_for_its_development_pr(self):
+        rec = running(feedback=["review-1"])
+        rec["fork"] = dict(rec["fork"], pr_number=None)
+        for attempt in range(2):
+            reviewing, _ = held(rec, run=str(4242 + attempt), artifact=901 + attempt)
+            rec = final(tick(reviewing, [review_result(
+                reviewing, severity="major", run=str(5000 + attempt), artifact=950 + attempt)]))
+        out = tick(rec, [published(rec, run=rec["held_patch"]["worker_run_id"])])
+        done = final(out)
+        self.assertEqual(engine.state_key(done), "development.waiting_ci")
+        [due] = done["review_comments"]
+        self.assertEqual((due["repository"], due["pr_number"], due["attempts"]),
+                         (None, None, 0))
+        self.assertEqual(out.report["review_comment_requests"], [])
+        # Held without spending an attempt, alerted once held for the bound.
+        hours = patch_review.COMMENT_HELD_ALERT_HOURS
+        _, out = self.run_tick(done, minutes=60 * hours - 1)
+        self.assertEqual((out.report["review_comment_requests"],
+                          out.report["controller"]["alerts"]), ([], []))
+        _, out = self.run_tick(done, minutes=60 * hours)
+        self.assertIn("no development PR is recorded",
+                      out.report["controller"]["alerts"][0]["alert"])
+        # Once the development PR operation confirms the PR, attempt 1 is
+        # launched on it.
+        with_pr = dict(done, fork=dict(done["fork"], pr_number=7))
+        launched, out = self.run_tick(with_pr, minutes=60 * hours + 5)
+        self.assertEqual([r["attempt"] for r in out.report["review_comment_requests"]], [1])
+        self.assertEqual((launched["review_comments"][0]["repository"],
+                          launched["review_comments"][0]["pr_number"]),
+                         (done["fork"]["name"], 7))
+
+    def test_a_terminal_record_posts_whatever_its_pause(self):
+        closed = contribution(phase="closed", activity="idle", paused=True,
+                              terminal_reason="abandoned", review_comments=[self.due()])
+        _, out = self.run_tick(closed)
+        self.assertEqual([r["attempt"] for r in out.report["review_comment_requests"]], [1])
+        record = json.loads(json.dumps(closed))
+        record["review_comments"][0]["attempts"] = 1
+        self.assertIsNone(patch_review.comment_check(record, "patch-review-x", 1, POLICY))
+        # Without a development PR nothing will post it: alerted at once.
+        no_pr = dict(closed, fork=dict(closed["fork"], pr_number=None))
+        _, out = self.run_tick(no_pr)
+        self.assertEqual(out.report["review_comment_requests"], [])
+        self.assertIn("nothing else will post it", out.report["controller"]["alerts"][0]["alert"])
+        # A paused record that is not terminal is held, by the check too.
+        paused = contribution(activity="waiting_ci", paused=True,
+                              review_comments=[self.due(attempts=1)])
+        self.assertEqual(patch_review.comment_check(paused, "patch-review-x", 1, POLICY),
+                         "the contribution is paused")
+
+    def test_the_attempts_end_where_the_workflow_input_ends(self):
+        import re
+        from pathlib import Path
+
+        text = Path(".github/workflows/review-comment.yml").read_text()
+        pattern = re.search(r'\[\[ "\$ATTEMPT" =~ (\S+) \]\]', text).group(1)
+        self.assertTrue(re.fullmatch(pattern, str(patch_review.COMMENT_LAST_ATTEMPT)))
+        self.assertFalse(re.fullmatch(pattern, str(patch_review.COMMENT_LAST_ATTEMPT + 1)))
+        schema = json.loads(Path("schemas/contribution.schema.json").read_text())
+        attempts = schema["properties"]["review_comments"]["items"]["properties"]["attempts"]
+        self.assertEqual(attempts["maximum"], patch_review.COMMENT_LAST_ATTEMPT)
+        last = patch_review.COMMENT_LAST_ATTEMPT
+        rec = contribution(activity="waiting_ci", review_comments=[self.due(
+            repository="riseproject-upstreaming/proj", pr_number=3, attempts=last,
+            exhausted=True, last_reason="HTTP 404")])
+        _, out = self.run_tick(rec, minutes=60 * 24 * 3)
+        self.assertEqual(out.report["review_comment_requests"], [])
+        self.assertIn("no longer posted", out.report["controller"]["alerts"][0]["alert"])
+        # One attempt short of it, the daily post is still launched.
+        rec["review_comments"][0]["attempts"] = last - 1
+        _, out = self.run_tick(rec, minutes=60 * 24 * 3)
+        self.assertEqual([r["attempt"] for r in out.report["review_comment_requests"]], [last])
+        self.assertEqual(patch_review.comment_check(
+            dict(rec, review_comments=[dict(rec["review_comments"][0], attempts=last + 1)]),
+            "patch-review-x", last + 1, POLICY),
+            "the comment is not a due comment of the record at this attempt")
+
+
 class TestHistory(unittest.TestCase):
     def test_every_review_is_a_history_entry_linked_to_its_report(self):
         reviewing, out = held(running(), history=True)

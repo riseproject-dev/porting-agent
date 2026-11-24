@@ -2075,7 +2075,10 @@ RULES: dict[str, Rule] = {
             _R, None,
             ("the Result does not match the current generation, revision, and requested Work",),
             description="Recorded in the events for audit. The Result is never folded, the "
-                        "publisher refuses it, and the state never changes."),
+                        "publisher refuses it, and the state never changes. A late "
+                        "`published` Result of a patch published after successive failed "
+                        "reviews still makes the comment of that review due on the "
+                        "development PR, beside the rule (`review_comments`)."),
         "every state"),
 }
 

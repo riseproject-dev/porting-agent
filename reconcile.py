@@ -1280,7 +1280,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
         return fold_patch_review(rec, outcome, now=now, policy=policy or {},
                                  worker_run_id=worker_run_id)
     return fold_patch_result(rec, outcome, now=now, policy=policy or {},
-                             worker_run_id=worker_run_id, operations=operations)
+                             worker_run_id=worker_run_id, operations=operations,
+                             evidence=evidence)
 
 
 _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_id")
@@ -1535,7 +1536,8 @@ def _confirm_read_back(op: dict, candidate: str, attempt: Any, *, now: str) -> d
 
 
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
-                      worker_run_id: str | None, operations: dict[str, dict] | None = None
+                      worker_run_id: str | None, operations: dict[str, dict] | None = None,
+                      evidence: dict[str, dict] | None = None
                       ) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold the Result of patch Work through the rows of
     ``development.agent_running``, or of revision Work through the rows of
@@ -1756,9 +1758,12 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             # review is due on the development PR, at exactly the reviewed
             # commit the pin names, beside every comment still due, posted
             # by trusted code that the tick launches (`review_comments`)
-            # until it is posted or found.
+            # until it is posted or found. The pending publication names the
+            # review; the stored review that published this patch anyway
+            # names it too (`patch_review.published_anyway`).
             values["review_comments"] = patch_review.comment_due(
-                rec, head=(rec.get("held_patch") or {}).get("candidate"), now=now)
+                rec, patch_review.pending_published_anyway(rec)
+                + patch_review.published_anyway(rec, outcome, evidence or {}), now=now)
         if verb == "record_revision_publish_success":
             head = published_head(outcome)
             values["upstream_pr.head_sha"] = head
@@ -2475,6 +2480,19 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 extra: dict[str, Any] = {}
                 reported = late_report_evidence(rec, pub, now=iso, policy=policy,
                                                 known=snap.evidence, details=extra)
+                # A late `published` Result of a patch published anyway (its
+                # record stopped, paused, or exhausted the publication before
+                # this Result was folded): the patch is on the fork, so the
+                # comment of the review is due all the same, in this write.
+                due = patch_review.comment_due(
+                    rec, patch_review.published_anyway(rec, pub, snap.evidence), now=iso)
+                if due != (rec.get("review_comments") or []):
+                    before = {item["evidence_id"] for item in rec.get("review_comments") or []}
+                    extra["review_comments_due"] = [item["evidence_id"] for item in due
+                                                    if item["evidence_id"] not in before]
+                    rec = engine.record_beside(rec, "review_comment_due", now=iso,
+                                               review_comments=due)
+                    contributions[key] = rec
                 out.staged.extend(reported + [("contributions", rec), ("events", _late_effect(
                     rec, pub, unrequested, policy=policy, now=iso, extra=extra))])
                 pubs_report.append({"contribution": cid, "ignored": unrequested})
@@ -2682,11 +2700,16 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
     recorded with the last reason, an alert in every tick says that the
     development PR lacks it, and it is launched again every
     ``COMMENT_EXHAUSTED_RETRY_HOURS``, so the alert ends once a human has
-    restored what the post needs. A due post is launched while the record is
-    not paused and the policy permits writes; its attempt is recorded before
-    the launch, so a post is never launched twice for one attempt. Beyond
-    ``MAX_DUE_COMMENTS`` the oldest exhausted comments are dropped, each
-    with an alert."""
+    restored what the post needs, up to ``COMMENT_LAST_ATTEMPT``, the last
+    attempt ``review-comment.yml`` admits. A due post is launched while the
+    policy permits writes, unless it is held: by the pause of a record that
+    is not terminal (``patch_review.held_by_pause``), or while no
+    development PR is recorded; a held post spends no attempt, and is
+    alerted on in every tick once it has been held for
+    ``COMMENT_HELD_ALERT_HOURS``, or at once for a terminal record. Its
+    attempt is recorded before the launch, so a post is never launched twice
+    for one attempt. Beyond ``MAX_DUE_COMMENTS`` the oldest exhausted
+    comments are dropped, each with an alert."""
     report: list[dict] = []
     out.report.setdefault("review_comment_requests", [])
     alerts = out.report["controller"]["alerts"]
@@ -2764,27 +2787,53 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
             # launch of every comment that is due now.
             launched: list[dict] = []
             requests: list[dict] = []
+            terminal = engine.state_key(c) in lifecycle.TERMINAL_STATES
             for due in kept:
                 attempt = int(due["attempts"])
                 entry = {"contribution": cid, "evidence_id": due["evidence_id"],
                          "attempt": attempt}
+                repository, number = patch_review.comment_target(c, due)
+                last = attempt >= patch_review.COMMENT_LAST_ATTEMPT
                 if due.get("exhausted"):
-                    repository, number = patch_review.comment_target(c, due)
                     alerts.append({"contribution": cid, "alert": (
                         f"the comment of the review {due['evidence_id']} on the development PR "
                         f"{repository or '(none recorded)'}#{number or '?'} could not be posted "
                         f"in {attempt} attempts (last: {due.get('last_reason')}); the patch was "
                         "published although that review failed, and the PR does not say so. "
-                        "It is posted again every "
-                        f"{patch_review.COMMENT_EXHAUSTED_RETRY_HOURS} hours until it is posted")})
-                if due.get("launched_at") or c.get("paused") or policy.get("read_only", True) \
-                        or datetime.fromisoformat(due["next_attempt_at"]) > now:
+                        + ("Its attempts are spent and it is no longer posted; a human posts "
+                           "it" if last else
+                           "It is posted again every "
+                           f"{patch_review.COMMENT_EXHAUSTED_RETRY_HOURS} hours until it is "
+                           "posted"))})
+                # A post that cannot be made yet is held without spending an
+                # attempt: by the pause of a contribution that is not
+                # terminal (its resume launches it), or until a development
+                # PR is recorded (the first patch published anyway has none
+                # until the development PR operation confirms one).
+                held = ("the contribution is paused" if patch_review.held_by_pause(c)
+                        else None if repository and number
+                        else "no development PR is recorded")
+                due_at = datetime.fromisoformat(due["next_attempt_at"])
+                if held and not due.get("launched_at") and due_at <= now and (
+                        terminal or now - due_at >= timedelta(
+                            hours=patch_review.COMMENT_HELD_ALERT_HOURS)):
+                    alerts.append({"contribution": cid, "alert": (
+                        f"the comment of the review {due['evidence_id']} is due on the "
+                        f"development PR since {due['next_attempt_at']} and is not posted: "
+                        f"{held}"
+                        + ("; the contribution is terminal, so nothing else will post it"
+                           if terminal else "")
+                        + ". The patch was published although that review failed, and the "
+                        "PR does not say so")})
+                if due.get("launched_at") or held or policy.get("read_only", True) \
+                        or due_at > now or (last and due.get("exhausted")):
                     launched.append(due)
                     if not due.get("launched_at"):
                         report.append(entry | {"status": "exhausted" if due.get("exhausted")
-                                               else "waiting"})
+                                               else "held" if held and due_at <= now
+                                               else "waiting"} | (
+                            {"reason": held} if held and due_at <= now else {}))
                     continue
-                repository, number = patch_review.comment_target(c, due)
                 attempt += 1
                 launched.append(dict(due, attempts=attempt, launched_at=iso,
                                      repository=repository, pr_number=number))

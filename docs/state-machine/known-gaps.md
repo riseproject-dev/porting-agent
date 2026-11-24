@@ -32,8 +32,8 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 ## An exhausted review comment has no command that ends it
 
 - **Where:** `reconcile.review_comments`, `review_comments` of the record.
-- **Today:** a comment due on a development PR whose attempts are spent stays due: every tick alerts on it and it is launched again every 24 hours until it is posted or found. No command dismisses it, so a development PR that can never take it (deleted or locked) keeps the alert until more than 16 comments are due and it is the oldest exhausted one.
-- **Table:** `record_publish_success` in `development.publishing` states that trusted code posts, retries, and alerts on the comment beside the table.
+- **Today:** a comment due on a development PR whose attempts are spent stays due: every tick alerts on it and it is launched again every 24 hours until it is posted or found, up to attempt 999. No command dismisses it, so a development PR that can never take it (deleted or locked) keeps the alert until more than 16 comments are due and it is the oldest exhausted one. The same holds for a comment held without a development PR on a terminal record, or by a pause that is never resumed: it is alerted on in every tick.
+- **Table:** `record_publish_success` in `development.publishing` states that trusted code posts, retries, and alerts on the comment beside the table, and `record_late_effect` that a late publication of a patch published anyway makes its comment due beside the rule.
 - **Required:** a command that ends an exhausted comment once a human has posted or waived it, recorded as an event.
 
 ## A repository renamed during upstream review is not followed

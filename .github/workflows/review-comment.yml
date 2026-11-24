@@ -8,7 +8,9 @@
 # reconcile job for a comment due on the record (`review_comments`) and its
 # current attempt, never by an agent. The record is read from the committed
 # state; nothing is posted unless the comment is still due at that attempt,
-# the contribution is not paused and the policy permits writes. The token is
+# no pause holds it (the pause of a terminal contribution holds nothing) and
+# the policy permits writes. The attempt input admits 1 to 999, the bound of
+# `patch_review.COMMENT_LAST_ATTEMPT`. The token is
 # minted for the one fork, with `pull-requests: write` only. The receipt
 # (`review-comment.json`) is folded by the reconciler, which launches a
 # failed or lost post again and, once the attempts are spent, raises an alert

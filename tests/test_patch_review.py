@@ -309,16 +309,45 @@ class TestComment(unittest.TestCase):
                "repository": rec["fork"]["name"], "pr_number": rec["fork"]["pr_number"],
                "attempts": 0, "next_attempt_at": NOW, "launched_at": None, "last_reason": "",
                "exhausted": False}
-        self.assertEqual(patch_review.comment_due(rec, head="c" * 40, now=NOW), [new])
+        def due(record):
+            return patch_review.comment_due(
+                record, patch_review.pending_published_anyway(record), now=NOW)
+
+        self.assertEqual(patch_review.pending_published_anyway(rec), [("patch-review-x", "c" * 40)])
+        self.assertEqual(due(rec), [new])
         passed = copy.deepcopy(rec)
         passed["pending_publication"]["patch_review"]["published_anyway"] = False
-        self.assertEqual(patch_review.comment_due(passed, head="c" * 40, now=NOW), [])
-        # The comments still due are kept, whatever is published.
+        self.assertEqual(due(passed), [])
+        # The comments still due are kept, whatever is published, and a
+        # review already due is not added again.
         older = dict(new, evidence_id="patch-review-old", attempts=3, exhausted=True)
-        self.assertEqual(patch_review.comment_due(dict(passed, review_comments=[older]),
-                                                  head="c" * 40, now=NOW), [older])
-        self.assertEqual(patch_review.comment_due(dict(rec, review_comments=[older]),
-                                                  head="c" * 40, now=NOW), [older, new])
+        self.assertEqual(due(dict(passed, review_comments=[older])), [older])
+        self.assertEqual(due(dict(rec, review_comments=[older])), [older, new])
+        self.assertEqual(due(dict(rec, review_comments=[older, new])), [older, new])
+        # Without a development PR, none is recorded: the launch resolves it.
+        no_pr = dict(rec, fork=dict(rec["fork"], pr_number=None))
+        self.assertEqual(due(no_pr), [dict(new, repository=None, pr_number=None)])
+
+    def test_a_published_result_names_the_review_that_published_it_anyway(self):
+        rec = contribution(activity="fix_needed")
+        pin = {"worker_run_id": "11", "work": "w", "candidate": "c" * 40}
+        stored = {"patch-review-x": {"kind": "patch_review", "contribution_id": rec["contribution_id"],
+                                     "data": {"disposition": "publish_anyway", "patch": pin}}}
+        result = {"status": "published", "worker_run_id": "11", "candidate": "c" * 40,
+                  "task": {"dedupe_key": "w"}}
+        self.assertEqual(patch_review.published_anyway(rec, result, stored),
+                         [("patch-review-x", "c" * 40)])
+        for name, other, store in (
+                ("not published", dict(result, status="uncertain"), stored),
+                ("another run", dict(result, worker_run_id="12"), stored),
+                ("another Work", dict(result, task={"dedupe_key": "v"}), stored),
+                ("another commit", dict(result, candidate="d" * 40), stored),
+                ("a passed review", result, {"patch-review-x": dict(
+                    stored["patch-review-x"], data={"disposition": "publish", "patch": pin})}),
+                ("another contribution", result, {"patch-review-x": dict(
+                    stored["patch-review-x"], contribution_id="other/1")})):
+            with self.subTest(name):
+                self.assertEqual(patch_review.published_anyway(rec, other, store), [])
 
     def test_the_command_line_checks_without_a_token_and_writes_a_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:

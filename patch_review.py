@@ -31,7 +31,7 @@ reproduction and writes nothing. Its Result
   a review: nothing about reviews is posted on the tracking issue.
 
     python -m patch_review check --task T --result R --out O
-    python -m patch_review comment --record R --outcome O --out O2
+    python -m patch_review comment --contribution C --evidence E --attempt N --out O
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import lifecycle
 import schemas
 import worker_report
 from common import APP_COMMIT_NAME, STATE_ROOT, canonical_json, fitted_id, repository_root
@@ -204,16 +205,12 @@ def held_patch_expires_at(outcome: dict, *, run: str, requested_at: str | None,
 
 def held_patch_expired(record: dict, now: Any) -> bool:
     """Whether an artifact the held patch depends on expired or expires
-    within a day (``held_patch.expires_at``; for a pin without it, the
-    effective retention after the hold)."""
-    held = record.get("held_patch") or {}
-    retention, margin = _retention()
-    expires = _instant(held.get("expires_at"))
-    if expires is None:
-        at = _instant(held.get("held_at"))
-        if at is None:
-            return False
-        expires = at + retention
+    within a day (``held_patch.expires_at``, which every pin records)."""
+    held = record.get("held_patch")
+    if not held:
+        return False
+    _, margin = _retention()
+    expires = datetime.fromisoformat(str(held["expires_at"]).replace("Z", "+00:00"))
     now = now if isinstance(now, datetime) else datetime.fromisoformat(str(now))
     return now >= expires - margin
 
@@ -416,9 +413,20 @@ COMMENT_RETRY_MINUTES = 30
 # every tick and posted again once every this many hours, until it is posted
 # or found, so a human who restores what the post needs ends the alert.
 COMMENT_EXHAUSTED_RETRY_HOURS = 24
+# The last attempt of a comment: the `attempt` input of `review-comment.yml`
+# admits 1 to 999 (`^[1-9][0-9]{0,2}$`), the schema of `review_comments`
+# bounds `attempts` the same, and the command line refuses any other. An
+# exhausted comment at this attempt is no longer launched; it stays due and
+# alerted on.
+COMMENT_LAST_ATTEMPT = 999
 # A launched post whose receipt is not folded within this many minutes is
 # a failed attempt.
 COMMENT_RECEIPT_WAIT_MINUTES = 60
+# A due comment whose post is held (by the pause of a contribution that is
+# not terminal, or because no development PR is recorded yet) for this many
+# hours is alerted on in every tick until it is launched; the held comment of
+# a terminal contribution is alerted on at once, since nothing resumes it.
+COMMENT_HELD_ALERT_HOURS = 24
 # The outcomes of a post that end its comment: posted now, or found by its
 # marker (an earlier attempt posted it).
 COMMENT_DONE = ("posted", "found")
@@ -431,22 +439,73 @@ MAX_DUE_COMMENTS = 16
 COMMENT_AUTHOR = APP_COMMIT_NAME
 
 
-def comment_due(record: dict, *, head: str, now: str) -> list[dict]:
-    """The record's due comments (``review_comments``) once the held patch is
-    published at ``head``: every comment still due, kept, and, for a patch
-    whose pending publication records a failed review it was published
-    after, the comment of that review: the review, the published head, the
-    development PR it is posted on, and no attempt yet, due now."""
-    due = [dict(item) for item in record.get("review_comments") or []]
+def published_anyway(record: dict, outcome: dict, evidence: dict[str, dict]) -> list[tuple[str, str]]:
+    """The reviews whose comment a ``published`` Result makes due, as
+    ``(evidence id, published head)``: every ``patch_review`` evidence of
+    the contribution that published its held patch anyway
+    (``publish_anyway``) and whose pin is the patch this Result published:
+    the same worker run, Work, and commit. It holds whatever state the
+    record is in when the Result is collected, and however late: the patch
+    is on the fork either way, and its development PR must say why."""
+    if outcome.get("status") != "published":
+        return []
+    run = str(outcome.get("worker_run_id") or "")
+    work = (outcome.get("task") or {}).get("dedupe_key")
+    op = outcome.get("operation") or {}
+    heads = {h for h in (outcome.get("candidate"),
+                         (op.get("proposed") or {}).get("commit")
+                         if op.get("status") == "confirmed" else None)
+             if isinstance(h, str) and _SHA.match(h)}
+    found = []
+    for eid, item in sorted(evidence.items()):
+        data = item.get("data") or {}
+        patch = data.get("patch") or {}
+        if item.get("kind") == STATUS \
+                and item.get("contribution_id") == record["contribution_id"] \
+                and data.get("disposition") == "publish_anyway" \
+                and run and str(patch.get("worker_run_id")) == run \
+                and work is not None and patch.get("work") == work \
+                and patch.get("candidate") in heads:
+            found.append((eid, patch["candidate"]))
+    return found
+
+
+def pending_published_anyway(record: dict) -> list[tuple[str, str]]:
+    """The review the pending publication of the held patch was published
+    anyway after, as ``(evidence id, reviewed commit)``, or nothing."""
     review = (record.get("pending_publication") or {}).get("patch_review") or {}
-    if not review.get("published_anyway") \
-            or any(item["evidence_id"] == review["evidence_id"] for item in due):
-        return due
+    if not review.get("published_anyway"):
+        return []
+    return [(review["evidence_id"], (record.get("held_patch") or {}).get("candidate"))]
+
+
+def comment_due(record: dict, reviews: list[tuple[str, str]], *, now: str) -> list[dict]:
+    """The record's due comments (``review_comments``) once a patch
+    published anyway is published: every comment still due, kept, and the
+    comment of each review in ``reviews`` (``(evidence id, published
+    head)``) that is not due already: the review, the published head, the
+    development PR it is posted on when one is recorded (else the one
+    recorded when it is launched), and no attempt yet, due now. Idempotent
+    by evidence id."""
+    due = [dict(item) for item in record.get("review_comments") or []]
     fork = record.get("fork") or {}
-    return due + [{"evidence_id": review["evidence_id"], "head": head,
-                   "repository": fork.get("name"), "pr_number": fork.get("pr_number"),
-                   "attempts": 0, "next_attempt_at": now, "launched_at": None,
-                   "last_reason": "", "exhausted": False}]
+    for eid, head in reviews:
+        if any(item["evidence_id"] == eid for item in due):
+            continue
+        number = fork.get("pr_number")
+        due.append({"evidence_id": eid, "head": head,
+                    "repository": fork.get("name") if number else None, "pr_number": number,
+                    "attempts": 0, "next_attempt_at": now, "launched_at": None,
+                    "last_reason": "", "exhausted": False})
+    return due
+
+
+def held_by_pause(record: dict) -> bool:
+    """Whether a pause holds the post of a due comment: the record is paused
+    and not terminal. Posting the comment is no development Work, and
+    nothing resumes a terminal record, so its pause holds nothing."""
+    return bool(record.get("paused")) \
+        and f"{record['phase']}.{record['activity']}" not in lifecycle.TERMINAL_STATES
 
 
 def comment_target(record: dict, due: dict) -> tuple[str | None, int | None]:
@@ -468,12 +527,12 @@ def due_comment(record: dict, evidence_id: str) -> dict | None:
 def comment_check(record: dict, evidence_id: str, attempt: int, policy: dict) -> str | None:
     """Why the comment named by ``evidence_id`` and ``attempt`` must not be
     posted now, or ``None``: it is a due comment of the record, at its
-    current attempt, on a known development PR, while the record is not
-    paused and the policy permits writes."""
+    current attempt, on a known development PR, while no pause holds it
+    (``held_by_pause``) and the policy permits writes."""
     due = due_comment(record, evidence_id) or {}
-    if due.get("attempts") != attempt:
+    if not 1 <= attempt <= COMMENT_LAST_ATTEMPT or due.get("attempts") != attempt:
         return "the comment is not a due comment of the record at this attempt"
-    if record.get("paused"):
+    if held_by_pause(record):
         return "the contribution is paused"
     if policy.get("read_only", True):
         return "the policy is read-only"
@@ -557,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", args.evidence) \
             or ".." in args.evidence or "/" in args.evidence:
         raise SystemExit("bad contribution or evidence id")
+    if not 1 <= args.attempt <= COMMENT_LAST_ATTEMPT:
+        raise SystemExit("bad attempt")
     record = json.loads((repository_root() / STATE_ROOT / "contributions"
                          / f"{args.contribution}.json").read_text(encoding="utf-8"))
     schemas.validate("contribution", record)
