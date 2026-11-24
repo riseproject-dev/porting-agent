@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Native work-queue plans for upstreaming tasks (plan sections 5.1, 15.1).
 
-``controller.tick`` produces ``submit_work`` requests. This module turns
-them into the immutable gh-aw Work payload and a staged plan for the
-dispatcher (``{"version": 1, "nodes": [...], "dispatch": {...}}``, the
-format accepted by gh-aw's ``stagePlanIntents``).
+``controller.tick`` produces ``submit_work`` requests and the task of each
+Work, which it commits as a task file (``work_task``). This module turns the
+requests into the immutable gh-aw Work payload, which names that task file
+by reference, and a staged plan for the dispatcher (``{"version": 1,
+"nodes": [...], "dispatch": {...}}``, the format accepted by gh-aw's
+``stagePlanIntents``).
 
 Effect contracts. gh-aw v1.2.2 verifies only a fixed set of output types
 inside a queue Claim; a branch push to another repository is not one of
@@ -25,14 +27,14 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Callable
 
 import commit_rules
 import lifecycle
+import task_file
 import work_history
 from common import (
     CONTROL_REPO,
-    STATE_ROOT,
     canonical_json,
     load_policy,
     repository_root,
@@ -145,9 +147,10 @@ def task_data(request: dict, record: dict, *, allowed_paths: list[str],
 
 def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths: list[str],
             context: dict | None = None) -> dict:
-    """The Work payload as the trusted jobs read it: the task
-    (``task_data``) with the resource scope and the effect contract the
-    queue's Claim scope reads."""
+    """The Work as the trusted jobs read it, once resolved
+    (``task_file.resolve``): the task (``task_data``) with the resource scope
+    and the effect contract the queue's Claim scope reads. A Work queued
+    before task files existed carried exactly this inline."""
     return {**task_data(request, record, allowed_paths=allowed_paths, context=context),
             "resource_scope": {"version": 1, "resources": [
                 {"host": "github.com", "repository": CONTROL_REPO,
@@ -223,7 +226,45 @@ def request_from_active(rec: dict) -> dict | None:
     return request
 
 
+def queue_payload(request: dict, *, control_repo_id: str, reference: dict) -> dict:
+    """The payload the queue carries for one requested Work: its identity (the
+    fields the reconciler keys a Result on: task, contribution, revision,
+    generation, Work id, and the review contract), the reference to its task
+    file, and the two fields gh-aw's Claim scope reads (fixed per task kind). Its size is bounded
+    (``MAX_QUEUE_PAYLOAD_BYTES``), whatever the task."""
+    pl = {"version": 1, "task": request["task"], "contribution_id": request["contribution_id"],
+          "revision": request["revision"], "generation": request["generation"],
+          "dedupe_key": request["dedupe_key"], "task_file": reference,
+          "resource_scope": {"version": 1, "resources": [
+              {"host": "github.com", "repository": CONTROL_REPO,
+               "repository_id": str(control_repo_id)}]},
+          "effect_contract": effect_contract(request["task"])}
+    if request["task"] in REVIEWED_TASKS:
+        # What the reconciler reads of a Work whose Result could not be
+        # resolved (a payload without its task file): the Work identity, and
+        # the review contract that decides how its patch is published.
+        pl["review"] = "required"
+    return pl
+
+
+def queue_node(request: dict, pl: dict) -> dict:
+    """The queue node of a requested Work with its queue payload ``pl``."""
+    return {
+        "graph_id": graph_id(request["dedupe_key"]),
+        "node_key": "task",
+        "pool": POOL,
+        "priority": 2 if request["task"] in ("upstream_revision", "development_repair",
+                                             DEVELOPMENT_REVIEW) else 3,
+        "fairness_key": "",
+        "worker_profile": profile_for(request["task"]),
+        "payload": pl,
+        "depends_on": [],
+    }
+
+
 def node(request: dict, record: dict, **kw) -> dict:
+    """The queue node of a request with its payload inline (``payload``),
+    the form of Work queued before task files existed."""
     pl = payload(request, record, **kw)
     key = request["dedupe_key"]
     return {
@@ -385,35 +426,15 @@ def _plan_data(data: dict) -> dict:
     }
 
 
-def _plan_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", evidence_id) or "/" in evidence_id:
-        raise ValueError("invalid plan evidence ID")
-    if not re.fullmatch(r"[0-9a-f]{40}", control_ref):
-        raise ValueError("invalid immutable control ref")
-    relative = Path(STATE_ROOT) / "evidence" / f"{evidence_id}.json"
-    raw = (root / relative).read_bytes()
-    return {
-        "repository": CONTROL_REPO,
-        "ref": control_ref,
-        "path": relative.as_posix(),
-        "sha256": hashlib.sha256(raw).hexdigest(),
-        "url": (
-            f"https://raw.githubusercontent.com/{CONTROL_REPO}/{control_ref}/"
-            f"{relative.as_posix()}"
-        ),
-    }
-
-
-# The bytes of a Work payload the queue accepts with a margin (its limit is
-# 16384).
-MAX_PAYLOAD_BYTES = 15_500
-_HISTORY_PATH = re.compile(r"\.state/evidence/history-[0-9a-f]{32}\.json")
+# The bytes of a queue payload at most: gh-aw accepts 16384, and a payload that
+# names its task file takes about a kilobyte, whatever the task holds.
+MAX_QUEUE_PAYLOAD_BYTES = 2048
 
 
 def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
-                   plan_reference: Any) -> tuple[list[str], dict]:
-    """The allowed paths and the context of the payload of ``request``, as
-    the dispatcher builds them from the committed ``evidence``: the scope
+                   plan_reference: Callable[[str], dict]) -> tuple[list[str], dict]:
+    """The allowed paths and the context of the task of ``request``, as
+    the controller builds them (``work_task``) from the committed ``evidence``: the scope
     of the record (else the paths of its target contract), the reason
     evidence of the request (a plan named by ``plan_reference``, a callable
     of its evidence id), the commit rules and template sections of the
@@ -485,56 +506,6 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
 # The digits of the longest GitHub repository id (a signed 64-bit integer,
 # at most 9223372036854775807).
 CONTROL_REPO_ID_MAX_DIGITS = 19
-
-
-def payload_floor(record: dict, evidence: dict[str, dict] | None = None) -> int | None:
-    """The fewest bytes the payload of the record's requested Work can take
-    (as ``cmd_plan`` measures it): the payload built from the committed
-    ``evidence`` as the dispatcher builds it (``payload_inputs``: the
-    allowed paths, the reason evidence, the commit rules), with references
-    to the history and the plan of their exact size and the control
-    repository id at its longest (``CONTROL_REPO_ID_MAX_DIGITS``: the
-    dispatcher passes the real id, which the controller does not read), so
-    the floor is never below the payload the dispatcher builds. ``None`` when the
-    record holds no Work it could dispatch, or the payload cannot be built.
-    The controller names it when a dispatch fails, so that a payload over
-    ``MAX_PAYLOAD_BYTES`` (a long frozen tracking issue description) is a
-    visible cause."""
-    request = request_from_active(record)
-    if request is None:
-        return None
-    zero = "0" * 40
-    history = {"repository": CONTROL_REPO, "ref": zero,
-               "path": f".state/evidence/history-{'0' * 32}.json", "sha256": "0" * 64,
-               "evidence_id": f"history-{'0' * 32}"}
-
-    def plan_reference(evidence_id: str) -> dict:
-        path = f"{STATE_ROOT}/evidence/{evidence_id}.json"
-        return {"repository": CONTROL_REPO, "ref": zero, "path": path, "sha256": "0" * 64,
-                "url": f"https://raw.githubusercontent.com/{CONTROL_REPO}/{zero}/{path}"}
-    try:
-        allowed_paths, context = payload_inputs(request, record, evidence or {},
-                                                plan_reference=plan_reference)
-        if "generation" in request:
-            context["history"] = history
-        built = payload(request, record, control_repo_id="9" * CONTROL_REPO_ID_MAX_DIGITS,
-                        allowed_paths=allowed_paths, context=context)
-        return len(json.dumps(built, separators=(",", ":"), ensure_ascii=False).encode())
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _history_reference(root: Path, evidence_id: str, control_ref: str) -> dict:
-    """The history of a Work as its payload names it: the committed
-    ``work_history`` evidence at the pinned control commit, with its
-    SHA-256, which the trusted pre-agent step fetches and verifies."""
-    reference = _plan_reference(root, evidence_id, control_ref)
-    if not _HISTORY_PATH.fullmatch(reference["path"]):
-        raise ValueError("invalid history evidence path")
-    # The pre-agent step reads it by repository, ref and path: no URL, so
-    # the reference takes as few bytes of the payload as it can.
-    reference.pop("url", None)
-    return dict(reference, evidence_id=evidence_id)
 
 
 def _reason_item(evidence: dict) -> dict:
@@ -657,6 +628,31 @@ def rewrite_reference(evidence: dict | None) -> dict:
             "run_id": str(artifact["run_id"]), "artifact_id": int(artifact["artifact_id"])}
 
 
+def read_task_file(root: Path, request: dict, control_ref: str) -> dict:
+    """The reference to the committed task file of the requested Work, at the
+    commit ``control_ref``, from the file under ``root``: its SHA-256, after
+    checking that it is the task file of exactly this Work (its kind, its
+    evidence id and the Work identity it names). Raises ``ValueError`` when
+    the file is missing, unreadable or another Work's."""
+    if not re.fullmatch(r"[0-9a-f]{40}", control_ref):
+        raise ValueError("invalid immutable control ref")
+    reference = task_file.reference(request["dedupe_key"], control_ref, "0" * 64)
+    try:
+        raw = (root / reference["path"]).read_bytes()
+        document = json.loads(raw)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"the task file cannot be read: {error}") from error
+    data = (document or {}).get("data") if isinstance(document, dict) else None
+    if not isinstance(data, dict) or document.get("kind") != task_file.KIND \
+            or document.get("evidence_id") != reference["evidence_id"] \
+            or (data.get("dedupe_key"), data.get("generation"), data.get("task"),
+                data.get("contribution_id"), data.get("revision")) != (
+                request["dedupe_key"], request["generation"], request["task"],
+                request["contribution_id"], request["revision"]):
+        raise ValueError("the task file is not the task file of the requested Work")
+    return dict(reference, sha256=hashlib.sha256(raw).hexdigest())
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     import reconcile
 
@@ -685,53 +681,31 @@ def cmd_plan(args: argparse.Namespace) -> int:
             continue
         if len(nodes) >= policy["concurrency"]["coding_workers"]:
             break
-        # Every Work carries its history, which the controller tick records
-        # when it allocates the Work. Work whose history is not committed
-        # yet is not dispatched in this run; the next tick records it.
-        history_id = work_history.evidence_id(request["dedupe_key"])
-        if history_id not in snapshot.evidence:
+        # Every Work carries its history and its task file, which the
+        # controller tick records in the commit that allocates the Work. Work
+        # whose history or task file is not committed yet is not dispatched in
+        # this run; the next tick records it.
+        recorded = [(work_history.evidence_id(request["dedupe_key"]), "history"),
+                    (task_file.evidence_id(request["dedupe_key"]), "task file")]
+        missing = [name for eid, name in recorded if eid not in snapshot.evidence]
+        if missing:
             deferred.append({"contribution": record["contribution_id"], "task": request["task"],
-                             "reason": "history not recorded yet"})
+                             "reason": f"{' and '.join(missing)} not recorded yet"})
             continue
-        # A requested task that cannot be replayed is reported and skipped:
-        # one such record never blocks the dispatch of every other
-        # contribution. Its Work stays unclaimed, so the controller's
-        # dispatch recovery decides it.
-        if not record["upstream"].get("repository_id") or not record["upstream"].get(
-            "base_sha"
-        ):
-            skipped.append({"contribution": record["contribution_id"], "task": request["task"],
-                            "reason": "the upstream identity or base is not bound"})
-            continue
-        if not (record["active_work"].get("tracking_issue") or {}).get("url"):
-            skipped.append({"contribution": record["contribution_id"], "task": request["task"],
-                            "reason": "no frozen tracking-issue description"})
-            continue
-        # A Work this run cannot build (an evidence file missing at the
-        # pinned commit, a payload over the queue budget) is skipped and
-        # reported: one such record never fails the dispatch of the others.
+        # A Work whose task file cannot be read at the pinned commit is
+        # reported and skipped: one such record never blocks the dispatch of
+        # every other contribution. Its Work stays unclaimed, so the
+        # controller's dispatch recovery decides it.
         try:
-            allowed_paths, context = payload_inputs(
-                request, record, snapshot.evidence,
-                plan_reference=lambda eid: _plan_reference(root, eid, control_ref))
-            if history_id is not None:
-                # Everything tried before and the owner's steering: the
-                # trusted pre-agent step fetches it at the pinned commit and
-                # checks its digest.
-                context["history"] = _history_reference(root, history_id, control_ref)
-            nodes.append(node(request, record, control_repo_id=args.control_repo_id,
-                              allowed_paths=allowed_paths, context=context))
-            payload_bytes = len(
-                json.dumps(
-                    nodes[-1]["payload"], separators=(",", ":"), ensure_ascii=False
-                ).encode()
-            )
-            if payload_bytes > MAX_PAYLOAD_BYTES:
-                raise ValueError(
-                    f"requested task payload exceeds safe queue budget: {payload_bytes} bytes"
-                )
-        except (ValueError, OSError) as error:
-            del nodes[len(selected):]
+            reference = read_task_file(root, request, control_ref)
+            pl = queue_payload(request, control_repo_id=args.control_repo_id,
+                               reference=reference)
+            payload_bytes = len(json.dumps(pl, separators=(",", ":"), ensure_ascii=False).encode())
+            if payload_bytes > MAX_QUEUE_PAYLOAD_BYTES:
+                raise ValueError(f"the queue payload takes {payload_bytes} bytes, over "
+                                 f"{MAX_QUEUE_PAYLOAD_BYTES}")
+            nodes.append(queue_node(request, pl))
+        except ValueError as error:
             skipped.append({"contribution": record["contribution_id"], "task": request["task"],
                             "reason": str(error)[:300]})
             continue

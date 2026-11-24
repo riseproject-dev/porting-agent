@@ -195,11 +195,7 @@ class TestTick(unittest.TestCase):
                            "summary": "s", "data": {"proposal": {}}}}
 
     def allocate(self, **kw):
-        rec = dev.record("waiting_ci")
-        rec["tracking_issue"] = dict(
-            rec["tracking_issue"], description="d", description_digest="0" * 64,
-            url="https://github.com/riseproject-dev/porting-agent/issues/12")
-        return dev.tick(rec, verdict="failed", evidence=self.evidence(), **kw)
+        return dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence(), **kw)
 
     def test_the_task_file_is_staged_with_the_allocation_and_its_history(self):
         out = self.allocate()
@@ -220,6 +216,23 @@ class TestTick(unittest.TestCase):
         evidence = dict(self.evidence(), **staged)
         again = dev.tick(record, evidence=evidence)
         self.assertEqual(again.report["work_task"], [])
+
+    def test_a_task_file_recorded_after_the_request_launches_the_dispatcher(self):
+        """Work an earlier tick requested, whose history is recorded but not
+        its task file (the dispatcher defers it), gets the file in the next
+        tick and the dispatcher is launched at once."""
+        out = self.allocate()
+        record = dev.final(out, None)
+        evidence = dict(self.evidence(), **{e["evidence_id"]: e for k, e in out.staged
+                                            if k == "evidence" and e["kind"] != "task"})
+        again = dev.tick(record, evidence=evidence)
+        [entry] = again.report["work_task"]
+        self.assertIn("relaunch", entry["dispatch"])
+        self.assertEqual(again.report["dispatch_relaunch"],
+                         [{"type": "relaunch_dispatcher",
+                           "contribution_id": record["contribution_id"]}])
+        self.assertTrue([e for k, e in again.staged if k == "evidence" and e["kind"] == "task"])
+        self.assertEqual(out.report["dispatch_relaunch"], [])
 
     def test_the_task_files_share_the_byte_bound_of_the_histories(self):
         """A tick that spent its bytes on steering and histories records the
@@ -248,7 +261,9 @@ class TestTick(unittest.TestCase):
 
     def test_a_task_that_cannot_be_built_is_an_alert_of_the_pipeline(self):
         # A record that froze no description at intake.
-        out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
+        rec = dev.record("waiting_ci")
+        rec["tracking_issue"] = {"id": 5000, "number": 12}
+        out = dev.tick(rec, verdict="failed", evidence=self.evidence())
         alerts = [a["alert"] for a in out.report["controller"]["alerts"]]
         self.assertTrue(any("task file" in a and "not of the contribution" in a for a in alerts),
                         alerts)

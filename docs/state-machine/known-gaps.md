@@ -119,11 +119,11 @@ The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `reallocate_after_pipeline_failure` is taken for Work whose last Claim failed before its agent for a failure of the pipeline; `allocate_work_retry` and `exhaust_recovery` are refused for it.
 - **Required:** classify the failures of the jobs after the agent that the contribution cannot cause, and hold and reallocate their Work the same way.
 
-## A long request description makes its Work undispatchable
+## Work queued with its task inline is still accepted
 
-- **Where:** `work.payload` and `work.cmd_plan`.
-- **Today:** every Work payload carries the frozen tracking issue description in `context.tracking_issue`, and intake admits a description of up to 16384 bytes (`intake.max_request_bytes`), while the dispatcher keeps a payload within 15500 bytes (`work.MAX_PAYLOAD_BYTES`) of the queue's limit of 16384. The rest of a payload takes about 2 KB with its history reference, more with reason evidence, so a description over about 13 KB makes a payload over the budget. The dispatcher skips that one Work and reports it (`skipped`), and dispatches every other Work; the skipped Work is never claimed, so dispatch recovery relaunches the dispatcher (`retry_dispatch`) and then waits for a human (`exhaust_recovery`). The controller measures the smallest payload of the Work as the dispatcher builds it from the committed evidence (`work.payload_floor`), so both events, and the tracking issue entry of the wait, name the cause: the payload size, the size of the frozen description, and the length a new request must keep to. The frozen description cannot change, so the human can only make the request again with a shorter description.
-- **Required:** the description passed by reference like the history (the frozen description in the committed contribution record at the pinned commit, fetched and verified by the trusted pre-agent step and by the trusted gates that check it, such as the plan gate's description digest), or an intake limit that leaves the payload room.
+- **Where:** `task_file.resolve`.
+- **Today:** the queue carries a reference to the task file of a Work (`task_file`). A Work queued before task files existed carries its task inline (`instructions` and no `task_file`), and every reader accepts it unchanged, so a Work in flight when the change was deployed can finish. No Work is queued that way any more.
+- **Required:** remove the inline form once the queue replay shows no live graph with an inline payload.
 
 ## Steering edits whose last editor is unknown
 

@@ -35,6 +35,10 @@ Display names are title case without a prefix.
 | Agent Validation | `validate.yml` | Pull requests, pushes to `main` |
 | Website | `website.yml` | Pushes to `main`, pull requests that change `docs/`, manual dispatch |
 
+## What the queue carries
+
+The Dispatcher stages one node per requested Work whose payload is a fixed-size reference (the Work identity, the reference to its task file, the resource scope and the effect contract), not the task. The Planner, Worker and Reviewer resolve it in their trusted pre-agent step (`task_file.py resolve`, which prints only the evidence id of the task file) and again in the trusted job after the agent (`queue_result`), and Publish Retry resolves it again from the assignment of the original run. A task file that is missing, or is not the task file of the claim, fails the run in a step of its own that is not a contribution step, so it is a failure of the pipeline and charges nothing to the Work.
+
 ## Names are load-bearing
 
 `controller.yml` subscribes to completed runs of the Dispatcher, Planner, Worker, Reviewer, Reproduction Image, Fork Provisioning, Development PR, Publish Retry, Review Comment, and Handoff workflows by display name. The plan comment publisher accepts runs whose `GITHUB_WORKFLOW` is Planner or Publish Retry on dispatch, and Controller only when `PORTING_PLAN_RECOVERY=1` is set. Run discovery and dispatch otherwise address workflows by file name.

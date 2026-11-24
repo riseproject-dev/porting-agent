@@ -116,7 +116,7 @@ class TestWorkflowContracts(unittest.TestCase):
         checkout = next(
             step
             for step in worker["pre-agent-steps"]
-            if step.get("name") == "Check out the contribution fork at the expected head (read-only)"
+            if step.get("name") == "Resolve the task and fetch the pinned plan and history"
         )
         script = checkout["run"]
         self.assertEqual(checkout["env"]["GH_TOKEN"], "${{ github.token }}")
@@ -127,8 +127,34 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn('.kind == "plan" and .evidence_id == $id', script)
         prompt = (WORKFLOWS / "worker.md").read_text()
         self.assertIn("identifies the latest verified plan", prompt)
-        self.assertIn("data` is only its queue-safe index", prompt)
+        self.assertIn("data` is only its bounded index", prompt)
         self.assertIn("read the latest verified plan", prompt)
+
+    def test_every_agent_workflow_resolves_the_task_from_its_task_file(self):
+        """The queue carries a reference to the task: the pre-agent step writes
+        the claim and resolves it before any check reads the task, the
+        trusted jobs after the agent read the task ``queue_result`` resolved,
+        and no step reads the Work of the Claim into task.json."""
+        for name in ("worker", "planner", "reviewer"):
+            with self.subTest(workflow=name):
+                text = (WORKFLOWS / f"{name}.md").read_text()
+                self.assertIn('fs.writeFileSync("/tmp/gh-aw/agent/claim.json"', text)
+                self.assertNotIn('fs.writeFileSync("/tmp/gh-aw/agent/task.json"', text)
+                resolve = text.index("python3 task_file.py resolve --claim "
+                                     "/tmp/gh-aw/agent/claim.json")
+                self.assertLess(resolve, text.index("task=/tmp/gh-aw/agent/task.json"))
+                self.assertIn("--out /tmp/gh-aw/agent/task.json", text)
+                self.assertIn("jq '.claims[0].work' > ../in/claim.json", text)
+                self.assertNotRegex(text, r"claims\[0\]\.work[^\n]*> \.\./in/task\.json")
+                self.assertIn("            in/claim.json\n", text)
+                # Until queue_result resolves it, task.json is the claim.
+                post = text[text.index("jq '.claims[0].work' > ../in/claim.json"):]
+                self.assertLess(post.index("cp ../in/claim.json ../in/task.json"),
+                                post.index("python -m queue_result"))
+        retry = (WORKFLOWS / "publish-retry.yml").read_text()
+        self.assertIn("python -m queue_result", retry)
+        self.assertNotIn("claims[0].work", retry)
+        self.assertIn("            in/claim.json\n", retry)
 
     def test_worker_brackets_untrusted_output_with_stop_commands(self):
         worker = source("worker")
@@ -678,11 +704,12 @@ class TestWorkflowContracts(unittest.TestCase):
                                           joined):
                     # Only the standard-library pre-agent scripts of the agent
                     # workflows run on the runner's python3.
-                    self.assertIn(path.name, ("worker.md", "reviewer.md"))
+                    self.assertIn(path.name, ("worker.md", "reviewer.md", "planner.md"))
                     self.assertRegex(
                         direct.group(1).strip(),
-                        r'^python3 scripts/(pi_provider_credential\.py "\$RUNNER_TEMP/gh-aw/actions"'
-                        r'|held_patch\.py --task "\$task" --key (patch|previous_patch) )',
+                        r'^python3 (scripts/(pi_provider_credential\.py "\$RUNNER_TEMP/gh-aw/actions"'
+                        r'|held_patch\.py --task "\$task" --key (patch|previous_patch) )'
+                        r'|task_file\.py resolve --claim /tmp/gh-aw/agent/claim\.json)',
                     )
 
     def test_controller_follows_up_after_a_state_commit(self):

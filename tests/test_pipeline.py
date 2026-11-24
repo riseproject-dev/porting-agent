@@ -461,18 +461,27 @@ class TestDispatcherPayloadBudget(unittest.TestCase):
         self.assertIn("dependency", item["data"]["dependency_graph"]["assessment"])
         self.assertNotIn("research", item["data"])
 
-    def test_complete_plan_reference_is_immutable_and_digest_bound(self):
+    def test_complete_plan_reference_is_digest_bound_and_names_no_commit(self):
+        """The task file names the plan by path and SHA-256 of the committed
+        file; the commit is the one of the reference to the task file, which
+        the resolver adds (with the URL)."""
+        import work_task
+        evidence = {"plan-c-r10": {"evidence_id": "plan-c-r10", "kind": "plan",
+                                   "data": {"full": "research"}}}
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             path = root / ".state/evidence/plan-c-r10.json"
             path.parent.mkdir(parents=True)
             path.write_text('{"kind":"plan","evidence_id":"plan-c-r10","data":{"full":"research"}}\n')
-            reference = work._plan_reference(root, "plan-c-r10", "a" * 40)
+            reference = work_task._reference(
+                "plan-c-r10", work_task.file_digest_reader(root, evidence))
+            self.assertEqual(reference["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
         self.assertEqual(reference["path"], ".state/evidence/plan-c-r10.json")
-        self.assertEqual(reference["ref"], "a" * 40)
-        self.assertEqual(reference["repository"], "riseproject-dev/porting-agent")
-        self.assertIn("/" + "a" * 40 + "/.state/evidence/", reference["url"])
-        self.assertEqual(len(reference["sha256"]), 64)
+        self.assertEqual(set(reference), {"path", "sha256"})
+        # A plan not committed yet is digested as the store writes it.
+        staged = work_task.file_digest_reader(None, evidence)("plan-c-r10")
+        self.assertEqual(staged, hashlib.sha256(work_task.file_bytes(
+            evidence["plan-c-r10"])).hexdigest())
 
     def test_feedback_projection_preserves_response_ids_and_exact_paths(self):
         evidence = {"evidence_id": "review-1", "kind": "human_relay", "summary": "s" * 9000,

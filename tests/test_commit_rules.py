@@ -4,7 +4,6 @@
 apply them: the worker gate and the Work payload that carries them."""
 
 import copy
-import json
 import subprocess
 import tempfile
 import unittest
@@ -239,7 +238,7 @@ class TestWorkerGate(unittest.TestCase):
 
 
 class TestPayload(unittest.TestCase):
-    def test_the_payload_carries_the_rules_of_a_version_2_plan_only(self):
+    def work(self, **evidence):
         import work
         import work_history
         from tests.helpers import contribution
@@ -249,87 +248,46 @@ class TestPayload(unittest.TestCase):
         record["active_work"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
                                  "revision": 3, "attempt": 1, "requested_at": "2026-11-23T00:00:00+00:00",
                                  "deadline_at": "2026-11-23T06:00:00+00:00", "dispatched_run_id": None,
-                                 "reason_ids": [], "tracking_issue": {"url": "https://x"}, "feedback_evidence_ids": []}
+                                 "reason_ids": [], "tracking_issue": {"url": "https://x"},
+                                 "feedback_evidence_ids": []}
+        record["active_work"]["reason_ids"] = ["plan-x"]
+        return record, dict(evidence, **{work_history.evidence_id("k"): {}}), work
+
+    def test_the_task_carries_the_rules_of_a_version_2_plan_only(self):
+        import work_task
         for data, expected in ((plan(), commit_rules.from_plan(plan())),
                                (dict(plan(), schema_version=1), None)):
-            evidence = {"evidence_id": "plan-x", "kind": "plan", "data": copy.deepcopy(data)}
-            history = work_history.evidence_id("k")
-            snapshot = type("S", (), {"contributions": {"c": record},
-                                      "evidence": {"plan-x": evidence, history: {}}})
-            with tempfile.TemporaryDirectory() as directory, \
-                    unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
-                    unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
-                        [], 0, stdout="c" * 40)):
-                out = Path(directory) / "plan.json"
-                (Path(directory) / ".state" / "evidence").mkdir(parents=True)
-                (Path(directory) / ".state" / "evidence" / f"{history}.json").write_text("{}")
-                args = type("A", (), {"root": directory, "out": str(out), "control_repo_id": "1"})
-                work.cmd_plan(args)
-                context = json.loads(out.read_text())["nodes"][0]["payload"]["context"]
-            self.assertEqual(context.get("commit_rules"), expected)
-            self.assertEqual("commit_rules" in context, expected is not None)
+            plan_evidence = {"evidence_id": "plan-x", "kind": "plan", "data": copy.deepcopy(data)}
+            record, evidence, _work = self.work(**{"plan-x": plan_evidence})
+            task = work_task.build_data(record, evidence, file_digest=lambda eid: "0" * 64)
+            self.assertEqual(task["context"].get("commit_rules"), expected)
+            self.assertEqual("commit_rules" in task["context"], expected is not None)
 
-    def test_the_payload_floor_is_the_payload_the_dispatcher_builds(self):
-        """The controller's measure of the smallest payload counts every part
-        the dispatcher builds from the committed evidence: the allowed paths
-        of the target contract, the reason evidence (the plan with its
-        reference) and the commit rules of the plan."""
-        import work
-        import work_history
-        from tests.helpers import contribution
-        record = contribution(phase="development", activity="agent_running", revision=3)
-        record.update(plan_evidence_id="plan-x", target_contract_id="contract-x",
-                      scope_paths=None, upstream=dict(
-                          record["upstream"], repository_id=1, base_sha="a" * 40))
-        record["active_work"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
-                                 "revision": 3, "attempt": 1, "requested_at": "2026-11-23T00:00:00+00:00",
-                                 "deadline_at": "2026-11-23T06:00:00+00:00", "dispatched_run_id": None,
-                                 "reason_ids": ["plan-x"], "tracking_issue": {"url": "https://x"},
-                                 "feedback_evidence_ids": []}
-        history = work_history.evidence_id("k")
-        evidence = {
+    def test_the_task_is_built_from_the_committed_evidence_the_worker_needs(self):
+        """The task counts every part the controller builds from the
+        committed evidence: the allowed paths of the target contract, the
+        reason evidence (the plan with its reference) and the commit rules
+        of the plan."""
+        import work_task
+        record, evidence, _work = self.work(**{
             "plan-x": {"evidence_id": "plan-x", "kind": "plan", "summary": "s" * 1500,
                        "limitations": ["l" * 400] * 4, "data": plan()},
             "contract-x": {"evidence_id": "contract-x", "kind": "target_contract",
                            "data": {"allowed_paths": [f".github/workflows/w{i}.yml"
-                                                      for i in range(40)]}},
-            history: {}}
-        snapshot = type("S", (), {"contributions": {"c": record}, "evidence": evidence})
-        with tempfile.TemporaryDirectory() as directory, \
-                unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
-                unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
-                    [], 0, stdout="c" * 40)):
-            out = Path(directory) / "plan.json"
-            (Path(directory) / ".state" / "evidence").mkdir(parents=True)
-            for eid in (history, "plan-x"):
-                (Path(directory) / ".state" / "evidence" / f"{eid}.json").write_text("{}")
-            args = type("A", (), {"root": directory, "out": str(out),
-                                  "control_repo_id": "1" * work.CONTROL_REPO_ID_MAX_DIGITS})
-            work.cmd_plan(args)
-            payload = json.loads(out.read_text())["nodes"][0]["payload"]
-        self.assertEqual(len(payload["allowed_paths"]), 40)
-        self.assertIn("commit_rules", payload["context"])
-        self.assertEqual(payload["context"]["reason_evidence"][0]["evidence_id"], "plan-x")
-        size = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode())
-        self.assertEqual(work.payload_floor(record, evidence), size)
-        # A shorter real control repository id makes a smaller payload: the
-        # floor counts the longest id, so it is never below the payload.
-        args.control_repo_id = "1" * 9
-        with tempfile.TemporaryDirectory() as directory, \
-                unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
-                unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
-                    [], 0, stdout="c" * 40)):
-            (Path(directory) / ".state" / "evidence").mkdir(parents=True)
-            for eid in (history, "plan-x"):
-                (Path(directory) / ".state" / "evidence" / f"{eid}.json").write_text("{}")
-            args.root, args.out = directory, str(Path(directory) / "plan.json")
-            work.cmd_plan(args)
-            short = json.loads(Path(args.out).read_text())["nodes"][0]["payload"]
-        self.assertEqual(work.payload_floor(record, evidence) - len(json.dumps(
-            short, separators=(",", ":"), ensure_ascii=False).encode()), 10)
-        # Without the evidence, the floor misses those parts.
-        self.assertLess(work.payload_floor(record), size)
-
+                                                      for i in range(40)]}}})
+        record.update(target_contract_id="contract-x", scope_paths=None)
+        task = work_task.build_data(record, evidence, file_digest=lambda eid: "0" * 64)
+        self.assertEqual(len(task["allowed_paths"]), 40)
+        self.assertIn("commit_rules", task["context"])
+        [plan_item] = task["context"]["reason_evidence"]
+        self.assertEqual(plan_item["evidence_id"], "plan-x")
+        self.assertEqual(plan_item["reference"],
+                         {"path": ".state/evidence/plan-x.json", "sha256": "0" * 64})
+        # Without the evidence of the plan, the task has none of those parts.
+        bare, evidence, _work = self.work()
+        task = work_task.build_data(bare, evidence, file_digest=lambda eid: "0" * 64)
+        self.assertEqual(task["context"]["reason_evidence"], [])
+        self.assertNotIn("commit_rules", task["context"])
 
 
 class TestHeadings(unittest.TestCase):

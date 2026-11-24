@@ -46,14 +46,21 @@ class NoReadApi:
         raise collect.CollectError(f"GET {path}: not expected in this test")
 
 def committed_history(record: dict, policy_: dict | None = None) -> dict[str, dict]:
-    """The committed ``work_history`` evidence of the record's requested
-    Work, by evidence id, recorded when the Work was requested: what the
-    tick that allocated it committed with it."""
+    """The committed ``work_history`` and ``task`` evidence of the record's
+    requested Work, by evidence id, recorded when the Work was requested:
+    what the tick that allocated it committed with it."""
+    import task_file
     import work_history
     aw = record["active_work"]
     history = work_history.build(record, aw, {}, policy=policy_ or policy(),
                                  now=aw["requested_at"])
-    return {history["evidence_id"]: history}
+    # The task file the same tick committed: the dispatch recovery needs its
+    # id and the time it was recorded only.
+    task = {"schema_version": 1, "evidence_id": task_file.evidence_id(aw["dedupe_key"]),
+            "contribution_id": record["contribution_id"], "kind": "task",
+            "policy_version": "p", "collected_at": aw["requested_at"], "summary": "s",
+            "data": {}}
+    return {history["evidence_id"]: history, task["evidence_id"]: task}
 
 
 NOW = "2026-11-18T12:00:00+00:00"
@@ -106,7 +113,10 @@ def policy(**over):
 def contribution(phase="development", **over):
     rec = lifecycle.new_contribution(
         contribution_id="example--proj/12", project_id="example--proj",
-        issue={"id": 5000, "number": 12}, upstream="example/proj", distributions=["proj"],
+        issue={"id": 5000, "number": 12,
+               "url": "https://github.com/riseproject-dev/porting-agent/issues/12",
+               "description": "Upstream: example/proj", "description_digest": "d" * 64},
+        upstream="example/proj", distributions=["proj"],
         base_ref="main", policy_id="test", now=NOW)
     rec.update({
         "phase": phase,

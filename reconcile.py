@@ -218,15 +218,15 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     nothing is charged. A record in a state the table does not have is left
     unchanged and reported.
 
-    Work that carries a history is dispatched only once its history is
+    Work is dispatched only once its history and its task file are
     committed (``evidence``, the committed evidence; ``None`` skips this
-    check). While it is not, and for at most ``HISTORY_WAIT`` since the
+    check). While they are not, and for at most ``HISTORY_WAIT`` since the
     request, the dispatch is not decided: nothing is charged and nothing is
     launched, since the dispatcher defers that Work by design. After that it
-    is decided as above, so a history that is never recorded ends in the
-    human wait of ``exhaust_recovery``. Once the history is
+    is decided as above, so a history or a task file that is never recorded
+    ends in the human wait of ``exhaust_recovery``. Once both are
     committed, the dispatcher runs are counted from the later of the request
-    and the time the history was recorded.
+    and the time they were recorded.
 
     ``queue_retries`` (``queue_result.work_retries``) names the available
     Work whose earlier Claim ended without a Result (a worker run that was
@@ -290,14 +290,15 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                     and now - requested < HISTORY_WAIT:
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
                                "queue_state": state,
-                               "decision": "waiting for the history of the Work"})
+                               "decision": "waiting for the history and the task file of the Work"})
                 continue
             if isinstance(history, dict):
-                try:
-                    recorded = datetime.fromisoformat(str(history.get("collected_at")))
-                except ValueError:
-                    recorded = requested
-                requested = max(requested, recorded)
+                for record_ in (history, evidence[work_task.evidence_id(aw["dedupe_key"])]):
+                    try:
+                        recorded = datetime.fromisoformat(str(record_.get("collected_at")))
+                    except ValueError:
+                        recorded = requested
+                    requested = max(requested, recorded)
             retry = (queue_retries or {}).get(work.graph_id(aw["dedupe_key"])) \
                 if state == "available" else None
             if retry is not None:
@@ -420,7 +421,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
                                                   policy=policy,
                                                   history_missing=history is False,
-                                                  evidence=evidence, retry=retry)
+                                                  retry=retry)
             if new is None:
                 report.append(entry | {"decision": decision})
                 continue
@@ -772,10 +773,13 @@ def _created_before(created: Any, moment: datetime) -> bool:
 
 def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
     """The committed ``work_history`` evidence of the requested Work ``aw``,
-    ``False`` when it carries a history that is not committed yet, ``None``
-    when it names no Work id or ``evidence`` is not known."""
+    ``False`` when its history or its task file (``work_task``) is not
+    committed yet, ``None`` when it names no Work id or ``evidence`` is not
+    known."""
     if evidence is None or not aw.get("dedupe_key"):
         return None
+    if work_task.evidence_id(aw["dedupe_key"]) not in evidence:
+        return False
     return evidence.get(work_history.evidence_id(aw["dedupe_key"])) or False
 
 
@@ -851,18 +855,16 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
 
 
 def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
-                   policy: dict, history_missing: bool = False,
-                   evidence: dict[str, dict] | None = None, retry: dict | None = None
+                   policy: dict, history_missing: bool = False, retry: dict | None = None
                    ) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work that a dispatcher run left absent
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
     relaunches spent) remains, ``exhaust_recovery`` once it is
     spent. ``count`` is the number of dispatcher runs since the request,
     all ended. The row records the decided run in ``dispatched_run_id``.
-    ``evidence`` is the committed evidence the payload is measured from
-    (``payload_cause``). ``history_missing`` says that the history of the
-    Work was never recorded (``HISTORY_WAIT`` has passed), which the event states as the
-    cause in plain words. ``retry`` is the queue's retry of the Work after a
+    ``history_missing`` says that the history or the task file of the Work
+    was never recorded (``HISTORY_WAIT`` has passed), which the event states
+    as the cause in plain words. ``retry`` is the queue's retry of the Work after a
     worker run that ended without a Result (``queue_result.work_retries``),
     which the event states too."""
     iso = now.isoformat()
@@ -871,15 +873,15 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                             "not have")
     counts = {"dispatch_recovery": count}
     details = {"dispatcher_run": str(run["id"]), "work": aw["dedupe_key"]}
-    causes = [payload_cause(c, evidence)]
+    causes = []
     if history_missing:
         details["history"] = "never recorded"
         hours = int(HISTORY_WAIT.total_seconds()) // 3600
         causes.insert(0, (
-            f"the history of this Work was never recorded in the {hours} hours since it was "
-            "requested, and the dispatcher dispatches no Work without its history, so no "
-            "worker ever received it. The controller reports of those ticks say why the "
-            "history was not recorded"))
+            f"the history or the task file of this Work was never recorded in the {hours} hours "
+            "since it was requested, and the dispatcher dispatches no Work without them, so no "
+            "worker ever received it. The controller reports of those ticks say why they "
+            "were not recorded"))
     if retry is not None:
         details["queue_retry"] = {"attempts": retry["attempts"],
                                   "max_attempts": retry.get("max_attempts")}
@@ -911,28 +913,6 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
             return None, None, f"dispatch lost: {refused.detail}"
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("reconcile", "_lost_dispatch"))
-
-
-def payload_cause(record: dict, evidence: dict[str, dict] | None = None) -> str | None:
-    """Why the dispatcher cannot dispatch the record's Work, when the
-    controller can tell: its payload is over the queue's budget
-    (``work.MAX_PAYLOAD_BYTES``) at the least, since it carries the frozen
-    tracking issue description inline. The dispatcher skips such Work and
-    dispatches every other; the event of the dispatch recovery names the
-    cause, so the tracking issue entry of the human wait says what to do.
-    The payload is measured from the committed ``evidence`` as the
-    dispatcher builds it (``work.payload_floor``)."""
-    floor = work.payload_floor(record, evidence)
-    if floor is None or floor <= work.MAX_PAYLOAD_BYTES:
-        return None
-    description = ((record.get("active_work") or {}).get("tracking_issue") or {}).get(
-        "description") or ""
-    size = len(json.dumps(description, ensure_ascii=False).encode()) - 2
-    return (f"the Work payload takes at least {floor} bytes, over the queue's budget of "
-            f"{work.MAX_PAYLOAD_BYTES}, because it carries the frozen tracking issue "
-            f"description ({size} bytes) inline: the dispatcher skips this Work. The frozen "
-            "description cannot change, so the request must be made again with a description "
-            f"of at most about {max(0, size - (floor - work.MAX_PAYLOAD_BYTES))} bytes")
 
 
 def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
@@ -3797,13 +3777,18 @@ def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snaps
     that records the history: the record as this tick leaves it is used, so
     Work allocated in this tick is covered. A Work whose history is not
     recorded (a steering read failed) gets its task file with it in a later
-    tick, and one whose task cannot be built raises an alert."""
+    tick, and one whose task cannot be built raises an alert. The tick that
+    records the task file of Work an earlier tick requested asks for a
+    dispatcher launch (``dispatch_relaunch``), like the tick that records its
+    history."""
     latest = {c["contribution_id"]: c for c in contributions.values()}
     for kind, record in out.staged:
         if kind == "contributions":
             latest[record["contribution_id"]] = record
     evidence = dict(snap.evidence)
     evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
+    submitted = {item.get("dedupe_key") for item in out.report.get("requested_effects") or []
+                 if item.get("type") == "submit_work"}
     digest = work_task.file_digest_reader(
         snap.root, evidence,
         frozenset(r["evidence_id"] for kind, r in out.staged if kind == "evidence"))
@@ -3848,8 +3833,17 @@ def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snaps
             evidence[eid] = task_record
             out.staged.append(("evidence", task_record))
             budget -= len(canonical_json(task_record).encode())
-            report.append({"contribution": cid, "work": request["dedupe_key"],
-                           "evidence_id": eid})
+            entry = {"contribution": cid, "work": request["dedupe_key"], "evidence_id": eid}
+            if request["dedupe_key"] not in submitted:
+                # The Work was requested by an earlier tick and the
+                # dispatcher deferred it while its task file was missing: the
+                # dispatcher is launched once it is committed, without
+                # waiting for dispatch recovery.
+                entry["dispatch"] = "relaunch: the task file was recorded after the request"
+                launches = out.report.setdefault("dispatch_relaunch", [])
+                if not launches:
+                    launches.append({"type": "relaunch_dispatcher", "contribution_id": cid})
+            report.append(entry)
     return report
 
 

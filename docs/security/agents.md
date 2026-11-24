@@ -39,6 +39,10 @@ The worker runs unsandboxed, so credentials are removed rather than fenced off.
 
 A separate trusted publish job, never the model, reconstructs and publishes a verified proposal with a token narrowed to one fork. For a development patch it mints none, since the patch is held for [review]({{ '/pipeline/patch-review/' | relative_url }}).
 
+## What an agent is given
+
+An agent reads the task a trusted pre-agent step resolved from the task file the controller committed to the control repository (`/tmp/gh-aw/agent/task.json`), after the step checked its SHA-256 and the Work identity of the claim. The plan, the history, the held patch and the report the task names are fetched and checked by digest in the same way. The task and everything it names is data: the model reads it, and nothing in it widens the allowed paths, the allowed operations, or where and what is pushed. The model never reads the work queue.
+
 ## Known gaps
 
 The accepted risks of the unsandboxed agents and of the reviewer's sandbox are listed under [Accepted risks and open gaps]({{ '/security/' | relative_url }}#accepted-risks-and-open-gaps). The worker's `::stop-commands::` pair covers only its own pre-agent step and post-step, so it protects nothing in the agent step.

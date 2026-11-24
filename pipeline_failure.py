@@ -27,7 +27,10 @@ ACTIVATION_JOB = "activation"
 
 # The pre-agent steps, by workflow file, that depend on the contribution: a
 # failure in one of them is the contribution's. Every other step before the
-# agent is the pipeline's (the setup of gh-aw, the gateway, the tools). The
+# agent is the pipeline's (the setup of gh-aw, the gateway, the tools, and the
+# step that resolves the task file and fetches the plan, the history and the
+# report the controller committed, at their pinned commit and digest: a
+# missing or mismatching one is no fault of the contribution). The
 # worker's "Resolve anonymous reproduction image" pulls one fixed image of the
 # pipeline (`worker.md`): it is the pipeline's. So are the reviewer's "Make the
 # code that the steps after the agent run unwritable by the agent" and "Seal the
@@ -40,11 +43,10 @@ CONTRIBUTION_STEPS: dict[str, frozenset[str]] = {
         "Check out the contribution fork at the expected head (read-only)",
     }),
     "reviewer.lock.yml": frozenset({
-        "Fetch and verify the held patch, its report, the plan and the history",
+        "Fetch and verify the held patch",
         "Check out the fork and rebuild the held patch (read-only)",
     }),
     "planner.lock.yml": frozenset({
-        "Read the Work and its history",
         "Check out the upstream project (read-only)",
     }),
     "dispatcher.lock.yml": frozenset(),

@@ -19,7 +19,7 @@ Every development patch is reviewed before it is published. The reviewer is a se
 
 ## Which patches are reviewed
 
-The Work payload of a development patch or repair carries the review contract (`review: required`). Its trusted publish job rebuilds and validates the series exactly as for a push, without a token (`fork_publish verify`), and publishes nothing.
+The task of a development patch or repair carries the review contract (`review: required`). Its trusted publish job rebuilds and validates the series exactly as for a push, without a token (`fork_publish verify`), and publishes nothing.
 
 ## The held patch
 
@@ -83,4 +83,4 @@ See [The review of a development patch]({{ '/state-machine/engine/' | relative_u
 
 Every review, passed or failed, is stored as `patch_review` evidence and is part of the history of every later Work and review.
 
-A failed review that returns the patch for repair is also the pending feedback of the next development Work. That Work's payload names the rejected series (`context.previous_patch`). Its trusted pre-agent step downloads the series and checks it by digest, so the worker amends it. An expired artifact is skipped.
+A failed review that returns the patch for repair is also the pending feedback of the next development Work. That Work's task names the rejected series (`context.previous_patch`). Its trusted pre-agent step downloads the series and checks it by digest, so the worker amends it. An expired artifact is skipped.

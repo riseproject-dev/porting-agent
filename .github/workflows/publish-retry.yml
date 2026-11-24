@@ -219,6 +219,7 @@ jobs:
           name: porting-publication
           path: |
             in/assignment.json
+            in/claim.json
             in/task.json
             in/result.json
             in/preflight.json

@@ -51,7 +51,7 @@ The trusted gate refuses a plan that:
 
 ## How the rules are enforced
 
-**Commit rules.** The Work payload carries the plan's measurable commit rules as `context.commit_rules`, taken by the trusted planner from the committed plan evidence. Before any token, the worker gate checks every non-debug commit of the proposed series against them and rejects the series with the rule each commit breaks. A plan of schema version 1 records none.
+**Commit rules.** The task of the Work carries the plan's measurable commit rules as `context.commit_rules`, taken by the trusted planner from the committed plan evidence. Before any token, the worker gate checks every non-debug commit of the proposed series against them and rejects the series with the rule each commit breaks. A plan of schema version 1 records none.
 
 **Attribution trailers.** The gate also rejects any attribution trailer that does not name the App's commit identity. That covers `Signed-off-by:`, `Co-authored-by:`, `Reviewed-by:`, and every other `*-by:` line, including a trailer in the title and trailers written with Unicode lookalikes of the key or the colon. It rejects an attribution trailer continued on a line that starts with white space. The worker commits as the App and attributes work to nobody else.
 

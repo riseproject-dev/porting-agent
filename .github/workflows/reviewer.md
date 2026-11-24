@@ -210,7 +210,7 @@ safe-outputs:
 # there through a link in the staging directory, so the step puts a
 # root-owned file that throws in its place.
 pre-agent-steps:
-  - name: Fetch and verify the held patch, its report, the plan and the history
+  - name: Resolve the task and fetch the pinned plan, history and report
     env:
       GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
       GH_TOKEN: ${{ github.token }}
@@ -225,8 +225,15 @@ pre-agent-steps:
       if (a.claims.length !== 1) throw new Error("porting reviewer takes exactly one Claim");
       const w = a.claims[0].work;
       fs.mkdirSync("/tmp/gh-aw/agent", { recursive: true });
-      fs.writeFileSync("/tmp/gh-aw/agent/task.json", JSON.stringify(w, null, 2));
+      fs.writeFileSync("/tmp/gh-aw/agent/claim.json", JSON.stringify(w, null, 2));
       JS
+      # The claim's payload names the task file the controller committed to
+      # the control repository (or, for Work queued before task files
+      # existed, carries the task inline): the task is read at the pinned
+      # commit, checked against the claim, and every later check reads it.
+      # Only its evidence id is printed, never its content.
+      python3 task_file.py resolve --claim /tmp/gh-aw/agent/claim.json \
+        --out /tmp/gh-aw/agent/task.json
       task=/tmp/gh-aw/agent/task.json
       [ "$(jq -r .task "$task")" = development_review ] || { echo "the reviewer only takes development_review tasks"; exit 1; }
       # A committed evidence file at the pinned control commit, checked
@@ -270,6 +277,13 @@ pre-agent-steps:
       if jq -e '.context.report != null' "$task" >/dev/null; then
         fetch_evidence .context.report worker_report /tmp/gh-aw/agent/report.json
       fi
+  - name: Fetch and verify the held patch
+    env:
+      GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
+      GH_TOKEN: ${{ github.token }}
+    run: |
+      set -euo pipefail
+      task=/tmp/gh-aw/agent/task.json
       # The held patch: the series of the trusted publication artifact the
       # held patch pins (of the worker run, or of the publish-only retry
       # that verified it again), downloaded with this job's read token and
@@ -653,8 +667,11 @@ jobs:
           set -euo pipefail
           mkdir -p ../in
           printf '%s' "$ASSIGNMENT" > ../in/assignment.json
-          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/task.json
-          [ "$(jq -r .task ../in/task.json)" = development_review ] \
+          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/claim.json
+          # Until its task file is resolved (`queue_result`), task.json is the
+          # claim's payload, which names the Work in every form it has.
+          cp ../in/claim.json ../in/task.json
+          [ "$(jq -r .task ../in/claim.json)" = development_review ] \
             || { echo "the reviewer only takes development_review tasks"; exit 1; }
           rc=0
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || rc=3
@@ -688,6 +705,7 @@ jobs:
           name: porting-publication
           path: |
             in/assignment.json
+            in/claim.json
             in/task.json
             in/result.json
             in/outcome.json
@@ -728,8 +746,9 @@ the patch rebuilds on the expected head and passes the trusted validation,
 and holds it unpublished until your review. You read and diff; you change
 no repository, run no reproduction, and write no code for the patch.
 
-The trusted pre-agent steps wrote the immutable task to
-`/tmp/gh-aw/agent/task.json` and prepared, each checked against the digest
+The trusted pre-agent steps resolved the immutable task from its task file in
+the control repository (checked against its SHA-256 and the Work identity of the claim),
+wrote it to `/tmp/gh-aw/agent/task.json` and prepared, each checked against the digest
 the task names:
 
 - `./fork`, a Git repository with the branches `base` (the frozen upstream

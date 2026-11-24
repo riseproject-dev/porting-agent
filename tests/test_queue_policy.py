@@ -277,42 +277,58 @@ class TestDispatchWhilePolicyRefuses(unittest.TestCase):
 
 
 class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
-    def test_a_record_without_identity_never_blocks_another(self):
-        def requested(cid, issue, *, bound):
+    def test_a_task_file_that_is_not_the_works_never_blocks_another(self):
+        """The dispatcher reads the task file of each Work at the pinned
+        commit: a Work whose file is not its own is skipped and reported, and
+        every other Work is dispatched."""
+        import task_file
+
+        def requested(cid, issue):
             record = contribution(phase="planning", activity="agent_running", revision=1,
                                   contribution_id=cid)
             record["tracking_issue"] = {"id": issue, "number": issue}
-            if not bound:
-                record["upstream"] = dict(record["upstream"], repository_id=None, base_sha=None)
             record["active_work"] = {
                 "dedupe_key": f"{cid}@1:planning", "task": "planning", "revision": 1,
                 "attempt": 1, "requested_at": NOW, "deadline_at": NOW,
                 "dispatched_run_id": None, "reason_ids": [], "generation": 0,
                 "feedback_evidence_ids": [], "tracking_issue": {"url": "https://x"}}
             return record
-        histories = {work_history.evidence_id(f"{cid}@1:planning"): {}
-                     for cid in ("example--a/1", "example--b/2")}
-        snapshot = type("S", (), {"contributions": {
-            "a": requested("example--a/1", 1, bound=False),
-            "b": requested("example--b/2", 2, bound=True)}, "evidence": histories})
+        ids = ("example--a/1", "example--b/2")
+        records = {"a": requested(ids[0], 1), "b": requested(ids[1], 2)}
+        recorded = {}
+        for cid in ids:
+            key = f"{cid}@1:planning"
+            for eid in (work_history.evidence_id(key), task_file.evidence_id(key)):
+                recorded[eid] = {}
+        snapshot = type("S", (), {"contributions": records, "evidence": recorded})
         with tempfile.TemporaryDirectory() as directory, \
                 unittest.mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
                 unittest.mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                     [], 0, stdout="c" * 40)), \
                 unittest.mock.patch("builtins.print") as printed:
             out = Path(directory) / "plan.json"
-            (Path(directory) / ".state" / "evidence").mkdir(parents=True)
-            for history_id in histories:
-                (Path(directory) / ".state" / "evidence" / f"{history_id}.json").write_text("{}")
+            evidence = Path(directory) / ".state" / "evidence"
+            evidence.mkdir(parents=True)
+            for cid in ids:
+                key = f"{cid}@1:planning"
+                (evidence / f"{work_history.evidence_id(key)}.json").write_text("{}")
+                # The file of the first Work is another Work's task file.
+                owner = ids[1] if cid == ids[0] else cid
+                (evidence / f"{task_file.evidence_id(key)}.json").write_text(json.dumps({
+                    "kind": "task", "evidence_id": task_file.evidence_id(key),
+                    "data": {"dedupe_key": f"{owner}@1:planning", "generation": 0,
+                             "revision": 1, "task": "planning",
+                             "contribution_id": owner}}))
             args = type("A", (), {"root": directory, "out": str(out), "control_repo_id": "1"})
             self.assertEqual(work.cmd_plan(args), 0)
             nodes = json.loads(out.read_text())["nodes"]
         self.assertEqual([n["payload"]["contribution_id"] for n in nodes], ["example--b/2"])
+        self.assertEqual(nodes[0]["payload"]["task_file"]["ref"], "c" * 40)
         report = json.loads(printed.call_args.args[0])
         self.assertEqual([s["contribution"] for s in report["selected"]], ["example--b/2"])
         self.assertEqual(report["skipped"], [{
             "contribution": "example--a/1", "task": "planning",
-            "reason": "the upstream identity or base is not bound"}])
+            "reason": "the task file is not the task file of the requested Work"}])
 
 
 if __name__ == "__main__":

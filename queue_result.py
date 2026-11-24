@@ -24,6 +24,11 @@ exact Work and Claim:
 
 That output's artifact ID, name and digest are the only artifact the
 publisher may download, and its bytes must match the digest.
+
+The claimed Work is written as ``claim.json`` and resolved into ``task.json``:
+its payload names the task file the controller committed
+(``task_file.resolve``), which is read at the pinned commit and checked
+against the claim.
 """
 
 from __future__ import annotations
@@ -34,6 +39,9 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+import schemas
+import task_file
 
 # Native safe-output tool accepts path, not a name override. Uploading the
 # porting-out directory yields claim-<hash>-porting-out.
@@ -338,11 +346,15 @@ def main(argv=None) -> int:
         check_artifact_metadata(api.get(f"/repos/{a.repo}/actions/artifacts/{art.artifact_id}"), art)
         data = api.get_bytes(f"/repos/{a.repo}/actions/artifacts/{art.artifact_id}/zip")
         check_bytes(data, art)
-    except ResultError as e:
+        # The task of the claimed Work: read from the task file its payload
+        # names, at the pinned commit, and checked against the claim.
+        task = task_file.resolve(m["work"], validate=lambda t: schemas.validate("task", t))
+    except (ResultError, task_file.Refused) as e:
         print(f"no publish: {e}", file=sys.stderr)
         _write_status(a.out, "rejected", "validation", str(e))
         return 1
     except (CollectError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+        # (``task_file.Unavailable`` is an OSError)
         # Could not reach GitHub or the CLI failed: retry later, same artifact.
         print(f"no publish (infrastructure): {e}", file=sys.stderr)
         _write_status(a.out, "infra_error", "infrastructure", str(e))
@@ -350,7 +362,8 @@ def main(argv=None) -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "proposal.zip").write_bytes(data)
     (a.out / "result.json").write_text(json.dumps(art.__dict__, indent=2))
-    (a.out / "task.json").write_text(json.dumps(m["work"], indent=2))
+    (a.out / "claim.json").write_text(json.dumps(m["work"], indent=2))
+    (a.out / "task.json").write_text(json.dumps(task, indent=2))
     print(json.dumps(art.__dict__))
     return 0
 

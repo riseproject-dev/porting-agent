@@ -29,7 +29,7 @@ Every patch, repair, revision, submission rewrite, and submission review Work al
 
 ## When a report is required
 
-The worker gate and the submission checks (`--report`) require the report whenever the payload carries `context.history`. It must name the contribution, revision, task, and the digest of the history the Work carried. The publish job and the publish-only retry pass it on in `porting-publication`.
+The worker gate and the submission checks (`--report`) require the report whenever the task carries `context.history`. It must name the contribution, revision, task, and the digest of the history the Work carried. The publish job and the publish-only retry pass it on in `porting-publication`.
 
 ## How reports are stored
 
@@ -42,9 +42,9 @@ Two [Known Gaps]({{ '/state-machine/known-gaps/' | relative_url }}) concern repo
 
 ## The contribution history
 
-Every Work payload, planning included, carries `context.history`:
+The task of every Work, planning included, carries `context.history`:
 
-- the repository and the pinned control commit;
+- the repository and the pinned control commit, which the reference to the task file names;
 - the path, `.state/evidence/history-<32 hex>.json`;
 - the SHA-256 and the evidence id of the `work_history` evidence the controller recorded when it allocated the Work.
 

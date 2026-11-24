@@ -189,7 +189,7 @@ pre-agent-steps:
       token="porting-stop-$(openssl rand -hex 32)"
       echo "token=$token" >> "$GITHUB_OUTPUT"
       printf '::stop-commands::%s\n' "$token"
-  - name: Check out the contribution fork at the expected head (read-only)
+  - name: Resolve the task and fetch the pinned plan and history
     env:
       GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
       GH_TOKEN: ${{ github.token }}
@@ -204,8 +204,15 @@ pre-agent-steps:
       if (a.claims.length !== 1) throw new Error("porting worker takes exactly one Claim");
       const w = a.claims[0].work;
       fs.mkdirSync("/tmp/gh-aw/agent", { recursive: true });
-      fs.writeFileSync("/tmp/gh-aw/agent/task.json", JSON.stringify(w, null, 2));
+      fs.writeFileSync("/tmp/gh-aw/agent/claim.json", JSON.stringify(w, null, 2));
       JS
+      # The claim's payload names the task file the controller committed to
+      # the control repository (or, for Work queued before task files
+      # existed, carries the task inline): the task is read at the pinned
+      # commit, checked against the claim, and every later check reads it.
+      # Only its evidence id is printed, never its content.
+      python3 task_file.py resolve --claim /tmp/gh-aw/agent/claim.json \
+        --out /tmp/gh-aw/agent/task.json
       task=/tmp/gh-aw/agent/task.json
       plan_count=$(jq '[.context.reason_evidence[]? | select(.kind == "plan" and .reference)] | length' "$task")
       [ "$plan_count" -le 1 ] || { echo "multiple plan references"; exit 1; }
@@ -252,6 +259,13 @@ pre-agent-steps:
           /tmp/gh-aw/agent/history.json >/dev/null || { echo "history identity mismatch"; exit 1; }
         echo "verified history $evidence_id at /tmp/gh-aw/agent/history.json"
       fi
+  - name: Check out the contribution fork at the expected head (read-only)
+    env:
+      GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
+      GH_TOKEN: ${{ github.token }}
+    run: |
+      set -euo pipefail
+      task=/tmp/gh-aw/agent/task.json
       if jq -e '.context.previous_patch != null' "$task" >/dev/null; then
         # The patch the newest review of this Work's feedback rejected: its
         # series, from the publication artifact the review pinned, checked
@@ -401,8 +415,11 @@ jobs:
           set -euo pipefail
           mkdir -p ../in
           printf '%s' "$ASSIGNMENT" > ../in/assignment.json
-          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/task.json
-          [ "$(jq -r .task ../in/task.json)" != planning ] \
+          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/claim.json
+          # Until its task file is resolved (`queue_result`), task.json is the
+          # claim's payload, which names the Work in every form it has.
+          cp ../in/claim.json ../in/task.json
+          [ "$(jq -r .task ../in/claim.json)" != planning ] \
             || { echo "planning tasks run in the planner"; exit 1; }
           rc=0
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || rc=3
@@ -549,6 +566,7 @@ jobs:
           name: porting-publication
           path: |
             in/assignment.json
+            in/claim.json
             in/task.json
             in/result.json
             in/outcome.json
@@ -597,14 +615,15 @@ sandbox:
 # riscv64 porting worker
 
 You handle exactly one task for the RISE riscv64 porting
-pipeline. The trusted pre-agent step wrote the immutable task to
-`/tmp/gh-aw/agent/task.json` and checked out the contribution's development
+pipeline. The trusted pre-agent step resolved the immutable task from its task file in
+the control repository, checked against its SHA-256 and the Work identity of the claim,
+wrote it to `/tmp/gh-aw/agent/task.json` and checked out the contribution's development
 branch (`riscv64-dev`, or `riscv64` for an upstream revision) in `./fork`. The task's
 `instructions` field says what to do; `reason_ids` and `context` say why. For repair and
 revision tasks, read every entry in `context.reason_evidence` before researching
 or editing. A `plan` evidence entry identifies the latest verified plan.
 Its complete authoritative record is committed at the immutable `reference`;
-`data` is only its queue-safe index. The trusted pre-agent step fetches that
+`data` is only its bounded index. The trusted pre-agent step fetches that
 exact-ref file, verifies its SHA-256 and evidence identity, and writes it to
 `/tmp/gh-aw/agent/plan.json`. You MUST read the latest verified plan from
 that complete local file when it exists. The reference also contains its

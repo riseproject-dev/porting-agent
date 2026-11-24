@@ -16,8 +16,10 @@ from unittest import mock
 import collect
 import isolation
 import state
+import task_file
 import work
 import work_history
+import work_task
 from common import canonical_json
 from tests import test_development_table as dev
 from tests.helpers import NOW, SHA_A, SHA_B, ci_record, command, contribution, policy
@@ -918,7 +920,7 @@ class TestTick(unittest.TestCase):
                     self.assertNotIn("retry_dispatch", dev.kinds(out))
                     if minutes:
                         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
-                                         "waiting for the history of the Work")
+                                         "waiting for the history and the task file of the Work")
         self.assertEqual(calls, [False] * 5 + [True])
         history = evidence[eid]
         self.assertEqual(history["data"]["steering_unreadable"],
@@ -977,7 +979,8 @@ class TestTick(unittest.TestCase):
 
 
 class TestPayload(unittest.TestCase):
-    """The dispatcher gives every Work its history by reference."""
+    """The dispatcher gives every Work a reference to its task file, which
+    names its history."""
 
     def plan(self, evidence, record, root):
         snapshot = type("S", (), {"contributions": {"c": record}, "evidence": evidence})
@@ -1001,52 +1004,72 @@ class TestPayload(unittest.TestCase):
                               "tracking_issue": {"url": "https://x", "description": description}}
         return rec
 
-    def test_the_payload_names_the_committed_history(self):
-        eid = work_history.evidence_id(WORK["dedupe_key"])
+    def commit(self, root, record):
+        """The history and the task file of the Work of ``record`` as the
+        tick commits them under ``root``: the evidence by id."""
+        key = record["active_work"]["dedupe_key"]
+        history = work_history.evidence_id(key)
+        evidence = {history: {"evidence_id": history, "kind": "work_history"}}
+        directory = Path(root) / ".state" / "evidence"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{history}.json").write_bytes(work_task.file_bytes(evidence[history]))
+        task = work_task.build(record, evidence, policy=POLICY, now=NOW,
+                               file_digest=work_task.file_digest_reader(Path(root), evidence))
+        (directory / f"{task['evidence_id']}.json").write_bytes(work_task.file_bytes(task))
+        evidence[task["evidence_id"]] = task
+        return evidence
+
+    def test_the_payload_names_the_committed_task_file(self):
         with tempfile.TemporaryDirectory() as root:
-            path = Path(root) / ".state" / "evidence" / f"{eid}.json"
-            path.parent.mkdir(parents=True)
-            path.write_text('{"kind": "work_history"}')
-            selection, plan = self.plan({eid: {}}, self.record("x" * 4000), root)
+            record = self.record("x" * 4000)
+            evidence = self.commit(root, record)
+            selection, plan = self.plan(evidence, record, root)
             self.assertEqual(selection["selected"][0]["task"], "development_repair")
             payload = plan["nodes"][0]["payload"]
-            history = payload["context"]["history"]
-            self.assertEqual(history["path"], f".state/evidence/{eid}.json")
-            self.assertEqual((history["evidence_id"], history["ref"], history["repository"]),
-                             (eid, "c" * 40, "riseproject-dev/porting-agent"))
+            tid = work_task.evidence_id(WORK["dedupe_key"])
+            reference = payload["task_file"]
+            self.assertEqual(reference["path"], f".state/evidence/{tid}.json")
+            self.assertEqual((reference["evidence_id"], reference["ref"],
+                              reference["repository"]),
+                             (tid, "c" * 40, "riseproject-dev/porting-agent"))
             import hashlib
-            self.assertEqual(history["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
-            self.assertLess(len(json.dumps(payload, separators=(",", ":")).encode()), 15_500)
-            # Steering never widens the Work.
-            self.assertFalse(payload["review_scope_extension"])
-            self.assertEqual(payload["allowed_operations"], ["append", "rewrite"])
+            self.assertEqual(reference["sha256"], hashlib.sha256(
+                (Path(root) / reference["path"]).read_bytes()).hexdigest())
+            # A reference of a fixed size, however long the description is.
+            self.assertLess(len(json.dumps(payload, separators=(",", ":")).encode()),
+                            work.MAX_QUEUE_PAYLOAD_BYTES)
+            self.assertNotIn("context", payload)
+            # The resolved task names the history, and steering never widens
+            # the Work.
+            task = task_file.resolve(
+                payload, lambda repository, ref, path: (Path(root) / path).read_bytes())
+            self.assertEqual(task["context"]["history"]["evidence_id"],
+                             work_history.evidence_id(WORK["dedupe_key"]))
+            self.assertEqual(task["context"]["tracking_issue"]["description"], "x" * 4000)
+            self.assertFalse(task["review_scope_extension"])
+            self.assertEqual(task["allowed_operations"], ["append", "rewrite"])
 
-    def test_the_history_reference_carries_no_url(self):
-        eid = work_history.evidence_id(WORK["dedupe_key"])
+    def test_the_history_reference_of_the_task_file_carries_no_url_or_commit(self):
         with tempfile.TemporaryDirectory() as root:
-            path = Path(root) / ".state" / "evidence" / f"{eid}.json"
-            path.parent.mkdir(parents=True)
-            path.write_text("{}")
-            _selection, plan = self.plan({eid: {}}, self.record(), root)
-        self.assertEqual(set(plan["nodes"][0]["payload"]["context"]["history"]),
-                         {"repository", "ref", "path", "sha256", "evidence_id"})
+            record = self.record()
+            evidence = self.commit(root, record)
+            self.plan(evidence, record, root)
+            tid = work_task.evidence_id(WORK["dedupe_key"])
+            document = json.loads((Path(root) / f".state/evidence/{tid}.json").read_text())
+        self.assertEqual(set(document["data"]["context"]["history"]),
+                         {"path", "sha256", "evidence_id"})
 
-    def test_a_payload_at_the_largest_description_never_fails_the_dispatch(self):
-        """A request description at the intake limit (16384 bytes) makes a
-        payload over the queue budget: that Work is skipped and reported,
-        and every other Work is dispatched."""
+    def test_the_largest_description_is_dispatched_like_any_other(self):
+        """A request description at the intake limit (16384 bytes) took the
+        payload over the queue's budget when it was carried inline: the task
+        file holds it, and the payload is the same size as any other."""
         largest = self.record("\u00e9" * (POLICY["intake"]["max_request_bytes"] // 2))
         other = self.record("short")
         other["contribution_id"] = "other--lib/13"
         other["active_work"] = dict(other["active_work"], dedupe_key="other--lib/13@g0.r4:"
                                     "development_repair", requested_at="2026-11-19T00:00:00Z")
         with tempfile.TemporaryDirectory() as root:
-            for key in (WORK["dedupe_key"], other["active_work"]["dedupe_key"]):
-                path = Path(root) / ".state" / "evidence" / f"{work_history.evidence_id(key)}.json"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("{}")
-            evidence = {work_history.evidence_id(WORK["dedupe_key"]): {},
-                        work_history.evidence_id(other["active_work"]["dedupe_key"]): {}}
+            evidence = {**self.commit(root, largest), **self.commit(root, other)}
             snapshot = type("S", (), {"contributions": {"a": largest, "b": other},
                                       "evidence": evidence})
             out = Path(root) / "plan.json"
@@ -1054,52 +1077,30 @@ class TestPayload(unittest.TestCase):
             with mock.patch("reconcile.load_snapshot", return_value=(None, snapshot)), \
                     mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
                         [], 0, stdout="c" * 40)), \
-                    mock.patch("builtins.print") as printed:
+                    mock.patch("builtins.print") as printed, \
+                    mock.patch("work.load_policy", return_value=dict(
+                        POLICY, concurrency=dict(POLICY["concurrency"], coding_workers=2))):
                 self.assertEqual(work.cmd_plan(args), 0)
             selection = json.loads(printed.call_args.args[0])
             plan = json.loads(out.read_text())
-        self.assertEqual([s["contribution"] for s in selection["selected"]], ["other--lib/13"])
-        [skipped] = selection["skipped"]
-        self.assertEqual(skipped["contribution"], largest["contribution_id"])
-        self.assertIn("exceeds safe queue budget", skipped["reason"])
-        [node] = plan["nodes"]
-        self.assertEqual(node["payload"]["contribution_id"], "other--lib/13")
-        self.assertLessEqual(len(json.dumps(node["payload"], separators=(",", ":"),
-                                            ensure_ascii=False).encode()),
-                             work.MAX_PAYLOAD_BYTES)
+        self.assertEqual(sorted(s["contribution"] for s in selection["selected"]),
+                         ["example--proj/12", "other--lib/13"])
+        self.assertNotIn("skipped", selection)
+        sizes = [len(json.dumps(n["payload"], separators=(",", ":"), ensure_ascii=False).encode())
+                 for n in plan["nodes"]]
+        self.assertLessEqual(max(sizes), work.MAX_QUEUE_PAYLOAD_BYTES)
+        self.assertLess(max(sizes) - min(sizes), 40)
 
-    def test_the_human_wait_of_an_undispatchable_payload_names_its_cause(self):
-        """The dispatcher skips Work whose payload is over the queue budget
-        because of a long frozen description; the controller cannot read
-        the skip, so it measures the smallest payload itself, and the event
-        that waits for a human, and its tracking issue entry, name the
-        cause and what to do."""
-        import reconcile
-        import status_ledger
-
-        largest = self.record("\u00e9" * (POLICY["intake"]["max_request_bytes"] // 2))
-        self.assertGreater(work.payload_floor(largest), work.MAX_PAYLOAD_BYTES)
-        self.assertIsNone(reconcile.payload_cause(self.record("short")))
-        self.assertLess(work.payload_floor(self.record("short")), work.MAX_PAYLOAD_BYTES)
-        run = {"id": 7, "status": "completed", "created_at": "2026-11-18T12:05:00Z"}
-        limit = __import__("lifecycle").budget_limit("dispatch_recovery", POLICY)
-        new, event, decision = reconcile._lost_dispatch(
-            largest, largest["active_work"], run, limit + 1,
-            now=dev.T, policy=POLICY)
-        self.assertEqual(decision, "dispatch failed; waiting for a human")
-        self.assertEqual(new["pending_human_action"]["kind"], "dispatch_failed")
-        self.assertIn("frozen tracking issue description (16384 bytes)", event["details"]["why"])
-        text = status_ledger.render(event, new, "https://run")
-        self.assertIn("because it carries the frozen tracking issue description", text)
-        self.assertIn("made again with a description of at most about", text)
-
-    def test_work_without_a_recorded_history_is_deferred(self):
+    def test_work_without_a_recorded_history_or_task_file_is_deferred(self):
         with tempfile.TemporaryDirectory() as root:
             selection, plan = self.plan({}, self.record(), root)
-        self.assertEqual(selection["selected"], [])
-        self.assertEqual(selection["deferred"][0]["reason"], "history not recorded yet")
+            self.assertEqual(selection["selected"], [])
+            self.assertEqual(selection["deferred"][0]["reason"],
+                             "history and task file not recorded yet")
+            record = self.record()
+            evidence = self.commit(root, record)
+            tid = work_task.evidence_id(WORK["dedupe_key"])
+            evidence.pop(tid)
+            selection, plan = self.plan(evidence, record, root)
+            self.assertEqual(selection["deferred"][0]["reason"], "task file not recorded yet")
         self.assertIsNone(plan)
-
-
-if __name__ == "__main__":
-    unittest.main()

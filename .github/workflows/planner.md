@@ -103,7 +103,7 @@ pre-agent-steps:
   - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
     with:
       enable-cache: false
-  - name: Read the Work and its history
+  - name: Resolve the task and fetch the pinned history
     env:
       GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
       GH_TOKEN: ${{ github.token }}
@@ -118,8 +118,15 @@ pre-agent-steps:
       if (a.claims.length !== 1) throw new Error("porting planner takes exactly one Claim");
       const w = a.claims[0].work;
       fs.mkdirSync("/tmp/gh-aw/agent", { recursive: true });
-      fs.writeFileSync("/tmp/gh-aw/agent/task.json", JSON.stringify(w, null, 2));
+      fs.writeFileSync("/tmp/gh-aw/agent/claim.json", JSON.stringify(w, null, 2));
       JS
+      # The claim's payload names the task file the controller committed to
+      # the control repository (or, for Work queued before task files
+      # existed, carries the task inline): the task is read at the pinned
+      # commit, checked against the claim, and every later check reads it.
+      # Only its evidence id is printed, never its content.
+      python3 task_file.py resolve --claim /tmp/gh-aw/agent/claim.json \
+        --out /tmp/gh-aw/agent/task.json
       task=/tmp/gh-aw/agent/task.json
       if jq -e '.context.history != null' "$task" >/dev/null; then
         # Everything tried before and the owner's steering: the committed
@@ -243,8 +250,11 @@ jobs:
           set -euo pipefail
           mkdir -p ../in
           printf '%s' "$ASSIGNMENT" > ../in/assignment.json
-          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/task.json
-          [ "$(jq -r .task ../in/task.json)" = planning ] || { echo "the planner only takes planning tasks"; exit 1; }
+          printf '%s' "$ASSIGNMENT" | jq '.claims[0].work' > ../in/claim.json
+          # Until its task file is resolved (`queue_result`), task.json is the
+          # claim's payload, which names the Work in every form it has.
+          cp ../in/claim.json ../in/task.json
+          [ "$(jq -r .task ../in/claim.json)" = planning ] || { echo "the planner only takes planning tasks"; exit 1; }
           rc=0
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || rc=3
           if [ "$rc" = 0 ]; then
@@ -270,6 +280,7 @@ jobs:
           name: porting-publication
           path: |
             in/assignment.json
+            in/claim.json
             in/task.json
             in/result.json
             in/outcome.json
@@ -365,8 +376,9 @@ sandbox:
 
 # riscv64 porting planner
 
-You plan the riscv64 contribution of one upstream project for the RISE riscv64 porting pipeline. The trusted pre-agent step wrote the immutable task to
-`/tmp/gh-aw/agent/task.json` and checked out the upstream project in
+You plan the riscv64 contribution of one upstream project for the RISE riscv64 porting pipeline. The trusted pre-agent step resolved the immutable task from its task file in
+the control repository, checked against its SHA-256 and the Work identity of the claim,
+wrote it to `/tmp/gh-aw/agent/task.json` and checked out the upstream project in
 `./fork` (read-only: nothing you change there is used). The task's `instructions`
 field says what to do; `reason_ids` and `context` say why.
 

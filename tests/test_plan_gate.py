@@ -378,6 +378,8 @@ class TestImmutableTrackingIssue(unittest.TestCase):
     def test_full_description_url_and_links_frozen_into_work(self):
         body = "### Additional context\n\nhttps://github.com/example/proj/pull/31488\n" + "user context\n" * 500
         rec = contribution(phase="planning", activity="idle")
+        # A record created before the description was frozen at intake.
+        rec["tracking_issue"] = {"id": 5000, "number": 12}
         issue = {"id": 5000, "number": 12, "body": body}
         result = controller.tick(contributions={"c": rec}, operations={}, consumed={}, projects={}, policy=policy(read_only=False),
                                  inputs=controller.Inputs(now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True),

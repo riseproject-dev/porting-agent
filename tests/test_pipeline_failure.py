@@ -122,9 +122,8 @@ class TestClassify(unittest.TestCase):
     def test_each_workflow_has_its_own_contribution_steps(self):
         run, jobs = live()
         for workflow, step in (
-                ("planner.lock.yml", "Read the Work and its history"),
-                ("reviewer.lock.yml", "Fetch and verify the held patch, its report, the plan and "
-                                      "the history"),
+                ("planner.lock.yml", "Check out the upstream project (read-only)"),
+                ("reviewer.lock.yml", "Fetch and verify the held patch"),
                 ("dispatcher.lock.yml", "Replay the controller-requested task from committed "
                                         "state (deterministic, no model)"),
                 ("worker.lock.yml", "Check out the contribution fork at the expected head "
@@ -144,7 +143,7 @@ class TestClassify(unittest.TestCase):
         # workflow it is read as: an unknown workflow keeps all of them.
         failed = copy.deepcopy(jobs)
         agent = next(j for j in failed if j["name"] == "agent")
-        agent["steps"] = [{"number": 1, "name": "Read the Work and its history",
+        agent["steps"] = [{"number": 1, "name": "Check out the upstream project (read-only)",
                            "status": "completed", "conclusion": "failure"}]
         self.assertIsNone(pipeline_failure.classify(dict(run, path=".github/workflows/x.yml"),
                                                     failed))
@@ -153,6 +152,32 @@ class TestClassify(unittest.TestCase):
 class TestWorkflowContract(unittest.TestCase):
     def frontmatter(self, name):
         return yaml.safe_load((WORKFLOWS / name).read_text().split("---", 2)[1])
+
+    def test_resolving_the_task_is_a_step_of_the_pipeline_not_of_the_contribution(self):
+        """The task file, the plan, the history and the report are what the
+        controller committed, read at a pinned commit and digest: a step that
+        cannot read them is a failure of the pipeline, so it is not a
+        contribution step."""
+        run, jobs = live()
+        for name in ("worker", "planner", "reviewer"):
+            steps = self.frontmatter(f"{name}.md")["pre-agent-steps"]
+            [resolve] = [s for s in steps if "task_file.py resolve" in s.get("run", "")]
+            self.assertTrue(resolve["name"].startswith("Resolve the task and fetch the pinned"))
+            self.assertNotIn(resolve["name"],
+                             pipeline_failure.CONTRIBUTION_STEPS[f"{name}.lock.yml"])
+            for step in steps:
+                if "held_patch.py" in step.get("run", "") or "git checkout" in step.get("run", ""):
+                    self.assertIn(step["name"],
+                                  pipeline_failure.CONTRIBUTION_STEPS[f"{name}.lock.yml"])
+            failed = copy.deepcopy(jobs)
+            agent = next(j for j in failed if j["name"] == "agent")
+            agent["steps"] = [{"number": 1, "name": resolve["name"], "status": "completed",
+                               "conclusion": "failure"},
+                              {"number": 2, "name": "Execute Pi CLI", "status": "completed",
+                               "conclusion": "skipped"}]
+            found = pipeline_failure.classify(
+                dict(run, path=f".github/workflows/{name}.lock.yml"), failed)
+            self.assertEqual(found["step"], resolve["name"])
 
     def test_the_agent_step_runs_once_in_each_lock(self):
         for name in pipeline_failure.CONTRIBUTION_STEPS:
@@ -172,6 +197,10 @@ class TestWorkflowContract(unittest.TestCase):
         "Register pinned riscv64 QEMU binfmt", "Install pinned gh-act when available",
         # It pulls the one fixed image of the pipeline, whatever the contribution.
         "Resolve anonymous reproduction image",
+        # They read what the controller committed, at a pinned commit and digest.
+        "Resolve the task and fetch the pinned plan and history",
+        "Resolve the task and fetch the pinned history",
+        "Resolve the task and fetch the pinned plan, history and report",
         "Split Pi provider authentication from untrusted tool environment",
         "Install pinned Pi and create credential-free unsandboxed engine wrapper",
         "Suspend workflow commands around untrusted agent output",

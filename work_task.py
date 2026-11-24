@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable
 
 import schemas
+import task_file
 import work
 import work_history
 import worker_report
@@ -53,7 +54,7 @@ class TaskFileError(ValueError):
 def evidence_id(dedupe_key: str) -> str:
     """The id of the task file of the Work ``dedupe_key``: derived from the
     Work id, like the id of its history."""
-    return "task-" + hashlib.sha256(dedupe_key.encode()).hexdigest()[:32]
+    return task_file.evidence_id(dedupe_key)
 
 
 def path(eid: str) -> str:
