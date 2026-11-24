@@ -1,5 +1,5 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"963b996bcdf784e828c806177eb96235fc18db01555d64175d2e005d5676b4f8","body_hash":"8c79f2d8fbf5f6648d0e5b88ba025b30a407b66c1c68dfb6ca3a2874cdbf632f","compiler_version":"v1.2.2","strict":true,"agent_id":"pi","agent_model":"anthropic/claude-fable-5-2","engine_versions":{"pi":"1.5.0"},"agent_image_runner":"ubuntu-24.04"}
-# gh-aw-manifest: {"version":1,"secrets":["ANTHROPIC_API_KEY","COPILOT_GITHUB_TOKEN","GH_AW_DEFAULT_OTLP_ENDPOINT","GH_AW_DEFAULT_OTLP_HEADERS","GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN","RISEPROJECT_APP_PRIVATE_KEY"],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/create-github-app-token","sha":"64ab729a6294000f5aa4a4bc0b73d1f32bc45510","version":"v3.3.0"},{"repo":"actions/download-artifact","sha":"9000827ccba6bdab643e8b6fd33ac0654aef8333","version":"v8.0.2"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"actions/upload-artifact","sha":"cf430e030ddbb5b0abf93d22962f4752f3646cd9","version":"v7.0.2"},{"repo":"astral-sh/setup-uv","sha":"20cfd1bf945f4377ade1205e4dbc17946fc9a30d","version":"v10.0.1"},{"repo":"github/gh-aw-actions/setup","sha":"53d0749e19424a918acd82b4d140264ce48f2f14","version":"v1.2.2"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.29.11","digest":"sha256:8774a73c351395b41d2ad0af4ddb4689007c67de3cd08bd9f43bb8a0e300690e","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.29.11@sha256:8774a73c351395b41d2ad0af4ddb4689007c67de3cd08bd9f43bb8a0e300690e"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.29.11","digest":"sha256:88d2d0e315a504d93fd4fb8847fd0f6b7f4469f41a6fc6047b3dc9654c56ab2c","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.29.11@sha256:88d2d0e315a504d93fd4fb8847fd0f6b7f4469f41a6fc6047b3dc9654c56ab2c"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.29.11","digest":"sha256:861739ecf924dd2db5e5fb652db2ad82aaafd1615623297ddabc8f41a36b2847","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.29.11@sha256:861739ecf924dd2db5e5fb652db2ad82aaafd1615623297ddabc8f41a36b2847"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.5.6","digest":"sha256:342cd624e1f179d91be2de7a146fc4f387092e62e6c8a47506d7932e113d2311","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.5.6@sha256:342cd624e1f179d91be2de7a146fc4f387092e62e6c8a47506d7932e113d2311"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:8735428c2d4e602f90781ba0c571c400e8ff93c7ee1508a75d71f87e34e415cc","pinned_image":"ghcr.io/github/gh-aw-node@sha256:8735428c2d4e602f90781ba0c571c400e8ff93c7ee1508a75d71f87e34e415cc"},{"image":"ghcr.io/github/github-mcp-server:v2.1.0","digest":"sha256:f6056fc10bfffcc8c81a6417a2e9ca12808647e8dd6049642a4feaadee0e0f8a","pinned_image":"ghcr.io/github/github-mcp-server:v2.1.0@sha256:f6056fc10bfffcc8c81a6417a2e9ca12808647e8dd6049642a4feaadee0e0f8a"}],"mcp_servers":[{"name":"github","tools":["get_commit","get_file_contents","get_latest_release","get_me","get_pull_request","get_pull_request_comments","get_pull_request_diff","get_pull_request_files","get_pull_request_review_comments","get_pull_request_reviews","get_pull_request_status","get_release_by_tag","get_tag","issue_read","list_branches","list_commits","list_issue_types","list_issues","list_pull_requests","list_releases","list_starred_repositories","list_tags","pull_request_read","search_code","search_issues","search_pull_requests","search_repositories"]},{"name":"github-authenticated","tools":["actions_list","get_commit","get_file_contents","get_pull_request","get_pull_request_comments","get_pull_request_diff","get_pull_request_files","get_pull_request_review_comments","get_pull_request_reviews","get_pull_request_status","issue_read","list_commits","list_issues","list_pull_requests","pull_request_read","search_code","search_issues","search_pull_requests"]},{"name":"mcpscripts","tools":["submit_review"]},{"name":"safeoutputs","tools":["noop","report_incomplete","report_missing_data","report_missing_tool","upload_artifact"]},{"name":"work-queue","tools":["work_queue_claim_finish","work_queue_dispatch_next","work_queue_explain","work_queue_read","work_queue_submit"]}],"threat_detection":{"mode":"disabled"},"admission":false,"work_queue":{"worker":true,"logical_contract":"ce1e50fd6396396a2c248f5700e02a2a5f7f24a33784d816792d7bedd839955c"},"agent_metadata":{}}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"d513fc7190d5529e06fc5e9c4928fee8572fcf6e9ce98de038c8c5ff1f46d1ec","body_hash":"3338af7d4ed72d872a02276447ca42ce7ccd1665fb18cc27faa4b97f43696c1b","compiler_version":"v1.2.2","strict":true,"agent_id":"pi","agent_model":"anthropic/claude-fable-5-2","engine_versions":{"pi":"1.5.0"},"agent_image_runner":"ubuntu-24.04"}
+# gh-aw-manifest: {"version":1,"secrets":["ANTHROPIC_API_KEY","COPILOT_GITHUB_TOKEN","GH_AW_DEFAULT_OTLP_ENDPOINT","GH_AW_DEFAULT_OTLP_HEADERS","GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN","RISEPROJECT_APP_PRIVATE_KEY"],"actions":[{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/create-github-app-token","sha":"64ab729a6294000f5aa4a4bc0b73d1f32bc45510","version":"v3.3.0"},{"repo":"actions/download-artifact","sha":"9000827ccba6bdab643e8b6fd33ac0654aef8333","version":"v8.0.2"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"949feb2413d6458794dcd2491c4babbbce0c15c1","version":"v7.1.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"actions/upload-artifact","sha":"cf430e030ddbb5b0abf93d22962f4752f3646cd9","version":"v7.0.2"},{"repo":"astral-sh/setup-uv","sha":"20cfd1bf945f4377ade1205e4dbc17946fc9a30d","version":"v10.0.1"},{"repo":"github/gh-aw-actions/setup","sha":"53d0749e19424a918acd82b4d140264ce48f2f14","version":"v1.2.2"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.29.11","digest":"sha256:8774a73c351395b41d2ad0af4ddb4689007c67de3cd08bd9f43bb8a0e300690e","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.29.11@sha256:8774a73c351395b41d2ad0af4ddb4689007c67de3cd08bd9f43bb8a0e300690e"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.29.11","digest":"sha256:88d2d0e315a504d93fd4fb8847fd0f6b7f4469f41a6fc6047b3dc9654c56ab2c","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.29.11@sha256:88d2d0e315a504d93fd4fb8847fd0f6b7f4469f41a6fc6047b3dc9654c56ab2c"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.29.11","digest":"sha256:861739ecf924dd2db5e5fb652db2ad82aaafd1615623297ddabc8f41a36b2847","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.29.11@sha256:861739ecf924dd2db5e5fb652db2ad82aaafd1615623297ddabc8f41a36b2847"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.5.6","digest":"sha256:342cd624e1f179d91be2de7a146fc4f387092e62e6c8a47506d7932e113d2311","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.5.6@sha256:342cd624e1f179d91be2de7a146fc4f387092e62e6c8a47506d7932e113d2311"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:8735428c2d4e602f90781ba0c571c400e8ff93c7ee1508a75d71f87e34e415cc","pinned_image":"ghcr.io/github/gh-aw-node@sha256:8735428c2d4e602f90781ba0c571c400e8ff93c7ee1508a75d71f87e34e415cc"},{"image":"ghcr.io/github/github-mcp-server:v2.1.0","digest":"sha256:f6056fc10bfffcc8c81a6417a2e9ca12808647e8dd6049642a4feaadee0e0f8a","pinned_image":"ghcr.io/github/github-mcp-server:v2.1.0@sha256:f6056fc10bfffcc8c81a6417a2e9ca12808647e8dd6049642a4feaadee0e0f8a"}],"mcp_servers":[{"name":"github","tools":["get_commit","get_file_contents","get_latest_release","get_me","get_pull_request","get_pull_request_comments","get_pull_request_diff","get_pull_request_files","get_pull_request_review_comments","get_pull_request_reviews","get_pull_request_status","get_release_by_tag","get_tag","issue_read","list_branches","list_commits","list_issue_types","list_issues","list_pull_requests","list_releases","list_starred_repositories","list_tags","pull_request_read","search_code","search_issues","search_pull_requests","search_repositories"]},{"name":"github-authenticated","tools":["actions_list","get_commit","get_file_contents","get_pull_request","get_pull_request_comments","get_pull_request_diff","get_pull_request_files","get_pull_request_review_comments","get_pull_request_reviews","get_pull_request_status","issue_read","list_commits","list_issues","list_pull_requests","pull_request_read","search_code","search_issues","search_pull_requests"]},{"name":"safeoutputs","tools":["noop","report_incomplete","report_missing_data","report_missing_tool","upload_artifact"]},{"name":"work-queue","tools":["work_queue_claim_finish","work_queue_dispatch_next","work_queue_explain","work_queue_read","work_queue_submit"]}],"threat_detection":{"mode":"disabled"},"admission":false,"work_queue":{"worker":true,"logical_contract":"2d7e0ea0c298bc924e309e2b8d0172f983f7a302d9dd95972bb69b43c087a4e2"},"agent_metadata":{}}
 # This file was automatically generated by gh-aw (v1.2.2). DO NOT EDIT. To debug this workflow, load the skill at https://github.com/github/gh-aw/blob/main/debug.md
 #
 #    ___                   _   _
@@ -379,9 +379,7 @@ jobs:
           GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
           GH_AW_GITHUB_RUN_ID: ${{ github.run_id }}
           GH_AW_GITHUB_WORKSPACE: ${{ github.workspace }}
-          GH_AW_MCP_CLI_SERVERS_LIST: |-
-            - `mcpscripts` -- run `mcpscripts --help` to see available tools
-            - `safeoutputs` -- run `safeoutputs --help` to see available tools
+          GH_AW_MCP_CLI_SERVERS_LIST: "- `safeoutputs` -- run `safeoutputs --help` to see available tools"
           GH_AW_OTLP_ENDPOINTS: ""
           GH_AW_OTLP_IF_MISSING: ""
           GH_AW_OTLP_LOGS_ENABLED: ""
@@ -435,9 +433,7 @@ jobs:
           GH_AW_GITHUB_REPOSITORY: ${{ github.repository }}
           GH_AW_GITHUB_RUN_ID: ${{ github.run_id }}
           GH_AW_GITHUB_WORKSPACE: ${{ github.workspace }}
-          GH_AW_MCP_CLI_SERVERS_LIST: |-
-            - `mcpscripts` -- run `mcpscripts --help` to see available tools
-            - `safeoutputs` -- run `safeoutputs --help` to see available tools
+          GH_AW_MCP_CLI_SERVERS_LIST: "- `safeoutputs` -- run `safeoutputs --help` to see available tools"
           GH_AW_OTLP_ENDPOINTS: ""
           GH_AW_OTLP_IF_MISSING: ""
           GH_AW_OTLP_LOGS_ENABLED: ""
@@ -482,7 +478,7 @@ jobs:
         env:
           GH_AW_WORK_QUEUE_ENABLED: "true"
           GH_AW_WORK_QUEUE_ROLE: "worker"
-          GH_AW_WORK_QUEUE_CONTRACT: "ce1e50fd6396396a2c248f5700e02a2a5f7f24a33784d816792d7bedd839955c"
+          GH_AW_WORK_QUEUE_CONTRACT: "2d7e0ea0c298bc924e309e2b8d0172f983f7a302d9dd95972bb69b43c087a4e2"
         with:
           script: |
             const path = require('path');
@@ -644,11 +640,6 @@ jobs:
           evidence_tmp="/tmp/gh-aw/agent_execution.json.tmp"
           printf '{"version":1,"component":"agent","run_id":%s,"run_attempt":%s,"state":"not_started"}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$evidence_tmp"
           mv "$evidence_tmp" "/tmp/gh-aw/agent_execution.json"
-      - name: Setup Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-          package-manager-cache: false
       - name: Create gh-aw temp directory
         run: bash "${RUNNER_TEMP}/gh-aw/actions/create_gh_aw_tmp_dir.sh"
       - name: Configure gh CLI for GitHub Enterprise
@@ -762,6 +753,8 @@ jobs:
         run: "set -euo pipefail\nsudo apt-get update -q\nsudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \\\n  ripgrep=14.1.0-1 fd-find=9.0.0-1\n[ \"$(dpkg-query -W -f='${Version}' ripgrep)\" = 14.1.0-1 ] || { echo \"unexpected ripgrep\"; exit 1; }\n[ \"$(dpkg-query -W -f='${Version}' fd-find)\" = 9.0.0-1 ] || { echo \"unexpected fd-find\"; exit 1; }\n/usr/bin/rg --version\n/usr/bin/fdfind --version\n"
       - name: Make the home directories the sandbox mounts read-only to the agent
         run: "set -euo pipefail\nfor dir in .cache .config .local/bin .local/lib .local/lib64 .local/share \\\n  .local/pipx .azure .anthropic .claude .cargo .rustup .npm .nvm; do\n  if [ -L \"$HOME/$dir\" ]; then\n    echo \"$HOME/$dir is a link\" >&2\n    exit 1\n  fi\n  mkdir -p -- \"$HOME/$dir\"\n  sudo chown -RHh root:root -- \"$HOME/$dir/\"\n  sudo chmod -R go-w -- \"$HOME/$dir/\"\n  if [ -L \"$HOME/$dir\" ] || [ -n \"$(find -H \"$HOME/$dir/\" \\( ! -user root -o -perm /022 \\) ! -type l -print -quit)\" ]; then\n    echo \"$HOME/$dir is still writable by the agent's user\" >&2\n    exit 1\n  fi\ndone\n"
+      - name: Make the code that the steps after the agent run unwritable by the agent
+        run: "set -euo pipefail\nharden() {\n  local dir=$1\n  if [ -L \"$dir\" ] || [ ! -d \"$dir\" ]; then\n    echo \"$dir is not a directory\" >&2\n    exit 1\n  fi\n  sudo chown -RHh root:root -- \"$dir/\"\n  sudo chmod -R go-w -- \"$dir/\"\n  if [ -n \"$(find -H \"$dir/\" \\( ! -user root -o -perm /022 \\) ! -type l -print -quit)\" ]; then\n    echo \"$dir is still writable by the agent's user\" >&2\n    exit 1\n  fi\n}\n# gh-aw's scripts, which the steps after the agent run, and the\n# actions of this job (the setup action's post step runs bash on a\n# script in its directory).\nharden \"$RUNNER_TEMP/gh-aw/actions\"\nharden \"$(dirname \"$RUNNER_TEMP\")/_actions\"\n# node and the commands on PATH, when writable by the runner's user.\ncandidates=()\nif node=$(command -v node); then\n  node=$(readlink -f -- \"$node\")\n  candidates+=(\"$(dirname \"$(dirname \"$node\")\")\")\nfi\nIFS=: read -ra entries <<< \"$PATH\"\nfor entry in \"${entries[@]}\"; do\n  case \"$entry\" in\n    /*) ;;\n    *) echo \"PATH has a relative entry\" >&2; exit 1 ;;\n  esac\n  if [ -d \"$entry\" ]; then\n    candidates+=(\"$(readlink -f -- \"$entry\")\")\n  fi\ndone\nfor dir in \"${candidates[@]}\"; do\n  if [ -n \"$(find -H \"$dir/\" \\( ! -user root -o -perm /022 \\) ! -type l -print -quit)\" ]; then\n    case \"$dir\" in\n      /|/tmp|\"$HOME\"|\"$GITHUB_WORKSPACE\"|\"$RUNNER_TEMP\")\n        echo \"$dir is writable and too wide to make read-only\" >&2\n        exit 1\n        ;;\n    esac\n    harden \"$dir\"\n  fi\ndone\n# Files that tools read as configuration and that the agent could\n# create through a link that dangles.\nfor file in .npmrc .curlrc .wgetrc; do\n  if [ -L \"$HOME/$file\" ]; then\n    echo \"$HOME/$file is a link\" >&2\n    exit 1\n  fi\n  if [ ! -e \"$HOME/$file\" ]; then\n    sudo install -m 0644 -o root -g root /dev/null \"$HOME/$file\"\n  fi\ndone\n"
       - name: Seal the workspace's git checkout against the agent
         run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE\"\nif [ -L .git ] || [ ! -d .git ]; then\n  echo \".git is not a directory\" >&2\n  exit 1\nfi\nrc=0\ngit config --get-all remote.origin.url >/dev/null || rc=$?\ncase \"$rc\" in\n  0) git remote remove origin ;;\n  1) ;;\n  *) echo \"the checkout's configuration cannot be read\" >&2; exit 1 ;;\nesac\nsudo chown -RHh root:root -- .git/\nsudo chmod -R go-w -- .git/\nsudo chown root:root -- \"$GITHUB_WORKSPACE\"\nsudo chmod 1777 -- \"$GITHUB_WORKSPACE\"\nif [ -L .git ] || [ -n \"$(find -H .git/ \\( ! -user root -o -perm /022 \\) ! -type l -print -quit)\" ]; then\n  echo \".git is still writable by the agent's user\" >&2\n  exit 1\nfi\n[ \"$(stat -c '%U %a' -- \"$GITHUB_WORKSPACE\")\" = \"root 1777\" ] || { echo \"the workspace is not sealed\" >&2; exit 1; }\nrc=0\ngit config --get-all remote.origin.url >/dev/null || rc=$?\n[ \"$rc\" = 1 ] || { echo \"origin is still set\" >&2; exit 1; }\ngit rev-parse --is-inside-work-tree"
 
@@ -896,144 +889,11 @@ jobs:
             setupGlobals(core, github, context, exec, io, getOctokit);
             const { main } = require(path.join(actionsDir, 'generate_safe_outputs_tools.cjs'));
             await main();
-      - name: Write MCP Scripts Config
-        # runner-guard:ignore RGS-018 -- writes first-party mcp-scripts tools.json manifest and mcp-server.cjs shim generated verbatim from the gh-aw compiler template, not an attacker-controlled dropper.
-        run: |
-          mkdir -p "${RUNNER_TEMP}/gh-aw/mcp-scripts/logs"
-          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/tools.json" << 'GH_AW_MCP_SCRIPTS_TOOLS_e5b272f95ee9aaa2_EOF'
-          {
-            "serverName": "mcpscripts",
-            "version": "1.0.0",
-            "logDir": "${RUNNER_TEMP}/gh-aw/mcp-scripts/logs",
-            "tools": [
-              {
-                "name": "submit_review",
-                "description": "Write the review, a JSON object matching schemas/patch_review.schema.json, to porting-out/proposal.json (replacing an earlier one)",
-                "inputSchema": {
-                  "properties": {
-                    "review": {
-                      "description": "The whole review, as JSON text",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "review"
-                  ],
-                  "type": "object"
-                },
-                "handler": "submit_review.cjs",
-                "timeout": 60
-              }
-            ]
-          }
-          GH_AW_MCP_SCRIPTS_TOOLS_e5b272f95ee9aaa2_EOF
-          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/mcp-server.cjs" << 'GH_AW_MCP_SCRIPTS_SERVER_7f1d774b71e7cfe7_EOF'
-            const path = require("path");
-            const { startHttpServer } = require("./mcp_scripts_mcp_server_http.cjs");
-            const configPath = path.join(__dirname, "tools.json");
-            const port = parseInt(process.env.GH_AW_MCP_SCRIPTS_PORT || "3000", 10);
-            const apiKey = process.env.GH_AW_MCP_SCRIPTS_API_KEY;
-            startHttpServer(configPath, {
-              port: port,
-              apiKey: apiKey,
-              stateless: true,
-              logDir: "${RUNNER_TEMP}/gh-aw/mcp-scripts/logs"
-            }).catch(error => {
-              console.error("Failed to start mcp-scripts HTTP server:", error);
-              process.exit(1);
-            });
-          GH_AW_MCP_SCRIPTS_SERVER_7f1d774b71e7cfe7_EOF
-          chmod +x "${RUNNER_TEMP}/gh-aw/mcp-scripts/mcp-server.cjs"
-
-      - name: Write MCP Scripts Tool Files
-        run: |
-          cat > "${RUNNER_TEMP}/gh-aw/mcp-scripts/submit_review.cjs" << 'GH_AW_MCP_SCRIPTS_JS_SUBMIT_REVIEW_dcad9e7ad378f82c_EOF'
-            async function execute(inputs) {
-              const { review } = inputs || {};
-              const fs = require("node:fs");
-              const path = require("node:path");
-              const text = typeof review === "string" ? review : "";
-              const size = Buffer.byteLength(text, "utf8");
-              if (size === 0 || size > 262144) {
-                return { written: false, error: `the review must be 1 to 262144 bytes of JSON, not ${size}` };
-              }
-              let value;
-              try {
-                value = JSON.parse(text);
-              } catch (error) {
-                return { written: false, error: `the review is not JSON: ${error.message}` };
-              }
-              if (value === null || typeof value !== "object" || Array.isArray(value)) {
-                return { written: false, error: "the review must be a JSON object" };
-              }
-              const workspace = process.env.GITHUB_WORKSPACE;
-              if (!workspace || !path.isAbsolute(workspace)) throw new Error("GITHUB_WORKSPACE is not set");
-              const dir = path.join(workspace, "porting-out");
-              fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
-              if (!fs.lstatSync(dir).isDirectory()) throw new Error("porting-out is not a directory");
-              const data = JSON.stringify(value, null, 2) + "\n";
-              const temporary = path.join(dir, `.proposal.${require("node:crypto").randomBytes(16).toString("hex")}.tmp`);
-              const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
-              const fd = fs.openSync(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
-              try {
-                try {
-                  fs.writeFileSync(fd, data);
-                  fs.fsyncSync(fd);
-                } finally {
-                  fs.closeSync(fd);
-                }
-                fs.renameSync(temporary, path.join(dir, "proposal.json"));
-              } catch (error) {
-                fs.rmSync(temporary, { force: true });
-                throw error;
-              }
-              return { written: "porting-out/proposal.json", bytes: Buffer.byteLength(data, "utf8") };
-            }
-            module.exports = { execute };
-            if (require.main === module) {
-              require("./mcp-scripts-runner.cjs")(execute);
-            }
-          GH_AW_MCP_SCRIPTS_JS_SUBMIT_REVIEW_dcad9e7ad378f82c_EOF
-
-      - name: Generate MCP Scripts Server Config
-        id: mcp-scripts-config
-        run: |
-          # Generate a secure random API key (360 bits of entropy, 40+ chars)
-          # Mask immediately to prevent timing vulnerabilities
-          API_KEY=$(openssl rand -base64 45 | tr -d '/+=')
-          echo "::add-mask::${API_KEY}"
-
-          PORT=3000
-
-          # Set outputs for next steps
-          {
-            echo "mcp_scripts_api_key=${API_KEY}"
-            echo "mcp_scripts_port=${PORT}"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "MCP Scripts server will run on port ${PORT}"
-
-      - name: Start MCP Scripts HTTP Server
-        id: mcp-scripts-start
-        env:
-          DEBUG: ${{ env.DEBUG || runner.debug == '1' && '*' || '' }}
-          GH_AW_MCP_SCRIPTS_PORT: ${{ steps.mcp-scripts-config.outputs.mcp_scripts_port }}
-          GH_AW_MCP_SCRIPTS_API_KEY: ${{ steps.mcp-scripts-config.outputs.mcp_scripts_api_key }}
-        run: |
-          # Environment variables are set above to prevent template injection
-          export DEBUG
-          export GH_AW_MCP_SCRIPTS_PORT
-          export GH_AW_MCP_SCRIPTS_API_KEY
-
-          bash "${RUNNER_TEMP}/gh-aw/actions/start_mcp_scripts_server.sh"
-
       - name: Start MCP Gateway
         id: start-mcp-gateway
         env:
           DEBUG: ${{ env.DEBUG || runner.debug == '1' && '*' || '' }}
           GH_AW_MCP_EXPR_811FE14326D0BC5E18E9685DAC717DD45610B98BF4A67729E3268BCA66142ECD: "${{ github.token }}"
-          GH_AW_MCP_SCRIPTS_API_KEY: ${{ steps.mcp-scripts-start.outputs.api_key }}
-          GH_AW_MCP_SCRIPTS_PORT: ${{ steps.mcp-scripts-start.outputs.port }}
           GH_AW_OBJECT_PACK_FETCH_DEPTHS: ${{ vars.GH_AW_OBJECT_PACK_FETCH_DEPTHS }}
           GH_AW_OBJECT_PACK_MAX_BYTES: ${{ vars.GH_AW_OBJECT_PACK_MAX_BYTES }}
           GH_AW_OBJECT_PACK_MAX_OBJECTS: ${{ vars.GH_AW_OBJECT_PACK_MAX_OBJECTS }}
@@ -1078,11 +938,11 @@ jobs:
           MCP_GATEWAY_UID=$(id -u 2>/dev/null || echo '0')
           MCP_GATEWAY_GID=$(id -g 2>/dev/null || echo '0')
           source "${RUNNER_TEMP}/gh-aw/actions/resolve_docker_socket_gid.sh"
-          export MCP_GATEWAY_DOCKER_COMMAND='docker run -i --rm --network bridge -p 127.0.0.1:'"${MCP_GATEWAY_PORT}"':'"${MCP_GATEWAY_PORT}"' --name awmg-mcpg --add-host host.docker.internal:host-gateway --user '"${MCP_GATEWAY_UID}"':'"${MCP_GATEWAY_GID}"' --group-add '"${DOCKER_SOCK_GID}"' -v '"${DOCKER_SOCK_PATH}"':/var/run/docker.sock -e MCP_GATEWAY_PORT -e MCP_GATEWAY_DOMAIN -e MCP_GATEWAY_AGENT_ID -e MCP_GATEWAY_PAYLOAD_DIR -e MCP_GATEWAY_PAYLOAD_SIZE_THRESHOLD -e DOCKER_HOST=unix:///var/run/docker.sock -e DEBUG -e MCP_GATEWAY_LOG_DIR -e GH_AW_MCP_LOG_DIR -e GH_AW_SAFE_OUTPUTS -e GH_AW_SAFE_OUTPUTS_CONFIG_PATH -e GH_AW_SAFE_OUTPUTS_TOOLS_PATH -e GH_AW_TARGET_REPO_SLUG -e GH_AW_PR_HEAD_BASE_BRANCH -e GH_AW_PR_HEAD_BASE_SHA -e GH_AW_PR_HEAD_BASE_REPO -e GH_AW_PR_HEAD_BASE_PR_NUMBER -e GH_AW_PR_HEAD_BASE_REF -e GH_AW_PR_HEAD_REPO -e GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST -e GH_AW_OBJECT_PACK_MAX_BYTES -e GH_AW_OBJECT_PACK_MAX_OBJECTS -e GH_AW_OBJECT_PACK_TIMEOUT_MS -e GH_AW_OBJECT_PACK_FETCH_DEPTHS -e GH_AW_ASSETS_BRANCH -e GH_AW_ASSETS_MAX_SIZE_KB -e GH_AW_ASSETS_ALLOWED_EXTS -e DEFAULT_BRANCH -e GITHUB_MCP_SERVER_TOKEN -e GITHUB_MCP_GUARD_MIN_INTEGRITY -e GITHUB_MCP_GUARD_REPOS -e GH_AW_SINK_VISIBILITY -e GITHUB_REPOSITORY -e GITHUB_SERVER_URL -e GITHUB_SHA -e GITHUB_WORKSPACE -e GITHUB_TOKEN -e GITHUB_RUN_ID -e GITHUB_RUN_NUMBER -e GITHUB_RUN_ATTEMPT -e GITHUB_JOB -e GITHUB_ACTION -e GITHUB_EVENT_NAME -e GITHUB_EVENT_PATH -e GITHUB_ACTOR -e GITHUB_ACTOR_ID -e GITHUB_TRIGGERING_ACTOR -e GITHUB_WORKFLOW -e GITHUB_WORKFLOW_REF -e GITHUB_WORKFLOW_SHA -e GITHUB_REF -e GITHUB_REF_NAME -e GITHUB_REF_TYPE -e GITHUB_HEAD_REF -e GITHUB_BASE_REF -e RUNNER_TEMP -e RUNNER_TOOL_CACHE -e MCP_GATEWAY_ALLOWED_MOUNT_ROOTS -e GH_AW_MCP_SCRIPTS_PORT -e GH_AW_MCP_SCRIPTS_API_KEY -e GITHUB_AW_OTEL_TRACE_ID -e GITHUB_AW_OTEL_PARENT_SPAN_ID -e OTEL_EXPORTER_OTLP_HEADERS -e GH_AW_MCP_EXPR_811FE14326D0BC5E18E9685DAC717DD45610B98BF4A67729E3268BCA66142ECD -v /tmp/gh-aw/mcp-payloads:/tmp/gh-aw/mcp-payloads:rw -v /opt:/opt:ro -v /tmp:/tmp:rw -v '"${GITHUB_WORKSPACE}"':'"${GITHUB_WORKSPACE}"':rw -v '"${RUNNER_TEMP}"'/gh-aw/safeoutputs:'"${RUNNER_TEMP}"'/gh-aw/safeoutputs:rw ghcr.io/github/gh-aw-mcpg:v0.5.6@sha256:342cd624e1f179d91be2de7a146fc4f387092e62e6c8a47506d7932e113d2311'
+          export MCP_GATEWAY_DOCKER_COMMAND='docker run -i --rm --network bridge -p 127.0.0.1:'"${MCP_GATEWAY_PORT}"':'"${MCP_GATEWAY_PORT}"' --name awmg-mcpg --add-host host.docker.internal:host-gateway --user '"${MCP_GATEWAY_UID}"':'"${MCP_GATEWAY_GID}"' --group-add '"${DOCKER_SOCK_GID}"' -v '"${DOCKER_SOCK_PATH}"':/var/run/docker.sock -e MCP_GATEWAY_PORT -e MCP_GATEWAY_DOMAIN -e MCP_GATEWAY_AGENT_ID -e MCP_GATEWAY_PAYLOAD_DIR -e MCP_GATEWAY_PAYLOAD_SIZE_THRESHOLD -e DOCKER_HOST=unix:///var/run/docker.sock -e DEBUG -e MCP_GATEWAY_LOG_DIR -e GH_AW_MCP_LOG_DIR -e GH_AW_SAFE_OUTPUTS -e GH_AW_SAFE_OUTPUTS_CONFIG_PATH -e GH_AW_SAFE_OUTPUTS_TOOLS_PATH -e GH_AW_TARGET_REPO_SLUG -e GH_AW_PR_HEAD_BASE_BRANCH -e GH_AW_PR_HEAD_BASE_SHA -e GH_AW_PR_HEAD_BASE_REPO -e GH_AW_PR_HEAD_BASE_PR_NUMBER -e GH_AW_PR_HEAD_BASE_REF -e GH_AW_PR_HEAD_REPO -e GH_AW_POLICY_ALLOW_CREATE_PULL_REQUEST -e GH_AW_OBJECT_PACK_MAX_BYTES -e GH_AW_OBJECT_PACK_MAX_OBJECTS -e GH_AW_OBJECT_PACK_TIMEOUT_MS -e GH_AW_OBJECT_PACK_FETCH_DEPTHS -e GH_AW_ASSETS_BRANCH -e GH_AW_ASSETS_MAX_SIZE_KB -e GH_AW_ASSETS_ALLOWED_EXTS -e DEFAULT_BRANCH -e GITHUB_MCP_SERVER_TOKEN -e GITHUB_MCP_GUARD_MIN_INTEGRITY -e GITHUB_MCP_GUARD_REPOS -e GH_AW_SINK_VISIBILITY -e GITHUB_REPOSITORY -e GITHUB_SERVER_URL -e GITHUB_SHA -e GITHUB_WORKSPACE -e GITHUB_TOKEN -e GITHUB_RUN_ID -e GITHUB_RUN_NUMBER -e GITHUB_RUN_ATTEMPT -e GITHUB_JOB -e GITHUB_ACTION -e GITHUB_EVENT_NAME -e GITHUB_EVENT_PATH -e GITHUB_ACTOR -e GITHUB_ACTOR_ID -e GITHUB_TRIGGERING_ACTOR -e GITHUB_WORKFLOW -e GITHUB_WORKFLOW_REF -e GITHUB_WORKFLOW_SHA -e GITHUB_REF -e GITHUB_REF_NAME -e GITHUB_REF_TYPE -e GITHUB_HEAD_REF -e GITHUB_BASE_REF -e RUNNER_TEMP -e RUNNER_TOOL_CACHE -e MCP_GATEWAY_ALLOWED_MOUNT_ROOTS -e GITHUB_AW_OTEL_TRACE_ID -e GITHUB_AW_OTEL_PARENT_SPAN_ID -e OTEL_EXPORTER_OTLP_HEADERS -e GH_AW_MCP_EXPR_811FE14326D0BC5E18E9685DAC717DD45610B98BF4A67729E3268BCA66142ECD -v /tmp/gh-aw/mcp-payloads:/tmp/gh-aw/mcp-payloads:rw -v /opt:/opt:ro -v /tmp:/tmp:rw -v '"${GITHUB_WORKSPACE}"':'"${GITHUB_WORKSPACE}"':rw -v '"${RUNNER_TEMP}"'/gh-aw/safeoutputs:'"${RUNNER_TEMP}"'/gh-aw/safeoutputs:rw ghcr.io/github/gh-aw-mcpg:v0.5.6@sha256:342cd624e1f179d91be2de7a146fc4f387092e62e6c8a47506d7932e113d2311'
 
           export GH_AW_PI_NATIVE_MCP=1
           GH_AW_NODE=$(which node 2>/dev/null || command -v node 2>/dev/null || echo node)
-          cat << GH_AW_MCP_CONFIG_111f217fd351183a_EOF | "$GH_AW_NODE" "${RUNNER_TEMP}/gh-aw/actions/start_mcp_gateway.cjs"
+          cat << GH_AW_MCP_CONFIG_466090e9c0b07d6c_EOF | "$GH_AW_NODE" "${RUNNER_TEMP}/gh-aw/actions/start_mcp_gateway.cjs"
           {
             "mcpServers": {
               "github": {
@@ -1129,21 +989,6 @@ jobs:
                   "GITHUB_PERSONAL_ACCESS_TOKEN": "\${GH_AW_MCP_EXPR_811FE14326D0BC5E18E9685DAC717DD45610B98BF4A67729E3268BCA66142ECD}",
                   "GITHUB_READ_ONLY": "1",
                   "GITHUB_TOOLSETS": "context,repos,issues,pull_requests,actions"
-                },
-                "guard-policies": {
-                  "write-sink": {
-                    "accept": [
-                      "*"
-                    ],
-                    "sink-visibility": "${GH_AW_SINK_VISIBILITY}"
-                  }
-                }
-              },
-              "mcpscripts": {
-                "type": "http",
-                "url": "http://host.docker.internal:$GH_AW_MCP_SCRIPTS_PORT",
-                "headers": {
-                  "Authorization": "\${GH_AW_MCP_SCRIPTS_API_KEY}"
                 },
                 "guard-policies": {
                   "write-sink": {
@@ -1226,7 +1071,7 @@ jobs:
               }
             }
           }
-          GH_AW_MCP_CONFIG_111f217fd351183a_EOF
+          GH_AW_MCP_CONFIG_466090e9c0b07d6c_EOF
       - name: Mount MCP servers as CLIs
         id: mount-mcp-clis
         continue-on-error: true
@@ -1495,17 +1340,6 @@ jobs:
             setupGlobals(core, github, context, exec, io, getOctokit);
             const { main } = require(path.join(actionsDir, 'parse_pi_log.cjs'));
             await main();
-      - name: Parse MCP Scripts logs for step summary
-        if: always()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const path = require('path');
-            const actionsDir = path.join(process.env.RUNNER_TEMP, 'gh-aw', 'actions');
-            const { setupGlobals } = require(path.join(actionsDir, 'setup_globals.cjs'));
-            setupGlobals(core, github, context, exec, io, getOctokit);
-            const { main } = require(path.join(actionsDir, 'parse_mcp_scripts_logs.cjs'));
-            await main();
       - name: Parse MCP Gateway logs for step summary
         if: always()
         id: parse-mcp-gateway
@@ -1584,7 +1418,7 @@ jobs:
           GH_AW_OBJECT_PACK_MAX_OBJECTS: ${{ vars.GH_AW_OBJECT_PACK_MAX_OBJECTS }}
           GH_AW_OBJECT_PACK_TIMEOUT_MS: ${{ vars.GH_AW_OBJECT_PACK_TIMEOUT_MS }}
           GH_AW_OBJECT_PACK_FETCH_DEPTHS: ${{ vars.GH_AW_OBJECT_PACK_FETCH_DEPTHS }}
-          GH_AW_RECOVERY_ADDITIONAL_ROOTS: '["/tmp/gh-aw/aw-prompts/prompt.txt","/tmp/gh-aw/agent_execution.json","/tmp/gh-aw/agent_execution_exit_code.txt","/tmp/gh-aw/agent-session.jsonl","/tmp/gh-aw/agent-errors.jsonl","/tmp/gh-aw/aw-prompts/user.txt","/tmp/gh-aw/aw-prompts/system.txt","/tmp/gh-aw/skill_inventory.json","/tmp/gh-aw/sandbox/agent/logs/pi-streaming.jsonl","/tmp/gh-aw/agent/pi-sessions","/tmp/gh-aw/pi-agent-dir/session.html","/tmp/gh-aw/redacted-urls.log","/tmp/gh-aw/mcp-logs/","/tmp/gh-aw/mcp-scripts/logs/","/tmp/gh-aw/agent_usage.json","/tmp/gh-aw/agent/model-resolution.json","/tmp/gh-aw/agent-stdio.log","/tmp/gh-aw/agent/harness_retry.json","/tmp/gh-aw/pre-agent-audit.txt","/tmp/gh-aw/github_rate_limits.jsonl","/tmp/gh-aw/otel.jsonl","/tmp/gh-aw/otlp-export-errors.jsonl","/tmp/gh-aw/safeoutputs.jsonl","/tmp/gh-aw/agent_output.json","/tmp/gh-aw/work-queue.finish.jsonl","/tmp/gh-aw/work-queue.intents.jsonl","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/awf-config.json","/tmp/gh-aw/awf-resolved-config.json","/tmp/gh-aw/sandbox/firewall/logs/","/tmp/gh-aw/sandbox/firewall/audit/","/tmp/gh-aw/sandbox/firewall/awf-reflect.json"]'
+          GH_AW_RECOVERY_ADDITIONAL_ROOTS: '["/tmp/gh-aw/aw-prompts/prompt.txt","/tmp/gh-aw/agent_execution.json","/tmp/gh-aw/agent_execution_exit_code.txt","/tmp/gh-aw/agent-session.jsonl","/tmp/gh-aw/agent-errors.jsonl","/tmp/gh-aw/aw-prompts/user.txt","/tmp/gh-aw/aw-prompts/system.txt","/tmp/gh-aw/skill_inventory.json","/tmp/gh-aw/sandbox/agent/logs/pi-streaming.jsonl","/tmp/gh-aw/agent/pi-sessions","/tmp/gh-aw/pi-agent-dir/session.html","/tmp/gh-aw/redacted-urls.log","/tmp/gh-aw/mcp-logs/","/tmp/gh-aw/agent_usage.json","/tmp/gh-aw/agent/model-resolution.json","/tmp/gh-aw/agent-stdio.log","/tmp/gh-aw/agent/harness_retry.json","/tmp/gh-aw/pre-agent-audit.txt","/tmp/gh-aw/github_rate_limits.jsonl","/tmp/gh-aw/otel.jsonl","/tmp/gh-aw/otlp-export-errors.jsonl","/tmp/gh-aw/safeoutputs.jsonl","/tmp/gh-aw/agent_output.json","/tmp/gh-aw/work-queue.finish.jsonl","/tmp/gh-aw/work-queue.intents.jsonl","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/claims","/tmp/gh-aw/awf-config.json","/tmp/gh-aw/awf-resolved-config.json","/tmp/gh-aw/sandbox/firewall/logs/","/tmp/gh-aw/sandbox/firewall/audit/","/tmp/gh-aw/sandbox/firewall/awf-reflect.json"]'
         with:
           script: |
             const path = require('path');
@@ -1637,7 +1471,6 @@ jobs:
             /tmp/gh-aw/pi-agent-dir/session.html
             /tmp/gh-aw/redacted-urls.log
             /tmp/gh-aw/mcp-logs/
-            /tmp/gh-aw/mcp-scripts/logs/
             /tmp/gh-aw/agent_usage.json
             /tmp/gh-aw/agent/model-resolution.json
             /tmp/gh-aw/agent-stdio.log
@@ -1746,7 +1579,7 @@ jobs:
         env:
           GH_AW_WORK_QUEUE_ENABLED: "true"
           GH_AW_WORK_QUEUE_ROLE: "worker"
-          GH_AW_WORK_QUEUE_CONTRACT: "ce1e50fd6396396a2c248f5700e02a2a5f7f24a33784d816792d7bedd839955c"
+          GH_AW_WORK_QUEUE_CONTRACT: "2d7e0ea0c298bc924e309e2b8d0172f983f7a302d9dd95972bb69b43c087a4e2"
         with:
           script: |
             const path = require('path');
@@ -2095,7 +1928,7 @@ jobs:
         env:
           GH_AW_WORK_QUEUE_ENABLED: "true"
           GH_AW_WORK_QUEUE_ROLE: "worker"
-          GH_AW_WORK_QUEUE_CONTRACT: "ce1e50fd6396396a2c248f5700e02a2a5f7f24a33784d816792d7bedd839955c"
+          GH_AW_WORK_QUEUE_CONTRACT: "2d7e0ea0c298bc924e309e2b8d0172f983f7a302d9dd95972bb69b43c087a4e2"
           GH_AW_WORK_QUEUE_FINISH_INTENT: /tmp/gh-aw/work-queue.finish.jsonl
         with:
           script: |
@@ -2111,7 +1944,7 @@ jobs:
         env:
           GH_AW_WORK_QUEUE_ENABLED: "true"
           GH_AW_WORK_QUEUE_ROLE: "worker"
-          GH_AW_WORK_QUEUE_CONTRACT: "ce1e50fd6396396a2c248f5700e02a2a5f7f24a33784d816792d7bedd839955c"
+          GH_AW_WORK_QUEUE_CONTRACT: "2d7e0ea0c298bc924e309e2b8d0172f983f7a302d9dd95972bb69b43c087a4e2"
           GH_AW_GITHUB_TOKEN_SOURCE: ${{ secrets.GH_AW_GITHUB_TOKEN != '' && 'pat' || 'github_actions' }}
           GH_AW_WORK_QUEUE_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           GH_AW_WORK_QUEUE_INTENTS: /tmp/gh-aw/work-queue.intents.jsonl

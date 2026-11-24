@@ -968,7 +968,8 @@ class TestAgentToolPolicy(unittest.TestCase):
         # directories (gh, git, node).
         self.assertEqual(runs["dispatcher"].rstrip("\n"), runs["reviewer"].rstrip("\n"))
         authored = [step["name"] for step in source("reviewer")["pre-agent-steps"]]
-        self.assertEqual(authored[-2:], ["Make the home directories the sandbox mounts read-only to the agent",
+        self.assertEqual(authored[-3:], ["Make the home directories the sandbox mounts read-only to the agent",
+                                         CODE_STEP,
                                          "Seal the workspace's git checkout against the agent"])
 
     def test_excluded_tools_reads_the_last_flag_as_pi_does(self):
@@ -1018,6 +1019,9 @@ class TestAgentToolPolicy(unittest.TestCase):
             self.assertEqual((planted.stat().st_uid, planted.stat().st_mode & 0o777), (0, 0o755))
             self.assertEqual(outside.stat().st_uid, 1001)
 
+CODE_STEP = "Make the code that the steps after the agent run unwritable by the agent"
+
+
 class TestReviewerSandbox(unittest.TestCase):
     """The reviewer has a shell, file writes and web search inside the sandbox."""
 
@@ -1035,10 +1039,12 @@ class TestReviewerSandbox(unittest.TestCase):
         allowed = re.findall(r'\\"allowDomains\\":(\[[^\]]*\])', run)
         self.assertEqual([sorted(json.loads(a.replace('\\"', '"'))) for a in allowed], [sorted(hosts)])
         self.assertEqual(source("reviewer")["network"], {"allowed": hosts})
-        # Its own servers: the GitHub read server and the review writer; no
-        # browser and no Docker.
+        # Its own server: the GitHub read server; no review-writing tool (the
+        # agent writes porting-out/proposal.json itself), no browser and no
+        # Docker.
         self.assertEqual(set(source("reviewer")["mcp-servers"]), {"github-authenticated"})
-        self.assertEqual(set(source("reviewer")["mcp-scripts"]), {"submit_review"})
+        self.assertNotIn("mcp-scripts", source("reviewer"))
+        self.assertNotIn("mcp-scripts", json.dumps(self.lock()))
         for absent in ("playwright", "--enable-dind", "docker-sudo"):
             self.assertNotIn(absent, json.dumps(source("reviewer")))
 
@@ -1244,55 +1250,121 @@ class TestReviewerSandbox(unittest.TestCase):
                 self.assertIn(f"`{output.rstrip('/')}", (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2])
         prompt = (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2]
         self.assertNotIn("git -C fork", prompt)
-        self.assertIn("one `submit_review` call", prompt)
+        self.assertNotIn("submit_review", prompt)
+        self.assertIn("`porting-out/proposal.json`", prompt)
 
-    def submit(self, workspace: Path, review) -> subprocess.CompletedProcess:
-        script = source("reviewer")["mcp-scripts"]["submit_review"]["script"]
-        harness = ("async function execute(inputs) {\nconst { review } = inputs || {};\n" + script
-                   + "\n}\nexecute(JSON.parse(require('node:fs').readFileSync(0, 'utf8')))"
-                   ".then(r => console.log(JSON.stringify(r)),"
-                   " e => { console.log(JSON.stringify({ thrown: e.code || e.message })); });\n")
-        return subprocess.run(["node", "-e", harness], input=json.dumps({"review": review}),
-                              capture_output=True, text=True,
-                              env={"PATH": os.environ["PATH"], "GITHUB_WORKSPACE": str(workspace)})
+    def test_the_web_tool_claims_match_the_extension(self):
+        text = (WORKFLOWS / "reviewer.md").read_text()
+        prompt = text.split("---", 2)[2]
+        for needle in ("web_fetch_exa", "crawling_exa", "automatic chain reaches only Exa",
+                       "send data to any host inside such a URL", "2026-11-24"):
+            self.assertIn(needle, text)
+        self.assertIn("`fetch_content` reaches only the three search hosts", prompt)
+        self.assertNotIn("a page elsewhere is refused", text)
 
-    @unittest.skipUnless(shutil.which("node"), "needs node")
-    def test_submit_review_writes_one_json_object_and_follows_no_link(self):
+    def test_the_code_hardening_comes_after_the_trusted_steps_and_before_the_agent(self):
+        steps = self.lock()["jobs"]["agent"]["steps"]
+        names = [s.get("name") for s in steps]
+        code = names.index(CODE_STEP)
+        self.assertLess(names.index("Make the home directories the sandbox mounts read-only to the agent"), code)
+        self.assertLess(code, names.index("Seal the workspace's git checkout against the agent"))
+        # Every step that writes or runs something in the directories it
+        # makes root-owned is before it; the only gh-aw step that touches
+        # the gh-aw directory after it writes elsewhere.
+        for before in ("Setup Scripts", "Install AWF binary", "Install Pi CLI", "Setup Node.js",
+                       "Install ripgrep and fd for the agent's grep and find tools"):
+            self.assertLess(names.index(before), code)
+        self.assertLess(code, names.index("Execute Pi CLI"))
+        run = steps[code]["run"]
+        for needle in ('harden "$RUNNER_TEMP/gh-aw/actions"', 'harden "$(dirname "$RUNNER_TEMP")/_actions"',
+                       'sudo chown -RHh root:root -- "$dir/"', 'sudo chmod -R go-w -- "$dir/"',
+                       "! -user root -o -perm /022", "exit 1"):
+            self.assertIn(needle, run)
+        # Every action a step after the agent uses is under _actions.
+        for step in steps[names.index("Execute Pi CLI") + 1:]:
+            if "uses" in step:
+                self.assertRegex(step["uses"], r"^(actions|github/gh-aw-actions)/")
+
+    def code_hardening(self, temp: Path, home: Path, path: str) -> subprocess.CompletedProcess:
+        step = next(s for s in self.lock()["jobs"]["agent"]["steps"] if s.get("name") == CODE_STEP)
+        shim = temp.parent / "shim"
+        shim.mkdir(exist_ok=True)
+        (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+        (shim / "sudo").chmod(0o755)
+        return subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True,
+                              env={"HOME": str(home), "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(temp.parent / "ws"),
+                                   "PATH": f"{shim}:{path}"})
+
+    def test_the_code_hardening_refuses_a_link_and_a_missing_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "ws"
-            workspace.mkdir()
-            out = workspace / "porting-out/proposal.json"
-            result = self.submit(workspace, '{"schema_version": 1, "verdict": "pass"}')
-            self.assertEqual(json.loads(result.stdout),
-                             {"written": "porting-out/proposal.json", "bytes": out.stat().st_size}, result.stderr)
-            self.assertEqual(json.loads(out.read_text()), {"schema_version": 1, "verdict": "pass"})
-            for review, error in (("[1]", "the review must be a JSON object"), ("null", "the review must be a JSON object"),
-                                  ("{", "the review is not JSON"), ("", "the review must be 1 to 262144 bytes"),
-                                  ('{"x": "' + "a" * 262144 + '"}', "the review must be 1 to 262144 bytes")):
-                with self.subTest(review=review[:20]):
-                    answer = json.loads(self.submit(workspace, review).stdout)
-                    self.assertFalse(answer["written"])
-                    self.assertTrue(answer["error"].startswith(error), answer)
-            # The earlier review stands.
-            self.assertEqual(json.loads(out.read_text())["verdict"], "pass")
-            # A link at proposal.json is replaced, not followed, and no
-            # temporary file is left.
-            elsewhere = Path(tmp) / "elsewhere"
-            elsewhere.write_text("keep")
-            out.unlink()
-            out.symlink_to(elsewhere)
-            self.assertTrue(json.loads(self.submit(workspace, "{}").stdout)["written"])
-            self.assertEqual(elsewhere.read_text(), "keep")
-            self.assertFalse(out.is_symlink())
-            self.assertEqual(json.loads(out.read_text()), {})
-            self.assertEqual([p.name for p in out.parent.iterdir()], ["proposal.json"])
-            out.unlink()
-            out.parent.rmdir()
-            target = Path(tmp) / "dir"
-            target.mkdir()
-            out.parent.symlink_to(target)
-            self.assertIn("thrown", json.loads(self.submit(workspace, "{}").stdout))
-            self.assertEqual(list(target.iterdir()), [])
+            root = Path(tmp)
+            temp, home = root / "work/_temp", root / "home"
+            temp.mkdir(parents=True)
+            home.mkdir()
+            result = self.code_hardening(temp, home, "/usr/bin:/bin")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("gh-aw/actions is not a directory", result.stderr)
+            (temp / "gh-aw").mkdir()
+            (temp / "gh-aw/actions").symlink_to(root)
+            self.assertIn("is not a directory", self.code_hardening(temp, home, "/usr/bin:/bin").stderr)
+
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
+                         "chown to root needs root, and the agent's writes run as another user")
+    def test_a_write_through_a_planted_link_cannot_change_the_code_later_steps_run(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            root = Path(tmp)
+            os.chmod(root, 0o755)
+            temp, home = root / "work/_temp", root / "home"
+            actions, setup = temp / "gh-aw/actions", root / "work/_actions/github/gh-aw-actions/sha/setup"
+            tools = root / "tools/node/x64"
+            for path in (actions, setup, tools / "bin", home):
+                path.mkdir(parents=True)
+            scripts = [actions / "print_firewall_logs.sh", setup / "cleanup.sh", tools / "bin/node"]
+            for script in scripts:
+                script.write_text("#!/bin/sh\necho original\n")
+                script.chmod(0o755)
+            for path in (root / "work", root / "tools", home, *root.rglob("*")):
+                os.lchown(path, 1001, 1001)
+            (root / "ws").mkdir()
+            fake_node = root / "pathbin"
+            fake_node.mkdir()
+            (fake_node / "node").symlink_to(tools / "bin/node")
+            result = self.code_hardening(temp, home, f"{fake_node}:/usr/bin:/bin")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for script in scripts:
+                self.assertEqual((script.stat().st_uid, script.stat().st_mode & 0o022), (0, 0), script)
+            self.assertEqual((home / ".npmrc").stat().st_uid, 0)
+            # What the agent plants in /tmp/gh-aw, and what the later steps
+            # do with it as the runner's user (uid 1001): the copy, the
+            # echo and the staging copy all write through the link.
+            planted = root / "gh-aw"
+            planted.mkdir()
+            os.chown(planted, 1001, 1001)
+            source_file = planted / "outputs.jsonl"
+            source_file.write_text('{"type":"noop","message":"$(touch /tmp/pwned)"}\n')
+            os.chown(source_file, 1001, 1001)
+            runner = ["setpriv", "--reuid=1001", "--regid=1001", "--clear-groups"]
+            for index, target in enumerate((*scripts, actions / "new.sh", setup / "new.js")):
+                link = planted / f"link{index}"
+                link.symlink_to(target)
+                before = target.read_bytes() if target.exists() else None
+                for command in (f'cp "{source_file}" "{link}"', f'echo \'{{"items":[]}}\' > "{link}"'):
+                    attempt = subprocess.run([*runner, "sh", "-c", command], capture_output=True, text=True)
+                    self.assertNotEqual(attempt.returncode, 0, command)
+                self.assertEqual(target.read_bytes() if target.exists() else None, before, target)
+            self.assertFalse((actions / "new.sh").exists() or (setup / "new.js").exists())
+            # The agent's own uid cannot replace the scripts either.
+            self.assertNotEqual(subprocess.run([*runner, "sh", "-c", f'rm -f "{scripts[0]}" && echo x > "{scripts[0]}"'],
+                                               capture_output=True).returncode, 0)
+
+    def test_the_dispatcher_agent_has_no_way_to_plant_a_link(self):
+        # No shell and no file writes: the audit of the post-agent steps that
+        # follow links in /tmp/gh-aw (see the reviewer) finds no writer there.
+        steps = workflow("dispatcher.lock.yml")["jobs"]["agent"]["steps"]
+        run = next(s for s in steps if s.get("name") == "Execute Pi CLI")["run"]
+        args = pi_command_args(run)
+        self.assertTrue({"bash", "edit", "write"} <= excluded_tools(args))
+        self.assertNotIn("mcp-scripts", source("dispatcher"))
 
 
 class TestHistoryAndReports(unittest.TestCase):
