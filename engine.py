@@ -75,7 +75,7 @@ def _effect_fields() -> tuple[str, ...]:
     return tuple(dict.fromkeys(n for n in names if n in record_fields))
 
 
-FENCED_FIELDS = tuple(dict.fromkeys((*STATE_FIELDS, "active_work", *_effect_fields())))
+FENCED_FIELDS = tuple(dict.fromkeys((*STATE_FIELDS, "active_task", *_effect_fields())))
 
 TransitionError = lc.TransitionError
 
@@ -232,7 +232,7 @@ PREDICATE_REFUSALS: dict[str, Refusal] = {
     "repair_budgets_remain": Refusal.BUDGET_EXHAUSTED,
     "revision_budgets_remain": Refusal.BUDGET_EXHAUSTED,
     "review_revision_budgets_remain": Refusal.BUDGET_EXHAUSTED,
-    "work_recovery_and_work_total_remain": Refusal.BUDGET_EXHAUSTED,
+    "task_recovery_and_task_total_remain": Refusal.BUDGET_EXHAUSTED,
 }
 
 
@@ -401,7 +401,7 @@ def _quiescent(ctx: Context) -> str | None:
 
 
 def _no_task(ctx: Context) -> str | None:
-    return "A task is requested" if ctx.record.get("active_work") else None
+    return "A task is requested" if ctx.record.get("active_task") else None
 
 
 _record(lc.NO_TASK, "no_requested_task")(_no_task)
@@ -522,7 +522,7 @@ def _no_failing_job(ctx: Context) -> str | None:
 def carried_feedback(record: dict) -> list[str]:
     """The pending feedback the requested task carries: the ids present when
     it was allocated. A Result held for publication carries those of its task."""
-    for holder in (record.get("active_work"), record.get("pending_publication")):
+    for holder in (record.get("active_task"), record.get("pending_publication")):
         if holder and holder.get("feedback_evidence_ids"):
             return list(holder["feedback_evidence_ids"])
     return []
@@ -639,7 +639,7 @@ def budget_count(name: str, ctx: Context) -> int | None:
         return ctx.counts[name]
     record = ctx.record
     budget = record.get("budget") or {}
-    if name == "work_total":
+    if name == "task_total":
         return int(budget.get("attempts_used", 0))
     if name == "no_progress":
         return int(budget.get("no_progress_streak", 0))
@@ -650,8 +650,8 @@ def budget_count(name: str, ctx: Context) -> int | None:
         if ctx.cluster is not None:
             return int(clusters.get(ctx.cluster, 0))
         return max((int(v) for v in clusters.values()), default=0)
-    if name == "work_recovery":
-        return int((record.get("active_work") or {}).get("attempt", 1))
+    if name == "task_recovery":
+        return int((record.get("active_task") or {}).get("attempt", 1))
     if name == "publish_recovery":
         return int((record.get("pending_publication") or {}).get("attempts", 0))
     if name == "source_reads":
@@ -681,8 +681,8 @@ def head_reruns(record: dict) -> dict:
 
 
 # Budgets whose counter is a field of the contribution record.
-RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts",
-                   "repair_attempts_cluster", "work_recovery", "publish_recovery",
+RECORD_COUNTERS = ("task_total", "no_progress", "planning_attempts",
+                   "repair_attempts_cluster", "task_recovery", "publish_recovery",
                    "source_reads", *RERUN_COUNTERS)
 
 
@@ -695,10 +695,10 @@ def remains(name: str, ctx: Context) -> bool | None:
     return count < lc.budget_limit(name, ctx.policy)
 
 
-def work_total_spent(record: dict, policy: dict) -> bool:
-    """Whether ``work_total`` is exhausted for the record."""
+def task_total_spent(record: dict, policy: dict) -> bool:
+    """Whether ``task_total`` is exhausted for the record."""
     ctx = Context(record, state_key(record), policy, "")
-    return remains("work_total", ctx) is False
+    return remains("task_total", ctx) is False
 
 
 # The fields beside `budget.source_unavailable` that a run of failed reads
@@ -806,14 +806,14 @@ for _name in lc.BUDGETS:
     _register(f"{_name} remains", f"{_name}_remains", "record", _remain(_name))
     _register(f"{_name} exhausted", f"{_name}_exhausted", "record", _any_exhausted(_name))
 
-_register("work_recovery and work_total remain", "work_recovery_and_work_total_remain", "record",
-          _remain("work_recovery", "work_total"))
+_register("task_recovery and task_total remain", "task_recovery_and_task_total_remain", "record",
+          _remain("task_recovery", "task_total"))
 _register(lc.REPAIR_BUDGETS_REMAIN, "repair_budgets_remain", "record",
           _remain("repair_attempts_cluster", "no_progress"))
 _register(lc.REVISION_BUDGETS_REMAIN, "revision_budgets_remain", "record",
-          _remain("repair_attempts_cluster", "no_progress", "work_total"))
+          _remain("repair_attempts_cluster", "no_progress", "task_total"))
 _register(lc.REVIEW_REVISION_BUDGETS_REMAIN, "review_revision_budgets_remain", "record",
-          _remain("no_progress", "work_total"))
+          _remain("no_progress", "task_total"))
 
 
 def _cluster_exhausted(ctx: Context) -> bool | None:
@@ -827,12 +827,12 @@ def _cluster_exhausted(ctx: Context) -> bool | None:
 
 @_record(lc.REVISION_BUDGET_EXHAUSTED, "revision_budget_exhausted")
 def _revision_budget_exhausted(ctx: Context) -> str | None:
-    if remains("no_progress", ctx) is False or remains("work_total", ctx) is False:
+    if remains("no_progress", ctx) is False or remains("task_total", ctx) is False:
         return None
     cluster = _cluster_exhausted(ctx)
     if cluster is None:
         return UNKNOWN_EVIDENCE
-    return None if cluster else "no_progress, work_total, and repair_attempts_cluster remain"
+    return None if cluster else "no_progress, task_total, and repair_attempts_cluster remain"
 
 
 @_record(lc.REPAIR_BUDGET_EXHAUSTED, "repair_budget_exhausted")
@@ -895,8 +895,8 @@ def recovery_exhaustion(ctx: Context) -> tuple[str, str] | str:
     """The pending action and counter of ``exhaust_recovery`` for the failure
     the caller asserts, or why the row does not apply: exactly one failure is
     asserted, the task or the publication it concerns is held, and one of
-    the budgets that recover it is exhausted (``work_total`` is named before
-    ``work_recovery``, so the resume starts the budget of the generation)."""
+    the budgets that recover it is exhausted (``task_total`` is named before
+    ``task_recovery``, so the resume starts the budget of the generation)."""
     failures = [fact for fact in lc.RECOVERY_FAILURES if _asserted(ctx, fact)]
     if len(failures) != 1:
         return "the failure whose recovery is exhausted is not established"
@@ -904,7 +904,7 @@ def recovery_exhaustion(ctx: Context) -> tuple[str, str] | str:
     if failures[0] == "publication_infrastructure_error":
         if not publication_pending(ctx.record):
             return "no publication is pending"
-    elif not ctx.record.get("active_work"):
+    elif not ctx.record.get("active_task"):
         return "no task is requested"
     unknown = None
     for name in budgets:
@@ -1138,14 +1138,14 @@ PIPELINE_VERBS: dict[str, str] = {
     "request_repair": "controller",
     "request_upstream_revision": "controller",
     "request_review_revision": "controller",
-    "exhaust_work_total": "controller",
+    "exhaust_task_total": "controller",
     "refresh_on_exhaustion": "controller",
     "exhaust_repair_attempts": "controller",
     # A terminal task graph without a usable Result (taken by
     # `controller.terminal_task` for the reconciler and for an allocation
     # that names a spent graph), and a planning run Result without a
     # usable plan.
-    "allocate_work_retry": "controller",
+    "allocate_task_retry": "controller",
     # A fresh graph for a task whose last Claim failed before its agent for a
     # failure of the pipeline, once the pipeline code changed (or a human
     # launched the controller): nothing is charged.
@@ -1218,7 +1218,7 @@ PIPELINE_VERBS: dict[str, str] = {
     "exhaust_development_pr_launches": "controller",
     "confirm_development_pr": "recovery",
     # The submission rewrite task: its allocation and the exhaustion of
-    # `work_total` where it is due, its Results, which the trusted checks
+    # `task_total` where it is due, its Results, which the trusted checks
     # decide, and a rewrite whose artifact expired.
     "request_submission_rewrite": "controller",
     "accept_submission_rewrite": "reconcile",
@@ -1572,7 +1572,7 @@ def reset_generation(record: dict) -> dict:
         # processed_publications is kept as a replay fence against old run artifacts.
         "processed_review_ids": [], "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
-        "pending_feedback_evidence_ids": [], "active_work": None,
+        "pending_feedback_evidence_ids": [], "active_task": None,
         "plan_evidence_id": None, "scope_coverage_complete": False,
         "scope_paths": None, "debug_commits": [], "clean_head_sha": None,
         "clean_head_ci_since": None,
@@ -1590,7 +1590,7 @@ def reset_generation(record: dict) -> dict:
 
 def _restart_counter(rec: dict, name: str) -> None:
     budget = rec["budget"] = dict(rec["budget"])
-    if name == "work_total":
+    if name == "task_total":
         budget["attempts_used"] = 0
     elif name == "no_progress":
         budget["no_progress_streak"] = 0
@@ -1610,7 +1610,7 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
     """Charge a budget whose counter is in the record. Returns ``False`` for
     a counter that lives elsewhere."""
     budget = rec["budget"] = dict(rec["budget"])
-    if name == "work_total":
+    if name == "task_total":
         budget["attempts_used"] = int(budget.get("attempts_used", 0)) + 1
     elif name == "no_progress":
         budget["no_progress_streak"] = int(budget.get("no_progress_streak", 0)) + 1
@@ -1621,9 +1621,9 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
             raise TransitionError("charging repair_attempts_cluster needs the failing CI job")
         clusters = budget["clusters"] = dict(budget.get("clusters") or {})
         clusters[ctx.cluster] = int(clusters.get(ctx.cluster, 0)) + 1
-    elif name == "work_recovery":
-        before = int((ctx.record.get("active_work") or {}).get("attempt", 1))
-        rec["active_work"] = dict(rec["active_work"], attempt=before + 1)
+    elif name == "task_recovery":
+        before = int((ctx.record.get("active_task") or {}).get("attempt", 1))
+        rec["active_task"] = dict(rec["active_task"], attempt=before + 1)
     elif name == "publish_recovery":
         before = int((ctx.record.get("pending_publication") or {}).get("attempts", 0))
         rec["pending_publication"] = dict(rec["pending_publication"], attempts=before + 1)
@@ -1663,7 +1663,7 @@ def _clear(rec: dict, before: dict, name: str) -> None:
 
 def _charged_entries(ctx: Context, t: lc.Transition) -> list[str]:
     """The budgets the allocation row ``t`` charges that a lost dispatch gives
-    back (``lc.CREDITABLE``), as ``active_work.charged`` records them: the
+    back (``lc.CREDITABLE``), as ``active_task.charged`` records them: the
     repair counter with the failing CI job it was charged for
     (``repair_attempts_cluster:<job>``)."""
     entries = []
@@ -1678,13 +1678,13 @@ def _charged_entries(ctx: Context, t: lc.Transition) -> list[str]:
 def credit_entries(record: dict, t: lc.Transition) -> list[str]:
     """The budgets the row ``t`` gives back to ``record``: the ones its
     ``credits`` name among those the lost allocation charged
-    (``pending_human_action.credit``), ``work_total`` alone for a wait that
+    (``pending_human_action.credit``), ``task_total`` alone for a wait that
     records none (an allocation before the field existed charged it, as
     every allocation does)."""
     if not t.effects.credits:
         return []
     recorded = (record.get("pending_human_action") or {}).get("credit")
-    entries = ["work_total"] if recorded is None else list(recorded)
+    entries = ["task_total"] if recorded is None else list(recorded)
     return [e for e in entries if e.partition(":")[0] in t.effects.credits]
 
 
@@ -1692,7 +1692,7 @@ def _credit(rec: dict, entry: str) -> None:
     """Give back one budget entry of ``credit_entries``."""
     name, _, detail = entry.partition(":")
     budget = rec["budget"] = dict(rec["budget"])
-    if name == "work_total":
+    if name == "task_total":
         budget["attempts_used"] = max(0, int(budget.get("attempts_used", 0)) - 1)
     elif name == "repair_attempts_cluster" and detail:
         clusters = budget["clusters"] = dict(budget.get("clusters") or {})
@@ -1710,7 +1710,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     before = ctx.record
     declared = {lc._field_name(s) for s in e.sets} - set(ENGINE_VALUES)
     if e.task in ("allocate", "reallocate"):
-        declared.add("active_work")
+        declared.add("active_task")
     extra = set(values) - declared
     if extra:
         raise TransitionError(
@@ -1733,15 +1733,15 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     for name in e.clears:
         _clear(rec, before, name)
     if e.task == "clear":
-        rec["active_work"] = None
+        rec["active_task"] = None
     elif e.task in ("allocate", "reallocate"):
-        if not isinstance(values.get("active_work"), dict):
-            raise TransitionError(f"{verb} allocates a task; active_work is required")
-        rec["active_work"] = copy.deepcopy(values["active_work"])
+        if not isinstance(values.get("active_task"), dict):
+            raise TransitionError(f"{verb} allocates a task; active_task is required")
+        rec["active_task"] = copy.deepcopy(values["active_task"])
         # A task carries the feedback the row records for it (``TASK_FEEDBACK``)
         # and none otherwise; a fresh graph for the same task carries the
         # same feedback.
-        rec["active_work"]["feedback_evidence_ids"] = carried if e.task == "reallocate" else []
+        rec["active_task"]["feedback_evidence_ids"] = carried if e.task == "reallocate" else []
 
     pending_kind = None
     pipeline_version = None
@@ -1812,10 +1812,10 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         if pending_kind == "dispatch_failed":
             # What the re-arm needs: the version of the pipeline code the
             # dispatch failed at, and what the lost allocation charged (a task
-            # allocated before it was recorded gives back `work_total` alone).
+            # allocated before it was recorded gives back `task_total` alone).
             if isinstance(pipeline_version, str) and pipeline_version:
                 rec["pending_human_action"]["pipeline_version"] = pipeline_version
-            charged = (before.get("active_work") or {}).get("charged")
+            charged = (before.get("active_task") or {}).get("charged")
             if charged is not None:
                 rec["pending_human_action"]["credit"] = list(charged)
     elif counter_declared:
@@ -1828,14 +1828,14 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                                           feedback_evidence_ids=carried)
 
     charged_elsewhere = tuple(name for name in t.charges if not _charge(rec, name, ctx))
-    if e.task in ("allocate", "reallocate") and rec.get("active_work"):
+    if e.task in ("allocate", "reallocate") and rec.get("active_task"):
         # What this allocation charged, which a lost dispatch gives back.
         # A graph that replaces one that failed for the pipeline charges
         # nothing, so the allocation of the first graph is what it stands for;
         # any other fresh graph charged its own.
-        prior = (list(rec["active_work"].get("charged") or [])
+        prior = (list(rec["active_task"].get("charged") or [])
                  if verb == "reallocate_after_pipeline_failure" else [])
-        rec["active_work"] = dict(rec["active_work"], charged=prior + _charged_entries(ctx, t))
+        rec["active_task"] = dict(rec["active_task"], charged=prior + _charged_entries(ctx, t))
     for entry in credit_entries(before, t):
         _credit(rec, entry)
     rec["phase"], rec["activity"] = target.split(".", 1)
@@ -2057,7 +2057,7 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "publication_operation_id": None, "pending_publication": None,
     "processed_publications": [], "processed_review_ids": [],
     "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
-    "pending_feedback_evidence_ids": [], "active_work": None, "plan_evidence_id": None,
+    "pending_feedback_evidence_ids": [], "active_task": None, "plan_evidence_id": None,
     "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
     "clean_head_sha": None, "clean_head_ci_since": None, "submission_rewrite_id": None,
     "handoff_request": None, "handoff_approval": None,
@@ -2102,7 +2102,7 @@ RETIRED_STATES = {
 }
 # The pending action of a review of a held patch that could not run, which
 # now is a failed task.
-RETIRED_PENDING_KINDS = {"patch_review_unavailable": "work_failed"}
+RETIRED_PENDING_KINDS = {"patch_review_unavailable": "task_failed"}
 # The count of failed reviews in succession, a field of `budget` removed
 # whatever its value.
 RETIRED_BUDGET_FIELD = "review_rejections"
@@ -2127,7 +2127,7 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
         removed.append(f"state {state_key(new)}")
         new["phase"], new["activity"] = moved.split(".")
         added.append(f"state {moved}")
-        new["active_work"] = None
+        new["active_task"] = None
         # The held Result of a publication is the held patch's: nothing in
         # `development.fix_needed` reads it, so it would strand the record.
         if new.get("pending_publication") is not None:
@@ -2180,59 +2180,99 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     if isinstance(pending, dict) and "counter" not in pending:
         new["pending_human_action"] = dict(pending, counter=None)
         added.append("pending_human_action.counter")
-    work = new.get("active_work")
+    work = new.get("active_task")
     if isinstance(work, dict):
-        work = new["active_work"] = dict(work)
+        work = new["active_task"] = dict(work)
         for name, value in TASK_DEFAULTS.items():
             if name not in work:
                 work[name] = copy.deepcopy(value)
-                added.append(f"active_work.{name}")
+                added.append(f"active_task.{name}")
     return new, added, removed
 
 
-def with_current_names(record: dict) -> tuple[dict, list[str]]:
-    """``record`` with the names of the planning phase and its plan that it
-    carries from before the rename (``lifecycle.HISTORIC_NAMES``) replaced,
-    and the places it replaced: the fields `dossier_evidence_id` and
-    `budget.investigation_attempts`, and the historic values of `phase`,
-    `previous_phase`, `pending_human_action.kind`, and
-    `pending_human_action.counter`. Nothing else changes. Raises
-    ``TransitionError`` for a requested task of the historic task, whose queued
-    payload names a worker profile that no longer exists, and for a record
-    that carries a field under both names."""
-    historic = lc.HISTORIC_NAMES
+def with_current_names(record: dict, migration: str | None = None) -> tuple[dict, list[str]]:
+    """``record`` with the names it carries from before a rename
+    (``lifecycle.HISTORIC_NAMES``) replaced, and the places it replaced. The
+    plan rename (``lifecycle.PLAN_RENAME``) replaces the fields
+    `dossier_evidence_id` and `budget.investigation_attempts` and the
+    historic values of `phase`, `previous_phase`, `pending_human_action.kind`,
+    and `pending_human_action.counter`; the task rename
+    (``lifecycle.TASK_RENAME``) replaces the field `active_work`, the historic values of `pending_human_action.kind`
+    and `pending_human_action.counter`, and the budgets named in
+    `active_work.charged` and `pending_human_action.credit`. ``migration`` names the one to apply;
+    all of them are applied when it is ``None``. Nothing else changes. Raises
+    ``TransitionError`` for a requested task of the historic task
+    investigation, whose queued payload names a worker profile that no longer
+    exists, and for a record that carries a field under both names."""
+    chosen = (migration,) if migration else tuple(lc.RENAMES)
     new = copy.deepcopy(record)
     renamed: list[str] = []
 
-    def rename_key(container: dict, old: str, path: str) -> None:
+    def rename_key(container: dict, old: str, current: str, path: str) -> None:
         if old in container:
-            if historic[old] in container:
-                raise TransitionError(f"both {path}{old} and {path}{historic[old]} are present")
-            container[historic[old]] = container.pop(old)
+            if current in container:
+                raise TransitionError(f"both {path}{old} and {path}{current} are present")
+            container[current] = container.pop(old)
             renamed.append(f"{path}{old}")
 
-    def rename_value(container: dict, name: str, old: str, path: str) -> None:
+    def rename_value(container: dict, name: str, names: dict[str, str], old: str,
+                     path: str) -> None:
         if container.get(name) == old:
-            container[name] = historic[old]
+            container[name] = names[old]
             renamed.append(f"{path}{name}={old}")
 
-    rename_key(new, "dossier_evidence_id", "")
-    if isinstance(new.get("budget"), dict):
-        new["budget"] = dict(new["budget"])
-        rename_key(new["budget"], "investigation_attempts", "budget.")
-    for name in ("phase", "previous_phase"):
-        rename_value(new, name, "investigation", "")
-    if isinstance(new.get("pending_human_action"), dict):
-        new["pending_human_action"] = dict(new["pending_human_action"])
-        rename_value(new["pending_human_action"], "kind", "investigation_failed",
-                     "pending_human_action.")
-        rename_value(new["pending_human_action"], "counter", "investigation_attempts",
-                     "pending_human_action.")
-    work = new.get("active_work")
-    if isinstance(work, dict) and (work.get("task") == "investigation"
-                                   or str(work.get("dedupe_key")).endswith(":investigation")):
-        raise TransitionError("A requested task of the historic task investigation has no "
-                              "reviewed name migration")
+    if lc.PLAN_RENAME in chosen:
+        historic = lc.PLAN_RENAME_NAMES
+        rename_key(new, "dossier_evidence_id", historic["dossier_evidence_id"], "")
+        if isinstance(new.get("budget"), dict):
+            new["budget"] = dict(new["budget"])
+            rename_key(new["budget"], "investigation_attempts", historic["investigation_attempts"],
+                       "budget.")
+        for name in ("phase", "previous_phase"):
+            rename_value(new, name, historic, "investigation", "")
+        if isinstance(new.get("pending_human_action"), dict):
+            new["pending_human_action"] = dict(new["pending_human_action"])
+            rename_value(new["pending_human_action"], "kind", historic, "investigation_failed",
+                         "pending_human_action.")
+            rename_value(new["pending_human_action"], "counter", historic,
+                         "investigation_attempts", "pending_human_action.")
+        work = new.get("active_task") or new.get("active_work")
+        if isinstance(work, dict) and (work.get("task") == "investigation"
+                                       or str(work.get("dedupe_key")).endswith(":investigation")):
+            raise TransitionError("a requested task of the historic task investigation has no "
+                                  "reviewed name migration")
+    if lc.TASK_RENAME in chosen:
+        historic = lc.TASK_RENAME_NAMES
+        rename_key(new, "active_work", historic["active_work"], "")
+
+        def rename_entries(container: dict, name: str, path: str) -> None:
+            """The budgets a list names, each as ``<budget>`` or
+            ``<budget>:<detail>`` (``active_work.charged``,
+            ``pending_human_action.credit``)."""
+            entries = container.get(name)
+            if not isinstance(entries, list):
+                return
+            current = []
+            for entry in entries:
+                head, sep, detail = entry.partition(":") if isinstance(entry, str) else (entry, "", "")
+                if head in ("work_total", "work_recovery"):
+                    renamed.append(f"{path}{name}={head}")
+                    entry = historic[head] + sep + detail
+                current.append(entry)
+            container[name] = current
+
+        if isinstance(new.get("active_task"), dict):
+            new["active_task"] = dict(new["active_task"])
+            rename_entries(new["active_task"], "charged", "active_work.")
+        if isinstance(new.get("pending_human_action"), dict):
+            new["pending_human_action"] = dict(new["pending_human_action"])
+            for old in ("work_failed", "work_budget_exhausted"):
+                rename_value(new["pending_human_action"], "kind", historic, old,
+                             "pending_human_action.")
+            for old in ("work_total", "work_recovery"):
+                rename_value(new["pending_human_action"], "counter", historic, old,
+                             "pending_human_action.")
+            rename_entries(new["pending_human_action"], "credit", "pending_human_action.")
     return new, renamed
 
 
@@ -2254,7 +2294,7 @@ CONTRADICTED_REJECTIONS = ("mbox paths do not match proposal changed_files",
 CONTRADICTION_CUTOFF = "2026-11-25T14:00:00+00:00"
 REPAIR_PARK_PREFIX = "repair budgets exhausted"
 # The budgets whose exhaustion parks a development record after the refresh.
-REPAIR_PARK_BUDGETS = ("no_progress", "work_total", "repair_attempts_cluster")
+REPAIR_PARK_BUDGETS = ("no_progress", "task_total", "repair_attempts_cluster")
 
 
 def before_cutoff(at: Any) -> bool:
@@ -2349,7 +2389,7 @@ def refund_contradicted(record: dict, events: list[dict], refunded_before: set[i
     reason = new.get("parked_reason")
     if (new.get("phase") == "parked" and new.get("previous_phase") == "development"
             and isinstance(reason, str) and reason.startswith(REPAIR_PARK_PREFIX)
-            and not new.get("pending_publication") and not new.get("active_work")):
+            and not new.get("pending_publication") and not new.get("active_task")):
         ctx = Context(new, "development.fix_needed", policy, now)
         if all(remains(name, ctx) for name in REPAIR_PARK_BUDGETS):
             moved = dict(new, phase="development", activity="fix_needed",
@@ -2390,7 +2430,7 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since",
                       "budget.source_unavailable_at", "budget.source_unavailable_repository"),
     # A task held in a handoff state that requests none is dropped.
-    "handoff_task_dropped": ("active_work",),
+    "handoff_task_dropped": ("active_task",),
     # A published patch: its files join the admitted scope.
     "patch_published": ("scope_paths",),
     # A verified receipt of a `ci_rerun` operation the collector planned
@@ -2667,7 +2707,7 @@ handles("controller", "_source_unavailable",
 handles("controller", "tick", "withdraw_request", D_OBS, FACT_MISSING=SKIP)
 handles("controller", "tick", "record_reminder", D_TICK)
 handles("controller", "tick",
-        ("exhaust_work_total", "exhaust_work_total|refresh_on_exhaustion|exhaust_repair_attempts",
+        ("exhaust_task_total", "exhaust_task_total|refresh_on_exhaustion|exhaust_repair_attempts",
          "exhaust_repair_attempts"), D_TICK, BUDGET_EXHAUSTED=SKIP)
 handles("controller", "_due_allocation",
         ("dispatch_planning", "request_repair|request_patch",
@@ -2681,7 +2721,7 @@ handles("controller", "tick",
          "request_upstream_revision", "request_review_revision"), _ALL_BUG)
 # A record that breaks its state is left to the heal of its tick (nothing is
 # decided for its task).
-handles("controller", "terminal_task", "allocate_work_retry", D_TICK,
+handles("controller", "terminal_task", "allocate_task_retry", D_TICK,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"), SOURCE_INVALID=SKIP)
 handles("controller", "terminal_task", "reallocate_after_pipeline_failure", D_TICK,
         SOURCE_INVALID=SKIP)

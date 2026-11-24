@@ -29,7 +29,7 @@
     "no_progress_review_after": 2,
     "max_attempts_per_contribution": 36,
     "planning_attempts": 3,
-    "work_recovery": 2,
+    "task_recovery": 2,
     "source_unavailable_reads": 3,
     "source_unavailable_minutes": 60
   },

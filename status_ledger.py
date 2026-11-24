@@ -16,6 +16,7 @@ import engine
 import isolation
 import lifecycle
 import schemas
+import state
 from common import CONTROL_REPO
 
 # The pending action of a provisioning operation that failed (`controller`).
@@ -73,9 +74,9 @@ RECORDED_KINDS = {
                                    "checks of the changed files, and, when only those charges "
                                    "had parked this contribution, returned it to repair; the automatic "
                                    "refresh those rejections used is returned too."),
-    "record_names_migrated": ("Recorded this contribution under the current names of the "
-                              "planning phase and its plan. Its state, revision, and evidence are "
-                              "unchanged."),
+    "record_names_migrated": ("Recorded this contribution under the current names (the "
+                              "planning phase and its plan, or the requested task). Its state, "
+                              "revision, and evidence are unchanged."),
 }
 
 
@@ -868,7 +869,8 @@ def publish(root: Path, report: dict, token: str, run_url: str) -> list[dict]:
             continue
         event = events[path]
         cid_file = path.parent.name
-        record = json.loads((root / ".state/contributions" / f"{cid_file}.json").read_text())
+        record = state.migrate_names("contributions", json.loads(
+            (root / ".state/contributions" / f"{cid_file}.json").read_text()))[0]
         number = record["tracking_issue"]["number"]
         marker = f"<!-- upstreaming-ledger:{record['contribution_id']}:{event['sequence']} -->"
         if number not in comment_cache:

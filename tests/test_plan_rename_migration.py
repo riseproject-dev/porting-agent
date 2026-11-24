@@ -5,9 +5,11 @@
 ``tests/fixtures/plan-rename`` holds the contributions, projects, plan
 evidence, and the events of the parked contribution as the controller
 committed them before the planning phase and its plan were renamed from
-`investigation` and `dossier`. The controller rewrites them by itself, in one
-evented state-only commit, and changes nothing but the names; the events stay
-as they were written and are read under the current names.
+`investigation` and `dossier`, and before the requested task was named
+`active_task` instead of `active_work`. The controller rewrites them by itself,
+in one evented state-only commit with one event for each rename, and changes
+nothing but the names; the events stay as they were written and are read under
+the current names.
 """
 
 import io
@@ -39,7 +41,10 @@ PARKED_PLAN = ".state/evidence/dossier-luhenry--d2vm--3-r0.json"
 PROJECTS = (".state/projects/closeio--ciso8601.json", ".state/projects/luhenry--d2vm.json")
 LIVE_EVENT = ".state/events/closeio--ciso8601--1/00000000.json"
 PARKED_EVENT = ".state/events/luhenry--d2vm--3/00000004.json"
-MIGRATED = sorted([LIVE, PARKED, LIVE_PLAN, PARKED_PLAN, *PROJECTS, LIVE_EVENT, PARKED_EVENT])
+LIVE_TASK_EVENT = ".state/events/closeio--ciso8601--1/00000001.json"
+PARKED_TASK_EVENT = ".state/events/luhenry--d2vm--3/00000005.json"
+MIGRATED = sorted([LIVE, PARKED, LIVE_PLAN, PARKED_PLAN, *PROJECTS, LIVE_EVENT, PARKED_EVENT,
+                   LIVE_TASK_EVENT, PARKED_TASK_EVENT])
 
 
 def flat(value, prefix=""):
@@ -105,7 +110,7 @@ class TestNameMigration(StateCopy):
         with mock.patch.dict("os.environ", env):
             state.apply_pending_record_migrations(self.repo, self.p, now=NOW,
                                                   run=state.run_from_env())
-        for rel in (LIVE_EVENT, PARKED_EVENT):
+        for rel in (LIVE_EVENT, PARKED_EVENT, LIVE_TASK_EVENT, PARKED_TASK_EVENT):
             self.assertEqual(self.read(rel)["run"], {"id": 4242, "attempt": 2})
 
     def test_the_controller_records_its_run_on_migration_events(self):
@@ -118,17 +123,19 @@ class TestNameMigration(StateCopy):
             result = reconcile.cmd_reconcile(SimpleNamespace(
                 root=str(self.repo), report=str(self.repo / "report.json")))
         self.assertEqual(result, 0)
-        for rel in (LIVE_EVENT, PARKED_EVENT):
+        for rel in (LIVE_EVENT, PARKED_EVENT, LIVE_TASK_EVENT, PARKED_TASK_EVENT):
             self.assertEqual(self.read(rel)["run"], {"id": 4242, "attempt": 1})
 
     def test_only_the_names_change(self):
         written = state.apply_pending_record_migrations(self.repo, self.p, now=NOW)
         self.assertEqual(sorted(written), MIGRATED)
         self.assertEqual(changed(fixture(LIVE), self.read(LIVE)), {
+            "active_work": (None, "-"), "active_task": ("-", None),
             "budget.investigation_attempts": (0, "-"), "budget.planning_attempts": ("-", 0),
             "dossier_evidence_id": ("dossier-closeio--ciso8601--1-r2", "-"),
             "plan_evidence_id": ("-", "dossier-closeio--ciso8601--1-r2")})
         self.assertEqual(changed(fixture(PARKED), self.read(PARKED)), {
+            "active_work": (None, "-"), "active_task": ("-", None),
             "budget.investigation_attempts": (0, "-"), "budget.planning_attempts": ("-", 0),
             "dossier_evidence_id": (None, "-"), "plan_evidence_id": ("-", None),
             "previous_phase": ("investigation", "planning")})
@@ -141,7 +148,7 @@ class TestNameMigration(StateCopy):
         self.assertEqual((engine.state_key(live), live["revision"], live["pending_human_action"]),
                          ("handoff.awaiting_submission", 6, fixture(LIVE)["pending_human_action"]))
 
-    def test_one_event_per_contribution_names_what_it_renamed(self):
+    def test_one_event_per_rename_names_what_it_renamed(self):
         state.apply_pending_record_migrations(self.repo, self.p, now=NOW)
         event = self.read(LIVE_EVENT)
         self.assertEqual((event["kind"], event["cause"], event["from"], event["to"],
@@ -159,6 +166,13 @@ class TestNameMigration(StateCopy):
         self.assertFalse(status_ledger.notifies(event, "handoff.awaiting_submission",
                                                 "handoff.awaiting_submission"))
         self.assertIn("current names", status_ledger.RECORDED_KINDS[event["kind"]])
+        # The task rename is its own event, after the plan rename.
+        task_event = self.read(LIVE_TASK_EVENT)
+        self.assertEqual((task_event["kind"], task_event["cause"]),
+                         (state.NAMES_MIGRATED, {"type": "migration", "id": lifecycle.TASK_RENAME}))
+        self.assertEqual(task_event["details"], {
+            "from_state": "handoff.awaiting_submission", "to_state": "handoff.awaiting_submission",
+            "renamed": ["active_work"], "evidence": [], "projects": []})
 
     def test_the_migration_is_idempotent_and_the_state_valid(self):
         state.apply_pending_record_migrations(self.repo, self.p, now=NOW)
@@ -166,7 +180,7 @@ class TestNameMigration(StateCopy):
         self.assertEqual(state.apply_pending_record_migrations(self.repo, self.p, now=NOW), [])
         store = state.StateStore(self.repo, self.p)
         self.assertEqual(len(store.load_all("contributions")), 2)
-        self.assertEqual(len(store.load_all("events")), 6)
+        self.assertEqual(len(store.load_all("events")), 8)
 
     def test_the_state_publisher_accepts_the_migration_commit(self):
         state.apply_pending_record_migrations(self.repo, self.p, now=NOW)
@@ -249,7 +263,8 @@ class TestHistoricEvents(unittest.TestCase):
         for old, new in lifecycle.HISTORIC_NAMES.items():
             self.assertNotIn(old, verbs | set(lifecycle.LIFECYCLE) | set(lifecycle.BUDGETS))
             self.assertTrue(new in verbs or new in lifecycle.LIFECYCLE or new in lifecycle.BUDGETS
-                            or new in ("planning", "planning_failed", "plan", "plan_evidence_id"),
+                            or new in ("planning", "planning_failed", "plan", "plan_evidence_id",
+                                       "active_task", "task_failed", "task_budget_exhausted"),
                             new)
         self.assertEqual(lifecycle.current_name("submit_upstream"), "submit_upstream")
         self.assertIsNone(lifecycle.current_name(None))

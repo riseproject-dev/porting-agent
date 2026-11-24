@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-24T23:54:05.500486+00:00",
+  "cause": {
+    "id": "strict-record-schema",
+    "type": "migration"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "details": {
+    "added": [],
+    "from_state": "handoff.awaiting_submission",
+    "removed": [
+      "held_patch",
+      "review_comments",
+      "submission_review_id"
+    ],
+    "to_state": "handoff.awaiting_submission"
+  },
+  "from": {},
+  "kind": "record_fields_migrated",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45513659112
+  },
+  "schema_version": 1,
+  "sequence": 31,
+  "to": {}
+}

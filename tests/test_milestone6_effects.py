@@ -140,7 +140,7 @@ class TestPublicationAndPRContracts(unittest.TestCase):
         record.update(
             phase="development",
             active_operation_id=None,
-            active_work=None,
+            active_task=None,
             fork={
                 "repository_id": 55,
                 "name": "riseproject-upstreaming/ciso8601",

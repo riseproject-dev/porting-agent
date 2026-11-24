@@ -51,7 +51,7 @@ def committed_history(record: dict, policy_: dict | None = None) -> dict[str, di
     what the tick that allocated it committed with it."""
     import task_file
     import task_history
-    aw = record["active_work"]
+    aw = record["active_task"]
     history = task_history.build(record, aw, {}, policy=policy_ or policy(),
                                  now=aw["requested_at"])
     # The task file the same tick committed: the dispatch recovery needs its
@@ -80,7 +80,7 @@ def holding_task(record: dict, task: str = "development_repair") -> tuple[dict, 
     import tasks
     generation = int(record.get("generation", 0))
     key = tasks.task_key(record["contribution_id"], generation, record["revision"], task)
-    held = dict(record, active_work={
+    held = dict(record, active_task={
         "dedupe_key": key, "task": task, "revision": record["revision"],
         "generation": generation, "attempt": 1, "requested_at": NOW,
         "deadline_at": "2026-11-19T12:00:00+00:00", "dispatched_run_id": None,

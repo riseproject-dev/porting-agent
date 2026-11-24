@@ -344,7 +344,7 @@ class TestPlanCompleteness(unittest.TestCase):
 class TestImmutableTrackingIssue(unittest.TestCase):
     def test_authorized_human_relay_enables_natural_review_scope_extension(self):
         rec = contribution(activity="agent_running")
-        rec["active_work"] = {"task": "development_repair", "reason_ids": ["review-1"],
+        rec["active_task"] = {"task": "development_repair", "reason_ids": ["review-1"],
                               "requested_at": NOW, "revision": rec["revision"],
                               "dedupe_key": "repair", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
         request = tasks.request_from_active(rec)
@@ -367,7 +367,7 @@ class TestImmutableTrackingIssue(unittest.TestCase):
         rec = contribution(phase="planning", activity="agent_running")
         rec["refresh"] = {"command_id": "comment-9", "reason": "audit dependencies",
                           "from_phase": "development", "head_sha": SHA_A, "pr_number": 1}
-        rec["active_work"] = {"task": "planning", "reason_ids": [],
+        rec["active_task"] = {"task": "planning", "reason_ids": [],
                               "requested_at": NOW, "revision": rec["revision"],
                               "dedupe_key": "refresh", "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "feedback_evidence_ids": []}
         node = tasks.node(tasks.request_from_active(rec), rec, control_repo_id="7", allowed_paths=[])

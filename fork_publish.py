@@ -48,6 +48,7 @@ import lifecycle
 import publisher
 import recovery
 import schemas
+import state
 from common import (
     APP_COMMIT_EMAIL,
     APP_COMMIT_NAME,
@@ -480,7 +481,7 @@ def main(argv=None) -> int:
     ap.add_argument("--previous-candidate", help="commit a previous attempt of this publication would push")
     ap.add_argument("--out", type=Path)
     a = ap.parse_args(argv)
-    record = json.loads(a.record.read_text())
+    record = state.migrate_names("contributions", json.loads(a.record.read_text()))[0]
     task = json.loads(a.task.read_text())
     proposal = json.loads(a.proposal.read_text())
     if a.cmd == "preflight":

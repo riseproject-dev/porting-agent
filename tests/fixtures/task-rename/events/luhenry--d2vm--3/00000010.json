@@ -1,0 +1,27 @@
+{
+  "at": "2026-11-23T17:49:25.917601+00:00",
+  "cause": {
+    "id": "dispatcher-45230565087",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "count": 3,
+    "dispatcher_run": "45230565087",
+    "from_state": "planning.agent_running",
+    "limit": 3,
+    "to_state": "planning.waiting_human",
+    "verb": "exhaust_dispatch_recovery",
+    "work": "luhenry--d2vm/3@g1.r1:planning"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "exhaust_dispatch_recovery",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 10,
+  "to": {
+    "activity": "waiting_human"
+  }
+}

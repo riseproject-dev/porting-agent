@@ -158,7 +158,7 @@ def condensed(data: dict, limit: int = TASK_FILE_MAX_BYTES) -> dict:
 
 def build_data(record: dict, evidence: dict[str, dict], *,
                file_digest: Callable[[str], str]) -> dict:
-    """The content of the task the record requests (``active_work``), from the
+    """The content of the task the record requests (``active_task``), from the
     committed ``evidence`` and the record: the content of its task file.
     Raises ``TaskFileError`` when it cannot be built."""
     request = tasks.request_from_active(record)
@@ -166,7 +166,7 @@ def build_data(record: dict, evidence: dict[str, dict], *,
         raise TaskFileError("the record requests no task to dispatch")
     if not record["upstream"].get("repository_id") or not record["upstream"].get("base_sha"):
         raise TaskFileError("the upstream identity or base is not bound")
-    if not (record["active_work"].get("tracking_issue") or {}).get("url"):
+    if not (record["active_task"].get("tracking_issue") or {}).get("url"):
         raise TaskFileError("the task carries no frozen tracking-issue description")
     history_id = task_history.evidence_id(request["dedupe_key"])
     if history_id not in evidence:

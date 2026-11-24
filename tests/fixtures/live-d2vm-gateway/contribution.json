@@ -1,6 +1,6 @@
 {
   "active_operation_id": null,
-  "active_work": {
+  "active_task": {
     "attempt": 1,
     "deadline_at": "2026-11-25T06:46:16.080097+00:00",
     "dedupe_key": "luhenry--d2vm/3@g1.r6:development_repair",

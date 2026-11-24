@@ -67,12 +67,17 @@ def extract(zip_path: Path, out: Path) -> list[str]:
 
 def write_record(control_root: Path, task_path: Path, out: Path) -> None:
     """Copy the trusted contribution record named by the task from control state."""
-    from common import contribution_file_id
+    import state
+    from common import canonical_json, contribution_file_id
     task = json.loads(task_path.read_text())
     rec = control_root / ".state" / "contributions" / f"{contribution_file_id(task['contribution_id'])}.json"
     if not rec.is_file() or rec.is_symlink():
         raise ArtifactError("contribution record not found in control state")
-    (out / "record.json").write_bytes(rec.read_bytes())
+    # Under the current names, as the controller reads it, whatever names the
+    # committed file still carries (a record not yet migrated): every reader
+    # of the artifact, the publication check among them, reads one shape.
+    record = state.migrate_names("contributions", json.loads(rec.read_text(encoding="utf-8")))[0]
+    (out / "record.json").write_text(canonical_json(record), encoding="utf-8")
 
 
 def main(argv: list[str]) -> int:

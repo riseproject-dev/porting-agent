@@ -1,0 +1,26 @@
+{
+  "at": "2026-11-24T14:16:58.378042+00:00",
+  "cause": {
+    "id": "strict-record-schema",
+    "type": "migration"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "added": [],
+    "from_state": "development.agent_running",
+    "removed": [
+      "next_poll_at"
+    ],
+    "to_state": "development.agent_running"
+  },
+  "from": {},
+  "kind": "record_fields_migrated",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45412205958
+  },
+  "schema_version": 1,
+  "sequence": 30,
+  "to": {}
+}

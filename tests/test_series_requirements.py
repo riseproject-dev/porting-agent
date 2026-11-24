@@ -104,9 +104,9 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(new["revision"], rec["revision"] + 1)
         # A task carrying the requirements is requested in the same tick.
         self.assertEqual(kinds(out)[1:], ["request_patch"])
-        self.assertEqual(new["active_work"]["task"], "development_repair")
-        self.assertIn(ev["evidence_id"], new["active_work"]["feedback_evidence_ids"])
-        self.assertIn(ev["evidence_id"], new["active_work"]["reason_ids"])
+        self.assertEqual(new["active_task"]["task"], "development_repair")
+        self.assertIn(ev["evidence_id"], new["active_task"]["feedback_evidence_ids"])
+        self.assertIn(ev["evidence_id"], new["active_task"]["reason_ids"])
 
     def test_the_return_is_idempotent_for_the_same_head(self):
         gh = FakeGitHub([commit(SHA_B, "Build riscv64 wheels")], ["setup.py"])
@@ -252,13 +252,13 @@ class TestWorkPayload(unittest.TestCase):
 
     def test_the_payload_carries_requirements_of_the_current_head_only(self):
         rec = record(pending_feedback_evidence_ids=["series-requirements-2-x"])
-        rec["active_work"] = {"feedback_evidence_ids": ["series-requirements-2-x"]}
+        rec["active_task"] = {"feedback_evidence_ids": ["series-requirements-2-x"]}
         store = {"series-requirements-2-x": self.evidence()}
         self.assertEqual(tasks.series_requirements_context(rec, store),
                          [{"id": "changelog", "paths": ["CHANGELOG.md"]}])
         self.assertIsNone(tasks.series_requirements_context(
             rec, {"series-requirements-2-x": self.evidence(head=SHA_B)}))
-        self.assertIsNone(tasks.series_requirements_context(dict(rec, active_work={}), store))
+        self.assertIsNone(tasks.series_requirements_context(dict(rec, active_task={}), store))
         item = tasks._reason_item(self.evidence())
         self.assertEqual(item["data"], {"head": SHA_A,
                                         "unmet": [{"id": "changelog", "paths": ["CHANGELOG.md"]}]})
@@ -278,7 +278,7 @@ class TestLiveRecord(unittest.TestCase):
         path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
         if not path.exists():
             self.skipTest("no live record in this checkout")
-        rec = json.loads(path.read_text())
+        rec = engine.with_current_names(json.loads(path.read_text()))[0]
         if "next_poll_at" in rec:
             self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[2], ["next_poll_at"])
         rec.pop("next_poll_at", None)  # retired; the field migration removes it

@@ -53,7 +53,8 @@ CID = "luhenry--d2vm/3"
 
 
 def live() -> dict:
-    return json.loads((FIXTURES / "contribution.json").read_text())
+    """The live record, as the controller reads it under the current names."""
+    return engine.with_current_names(json.loads((FIXTURES / "contribution.json").read_text()))[0]
 
 
 def report() -> dict:
@@ -322,26 +323,26 @@ class TestTheAutomaticResume(unittest.TestCase):
 
 
 class TestTheSpentWorkTotal(unittest.TestCase):
-    """`development.fix_needed` with `work_total` spent and a head without a
-    PR: the rows that open the PR need `work_total`, so the task loop takes
-    `exhaust_work_total` and nothing is paused."""
+    """`development.fix_needed` with `task_total` spent and a head without a
+    PR: the rows that open the PR need `task_total`, so the task loop takes
+    `exhaust_task_total` and nothing is paused."""
 
     def spent(self):
         rec = dict(live(), activity="fix_needed", paused=False, paused_by=None,
                    paused_reason=None, paused_at=None)
-        limit = lc.budget_limit("work_total", POLICY)
+        limit = lc.budget_limit("task_total", POLICY)
         rec["budget"] = dict(rec["budget"], attempts_used=limit)
         return rec
 
-    def test_exhaust_work_total_is_taken_and_nothing_is_paused(self):
+    def test_exhaust_task_total_is_taken_and_nothing_is_paused(self):
         rec = self.spent()
         self.assertEqual(engine.state_key(rec), "development.fix_needed")
         out = tick(rec)
-        self.assertEqual(kinds(out), ["exhaust_work_total"])
+        self.assertEqual(kinds(out), ["exhaust_task_total"])
         self.assertIsNone(out.report.get("processing_errors"))
         self.assertEqual(engine.state_key(final(out, rec)), "development.waiting_human")
         self.assertTrue([d for d in out.report["controller"]["deferred"]
-                         if "work_total" in d["why"]])
+                         if "task_total" in d["why"]])
         # Nothing is left to do in the next tick.
         again = tick(final(out, rec))
         self.assertEqual((kinds(again), again.report.get("processing_errors")), ([], None))
@@ -351,7 +352,7 @@ class TestTheSpentWorkTotal(unittest.TestCase):
         [op] = [r for k, r in first.staged if k == "operations"]
         rec = final(first, live())
         spent = dict(rec, budget=dict(rec["budget"],
-                                      attempts_used=lc.budget_limit("work_total", POLICY)))
+                                      attempts_used=lc.budget_limit("task_total", POLICY)))
         out = tick(spent, now=T + timedelta(minutes=10), operations={op["operation_id"]: op})
         self.assertIsNone(out.report.get("processing_errors"))
         self.assertEqual(out.report["dev_pr_requests"], [])

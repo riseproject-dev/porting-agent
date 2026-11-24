@@ -91,7 +91,7 @@ class TestBuild(unittest.TestCase):
     def test_a_task_that_cannot_be_built_is_refused(self):
         for change, why in (
                 (lambda r, e: r["upstream"].update(base_sha=None), "not bound"),
-                (lambda r, e: r["active_work"].pop("tracking_issue"), "frozen tracking-issue"),
+                (lambda r, e: r["active_task"].pop("tracking_issue"), "frozen tracking-issue"),
                 (lambda r, e: e.pop(live.HISTORY), "history of the task is not recorded")):
             record, evidence = live.fresh()
             change(record, evidence)
@@ -200,7 +200,7 @@ class TestTick(unittest.TestCase):
     def test_the_task_file_is_staged_with_the_allocation_and_its_history(self):
         out = self.allocate()
         record = dev.final(out, None)
-        key = record["active_work"]["dedupe_key"]
+        key = record["active_task"]["dedupe_key"]
         staged = {e["evidence_id"]: e for k, e in out.staged if k == "evidence"}
         self.assertIn(task_history.evidence_id(key), staged)
         task = staged[task_build.evidence_id(key)]
@@ -266,7 +266,7 @@ class TestTick(unittest.TestCase):
         out = dev.tick(rec, verdict="failed", evidence=self.evidence())
         self.assertEqual(dev.kinds(out), ["record_ci_failure"])
         held = dev.final(out, rec)
-        self.assertIsNone(held["active_work"])
+        self.assertIsNone(held["active_task"])
         self.assertEqual(held["budget"]["attempts_used"], rec["budget"]["attempts_used"])
         self.assertEqual([e["kind"] for k, e in out.staged if k == "evidence"], ["ci"])
         self.assertEqual(out.report["controller"]["selected"], [])

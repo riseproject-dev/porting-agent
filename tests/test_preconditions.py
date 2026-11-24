@@ -147,7 +147,7 @@ class TestEveryGuardRefusesWithItsKind(unittest.TestCase):
                            paused=True, paused_by="human", paused_at=NOW)
         out = engine.preconditions(rec, "request_patch", policy=POLICY, now=NOW,
                                    facts={"worker_slot_free", "capacity_available"},
-                                   values={"active_work": {}})
+                                   values={"active_task": {}})
         self.assertEqual(out.kind, engine.Refusal.PAUSED)
 
     def test_no_row_of_the_state_is_not_applicable(self):

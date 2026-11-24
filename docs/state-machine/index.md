@@ -14,7 +14,7 @@ The contribution lifecycle is defined by one table in `lifecycle.py`. That table
 
 `uv run --locked python -m lifecycle check` verifies that the table is consistent, and the Agent Validation workflow runs it on every pull request and every push to `main`. It checks the structure: every target exists, every state is reachable from `queued.idle`, an end state (kind `terminal`) is reachable from every state, end states have no exits and every other state has one that leaves it, a verb leads from a state to one target only, and every transition names its trigger and its guard (`always` when unconditional), every command transition its command and the revision it accepts. It also checks the rules of the lifecycle:
 
-- every transition that allocates a task charges `work_total`, and every charged budget has a `policy.json` key and an exhaustion transition;
+- every transition that allocates a task charges `task_total`, and every charged budget has a `policy.json` key and an exhaustion transition;
 - every transition that allocates a task, or a fresh graph for it, is guarded by `upstream identity and base bound`: the task names the verified upstream repository and base;
 - exhaustion of an infrastructure budget leads to a human wait of the same phase, and nothing ends the generation from `upstream_review` without a command;
 - the revision is bumped by every resume and by every transition that invalidates requested or approved work, and by no other transition;
@@ -228,16 +228,16 @@ flowchart TB
     start_1(( )) --> planning_idle
     planning_idle -->|dispatch_planning| planning_agent_running
     planning_agent_running -->|retry_dispatch| planning_agent_running
-    planning_agent_running -->|allocate_work_retry| planning_agent_running
+    planning_agent_running -->|allocate_task_retry| planning_agent_running
     planning_agent_running -->|reallocate_after_pipeline_failure| planning_agent_running
     planning_agent_running -->|exhaust_recovery| planning_waiting_human
-    planning_idle -->|exhaust_work_total| planning_waiting_human
+    planning_idle -->|exhaust_task_total| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
     planning_waiting_human -->|rearm_dispatch| planning_idle
     planning_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-Dispatch and terminal-task recovery are automatic within `dispatch_recovery` and `work_recovery`. A terminal task graph is never submitted again under the same identity. Every task allocation also charges `work_total`. While the installed work-queue Policy refuses every dispatch, a dispatch is not decided until the queue is quiescent, where the dispatcher reinstalls the compiled policy; a dispatch that failed before the reinstall, or at an earlier version of the pipeline code, is re-armed by `rearm_dispatch`, which gives back the budgets its lost allocation charged.
+Dispatch and terminal-task recovery are automatic within `dispatch_recovery` and `task_recovery`. A terminal task graph is never submitted again under the same identity. Every task allocation also charges `task_total`. While the installed work-queue Policy refuses every dispatch, a dispatch is not decided until the queue is quiescent, where the dispatcher reinstalls the compiled policy; a dispatch that failed before the reinstall, or at an earlier version of the pipeline code, is re-armed by `rearm_dispatch`, which gives back the budgets its lost allocation charged.
 
 ### Failure case 4: fork provisioning fails or its outcome is uncertain
 
@@ -291,7 +291,7 @@ Every task carries its history: the reports of the earlier successful workers, t
 
 The worker commits the patch and runs a review loop on it with the `subagent` tool of `pi-subagents` (at most 3 rounds: fresh reviewers (read only), then a fix pass while a P0 or a P1 fix worth doing is found); its report records the loop. Trusted code publishes the patch only when no P0 finding is left open, and `record_publish_success` folds its Result.
 
-`development.fix_needed` is the one state in which a development task is due, and it is entered only after `confirm_provisioning`: no patch is proposed before the fork exists. `request_repair` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster` for that job; `request_patch` applies otherwise (the first patch, a rejected proposal, a repair driven only by review feedback) and charges `work_total` only. Both need write admission. Every applicable build and test job must execute and pass on the exact head.
+`development.fix_needed` is the one state in which a development task is due, and it is entered only after `confirm_provisioning`: no patch is proposed before the fork exists. `request_repair` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster` for that job; `request_patch` applies otherwise (the first patch, a rejected proposal, a repair driven only by review feedback) and charges `task_total` only. Both need write admission. Every applicable build and test job must execute and pass on the exact head.
 
 ### Failure case 1: patch proposal, dispatch, or task failure
 
@@ -309,7 +309,7 @@ flowchart TB
     development_agent_running -->|replan_development| development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running -->|retry_dispatch| development_agent_running
-    development_agent_running -->|allocate_work_retry| development_agent_running
+    development_agent_running -->|allocate_task_retry| development_agent_running
     development_agent_running -->|reallocate_after_pipeline_failure| development_agent_running
     development_agent_running -->|exhaust_recovery| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
@@ -450,7 +450,7 @@ flowchart TB
     development_fix_needed -->|exhaust_repair_attempts| parked_idle
 ```
 
-Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs complete planning again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains. `repair_attempts_cluster` counts only while a failing CI job is recorded for the head.
+Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs complete planning again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `task_total` remains. `repair_attempts_cluster` counts only while a failing CI job is recorded for the head.
 
 ### Failure case 6: the task budget is exhausted
 
@@ -467,12 +467,12 @@ flowchart TB
 
     start_1(( )) --> development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
-    development_fix_needed -->|exhaust_work_total| development_waiting_human
+    development_fix_needed -->|exhaust_task_total| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-When `work_total` is exhausted at `development.fix_needed`, `exhaust_work_total` waits for a human and names `work_total` in `pending_human_action.counter`, whatever the repair budgets hold. The reply states the number of task allocations spent in this generation and names both `/upstreaming resume` and `/upstreaming park`. One resume starts `work_total` again and returns to `development.fix_needed`; the repair budgets are not started again.
+When `task_total` is exhausted at `development.fix_needed`, `exhaust_task_total` waits for a human and names `task_total` in `pending_human_action.counter`, whatever the repair budgets hold. The reply states the number of task allocations spent in this generation and names both `/upstreaming resume` and `/upstreaming park`. One resume starts `task_total` again and returns to `development.fix_needed`; the repair budgets are not started again.
 
 ### Failure case 7: development must be re-planned
 
@@ -820,10 +820,10 @@ flowchart TB
     end
 
     start_1(( )) --> handoff_review_due
-    handoff_review_due -->|exhaust_work_total| handoff_waiting_human
+    handoff_review_due -->|exhaust_task_total| handoff_waiting_human
     handoff_agent_running -->|retry_dispatch| handoff_agent_running
     handoff_agent_running -->|exhaust_recovery| handoff_waiting_human
-    handoff_agent_running -->|allocate_work_retry| handoff_agent_running
+    handoff_agent_running -->|allocate_task_retry| handoff_agent_running
     handoff_agent_running -->|reallocate_after_pipeline_failure| handoff_agent_running
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     handoff_waiting_human -->|rearm_dispatch| handoff_review_due
@@ -894,7 +894,7 @@ flowchart TB
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
 
-A revision task carries the same history as a development task, including the reviews of upstream maintainers. Automated upstream revisions require that the upstream PR head is the controlled fork ref. `request_upstream_revision` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster`; `request_review_revision` applies to a revision driven only by review feedback and charges `work_total` only. A published revision clears exactly the feedback its task carried. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without a requesting task. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and set of failing jobs. Upstream CI is never rerun by the pipeline.
+A revision task carries the same history as a development task, including the reviews of upstream maintainers. Automated upstream revisions require that the upstream PR head is the controlled fork ref. `request_upstream_revision` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster`; `request_review_revision` applies to a revision driven only by review feedback and charges `task_total` only. A published revision clears exactly the feedback its task carried. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without a requesting task. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and set of failing jobs. Upstream CI is never rerun by the pipeline.
 
 ### Failure case 4: a revision task or its publication fails
 
@@ -908,7 +908,7 @@ flowchart TB
 
     start_1(( )) --> upstream_agent_running
     upstream_agent_running -->|retry_dispatch| upstream_agent_running
-    upstream_agent_running -->|allocate_work_retry| upstream_agent_running
+    upstream_agent_running -->|allocate_task_retry| upstream_agent_running
     upstream_agent_running -->|reallocate_after_pipeline_failure| upstream_agent_running
     upstream_agent_running -->|schedule_publish_retry| upstream_agent_running
     upstream_agent_running -->|exhaust_recovery| upstream_waiting_human

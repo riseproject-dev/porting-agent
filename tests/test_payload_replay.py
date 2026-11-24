@@ -5,7 +5,7 @@
 payload carrying its whole task was 15592 bytes against the queue's limit of
 16384 (with a safety margin of 15500); the dispatch recovery blamed the 244
 byte tracking issue description, charged `dispatch_recovery`, and waited for
-a human, while the request had charged `work_total` for a task that never
+a human, while the request had charged `task_total` for a task that never
 reached the queue.
 
 The fixtures (``tests/fixtures/live-d2vm-payload``) are the committed record
@@ -194,8 +194,9 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
                           record["budget"]["attempts_used"], record["revision"]),
                          ("dispatch_failed", "dispatch_recovery", 7, 10))
         self.assertNotIn("pipeline_version", record["pending_human_action"])
-        self.assertIsNone(record["active_work"])
+        self.assertIsNone(record["active_task"])
         events = {e["sequence"]: e for e in live.events()}
+        # An event is the history as it was written: it names the budget as it did.
         self.assertEqual(events[38]["details"]["charged"], ["work_total"])
         self.assertEqual(events[41]["kind"], "exhaust_recovery")
         self.assertIn("15601 bytes", events[41]["details"]["why"])
@@ -214,19 +215,19 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         self.assertEqual(rearm["details"]["pipeline_version"], FIXED)
         # The task the lost allocation charged is credited, and the new
         # request charges its own: the net charge is one task.
-        self.assertEqual(rearm["details"]["credited"], ["work_total"])
-        self.assertEqual(request["details"]["charged"], ["work_total"])
+        self.assertEqual(rearm["details"]["credited"], ["task_total"])
+        self.assertEqual(request["details"]["charged"], ["task_total"])
         record = [r for r in self.staged(out, "contributions")][-1]
         self.assertEqual(record["budget"]["attempts_used"], 7)
         self.assertIsNone(record["pending_human_action"])
         self.assertEqual(engine.state_key(record), "development.agent_running")
-        self.assertEqual(record["active_work"]["dedupe_key"],
+        self.assertEqual(record["active_task"]["dedupe_key"],
                          "luhenry--d2vm/3@g1.r11:development_repair")
-        self.assertEqual(record["active_work"]["charged"], ["work_total"])
+        self.assertEqual(record["active_task"]["charged"], ["task_total"])
         # What the human wait held is kept: the feedback the repair answers
         # and the verified plan.
         self.assertEqual(record["pending_feedback_evidence_ids"], [live.REVIEW])
-        self.assertEqual(record["active_work"]["feedback_evidence_ids"], [live.REVIEW])
+        self.assertEqual(record["active_task"]["feedback_evidence_ids"], [live.REVIEW])
         self.assertEqual(record["plan_evidence_id"], live.PLAN)
         self.assertEqual(record["revision"], 11)
         # The task is requested again for dispatch.
@@ -238,7 +239,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
     def test_the_task_file_and_the_history_are_committed_with_the_request(self):
         out = self.tick()
         record = [r for r in self.staged(out, "contributions")][-1]
-        key = record["active_work"]["dedupe_key"]
+        key = record["active_task"]["dedupe_key"]
         evidence = {e["evidence_id"]: e for e in self.staged(out, "evidence")}
         history, task = evidence[task_history.evidence_id(key)], evidence[
             task_build.evidence_id(key)]
@@ -285,12 +286,12 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         run = {"id": 45447556135, "status": "completed", "created_at": "2026-11-24T17:24:00Z"}
         limit = reconcile.lifecycle.budget_limit("dispatch_recovery", POLICY)
         new, event, decision = reconcile._lost_dispatch(
-            record, record["active_work"], run, limit + 1, now=NOW, policy=POLICY,
+            record, record["active_task"], run, limit + 1, now=NOW, policy=POLICY,
             pipeline=FIXED)
         self.assertEqual(decision, "dispatch failed; waiting for a human")
         self.assertEqual(new["pending_human_action"]["pipeline_version"], FIXED)
         # The task of the incident predates `charged`: the wait records no
-        # credit, and the re-arm gives back `work_total` alone.
+        # credit, and the re-arm gives back `task_total` alone.
         self.assertNotIn("credit", new["pending_human_action"])
         self.assertEqual(event["details"]["pipeline_version"], FIXED)
         self.assertNotIn("payload", event["details"].get("why", ""))
@@ -312,7 +313,7 @@ class TestTheRequestWithoutATaskFile(unittest.TestCase):
         out = run_tick(record, live.evidence())
         self.assertEqual([e["kind"] for e in staged(out, "events")], ["rearm_dispatch"])
         final = staged(out, "contributions")[-1]
-        self.assertIsNone(final["active_work"])
+        self.assertIsNone(final["active_task"])
         # The credit of the lost allocation, and no new charge.
         self.assertEqual(final["budget"]["attempts_used"], 6)
         [alert] = [a["alert"] for a in out.report["controller"]["alerts"]

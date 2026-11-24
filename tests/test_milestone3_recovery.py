@@ -28,7 +28,7 @@ class TestDeterministicController(unittest.TestCase):
             phase="planning",
             activity="fix_needed",
             fork=None,
-            active_work=None,
+            active_task=None,
         )
         inputs = controller.Inputs(
             now=datetime.fromisoformat(NOW),

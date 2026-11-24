@@ -249,12 +249,12 @@ class TestPayload(unittest.TestCase):
         record = contribution(phase="development", activity="agent_running", revision=3)
         record.update(plan_evidence_id="plan-x", upstream=dict(
             record["upstream"], repository_id=1, base_sha="a" * 40))
-        record["active_work"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
+        record["active_task"] = {"dedupe_key": "k", "task": "development_patch", "generation": 0,
                                  "revision": 3, "attempt": 1, "requested_at": "2026-11-23T00:00:00+00:00",
                                  "deadline_at": "2026-11-23T06:00:00+00:00", "dispatched_run_id": None,
                                  "reason_ids": [], "tracking_issue": {"url": "https://x"},
                                  "feedback_evidence_ids": []}
-        record["active_work"]["reason_ids"] = ["plan-x"]
+        record["active_task"]["reason_ids"] = ["plan-x"]
         return record, dict(evidence, **{task_history.evidence_id("k"): {}}), tasks
 
     def test_the_task_carries_the_rules_of_a_version_2_plan_only(self):

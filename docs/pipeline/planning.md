@@ -48,7 +48,7 @@ A Python project is also audited against public PyPI and the RISE index. That a 
 
 ## How planning is dispatched
 
-1. The controller selects a queued contribution and commits an immutable `active_work` request.
+1. The controller selects a queued contribution and commits an immutable `active_task` request.
 2. It launches `dispatcher.lock.yml`.
 3. Trusted dispatcher preparation replays that exact request into the native queue. The model never selects or mutates queue Work.
 4. Each dispatcher run admits at most one Claim, for the planner or the worker profile (`dispatch-workflow` with `max: 1`). Planning dispatches the planner profile through gh-aw native queue Work.

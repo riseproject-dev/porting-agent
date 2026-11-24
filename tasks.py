@@ -90,7 +90,7 @@ def task_data(request: dict, record: dict, *, allowed_paths: list[str],
     time except re-checks."""
     task = request["task"]
     context = dict(context or {})
-    issue = (record.get("active_work") or {}).get("tracking_issue")
+    issue = (record.get("active_task") or {}).get("tracking_issue")
     if issue is not None:
         context["tracking_issue"] = issue
     if task == "planning" and record.get("refresh"):
@@ -192,10 +192,10 @@ def task_identity(task: dict) -> tuple[int | None, str | None]:
 
 
 def request_from_active(rec: dict) -> dict | None:
-    """The controller's committed request (``active_work``) as a work request,
+    """The controller's committed request (``active_task``) as a work request,
     or None if there is nothing to dispatch for this record: no task, a
     pause, or a task of another generation or revision."""
-    aw = rec.get("active_work")
+    aw = rec.get("active_task")
     if not aw or rec.get("paused") or aw.get("revision") != rec["revision"] \
             or aw.get("generation") != int(rec.get("generation", 0)):
         return None
@@ -423,7 +423,7 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
     allowed_paths = (record.get("scope_paths") or contract.get("allowed_paths")
                      or [".github/workflows/*"])
     context = {
-        "requested_at": record["active_work"]["requested_at"],
+        "requested_at": record["active_task"]["requested_at"],
         "reason_evidence": reason_evidence,
         # The measurable commit conventions of the verified plan, which the
         # trusted worker gate checks. A plan of schema version 1 records
@@ -468,7 +468,7 @@ def series_requirements_context(record: dict, evidence: dict[str, dict]) -> list
     among the task's feedback, as ``{id, paths}``, and only while the fork
     head is the head that evidence names (a push since then may already
     meet them). ``None`` when the task carries none."""
-    work = record.get("active_work") or {}
+    work = record.get("active_task") or {}
     head = (record.get("fork") or {}).get("head_sha")
     for evidence_id in reversed(list(work.get("feedback_evidence_ids") or [])):
         found = evidence.get(evidence_id) or {}
@@ -524,8 +524,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     deferred = []
     ordered = sorted(
         snapshot.contributions.values(),
-        key=lambda record: (record["active_work"] or {}).get("requested_at", "")
-        if record.get("active_work")
+        key=lambda record: (record["active_task"] or {}).get("requested_at", "")
+        if record.get("active_task")
         else "",
     )
     for record in ordered:

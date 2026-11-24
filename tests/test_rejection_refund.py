@@ -42,7 +42,10 @@ class _Store(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.record = load("contribution.json")
+        # The fixture is the record as committed before the task rename; the
+        # refund is tested on it under the current names, and its composition
+        # with the name migration in `TestComposition`.
+        self.record = state.migrate_names("contributions", load("contribution.json"))[0]
         self.events = self.root / ".state/events/luhenry--d2vm--3"
         shutil.copytree(FIXTURE / "events", self.events)
         self.write(self.record)
@@ -75,6 +78,23 @@ class _Store(unittest.TestCase):
                 if e["kind"] == state.REFUND_MIGRATED]
 
 
+class TestComposition(_Store):
+    def test_the_refund_follows_the_name_migration_of_the_same_record(self):
+        self.write(load("contribution.json"))
+        self.assertEqual(state.pending_record_migrations(self.root, POLICY),
+                         [".state/contributions/luhenry--d2vm--3.json"])
+        written = self.apply()
+        self.assertEqual(len(written), 3)
+        self.assertEqual(self.apply(), [])
+        record = self.read()
+        self.assertNotIn("active_work", record)
+        self.assertEqual((record["phase"], record["activity"]), ("development", "fix_needed"))
+        names, refund = (state.contribution_events(self.root, CID)[-2:])
+        self.assertEqual((names["sequence"], names["kind"], names["cause"]["id"]),
+                         (48, state.NAMES_MIGRATED, "task-rename"))
+        self.assertEqual((refund["sequence"], refund["kind"]), (49, state.REFUND_MIGRATED))
+
+
 class TestRefund(_Store):
     def test_the_parked_record_returns_to_repair_with_its_charges_refunded(self):
         self.assertEqual(self.record["phase"], "parked")
@@ -87,7 +107,7 @@ class TestRefund(_Store):
         self.assertEqual(record["budget"]["attempts_used"], self.record["budget"]["attempts_used"])
         self.assertIsNone(record["parked_reason"])
         self.assertIsNone(record["previous_phase"])
-        self.assertIsNone(record["active_work"])
+        self.assertIsNone(record["active_task"])
         self.assertEqual(record["revision"], self.record["revision"])
         [event] = self.refunds()
         self.assertEqual(event["details"]["refunded"], [44, 46])
@@ -186,8 +206,8 @@ class TestRefund(_Store):
         self.write(record)
         self.assertEqual(state.pending_record_migrations(self.root, POLICY), [])
 
-    def test_work_total_is_not_refunded(self):
-        self.event(46, charged=["no_progress", "work_total"])
+    def test_task_total_is_not_refunded(self):
+        self.event(46, charged=["no_progress", "task_total"])
         self.apply()
         record = self.read()
         self.assertEqual(record["budget"]["attempts_used"], self.record["budget"]["attempts_used"])

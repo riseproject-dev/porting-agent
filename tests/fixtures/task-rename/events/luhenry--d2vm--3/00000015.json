@@ -1,0 +1,26 @@
+{
+  "at": "2026-11-23T20:13:29.927419+00:00",
+  "cause": {
+    "id": "op-86c874839c048d14aa174d6e",
+    "type": "operation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "provisioning.idle",
+    "operation": "op-86c874839c048d14aa174d6e",
+    "to_state": "development.fix_needed",
+    "verb": "confirm_provisioning"
+  },
+  "from": {
+    "activity": "idle",
+    "phase": "provisioning"
+  },
+  "kind": "confirm_provisioning",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 15,
+  "to": {
+    "activity": "fix_needed",
+    "phase": "development"
+  }
+}

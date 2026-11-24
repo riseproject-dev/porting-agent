@@ -61,6 +61,7 @@ import fork_publish
 import lifecycle
 import recovery
 import schemas
+import state
 from common import CONTROL_REPO, DEV_REF, FORK_ORG, UPSTREAM_REF, contribution_file_id
 
 # The states whose CI observation reruns interrupted jobs
@@ -516,7 +517,8 @@ def load_request(root: Path, operation_id: str, policy: dict, *,
     op = json.loads((root / ".state/operations" / f"{operation_id}.json").read_text())
     schemas.validate("operation", op)
     cid = contribution_file_id(op["contribution_id"])
-    record = json.loads((root / ".state/contributions" / f"{cid}.json").read_text())
+    record = state.migrate_names(
+        "contributions", json.loads((root / ".state/contributions" / f"{cid}.json").read_text()))[0]
     schemas.validate("contribution", record)
     fork = record.get("fork") or {}
     if op["kind"] != "ci_rerun" or op["status"] != "planned" \
@@ -589,6 +591,11 @@ def _trusted_workflow() -> None:
         raise RerunError("CI reruns require the trusted control workflow on main")
 
 
+def _record(path) -> dict:
+    """The contribution record of a file, under the current names."""
+    return state.migrate_names("contributions", json.loads(path.read_text()))[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     from datetime import datetime, timezone
@@ -654,14 +661,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         code = 0
     elif a.cmd == "preflight":
-        result = preflight(record=json.loads(a.record.read_text()),
+        result = preflight(record=_record(a.record),
                            task=json.loads(a.task.read_text()),
                            proposal=json.loads(a.proposal.read_text()), policy=policy, now=now,
                            fork_lookup=lambda name: collect.repository(collect.Api(), name))
         code = 0
     else:
         token = os.environ.pop("UPSTREAMING_FORK_TOKEN", "")
-        result = publish(record=json.loads(a.record.read_text()),
+        result = publish(record=_record(a.record),
                          task=json.loads(a.task.read_text()),
                          api=Api(token=token, reader=collect.Api()), policy=policy, now=now)
         result["attempt"] = fork_publish.dispatched_attempt()

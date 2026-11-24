@@ -32,7 +32,7 @@ def rearm(rec):
 
 
 class TestWhatAnAllocationCharged(unittest.TestCase):
-    def test_a_repair_records_the_counter_of_its_failing_job_and_the_work_total(self):
+    def test_a_repair_records_the_counter_of_its_failing_job_and_the_task_total(self):
         out = dev.tick(dev.record("waiting_ci"), verdict="failed",
                        evidence={"plan-1": {"schema_version": 1, "evidence_id": "plan-1",
                                             "kind": "plan", "policy_version": "p",
@@ -41,50 +41,50 @@ class TestWhatAnAllocationCharged(unittest.TestCase):
         self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
         record = dev.final(out, None)
         [cluster] = record["budget"]["clusters"]
-        self.assertEqual(record["active_work"]["charged"],
-                         [f"repair_attempts_cluster:{cluster}", "work_total"])
+        self.assertEqual(record["active_task"]["charged"],
+                         [f"repair_attempts_cluster:{cluster}", "task_total"])
         self.assertEqual(record["budget"]["attempts_used"], 1)
 
     def test_a_fresh_graph_after_a_terminal_one_charged_its_own_allocation_only(self):
-        rec = dev.running(active_work=dict(dev.WORK, charged=["work_total"],
+        rec = dev.running(active_task=dict(dev.WORK, charged=["task_total"],
                                            dedupe_key="example--proj/12@g0.r0:development_repair"))
         import tasks
         out = dev.tick(rec, observe=False, queue={tasks.graph_id(
-            rec["active_work"]["dedupe_key"]): "cancelled"},
+            rec["active_task"]["dedupe_key"]): "cancelled"},
             now=dev.T)
-        self.assertEqual(dev.kinds(out), ["allocate_work_retry"])
-        # `allocate_work_retry` charged `work_total` for its own graph: a
+        self.assertEqual(dev.kinds(out), ["allocate_task_retry"])
+        # `allocate_task_retry` charged `task_total` for its own graph: a
         # later re-arm gives back one, not the charge of the graph before.
-        self.assertEqual(dev.final(out, rec)["active_work"]["charged"], ["work_total"])
+        self.assertEqual(dev.final(out, rec)["active_task"]["charged"], ["task_total"])
 
     def test_a_graph_reallocated_after_a_failure_of_the_pipeline_keeps_the_allocation(self):
         import controller
-        rec = dev.running(active_work=dict(dev.WORK, charged=["work_total"],
+        rec = dev.running(active_task=dict(dev.WORK, charged=["task_total"],
                                            dedupe_key="example--proj/12@g0.r0:development_repair"))
-        fresh = controller._fresh_task(rec, rec["active_work"], __import__("datetime").datetime
+        fresh = controller._fresh_task(rec, rec["active_task"], __import__("datetime").datetime
                                        .fromisoformat(NOW))
         out = engine.try_apply_transition(
             rec, "reallocate_after_pipeline_failure", policy=POLICY, now=NOW,
             facts={"task_terminal_without_result", "pipeline_failure",
-                   "pipeline_failure_cleared"}, values={"active_work": fresh})
-        self.assertEqual(out.record["active_work"]["charged"], ["work_total"])
+                   "pipeline_failure_cleared"}, values={"active_task": fresh})
+        self.assertEqual(out.record["active_task"]["charged"], ["task_total"])
         self.assertEqual(out.record["budget"]["attempts_used"], rec["budget"]["attempts_used"])
 
 
 class TestTheWaitRecordsWhatTheReArmNeeds(unittest.TestCase):
     def lost(self, aw, **kw):
-        rec = dev.running(active_work=dict(dev.WORK, **aw))
+        rec = dev.running(active_task=dict(dev.WORK, **aw))
         run = {"id": 9, "status": "completed", "created_at": "2026-11-23T09:30:00Z"}
         limit = lifecycle.budget_limit("dispatch_recovery", POLICY)
-        return reconcile._lost_dispatch(rec, rec["active_work"], run, limit + 1, now=dev.T,
+        return reconcile._lost_dispatch(rec, rec["active_task"], run, limit + 1, now=dev.T,
                                         policy=POLICY, **kw)
 
     def test_the_exhaustion_of_a_lost_dispatch_records_the_version_and_the_credit(self):
         new, event, _decision = self.lost(
-            {"charged": ["repair_attempts_cluster:build", "work_total"]}, pipeline="v" * 64)
+            {"charged": ["repair_attempts_cluster:build", "task_total"]}, pipeline="v" * 64)
         self.assertEqual(new["pending_human_action"]["pipeline_version"], "v" * 64)
         self.assertEqual(new["pending_human_action"]["credit"],
-                         ["repair_attempts_cluster:build", "work_total"])
+                         ["repair_attempts_cluster:build", "task_total"])
         self.assertEqual(event["details"]["pipeline_version"], "v" * 64)
 
     def test_task_allocated_before_the_credit_was_recorded_records_none(self):
@@ -99,12 +99,12 @@ class TestTheReArmGivesTheBudgetsBack(unittest.TestCase):
     def test_the_credit_names_what_is_given_back(self):
         rec = waiting(budget=dict(contribution()["budget"], attempts_used=5,
                                   clusters={"build": 2}))
-        rec["pending_human_action"]["credit"] = ["repair_attempts_cluster:build", "work_total"]
+        rec["pending_human_action"]["credit"] = ["repair_attempts_cluster:build", "task_total"]
         out = rearm(rec)
         self.assertEqual((out.record["budget"]["attempts_used"], out.record["budget"]["clusters"]),
                          (4, {"build": 1}))
         self.assertEqual(out.event["details"]["credited"],
-                         ["repair_attempts_cluster:build", "work_total"])
+                         ["repair_attempts_cluster:build", "task_total"])
 
     def test_a_cluster_given_back_to_zero_is_removed(self):
         rec = waiting(budget=dict(contribution()["budget"], attempts_used=1,
@@ -114,7 +114,7 @@ class TestTheReArmGivesTheBudgetsBack(unittest.TestCase):
         self.assertEqual((out.record["budget"]["attempts_used"], out.record["budget"]["clusters"]),
                          (1, {}))
 
-    def test_a_wait_without_a_credit_gives_back_the_work_total_alone(self):
+    def test_a_wait_without_a_credit_gives_back_the_task_total_alone(self):
         rec = waiting(budget=dict(contribution()["budget"], attempts_used=3,
                                   clusters={"build": 2}))
         out = rearm(rec)

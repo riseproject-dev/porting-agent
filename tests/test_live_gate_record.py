@@ -33,7 +33,8 @@ RECORD_PATH = ".state/contributions/closeio--ciso8601--1.json"
 
 
 def committed() -> dict:
-    return json.loads((FIXTURES / "contribution.json").read_text())
+    """The committed record, as the controller reads it under the current names."""
+    return engine.with_current_names(json.loads((FIXTURES / "contribution.json").read_text()))[0]
 
 
 def record() -> dict:
@@ -128,7 +129,7 @@ class TestTheLiveRecordAndItsHistory(unittest.TestCase):
         path = Path(__file__).parents[1] / RECORD_PATH
         if not path.is_file():
             self.skipTest("the live record is not in this checkout")
-        value = json.loads(path.read_text())
+        value = state.migrate_names("contributions", json.loads(path.read_text()))[0]
         if state.needs_field_migration(value):
             value = state.migrate_record_fields(value, now="2026-11-23T13:00:00+00:00")[0]
         return value

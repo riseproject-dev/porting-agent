@@ -1,0 +1,859 @@
+{
+  "collected_at": "2026-11-22T02:33:53.701661+00:00",
+  "contribution_id": "closeio--ciso8601/1",
+  "data": {
+    "contribution_id": "closeio--ciso8601/1",
+    "dependency_graph": {
+      "assessment": "The graph resolves ciso8601 to pypi 2.4.1 (requires_python >=3.8) with zero forward dependency edges (direct or transitive) and 23 reverse dependents on PyPI (e.g. homeassistant, hass-nabucasa, faust-streaming, datacube). The Debian riscv64 binary python3-ciso8601 2.3.3 depends only on libc6 and python3. This agrees with the checkout: no install_requires, no native library; build/test-only deps (setuptools, wheel/build, pytz) are not modelled by the graph, so they were audited separately on PyPI. An empty result here reflects the absence of declared runtime edges, not missing data, because the project resolved successfully.",
+      "canonical_project": "ciso8601",
+      "query": {
+        "queries": [
+          {
+            "purpose": "resolve canonical project",
+            "query": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?s ?name WHERE { ?s core:identityName ?name . FILTER(CONTAINS(LCASE(STR(?name)),\"ciso8601\")) } LIMIT 50"
+          },
+          {
+            "purpose": "direct outgoing edges of pypi ciso8601 2.4.1",
+            "query": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> SELECT ?d WHERE { <https://packagegraph.github.io/d/pkg/pypi/index/any/ciso8601/2.4.1> core:directlyDependsOn ?d } LIMIT 50"
+          },
+          {
+            "purpose": "transitive forward deps",
+            "query": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> SELECT ?d WHERE { <https://packagegraph.github.io/d/pkg/pypi/index/any/ciso8601/2.4.1> core:directlyDependsOn+ ?d } LIMIT 50"
+          },
+          {
+            "purpose": "reverse dependents (distinct)",
+            "query": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s core:directlyDependsOn <https://packagegraph.github.io/d/pkg/pypi/index/any/ciso8601> }"
+          },
+          {
+            "purpose": "debian riscv64 package deps",
+            "query": "PREFIX core: <https://purl.org/packagegraph/ontology/core#> SELECT ?d WHERE { <https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/python3-ciso8601/2.3.3-2build1> core:directlyDependsOn ?d } LIMIT 50"
+          }
+        ]
+      },
+      "result": {
+        "debian_riscv64_deps": {
+          "head": {
+            "vars": [
+              "d"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "d": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/libc6"
+                }
+              },
+              {
+                "d": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/python3"
+                }
+              }
+            ]
+          }
+        },
+        "debian_riscv64_identity": {
+          "head": {
+            "vars": [
+              "p",
+              "o"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "o": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#PackageIdentity"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+                }
+              },
+              {
+                "o": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/ecosystem/pypi"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#upstreamEcosystem"
+                }
+              },
+              {
+                "o": {
+                  "type": "literal",
+                  "value": "python3-ciso8601"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#identityName"
+                }
+              },
+              {
+                "o": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/python3-ciso8601/2.3.3-2build1"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#hasPackage"
+                }
+              },
+              {
+                "o": {
+                  "type": "literal",
+                  "value": "ciso8601"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#upstreamPackageName"
+                }
+              },
+              {
+                "o": {
+                  "datatype": "http://www.w3.org/2001/XMLSchema#anyURI",
+                  "type": "literal",
+                  "value": "pkg:deb/debian/python3-ciso8601?arch=riscv64"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#purl"
+                }
+              },
+              {
+                "o": {
+                  "type": "literal",
+                  "value": "python3-ciso8601 Package Identity"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "http://www.w3.org/2000/01/rdf-schema#label"
+                }
+              },
+              {
+                "o": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/repo/github.com%2Fcloseio%2Fciso8601"
+                },
+                "p": {
+                  "type": "uri",
+                  "value": "https://purl.org/packagegraph/ontology/core#upstreamRepository"
+                }
+              }
+            ]
+          }
+        },
+        "pypi_forward_direct": {
+          "head": {
+            "vars": [
+              "d"
+            ]
+          },
+          "results": {
+            "bindings": []
+          }
+        },
+        "pypi_forward_transitive": {
+          "head": {
+            "vars": [
+              "d"
+            ]
+          },
+          "results": {
+            "bindings": []
+          }
+        },
+        "resolve": {
+          "head": {
+            "vars": [
+              "s",
+              "name"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "ciso8601"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/pypi/index/any/ciso8601"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "python3-ciso8601"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/arm64/python3-ciso8601"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "python3-ciso8601"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/amd64/python3-ciso8601"
+                }
+              },
+              {
+                "name": {
+                  "type": "literal",
+                  "value": "python3-ciso8601"
+                },
+                "s": {
+                  "type": "uri",
+                  "value": "https://packagegraph.github.io/d/pkg/debian/resolute/riscv64/python3-ciso8601"
+                }
+              }
+            ]
+          }
+        },
+        "reverse_dependents_count": {
+          "head": {
+            "vars": [
+              "n"
+            ]
+          },
+          "results": {
+            "bindings": [
+              {
+                "n": {
+                  "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+                  "type": "literal",
+                  "value": "23"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "success": true,
+      "tool": "project_graph_query"
+    },
+    "ecosystem_report": {
+      "status": "absent"
+    },
+    "expected_revision": 2,
+    "history": [
+      {
+        "decision": "Open request for riscv64 wheels; no maintainer reply yet. Prerequisite of bumping closeio/cibuildwheel to v3.4.1 has since been satisfied.",
+        "outcome": "open",
+        "review_urls": [],
+        "reviewers": [],
+        "url": "https://github.com/closeio/ciso8601/issues/181"
+      },
+      {
+        "decision": "Added Linux aarch64 wheels (QEMU); approved by movermeyer after long delay; arch list moved to pyproject.toml.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/151#pullrequestreview-2302016646"
+        ],
+        "reviewers": [
+          "movermeyer"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/151"
+      },
+      {
+        "decision": "Closed by movermeyer in favour of #151; duplicate approach for Linux ARM.",
+        "outcome": "superseded",
+        "review_urls": [],
+        "reviewers": [
+          "movermeyer"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/153"
+      },
+      {
+        "decision": "Windows ARM64 native runner row (windows-11-arm, ARM64) merged; strongest precedent for dedicated native arch rows.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/178#pullrequestreview-4136823509"
+        ],
+        "reviewers": [
+          "movermeyer"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/178"
+      },
+      {
+        "decision": "Test each wheel in CI (incl. aarch64 fix) merged; riscv64 row will inherit this test step.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/192#pullrequestreview-5829839582"
+        ],
+        "reviewers": [
+          "AlecRosenbaum"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/192"
+      },
+      {
+        "decision": "Added CPython 3.15 and PyPy 3.12; introduced split cibuildwheel step (legacy 3.x for cp38/pp38, 4.x for rest).",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/190#pullrequestreview-5807717349"
+        ],
+        "reviewers": [
+          "mathcass"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/190"
+      },
+      {
+        "decision": "Closed unmerged; its commit was incorporated into #190 per kwilcox.",
+        "outcome": "superseded",
+        "review_urls": [],
+        "reviewers": [],
+        "url": "https://github.com/closeio/ciso8601/pull/187"
+      },
+      {
+        "decision": "Upgraded cibuildwheel to add cp313/cp314/pp311 wheels; approved by thomasst.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/169#pullrequestreview-3133830818"
+        ],
+        "reviewers": [
+          "thomasst"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/169"
+      },
+      {
+        "decision": "Switched to closeio forks of GitHub Actions because upstream pypa actions are not allowlisted in the org.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/143#pullrequestreview-1226508057"
+        ],
+        "reviewers": [
+          "movermeyer",
+          "AlecRosenbaum"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/143"
+      },
+      {
+        "decision": "Original cibuildwheel-based wheel build for many platforms approved by movermeyer.",
+        "outcome": "accepted",
+        "review_urls": [
+          "https://github.com/closeio/ciso8601/pull/109#pullrequestreview-781937423"
+        ],
+        "reviewers": [
+          "movermeyer",
+          "kylebarron"
+        ],
+        "url": "https://github.com/closeio/ciso8601/pull/109"
+      },
+      {
+        "decision": "Free-threaded 3.14 support, open without review; potential minor conflict surface in pyproject but not in workflow rows.",
+        "outcome": "open",
+        "review_urls": [],
+        "reviewers": [],
+        "url": "https://github.com/closeio/ciso8601/pull/176"
+      },
+      {
+        "decision": "Windows ARM64 release tracking issue closed by kwilcox once 2.4.1 shipped the wheels; shows maintainers release merged arch rows.",
+        "outcome": "closed_unmerged",
+        "review_urls": [],
+        "reviewers": [
+          "kwilcox"
+        ],
+        "url": "https://github.com/closeio/ciso8601/issues/184"
+      },
+      {
+        "decision": "Downstream RISE riscv64 wheel build for ciso8601 2.3.3 merged by luhenry; not an upstream decision but proves the build and tests pass natively.",
+        "outcome": "accepted",
+        "review_urls": [],
+        "reviewers": [
+          "luhenry"
+        ],
+        "url": "https://github.com/riseproject-dev/python-wheels/pull/625"
+      }
+    ],
+    "maintainers": [
+      {
+        "name": "kwilcox",
+        "role": "Release owner: cut 2.4.0 and 2.4.1 and authored #192, #190, #183; merges workflow changes.",
+        "sources": [
+          "https://github.com/closeio/ciso8601/releases/tag/v2.4.1",
+          "https://github.com/closeio/ciso8601/pull/192"
+        ]
+      },
+      {
+        "name": "movermeyer",
+        "role": "Original maintainer who approved #151, #178, #143 and #109 and set the wheel strategy and CONTRIBUTING design philosophy.",
+        "sources": [
+          "https://github.com/closeio/ciso8601/pull/178#pullrequestreview-4136823509",
+          "https://github.com/closeio/ciso8601/pull/151#pullrequestreview-2302016646"
+        ]
+      },
+      {
+        "name": "AlecRosenbaum",
+        "role": "Collaborator who reviews CI/release workflow changes (#192, #143).",
+        "sources": [
+          "https://github.com/closeio/ciso8601/pull/192#pullrequestreview-5829839582"
+        ]
+      },
+      {
+        "name": "thomasst",
+        "role": "Org member who reviewed cibuildwheel upgrade #169.",
+        "sources": [
+          "https://github.com/closeio/ciso8601/pull/169#pullrequestreview-3133830818"
+        ]
+      },
+      {
+        "name": "philfreo",
+        "role": "Org member who approves action bumps (#183) and is pinged on release questions (#184).",
+        "sources": [
+          "https://github.com/closeio/ciso8601/pull/183#pullrequestreview-4472775358",
+          "https://github.com/closeio/ciso8601/issues/184"
+        ]
+      }
+    ],
+    "proposal": {
+      "admission_class": "configuration_integration",
+      "allowed_paths": [
+        ".github/workflows/build-wheels.yml",
+        "pyproject.toml",
+        "CHANGELOG.md"
+      ],
+      "architecture_precedent": "Dedicated native runner rows: ubuntu-24.04-arm/aarch64 and windows-11-arm/ARM64 (not a shared ubuntu-latest QEMU arch list). A riscv64 row on ubuntu-24.04-riscv follows this existing native-per-architecture topology.",
+      "build_backend": "setuptools with setup.py Extension (module.c, timezone.c, isocalendar.c); no [build-system] table; no third-party native libraries. Build/test deps setuptools, wheel, build, pytz are pure-Python universal wheels on public PyPI (checked: pytz-2026.6-py2.py3-none-any, setuptools-84.2.1-py3-none-any, wheel-0.48.0-py3-none-any, build-1.6.1-py3-none-any); the RISE index has no entry for them and none is needed, so PIP_EXTRA_INDEX_URL/PIP_PREFER_BINARY are not required for this project.",
+      "contribution_rules": "No CLA/DCO; fork-branch-PR flow; add a CHANGELOG entry; PEP 7 for C; no hand-written arch-specific code.",
+      "decision": "develop",
+      "existing_riscv64_work": "Open issue closeio/ciso8601#181 only; no upstream PR. Downstream RISE python-wheels#625 builds 2.3.3 cp312-cp314 riscv64 wheels.",
+      "fork_guards": "None: no github.repository conditions in any workflow.",
+      "path_coverage": [
+        {
+          "area": "build",
+          "assessment": "Add matrix include os ubuntu-24.04-riscv, cibw_archs riscv64; make the legacy cibuildwheel v3.4.1 step conditional off for riscv64; add riscv64 to [tool.cibuildwheel.linux] archs for local-run consistency (CIBW_ARCHS env already overrides).",
+          "paths": [
+            ".github/workflows/build-wheels.yml",
+            "pyproject.toml"
+          ]
+        },
+        {
+          "area": "test",
+          "assessment": "Wheel tests run inside cibuildwheel via test-command python -m unittest (pyproject.toml), natively on the riscv64 runner. The separate x86 test job is unchanged. tox.ini is an sdist/py version matrix with no architecture dimension and needs no change.",
+          "paths": [
+            ".github/workflows/build-wheels.yml"
+          ]
+        },
+        {
+          "area": "release",
+          "assessment": "release.yml calls build-wheels.yml with upload: true and artifact names derive from matrix.os/cibw_archs, so the new row is uploaded automatically; PyPI upload is manual. No release file change needed.",
+          "paths": []
+        },
+        {
+          "area": "packaging",
+          "assessment": "setup.py and MANIFEST.in have no arch conditionals; classifiers say OS Independent. No package metadata change required.",
+          "paths": []
+        },
+        {
+          "area": "documentation",
+          "assessment": "Add an Unreleased entry for riscv64 wheels. README/CONTRIBUTING/RELEASING have no architecture matrix to update.",
+          "paths": [
+            "CHANGELOG.md"
+          ]
+        },
+        {
+          "area": "native_sources",
+          "assessment": "module.c, timezone.c, isocalendar.c are portable C with no architecture-specific code or assembly; no riscv64 change needed (CONTRIBUTING forbids hand-coded per-arch assembly).",
+          "paths": []
+        }
+      ],
+      "rationale": "A concrete bounded CI/config patch can advance official riscv64 wheels: add a native ubuntu-24.04-riscv/riscv64 row to build-wheels.yml (matching the project's native-runner-per-arch topology used for aarch64 and Windows ARM64, not QEMU), skip the legacy cibuildwheel v3.4.1 step on that row because actions/setup-python has no riscv64 interpreter builds, list riscv64 in pyproject linux archs, and add a CHANGELOG line. The C code is portable (no assembly or arch dispatch, CONTRIBUTING forbids it), no native dependencies exist, closeio/cibuildwheel v4.3.5 supports riscv64 (manylinux_2_39 default image, cp39-cp315), and maintainers have merged similar rows (#151, #178). Risks: RISE runner app must be enabled by the closeio org; the runner needs python3 with venv/pip for the v4 action; cp38/pp riscv64 wheels will not be produced.",
+      "release_coverage": "PyPI 2.4.1 ships macOS, manylinux x86_64/aarch64, musllinux x86_64/aarch64, win_amd64 and win_arm64 wheels; no riscv64 wheel exists in any release.",
+      "release_graph": "build-wheels.yml (pull_request to main/master, workflow_dispatch, workflow_call) runs test, build_wheels, build_sdist; release.yml (workflow_dispatch) runs sanity_check then calls build-wheels.yml with upload: true; PyPI upload is manual.",
+      "risks": [
+        "RISE runner GitHub App must be installed for the closeio org; otherwise the job stays queued",
+        "Legacy v3.4.1 step must be conditional (setup-python has no riscv64)",
+        "Runner python3 must provide venv/pip for the v4.3.5 action",
+        "PR #176 may touch pyproject.toml",
+        "cp38 and PyPy riscv64 wheels not produced"
+      ],
+      "target_matrix": {
+        "cibw_archs": "riscv64",
+        "interpreters": "CPython 3.9-3.15 via v4.3.5; cp38 and PyPy have no v4 riscv64 identifiers; legacy step skipped on this row",
+        "libc": [
+          "manylinux_2_39 (default image)"
+        ],
+        "runner": "ubuntu-24.04-riscv",
+        "test": "python -m unittest with pytz (pure-Python wheel from public PyPI)"
+      }
+    },
+    "research": {
+      "blogs": {
+        "coverage": {
+          "complete": true,
+          "scope": "Project docs, PyPI links and release notes checked for blog or announcement channels."
+        },
+        "findings": "No project blog; only GitHub release notes exist.",
+        "justification": "The project has no blog or announcement channel; discovered sources (README, PyPI metadata, GitHub releases) link to none. Distro packaging (Debian/ALT) mentions confirm only downstream builds, not blog posts.",
+        "queries": [
+          "web search ciso8601 riscv64 wheel",
+          "README/PyPI links for announcements",
+          "GitHub releases list"
+        ],
+        "sources": [
+          {
+            "finding": "Release notes are GitHub-generated lists of PRs; no blog link.",
+            "url": "https://github.com/closeio/ciso8601/releases/tag/v2.4.1"
+          },
+          {
+            "finding": "No blog or announcement link in project_urls.",
+            "url": "https://pypi.org/pypi/ciso8601/json"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "ci_history": {
+        "coverage": {
+          "complete": true,
+          "scope": "Current workflows, their PR history, recent runs, and the cibuildwheel fork versions used were read in full; no riscv jobs ever existed."
+        },
+        "findings": "Matrix change is a simple additional include row. Legacy cp38/pp38 step must be conditional off for riscv64. The riscv64 cibuildwheel identifier list lacks PyPy and cp38 in v4, so with CIBW_ALLOW_EMPTY unneeded in the v4 step. Whether the closeio org has the RISE runner GitHub App installed is not verifiable from the repository.",
+        "queries": [
+          "read fork/.github/workflows/build-wheels.yml, release.yml, lint.yml and pyproject.toml/tox.ini",
+          "actions_list list_workflow_runs build-wheels.yml",
+          "pull_request_read get_files #192 #178",
+          "compare closeio/cibuildwheel v3.4.1 and v4.3.5 action.yml, architecture.py, pinned_docker_images.cfg, build-platforms.toml"
+        ],
+        "sources": [
+          {
+            "finding": "Matrix rows: ubuntu-24.04/x86_64, ubuntu-24.04-arm/aarch64, windows-2025/AMD64, windows-11-arm/ARM64, macos-26-intel, macos-26 (arm64, universal2). Dedicated native runner per arch, no QEMU step, no fork guards (no github.repository conditions). Two cibuildwheel steps: legacy closeio/cibuildwheel@v3.4.1 for cp38/pp38 then @v4.3.5.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/.github/workflows/build-wheels.yml"
+          },
+          {
+            "finding": "workflow_dispatch only; sanity_check job then calls build-wheels.yml with upload: true; artifacts named matrix.os-matrix.cibw_archs-wheels; PyPI upload is manual.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/.github/workflows/release.yml"
+          },
+          {
+            "finding": "Recent PR runs are action_required (first-time contributors). The latest merged-state CI for wheel tests is from #192.",
+            "url": "https://github.com/closeio/ciso8601/actions/workflows/build-wheels.yml"
+          },
+          {
+            "finding": "v4.3.5 action runs setup-python only on X64/ARM64 runners and otherwise uses python3, so it works on a riscv64 host.",
+            "url": "https://github.com/closeio/cibuildwheel/blob/v4.3.5/action.yml"
+          },
+          {
+            "finding": "v3.4.1 action runs actions/setup-python unconditionally; the setup-python manifest has no riscv64 builds (verified against actions/python-versions versions-manifest.json), so the legacy step must be skipped on a riscv64 row.",
+            "url": "https://github.com/closeio/cibuildwheel/blob/v3.4.1/action.yml"
+          },
+          {
+            "finding": "riscv64 default images: manylinux_2_39 and musllinux_1_2 riscv64; build-platforms.toml has cp39-cp315 (+t) manylinux/musllinux riscv64 identifiers but no PyPy riscv64.",
+            "url": "https://github.com/closeio/cibuildwheel/blob/v4.3.5/cibuildwheel/resources/pinned_docker_images.cfg"
+          },
+          {
+            "finding": "[tool.cibuildwheel.linux] archs = [\"x86_64\",\"aarch64\"]; CIBW_ARCHS env from the matrix overrides this; test-command python -m unittest with pytz; enable pypy/pypy-eol.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/pyproject.toml"
+          }
+        ],
+        "status": "searched"
+      },
+      "documentation": {
+        "coverage": {
+          "complete": true,
+          "scope": "All contributor, release and README docs in the checkout read; links extracted."
+        },
+        "findings": "Only CHANGELOG.md needs documentation change; README has no platform matrix.",
+        "queries": [
+          "read CONTRIBUTING.md, RELEASING.md, README.rst, CHANGELOG.md, why_ciso8601.md",
+          "grep for riscv/arch/platform/mailing/blog in docs"
+        ],
+        "sources": [
+          {
+            "finding": "No CLA/DCO; fork-branch-PR workflow; PEP 7 C style; design philosophy forbids hand-coded per-architecture assembly; asks to keep cross-platform compatibility.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/CONTRIBUTING.md"
+          },
+          {
+            "finding": "Release is manual: tag/GitHub release, dispatch release.yml, download artifacts, upload to PyPI by hand; CHANGELOG entry required (release.yml greps the version in CHANGELOG.md).",
+            "url": "https://github.com/closeio/ciso8601/blob/master/RELEASING.md"
+          },
+          {
+            "finding": "\"Unreleased\" section currently \"* Nil.\"; add riscv64 note there.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/CHANGELOG.md"
+          },
+          {
+            "finding": "No architecture/wheel platform list to update.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/README.rst"
+          }
+        ],
+        "status": "searched"
+      },
+      "ecosystem_report": {
+        "coverage": {
+          "complete": true,
+          "scope": "Full directory listing and projects.yml (6195 lines) and queue checked; no matching entry by project name, repo, or synonym."
+        },
+        "findings": "No matching report exists; ecosystem_report.status is absent. Prior RISE evidence comes from python-wheels#625/#631 instead.",
+        "justification": "Verified no matching report exists: the full 544-file project-reports listing, projects.yml and .queue.yml contain no ciso8601, closeio or iso8601-parser entry, so there is nothing to read or cite.",
+        "queries": [
+          "list sw-ecosystem/project-reports (544 files) via get_file_contents",
+          "filter names for ciso/iso8601/datetime/closeio",
+          "fetch projects.yml and grep ciso|closeio",
+          "fetch project-reports/.queue.yml and grep"
+        ],
+        "sources": [
+          {
+            "finding": "544 reports; none named ciso8601, iso8601, closeio or datetime parser.",
+            "url": "https://github.com/riseproject-dev/sw-ecosystem/tree/main/project-reports"
+          },
+          {
+            "finding": "No ciso8601 or closeio entry.",
+            "url": "https://raw.githubusercontent.com/riseproject-dev/sw-ecosystem/main/projects.yml"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "mailing_lists": {
+        "coverage": {
+          "complete": true,
+          "scope": "Authoritative project docs checked for support channels; web search for external discussion."
+        },
+        "findings": "No mailing list or chat found in any authoritative project source; GitHub issues are the only channel (also searched by issue).",
+        "justification": "CONTRIBUTING.md explicitly says to search/create GitHub issues for questions; no mailing list or chat is referenced anywhere in project docs, so absence is evidenced by discovery.",
+        "queries": [
+          "grep README/CONTRIBUTING for mailing list, discord, slack, gitter",
+          "web search ciso8601 riscv64"
+        ],
+        "sources": [
+          {
+            "finding": "Directs questions to GitHub issues; mentions no mailing list, chat, or forum.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/CONTRIBUTING.md"
+          },
+          {
+            "finding": "No mailing list or chat links.",
+            "url": "https://github.com/closeio/ciso8601/blob/master/README.rst"
+          }
+        ],
+        "status": "not_applicable"
+      },
+      "maintainer_reviews": {
+        "coverage": {
+          "complete": true,
+          "scope": "Every wheel/CI PR review and review thread read; reviewer roles inferred from author_association and merge behaviour."
+        },
+        "findings": "No review has ever rejected an architecture row; objections only concern correctness testing and release automation. Open question not raised by anyone: willingness to enable the RISE runner app on the closeio org.",
+        "queries": [
+          "pull_request_read get_reviews and get_review_comments for #151,#178,#192,#190,#169,#143,#109,#183",
+          "list collaborators/members via author_association"
+        ],
+        "sources": [
+          {
+            "finding": "movermeyer approves aarch64 wheel PR: \"Thank you for this, and sorry for the delay.\" Accepts arch additions, slowly.",
+            "url": "https://github.com/closeio/ciso8601/pull/151#pullrequestreview-2302016646"
+          },
+          {
+            "finding": "movermeyer approves Windows ARM64 native-runner row from an external contributor.",
+            "url": "https://github.com/closeio/ciso8601/pull/178#pullrequestreview-4136823509"
+          },
+          {
+            "finding": "AlecRosenbaum (collaborator) approves test-every-wheel PR; asks about automating upload (open).",
+            "url": "https://github.com/closeio/ciso8601/pull/192#pullrequestreview-5829839582"
+          },
+          {
+            "finding": "mathcass approves 3.15/PyPy 3.12 support.",
+            "url": "https://github.com/closeio/ciso8601/pull/190#pullrequestreview-5807717349"
+          },
+          {
+            "finding": "thomasst (member) approves new cibuildwheel versions.",
+            "url": "https://github.com/closeio/ciso8601/pull/169#pullrequestreview-3133830818"
+          },
+          {
+            "finding": "philfreo approves Node-24 actions bump.",
+            "url": "https://github.com/closeio/ciso8601/pull/183#pullrequestreview-4472775358"
+          }
+        ],
+        "status": "searched"
+      },
+      "release_repositories": {
+        "coverage": {
+          "complete": true,
+          "scope": "Release path followed to PyPI and to the downstream RISE index; no separate upstream release repository."
+        },
+        "findings": "The only release repository is the closeio/cibuildwheel fork for the builder action; publication is manual from the release.yml artifacts.",
+        "queries": [
+          "read release.yml and RELEASING.md",
+          "get_latest_release closeio/ciso8601",
+          "pypi.org/pypi/ciso8601/json files listing",
+          "python-wheels#625 and RISE index simple page"
+        ],
+        "sources": [
+          {
+            "finding": "2.4.1 has 80 files: macOS arm64/x86_64/universal2, manylinux x86_64 (manylinux1/2_28), manylinux2014 aarch64, musllinux_1_2 x86_64/aarch64, win_amd64, win_arm64 (cp311+); CPython 3.8-3.15, PyPy 3.8-3.12; sdist; no riscv64 in any release.",
+            "url": "https://pypi.org/pypi/ciso8601/json"
+          },
+          {
+            "finding": "Latest release by kwilcox (2026-11-09); wheels uploaded manually to PyPI.",
+            "url": "https://github.com/closeio/ciso8601/releases/tag/v2.4.1"
+          },
+          {
+            "finding": "RISE index has only 2.3.3 cp312/cp313/cp314 manylinux_2_31/2_39 riscv64 wheels from python-wheels.",
+            "url": "https://pypi.riseproject.dev/simple/ciso8601/"
+          },
+          {
+            "finding": "closeio-maintained fork of pypa/cibuildwheel used because the org allowlists only its own actions (#143).",
+            "url": "https://github.com/closeio/cibuildwheel"
+          }
+        ],
+        "status": "searched"
+      },
+      "tracking_issue": {
+        "coverage": {
+          "complete": true,
+          "scope": "Full immutable description read; all 5 comments on porting-agent#1 read (bot ledger status only); linked python-wheels#631 and PR #625 read. Prior-attempt data treated as migration evidence only."
+        },
+        "findings": "The tracking issue gives no new instructions beyond the plan. Earlier state (head 9339ec54, revision 9) is not re-authorized. Re-verified current upstream master cbe0577 (Release 2.4.1 follow-up) still lacks any riscv64 row.",
+        "queries": [
+          "read task.context.tracking_issue description in full",
+          "issue_read get_comments riseproject-dev/porting-agent#1",
+          "issue_read python-wheels#631 and comments; pull_request_read python-wheels#625"
+        ],
+        "sources": [
+          {
+            "finding": "Description names closeio/ciso8601, dist ciso8601, target branch master, and cites prior investigation (aarch64-like native row, 4 paths, handoff at revision 9). Its 5 comments are bot ledger updates only; no human instructions or new constraints.",
+            "url": "https://github.com/riseproject-dev/porting-agent/issues/1"
+          },
+          {
+            "finding": "Downstream upstreaming-request issue; closed by python-wheels#625; contains the earlier investigation recommending develop (comment read, used as evidence and re-verified below).",
+            "url": "https://github.com/riseproject-dev/python-wheels/issues/631"
+          },
+          {
+            "finding": "Downstream workflow build-ciso8601.yml builds cp312-cp314 manylinux_2_39 riscv64 on ubuntu-24.04-riscv with cibuildwheel, runs python -m unittest with pytz; 43 tests passed on cp313.",
+            "url": "https://github.com/riseproject-dev/python-wheels/pull/625"
+          }
+        ],
+        "status": "searched"
+      },
+      "upstream_issues": {
+        "coverage": {
+          "complete": true,
+          "scope": "All issues (open and closed) listed via list_issues in pages of 100 and scanned; semantic searches for riscv/arch/wheel terms; relevant issues read with all comments."
+        },
+        "findings": "Only one riscv64 issue (#181), open, unanswered. Related architecture precedents #117, #123, #184 closed after wheels shipped.",
+        "queries": [
+          "issue search closeio/ciso8601: riscv64 RISC-V rv64 wheel",
+          "issue search: architecture wheels manylinux musllinux aarch64 s390x ppc64le",
+          "list_issues all states (paginated, whole corpus scanned by title)",
+          "issue_read #181,#117,#184 with comments"
+        ],
+        "sources": [
+          {
+            "finding": "Open (2026-05-17, eshattow): request for riscv64 wheels, prefers ubuntu-24.04-riscv RISE runner; says it depends on bumping closeio/cibuildwheel to v3.4.1 (now done, repo uses v3.4.1 and v4.3.5). No comments, no maintainer response.",
+            "url": "https://github.com/closeio/ciso8601/issues/181"
+          },
+          {
+            "finding": "Closed: aarch64 wheel request; maintainer movermeyer closed it after v2.3.0 shipped prebuilt wheels (macOS arm64).",
+            "url": "https://github.com/closeio/ciso8601/issues/117"
+          },
+          {
+            "finding": "Closed: Windows ARM64 release request after #178 merged; kwilcox closed it pointing to the 2.4.1 release (Nov 2026), showing maintainers will release architecture rows once merged.",
+            "url": "https://github.com/closeio/ciso8601/issues/184"
+          },
+          {
+            "finding": "Closed: build fails on Python 3.9 on Graviton; context for aarch64 history (#153/#151).",
+            "url": "https://github.com/closeio/ciso8601/issues/123"
+          }
+        ],
+        "status": "searched"
+      },
+      "upstream_pull_requests": {
+        "coverage": {
+          "complete": true,
+          "scope": "Whole PR corpus (state=all, ~190 PRs) listed and wheel/CI/arch PRs read with reviews, comments and review threads."
+        },
+        "findings": "No riscv64 PR upstream in any state. Wheel-matrix additions (aarch64, Windows ARM64, 3.13-3.15) were merged by maintainers with one approving review each.",
+        "queries": [
+          "search_pull_requests riscv",
+          "search_pull_requests aarch64 OR arm OR s390x OR ppc64le OR cibuildwheel OR wheels",
+          "list_pull_requests state=all perPage=100",
+          "pull_request_read get/get_reviews/get_comments/get_review_comments for #151,#153,#178,#169,#192,#187,#190,#143,#183,#109,#176"
+        ],
+        "sources": [
+          {
+            "finding": "Merged: Linux aarch64 wheels via QEMU (Dec 2023), approved by movermeyer Sep 2024 (\"sorry for the delay\"). Later superseded by native ubuntu-24.04-arm row.",
+            "url": "https://github.com/closeio/ciso8601/pull/151"
+          },
+          {
+            "finding": "Closed unmerged in favour of #151 by movermeyer.",
+            "url": "https://github.com/closeio/ciso8601/pull/153"
+          },
+          {
+            "finding": "Merged: Windows ARM64 row using native windows-11-arm runner with cibw_archs ARM64 and arch moved out of pyproject; approved by movermeyer.",
+            "url": "https://github.com/closeio/ciso8601/pull/178"
+          },
+          {
+            "finding": "Merged: build and test each wheel in CI on pull requests; approved by AlecRosenbaum; only open thread asks about automating upload.",
+            "url": "https://github.com/closeio/ciso8601/pull/192"
+          },
+          {
+            "finding": "Merged: CPython 3.15 and PyPy 3.12 support; approved by mathcass.",
+            "url": "https://github.com/closeio/ciso8601/pull/190"
+          },
+          {
+            "finding": "Closed unmerged; commit incorporated into #190 per kwilcox.",
+            "url": "https://github.com/closeio/ciso8601/pull/187"
+          },
+          {
+            "finding": "Open: free-threaded 3.14 support (touches benchmarking/ and module); not touching the workflow rows, low conflict risk.",
+            "url": "https://github.com/closeio/ciso8601/pull/176"
+          },
+          {
+            "finding": "Merged: original cibuildwheel wheel build, reviewed by movermeyer.",
+            "url": "https://github.com/closeio/ciso8601/pull/109"
+          },
+          {
+            "finding": "Merged: use closeio forks of GitHub Actions because the org does not allowlist upstream pypa actions.",
+            "url": "https://github.com/closeio/ciso8601/pull/143"
+          },
+          {
+            "finding": "No upstream riscv PR; downstream RISE wheel build (merged) shows feasibility.",
+            "url": "https://github.com/riseproject-dev/python-wheels/pull/625"
+          }
+        ],
+        "status": "searched"
+      },
+      "website": {
+        "coverage": {
+          "complete": true,
+          "scope": "PyPI metadata and README links checked for a dedicated website."
+        },
+        "findings": "The only project site is the GitHub repository and PyPI page; README links only to close.com (employer) and reference material.",
+        "justification": "No official project website exists beyond the GitHub repository; PyPI project_urls lists only the GitHub homepage and the readthedocs guess returns 404.",
+        "queries": [
+          "pypi.org project_urls for ciso8601",
+          "HEAD https://ciso8601.readthedocs.io/",
+          "README link extraction"
+        ],
+        "sources": [
+          {
+            "finding": "project_urls only lists Homepage = https://github.com/closeio/ciso8601; no separate website or docs site.",
+            "url": "https://pypi.org/pypi/ciso8601/json"
+          },
+          {
+            "finding": "Returned HTTP 404, no readthedocs site.",
+            "url": "https://ciso8601.readthedocs.io/"
+          }
+        ],
+        "status": "not_applicable"
+      }
+    },
+    "schema_version": 1,
+    "summary": "ciso8601 2.4.1 (latest on PyPI, 80 files) ships no riscv64 wheel. The project is a single-phase-init pure C extension (module.c, timezone.c, isocalendar.c) built with setuptools via closeio/cibuildwheel, with no third-party native or Python build/runtime dependency beyond pure-Python setuptools/pytz. Upstream issue #181 requests riscv64 wheels; no upstream PR exists. Architecture precedent is dedicated native-runner rows (ubuntu-24.04-arm/aarch64, windows-11-arm/ARM64), not QEMU. Recommendation: develop a bounded configuration_integration patch adding an ubuntu-24.04-riscv/riscv64 matrix row to build-wheels.yml (skipping the legacy v3.4.1 step on that row because actions/setup-python has no riscv64 builds), adding riscv64 to pyproject linux archs, and a CHANGELOG entry. No sw-ecosystem report exists for this project.",
+    "tracking_issue_description_digest": "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb"
+  },
+  "digests": {
+    "artifact": "sha256:4f4b86c0ce0c3ef37921c74ca5267d4e2b89898b254f2170fc47a5c7006dc789"
+  },
+  "evidence_id": "dossier-closeio--ciso8601--1-r2",
+  "kind": "plan",
+  "limitations": [],
+  "policy_version": "2026-11-18.1-proposed",
+  "schema_version": 1,
+  "summary": "develop: add ubuntu-24.04-riscv/riscv64 native row to build-wheels.yml (skip legacy v3.4.1 step there since setup-python lacks riscv64), add riscv64 to pyproject linux archs, CHANGELOG entry. PyPI 2.4.1 has no riscv64 wheel; no deps; precedent is native-runner rows (aarch64, win-arm64); issue #181 open; no sw-ecosystem report."
+}

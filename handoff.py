@@ -73,6 +73,7 @@ from common import (
     contribution_file_id,
     safe_id,
 )
+from state import migrate_names
 
 # The operation kind each handoff work state runs, and the state of a kind.
 KINDS = {
@@ -918,8 +919,9 @@ def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dic
     try:
         op = json.loads((root / ".state/operations" / f"{operation_id}.json").read_text())
         schemas.validate("operation", op)
-        record = json.loads((root / ".state/contributions"
-                             / f"{contribution_file_id(op['contribution_id'])}.json").read_text())
+        record = migrate_names("contributions", json.loads(
+            (root / ".state/contributions"
+             / f"{contribution_file_id(op['contribution_id'])}.json").read_text()))[0]
         schemas.validate("contribution", record)
     except (OSError, ValueError, schemas.SchemaError) as error:
         raise HandoffRefused(f"the operation or its record cannot be read: {error}") from None

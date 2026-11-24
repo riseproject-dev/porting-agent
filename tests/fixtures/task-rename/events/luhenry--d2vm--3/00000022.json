@@ -1,0 +1,33 @@
+{
+  "at": "2026-11-24T12:13:05.040020+00:00",
+  "cause": {
+    "id": "pipeline:2ad1fc7e98b0",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "automatic": true,
+    "from_state": "development.waiting_ci",
+    "paused_at_commit": null,
+    "paused_reason": "processing_error: SchemaError: invalid contribution record: scope_paths: ['.github/workflows/*', '.goreleaser.yaml', 'Makefile', 'Dockerfile', 'README.md', '.gitignore', 'builder.go', 'bootloader.go', 'grub.go', 'grub_bios.go', 'grub_efi.go', 'grub_common.go', 'syslinux.go', 'config.go', 'config_test.go', 'dockerfile.go', 'doc... (step publication, run 45306486508)",
+    "pipeline_version": "2ad1fc7e98b081d137dff423a2e20ff3a7c21d07f670b24d21df52c81b53b240",
+    "to_state": "development.waiting_ci",
+    "verb": "resume_pause"
+  },
+  "from": {
+    "paused": true,
+    "revision": 4
+  },
+  "kind": "resume_pause",
+  "revision_bumped": true,
+  "run": {
+    "attempt": 1,
+    "id": 45391229487
+  },
+  "schema_version": 1,
+  "sequence": 22,
+  "to": {
+    "paused": false,
+    "revision": 5
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "at": "2026-11-23T17:35:46.249203+00:00",
+  "cause": {
+    "id": "tick-r1",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "queued.idle",
+    "to_state": "planning.idle",
+    "verb": "begin_planning"
+  },
+  "from": {
+    "phase": "queued"
+  },
+  "kind": "begin_planning",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 6,
+  "to": {
+    "phase": "planning"
+  }
+}

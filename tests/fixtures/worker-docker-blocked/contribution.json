@@ -1,6 +1,6 @@
 {
   "active_operation_id": null,
-  "active_work": null,
+  "active_task": null,
   "activity": "waiting_ci",
   "admission_class": "configuration_integration",
   "budget": {

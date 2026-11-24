@@ -180,7 +180,7 @@ class TestPolicyRecovery(unittest.TestCase):
         self.assertNotEqual(key, failed_key)
         allocated = copy.deepcopy(record)
         allocated["activity"] = "agent_running"
-        allocated["active_work"] = {
+        allocated["active_task"] = {
             "dedupe_key": key, "task": "planning", "generation": generation,
             "revision": record["revision"], "attempt": 1, "requested_at": NOW,
             "deadline_at": NOW, "dispatched_run_id": None, "reason_ids": [],
@@ -243,13 +243,13 @@ class TestPolicyRecovery(unittest.TestCase):
         self.assertEqual(engine.state_key(record), "planning.idle")
         self.assertIsNone(record["pending_human_action"])
         self.assertEqual(launch, [])
-        # A wait that records no credit gives back `work_total`, as every
+        # A wait that records no credit gives back `task_total`, as every
         # allocation charges it.
         self.assertEqual(record["budget"]["attempts_used"], 3)
         [event] = [r for kind, r in staged if kind == "events"]
         self.assertEqual(event["kind"], "rearm_dispatch")
         self.assertEqual(event["cause"]["id"], "pipeline:" + "a" * 12)
-        self.assertEqual(event["details"]["credited"], ["work_total"])
+        self.assertEqual(event["details"]["credited"], ["task_total"])
         self.assertEqual((event["details"]["cause"], event["details"]["automatic"],
                           event["details"]["pipeline_version"]),
                          ("pipeline_changed", True, "a" * 64))
@@ -260,13 +260,13 @@ class TestPolicyRecovery(unittest.TestCase):
         self.record["budget"] = dict(self.record["budget"], attempts_used=4,
                                      clusters={"build": 2, "test": 1})
         self.record["pending_human_action"]["credit"] = [
-            "repair_attempts_cluster:build", "work_total", "dispatch_recovery"]
+            "repair_attempts_cluster:build", "task_total", "dispatch_recovery"]
         record, _launch, staged, _report = self.recover(None, pipeline="a" * 64)
         self.assertEqual((record["budget"]["attempts_used"], record["budget"]["clusters"]),
                          (3, {"build": 1, "test": 1}))
         [event] = [r for kind, r in staged if kind == "events"]
         self.assertEqual(event["details"]["credited"],
-                         ["repair_attempts_cluster:build", "work_total"])
+                         ["repair_attempts_cluster:build", "task_total"])
 
     def test_a_wait_resumes_once_per_version_of_the_code(self):
         self.record["pending_human_action"]["pipeline_version"] = "a" * 64
@@ -294,7 +294,7 @@ class TestPolicyRecovery(unittest.TestCase):
 class TestDispatchWhilePolicyRefuses(unittest.TestCase):
     def setUp(self):
         self.record = contribution(phase="planning", activity="agent_running", revision=1)
-        self.record["active_work"] = {
+        self.record["active_task"] = {
             "dedupe_key": "example--proj/12@1:planning", "task": "planning", "revision": 1,
             "attempt": 1, "requested_at": NOW, "deadline_at": "2026-11-19T12:00:00+00:00",
             "dispatched_run_id": None, "reason_ids": [], "generation": 0,
@@ -333,7 +333,7 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
             record = contribution(phase="planning", activity="agent_running", revision=1,
                                   contribution_id=cid)
             record["tracking_issue"] = {"id": issue, "number": issue}
-            record["active_work"] = {
+            record["active_task"] = {
                 "dedupe_key": f"{cid}@1:planning", "task": "planning", "revision": 1,
                 "attempt": 1, "requested_at": NOW, "deadline_at": NOW,
                 "dispatched_run_id": None, "reason_ids": [], "generation": 0,

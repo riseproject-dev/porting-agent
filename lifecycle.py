@@ -116,7 +116,7 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
         return "work generation changed"
     if record["revision"] != expected_revision:
         return "work revision changed"
-    work = record.get("active_work")
+    work = record.get("active_task")
     if work is not None and work.get("dedupe_key") != task_key:
         return "the requested task is another task"
     if work is None and not record.get("pending_publication"):
@@ -170,7 +170,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "processed_review_ids": [],
         "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
-        "active_work": None,
+        "active_task": None,
         "plan_evidence_id": None,
         "pending_feedback_evidence_ids": [],
         "scope_coverage_complete": False,
@@ -210,17 +210,21 @@ def write_admission(record: dict) -> str | None:
 
 
 # --------------------------------------------------------------------------
-# Names before the plan rename
+# Names before a rename
 #
-# The planning phase and its plan were once named `investigation` and
-# `dossier`, and seven verbs were merged into three. Committed events keep
-# the names they were written with; the
-# record migration of `state.py` (`state.migrate_record_names`) rewrites the
-# stored records, projects, and evidence to the current names, and readers of
-# the event history translate a historic name with `current_name`. Each
-# entry maps a name that is no longer written to the name that replaced it.
+# Two renames changed names that records, projects, and evidence store. Each
+# is a migration of the controller (``RENAMES``, ``state.migrate_record_names``)
+# that rewrites the stored records, projects, and evidence to the current
+# names and records an event under its own cause. Committed events keep the
+# names they were written with, and readers of the event history translate a
+# historic name with `current_name`. Each entry maps a name that is no longer
+# written to the name that replaced it.
+#
+# The plan rename: the planning phase and its plan were once named
+# `investigation` and `dossier`.
 
-HISTORIC_NAMES: dict[str, str] = {
+PLAN_RENAME = "plan-rename"
+PLAN_RENAME_NAMES: dict[str, str] = {
     # The phase, its states, and the task.
     "investigation": "planning",
     "investigation.idle": "planning.idle",
@@ -241,6 +245,34 @@ HISTORIC_NAMES: dict[str, str] = {
     "investigation_failed": "planning_failed",
     "dossier": "plan",
     "dossier_evidence_id": "plan_evidence_id",
+}
+
+# The task rename: the unit the controller requests was once named `work`.
+# The field of the record that holds it, the two budgets that count it, the
+# pending human actions of its failure and its exhaustion, and the verbs that
+# allocate it again or end its budget took the name `task`. The kinds of the
+# tasks, the evidence kinds, and the keys of event details and evidence data
+# are unchanged.
+
+TASK_RENAME = "task-rename"
+TASK_RENAME_NAMES: dict[str, str] = {
+    "active_work": "active_task",
+    "work_total": "task_total",
+    "work_recovery": "task_recovery",
+    "allocate_work_retry": "allocate_task_retry",
+    "exhaust_work_total": "exhaust_task_total",
+    "work_failed": "task_failed",
+    "work_budget_exhausted": "task_budget_exhausted",
+}
+
+# The migrations, in the order the controller applies them.
+RENAMES: dict[str, dict[str, str]] = {
+    PLAN_RENAME: PLAN_RENAME_NAMES,
+    TASK_RENAME: TASK_RENAME_NAMES,
+}
+
+HISTORIC_NAMES: dict[str, str] = {
+    **PLAN_RENAME_NAMES,
     # Verbs merged into one row each (2026-11-24): committed events keep the
     # name they were written with.
     "resume_clean_head_ci": "resume_ci",
@@ -250,6 +282,7 @@ HISTORIC_NAMES: dict[str, str] = {
     "exhaust_work_recovery": "exhaust_recovery",
     "exhaust_publish_recovery": "exhaust_recovery",
     "return_for_series_requirements": "return_for_feedback",
+    **TASK_RENAME_NAMES,
 }
 
 
@@ -333,7 +366,7 @@ class Effects:
 
     ``revision`` and ``generation`` are ``keep`` or ``bump``; a generation
     bump resets every mutable lifecycle field and keeps identity and replay
-    fences. ``task`` is what happens to the requested task (``active_work``):
+    fences. ``task`` is what happens to the requested task (``active_task``):
     ``keep``, ``clear``, ``allocate`` (a new task for this state) or
     ``reallocate`` (a fresh task graph for the same task). ``sets`` and
     ``clears`` name record fields; ``field=value`` names the value set. A
@@ -342,7 +375,7 @@ class Effects:
     again: it starts exactly the one named in ``pending_human_action.counter``,
     and none when no counter is named. ``credits`` names the budgets the
     transition gives back: those the allocation of the lost task charged
-    (``pending_human_action.credit``, else ``work_total`` alone).
+    (``pending_human_action.credit``, else ``task_total`` alone).
     """
 
     revision: str = "keep"
@@ -599,12 +632,12 @@ PENDING_GUARDS: dict[str, tuple[bool, tuple[str, ...]]] = {}
 PENDING_COUNTER = "pending_human_action.counter"
 # The fields in which the exhaustion of a lost dispatch records the version of
 # the pipeline code it failed at, and the budgets its task's allocation charged
-# (`active_work.charged`), which the re-arm gives back.
+# (`active_task.charged`), which the re-arm gives back.
 PENDING_PIPELINE = "pending_human_action.pipeline_version"
 PENDING_CREDIT = "pending_human_action.credit"
 # The budgets an allocation charges that a lost dispatch gives back: the
 # counter of the task, and the repair counter of the failing CI job.
-CREDITABLE = ("work_total", "repair_attempts_cluster")
+CREDITABLE = ("task_total", "repair_attempts_cluster")
 
 
 def _one_of(kinds: tuple[str, ...]) -> str:
@@ -680,7 +713,7 @@ CARRIED_FEEDBACK = "carried pending_feedback_evidence_ids"
 QUALIFIED_CLEARS: dict[str, tuple[str, str]] = {
     CARRIED_FEEDBACK: (
         "pending_feedback_evidence_ids",
-        "exactly the ids in `active_work.feedback_evidence_ids`, the pending feedback present "
+        "exactly the ids in `active_task.feedback_evidence_ids`, the pending feedback present "
         "when the task was allocated; feedback recorded later stays pending"),
 }
 # What every stop clears beside the requested task. `proposal_artifact` only
@@ -689,7 +722,7 @@ _HELD = (HELD_RESULT,)
 # The pending feedback a task request carries: the ids present at allocation.
 # A fresh task graph for the same task and a publish retry of its Result carry
 # the same ids.
-TASK_FEEDBACK = "active_work.feedback_evidence_ids"
+TASK_FEEDBACK = "active_task.feedback_evidence_ids"
 # Rerun counts of the current head. They start again whenever the recorded
 # head changes: on every row of ``RERUN_RESTART_VERBS``.
 RERUNS = "budget.reruns"
@@ -709,27 +742,27 @@ _REFRESH = Transition(
 _RETRY_DISPATCH = Transition(
     _K, None,
     ("a dispatcher run ended with the requested task absent or unclaimed", "dispatch_recovery remains"),
-    _E(sets=("active_work.dispatched_run_id",)),
+    _E(sets=("active_task.dispatched_run_id",)),
     charges=("dispatch_recovery",),
     description="Launches the dispatcher again for the same committed task request. The row "
-                "records the dispatcher run it decided in `active_work.dispatched_run_id`, so "
+                "records the dispatcher run it decided in `active_task.dispatched_run_id`, so "
                 "each ended run is decided once.")
 # The exhaustion of the recovery of one failure of the task or of its
 # publication, whichever budget that failure spends: a lost dispatch
 # (`dispatch_recovery`), a task graph terminal without a usable Result
-# (`work_recovery`, or `work_total` for its fresh graph), or a failed
+# (`task_recovery`, or `task_total` for its fresh graph), or a failed
 # publication of a held Result (`publish_recovery`). The engine derives the
 # pending action and its counter from the failure (``engine.recovery_exhaustion``).
 RECOVERY_EXHAUSTED = ("the recovery of the failure is exhausted: dispatch_recovery for a lost "
-                      "dispatch, work_recovery or work_total for a task graph terminal without "
+                      "dispatch, task_recovery or task_total for a task graph terminal without "
                       "a usable Result, publish_recovery for a failed publication")
 # The failures whose recovery `exhaust_recovery` ends, by the fact the caller
 # asserts: the budgets that recover it (the first exhausted one is the
-# counter the wait names, so `work_total` before `work_recovery`) and the
+# counter the wait names, so `task_total` before `task_recovery`) and the
 # pending action of the wait.
 RECOVERY_FAILURES: dict[str, tuple[tuple[str, ...], str]] = {
     "dispatch_lost": (("dispatch_recovery",), "dispatch_failed"),
-    "task_terminal_without_result": (("work_total", "work_recovery"), "work_failed"),
+    "task_terminal_without_result": (("task_total", "task_recovery"), "task_failed"),
     "publication_infrastructure_error": (("publish_recovery",),
                                          "publication_infrastructure_failure"),
 }
@@ -764,19 +797,19 @@ def _exhaust_recovery(*failures: str) -> Transition:
                                          "budgets the allocation of the lost task charged "
                                          "(`pending_human_action.credit`)",
                         "task_terminal_without_result":
-                            "`work_failed` for a task graph terminal without a usable Result, "
-                            "with `work_total` when that budget is exhausted (also when "
-                            "`work_recovery` is exhausted too) and `work_recovery` otherwise",
+                            "`task_failed` for a task graph terminal without a usable Result, "
+                            "with `task_total` when that budget is exhausted (also when "
+                            "`task_recovery` is exhausted too) and `task_recovery` otherwise",
                         "publication_infrastructure_error":
                             "`publication_infrastructure_failure` with `publish_recovery` for a "
                             "failed publication, which keeps the held Result "
                             "(`pending_publication.exhausted`)"}[f] for f in failures)
-                    + ". The resume starts that counter again; `work_recovery` starts again "
+                    + ". The resume starts that counter again; `task_recovery` starts again "
                     "with the fresh task.",
         exhausts=budgets)
 
 
-_EXHAUST_WORK_RECOVERY = _exhaust_recovery("dispatch_lost", "task_terminal_without_result")
+_EXHAUST_TASK_RECOVERY = _exhaust_recovery("dispatch_lost", "task_terminal_without_result")
 _EXHAUST_PUBLICATION_RECOVERY = _exhaust_recovery(
     "dispatch_lost", "task_terminal_without_result", "publication_infrastructure_error")
 _EXHAUST_PUBLISH_RECOVERY = _exhaust_recovery("publication_infrastructure_error")
@@ -797,18 +830,18 @@ _REARM_DISPATCH = Transition(
                 "reinstalled the compiled policy that the installed one refused, or the pipeline "
                 "code changed since the failure (a resume once per version of the code, which "
                 "the next failure records). The task the lost dispatch allocated is given back "
-                "its budgets: `work_total` (and the repair counter of its failing CI job) as "
-                "its allocation charged them (`pending_human_action.credit`), `work_total` "
+                "its budgets: `task_total` (and the repair counter of its failing CI job) as "
+                "its allocation charged them (`pending_human_action.credit`), `task_total` "
                 "alone for a wait that records none. The same transition as the resume a "
                 "human would post, taken by the controller.")
 # Guards that decide which transition applies when a task is due. EXCLUSIVE_GUARDS
 # lists the combinations that cannot hold together.
-TASK_TOTAL_REMAINS = "work_total remains"
-TASK_TOTAL_EXHAUSTED = "work_total exhausted"
+TASK_TOTAL_REMAINS = "task_total remains"
+TASK_TOTAL_EXHAUSTED = "task_total exhausted"
 # ``repair_attempts_cluster`` counts repairs per failing CI job, so it is
 # charged, and its exhaustion applies, only while a failing CI job is recorded
 # for the head. A task that is due without one (the first patch, a rejected
-# proposal, a repair driven only by review feedback) charges ``work_total``
+# proposal, a repair driven only by review feedback) charges ``task_total``
 # only.
 FAILING_JOB = "a failing CI job is recorded for the head"
 NO_FAILING_JOB = "no failing CI job is recorded for the head"
@@ -818,14 +851,14 @@ REPAIR_BUDGET_EXHAUSTED = ("no_progress is exhausted, or repair_attempts_cluster
                            "and a failing CI job is recorded for the head")
 REFRESH_UNUSED = "the automatic refresh is unused in this generation"
 REFRESH_USED = "the automatic refresh is used in this generation"
-REVISION_BUDGETS_REMAIN = "repair_attempts_cluster, no_progress, and work_total remain"
-REVIEW_REVISION_BUDGETS_REMAIN = "no_progress and work_total remain"
+REVISION_BUDGETS_REMAIN = "repair_attempts_cluster, no_progress, and task_total remain"
+REVIEW_REVISION_BUDGETS_REMAIN = "no_progress and task_total remain"
 # The guard of `require_provisioning_intervention`: the exhaustion form is not
 # taken while the contribution is paused; the failure and blocked forms are.
 PROVISIONING_NEEDS_INTERVENTION = ("a prerequisite cannot be satisfied, an uncertain operation "
                                    "has no discovery, or operation_launch is exhausted while the "
                                    "contribution is not paused")
-REVISION_BUDGET_EXHAUSTED = ("no_progress or work_total is exhausted, or repair_attempts_cluster "
+REVISION_BUDGET_EXHAUSTED = ("no_progress or task_total is exhausted, or repair_attempts_cluster "
                              "is exhausted and a failing CI job is recorded for the head")
 # What leaves the submission gate for repair: a CI failure on the candidate
 # head takes ``return_for_repair``; an actionable review takes
@@ -909,11 +942,11 @@ EXCLUSIVE_OBSERVATION_PAIRS = {
     "development.waiting_ci": (("record_ci_failure", "record_actionable_review"),),
 }
 
-_ALLOCATE_WORK_RETRY = Transition(
+_ALLOCATE_TASK_RETRY = Transition(
     _K, None,
     ("the task graph is terminal without a usable Result", NOT_PIPELINE_FAILURE,
-     "work_recovery and work_total remain", UPSTREAM_BOUND),
-    _E(revision="bump", task="reallocate"), ("work_recovery", "work_total"),
+     "task_recovery and task_total remain", UPSTREAM_BOUND),
+    _E(revision="bump", task="reallocate"), ("task_recovery", "task_total"),
     description="A terminal task graph is never submitted again; a fresh graph is allocated. It "
                 "carries the same feedback ids.")
 _REALLOCATE_AFTER_PIPELINE_FAILURE = Transition(
@@ -926,7 +959,7 @@ _REALLOCATE_AFTER_PIPELINE_FAILURE = Transition(
                 "failure, a human launched the controller, or the backoff of one of its 3 free "
                 "relaunches passed (counted on the task as `pipeline_free`, per version of the "
                 "code). It charges nothing: the "
-                "failure was not caused by the task, so `work_recovery`, `work_total` and the "
+                "failure was not caused by the task, so `task_recovery`, `task_total` and the "
                 "attempts counted so far are unchanged. Until then the record is held as it is: "
                 "no row is taken and the failure is reported as an alert. It carries the same "
                 "feedback ids. A Result held for a publish-only retry whose report records no "
@@ -1017,7 +1050,7 @@ _LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_i
 # evidence is kept. A return for a CI failure also records its evidence.
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
 _FEEDBACK_NOTE = (" The task request carries the pending feedback ids present at allocation "
-                  "(`active_work.feedback_evidence_ids`).")
+                  "(`active_task.feedback_evidence_ids`).")
 _RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
 _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts again the one "
                  "counter named in `pending_human_action.counter`, and no other. The event "
@@ -1036,8 +1069,8 @@ _RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh task is 
 
 
 def _guarded(t: Transition, *guards: str) -> Transition:
-    """``t`` with ``guards`` added: where a task is due, a spent `work_total`
-    is exhausted first (`exhaust_work_total`)."""
+    """``t`` with ``guards`` added: where a task is due, a spent `task_total`
+    is exhausted first (`exhaust_task_total`)."""
     from dataclasses import replace
 
     return replace(t, guard=(*t.guard, *guards))
@@ -1096,11 +1129,11 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 ("worker slot free", TASK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
                  UPSTREAM_BOUND),
-                _E(task="allocate"), ("work_total",)),
-            ("exhaust_work_total", "planning.waiting_human"): Transition(
+                _E(task="allocate"), ("task_total",)),
+            ("exhaust_task_total", "planning.waiting_human"): Transition(
                 _K, None, (TASK_TOTAL_EXHAUSTED,),
-                _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",)),
+                _E(sets=("pending_human_action=task_budget_exhausted",
+                        f"{PENDING_COUNTER}=task_total")), exhausts=("task_total",)),
             ("withdraw_request", "closed.idle"): _WITHDRAW_REQUEST,
         }),
     "planning.agent_running": State(
@@ -1108,8 +1141,8 @@ LIFECYCLE: dict[str, State] = {
         "A planning task is requested or running and will return a plan.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_recovery", "planning.waiting_human"): _EXHAUST_WORK_RECOVERY,
-            ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("exhaust_recovery", "planning.waiting_human"): _EXHAUST_TASK_RECOVERY,
+            ("allocate_task_retry", SELF): _ALLOCATE_TASK_RETRY,
             ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("reject_plan", "planning.idle"): Transition(
                 _R, None,
@@ -1168,7 +1201,7 @@ LIFECYCLE: dict[str, State] = {
             ("resume_planning", "planning.idle"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, QUIESCENT),
-                _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
+                _resume_restarting("task_total", "dispatch_recovery", "task_recovery",
                                    "planning_attempts", "source_reads"),
                 description=_RESTART_NOTE),
         }),
@@ -1230,7 +1263,7 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "development.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
-            ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("allocate_task_retry", SELF): _ALLOCATE_TASK_RETRY,
             ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
@@ -1359,7 +1392,7 @@ LIFECYCLE: dict[str, State] = {
                             "a task is due again, so `request_patch` requests a repair that "
                             "carries the feedback. The pending feedback is kept; only a "
                             "published Result clears it. Nothing is charged here: the task is "
-                            "bounded by `no_progress` and `work_total`."),
+                            "bounded by `no_progress` and `task_total`."),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
@@ -1374,7 +1407,7 @@ LIFECYCLE: dict[str, State] = {
                 (NO_FAILING_JOB, "write admission", "worker slot free",
                  "capacity available", NO_PROGRESS_REMAINS, TASK_TOTAL_REMAINS, NOT_PAUSED,
                  "no open operation", UPSTREAM_BOUND),
-                _E(task="allocate", sets=(TASK_FEEDBACK,)), ("work_total",),
+                _E(task="allocate", sets=(TASK_FEEDBACK,)), ("task_total",),
                 "Covers the first patch, the patch after a rejected proposal, and a repair "
                 "driven only by review feedback." + _FEEDBACK_NOTE),
             ("request_repair", "development.agent_running"): Transition(
@@ -1383,7 +1416,7 @@ LIFECYCLE: dict[str, State] = {
                  REPAIR_BUDGETS_REMAIN, TASK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
                  UPSTREAM_BOUND),
                 _E(task="allocate", sets=(TASK_FEEDBACK,)),
-                ("repair_attempts_cluster", "work_total"),
+                ("repair_attempts_cluster", "task_total"),
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
             ("refresh_on_exhaustion", "queued.idle"): Transition(
                 _K, None,
@@ -1394,23 +1427,23 @@ LIFECYCLE: dict[str, State] = {
                           "budget.no_progress_streak")),
                 description="One automatic refresh per generation: complete planning runs "
                             "again on the existing fork. The per-job and no-progress counters "
-                            "start again; `work_total` does not.",
+                            "start again; `task_total` does not.",
                 exhausts=("repair_attempts_cluster", "no_progress")),
             ("exhaust_repair_attempts", "parked.idle"): Transition(
                 _K, None,
                 (REPAIR_BUDGET_EXHAUSTED, TASK_TOTAL_REMAINS, REFRESH_USED, "no open operation"),
                 _E(task="clear", sets=("parked_reason", "previous_phase"), clears=_HELD),
                 description="Parks for `repair_attempts_cluster` and `no_progress` only, after "
-                            "`refresh_on_exhaustion` is used. Exhaustion of `work_total` takes "
-                            "`exhaust_work_total` first.",
+                            "`refresh_on_exhaustion` is used. Exhaustion of `task_total` takes "
+                            "`exhaust_task_total` first.",
                 exhausts=("repair_attempts_cluster", "no_progress")),
-            ("exhaust_work_total", "development.waiting_human"): Transition(
+            ("exhaust_task_total", "development.waiting_human"): Transition(
                 _K, None, (TASK_TOTAL_EXHAUSTED,),
-                _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",),
+                _E(sets=("pending_human_action=task_budget_exhausted",
+                        f"{PENDING_COUNTER}=task_total")), exhausts=("task_total",),
                 description="The reply states the number of task allocations spent in this "
                             "generation and names both `/upstreaming resume`, which starts "
-                            "`work_total` again, and `/upstreaming park`."),
+                            "`task_total` again, and `/upstreaming park`."),
             ("record_head_change", "development.waiting_ci"): Transition(
                 _O, None,
                 ("the observed fork head differs from the recorded head", DEVELOPMENT_PR_RECORDED),
@@ -1443,7 +1476,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "development.waiting_human": State(
         "human_wait", False, False,
-        "Development recovery, or the recovery of a publication, or `work_total` is exhausted, the development PR does not match, CI on "
+        "Development recovery, or the recovery of a publication, or `task_total` is exhausted, the development PR does not match, CI on "
         "the head was interrupted repeatedly, or the development PR operation could not be "
         "completed; a human corrects the cause and resumes.",
         transitions={
@@ -1458,7 +1491,7 @@ LIFECYCLE: dict[str, State] = {
                 (EXACT_REVISION, pending_is_not("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
                  QUIESCENT, NOT_STALE),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
-                  restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
+                  restarts=("dispatch_recovery", "task_recovery", "task_total", "publish_recovery",
                             "source_reads", "operation_launch")),
                 description="A fresh task is requested; a Result held for publication is not "
                             "reused. The pending feedback is kept. " + _RESTART_NOTE),
@@ -1517,7 +1550,7 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 ("worker slot free", TASK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
                  UPSTREAM_BOUND),
-                _E(task="allocate"), ("work_total",),
+                _E(task="allocate"), ("task_total",),
                 "The uncredentialed rewrite task reads the plan's contribution guidelines and "
                 "the non-debug commits of the approved `riscv64-dev` series. It reshapes the "
                 "commit messages (squashing only where the project's contributing "
@@ -1527,10 +1560,10 @@ LIFECYCLE: dict[str, State] = {
                 "does not have is added) and writes the upstream PR title and "
                 "description after the project's pull request template and contributing "
                 "instructions."),
-            ("exhaust_work_total", "handoff.waiting_human"): Transition(
+            ("exhaust_task_total", "handoff.waiting_human"): Transition(
                 _K, None, (TASK_TOTAL_EXHAUSTED,),
-                _E(sets=("pending_human_action=work_budget_exhausted",
-                        f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",)),
+                _E(sets=("pending_human_action=task_budget_exhausted",
+                        f"{PENDING_COUNTER}=task_total")), exhausts=("task_total",)),
         }),
     "handoff.agent_running": State(
         "running", False, False,
@@ -1539,8 +1572,8 @@ LIFECYCLE: dict[str, State] = {
         "change.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
-            ("exhaust_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
-            ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("exhaust_recovery", "handoff.waiting_human"): _EXHAUST_TASK_RECOVERY,
+            ("allocate_task_retry", SELF): _ALLOCATE_TASK_RETRY,
             ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("accept_submission_rewrite", "handoff.building_upstream_branch"): Transition(
                 _R, None,
@@ -1689,9 +1722,9 @@ LIFECYCLE: dict[str, State] = {
             ("resume_submission_review", "handoff.review_due"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION,
-                 pending_is("work_budget_exhausted", "dispatch_failed", "work_failed",
+                 pending_is("task_budget_exhausted", "dispatch_failed", "task_failed",
                             BASE_BRANCH_UNAVAILABLE, UPSTREAM_UNAVAILABLE)),
-                _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
+                _resume_restarting("task_total", "dispatch_recovery", "task_recovery",
                                    "source_reads"),
                 description="A fresh rewrite task is requested; it reviews its own series in "
                             "its run. " + _RESTART_NOTE),
@@ -1800,14 +1833,14 @@ LIFECYCLE: dict[str, State] = {
                  "worker slot free", REVISION_BUDGETS_REMAIN, NOT_PAUSED, "no open operation",
                  UPSTREAM_BOUND),
                 _E(task="allocate", sets=(TASK_FEEDBACK,)),
-                ("repair_attempts_cluster", "work_total"),
+                ("repair_attempts_cluster", "task_total"),
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
             ("request_review_revision", "upstream_review.agent_running"): Transition(
                 _K, None,
                 ("the upstream PR head is the controlled fork ref", NO_FAILING_JOB,
                  "worker slot free", REVIEW_REVISION_BUDGETS_REMAIN, NOT_PAUSED,
                  "no open operation", UPSTREAM_BOUND),
-                _E(task="allocate", sets=(TASK_FEEDBACK,)), ("work_total",),
+                _E(task="allocate", sets=(TASK_FEEDBACK,)), ("task_total",),
                 "A revision driven only by review feedback; it charges no "
                 "`repair_attempts_cluster`." + _FEEDBACK_NOTE),
             ("exhaust_repair_attempts", "upstream_review.waiting_human"): Transition(
@@ -1815,11 +1848,11 @@ LIFECYCLE: dict[str, State] = {
                 (REVISION_BUDGET_EXHAUSTED,),
                 _E(sets=("pending_human_action=repair_budget_exhausted", PENDING_COUNTER)),
                 description="`pending_human_action.counter` names the first exhausted counter "
-                            "in the order `no_progress`, `work_total`, "
+                            "in the order `no_progress`, `task_total`, "
                             "`repair_attempts_cluster`, and the event lists every exhausted "
                             "counter. The resume starts only the named counter again, so with "
                             "several exhausted the next tick waits again on the next one.",
-                exhausts=("work_total", "repair_attempts_cluster", "no_progress")),
+                exhausts=("task_total", "repair_attempts_cluster", "no_progress")),
         }),
     "upstream_review.agent_running": State(
         "running", False, True,
@@ -1864,7 +1897,7 @@ LIFECYCLE: dict[str, State] = {
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
-            ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("allocate_task_retry", SELF): _ALLOCATE_TASK_RETRY,
             ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
         }),
     "upstream_review.waiting_human": State(
@@ -1888,12 +1921,12 @@ LIFECYCLE: dict[str, State] = {
             ("resume_upstream_revision", "upstream_review.fix_needed"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION,
-                 pending_is("dispatch_failed", "work_failed", "publication_infrastructure_failure",
+                 pending_is("dispatch_failed", "task_failed", "publication_infrastructure_failure",
                             "repair_budget_exhausted", BASE_BRANCH_UNAVAILABLE,
                             UPSTREAM_UNAVAILABLE)),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
-                  restarts=("repair_attempts_cluster", "no_progress", "work_total",
-                            "dispatch_recovery", "work_recovery", "publish_recovery",
+                  restarts=("repair_attempts_cluster", "no_progress", "task_total",
+                            "dispatch_recovery", "task_recovery", "publish_recovery",
                             "source_reads")),
                 description="Only when a revision task failed: dispatch, a task, publication, or a "
                             "budget. The pending feedback is kept. " + _RESTART_NOTE),
@@ -2053,7 +2086,7 @@ _dev_pr = dev_pr_problem
 
 
 def _task_or_publication(record: dict) -> str | None:
-    if record.get("active_work") or record.get("pending_publication"):
+    if record.get("active_task") or record.get("pending_publication"):
         return None
     return "neither task nor a publication of its Result is held"
 
@@ -2097,7 +2130,7 @@ INVARIANTS: dict[str, Invariant] = {
         or "fork" in _sets(t),
         heal=("launch_development_pr", "confirm_development_pr", "record_pr_mismatch")),
     "task": Invariant(
-        "A task is requested", _present("active_work", "no task is requested"),
+        "A task is requested", _present("active_task", "no task is requested"),
         lambda t, verb: _row_sets_task(t),
         lambda t, verb: _row_clears_task(t)),
     "task_or_publication": Invariant(
@@ -2175,7 +2208,7 @@ RULES: dict[str, Rule] = {
             _E(revision="bump", sets=_REFRESH_EFFECTS.sets,
               clears=(*_REFRESH_EFFECTS.clears, *_FLAG_FIELDS),
               restarts=("operation_launch", "interrupted_reruns", "dispatch_recovery",
-                        "work_recovery", "work_total", "publish_recovery", "source_reads")),
+                        "task_recovery", "task_total", "publish_recovery", "source_reads")),
             description="After a long stop the plan is refreshed: complete planning "
                         "runs again while the fork and development PR are kept. The stop is "
                         "counted from the older of `paused_at` and "
@@ -2563,15 +2596,15 @@ FLAGS: dict[str, Flag] = {
 }
 
 BUDGETS: dict[str, Budget] = {
-    "work_total": Budget(
+    "task_total": Budget(
         "retries.max_attempts_per_contribution", 0,
         "one task allocation of any kind",
         "`budget.attempts_used`, counted per generation",
-        ("exhaust_work_total", "exhaust_recovery", "exhaust_repair_attempts")),
-    "work_recovery": Budget(
-        "retries.work_recovery", 1,
+        ("exhaust_task_total", "exhaust_recovery", "exhaust_repair_attempts")),
+    "task_recovery": Budget(
+        "retries.task_recovery", 1,
         "one fresh task graph after a terminal task without a usable Result",
-        "`active_work.attempt`", ("exhaust_recovery",), infrastructure=True),
+        "`active_task.attempt`", ("exhaust_recovery",), infrastructure=True),
     "planning_attempts": Budget(
         "retries.planning_attempts", 0,
         "one planning Result without a usable plan",
@@ -2953,17 +2986,17 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "parked.idle"),
                 (("planning.idle", "dispatch_planning"),
                  ("planning.agent_running", "retry_dispatch"),
-                 ("planning.agent_running", "allocate_work_retry"),
+                 ("planning.agent_running", "allocate_task_retry"),
                  ("planning.agent_running", "reallocate_after_pipeline_failure"),
                  ("planning.agent_running", "exhaust_recovery"),
-                 ("planning.idle", "exhaust_work_total"),
+                 ("planning.idle", "exhaust_task_total"),
                  ("planning.waiting_human", "resume_planning"),
                  ("planning.waiting_human", "rearm_dispatch"),
                  ("planning.waiting_human", "park_contribution")),
                 start="planning.idle",
                 text="Dispatch and terminal-task recovery are automatic within `dispatch_recovery` "
-                     "and `work_recovery`. A terminal task graph is never submitted again under the "
-                     "same identity. Every task allocation also charges `work_total`. While the "
+                     "and `task_recovery`. A terminal task graph is never submitted again under the "
+                     "same identity. Every task allocation also charges `task_total`. While the "
                      "installed work-queue Policy refuses every dispatch, a dispatch is not "
                      "decided until the queue is quiescent, where the dispatcher reinstalls the "
                      "compiled policy; a dispatch that failed before the reinstall, or at an "
@@ -3017,7 +3050,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "before the fork exists. `request_repair` applies while a failing CI job is "
                      "recorded for the head and charges `repair_attempts_cluster` for that job; "
                      "`request_patch` applies otherwise (the first patch, a rejected proposal, a "
-                     "repair driven only by review feedback) and charges `work_total` only. Both "
+                     "repair driven only by review feedback) and charges `task_total` only. Both "
                      "need write admission. Every applicable build and test job must execute and "
                      "pass on the exact head."),
             Diagram(
@@ -3029,7 +3062,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.agent_running", "replan_development"),
                  ("development.fix_needed", "request_repair"),
                  ("development.agent_running", "retry_dispatch"),
-                 ("development.agent_running", "allocate_work_retry"),
+                 ("development.agent_running", "allocate_task_retry"),
                  ("development.agent_running", "reallocate_after_pipeline_failure"),
                  ("development.agent_running", "exhaust_recovery"),
                  ("development.waiting_human", "resume_development"),
@@ -3164,23 +3197,23 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`repair_attempts_cluster` or `no_progress` is exhausted in a generation, "
                      "`refresh_on_exhaustion` runs complete planning again on the existing "
                      "fork. After that, `exhaust_repair_attempts` parks. Both apply only while "
-                     "`work_total` remains. `repair_attempts_cluster` counts only while a failing "
+                     "`task_total` remains. `repair_attempts_cluster` counts only while a failing "
                      "CI job is recorded for the head."),
             Diagram(
                 "Failure case 6: the task budget is exhausted",
                 ("development.fix_needed", "development.agent_running",
                  "development.waiting_human", "parked.idle"),
                 (("development.fix_needed", "request_repair"),
-                 ("development.fix_needed", "exhaust_work_total"),
+                 ("development.fix_needed", "exhaust_task_total"),
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "park_contribution")),
                 start="development.fix_needed",
-                text="When `work_total` is exhausted at `development.fix_needed`, "
-                     "`exhaust_work_total` waits for a human and names `work_total` in "
+                text="When `task_total` is exhausted at `development.fix_needed`, "
+                     "`exhaust_task_total` waits for a human and names `task_total` in "
                      "`pending_human_action.counter`, whatever the repair budgets hold. The reply states the "
                      "number of task allocations spent in this generation and names both "
                      "`/upstreaming resume` and `/upstreaming park`. One resume starts "
-                     "`work_total` again and returns to `development.fix_needed`; the repair "
+                     "`task_total` again and returns to `development.fix_needed`; the repair "
                      "budgets are not started again."),
             Diagram(
                 "Failure case 7: development must be re-planned",
@@ -3463,10 +3496,10 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "handoff.building_upstream_branch",
                  "handoff.waiting_ci", "handoff.preparing_submission", "handoff.waiting_human",
                  "handoff.waiting_upstream_pr"),
-                (("handoff.review_due", "exhaust_work_total"),
+                (("handoff.review_due", "exhaust_task_total"),
                  ("handoff.agent_running", "retry_dispatch"),
                  ("handoff.agent_running", "exhaust_recovery"),
-                 ("handoff.agent_running", "allocate_work_retry"),
+                 ("handoff.agent_running", "allocate_task_retry"),
                  ("handoff.agent_running", "reallocate_after_pipeline_failure"),
                  ("handoff.waiting_human", "resume_submission_review"),
                  ("handoff.waiting_human", "rearm_dispatch"),
@@ -3527,7 +3560,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "controlled fork ref. `request_upstream_revision` applies while a failing "
                      "CI job is recorded for the head and charges `repair_attempts_cluster`; "
                      "`request_review_revision` applies to a revision driven only by review "
-                     "feedback and charges `work_total` only. A published revision clears "
+                     "feedback and charges `task_total` only. A published revision clears "
                      "exactly the feedback its task carried. A rejected proposal is repaired within `no_progress`. "
                      "When the worker reports that no change is needed, a human answers the "
                      "reviewer; `resume_upstream_review` then clears the pending feedback and "
@@ -3540,7 +3573,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("upstream_review.agent_running", "upstream_review.waiting_human",
                  "upstream_review.fix_needed"),
                 (("upstream_review.agent_running", "retry_dispatch"),
-                 ("upstream_review.agent_running", "allocate_work_retry"),
+                 ("upstream_review.agent_running", "allocate_task_retry"),
                  ("upstream_review.agent_running", "reallocate_after_pipeline_failure"),
                  ("upstream_review.agent_running", "schedule_publish_retry"),
                  ("upstream_review.agent_running", "exhaust_recovery"),
@@ -3825,9 +3858,9 @@ def _check_states(problems: list[str]) -> None:
             effects = e.transition.effects
             if effects.task == "allocate" and not state.launches:
                 problems.append(f"{where}: allocates a task from a state that does not launch")
-            if effects.task in ("allocate", "reallocate") and "work_total" not in e.transition.charges \
+            if effects.task in ("allocate", "reallocate") and "task_total" not in e.transition.charges \
                     and PIPELINE_FAILURE not in e.transition.guard:
-                problems.append(f"{where}: allocates a task without charging 'work_total'")
+                problems.append(f"{where}: allocates a task without charging 'task_total'")
             if must_bump(e) and effects.revision != "bump":
                 problems.append(f"{where}: the revision rule requires a revision bump")
             if not must_bump(e) and effects.revision == "bump":
@@ -4498,7 +4531,7 @@ def due_task_edges(state: str) -> list[Edge]:
 def _check_due_task(problems: list[str]) -> None:
     """In a state in which the controller allocates a task, at most one of its
     controller transitions applies: every two of them carry guards that
-    ``EXCLUSIVE_GUARDS`` lists as exclusive. Exhaustion of ``work_total``
+    ``EXCLUSIVE_GUARDS`` lists as exclusive. Exhaustion of ``task_total``
     is one transition, guarded by nothing else, so that it applies whatever
     the other budgets hold."""
     guards = {g for e in table_edges() for g in e.transition.guard}
@@ -4517,10 +4550,10 @@ def _check_due_task(problems: list[str]) -> None:
                                     "guards are not exclusive")
         for e in edges:
             if TASK_TOTAL_EXHAUSTED in e.transition.guard and (
-                    e.verb != "exhaust_work_total" or e.transition.guard != (TASK_TOTAL_EXHAUSTED,)
+                    e.verb != "exhaust_task_total" or e.transition.guard != (TASK_TOTAL_EXHAUSTED,)
                     or LIFECYCLE[e.target].kind != "human_wait"):
-                problems.append(f"{key} --{e.verb}--> {e.target}: exhaustion of work_total where "
-                                "a task is due is exhaust_work_total, guarded by nothing else, and "
+                problems.append(f"{key} --{e.verb}--> {e.target}: exhaustion of task_total where "
+                                "a task is due is exhaust_task_total, guarded by nothing else, and "
                                 "leads to a human wait")
 
 

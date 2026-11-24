@@ -173,7 +173,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     pinned gh-aw CLI's validating replay ({} when the queue does not exist
     yet). Either being None means "unknown": nothing is decided this tick.
 
-    For each ``active_work`` (oldest first) whose task is absent from the
+    For each ``active_task`` (oldest first) whose task is absent from the
     queue, or admitted but still unclaimed:
 
     * a dispatcher run is still queued/running, whenever it was created: wait.
@@ -191,7 +191,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
       that budget is spent. Its count is the number of
       dispatcher runs that ended since the request. Each
       ended run is decided once: the record names the last one it decided
-      in ``active_work.dispatched_run_id``.
+      in ``active_task.dispatched_run_id``.
 
     ``queue_policy`` is ``queue_policy.status`` of the replayed queue. While
     the installed Policy drops a worker profile of the compiled policy, gh-aw
@@ -200,7 +200,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     decided at all: nothing is charged and nothing is launched.
 
     A graph the queue reports completed or cancelled takes
-    ``allocate_work_retry`` or ``exhaust_recovery`` once it is terminal
+    ``allocate_task_retry`` or ``exhaust_recovery`` once it is terminal
     without a usable Result (``_result_missing``): a cancelled graph at
     once; a completed graph when a publication collected in this tick
     (``collected``, graph ids) names it, or once ``work_results``
@@ -237,7 +237,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     retry is not a lost dispatch. The dispatcher runs are counted from the
     retry time, and when none was created since it, the dispatcher is
     launched without a row and nothing is charged. A retry the queue exhausts
-    cancels the task, which ``allocate_work_retry`` or
+    cancels the task, which ``allocate_task_retry`` or
     ``exhaust_recovery`` then decides.
 
     ``pipeline_failures`` (``pipeline_failure_readings``, by graph id, and by
@@ -269,15 +269,15 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     if runs is None or queue_works is None:
         return relaunch, staged, report
     iso = now.isoformat()
-    pending = sorted(((k, c) for k, c in contributions.items() if c.get("active_work")),
-                     key=lambda kc: kc[1]["active_work"]["requested_at"])
+    pending = sorted(((k, c) for k, c in contributions.items() if c.get("active_task")),
+                     key=lambda kc: kc[1]["active_task"]["requested_at"])
     for key, c in pending:
         if c["contribution_id"] in skip:
             continue
         with isolation.contribution(c["contribution_id"], "dispatch_recovery"):
-            aw = c["active_work"]
+            aw = c["active_task"]
             if c["phase"] == "handoff" and engine.state_key(c) not in SUBMISSION_TASK_STATES:
-                new = engine.record_beside(c, "handoff_task_dropped", now=iso, active_work=None)
+                new = engine.record_beside(c, "handoff_task_dropped", now=iso, active_task=None)
                 contributions[key] = new
                 staged.append(("contributions", new))
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
@@ -347,8 +347,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 # Task graphs are immutable and terminal. Reusing the same graph
                 # can only fail: once the graph is terminal without a usable
                 # Result, the table allocates a fresh graph at a new revision
-                # within `work_recovery` and `work_total`
-                # (`allocate_work_retry`), and waits for a human otherwise
+                # within `task_recovery` and `task_total`
+                # (`allocate_task_retry`), and waits for a human otherwise
                 # (`exhaust_recovery`).
                 decided, waiting, details = _result_missing(
                     state, tasks.graph_id(aw["dedupe_key"]), work_results, collected, now)
@@ -367,7 +367,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                     continue
                 contributions[key] = new
                 staged.extend([("contributions", new), ("events", event)])
-                if new.get("active_work"):
+                if new.get("active_task"):
                     relaunch.append({"type": "relaunch_dispatcher",
                                      "contribution_id": new["contribution_id"]})
                 report.append(entry | {"decision": decision})
@@ -447,7 +447,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 continue
             contributions[key] = new
             staged.extend([("contributions", new), ("events", event)])
-            if new.get("active_work"):
+            if new.get("active_task"):
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
             report.append(entry | {"decision": decision})
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
@@ -674,7 +674,7 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
     uncollected, inventory, listed_at = collection or ({}, None, None)
     readings: dict[str, dict] = {}
     for c in contributions.values():
-        aw = c.get("active_work")
+        aw = c.get("active_task")
         if not isinstance(aw, dict) or not isinstance(aw.get("dedupe_key"), str):
             continue
         graph = tasks.graph_id(aw["dedupe_key"])
@@ -722,9 +722,9 @@ def pipeline_failure_readings(api: collect.Api, contributions: dict[str, dict],
     made so far, plus one. A failed read is printed and leaves that graph
     without a reading; the others are still read."""
     readings: dict[str, dict] = {}
-    held = [c["active_work"] for c in contributions.values()
-            if isinstance(c.get("active_work"), dict)
-            and isinstance(c["active_work"].get("dedupe_key"), str)]
+    held = [c["active_task"] for c in contributions.values()
+            if isinstance(c.get("active_task"), dict)
+            and isinstance(c["active_task"].get("dedupe_key"), str)]
 
     def read(run_id: str) -> dict | None:
         found = collect.agent_run_failure(api, run_id)
@@ -837,7 +837,7 @@ def dispatch_failure_recovery(contributions: dict[str, dict], *, queue_policy: d
         if c["contribution_id"] in skip:
             continue
         pending = c.get("pending_human_action") or {}
-        if c.get("active_work"):
+        if c.get("active_task"):
             waiting = True
         if pending.get("kind") != "dispatch_failed":
             continue
@@ -936,7 +936,7 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     match engine.dispatch(engine.try_apply_transition(
             c, "retry_dispatch", policy=policy, now=iso, cause_id=f"dispatcher-{run['id']}",
             facts={"dispatch_lost"}, counts=counts,
-            values={"active_work.dispatched_run_id": str(run["id"])},
+            values={"active_task.dispatched_run_id": str(run["id"])},
             details=details | {"attempt": count + 1, "limit": limit}),
             ("reconcile", "_lost_dispatch")):
         case engine.Applied() as out:
@@ -976,7 +976,7 @@ def _holds_dispatched_task(rec: dict) -> bool:
     """Whether a relaunch decided by dispatch recovery still applies once the
     record is observed: it holds a requested task, in a working phase or in a
     submission task state of the handoff phase."""
-    return rec.get("active_work") is not None and (
+    return rec.get("active_task") is not None and (
         rec["phase"] != "handoff" or engine.state_key(rec) in SUBMISSION_TASK_STATES)
 
 
@@ -1035,7 +1035,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
     if pub.get("status") == submission.REWRITE and rec["phase"] != "handoff":
         return f"late Result: a submission rewrite has no row in the {rec['phase']} phase"
-    requested = rec.get("active_work")
+    requested = rec.get("active_task")
     if requested and TASK_PHASE.get(requested.get("task")) != rec["phase"]:
         # Each phase requests its own task only: a Result of a task of another
         # phase has no row of this one.
@@ -1384,8 +1384,8 @@ def _rewrite_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str
 def _unusable_submission_result(rec: dict, why: str, *, now: str,
                                 policy: dict) -> tuple[dict, list[tuple[str, dict]]]:
     """A rewrite Result that is not usable: a task without a usable
-    Result (``allocate_work_retry``, then ``exhaust_recovery``)."""
-    aw = rec.get("active_work") or {}
+    Result (``allocate_task_retry``, then ``exhaust_recovery``)."""
+    aw = rec.get("active_task") or {}
     new, event, decision = _terminal_task(rec, aw, "result_unusable",
                                           now=datetime.fromisoformat(now), policy=policy)
     if new is None:
@@ -1437,7 +1437,7 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
         # not accepted. It is a task without a usable Result of the pipeline
         # that dispatched it, relaunched with nothing charged.
         new, event, decision = _terminal_task(
-            rec, rec.get("active_work") or {}, "result_unusable",
+            rec, rec.get("active_task") or {}, "result_unusable",
             now=datetime.fromisoformat(now), policy=policy,
             details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
                      "why": "the rewrite passed a check that read no review loop"})
@@ -1853,7 +1853,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         # and pushed nothing (``verified``), or the retry of its held Result
         # found a report with no review loop (``unreviewed``). It is a task without a usable Result of the
         # pipeline that dispatched it, relaunched with nothing charged.
-        aw = rec.get("active_work")
+        aw = rec.get("active_task")
         if aw is None and rec.get("pending_publication"):
             # A Result held for a publish-only retry: its task was cleared when
             # it was held, so the request that replaces it is rebuilt from the
@@ -1919,7 +1919,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         if rerun_missing:
             failed = True
             details["rerun"] = rerun_missing
-    if failed and held and not rec.get("active_work") \
+    if failed and held and not rec.get("active_task") \
             and _charged_launch(held, outcome):
         # The failed publication of this launch is already charged, by the
         # wait for its Result: the late Result is recorded once, for audit,
@@ -3195,7 +3195,7 @@ def _waited(record: dict, now: str) -> timedelta:
     """How long the record's requested task has waited since it was
     requested."""
     try:
-        requested = datetime.fromisoformat(str(record["active_work"]["requested_at"]))
+        requested = datetime.fromisoformat(str(record["active_task"]["requested_at"]))
         return datetime.fromisoformat(now) - requested
     except (KeyError, TypeError, ValueError):
         return timedelta(0)
@@ -3287,7 +3287,7 @@ def task_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                 if not new["data"]["deferred"]:
                     break
             deferred = steering.pending(record, collected, evidence)
-            history = task_history.build(record, record["active_work"], evidence,
+            history = task_history.build(record, record["active_task"], evidence,
                                          policy=policy, now=now, deferred=deferred,
                                          unreadable=collected.get("unreadable") or [])
             evidence[eid] = history

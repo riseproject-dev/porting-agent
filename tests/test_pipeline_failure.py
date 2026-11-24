@@ -345,7 +345,7 @@ class TestRunRead(unittest.TestCase):
     def test_the_readings_of_a_tick(self):
         record = json.loads((FIXTURE / "contribution.json").read_text())
         import tasks
-        graph = tasks.graph_id(record["active_work"]["dedupe_key"])
+        graph = tasks.graph_id(record["active_task"]["dedupe_key"])
 
         def failure(run_id):
             return {"pipeline": True, "job": "agent", "step": "Start MCP Gateway",

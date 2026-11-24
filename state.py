@@ -326,8 +326,9 @@ class StateStore:
         return directory
 
     def load_all(self, kind: str) -> dict[str, dict]:
-        """Load every record of a kind, validating each. Invalid state blocks
-        writes: callers must stop affected work, never guess."""
+        """Load every record of a kind, validating each, under the current
+        names (``migrate_names``). Invalid state blocks writes: callers must
+        stop affected work, never guess."""
         out: dict[str, dict] = {}
         d = self._dir(kind)
         if not d.exists():
@@ -346,7 +347,11 @@ class StateStore:
             if problems:
                 raise StateError("; ".join(problems))
             rec = json.loads(p.read_text(encoding="utf-8"))
-            out[rel] = rec
+            # A record written before a rename is read under the current
+            # names, as the name migration will rewrite it, so that no
+            # reader of the committed state sees a historic name (the
+            # dispatcher reads it before the controller migrates it).
+            out[rel] = migrate_names(kind, rec)[0]
         return out
 
     def contributions(self) -> list[dict]:
@@ -488,10 +493,13 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str,
 # --------------------------------------------------------------------------
 # Name migration
 #
-# The planning phase and its plan were once named `investigation` and
-# `dossier` (``lifecycle.HISTORIC_NAMES``). A record written before the
-# rename carries the historic names in exactly these places, and
-# ``migrate_record_names`` rewrites them and nothing else:
+# Two renames changed names that state stores (``lifecycle.RENAMES``). A
+# record written before one carries the historic names in exactly these
+# places, and ``migrate_record_names`` rewrites them and nothing else, one
+# migration after the other and each with its own event:
+#
+# The plan rename (cause `plan-rename`): the planning phase and its plan were
+# once named `investigation` and `dossier`.
 #
 # - a contribution: the field `dossier_evidence_id` (now `plan_evidence_id`)
 #   and the count `budget.investigation_attempts` (now
@@ -503,28 +511,41 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str,
 # - an evidence record: the kind `dossier` (now `plan`). Its id is kept: ids
 #   are opaque, and operations and events name it.
 #
-# A requested task under the historic names (an `active_work` of the task
-# `investigation`) has no reviewed migration: its queued payload names a
-# worker profile that no longer exists. Committed events are not rewritten:
-# they are the history as it was written, the event schema accepts any kind,
-# and their readers translate a historic name (``lifecycle.current_name``).
+# The task rename (cause `task-rename`): the unit the controller requests was
+# once named `work`.
+#
+# - a contribution: the field `active_work` (now `active_task`), the values
+#   `work_failed` and `work_budget_exhausted` of `pending_human_action.kind` and
+#   `work_total` and `work_recovery` of `pending_human_action.counter`. The
+#   task in flight keeps its `dedupe_key`, its kind, and its graph: the
+#   queued payload is not touched, and its Result is folded as before.
+#
+# A requested task of the historic task `investigation` has no reviewed
+# migration: its queued payload names a worker profile that no longer exists.
+# Committed events are not rewritten: they are the history as it was
+# written, the event schema accepts any kind, and their readers translate a
+# historic name (``lifecycle.current_name``).
 
-NAME_MIGRATION = "plan-rename"
+NAME_MIGRATION = lifecycle.PLAN_RENAME
 NAMES_MIGRATED = "record_names_migrated"
-_HISTORIC = lifecycle.HISTORIC_NAMES
+_HISTORIC = lifecycle.PLAN_RENAME_NAMES
 
 
-def migrate_names(kind: str, record: Any) -> tuple[Any, list[str]]:
+def migrate_names(kind: str, record: Any, migration: str | None = None) -> tuple[Any, list[str]]:
     """``record`` of the state kind ``kind`` with its historic names replaced
     by the current ones, and the places it changed (empty when it carries
-    none). Raises ``StateError`` for a shape the migration does not know."""
+    none). ``migration`` names the one rename to apply (``lifecycle.RENAMES``),
+    else all of them. Raises ``StateError`` for a shape the migration does not
+    know."""
     if not isinstance(record, dict):
         return record, []
     if kind == "contributions":
         try:
-            return engine.with_current_names(record)
+            return engine.with_current_names(record, migration)
         except lifecycle.TransitionError as error:
             raise StateError(str(error)) from error
+    if migration not in (None, lifecycle.PLAN_RENAME):
+        return record, []
     if kind == "projects" and "dossier_evidence_id" in record:
         if "plan_evidence_id" in record:
             raise StateError("both dossier_evidence_id and plan_evidence_id are present")
@@ -545,27 +566,37 @@ def needs_name_migration(kind: str, record: Any) -> bool:
 
 
 def migrate_record_names(record: dict, *, now: str, evidence: list[str] = (),
-                         projects: list[str] = ()) -> tuple[dict, dict]:
+                         projects: list[str] = ()) -> tuple[dict, list[dict]]:
     """The contribution record with its historic names replaced, and the
-    event that records it, with the evidence and projects whose names the
-    same migration rewrites. Nothing else changes, `updated_at` included.
-    Raises ``StateError`` when nothing is renamed or for any other shape."""
-    new, changes = migrate_names("contributions", record)
-    if not (changes or evidence or projects):
+    events that record it: one for each rename (``lifecycle.RENAMES``) the
+    record needs, in order. ``evidence`` and ``projects`` are the evidence
+    and projects whose names the plan rename rewrites with it. Nothing else
+    changes, `updated_at` included. Raises ``StateError`` when nothing is
+    renamed or for any other shape."""
+    current = record
+    events = []
+    for migration in lifecycle.RENAMES:
+        owned = (evidence, projects) if migration == lifecycle.PLAN_RENAME else ((), ())
+        new, changes = migrate_names("contributions", current, migration)
+        if not (changes or any(owned)):
+            continue
+        event = lifecycle._event(current, new, NAMES_MIGRATED, "migration", migration, now, False)
+        event["details"] = {"from_state": engine.state_key(current),
+                            "to_state": engine.state_key(new), "renamed": changes,
+                            "evidence": sorted(owned[0]), "projects": sorted(owned[1])}
+        schemas.validate("event", event)
+        events.append(event)
+        current = new
+    if not events:
         raise StateError("the record needs no name migration")
-    view = engine.with_defaults(new)[0]
+    view = engine.with_defaults(current)[0]
     errors = schemas.errors("contribution", view)
     if errors:
         raise StateError("no reviewed name migration for this record: " + "; ".join(errors[:5]))
     problem = engine.state_problem(view)
     if problem:
         raise StateError(f"no reviewed name migration for this record: {problem}")
-    event = lifecycle._event(record, new, NAMES_MIGRATED, "migration", NAME_MIGRATION, now, False)
-    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
-                        "renamed": changes, "evidence": sorted(evidence),
-                        "projects": sorted(projects)}
-    schemas.validate("event", event)
-    return new, event
+    return current, events
 
 
 def migrated_view(kind: str, record: Any) -> Any:
@@ -584,7 +615,7 @@ def migrated_view(kind: str, record: Any) -> Any:
 #
 # The strict record schema requires every field of the record, the counts of
 # `budget`, `pending_human_action.counter`, and the fields of the task
-# identity in `active_work`; the stop flag is `paused` alone. A record
+# identity in `active_task`; the stop flag is `paused` alone. A record
 # written before it lacks fields the table added later and may still carry
 # `blocked_reason`, always null, or the retired `next_poll_at`.
 # ``migrate_record_fields`` adds each missing field with the value the
@@ -753,8 +784,9 @@ def _pending_record_migrations(root: Path, policy: dict, *, now: str | None = No
 
     A contribution, project, or evidence record that carries a historic name
     is renamed (``migrate_names``), with one ``record_names_migrated`` event
-    per contribution that names the renamed evidence of the contribution and
-    the renamed projects of which it is the first contribution; then a
+    per rename of each contribution (the plan rename names the renamed
+    evidence of the contribution and the renamed projects of which it is the
+    first contribution); then a
     contribution that lacks a field of the strict schema is migrated
     (``migrate_record_fields``). Every other record must be valid, and a
     record a migration refuses fails closed here, before any caller acts on
@@ -798,12 +830,12 @@ def _pending_record_migrations(root: Path, policy: dict, *, now: str | None = No
             current = record
             stamp = now or (record["updated_at"] if isinstance(record, dict) else None)
             if needs_name_migration("contributions", record) or cid in renamed:
-                current, event = migrate_record_names(
+                current, events = migrate_record_names(
                     record, now=stamp, evidence=evidence_of.get(cid, []),
                     projects=projects_of.get(cid, []))
                 pending.append((rel, "contributions", current))
                 pending.extend(renamed.get(cid, []))
-                pending.append(("", "events", event))
+                pending.extend(("", "events", event) for event in events)
             if needs_field_migration(current):
                 current, event = migrate_record_fields(current, now=stamp)
                 # A record that also needed the name migration is staged
@@ -842,8 +874,8 @@ def pending_record_migrations(root: Path, policy: dict) -> list[str]:
 
 def apply_pending_record_migrations(root: Path, policy: dict, *, now: str,
                                     run: dict | None = None) -> list[str]:
-    """Rewrite every record written before the plan rename
-    (``migrate_record_names``) or the strict record schema
+    """Rewrite every record written before the plan rename or the task
+    rename (``migrate_record_names``) or the strict record schema
     (``migrate_record_fields``) and append one migration event per
     migration of each contribution.
 

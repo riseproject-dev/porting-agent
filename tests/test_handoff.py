@@ -263,7 +263,7 @@ class World:
     def rewrite_outcome(self, verdict="pass", reasons=(), expires_at=None, **over):
         """The trusted outcome of the requested rewrite task, as the worker's
         publish job writes it and the controller collects it."""
-        work = self.record["active_work"]
+        work = self.record["active_task"]
         self.publication += 1
         out = {"status": submission.REWRITE, "stage": "submission_check", "approved_head": HEAD,
                "base_sha": BASE, "verdict": verdict, "reasons": list(reasons),
@@ -414,7 +414,7 @@ class TestLivePath(unittest.TestCase):
         [work] = out.report["requested_effects"]
         self.assertEqual((work["task"], work["expected_head"], work["effect_contract"]),
                          ("submission_rewrite", HEAD, {"kind": "none"}))
-        self.assertEqual(world.record["active_work"]["reason_ids"], [PLAN, CI_EVIDENCE])
+        self.assertEqual(world.record["active_task"]["reason_ids"], [PLAN, CI_EVIDENCE])
         self.assertEqual(out.report["handoff_requests"], [])
         self.assertIsNone(world.record["active_operation_id"])
 
@@ -524,9 +524,9 @@ class TestLivePath(unittest.TestCase):
                 for name in ("clean_head_sha", "submission_rewrite_id",
                              "handoff_request", "pending_human_action", "active_operation_id"):
                     self.assertIsNone(world.record[name], name)
-                self.assertEqual(world.record["active_work"]["task"], "development_repair")
-                self.assertEqual(world.record["active_work"]["feedback_evidence_ids"], [eid])
-                self.assertIn(eid, world.record["active_work"]["reason_ids"])
+                self.assertEqual(world.record["active_task"]["task"], "development_repair")
+                self.assertEqual(world.record["active_task"]["feedback_evidence_ids"], [eid])
+                self.assertIn(eid, world.record["active_task"]["reason_ids"])
                 # Nothing was posted and no branch was written.
                 self.assertEqual((world.gh.comments, world.gh.fork_writes()), ({}, []))
                 self.assertEqual(world.gh.branches["riscv64"], None)
@@ -547,8 +547,8 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(world.state, "handoff.agent_running")
         self.assertIsNone(world.record["submission_rewrite_id"])
         self.assertEqual(world.record["budget"], before["budget"])
-        self.assertNotEqual(world.record["active_work"]["dedupe_key"],
-                            before["active_work"]["dedupe_key"])
+        self.assertNotEqual(world.record["active_task"]["dedupe_key"],
+                            before["active_task"]["dedupe_key"])
         # The stamped pass is accepted.
         world = submitted()
         self.assertEqual(world.kinds(world.tick(at(1), publications=[world.rewrite_outcome()])),
@@ -572,20 +572,20 @@ class TestLivePath(unittest.TestCase):
             with self.subTest(step=step):
                 world = submitted()
                 make = world.rewrite_outcome
-                first = world.record["active_work"]["dedupe_key"]
+                first = world.record["active_task"]["dedupe_key"]
                 for outcome in ({"status": "rejected", "failure_class": "validation",
                                  "reason": "the review is malformed"},
                                 {"verdict": "pass", "commits": []}):
                     out = world.tick(at(2), publications=[make(**outcome)])
-                    self.assertEqual(world.kinds(out), ["allocate_work_retry"])
+                    self.assertEqual(world.kinds(out), ["allocate_task_retry"])
                     self.assertEqual(world.state, state)
-                    self.assertNotEqual(world.record["active_work"]["dedupe_key"], first)
-                    first = world.record["active_work"]["dedupe_key"]
-                # Once `work_recovery` is spent, a human resumes a fresh rewrite.
+                    self.assertNotEqual(world.record["active_task"]["dedupe_key"], first)
+                    first = world.record["active_task"]["dedupe_key"]
+                # Once `task_recovery` is spent, a human resumes a fresh rewrite.
                 out = world.tick(at(3), publications=[make(verdict="maybe")])
                 self.assertEqual(world.kinds(out), ["exhaust_recovery"])
                 self.assertEqual((world.state, world.record["pending_human_action"]["kind"]),
-                                 ("handoff.waiting_human", "work_failed"))
+                                 ("handoff.waiting_human", "task_failed"))
                 revision = world.record["revision"]
                 out = world.tick(at(4), comments=[comment(
                     f'/upstreaming resume revision={revision} reason="x"', cid=940)])
@@ -1079,12 +1079,12 @@ class TestCleanHeadCi(unittest.TestCase):
         self.assertEqual(world.kinds(out), ["confirm_clean_head", "return_for_repair",
                                             "request_repair"])
         self.assertEqual(world.state, "development.agent_running")
-        self.assertEqual(world.record["active_work"]["task"], "development_repair")
+        self.assertEqual(world.record["active_task"]["task"], "development_repair")
         failed = world.record["last_ci_evidence_id"]
         self.assertNotEqual(failed, gate_evidence)
         self.assertEqual(world.evidence[failed]["ci"]["head_sha"], HEAD)
         self.assertNotIn("candidate_head_sha", world.evidence[failed]["ci"])
-        self.assertIn(failed, world.record["active_work"]["reason_ids"])
+        self.assertIn(failed, world.record["active_task"]["reason_ids"])
         world = reviewed()
         receipt = world.run_workflow()
         with mock.patch.object(FakeGitHub, "ci_snapshot", lambda self, a, f, h: collect.CiSnapshot(
@@ -1135,7 +1135,7 @@ class TestCleanHeadCi(unittest.TestCase):
                          (CLEAN, world.record["fork"]["head_sha"]))
         self.assertTrue(world.evidence[failed]["limitations"][0].startswith(
             f"CI ran on the clean head {CLEAN} of `riscv64`"))
-        self.assertIn(failed, world.record["active_work"]["reason_ids"])
+        self.assertIn(failed, world.record["active_task"]["reason_ids"])
         self.assertEqual(world.record["budget"]["clusters"]
                          .get("Build - ubuntu-24.04-riscv (riscv64)"), 1)
 
@@ -1958,7 +1958,7 @@ class TestNoReceipt(unittest.TestCase):
             self.assertEqual(world.state, state)
             out = world.tick(at(1), comments=[comment("/upstreaming pause", cid=930)])
             self.assertEqual((world.kinds(out), world.state), (["pause"], "handoff.review_due"))
-            self.assertIsNone(world.record["active_work"])
+            self.assertIsNone(world.record["active_task"])
             revision = world.record["revision"]
             out = world.tick(at(2), comments=[comment(
                 f'/upstreaming resume revision={revision} reason="x"', cid=931)])
@@ -2738,7 +2738,7 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         record["fork"]["head_sha"] = approved
         record["handoff_approval"] = {"command_id": "c-1", "actor": dict(OWNER), "head": approved,
                                       "revision": 4, "evidence_ids": []}
-        record["active_work"] = {"dedupe_key": "k", "task": "submission_rewrite", "generation": 0,
+        record["active_task"] = {"dedupe_key": "k", "task": "submission_rewrite", "generation": 0,
                                  "revision": 4, "attempt": 1, "requested_at": T0,
                                  "deadline_at": T0, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         record, staged = reconcile.fold_submission_rewrite(

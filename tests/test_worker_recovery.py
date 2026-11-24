@@ -26,7 +26,7 @@ ARTIFACT_ID = 14738278252
 class TestDispatcherAcceptedLaunchRecovery(unittest.TestCase):
     def test_failed_dispatcher_run_does_not_duplicate_an_already_live_claim(self):
         record = contribution(phase="development", activity="agent_running", revision=3)
-        record["active_work"] = {
+        record["active_task"] = {
             "dedupe_key": "example--proj/12@3:development_patch",
             "task": "development_patch",
             "revision": 3,
@@ -36,7 +36,7 @@ class TestDispatcherAcceptedLaunchRecovery(unittest.TestCase):
             "dispatched_run_id": None,
             "reason_ids": ["plan-1"], "generation": 0, "feedback_evidence_ids": []
         }
-        graph = tasks.graph_id(record["active_work"]["dedupe_key"])
+        graph = tasks.graph_id(record["active_task"]["dedupe_key"])
         relaunch, staged, report = reconcile.dispatch_recovery(
             {"c": record},
             runs=[{
@@ -57,7 +57,7 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
 
     def setUp(self):
         self.record = contribution(phase="development", activity="agent_running", revision=4)
-        self.record["active_work"] = {
+        self.record["active_task"] = {
             "dedupe_key": "closeio--ciso8601/1@4:development_repair",
             "task": "development_repair",
             "revision": 4,
@@ -71,7 +71,7 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
                 "plan-closeio--ciso8601--1-r2",
             ], "generation": 0, "feedback_evidence_ids": []
         }
-        self.graph = tasks.graph_id(self.record["active_work"]["dedupe_key"])
+        self.graph = tasks.graph_id(self.record["active_task"]["dedupe_key"])
         self.runs = [
             {
                 "id": 45005112315,
@@ -114,14 +114,14 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
                 staged_contributions = [item for kind, item in staged if kind == "contributions"]
                 if staged_contributions:
                     self.assertEqual(
-                        staged_contributions[-1]["active_work"]["dedupe_key"],
-                        self.record["active_work"]["dedupe_key"],
+                        staged_contributions[-1]["active_task"]["dedupe_key"],
+                        self.record["active_task"]["dedupe_key"],
                     )
 
         relaunch, staged, report = self.recover(3)
         self.assertEqual(relaunch, [])
         final = [item for kind, item in staged if kind == "contributions"][-1]
-        self.assertEqual((final["activity"], final["active_work"]), ("waiting_human", None))
+        self.assertEqual((final["activity"], final["active_task"]), ("waiting_human", None))
         self.assertEqual(final["pending_human_action"]["kind"], "dispatch_failed")
         self.assertEqual(final["pending_human_action"]["counter"], "dispatch_recovery")
         self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
@@ -131,17 +131,17 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
     def test_each_ended_dispatcher_run_is_decided_once(self):
         relaunch, staged, _report = self.recover(1)
         decided = [item for kind, item in staged if kind == "contributions"][-1]
-        self.assertEqual(decided["active_work"]["dispatched_run_id"], "45005112315")
+        self.assertEqual(decided["active_task"]["dispatched_run_id"], "45005112315")
         [event] = [item for kind, item in staged if kind == "events"]
         self.assertEqual((event["kind"], event["cause"]["id"]),
                          ("retry_dispatch", "dispatcher-45005112315"))
-        # The row records the decided run: only `active_work.dispatched_run_id`
+        # The row records the decided run: only `active_task.dispatched_run_id`
         # changes in the task, and no write beside the row records it.
-        self.assertEqual(decided["active_work"],
-                         dict(self.record["active_work"], dispatched_run_id="45005112315"))
+        self.assertEqual(decided["active_task"],
+                         dict(self.record["active_task"], dispatched_run_id="45005112315"))
         with self.assertRaises(engine.TransitionError):
             engine.record_beside(self.record, "dispatcher_run_decided", now=decided["updated_at"],
-                                 active_work=decided["active_work"])
+                                 active_task=decided["active_task"])
         # The relaunched run is not listed: the launch was lost, so it is
         # launched again, and no row is taken again.
         self.record = decided
@@ -168,7 +168,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         record.update(
             phase="development",
             activity="waiting_ci",
-            active_work=None,
+            active_task=None,
             active_operation_id=None,
             fork={
                 "repository_id": 55,
@@ -253,7 +253,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
             }
             # Each blocked Result answers a task requested in agent_running.
             record = dict(record, activity="agent_running",
-                          active_work={"dedupe_key": f"example--proj/12@g0.r{record['revision']}"
+                          active_task={"dedupe_key": f"example--proj/12@g0.r{record['revision']}"
                                                      ":development_patch",
                                        "task": "development_patch",
                                        "revision": record["revision"], "attempt": 1,
@@ -268,7 +268,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                 policy=policy(read_only=False),
                 worker_run_id=str(100 + attempt),
             )
-        # Each blocked outcome charges `no_progress` only; `work_total` and
+        # Each blocked outcome charges `no_progress` only; `task_total` and
         # the clusters are charged when a task is allocated.
         self.assertEqual(record["budget"]["no_progress_streak"],
                          before["no_progress_streak"] + 2)
@@ -299,7 +299,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         self.assertEqual((parked["phase"], parked["activity"]), ("parked", "idle"))
         self.assertEqual(parked["previous_phase"], "development")
         self.assertIn("no_progress", parked["parked_reason"])
-        self.assertIsNone(parked["active_work"])
+        self.assertIsNone(parked["active_task"])
 
     def test_other_blocked_or_mutated_proposals_are_not_reclassified(self):
         with tempfile.TemporaryDirectory() as temporary:

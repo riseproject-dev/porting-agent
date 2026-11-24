@@ -57,7 +57,7 @@
     "processed_review_comment_ids",
     "processed_pr_conversation_comment_ids",
     "pending_feedback_evidence_ids",
-    "active_work",
+    "active_task",
     "plan_evidence_id",
     "scope_coverage_complete",
     "scope_paths"
@@ -992,8 +992,8 @@
             },
             "counter": {
               "enum": [
-                "work_total",
-                "work_recovery",
+                "task_total",
+                "task_recovery",
                 "planning_attempts",
                 "repair_attempts_cluster",
                 "no_progress",
@@ -1196,7 +1196,7 @@
         "maxLength": 200
       }
     },
-    "active_work": {
+    "active_task": {
       "anyOf": [
         {
           "type": "null"

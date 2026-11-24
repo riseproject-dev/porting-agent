@@ -182,7 +182,7 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assertEqual((paused["paused"], paused["paused_by"], paused["paused_at"]),
                          (True, "controller", ISO))
         self.assertEqual(paused["revision"], before["revision"])
-        self.assertIsNone(paused["active_work"])
+        self.assertIsNone(paused["active_task"])
         self.assertIsNone(paused["pending_publication"])
         for text in ("processing_error", "Boom", "injected failure", "run 4242", f"step {step}"):
             self.assertIn(text, paused["paused_reason"])
@@ -208,7 +208,7 @@ class TestOneContributionErrors(unittest.TestCase):
                          [(A, isolation.ProcessingError)])
 
     def test_publication_fold(self):
-        a = contribution(activity="agent_running", active_work=dict(WORK))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
         b = other_waiting()
         pubs = [publication(a, "published")]
         baseline = tick([a, b], publications=pubs)
@@ -222,7 +222,7 @@ class TestOneContributionErrors(unittest.TestCase):
 
     def test_an_operation_staged_over_a_closed_one_pauses_only_its_contribution(self):
         import recovery
-        a = contribution(activity="agent_running", active_work=dict(WORK))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
         b = other_waiting()
         failed = recovery.plan(contribution_id=A, revision=0, kind="branch_update",
                                policy_version="p", reason_ids=["r"],
@@ -250,7 +250,7 @@ class TestOneContributionErrors(unittest.TestCase):
                 self.assertIsNone(recovery.transition_problem(ops.get(r["operation_id"]), r))
 
     def test_dispatch_recovery(self):
-        a = contribution(activity="agent_running", active_work=dict(WORK))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
         b = other_waiting()
         import tasks
         real = tasks.graph_id
@@ -436,7 +436,7 @@ class TestPipelineFailures(unittest.TestCase):
         self.assertEqual({f.contribution_id for f in raised.exception.failures}, {A, B})
 
     def test_errors_in_two_different_steps_stop_the_tick(self):
-        a = contribution(activity="agent_running", active_work=dict(WORK))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
         with self.assertRaises(isolation.TickFailure):
             tick([a, other_waiting()], publications=[publication(a, "published")],
                  head=branch_head(FORK_B),
@@ -487,8 +487,8 @@ class TestReportPauses(unittest.TestCase):
     def test_two_report_errors_in_one_tick_pause_both_and_stop_nothing(self):
         import worker_report
 
-        a = contribution(activity="agent_running", active_work=dict(WORK))
-        b = other(activity="agent_running", active_work=dict(WORK, dedupe_key=f"{B}@0:x"))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
+        b = other(activity="agent_running", active_task=dict(WORK, dedupe_key=f"{B}@0:x"))
 
         def refuse(record, *_args, **_kwargs):
             raise worker_report.ReportError(f"the report of {record['contribution_id']} is lost")
@@ -511,7 +511,7 @@ class TestReportPauses(unittest.TestCase):
     def test_the_paused_result_is_read_once_more_as_a_late_result(self):
         import worker_report
 
-        a = contribution(activity="agent_running", active_work=dict(WORK))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
         pub = publication(a, "published", artifact_id=7)
 
         def refuse(*_args, **_kwargs):
@@ -577,7 +577,7 @@ class TestCollectorFailure(unittest.TestCase):
     def test_contribution_is_skipped_without_state_change_or_pause(self):
         errors = (collect.CollectError("GET /repos/x: HTTP 502"),
                   urllib.error.URLError("connection refused"), TimeoutError("timed out"))
-        a = contribution(activity="agent_running", active_work=dict(WORK))
+        a = contribution(activity="agent_running", active_task=dict(WORK))
         b = other_waiting()
         pubs = [publication(a, "published")]
         baseline = tick([a, b], publications=pubs, verdict="passed")

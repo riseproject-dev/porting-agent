@@ -171,7 +171,7 @@ class TestPlanRefresh(unittest.TestCase):
     def test_refresh_requires_existing_pr_and_quiescence(self):
         cases = [contribution(phase="queued"),
                  contribution(activity="waiting_ci", fork=dict(contribution()["fork"], pr_number=None)),
-                 contribution(activity="fix_needed", active_work={"x": 1}),
+                 contribution(activity="fix_needed", active_task={"x": 1}),
                  contribution(activity="waiting_ci", active_operation_id="op-1"),
                  contribution(activity="waiting_ci", pending_publication={"x": 1}),
                  # A state the table does not have: refresh applies in states of the table only.
@@ -431,16 +431,16 @@ if __name__ == "__main__":
 
 
 class TestStopEndsRequestedWork(unittest.TestCase):
-    def test_stop_commands_clear_active_work(self):
+    def test_stop_commands_clear_active_task(self):
         import commands as C
         from tests.helpers import NOW, contribution
         rec = contribution(phase="planning", activity="agent_running", revision=1)
-        rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 1,
+        rec["active_task"] = {"dedupe_key": "k", "task": "planning", "revision": 1,
                               "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
         for body in ("/upstreaming pause", "/upstreaming park reason=x"):
             out = apply_command(rec, C.parse(body))
             self.assertTrue(out.accepted, body)
-            self.assertIsNone(out.record["active_work"], body)
+            self.assertIsNone(out.record["active_task"], body)
             self.assertNotEqual(out.record["activity"], "agent_running", body)
 
 

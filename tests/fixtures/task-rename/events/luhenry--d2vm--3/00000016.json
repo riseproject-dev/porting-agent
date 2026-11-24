@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-23T20:13:29.927419+00:00",
+  "cause": {
+    "id": "luhenry--d2vm/3@g1.r3:development_patch",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "charged": [
+      "work_total"
+    ],
+    "from_state": "development.fix_needed",
+    "task": "development_patch",
+    "to_state": "development.agent_running",
+    "verb": "request_patch",
+    "work": "luhenry--d2vm/3@g1.r3:development_patch"
+  },
+  "from": {
+    "activity": "fix_needed"
+  },
+  "kind": "request_patch",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 16,
+  "to": {
+    "activity": "agent_running"
+  }
+}

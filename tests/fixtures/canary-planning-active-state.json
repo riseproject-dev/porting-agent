@@ -1,6 +1,6 @@
 {
   "active_operation_id": null,
-  "active_work": {
+  "active_task": {
     "attempt": 1,
     "deadline_at": "2026-11-22T07:26:35.052909+00:00",
     "dedupe_key": "closeio--ciso8601/1@0:planning",

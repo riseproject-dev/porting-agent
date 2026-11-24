@@ -26,7 +26,7 @@ from tests.helpers import policy, take
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "live-d2vm-gateway"
 RECORD = json.loads((FIXTURE / "contribution.json").read_text())
-GRAPH = tasks.graph_id(RECORD["active_work"]["dedupe_key"])
+GRAPH = tasks.graph_id(RECORD["active_task"]["dedupe_key"])
 RETRY_AT = datetime(2026, 11, 24, 12, 54, 34, tzinfo=timezone.utc)
 # The code at the failed run, and the code after a push.
 V1, V2, V3 = "1" * 64, "2" * 64, "3" * 64
@@ -63,7 +63,7 @@ RUNS = [dispatcher(45396818686, "2026-11-24T12:46:30Z")]
 
 def recover(now, *, state="available", failures=None, pipeline=V1, manual=False, runs=None,
             record=None):
-    graph = tasks.graph_id((record or RECORD)["active_work"]["dedupe_key"])
+    graph = tasks.graph_id((record or RECORD)["active_task"]["dedupe_key"])
     return reconcile.dispatch_recovery(
         {"c": copy.deepcopy(record or RECORD)}, runs=RUNS if runs is None else runs,
         queue_works={graph: state}, now=at(now), policy=policy(),
@@ -73,7 +73,7 @@ def recover(now, *, state="available", failures=None, pipeline=V1, manual=False,
 
 class TestTheStall(unittest.TestCase):
     def test_the_fixture_is_the_incident(self):
-        self.assertEqual(RECORD["active_work"]["dedupe_key"],
+        self.assertEqual(RECORD["active_task"]["dedupe_key"],
                          "luhenry--d2vm/3@g1.r6:development_repair")
         self.assertEqual(RECORD["budget"]["attempts_used"], 4)
         self.assertEqual(queue_result.work_claim_runs(projection()), {GRAPH: ["45397386038"]})
@@ -166,14 +166,14 @@ class TestTheStall(unittest.TestCase):
 
     def test_the_free_relaunches_are_not_carried_to_any_other_fresh_graph(self):
         record = copy.deepcopy(RECORD)
-        record["active_work"]["pipeline_free"] = {"version": V1, "count": 2}
+        record["active_task"]["pipeline_free"] = {"version": V1, "count": 2}
         failures = {GRAPH: {"run_id": "5", "pipeline": False}}
         _relaunch, staged, _report = recover("2026-11-24T14:41:00+00:00", state="cancelled",
                                              failures=failures, record=record)
         [new] = [r for kind, r in staged if kind == "contributions"]
         self.assertEqual([e["kind"] for k, e in staged if k == "events"],
-                         ["allocate_work_retry"])
-        self.assertNotIn("pipeline_free", new["active_work"])
+                         ["allocate_task_retry"])
+        self.assertNotIn("pipeline_free", new["active_task"])
         # Nor is the count of a changed version or of a human's release.
         for kwargs in ({"pipeline": V2}, {"manual": True}):
             _relaunch, staged, _report = recover(
@@ -181,7 +181,7 @@ class TestTheStall(unittest.TestCase):
                 failures={GRAPH: dict(FAILED, ended_at="2026-11-24T14:00:00Z")},
                 record=record, **kwargs)
             [new] = [r for kind, r in staged if kind == "contributions"]
-            self.assertNotIn("pipeline_free", new["active_work"])
+            self.assertNotIn("pipeline_free", new["active_task"])
 
     def test_the_version_of_the_code_unknown_decides_nothing(self):
         now = at("2026-11-24T13:01:00+00:00")
@@ -244,12 +244,12 @@ class TestTheStall(unittest.TestCase):
         self.assertEqual(event["details"]["pipeline_failure"]["release"], "changed")
         self.assertEqual(len(relaunch), 1)
         self.assertEqual(new["revision"], RECORD["revision"] + 1)
-        self.assertEqual(new["active_work"]["dedupe_key"],
+        self.assertEqual(new["active_task"]["dedupe_key"],
                          "luhenry--d2vm/3@g1.r7:development_repair")
         # The budgets are those of the record, and so are the attempts used.
         self.assertEqual(new["budget"], RECORD["budget"])
-        self.assertEqual(new["active_work"]["attempt"], RECORD["active_work"]["attempt"])
-        self.assertNotIn("pipeline_free", new["active_work"])
+        self.assertEqual(new["active_task"]["attempt"], RECORD["active_task"]["attempt"])
+        self.assertNotIn("pipeline_free", new["active_task"])
         self.assertEqual(engine.state_key(new), "development.agent_running")
         # The same release by a human, at the same version.
         _relaunch, staged, _report = recover(now, state="cancelled", failures=failures,
@@ -270,12 +270,12 @@ class TestTheStall(unittest.TestCase):
         self.assertEqual((event["kind"], len(relaunch)),
                          ("reallocate_after_pipeline_failure", 1))
         self.assertEqual(event["details"]["pipeline_failure"]["release"], "timed")
-        self.assertEqual(new["active_work"]["pipeline_free"], {"version": V1, "count": 1})
+        self.assertEqual(new["active_task"]["pipeline_free"], {"version": V1, "count": 1})
         self.assertEqual(new["budget"], RECORD["budget"])
         # The fresh graph fails the same way: the count of the task carries
         # over, so the next backoff is the second (2 hours).
-        again = dict(RECORD, **{k: new[k] for k in ("revision", "active_work", "budget")})
-        graph = tasks.graph_id(new["active_work"]["dedupe_key"])
+        again = dict(RECORD, **{k: new[k] for k in ("revision", "active_task", "budget")})
+        graph = tasks.graph_id(new["active_task"]["dedupe_key"])
         later = {graph: dict(FAILED, ended_at="2026-11-24T15:00:00Z")}
         _r, staged, report = recover("2026-11-24T16:59:00+00:00", state="cancelled",
                                      failures=later, record=again)
@@ -285,10 +285,10 @@ class TestTheStall(unittest.TestCase):
         _r, staged, _report = recover("2026-11-24T15:01:00+00:00", state="cancelled",
                                       failures=later, record=again, pipeline=V2)
         [new] = [r for kind, r in staged if kind == "contributions"]
-        self.assertNotIn("pipeline_free", new["active_work"])
+        self.assertNotIn("pipeline_free", new["active_task"])
         # Three free relaunches of this version are spent.
         spent = copy.deepcopy(again)
-        spent["active_work"]["pipeline_free"] = {"version": V1, "count": 3}
+        spent["active_task"]["pipeline_free"] = {"version": V1, "count": 3}
         _r, staged, report = recover("2027-01-30T00:00:00+00:00", state="cancelled",
                                      failures=later, record=spent)
         self.assertEqual(staged, [])
@@ -310,7 +310,7 @@ class TestTheStall(unittest.TestCase):
             _relaunch, staged, _report = recover("2026-11-24T14:41:00+00:00", state="cancelled",
                                                  failures=failures)
             self.assertEqual([e["kind"] for k, e in staged if k == "events"],
-                             ["allocate_work_retry"])
+                             ["allocate_task_retry"])
 
     def test_a_dispatcher_run_that_failed_before_its_agent_is_not_charged(self):
         failed = dispatcher(45420000001, "2026-11-24T13:10:00Z", conclusion="failure")
@@ -383,9 +383,9 @@ class TestTheRow(unittest.TestCase):
     FACTS = {"task_terminal_without_result", "pipeline_failure", "pipeline_failure_cleared"}
 
     def fresh(self):
-        aw = dict(RECORD["active_work"], dedupe_key="luhenry--d2vm/3@g1.r7:development_repair",
+        aw = dict(RECORD["active_task"], dedupe_key="luhenry--d2vm/3@g1.r7:development_repair",
                   revision=7)
-        return {"active_work": aw}
+        return {"active_task": aw}
 
     def test_the_row_charges_nothing_and_gives_a_new_dedupe_key(self):
         out = take(copy.deepcopy(RECORD), "reallocate_after_pipeline_failure", policy=policy(),
@@ -395,10 +395,10 @@ class TestTheRow(unittest.TestCase):
         self.assertNotIn("charged", out.event["details"])
         self.assertEqual(out.record["revision"], RECORD["revision"] + 1)
         self.assertEqual(out.record["budget"], RECORD["budget"])
-        self.assertEqual(out.record["active_work"]["dedupe_key"],
+        self.assertEqual(out.record["active_task"]["dedupe_key"],
                          "luhenry--d2vm/3@g1.r7:development_repair")
-        self.assertEqual(out.record["active_work"]["feedback_evidence_ids"],
-                         RECORD["active_work"]["feedback_evidence_ids"])
+        self.assertEqual(out.record["active_task"]["feedback_evidence_ids"],
+                         RECORD["active_task"]["feedback_evidence_ids"])
 
     def test_it_needs_the_failure_and_that_it_was_cleared(self):
         for missing in ("pipeline_failure", "pipeline_failure_cleared",
@@ -412,10 +412,10 @@ class TestTheRow(unittest.TestCase):
     def test_the_other_rows_of_a_terminal_graph_are_refused_for_a_pipeline_failure(self):
         now = datetime(2026, 11, 24, 15, 0, tzinfo=timezone.utc).isoformat()
         spent = copy.deepcopy(RECORD)
-        spent["active_work"]["attempt"] = lifecycle.budget_limit("work_recovery", policy())
-        for verb, record in (("allocate_work_retry", RECORD), ("exhaust_recovery", spent)):
+        spent["active_task"]["attempt"] = lifecycle.budget_limit("task_recovery", policy())
+        for verb, record in (("allocate_task_retry", RECORD), ("exhaust_recovery", spent)):
             facts = {"task_terminal_without_result"}
-            values = self.fresh() if verb == "allocate_work_retry" else {}
+            values = self.fresh() if verb == "allocate_task_retry" else {}
             out = take(copy.deepcopy(record), verb, policy=policy(), now=now, cause_id="x",
                        facts=facts | {"pipeline_failure"}, values=values)
             self.assertFalse(out.accepted, verb)
@@ -425,9 +425,9 @@ class TestTheRow(unittest.TestCase):
             out = take(copy.deepcopy(record), verb, policy=policy(), now=now, cause_id="x",
                        facts=facts, values=values)
             self.assertTrue(out.accepted, (verb, out.reason))
-        charged = take(copy.deepcopy(RECORD), "allocate_work_retry", policy=policy(), now=now,
+        charged = take(copy.deepcopy(RECORD), "allocate_task_retry", policy=policy(), now=now,
                        cause_id="x", facts={"task_terminal_without_result"}, values=self.fresh())
-        self.assertEqual(charged.event["details"]["charged"], ["work_recovery", "work_total"])
+        self.assertEqual(charged.event["details"]["charged"], ["task_recovery", "task_total"])
 
     def test_the_pair_is_exclusive_in_the_table(self):
         self.assertIn(((lifecycle.NOT_PIPELINE_FAILURE,), (lifecycle.PIPELINE_FAILURE,)),

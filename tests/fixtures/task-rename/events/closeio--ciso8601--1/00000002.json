@@ -1,0 +1,22 @@
+{
+  "at": "2026-11-22T01:26:14.467146+00:00",
+  "cause": {
+    "id": "op-e6b6689f44d1434a6adcabcd",
+    "type": "migration"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "from": {
+    "description_digest": "4a5a584a429838e79b79c512b2bdf9f5c49df33dc046969c5d958a254d6a20c8",
+    "phase": "investigation",
+    "revision": 0
+  },
+  "kind": "canary:intake_repaired",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 2,
+  "to": {
+    "description_digest": "9f58bffa65d7e7df0206ae1130ce6eb5e218181b966839f2e609c05e8baa7ebb",
+    "phase": "queued",
+    "revision": 0
+  }
+}

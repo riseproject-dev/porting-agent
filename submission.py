@@ -39,7 +39,7 @@ reports that the series cannot be shaped without a code change, returns to
 development with the reasons as feedback (``reject_submission_rewrite``). A
 Result that is not usable (malformed, for another task or series, without
 its series, or with a review loop that is missing or contradicts itself) is
-a task without a usable Result: ``allocate_work_retry`` within its budget,
+a task without a usable Result: ``allocate_task_retry`` within its budget,
 never a verdict.
 The trusted handoff workflow then builds `riscv64` from the same series,
 checks it again, and pushes exactly the head this check computed.

@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-23T16:22:56.531091+00:00",
+  "cause": {
+    "id": "45214076594",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "decision": "park",
+    "evidence_id": "dossier-luhenry--d2vm--3-r0",
+    "from_state": "investigation.agent_running",
+    "to_state": "parked.idle",
+    "verb": "park_investigation"
+  },
+  "from": {
+    "activity": "agent_running",
+    "parked_reason": null,
+    "phase": "investigation"
+  },
+  "kind": "park_investigation",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 3,
+  "to": {
+    "activity": "idle",
+    "parked_reason": "d2vm is a Go VM-image builder with no Python package, wheel, PyPI release, or build backend, and no riscv64 discussion upstream. A riscv64 wheel contribution cannot exist; any riscv64 support would be Go and bootloader feature work outside this pipeline's wheel scope. A human can resume with a class and paths if Go riscv64 support is desired.",
+    "phase": "parked"
+  }
+}

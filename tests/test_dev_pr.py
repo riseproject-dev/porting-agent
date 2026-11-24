@@ -427,7 +427,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
         _res, rec, ops, _events = run(rec, ops)
         op = ops[rec["active_operation_id"]]
         moved = dict(rec, activity="waiting_human", pending_human_action={
-            "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
+            "kind": "task_failed", "requested_at": NOW, "reminded_at": None,
             "escalated_at": None, "counter": None})
         out = fold(moved, ops, receipt_for(rec, op), dev_pr_body(rec, op))
         current = [v for k, v in out.staged if k == "contributions"][-1]

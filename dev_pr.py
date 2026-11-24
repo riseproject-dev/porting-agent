@@ -14,6 +14,7 @@ from pathlib import Path
 import collect
 import provisioning
 import schemas
+import state
 from common import CONTROL_REPO, DEV_REF, contribution_file_id
 
 
@@ -113,7 +114,8 @@ def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
     op = json.loads((root / ".state/operations" / f"{operation_id}.json").read_text())
     schemas.validate("operation", op)
     cid = contribution_file_id(op["contribution_id"])
-    record = json.loads((root / ".state/contributions" / f"{cid}.json").read_text())
+    record = state.migrate_names(
+        "contributions", json.loads((root / ".state/contributions" / f"{cid}.json").read_text()))[0]
     schemas.validate("contribution", record)
     if op["kind"] not in INTENT_STATES or op["status"] != "planned" \
             or record.get("active_operation_id") != operation_id or record.get("paused"):

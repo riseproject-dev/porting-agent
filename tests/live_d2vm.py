@@ -16,6 +16,8 @@ import copy
 import json
 from pathlib import Path
 
+import engine
+
 DIRECTORY = Path(__file__).parent / "fixtures" / "live-d2vm-payload"
 CID = "luhenry--d2vm/3"
 WORK = "luhenry--d2vm/3@g1.r10:development_repair"
@@ -25,7 +27,10 @@ HISTORY = "history-fc92db593b9e5ae1e40d1c270060207d"
 
 
 def record(name: str = "900e2b9") -> dict:
-    return json.loads((DIRECTORY / f"record-{name}.json").read_text())
+    """The record as committed, read under the current names (the files are
+    as committed before the task rename)."""
+    return engine.with_current_names(
+        json.loads((DIRECTORY / f"record-{name}.json").read_text()))[0]
 
 
 def evidence() -> dict[str, dict]:

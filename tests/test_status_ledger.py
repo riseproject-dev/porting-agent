@@ -316,7 +316,7 @@ class TestOnlyHumanStepsReachTheIssue(unittest.TestCase):
                 ("abandon", "parked.idle", "closed.idle"),
                 ("park_contribution", "development.waiting_ci", "parked.idle"),
                 ("nominate_for_handoff", "development.waiting_ci", "handoff.awaiting_submission"),
-                ("exhaust_work_total", "development.fix_needed", "development.waiting_human")):
+                ("exhaust_task_total", "development.fix_needed", "development.waiting_human")):
             with self.subTest(verb=verb):
                 self.assertTrue(self.notifies(table_event(verb, source, target)))
 

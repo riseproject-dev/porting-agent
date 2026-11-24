@@ -289,7 +289,7 @@ class TestRerunFenceMigration(unittest.TestCase):
         if not path.exists():
             self.skipTest("no live record in this checkout")
         import schemas
-        rec = json.loads(path.read_text())
+        rec = state.migrate_names("contributions", json.loads(path.read_text()))[0]
         # The retired fields (`next_poll_at`, the held patch, the review
         # comments and the count of failed reviews) are removed by the
         # evented field migration, and nothing else changes.

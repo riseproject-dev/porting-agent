@@ -70,7 +70,7 @@ class Inputs:
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
     # The queue graphs (``tasks.graph_id``) of a task that already returned a
     # Result or that the queue holds as terminal. A terminal graph is never
-    # submitted again: a task allocated under one takes `allocate_work_retry`
+    # submitted again: a task allocated under one takes `allocate_task_retry`
     # or `exhaust_recovery` in the same tick.
     spent_graphs: frozenset[str] = frozenset()
     # The handoff workflow runs that are not completed, by operation (run id);
@@ -117,7 +117,7 @@ def _actionable(c: dict) -> str | None:
         return None
     if c.get("pending_publication"):
         return None   # a delivered proposal is still being published; never re-run the agent for it
-    if c.get("active_work"):
+    if c.get("active_task"):
         return None   # a task was already requested for this contribution; wait for its outcome
     if c.get("active_operation_id") or c["activity"] in ("agent_running", "waiting_human",
                                                           "waiting_ci", "waiting_capacity"):
@@ -133,12 +133,12 @@ def _actionable(c: dict) -> str | None:
     return None
 
 
-# The deadline recorded with a requested task (`active_work.deadline_at`): the
+# The deadline recorded with a requested task (`active_task.deadline_at`): the
 # queue's attempts at it (the `retry` attempts of the pool's Policy, 3), each
 # a worker run of up to 350 minutes (the agent job bound of `worker.md`), so
 # 18 hours covers the three with time to spare. No row reads
 # it: a task whose graph ends without a usable Result is recovered by
-# `allocate_work_retry` and `exhaust_recovery`.
+# `allocate_task_retry` and `exhaust_recovery`.
 TASK_DEADLINE_HOURS = 18
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0,
@@ -159,10 +159,10 @@ ALLOCATIONS = {
 # The rows taken instead when a budget of that task is exhausted. They need no
 # worker slot and are taken as soon as their guard holds.
 EXHAUSTIONS = {
-    "planning.idle": ("exhaust_work_total",),
-    "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
+    "planning.idle": ("exhaust_task_total",),
+    "development.fix_needed": ("exhaust_task_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
-    "handoff.review_due": ("exhaust_work_total",),
+    "handoff.review_due": ("exhaust_task_total",),
     "upstream_review.fix_needed": ("exhaust_repair_attempts",),
 }
 # The facts the controller establishes for an allocation it is about to take.
@@ -970,12 +970,12 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                             f"{c['active_operation_id']}")})
                 continue
             if engine.state_key(c) == "development.fix_needed" \
-                    and engine.work_total_spent(c, policy):
-                # The task loop takes `exhaust_work_total`; the rows that
-                # open the PR of this state need `work_total`.
+                    and engine.task_total_spent(c, policy):
+                # The task loop takes `exhaust_task_total`; the rows that
+                # open the PR of this state need `task_total`.
                 rep["deferred"].append({
                     "contribution": cid,
-                    "why": f"work_total is exhausted: the development PR of {head} is opened "
+                    "why": f"task_total is exhausted: the development PR of {head} is opened "
                            "once it is restored"})
                 continue
             marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{head} -->"
@@ -1164,7 +1164,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # A Result held for a publish-only retry holds no worker.
     slots = policy["concurrency"]["coding_workers"] - sum(
         1 for c in by_id.values()
-        if c.get("active_work")
+        if c.get("active_task")
         or (c["activity"] == "agent_running" and not c.get("pending_publication")))
     pressure = inputs.pressure
     for _p, _t, kind, c, verb in candidates:
@@ -1190,15 +1190,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             claimed = _stage(res, by_id, engine.applied(engine.try_apply_transition(
                 claimed, verb, policy=policy, now=now, cause_id=request["dedupe_key"],
                 facts=ALLOCATION_FACTS,
-                values={"active_work": request}, ci_evidence=ci,
+                values={"active_task": request}, ci_evidence=ci,
                 open_operations=_open_operations(claimed, operations),
                 details={"task": kind, "work": request["dedupe_key"],
                          **({"cluster": cluster} if cluster else {})}), ("controller", "tick")))
             # Only the rows that request patch or revision task carry the
-            # pending feedback (`active_work.feedback_evidence_ids`); a
+            # pending feedback (`active_task.feedback_evidence_ids`); a
             # planning task carries none and keeps it pending. The submission
             # rewrite task names what it answers in its context.
-            carried = claimed["active_work"].get("feedback_evidence_ids") or []
+            carried = claimed["active_task"].get("feedback_evidence_ids") or []
             expected = (list(c.get("pending_feedback_evidence_ids") or [])
                         if _carries_feedback(source, verb)
                         else [])
@@ -1208,15 +1208,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             # A row that keeps the revision can name a task whose graph already
             # returned a Result or is terminal in the queue. That task is
             # terminal without a usable Result: it is never submitted again,
-            # and a fresh graph is allocated within `work_recovery`
-            # (`allocate_work_retry`), or the contribution waits for a human
+            # and a fresh graph is allocated within `task_recovery`
+            # (`allocate_task_retry`), or the contribution waits for a human
             # (`exhaust_recovery`).
             claimed = _retry_spent_task(claimed, inputs, res, policy)
             by_id[c["contribution_id"]] = claimed
-            if not claimed.get("active_work"):
+            if not claimed.get("active_task"):
                 slots += 1
                 continue
-            aw = claimed["active_work"]
+            aw = claimed["active_task"]
             work = {
                 "type": "submit_task",
                 "dedupe_key": aw["dedupe_key"],
@@ -1276,7 +1276,7 @@ def terminal_task(c: dict, aw: dict, queue_state: str, *, now: datetime,
                 c, "reallocate_after_pipeline_failure", policy=policy, now=iso,
                 cause_id=f"queue-{queue_state}",
                 facts=facts | {"pipeline_failure", "pipeline_failure_cleared"},
-                values={"active_work": fresh}, details=details),
+                values={"active_task": fresh}, details=details),
                 ("controller", "terminal_task")):
             case engine.Applied() as out:
                 return (out.record, out.event,
@@ -1286,23 +1286,23 @@ def terminal_task(c: dict, aw: dict, queue_state: str, *, now: datetime,
                 return None, None, f"A terminal task: {refused.detail}"
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("controller", "terminal_task"))
-    # `allocate_work_retry` is guarded by the bound upstream identity. A
+    # `allocate_task_retry` is guarded by the bound upstream identity. A
     # record without it never reaches this point: it holds a task only once a
     # row guarded by the same identity allocated it, the identity is cleared
     # only by `restart_generation`, which clears the task in the same row,
     # and binding fills unbound fields only. Were it unbound all the same,
     # nothing is decided for the record (``Skip``).
     match engine.dispatch(engine.try_apply_transition(
-            c, "allocate_work_retry", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
-            facts=facts, values={"active_work": fresh}, details=details),
+            c, "allocate_task_retry", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
+            facts=facts, values={"active_task": fresh}, details=details),
             ("controller", "terminal_task")):
         case engine.Applied() as out:
-            attempt = out.record["active_work"]["attempt"]
-            limit = lifecycle.budget_limit("work_recovery", policy)
+            attempt = out.record["active_task"]["attempt"]
+            limit = lifecycle.budget_limit("task_recovery", policy)
             return (out.record, out.event,
                     f"new revision for a terminal task, attempt {attempt} of {limit}")
         case engine.Take(verb="exhaust_recovery"):
-            spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
+            spent = engine.exhausted(c, ("task_total", "task_recovery"), policy=policy, now=iso)
             out = engine.applied(engine.try_apply_transition(
                 c, "exhaust_recovery", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
                 facts=facts, details=details | {"exhausted": spent}),
@@ -1330,13 +1330,13 @@ def _fresh_task(c: dict, aw: dict, now: datetime) -> dict:
 
 def _retry_spent_task(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
     """``record`` once the task it was just allocated no longer names a graph
-    in ``inputs.spent_graphs``: each spent graph takes ``allocate_work_retry``
+    in ``inputs.spent_graphs``: each spent graph takes ``allocate_task_retry``
     (a fresh graph at a new revision) or ``exhaust_recovery``, which
     clears the task."""
-    while record.get("active_work") and \
-            tasks.graph_id(record["active_work"]["dedupe_key"]) in inputs.spent_graphs:
-        spent = record["active_work"]["dedupe_key"]
-        new, event, decision = terminal_task(record, record["active_work"], "spent",
+    while record.get("active_task") and \
+            tasks.graph_id(record["active_task"]["dedupe_key"]) in inputs.spent_graphs:
+        spent = record["active_task"]["dedupe_key"]
+        new, event, decision = terminal_task(record, record["active_task"], "spent",
                                              now=inputs.now, policy=policy)
         if new is None:
             raise lifecycle.TransitionError(f"A task {spent} is spent: {decision}")
@@ -1350,7 +1350,7 @@ def _retry_spent_task(record: dict, inputs: Inputs, res: TickResult, policy: dic
 
 def _carries_feedback(state: str, verb: str) -> bool:
     """Whether the allocation row ``verb`` of ``state`` sets the pending
-    feedback its task carries (``active_work.feedback_evidence_ids``)."""
+    feedback its task carries (``active_task.feedback_evidence_ids``)."""
     return lifecycle.TASK_FEEDBACK in lifecycle.find_edge(state, verb).transition.effects.sets
 
 
@@ -1396,12 +1396,12 @@ def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
                        now: str) -> tuple[dict, dict]:
     """The values an exhaustion row sets that the engine cannot derive, and
     the event details that state the spent counters."""
-    if verb == "exhaust_work_total":
-        return {}, {"counter": "work_total",
+    if verb == "exhaust_task_total":
+        return {}, {"counter": "task_total",
                     "count": int(record["budget"].get("attempts_used", 0)),
-                    "limit": lifecycle.budget_limit("work_total", policy)}
+                    "limit": lifecycle.budget_limit("task_total", policy)}
     if engine.state_key(record) == "upstream_review.fix_needed":
-        spent = engine.exhausted(record, ("no_progress", "work_total", "repair_attempts_cluster"),
+        spent = engine.exhausted(record, ("no_progress", "task_total", "repair_attempts_cluster"),
                                  policy=policy, now=now, ci_evidence=ci)
         return {lifecycle.PENDING_COUNTER: spent[0]}, {"exhausted": spent}
     spent = engine.exhausted(record, ("repair_attempts_cluster", "no_progress"), policy=policy,
@@ -1428,7 +1428,7 @@ def _due_allocation(due: dict, allocations: tuple[str, ...], facts: frozenset, c
     match engine.dispatch(engine.try_apply_one_of(
             due, allocations, policy=policy, now=now, facts=facts, ci_evidence=ci,
             open_operations=ops,
-            prepare=lambda verb: {"values": {"active_work": _task_request(
+            prepare=lambda verb: {"values": {"active_task": _task_request(
                 due, task_for(verb, due), inputs, now)}}),
             ("controller", "_due_allocation"), "|".join(allocations)):
         case engine.Applied() as allocation:
@@ -1456,7 +1456,7 @@ def _exhaust(due: dict, out: engine.Applied, ci: dict | None, by_id: dict, res: 
 
 
 def _task_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
-    """The requested task (``active_work``) for ``kind`` at the record's
+    """The requested task (``active_task``) for ``kind`` at the record's
     generation and revision. Its reason ids are the pending feedback it
     carries, then the CI evidence and the plan."""
     from datetime import timedelta
@@ -1835,13 +1835,13 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
                 "attempt": attempts + 1})
             return True
         case engine.Take(verb="exhaust_development_pr_launches", refused=refused) \
-                if _refused_by_work_total(refused):
-            # The row of `development.fix_needed` also needs `work_total`:
-            # its exhaustion is the task loop's (`exhaust_work_total`), not
+                if _refused_by_task_total(refused):
+            # The row of `development.fix_needed` also needs `task_total`:
+            # its exhaustion is the task loop's (`exhaust_task_total`), not
             # that of the launches of the operation.
             rep.setdefault("deferred", []).append(
                 {"contribution": cid, "operation": oid,
-                 "why": "work_total is exhausted: the development PR is opened once it is "
+                 "why": "task_total is exhausted: the development PR is opened once it is "
                         "restored"})
             return False
         case engine.Take(verb="exhaust_development_pr_launches"):
@@ -1880,8 +1880,8 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
             raise engine.TransitionRefused(refused, ("controller", "_launch_development_pr"))
 
 
-def _refused_by_work_total(refused) -> bool:
-    """Whether the refusal of a launch is that of `work_total` (the budget
+def _refused_by_task_total(refused) -> bool:
+    """Whether the refusal of a launch is that of `task_total` (the budget
     the row of `development.fix_needed` adds to `operation_launch`)."""
     return isinstance(refused, engine.Refused) and refused.guard == lifecycle.TASK_TOTAL_REMAINS
 

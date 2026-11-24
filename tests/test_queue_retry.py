@@ -81,7 +81,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         self.record = contribution(phase="development", activity="agent_running", revision=3,
                                    contribution_id="luhenry--d2vm/3")
         self.record["generation"] = 1
-        self.record["active_work"] = {
+        self.record["active_task"] = {
             "dedupe_key": DEDUPE, "task": "development_patch", "revision": 3, "generation": 1,
             "attempt": 1, "requested_at": REQUESTED,
             "deadline_at": "2026-11-24T02:13:29.927419+00:00",
@@ -137,7 +137,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         ended = run(45278935001, (RETRY_AT + timedelta(seconds=5)).isoformat(),
                     conclusion="failure")
         record = copy.deepcopy(self.record)
-        record["active_work"]["dispatched_run_id"] = "45278935001"
+        record["active_task"]["dispatched_run_id"] = "45278935001"
         relaunch, staged, report = self.recover(
             (RETRY_AT + timedelta(seconds=40)).isoformat(), runs=self.runs + [ended],
             record=record)

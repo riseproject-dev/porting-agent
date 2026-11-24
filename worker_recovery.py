@@ -19,6 +19,7 @@ from pathlib import Path
 
 import fork_publish
 import schemas
+import state
 import worker_gate
 from common import canonical_json
 
@@ -92,7 +93,7 @@ def _recover_no_change(directory: Path, run_id: str, task: dict, proposal: dict,
     """Re-run the current gate and preflight; keep the rejection otherwise."""
     if not (directory / "record.json").is_file():
         return outcome
-    record = _load(directory, "record.json")
+    record = state.migrate_names("contributions", _load(directory, "record.json"))[0]
     try:
         report = worker_gate.validate(task, proposal, directory / "patches.mbox",
                                       directory / "report.json")

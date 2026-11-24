@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-24T17:24:59.756110+00:00",
+  "cause": {
+    "id": "dispatcher-45447556135",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "count": 3,
+    "dispatcher_run": "45447556135",
+    "from_state": "development.agent_running",
+    "limit": 3,
+    "to_state": "development.waiting_human",
+    "verb": "exhaust_recovery",
+    "why": "the Work payload takes at least 15601 bytes, over the queue's budget of 15500, because it carries the frozen tracking issue description (244 bytes) inline: the dispatcher skips this Work. The frozen description cannot change, so the request must be made again with a description of at most about 143 bytes",
+    "work": "luhenry--d2vm/3@g1.r10:development_repair"
+  },
+  "from": {
+    "activity": "agent_running"
+  },
+  "kind": "exhaust_recovery",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45448124580
+  },
+  "schema_version": 1,
+  "sequence": 41,
+  "to": {
+    "activity": "waiting_human"
+  }
+}

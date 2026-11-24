@@ -349,7 +349,7 @@ class TestObservation(unittest.TestCase):
     def test_states_without_an_observation_row_are_not_read(self):
         pending = {"kind": "answer_reviewer", "requested_at": NOW, "reminded_at": None,
                    "escalated_at": None, "counter": None}
-        for rec in (record("fix_needed"), record("agent_running", active_work=dict(REVISION_TASK)),
+        for rec in (record("fix_needed"), record("agent_running", active_task=dict(REVISION_TASK)),
                     record("waiting_human", pending_human_action=pending)):
             with self.subTest(state=engine.state_key(rec)):
                 out = tick(rec, pr=pull(merged=True, state="closed"), verdict="failed",
@@ -429,7 +429,7 @@ class TestRevisionResults(unittest.TestCase):
     """Every Result of a revision task takes a row of `upstream_review.agent_running`."""
 
     def running(self, **fields):
-        fields.setdefault("active_work", dict(REVISION_TASK,
+        fields.setdefault("active_task", dict(REVISION_TASK,
                                               feedback_evidence_ids=["review-old"]))
         return record("agent_running", pending_feedback_evidence_ids=["review-old", "review-new"],
                       **fields)
@@ -457,7 +457,7 @@ class TestRevisionResults(unittest.TestCase):
                 after = final(out, rec)
                 self.assertEqual(engine.state_key(after), state)
                 self.assertEqual(after["revision"], rec["revision"] + bumped)
-                self.assertIsNone(after["active_work"])
+                self.assertIsNone(after["active_task"])
                 if verb == "record_revision_publish_success":
                     # Exactly the feedback the task carried is answered.
                     self.assertEqual(after["pending_feedback_evidence_ids"], ["review-new"])
@@ -470,7 +470,7 @@ class TestRevisionResults(unittest.TestCase):
     def test_no_change_of_a_ci_revision_asks_a_human(self):
         rec = record("agent_running", last_ci_evidence_id="ci-2-777-1",
                      pending_feedback_evidence_ids=[],
-                     active_work=dict(REVISION_TASK, feedback_evidence_ids=[]))
+                     active_task=dict(REVISION_TASK, feedback_evidence_ids=[]))
         out = tick(rec, [publication(rec, "no_change")])
         self.assertEqual(kinds(out)[0], "require_reviewer_answer")
         waiting = final(out, rec)
@@ -519,10 +519,10 @@ class TestRevisionResults(unittest.TestCase):
         evidence = {e["evidence_id"]: e for e in staged(failed, "evidence")}
         out = tick(due, pr=pull(head=SHA_B), branch=SHA_B, evidence=evidence, capacity_ok=True)
         self.assertEqual(kinds(out), ["request_upstream_revision"])
-        work = final(out, due)["active_work"]
+        work = final(out, due)["active_task"]
         self.assertEqual(work["revision"], rec["revision"] + 1)
-        self.assertNotEqual(work["dedupe_key"], rec["active_work"]["dedupe_key"])
-        self.assertNotIn("allocate_work_retry", kinds(out))
+        self.assertNotEqual(work["dedupe_key"], rec["active_task"]["dedupe_key"])
+        self.assertNotIn("allocate_task_retry", kinds(out))
 
     def test_a_head_that_was_not_read_back_is_not_recorded(self):
         rec = self.running()
@@ -621,7 +621,7 @@ class TestRevisionResults(unittest.TestCase):
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(engine.state_key(out.record), "upstream_review.waiting_ci")
         self.assertEqual(out.record["pending_feedback_evidence_ids"], [])
-        self.assertIsNone(out.record["active_work"])
+        self.assertIsNone(out.record["active_task"])
 
 
     def waiting(self, kind):
@@ -644,7 +644,7 @@ class TestRevisionResults(unittest.TestCase):
         self.assertEqual(kinds(out), ["resume_upstream_review"])
         after = final(out, rec)
         self.assertEqual((engine.state_key(after), after["revision"],
-                          after["pending_feedback_evidence_ids"], after["active_work"]),
+                          after["pending_feedback_evidence_ids"], after["active_task"]),
                          ("upstream_review.waiting_ci", rec["revision"] + 1, [], None))
         # The review stays fenced, so the collector reads nothing new and no
         # task is requested for it.
@@ -654,15 +654,15 @@ class TestRevisionResults(unittest.TestCase):
         self.assertEqual(engine.state_key(final(again, after)), "upstream_review.waiting_ci")
 
     def test_a_resume_that_requests_task_again_keeps_the_feedback(self):
-        rec = self.waiting("work_failed")
+        rec = self.waiting("task_failed")
         out = self.resumed(rec)
         self.assertEqual(kinds(out), ["resume_upstream_revision"])
         after = final(out, rec)
         self.assertEqual((engine.state_key(after), after["pending_feedback_evidence_ids"]),
                          ("upstream_review.fix_needed", ["review-1"]))
         work = final(tick(after, capacity_ok=True), after)
-        self.assertEqual(work["active_work"]["task"], "upstream_revision")
-        self.assertEqual(work["active_work"]["feedback_evidence_ids"], ["review-1"])
+        self.assertEqual(work["active_task"]["task"], "upstream_revision")
+        self.assertEqual(work["active_task"]["feedback_evidence_ids"], ["review-1"])
 
     def test_only_published_results_and_the_answered_review_clear_feedback(self):
         self.assertEqual(lifecycle.check_table(POLICY), [])
@@ -677,7 +677,7 @@ class TestRevisionWork(unittest.TestCase):
     """A revision task is allocated and exhausted by the rows of
     `upstream_review.fix_needed`; nothing parks without a command."""
 
-    def test_a_failing_job_charges_its_cluster_and_review_only_work_total(self):
+    def test_a_failing_job_charges_its_cluster_and_review_only_task_total(self):
         rec = record("waiting_ci")
         failed = tick(rec, verdict="failed")
         observed = final(failed, rec)
@@ -686,7 +686,7 @@ class TestRevisionWork(unittest.TestCase):
         out = tick(observed, evidence=evidence, capacity_ok=True)
         self.assertIn("request_upstream_revision", kinds(out))
         after = final(out, observed)
-        self.assertEqual(after["active_work"]["task"], "upstream_revision")
+        self.assertEqual(after["active_task"]["task"], "upstream_revision")
         self.assertEqual(after["budget"]["attempts_used"], 1)
         self.assertEqual(sum(after["budget"]["clusters"].values()), 1)
 
@@ -694,7 +694,7 @@ class TestRevisionWork(unittest.TestCase):
         out = tick(reviewed, capacity_ok=True)
         self.assertIn("request_review_revision", kinds(out))
         after = final(out, reviewed)
-        self.assertEqual(after["active_work"]["feedback_evidence_ids"],
+        self.assertEqual(after["active_task"]["feedback_evidence_ids"],
                          reviewed["pending_feedback_evidence_ids"])
         self.assertEqual((after["budget"]["attempts_used"], after["budget"]["clusters"]), (1, {}))
 
@@ -710,7 +710,7 @@ class TestRevisionWork(unittest.TestCase):
 
     def test_exhaustion_names_the_first_spent_counter_in_order(self):
         """`exhaust_repair_attempts` names the first spent counter of
-        `no_progress`, `work_total`, `repair_attempts_cluster`; the event
+        `no_progress`, `task_total`, `repair_attempts_cluster`; the event
         lists every spent one, and each resume restarts only the named one."""
         rec = record("waiting_ci")
         failed = tick(rec, verdict="failed")
@@ -719,9 +719,9 @@ class TestRevisionWork(unittest.TestCase):
         cluster = next(iter(final(tick(observed, evidence=evidence, capacity_ok=True),
                                   observed)["budget"]["clusters"]))
         limits = {name: lifecycle.budget_limit(name, POLICY)
-                  for name in ("no_progress", "work_total", "repair_attempts_cluster")}
+                  for name in ("no_progress", "task_total", "repair_attempts_cluster")}
         fields = {"no_progress": {"no_progress_streak": limits["no_progress"]},
-                  "work_total": {"attempts_used": limits["work_total"]},
+                  "task_total": {"attempts_used": limits["task_total"]},
                   "repair_attempts_cluster": {
                       "clusters": {cluster: limits["repair_attempts_cluster"]}}}
 
@@ -738,7 +738,7 @@ class TestRevisionWork(unittest.TestCase):
             return final(out, rec), event
 
         for names, first in ((tuple(fields), "no_progress"),
-                             (("work_total", "repair_attempts_cluster"), "work_total"),
+                             (("task_total", "repair_attempts_cluster"), "task_total"),
                              (("repair_attempts_cluster",), "repair_attempts_cluster")):
             with self.subTest(spent=names):
                 after, event = exhaust(spent(*names))
@@ -746,7 +746,7 @@ class TestRevisionWork(unittest.TestCase):
                 self.assertEqual(after["pending_human_action"]["counter"], first)
                 self.assertEqual(event["details"]["exhausted"], list(names))
 
-        after, _event = exhaust(spent("work_total", "repair_attempts_cluster"))
+        after, _event = exhaust(spent("task_total", "repair_attempts_cluster"))
         out = apply_command(after, commands.parse(
             f'/upstreaming resume revision={after["revision"]} reason="go"'))
         self.assertTrue(out.accepted, out.reason)
@@ -774,10 +774,10 @@ class TestRevisionWork(unittest.TestCase):
         self.assertTrue(apply_command(waiting, park).accepted)
         # Ticks over every observation and Result never park.
         for rec in (record(), record("fix_needed"), record("agent_running",
-                                                           active_work=dict(REVISION_TASK))):
+                                                           active_task=dict(REVISION_TASK))):
             for kwargs in (dict(verdict="failed"), dict(pr=pull(state="closed")),
                            dict(feedback=REVIEW), dict(pr=pull(head=SHA_B), branch=SHA_B)):
-                pubs = [publication(rec, "rejected_validation")] if rec["active_work"] else []
+                pubs = [publication(rec, "rejected_validation")] if rec["active_task"] else []
                 with self.subTest(state=engine.state_key(rec), **{k: str(v)[:20] for k, v in kwargs.items()}):
                     after = final(tick(rec, pubs, **kwargs), rec)
                     self.assertNotEqual(after["phase"], "parked")

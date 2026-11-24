@@ -87,7 +87,7 @@ def identity(record):
     """The task identity a Result of ``record`` carries back: that of the
     task it holds, else that of the task ``running`` held before a stop
     cleared it."""
-    held_task = record.get("active_work") or {}
+    held_task = record.get("active_task") or {}
     generation = held_task.get("generation", record.get("generation", 0))
     if held_task.get("dedupe_key"):
         return {"generation": generation, "dedupe_key": held_task["dedupe_key"]}
@@ -156,7 +156,7 @@ def running(phase):
         record["fork"] = None
     if phase == "upstream_review":
         record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
-    record["active_work"] = dict(WORK, task=task, dedupe_key=f"example--proj/12@0:{task}")
+    record["active_task"] = dict(WORK, task=task, dedupe_key=f"example--proj/12@0:{task}")
     schemas.validate("contribution", record)
     return record
 
@@ -181,7 +181,7 @@ def stopped(phase, verb):
         assert not out.accepted and "does not apply" in out.reason, out.reason
         return None
     assert out.accepted, out.reason
-    assert out.record["revision"] == record["revision"] and out.record["active_work"] is None
+    assert out.record["revision"] == record["revision"] and out.record["active_task"] is None
     return out.record
 
 
@@ -256,7 +256,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
             self.assertEqual(engine.state_key(record), state)
             # A stale task left on such a record does not make the Result match.
             for work in (None, WORK):
-                rec = dict(record, active_work=copy.deepcopy(work))
+                rec = dict(record, active_task=copy.deepcopy(work))
                 for name in RESULTS:
                     with self.subTest(state=state, work=bool(work), result=name):
                         if state == "queued.idle":
@@ -270,9 +270,9 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
             record = contribution(phase=phase, activity=activity, plan_evidence_id="plan-1")
             if phase == "upstream_review":
                 record["upstream_pr"] = copy.deepcopy(UPSTREAM_PR)
-            other = dict(record, active_work=dict(WORK, revision=7))
+            other = dict(record, active_task=dict(WORK, revision=7))
             for rec, name in itertools.product((record, other), RESULTS):
-                with self.subTest(state=engine.state_key(rec), work=bool(rec["active_work"]),
+                with self.subTest(state=engine.state_key(rec), work=bool(rec["active_task"]),
                                   result=name):
                     self.assert_recorded_only(rec, name)
 
@@ -302,7 +302,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         after = final(output, record)
         self.assertEqual([e["kind"] for e in events(output)][:1], ["record_late_effect"])
         self.assertEqual(engine.state_key(after), "planning.agent_running")
-        self.assertEqual((after["active_work"]["task"], after["revision"]),
+        self.assertEqual((after["active_task"]["task"], after["revision"]),
                          ("planning", record["revision"]))
         self.assertEqual(
             (after["plan_evidence_id"], after["proposal_artifact"],
@@ -316,7 +316,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         record = running("development")
         output = tick(record, [publication(record, "published")])
         self.assertEqual([e["kind"] for e in events(output)], ["record_publish_success"])
-        self.assertEqual((final(output, record)["activity"], final(output, record)["active_work"]),
+        self.assertEqual((final(output, record)["activity"], final(output, record)["active_task"]),
                          ("waiting_ci", None))
         # A publish-only retry of the same worker run answers the pending publication.
         pending = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
@@ -337,13 +337,13 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         planning = running("planning")
         held = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
                 "next_attempt_at": NOW, "exhausted": False}
-        planning_task = dict(planning["active_work"])
+        planning_task = dict(planning["active_task"])
         cases = (
             # A task the record holds whose task belongs to another phase.
-            ("A planning task in development", dict(development, active_work=planning_task),
+            ("A planning task in development", dict(development, active_task=planning_task),
              "published", "late Result: the planning task is not requested in the development phase"),
             ("A patch task in upstream review",
-             dict(running("upstream_review"), active_work=dict(WORK)), "published",
+             dict(running("upstream_review"), active_task=dict(WORK)), "published",
              "late Result: the development_repair task is not requested in the upstream_review "
              "phase"),
             # A plan outside planning, and any other Result in planning.
@@ -357,21 +357,21 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
             # The Result of a held publication outside development and
             # upstream review.
             ("a held publication in planning",
-             dict(planning, active_work=None, pending_publication=dict(held)), "published",
+             dict(planning, active_task=None, pending_publication=dict(held)), "published",
              "late Result: a published Result has no row in the planning phase"),
             ("a held publication's plan in planning",
-             dict(planning, active_work=None, pending_publication=dict(held)), "planning",
+             dict(planning, active_task=None, pending_publication=dict(held)), "planning",
              "late Result without matching a requested task"),
         )
         for name, record, status, why in cases:
             with self.subTest(case=name):
                 pub = dict(publication(record, "published"), status=status)
-                if record.get("active_work"):
-                    pub["task"] = dict(pub["task"], dedupe_key=record["active_work"]["dedupe_key"],
-                                       generation=record["active_work"]["generation"])
+                if record.get("active_task"):
+                    pub["task"] = dict(pub["task"], dedupe_key=record["active_task"]["dedupe_key"],
+                                       generation=record["active_task"]["generation"])
                 self.assertEqual(reconcile.result_mismatch(record, pub), why)
         # The event names why.
-        record = dict(development, active_work=planning_task)
+        record = dict(development, active_task=planning_task)
         pub = dict(publication(record, "published"),
                    task=dict(publication(record, "published")["task"],
                              dedupe_key=planning_task["dedupe_key"]))
@@ -455,7 +455,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
         result = dict(publication(record, "infra_error"), artifact=dict(ARTIFACT))
         record, outputs = self.ticks(record, [result], 2)
         self.assertEqual(record["pending_publication"]["worker_run_id"], "555")
-        self.assertIsNone(record["active_work"])
+        self.assertIsNone(record["active_task"])
         self.assertIsNone(record["proposal_artifact"])
         launched = [o.report["publication_retries"] for o in outputs]
         self.assertTrue(any(launched), "the publication is launched while the record runs")
@@ -487,7 +487,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                         self.assertEqual([k for k, _ in output.staged
                                           if k in ("operations", "evidence")], [])
                     self.assertIsNone(record["pending_publication"])
-                    self.assertIsNone(record["active_work"])
+                    self.assertIsNone(record["active_task"])
                     self.assertTrue(engine.stopped(record))
                     self.assertEqual((record["revision"], record["budget"]),
                                      (pending["revision"], pending["budget"]))
@@ -594,10 +594,10 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
             if flag == "paused":
                 record.update(paused=True, paused_at=NOW, paused_by="human")
             if work:
-                record["active_work"] = copy.deepcopy(WORK)
+                record["active_task"] = copy.deepcopy(WORK)
             if activity == "waiting_human" and not flag:
                 record["pending_human_action"] = {
-                    "kind": "work_failed", "requested_at": NOW, "reminded_at": None,
+                    "kind": "task_failed", "requested_at": NOW, "reminded_at": None,
                     "escalated_at": None, "counter": None}
             if phase == "parked":
                 record.update(parked_reason="x", previous_phase="development")
@@ -670,7 +670,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     self.assertEqual([kind for kind, _r in output.staged],
                                      ["contributions", "events"])
                     self.assertEqual(events(output)[0]["kind"], "pause_on_processing_error")
-                    self.assertEqual((after["paused_by"], after["active_work"],
+                    self.assertEqual((after["paused_by"], after["active_task"],
                                       after["pending_publication"], after["revision"]),
                                      ("controller", None, None, record["revision"]))
         self.assertGreater(count, 650)

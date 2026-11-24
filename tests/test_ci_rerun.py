@@ -273,7 +273,7 @@ def task(**over):
 
 
 def repair_record(**over):
-    return contribution(activity="agent_running", active_work=dict(WORK),
+    return contribution(activity="agent_running", active_task=dict(WORK),
                         last_ci_evidence_id="ci-2-5-1", plan_evidence_id="plan-1",
                         scope_paths=["a"], scope_coverage_complete=True, **over)
 
@@ -292,11 +292,11 @@ class TestPreflight(unittest.TestCase):
         # A `development_patch` task carries no feedback: its `no_change` Result
         # is published by the rerun as well, as the reconciler requires.
         patch = repair_record()
-        patch["active_work"]["task"] = "development_patch"
+        patch["active_task"]["task"] = "development_patch"
         self.assertEqual(self.preflight(record=patch, t=task(task="development_patch")),
                          {"rerun": True, "fork_name": "proj", "reason": None})
         carried = repair_record()
-        carried["active_work"]["feedback_evidence_ids"] = ["review-1"]
+        carried["active_task"]["feedback_evidence_ids"] = ["review-1"]
         exhausted = repair_record(budget=dict(repair_record()["budget"], reruns={
             "head_sha": SHA_A, "flaky": 1, "interrupted": 0}))
         paused = repair_record(paused=True, paused_reason="hold", paused_by="human",

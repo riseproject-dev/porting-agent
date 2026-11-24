@@ -1,0 +1,23 @@
+{
+  "at": "2026-11-23T16:09:42.818921+00:00",
+  "cause": {
+    "id": "tick-r0",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "queued.idle",
+    "to_state": "investigation.idle",
+    "verb": "begin_investigation"
+  },
+  "from": {
+    "phase": "queued"
+  },
+  "kind": "begin_investigation",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 1,
+  "to": {
+    "phase": "investigation"
+  }
+}

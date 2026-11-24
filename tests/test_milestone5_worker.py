@@ -363,7 +363,7 @@ class TestProposalOnlyReconciliation(unittest.TestCase):
         record = contribution(
             phase="development",
             activity="agent_running",
-            active_work={"task": "development_patch", "revision": 3},
+            active_task={"task": "development_patch", "revision": 3},
             revision=3,
         )
         outcome = {
@@ -386,7 +386,7 @@ class TestProposalOnlyReconciliation(unittest.TestCase):
             policy=policy(read_only=False),
             worker_run_id="9",
         )
-        self.assertIsNone(updated["active_work"])
+        self.assertIsNone(updated["active_task"])
         self.assertEqual((updated["activity"], updated["revision"]), ("fix_needed", 4))
         # `reject_patch_proposal` sets no proposal artifact: only a published
         # Result is recorded there.

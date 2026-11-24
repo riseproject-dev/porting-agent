@@ -162,7 +162,7 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
         exhausted = contribution(activity="fix_needed")
         exhausted["budget"]["attempts_used"] = 99
         self.assertEqual(generate_doc.status_label(exhausted),
-                         "Development (next: exhaust_work_total)")
+                         "Development (next: exhaust_task_total)")
 
     def test_closed_names_its_terminal_reason(self):
         for reason, label in (("abandoned", "Closed (abandoned)"),

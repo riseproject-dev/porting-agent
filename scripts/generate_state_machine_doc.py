@@ -225,7 +225,7 @@ def render_index() -> str:
         "state to one target only, and every transition names its trigger and its guard "
         "(`always` when unconditional), every command transition its command and the revision "
         "it accepts. It also checks the rules of the lifecycle:", "",
-        "- every transition that allocates a task charges `work_total`, and every charged budget "
+        "- every transition that allocates a task charges `task_total`, and every charged budget "
         "has a `policy.json` key and an exhaustion transition;",
         "- every transition that allocates a task, or a fresh graph for it, is guarded by "
         f"`{lc.UPSTREAM_BOUND}`: the task names the verified upstream repository and base;",

@@ -771,7 +771,7 @@ class TestTick(unittest.TestCase):
         out = dev.tick(dev.record("waiting_ci"), verdict="failed", evidence=self.evidence())
         self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
         rec = dev.final(out, None)
-        eid = task_history.evidence_id(rec["active_work"]["dedupe_key"])
+        eid = task_history.evidence_id(rec["active_task"]["dedupe_key"])
         [history] = [e for k, e in out.staged if k == "evidence" and e["evidence_id"] == eid]
         kinds = [t["kind"] for t in history["data"]["timeline"]]
         self.assertEqual(kinds, ["worker_report", "ci"])
@@ -908,11 +908,11 @@ class TestTick(unittest.TestCase):
                 evidence.update({e["evidence_id"]: e for k, e in out.staged if k == "evidence"})
                 runs.insert(0, {"id": 100 + minutes, "status": "completed",
                                 "created_at": (now + timedelta(minutes=1)).isoformat()})
-                eid = task_history.evidence_id(rec["active_work"]["dedupe_key"])
+                eid = task_history.evidence_id(rec["active_task"]["dedupe_key"])
                 if minutes == 0:
                     self.assertEqual(dev.kinds(out), ["record_ci_failure", "request_repair"])
-                    requested = rec["active_work"]["requested_at"]
-                self.assertEqual(rec["active_work"]["requested_at"], requested)
+                    requested = rec["active_task"]["requested_at"]
+                self.assertEqual(rec["active_task"]["requested_at"], requested)
                 self.assertNotIn("skipped_contributions", out.report)
                 if minutes < 60:
                     self.assertNotIn(eid, evidence)
@@ -971,7 +971,7 @@ class TestTick(unittest.TestCase):
         launch at once, not through dispatch recovery."""
         out = dev.tick(dev.running())
         [entry] = out.report["work_history"]
-        self.assertEqual(entry["work"], dev.running()["active_work"]["dedupe_key"])
+        self.assertEqual(entry["work"], dev.running()["active_task"]["dedupe_key"])
         self.assertEqual(entry["dispatch"], "relaunch: the history was recorded after the request")
         self.assertEqual(out.report["dispatch_relaunch"],
                          [{"type": "relaunch_dispatcher",
@@ -997,7 +997,7 @@ class TestPayload(unittest.TestCase):
     def record(self, description="d"):
         rec = contribution(phase="development", activity="agent_running", revision=4)
         rec["upstream"].update(repository_id=1, base_sha="a" * 40)
-        rec["active_work"] = {"dedupe_key": WORK["dedupe_key"], "task": "development_repair",
+        rec["active_task"] = {"dedupe_key": WORK["dedupe_key"], "task": "development_repair",
                               "generation": 0, "revision": 4, "attempt": 1,
                               "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": None,
                               "reason_ids": [], "feedback_evidence_ids": [],
@@ -1007,7 +1007,7 @@ class TestPayload(unittest.TestCase):
     def commit(self, root, record):
         """The history and the task file of the task of ``record`` as the
         tick commits them under ``root``: the evidence by id."""
-        key = record["active_work"]["dedupe_key"]
+        key = record["active_task"]["dedupe_key"]
         history = task_history.evidence_id(key)
         evidence = {history: {"evidence_id": history, "kind": "work_history"}}
         directory = Path(root) / ".state" / "evidence"
@@ -1066,7 +1066,7 @@ class TestPayload(unittest.TestCase):
         largest = self.record("\u00e9" * (POLICY["intake"]["max_request_bytes"] // 2))
         other = self.record("short")
         other["contribution_id"] = "other--lib/13"
-        other["active_work"] = dict(other["active_work"], dedupe_key="other--lib/13@g0.r4:"
+        other["active_task"] = dict(other["active_task"], dedupe_key="other--lib/13@g0.r4:"
                                     "development_repair", requested_at="2026-11-19T00:00:00Z")
         with tempfile.TemporaryDirectory() as root:
             evidence = {**self.commit(root, largest), **self.commit(root, other)}

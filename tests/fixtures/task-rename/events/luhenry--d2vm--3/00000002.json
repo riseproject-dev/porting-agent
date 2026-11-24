@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-23T16:09:42.818921+00:00",
+  "cause": {
+    "id": "luhenry--d2vm/3@g0.r0:investigation",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "charged": [
+      "work_total"
+    ],
+    "from_state": "investigation.idle",
+    "task": "investigation",
+    "to_state": "investigation.agent_running",
+    "verb": "dispatch_investigation",
+    "work": "luhenry--d2vm/3@g0.r0:investigation"
+  },
+  "from": {
+    "activity": "idle"
+  },
+  "kind": "dispatch_investigation",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 2,
+  "to": {
+    "activity": "agent_running"
+  }
+}

@@ -216,7 +216,7 @@ class TestProvisioning(unittest.TestCase):
         bound = [r for k, r in tick.staged if k == "contributions"][-1]
         self.assertEqual(bound["upstream"], {"full_name": UP, **source})
         source["base_sha"] = SHA_A
-        args["contributions"] = {"c": dict(bound, active_work=None, activity="idle")}
+        args["contributions"] = {"c": dict(bound, active_task=None, activity="idle")}
         next_tick = controller.tick(**args)
         current = [r for k, r in next_tick.staged if k == "contributions"][-1]
         self.assertEqual(current["upstream"]["base_sha"], SHA_C)

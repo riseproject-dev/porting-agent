@@ -52,7 +52,7 @@ def planning(*, override=None, refresh="none", attempts=0):
                           fork=copy.deepcopy(fork), admission_class=None,
                           refresh=copy.deepcopy(refresh_value),
                           admission_override=copy.deepcopy(override))
-    record["active_work"] = {"dedupe_key": "example--proj/12@0.r4:planning",
+    record["active_task"] = {"dedupe_key": "example--proj/12@0.r4:planning",
                              "task": "planning", "generation": 0, "revision": 4,
                              "attempt": 1, "requested_at": NOW,
                              "deadline_at": "2026-11-24T09:00:00+00:00",
@@ -65,7 +65,7 @@ def planning(*, override=None, refresh="none", attempts=0):
 def result(record, research):
     out = {"status": "planning", "worker_run_id": "77", "publication_artifact_id": 5,
            "task": {"contribution_id": record["contribution_id"], "revision": record["revision"],
-                    "generation": 0, "dedupe_key": record["active_work"]["dedupe_key"],
+                    "generation": 0, "dedupe_key": record["active_task"]["dedupe_key"],
                     "task": "planning"},
            "proposal": {"diagnosis": "complete research"},
            "artifact": {"digest": "sha256:" + "0" * 64}}
@@ -170,7 +170,7 @@ class TestPlanDecisionMatrix(unittest.TestCase):
                 self.assertEqual(verb_of(staged), verb)
                 self.assertEqual(engine.state_key(new), TARGETS[verb])
                 self.assertEqual(event["details"]["verb"], verb)
-                self.assertIsNone(new["active_work"])
+                self.assertIsNone(new["active_task"])
                 evidence = [r for kind, r in staged if kind == "evidence"]
                 self.assertEqual(len(evidence), 0 if research is None else 1)
                 self.check(verb, record, new, event, research, override_name, override)
@@ -361,7 +361,7 @@ class TestPlanDecisionReadings(unittest.TestCase):
         self.assertFalse(new["scope_coverage_complete"])
         self.assertEqual(new["scope_paths"], ["setup.py"])
         repair = dict(new, phase="development", activity="agent_running")
-        repair["active_work"] = {"task": "development_repair", "reason_ids": [],
+        repair["active_task"] = {"task": "development_repair", "reason_ids": [],
                                  "requested_at": NOW, "revision": new["revision"],
                                  "dedupe_key": "repair", "deadline_at": NOW, "generation": 0,
                                  "attempt": 1, "dispatched_run_id": None,
@@ -524,7 +524,7 @@ class TestOverrideEndToEnd(unittest.TestCase):
         self.assertEqual(engine.state_key(running), "planning.agent_running")
         task = {"contribution_id": running["contribution_id"], "revision": running["revision"],
                 "generation": running["generation"],
-                "dedupe_key": running["active_work"]["dedupe_key"], "task": "planning"}
+                "dedupe_key": running["active_task"]["dedupe_key"], "task": "planning"}
         publication = dict(result(running, copy.deepcopy(DECISIONS["park"])), task=task,
                            publication_artifact_id=6)
         admitted, out = self.tick(running, [publication])

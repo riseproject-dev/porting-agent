@@ -715,7 +715,7 @@ def _degrade(doc: dict) -> dict:
 def build(record: dict, work: dict, evidence: dict[str, dict], *, policy: dict,
           now: str, deferred: int = 0, unreadable: list[str] | tuple[str, ...] = ()) -> dict:
     """The ``work_history`` evidence of ``work`` (the record's
-    ``active_work``), from ``evidence`` (the store's and the tick's), and
+    ``active_task``), from ``evidence`` (the store's and the tick's), and
     what the steering collection of the tick could not record
     (``deferred``) or read (``unreadable``)."""
     doc = document(record, work, evidence, deferred=deferred, unreadable=unreadable)

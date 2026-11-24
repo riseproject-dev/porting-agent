@@ -433,7 +433,7 @@ class TestReviewWork(unittest.TestCase):
         self.assertIn("pending_feedback_evidence_ids", reject.transition.effects.sets)
         self.assertEqual(reject.transition.effects.revision, "bump")
         state = "handoff.agent_running"
-        self.assertEqual(lc.find_edge(state, "allocate_work_retry").target, state)
+        self.assertEqual(lc.find_edge(state, "allocate_task_retry").target, state)
         self.assertEqual(lc.find_edge(state, "exhaust_recovery").target, "handoff.waiting_human")
         # An expired rewrite leads back to a fresh rewrite.
         self.assertEqual(lc.find_edge("handoff.building_upstream_branch",

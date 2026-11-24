@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-23T19:50:34.244830+00:00",
+  "cause": {
+    "id": "queue-policy-epoch_28f2a687a5b438ebf86fd75d123ff6fd027f7db95c1533c9d615113247e7ce35",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "planning.waiting_human",
+    "installed_at": "2026-11-23T19:47:55.340000+00:00",
+    "policy_epoch": "epoch_28f2a687a5b438ebf86fd75d123ff6fd027f7db95c1533c9d615113247e7ce35",
+    "restarted": {
+      "count": null,
+      "counter": "dispatch_recovery"
+    },
+    "to_state": "planning.idle",
+    "verb": "rearm_dispatch"
+  },
+  "from": {
+    "activity": "waiting_human",
+    "revision": 1
+  },
+  "kind": "rearm_dispatch",
+  "revision_bumped": true,
+  "schema_version": 1,
+  "sequence": 11,
+  "to": {
+    "activity": "idle",
+    "revision": 2
+  }
+}

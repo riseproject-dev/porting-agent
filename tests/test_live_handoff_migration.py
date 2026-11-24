@@ -28,6 +28,7 @@ import capacity
 import collect
 import controller
 import engine
+import lifecycle
 import observe_ci
 import reconcile
 import state
@@ -45,6 +46,7 @@ CI_EVIDENCE = "ci-1467208233-45008094068-1"
 RECORD_PATH = ".state/contributions/closeio--ciso8601--1.json"
 EVIDENCE_PATH = f".state/evidence/{CI_EVIDENCE}.json"
 EVENT_PATH = ".state/events/closeio--ciso8601--1/00000027.json"
+FIELDS_EVENT_PATH = ".state/events/closeio--ciso8601--1/00000028.json"
 NOW = "2026-11-23T09:00:00+00:00"
 T = datetime.fromisoformat(NOW)
 SUBMIT = f"/upstreaming submit-upstream revision=6 head={HEAD}"
@@ -59,8 +61,9 @@ def load(name):
 
 
 def live():
-    """The live record as committed, before the strict record schema."""
-    return json.loads(LIVE.read_text())
+    """The live record under the current names, before the strict record
+    schema; the file is as committed before the task rename."""
+    return state.migrate_names("contributions", json.loads(LIVE.read_text()))[0]
 
 
 def migrated():
@@ -145,11 +148,11 @@ class TestRecordMigration(unittest.TestCase):
         record = copy.deepcopy(live())
         record.update(phase="development", activity="agent_running",
                       handoff_request=None, pending_human_action=None,
-                      active_work={"dedupe_key": "k", "task": "development_repair", "revision": 6,
+                      active_task={"dedupe_key": "k", "task": "development_repair", "revision": 6,
                                    "requested_at": NOW, "deadline_at": NOW})
         after, event = state.migrate_record_fields(record, now=NOW)
-        self.assertEqual(after["active_work"], dict(record["active_work"], **engine.TASK_DEFAULTS))
-        self.assertIn("active_work.feedback_evidence_ids", event["details"]["added"])
+        self.assertEqual(after["active_task"], dict(record["active_task"], **engine.TASK_DEFAULTS))
+        self.assertIn("active_task.feedback_evidence_ids", event["details"]["added"])
         wait = copy.deepcopy(live())
         wait["pending_human_action"].pop("counter")
         after, event = state.migrate_record_fields(wait, now=NOW)
@@ -212,7 +215,7 @@ class TestControllerMigratesByItself(unittest.TestCase):
         self.assertEqual(state.pending_record_migrations(self.repo, self.p), [RECORD_PATH])
         result, report, stderr = self.run_reconcile()
         self.assertEqual((result, stderr), (0, ""))
-        self.assertEqual(sorted(report["written"]), [RECORD_PATH, EVENT_PATH])
+        self.assertEqual(sorted(report["written"]), [RECORD_PATH, EVENT_PATH, FIELDS_EVENT_PATH])
         self.assertEqual(report["record_migration"], {"written": report["written"]})
         # A migration-only tick launches nothing.
         for key in ("requested_effects", "dispatch_relaunch", "provision_requests",
@@ -220,11 +223,17 @@ class TestControllerMigratesByItself(unittest.TestCase):
             self.assertEqual(report[key], [], key)
         changed = sorted(line.strip() for line in git(
             self.repo, "status", "--porcelain", "--untracked-files=all").split("\n"))
-        self.assertEqual(changed, [f"?? {EVENT_PATH}", "?? report.json", f"M {RECORD_PATH}"])
+        self.assertEqual(changed, [f"?? {EVENT_PATH}", f"?? {FIELDS_EVENT_PATH}", "?? report.json",
+                                   f"M {RECORD_PATH}"])
         record = json.loads((self.repo / RECORD_PATH).read_text())
         self.assertEqual(record, state.migrate_record_fields(live(), now=T.isoformat())[0])
+        # The names of the task rename first, then the fields of the strict
+        # record schema, each under its own event.
         event = json.loads((self.repo / EVENT_PATH).read_text())
-        self.assertEqual((event["sequence"], event["kind"]), (27, state.FIELD_MIGRATED))
+        self.assertEqual((event["sequence"], event["kind"], event["cause"]["id"]),
+                         (27, state.NAMES_MIGRATED, lifecycle.TASK_RENAME))
+        event = json.loads((self.repo / FIELDS_EVENT_PATH).read_text())
+        self.assertEqual((event["sequence"], event["kind"]), (28, state.FIELD_MIGRATED))
         for path, text in self.files.items():
             if "/events/" in path or "/evidence/" in path:
                 self.assertEqual((self.repo / path).read_text(), text)
@@ -237,7 +246,7 @@ class TestControllerMigratesByItself(unittest.TestCase):
         candidate = git(self.repo, "rev-parse", "HEAD")
         report = state.validate_state_diff(self.repo, self.base, candidate, self.p)
         self.assertTrue(report.ok, report.problems)
-        self.assertEqual(sorted(report.changed), [RECORD_PATH, EVENT_PATH])
+        self.assertEqual(sorted(report.changed), [RECORD_PATH, EVENT_PATH, FIELDS_EVENT_PATH])
         # Writing the old shape again is refused by the same final check.
         old = commit_files(self.repo, {RECORD_PATH: canonical_json(dict(live(), updated_at=NOW))})
         problems = state.validate_state_diff(self.repo, candidate, old, self.p).problems
@@ -247,10 +256,10 @@ class TestControllerMigratesByItself(unittest.TestCase):
         self.assertEqual(self.run_reconcile()[0], 0)
         self.assertEqual(state.pending_record_migrations(self.repo, self.p), [])
         self.assertEqual(state.apply_pending_record_migrations(self.repo, self.p, now=NOW), [])
-        self.assertFalse((self.repo / ".state/events/closeio--ciso8601--1/00000028.json").exists())
+        self.assertFalse((self.repo / ".state/events/closeio--ciso8601--1/00000029.json").exists())
         store = state.StateStore(self.repo, self.p)
         self.assertEqual(len(store.load_all("contributions")), 1)
-        self.assertEqual(len(store.load_all("events")), 2)
+        self.assertEqual(len(store.load_all("events")), 3)
 
     def test_observe_reports_the_pending_migration_without_writing(self):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -546,7 +555,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual(self.events(output),
                          ["return_for_repair", "record_actionable_review", "request_repair"])
         self.assertEqual(engine.state_key(after), "development.agent_running")
-        self.assertIn("review-1467208233-2-77", after["active_work"]["feedback_evidence_ids"])
+        self.assertIn("review-1467208233-2-77", after["active_task"]["feedback_evidence_ids"])
 
     def test_an_explanation_a_review_and_a_ci_failure_in_one_observation(self):
         record = migrated()

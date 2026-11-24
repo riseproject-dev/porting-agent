@@ -1,0 +1,20 @@
+{
+  "at": "2026-11-22T03:22:20.717817+00:00",
+  "cause": {
+    "id": "op-eedfbd35ac6db9c814795d66",
+    "type": "policy"
+  },
+  "contribution_id": "closeio--ciso8601/1",
+  "from": {
+    "activity": "waiting_capacity",
+    "phase": "provisioning"
+  },
+  "kind": "destination_operation_deferred",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 6,
+  "to": {
+    "activity": "idle",
+    "phase": "development"
+  }
+}

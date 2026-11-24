@@ -47,7 +47,7 @@ def held(phase, activity, task, over):
 
 
 def graph(record):
-    return tasks.graph_id(record["active_work"]["dedupe_key"])
+    return tasks.graph_id(record["active_task"]["dedupe_key"])
 
 
 def reading(status="completed", publication=False, ended=T - timedelta(minutes=5),
@@ -178,15 +178,15 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
             with self.subTest(state=spec[:2]):
                 record = held(*spec)
                 relaunch, staged, _ = recover(record, results={graph(record): reading()})
-                self.assertEqual(kinds(staged), ["allocate_work_retry"])
+                self.assertEqual(kinds(staged), ["allocate_task_retry"])
                 [event] = [e for kind, e in staged if kind == "events"]
                 self.assertEqual((event["details"]["worker_run"], event["details"]["result"],
                                   event["details"]["run_conclusion"]),
                                  ("4242", "missing", "success"))
                 self.assertEqual(len(relaunch), 1)
-                # With `work_recovery` spent, the phase's human wait.
+                # With `task_recovery` spent, the phase's human wait.
                 spent = copy.deepcopy(record)
-                spent["active_work"]["attempt"] = lc.budget_limit("work_recovery", POLICY)
+                spent["active_task"]["attempt"] = lc.budget_limit("task_recovery", POLICY)
                 _, staged, _ = recover(spent, results={graph(record): reading()})
                 self.assertEqual(kinds(staged), ["exhaust_recovery"])
                 new = [r for kind, r in staged if kind == "contributions"][-1]
@@ -200,7 +200,7 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
         self.assertEqual(staged, [])
         self.assertIn("to be collected", report[0]["decision"])
         _, staged, _ = recover(record, results=results, now=T + timedelta(minutes=1))
-        self.assertEqual(kinds(staged), ["allocate_work_retry"])
+        self.assertEqual(kinds(staged), ["allocate_task_retry"])
         self.assertEqual([e for k, e in staged if k == "events"][0]["details"]["result"],
                          "uncollected")
 
@@ -212,7 +212,7 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
                 results = {graph(record): dict(reading(publication=True, ended=ended),
                                                never_collected=never)}
                 _, staged, _ = recover(record, results=results)
-                self.assertEqual(kinds(staged), ["allocate_work_retry"])
+                self.assertEqual(kinds(staged), ["allocate_task_retry"])
                 details = [e for k, e in staged if k == "events"][0]["details"]
                 self.assertEqual((details["result"], details["never_collected"]),
                                  ("uncollected", never))
@@ -224,14 +224,14 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
                 ({graph(record): reading("gone", ended=None)}, frozenset(), "missing"),
                 (None, frozenset({graph(record)}), "collected")):
             _, staged, _ = recover(record, results=results, collected=collected)
-            self.assertEqual(kinds(staged), ["allocate_work_retry"], why)
+            self.assertEqual(kinds(staged), ["allocate_task_retry"], why)
             self.assertEqual([e for k, e in staged if k == "events"][0]["details"]["result"], why)
 
     def test_a_cancelled_graph_is_retried_without_a_reading(self):
         for spec in STATES:
             record = held(*spec)
             _, staged, _ = recover(record, "cancelled", None)
-            self.assertEqual(kinds(staged), ["allocate_work_retry"], spec)
+            self.assertEqual(kinds(staged), ["allocate_task_retry"], spec)
 
     def test_a_paused_record_is_unchanged(self):
         record = dict(held(*STATES[1]), paused=True)
@@ -258,11 +258,11 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
         self.assertEqual(out.staged, [])
         out = tick([result(record, "published")], {graph(record): reading(publication=True)})
         found = [e["kind"] for kind, e in out.staged if kind == "events"]
-        self.assertNotIn("allocate_work_retry", found)
+        self.assertNotIn("allocate_task_retry", found)
         self.assertNotIn("record_late_effect", found)
         after = [r for kind, r in out.staged if kind == "contributions"][-1]
         self.assertEqual(engine.state_key(after), "development.waiting_ci")
-        # `work_recovery` was never charged: the task was never reallocated.
+        # `task_recovery` was never charged: the task was never reallocated.
         self.assertEqual(after["revision"], record["revision"])
         self.assertEqual(dict(after["budget"], reruns=None), dict(record["budget"], reruns=None))
 
@@ -272,9 +272,9 @@ class TestWorkResultReadings(unittest.TestCase):
     def test_only_held_completed_graphs_are_read_and_failures_are_isolated(self):
         one, two = held(*STATES[1]), held(*STATES[2])
         two["contribution_id"] = "example--other/3"
-        two["active_work"]["dedupe_key"] = tasks.task_key("example--other/3", 1, 5,
+        two["active_task"]["dedupe_key"] = tasks.task_key("example--other/3", 1, 5,
                                                          tasks.SUBMISSION_REWRITE)
-        idle = contribution(phase="handoff", activity="awaiting_submission", active_work=None)
+        idle = contribution(phase="handoff", activity="awaiting_submission", active_task=None)
         contributions = {"a": one, "b": two, "c": idle}
         queue = {graph(one): "completed", graph(two): "completed", "other": "completed"}
         runs = {graph(one): {"run_id": "11"}, graph(two): {"run_id": "22"}}

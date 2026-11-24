@@ -22,6 +22,7 @@ import yaml
 import collect
 import isolation
 import schemas
+import state
 from common import CONTROL_REPO, DEV_REF, FORK_ORG, contribution_file_id
 
 # Why a provisioning run failed definitely, as a closed code: the receipt
@@ -310,7 +311,7 @@ def read_request(api, operation_id: str) -> tuple[dict, dict, dict]:
         return json.loads(raw)
     op = read(f".state/operations/{operation_id}.json")
     cid = contribution_file_id(op["contribution_id"])
-    record = read(f".state/contributions/{cid}.json")
+    record = state.migrate_names("contributions", read(f".state/contributions/{cid}.json"))[0]
     policy = read("policy.json")
     return record, op, policy
 

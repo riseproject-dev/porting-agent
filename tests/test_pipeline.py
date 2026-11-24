@@ -122,7 +122,7 @@ class TestPipeline(unittest.TestCase):
         # The committed request: the record the publish job and the
         # reconciler read holds the requested task.
         claimed = [r for k, r in res.staged if k == "contributions"][-1]
-        self.assertEqual(claimed["active_work"]["dedupe_key"],
+        self.assertEqual(claimed["active_task"]["dedupe_key"],
                          res.requested_effects[0]["dedupe_key"])
         self.assertEqual(claimed["budget"]["attempts_used"], 1)
         node = tasks.node(tasks.request_from_active(claimed), claimed, control_repo_id="123",
@@ -171,7 +171,7 @@ class TestPipeline(unittest.TestCase):
 
         # 4. Publish job: preflight, then rebuild + validate + leased push.
         self.assertEqual((task["generation"], task["dedupe_key"]),
-                         (0, claimed["active_work"]["dedupe_key"]))
+                         (0, claimed["active_task"]["dedupe_key"]))
         pf = fork_publish.preflight(record=claimed, task=task, proposal=proposal,
                                     report_path=helpers.accepted_loop(self),
                                     fork_lookup=lambda n: {"id": 2, "full_name": n, "archived": False})
@@ -212,7 +212,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(final["proposal_artifact"]["artifact_id"], 900)
         self.assertEqual(final["publication_operation_id"], ops[-1]["operation_id"])
         self.assertTrue(final["last_ci_evidence_id"].startswith("ci-2-7-1"))
-        self.assertIsNone(final["active_work"])
+        self.assertIsNone(final["active_task"])
         self.assertEqual((final["phase"], final["activity"]), ("handoff", "awaiting_submission"))
         self.assertEqual(final["pending_human_action"]["kind"], "submit_upstream")
         self.assertEqual(final["handoff_request"]["head"], new_head)
@@ -241,14 +241,14 @@ if __name__ == "__main__":
 
 class TestPublicationRetry(unittest.TestCase):
     def setUp(self):
-        self.rec = contribution(activity="agent_running", active_work={
+        self.rec = contribution(activity="agent_running", active_task={
             "dedupe_key": "example--proj/12@g0.r0:development_patch", "task": "development_patch",
             "generation": 0, "revision": 0, "attempt": 1, "requested_at": NOW,
             "deadline_at": "2026-11-19T12:00:00+00:00", "dispatched_run_id": None,
             "reason_ids": [], "feedback_evidence_ids": []})
         self.now = datetime(2026, 11, 18, 12, tzinfo=timezone.utc)
         self.task = {"contribution_id": self.rec["contribution_id"], "revision": self.rec["revision"],
-                     "generation": 0, "dedupe_key": self.rec["active_work"]["dedupe_key"]}
+                     "generation": 0, "dedupe_key": self.rec["active_task"]["dedupe_key"]}
 
     def tick(self, rec, pubs, now=None):
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})
@@ -267,7 +267,7 @@ class TestPublicationRetry(unittest.TestCase):
         # `schedule_publish_retry` keeps `development.agent_running` and
         # charges `publish_recovery`; the task is cleared.
         self.assertEqual(rec["activity"], "agent_running")
-        self.assertIsNone(rec["active_work"])
+        self.assertIsNone(rec["active_task"])
         self.assertEqual([e["kind"] for k, e in t.staged if k == "events"],
                          ["schedule_publish_retry"])
         self.assertEqual(t.report["publication_retries"], [])          # backoff not elapsed
@@ -303,7 +303,7 @@ class TestPublicationRetry(unittest.TestCase):
         # patch again: no failing CI job and no feedback is recorded, so
         # `request_patch` applies.
         self.assertEqual([e["task"] for e in t.report["requested_effects"]], ["development_patch"])
-        self.assertEqual(self.final(t)["active_work"]["task"], "development_patch")
+        self.assertEqual(self.final(t)["active_task"]["task"], "development_patch")
         self.assertEqual(self.final(t)["budget"]["no_progress_streak"], 1)
         self.assertEqual(self.final(t)["revision"], self.rec["revision"] + 1)
         # Stale: `replan_development` returns to `development.fix_needed` at
@@ -423,16 +423,16 @@ class TestDispatchRecovery(unittest.TestCase):
     def setUp(self):
         self.now = datetime(2026, 11, 18, 20, tzinfo=timezone.utc)
         self.rec = contribution(phase="planning", activity="agent_running", revision=1)
-        self.rec["active_work"] = {"dedupe_key": "example--proj/12@1:planning", "task": "planning",
+        self.rec["active_task"] = {"dedupe_key": "example--proj/12@1:planning", "task": "planning",
                                    "revision": 1, "requested_at": "2026-11-18T19:22:14+00:00",
                                    "deadline_at": "2026-11-19T01:22:14+00:00", "dispatched_run_id": None, "generation": 0, "attempt": 1, "reason_ids": [], "feedback_evidence_ids": []}
-        self.gid = tasks.graph_id(self.rec["active_work"]["dedupe_key"])
+        self.gid = tasks.graph_id(self.rec["active_task"]["dedupe_key"])
 
     def tick(self, runs, queue, rec=None, now=None):
         rec = rec or self.rec
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={},
                                   projects={}, evidence=helpers.committed_history(rec)
-                                  if rec.get("active_work") else {})
+                                  if rec.get("active_task") else {})
         return reconcile.tick(None, snap, policy=policy(read_only=False), now=now or self.now, publications=[],
                               pressure=capacity.Pressure(ok=True), observe=False,
                               dispatcher_runs=runs, queue_works=queue,
@@ -450,7 +450,7 @@ class TestDispatchRecovery(unittest.TestCase):
         t = self.tick([self.drun(1)], {})
         self.assertEqual(len(t.report["dispatch_relaunch"]), 1)
         rec = self.final(t)
-        self.assertEqual(rec["active_work"]["dispatched_run_id"], "1")       # recorded, still requested
+        self.assertEqual(rec["active_task"]["dispatched_run_id"], "1")       # recorded, still requested
         self.assertEqual(rec["activity"], "agent_running")
         # Retry budget: 1 + retries.infrastructure_per_head_failure (2) dispatcher runs.
         t = self.tick([self.drun(2, "success"), self.drun(1)], {}, rec=rec)
@@ -458,7 +458,7 @@ class TestDispatchRecovery(unittest.TestCase):
         t = self.tick([self.drun(3), self.drun(2, "success"), self.drun(1)], {}, rec=self.final(t))
         self.assertEqual(t.report["dispatch_relaunch"], [])
         rec = self.final(t)
-        self.assertEqual((rec["activity"], rec["active_work"], rec["pending_human_action"]["kind"]),
+        self.assertEqual((rec["activity"], rec["active_task"], rec["pending_human_action"]["kind"]),
                          ("waiting_human", None, "dispatch_failed"))
 
     def test_running_dispatcher_or_claimed_task_is_left_alone(self):
@@ -475,16 +475,16 @@ class TestDispatchRecovery(unittest.TestCase):
                 self.assertEqual(len(t.report["dispatch_relaunch"]), 1)
                 rec = self.final(t)
                 self.assertEqual(rec["revision"], 2)
-                self.assertEqual(rec["active_work"]["attempt"], 2)
-                self.assertNotEqual(tasks.graph_id(rec["active_work"]["dedupe_key"]), self.gid)
+                self.assertEqual(rec["active_task"]["attempt"], 2)
+                self.assertNotEqual(tasks.graph_id(rec["active_task"]["dedupe_key"]), self.gid)
                 for kind, staged in t.staged:
                     schemas.validate({"contributions": "contribution", "events": "event"}.get(kind, kind), staged)
 
-    def test_handoff_clears_obsolete_active_work_without_dispatch(self):
-        rec = awaiting_submission(revision=self.rec["revision"], active_work=self.rec["active_work"])
+    def test_handoff_clears_obsolete_active_task_without_dispatch(self):
+        rec = awaiting_submission(revision=self.rec["revision"], active_task=self.rec["active_task"])
         t = self.tick([self.drun(1)], {self.gid: "completed"}, rec=rec)
         self.assertEqual(t.report["dispatch_relaunch"], [])
-        self.assertIsNone(self.final(t)["active_work"])
+        self.assertIsNone(self.final(t)["active_task"])
 
     def test_submission_task_is_relaunched_in_an_observing_tick(self):
         # The rewrite task of the handoff phase is relaunched
@@ -493,7 +493,7 @@ class TestDispatchRecovery(unittest.TestCase):
         for activity, task in (("agent_running", "submission_rewrite"),):
             with self.subTest(activity):
                 rec = awaiting_submission(revision=6, activity=activity, pending_human_action=None)
-                rec["active_work"] = dict(self.rec["active_work"], revision=6, task=task,
+                rec["active_task"] = dict(self.rec["active_task"], revision=6, task=task,
                                           dedupe_key=f"example--proj/12@g0.r6:{task}")
                 runs = []
                 for count in (1, 2, 3):
@@ -509,10 +509,10 @@ class TestDispatchRecovery(unittest.TestCase):
                         self.assertEqual(t.report["dispatch_relaunch"],
                                          [{"type": "relaunch_dispatcher",
                                            "contribution_id": rec["contribution_id"]}])
-                        self.assertEqual(rec["active_work"]["dispatched_run_id"], str(count))
+                        self.assertEqual(rec["active_task"]["dispatched_run_id"], str(count))
                         self.assertEqual(rec["activity"], activity)
                 self.assertEqual(t.report["dispatch_relaunch"], [])
-                self.assertEqual((rec["activity"], rec["active_work"],
+                self.assertEqual((rec["activity"], rec["active_task"],
                                   rec["pending_human_action"]["counter"]),
                                  ("waiting_human", None, "dispatch_recovery"))
 
@@ -533,7 +533,7 @@ class TestDispatchRecovery(unittest.TestCase):
         # Identical across replays (the queue admits an identical node once).
         self.assertEqual(n, tasks.node(tasks.request_from_active(self.rec), self.rec, control_repo_id="1",
                                       allowed_paths=["x"]))
-        dev = dict(self.rec, phase="development", active_work=dict(self.rec["active_work"], task="development_patch"))
+        dev = dict(self.rec, phase="development", active_task=dict(self.rec["active_task"], task="development_patch"))
         self.assertEqual(tasks.node(tasks.request_from_active(dev), dev, control_repo_id="1",
                                    allowed_paths=["x"])["worker_profile"], "worker")
         self.assertIsNone(tasks.request_from_active(dict(self.rec, paused=True)))

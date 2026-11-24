@@ -115,7 +115,7 @@ class TestPlanningRecordRecovery(unittest.TestCase):
         # The plan admits development: the fork is provisioned first
         # (without capacity, no launch yet), and no patch task is requested.
         self.assertEqual((final["phase"], final["activity"]), ("provisioning", "idle"))
-        self.assertIsNone(final["active_work"])
+        self.assertIsNone(final["active_task"])
         self.assertEqual(output.report["controller"]["selected"], [])
         self.assertEqual(output.report["provision_requests"], [])
 

@@ -203,12 +203,12 @@ class TestLifecycleTable(unittest.TestCase):
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_submission_rewrite",
                           "request_upstream_revision", "request_review_revision",
-                          "allocate_work_retry", "reallocate_after_pipeline_failure"})
+                          "allocate_task_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
             self.assertIn(lc.UPSTREAM_BOUND, e.transition.guard, f"{e.source} --{e.verb}-->")
         for state, verb in (("planning.idle", "dispatch_planning"),
                             ("upstream_review.fix_needed", "request_review_revision"),
-                            ("development.agent_running", "allocate_work_retry")):
+                            ("development.agent_running", "allocate_task_retry")):
             with self.subTest(verb=verb):
                 guard = lc.find_edge(state, verb).transition.guard
                 problems = self.mutated(state, verb, guard=self.without(guard, lc.UPSTREAM_BOUND))
@@ -323,7 +323,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertGreaterEqual(len(edges), 4)
         for e in edges:
             with self.subTest(state=e.source):
-                self.assertEqual(e.transition.effects.sets, ("active_work.dispatched_run_id",))
+                self.assertEqual(e.transition.effects.sets, ("active_task.dispatched_run_id",))
                 self.assertEqual(e.transition.effects.revision, "keep")
 
     def test_both_admissions_set_the_scope_coverage(self):
@@ -433,7 +433,7 @@ class TestLifecycleTable(unittest.TestCase):
             ("development.waiting_ci", "record_head_change",
              {"sets": self.without(head.effects.sets, lc.RERUNS)}, lc.RERUNS),
             ("upstream_review.fix_needed", "request_review_revision",
-             {"charges": ("repair_attempts_cluster", "work_total"),
+             {"charges": ("repair_attempts_cluster", "task_total"),
               "guard": (*review.guard, "repair_attempts_cluster remains")},
              "repair_attempts_cluster is charged exactly when"),
             ("development.fix_needed", "request_patch",
@@ -466,20 +466,20 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual(lc.BUDGETS["interrupted_reruns"].counter.split(",")[0],
                          "`budget.reruns.interrupted`")
 
-    def test_every_work_allocation_charges_work_total(self):
+    def test_every_work_allocation_charges_task_total(self):
         allocating = [e for e in lc.table_edges() if e.transition.effects.task in ("allocate", "reallocate")]
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
                           "request_submission_rewrite",
-                          "allocate_work_retry", "reallocate_after_pipeline_failure"})
+                          "allocate_task_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
             if e.verb == "reallocate_after_pipeline_failure":
                 # The failure of the pipeline is not the task's: nothing is charged.
                 self.assertEqual(e.transition.charges, (), (e.source, e.verb))
                 self.assertIn(lc.PIPELINE_FAILURE, e.transition.guard)
                 continue
-            self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
+            self.assertIn("task_total", e.transition.charges, (e.source, e.verb))
 
     def test_revision_bumps_follow_the_rule(self):
         for e in lc.table_edges():
@@ -514,7 +514,7 @@ class TestLifecycleTable(unittest.TestCase):
         revision = lc.find_edge("upstream_review.waiting_human", "resume_upstream_revision").transition
         for kind in ("pr_closed_unmerged", "answer_reviewer", "upstream_head_changed"):
             self.assertTrue(lc._admits(review, kind) and not lc._admits(revision, kind), kind)
-        for kind in ("dispatch_failed", "work_failed", "publication_infrastructure_failure",
+        for kind in ("dispatch_failed", "task_failed", "publication_infrastructure_failure",
                      "repair_budget_exhausted"):
             self.assertTrue(lc._admits(revision, kind) and not lc._admits(review, kind), kind)
         self.assertIn("pending_feedback_evidence_ids", review.effects.clears)
@@ -560,7 +560,7 @@ class TestLifecycleTable(unittest.TestCase):
              "resume_upstream_branch": "handoff.building_upstream_branch",
              "resume_submission_preparation": "handoff.preparing_submission"})
         self.assertEqual(lc.pending_kinds("handoff.waiting_human"),
-                         {"work_budget_exhausted", "dispatch_failed", "work_failed",
+                         {"task_budget_exhausted", "dispatch_failed", "task_failed",
                           "upstream_branch_failed", "upstream_branch_blocked", "ci_interrupted",
                           "submission_comment_failed", "clean_head_ci_missing",
                           "base_branch_unavailable", "upstream_unavailable"})
@@ -588,9 +588,9 @@ class TestLifecycleTable(unittest.TestCase):
                          .transition.charges, ("interrupted_reruns",))
 
     def test_resume_after_exhaustion_restarts_the_named_counter(self):
-        cases = (("planning.idle", "exhaust_work_total", "resume_planning", {"work_total"}),
-                 ("development.fix_needed", "exhaust_work_total", "resume_development",
-                  {"work_total"}),
+        cases = (("planning.idle", "exhaust_task_total", "resume_planning", {"task_total"}),
+                 ("development.fix_needed", "exhaust_task_total", "resume_development",
+                  {"task_total"}),
                  ("planning.agent_running", "exhaust_planning_recovery",
                   "resume_planning", {"planning_attempts"}),
                  ("planning.agent_running", "exhaust_recovery",
@@ -605,16 +605,16 @@ class TestLifecycleTable(unittest.TestCase):
                   {"interrupted_reruns"}),
                  ("handoff.building_upstream_branch", "exhaust_upstream_branch_retries",
                   "resume_upstream_branch", {"upstream_branch"}),
-                 ("handoff.review_due", "exhaust_work_total", "resume_submission_review",
-                  {"work_total"}),
+                 ("handoff.review_due", "exhaust_task_total", "resume_submission_review",
+                  {"task_total"}),
                  ("handoff.agent_running", "exhaust_recovery",
                   "resume_submission_review", {"dispatch_recovery"}),
                  ("handoff.agent_running", "exhaust_recovery", "resume_submission_review",
-                  {"work_recovery", "work_total"}),
+                  {"task_recovery", "task_total"}),
                  ("handoff.preparing_submission", "exhaust_comment_retries",
                   "resume_submission_preparation", {"submission_comment"}),
                  ("upstream_review.fix_needed", "exhaust_repair_attempts", "resume_upstream_revision",
-                  {"repair_attempts_cluster", "no_progress", "work_total"}))
+                  {"repair_attempts_cluster", "no_progress", "task_total"}))
         for state, verb, resume, counters in cases:
             edge = lc.find_edge(state, verb)
             if verb == "exhaust_recovery":
@@ -671,52 +671,52 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual({v for v, r in lc.RULES.items() if r.transition.effects.restarts},
                          {"resume_stale"})
 
-    def test_work_total_found_while_work_runs_takes_one_resume(self):
+    def test_task_total_found_while_work_runs_takes_one_resume(self):
         resumes = {"planning": "resume_planning", "development": "resume_development",
                    "upstream_review": "resume_upstream_revision"}
         for phase, resume in resumes.items():
             edge = lc.find_edge(f"{phase}.agent_running", "exhaust_recovery")
             self.assertEqual(edge.target, f"{phase}.waiting_human")
-            self.assertLessEqual({"work_total", "work_recovery"}, lc.counters_named(edge))
-            self.assertIn("with `work_total` when that budget is exhausted (also when "
-                          "`work_recovery` is exhausted too) and `work_recovery` otherwise",
+            self.assertLessEqual({"task_total", "task_recovery"}, lc.counters_named(edge))
+            self.assertIn("with `task_total` when that budget is exhausted (also when "
+                          "`task_recovery` is exhausted too) and `task_recovery` otherwise",
                           edge.transition.description)
             restarts = lc.find_edge(edge.target, resume).transition.effects.restarts
-            self.assertIn("work_total", restarts)
-            self.assertIn("work_recovery", restarts)
+            self.assertIn("task_total", restarts)
+            self.assertIn("task_recovery", restarts)
 
-    def test_work_total_found_when_development_work_is_due_waits_for_a_human(self):
+    def test_task_total_found_when_development_work_is_due_waits_for_a_human(self):
         state = "development.fix_needed"
-        edge = lc.find_edge(state, "exhaust_work_total")
+        edge = lc.find_edge(state, "exhaust_task_total")
         self.assertEqual(edge.target, "development.waiting_human")
         self.assertEqual(edge.transition.guard, (lc.TASK_TOTAL_EXHAUSTED,))
         self.assertEqual(edge.transition.effects.sets,
-                         ("pending_human_action=work_budget_exhausted",
-                          f"{lc.PENDING_COUNTER}=work_total"))
+                         ("pending_human_action=task_budget_exhausted",
+                          f"{lc.PENDING_COUNTER}=task_total"))
         for text in ("number of task allocations spent", "`/upstreaming resume`",
                      "`/upstreaming park`"):
             self.assertIn(text, edge.transition.description)
         resume = lc.find_edge(edge.target, "resume_development")
-        self.assertTrue(lc._admits(resume.transition, "work_budget_exhausted"))
-        self.assertIn("work_total", resume.transition.effects.restarts)
+        self.assertTrue(lc._admits(resume.transition, "task_budget_exhausted"))
+        self.assertIn("task_total", resume.transition.effects.restarts)
         self.assertEqual(resume.target, state)
         self.assertEqual(lc.find_edge(edge.target, "park_contribution").target, "parked.idle")
         park = lc.find_edge(state, "exhaust_repair_attempts")
         self.assertEqual(park.target, "parked.idle")
         self.assertEqual(lc.exhausted_budgets(park), ["repair_attempts_cluster", "no_progress"])
         self.assertIn(lc.REFRESH_USED, park.transition.guard)
-        self.assertEqual([(e.source, e.verb, e.target) for e in lc.exhaustion_edges("work_total")
+        self.assertEqual([(e.source, e.verb, e.target) for e in lc.exhaustion_edges("task_total")
                           if lc.state_phase(e.source) == "development"],
                          [("development.agent_running", "exhaust_recovery",
                            "development.waiting_human"),
-                          (state, "exhaust_work_total", "development.waiting_human")])
-        self.assertFalse([e for e in lc.exhaustion_edges("work_total")
+                          (state, "exhaust_task_total", "development.waiting_human")])
+        self.assertFalse([e for e in lc.exhaustion_edges("task_total")
                           if lc.LIFECYCLE[e.target].kind != "human_wait"])
 
     def test_transitions_of_a_state_in_which_task_is_due_are_mutually_exclusive(self):
         self.assertEqual([e.verb for e in lc.due_task_edges("development.fix_needed")],
                          ["request_patch", "request_repair", "refresh_on_exhaustion",
-                          "exhaust_repair_attempts", "exhaust_work_total",
+                          "exhaust_repair_attempts", "exhaust_task_total",
                           "launch_development_pr", "exhaust_development_pr_launches"])
         for state in ("planning.idle", "development.fix_needed", "upstream_review.fix_needed"):
             edges = lc.due_task_edges(state)
@@ -732,7 +732,7 @@ class TestLifecycleTable(unittest.TestCase):
 
     def test_first_patch_after_a_rejected_proposal(self):
         patch = lc.find_edge("development.fix_needed", "request_patch").transition
-        self.assertEqual(patch.charges, ("work_total",))
+        self.assertEqual(patch.charges, ("task_total",))
         self.assertIn(lc.NO_FAILING_JOB, patch.guard)
         self.assertTrue(any("no_progress" in g and "remain" in g for g in patch.guard))
         self.assertNotIn("feedback", " ".join(
@@ -800,8 +800,8 @@ class TestLifecycleTable(unittest.TestCase):
     def test_budget_table(self):
         infrastructure = "retries.infrastructure_per_head_failure"
         self.assertEqual({name: b.policy_key for name, b in lc.BUDGETS.items()}, {
-            "work_total": "retries.max_attempts_per_contribution",
-            "work_recovery": "retries.work_recovery",
+            "task_total": "retries.max_attempts_per_contribution",
+            "task_recovery": "retries.task_recovery",
             "planning_attempts": "retries.planning_attempts",
             "repair_attempts_cluster": "retries.patch_attempts_per_cluster",
             "no_progress": "retries.no_progress_review_after",
@@ -941,15 +941,15 @@ class TestConsistencyCheckViolations(unittest.TestCase):
 
     def test_a_declared_exhaustion_of_another_budget(self):
         self.assertReports(
-            self.with_row("queued.idle", "require_renamed_upstream", exhausts=("work_total",)),
+            self.with_row("queued.idle", "require_renamed_upstream", exhausts=("task_total",)),
             "queued.idle --require_renamed_upstream--> planning.waiting_human: declares the "
-            "exhaustion of 'work_total', which does not name 'require_renamed_upstream'")
+            "exhaustion of 'task_total', which does not name 'require_renamed_upstream'")
 
-    def test_work_allocation_without_work_total(self):
+    def test_work_allocation_without_task_total(self):
         self.assertReports(
             self.with_row("development.fix_needed", "request_patch", charges=()),
             "development.fix_needed --request_patch--> development.agent_running: allocates a task "
-            "without charging 'work_total'")
+            "without charging 'task_total'")
 
     def test_task_allocation_without_the_operation_guard(self):
         guard = tuple(g for g in lc.find_edge("upstream_review.fix_needed",
@@ -1089,26 +1089,26 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         guard = tuple(g for g in edge.transition.guard if g != lc.TASK_TOTAL_REMAINS)
         self.assertReports(
             self.with_row("development.fix_needed", "exhaust_repair_attempts", guard=guard),
-            "development.fix_needed: exhaust_repair_attempts and exhaust_work_total can apply "
+            "development.fix_needed: exhaust_repair_attempts and exhaust_task_total can apply "
             "together; their guards are not exclusive")
         self.assertReports(
-            self.with_row("development.fix_needed", "exhaust_work_total", "parked.idle",
+            self.with_row("development.fix_needed", "exhaust_task_total", "parked.idle",
                           effects=lc.Effects(sets=("parked_reason", "previous_phase"))),
-            "development.fix_needed --exhaust_work_total--> parked.idle: exhaustion of "
-            "work_total where a task is due is exhaust_work_total, guarded by nothing else, and "
+            "development.fix_needed --exhaust_task_total--> parked.idle: exhaustion of "
+            "task_total where a task is due is exhaust_task_total, guarded by nothing else, and "
             "leads to a human wait")
 
     def test_exhaustion_without_a_counter_or_a_restart(self):
         self.assertReports(
-            self.with_row("planning.idle", "exhaust_work_total",
-                          effects=lc.Effects(sets=("pending_human_action=work_budget_exhausted",))),
-            "planning.idle --exhaust_work_total--> planning.waiting_human: exhaustion "
+            self.with_row("planning.idle", "exhaust_task_total",
+                          effects=lc.Effects(sets=("pending_human_action=task_budget_exhausted",))),
+            "planning.idle --exhaust_task_total--> planning.waiting_human: exhaustion "
             "that leads to a human wait without pending_human_action.counter")
         edge = lc.find_edge("upstream_review.waiting_human", "resume_upstream_revision")
         self.assertReports(
             self.with_row("upstream_review.waiting_human", "resume_upstream_revision",
                           effects=dataclasses.replace(edge.transition.effects,
-                                                      restarts=("work_total",))),
+                                                      restarts=("task_total",))),
             "upstream_review.waiting_human --resume_upstream_revision--> "
             "upstream_review.fix_needed: does not start 'no_progress' again")
         edge = lc.find_edge("handoff.waiting_human", "resume_ci")
@@ -1120,8 +1120,8 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertReports(
             self.with_row("handoff.waiting_human", "resume_ci",
                           effects=dataclasses.replace(edge.transition.effects,
-                                                      restarts=("interrupted_reruns", "work_total"))),
-            "starts 'work_total' again, but no exhaustion of it names its counter")
+                                                      restarts=("interrupted_reruns", "task_total"))),
+            "starts 'task_total' again, but no exhaustion of it names its counter")
         self.assertReports(
             self.with_row("handoff.building_upstream_branch", "exhaust_upstream_branch_retries",
                           effects=lc.Effects(sets=("pending_human_action=upstream_branch_failed",))),
@@ -1147,10 +1147,10 @@ class TestConsistencyCheckViolations(unittest.TestCase):
 
     def test_budget_table_violations(self):
         policy = json.loads(json.dumps(POLICY))
-        del policy["retries"]["work_recovery"]
+        del policy["retries"]["task_recovery"]
         del policy["refresh"]
         problems = lc.check_table(policy)
-        self.assertIn("budget work_recovery: policy.json has no integer retries.work_recovery", problems)
+        self.assertIn("budget task_recovery: policy.json has no integer retries.task_recovery", problems)
         self.assertIn("policy.json has no integer refresh.stale_after_days", problems)
         budget = dataclasses.replace(lc.BUDGETS["upstream_branch"], infrastructure=False)
         with mock.patch.dict(lc.BUDGETS, {"upstream_branch": budget}):

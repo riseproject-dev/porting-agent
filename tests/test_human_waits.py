@@ -3,7 +3,7 @@
 """A wait for a human is left only by the rows the table lists for it.
 
 Multi-tick loops through ``reconcile.tick``: the development human wait that
-``exhaust_work_total`` and ``exhaust_recovery`` enter stays as it is
+``exhaust_task_total`` and ``exhaust_recovery`` enter stays as it is
 under failing, pending, and passing CI, posts nothing again, and is left by
 ``resume_development``, ``park_contribution``, or ``refresh_planning``.
 """
@@ -89,24 +89,24 @@ def failing_record(**fields) -> tuple[dict, dict]:
     return record, {"ci-0": ci_record("ci-0", SHA_A, failing=FAILING)}
 
 
-def wait_from_work_total() -> World:
-    """``exhaust_work_total`` from ``development.fix_needed``."""
+def wait_from_task_total() -> World:
+    """``exhaust_task_total`` from ``development.fix_needed``."""
     record, evidence = failing_record()
-    record["budget"]["attempts_used"] = lifecycle.budget_limit("work_total", P)
+    record["budget"]["attempts_used"] = lifecycle.budget_limit("task_total", P)
     world = World(record, evidence)
     events, _ = world.tick()
-    assert [e["kind"] for e in events] == ["exhaust_work_total"], events
+    assert [e["kind"] for e in events] == ["exhaust_task_total"], events
     return world
 
 
-def wait_from_work_recovery() -> World:
+def wait_from_task_recovery() -> World:
     """``exhaust_recovery`` after the task graph ended without a Result
-    on every attempt ``work_recovery`` allows."""
+    on every attempt ``task_recovery`` allows."""
     record, evidence = failing_record()
     world = World(record, evidence)
     runs = [{"id": 1, "status": "completed", "created_at": "2026-12-30T00:00:00Z"}]
-    for _ in range(lifecycle.budget_limit("work_recovery", P) + 2):
-        aw = world.rec.get("active_work")
+    for _ in range(lifecycle.budget_limit("task_recovery", P) + 2):
+        aw = world.rec.get("active_task")
         queue = {tasks.graph_id(aw["dedupe_key"]): "completed"} if aw else {}
         events, _ = world.tick(queue_works=queue, runs=runs)
         if engine.state_key(world.rec) == "development.waiting_human":
@@ -115,8 +115,8 @@ def wait_from_work_recovery() -> World:
     raise AssertionError(f"never exhausted: {engine.state_key(world.rec)}")
 
 
-WAITS = {"exhaust_work_total": wait_from_work_total,
-         "exhaust_recovery": wait_from_work_recovery}
+WAITS = {"exhaust_task_total": wait_from_task_total,
+         "exhaust_recovery": wait_from_task_recovery}
 
 
 class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
@@ -141,8 +141,8 @@ class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
                 "park": ("/upstreaming park reason=done", "park_contribution", {"parked.idle"}),
                 "refresh": ("/upstreaming refresh revision={r} reason=again",
                             "refresh_planning",
-                            # `work_total` is not started again by a refresh: once
-                            # it is spent, the planning takes `exhaust_work_total`.
+                            # `task_total` is not started again by a refresh: once
+                            # it is spent, the planning takes `exhaust_task_total`.
                             {"queued.idle", "planning.idle", "planning.agent_running",
                              "planning.waiting_human"}),
             }
@@ -156,7 +156,7 @@ class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
                     self.assertIn(engine.state_key(world.rec), targets)
 
     def test_resume_starts_the_counter_and_requests_fresh_task(self):
-        world = wait_from_work_total()
+        world = wait_from_task_total()
         events, submitted = world.tick(
             "failed", comments=[world.command(
                 f"/upstreaming resume revision={world.rec['revision']} reason=go")])
@@ -164,7 +164,7 @@ class TestDevelopmentHumanWaitIsStable(unittest.TestCase):
         self.assertIn("resume_development", kinds)
         self.assertIn("request_repair", kinds)
         self.assertEqual(len(submitted), 1)
-        self.assertEqual(world.rec["active_work"]["attempt"], 1)
+        self.assertEqual(world.rec["active_task"]["attempt"], 1)
         self.assertEqual(world.rec["budget"]["attempts_used"], 1)
 
 
@@ -172,10 +172,10 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
     def record(self, **fields):
         record, _ = failing_record()
         record.update({"activity": "waiting_human",
-                       "pending_human_action": {"kind": "work_failed",
+                       "pending_human_action": {"kind": "task_failed",
                                                 "requested_at": record["updated_at"],
                                                 "reminded_at": None, "escalated_at": None,
-                                                "counter": "work_recovery"}, **fields})
+                                                "counter": "task_recovery"}, **fields})
         return record
 
     def test_a_write_beside_a_row_cannot_leave_a_wait_of_the_table(self):
@@ -255,14 +255,14 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
 
     def test_a_result_in_the_wait_is_late(self):
         record = self.record()
-        record["active_work"] = {
+        record["active_task"] = {
             "dedupe_key": tasks.task_key(record["contribution_id"], 0, record["revision"],
                                         "development_repair"),
             "task": "development_repair", "generation": 0, "revision": record["revision"],
             "attempt": 1, "requested_at": record["updated_at"],
             "deadline_at": "2026-11-30T00:00:00+00:00", "dispatched_run_id": None,
             "reason_ids": [], "feedback_evidence_ids": []}
-        aw = record["active_work"]
+        aw = record["active_task"]
         pub = {"status": "published", "worker_run_id": "5",
                "task": {"contribution_id": record["contribution_id"], "revision": aw["revision"],
                         "generation": 0, "dedupe_key": aw["dedupe_key"],

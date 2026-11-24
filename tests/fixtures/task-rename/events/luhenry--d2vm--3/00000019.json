@@ -1,0 +1,25 @@
+{
+  "at": "2026-11-24T01:39:38.105111+00:00",
+  "cause": {
+    "id": "45297811397",
+    "type": "result"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "development.fix_needed",
+    "report_evidence_id": "report-luhenry--d2vm--3-r3-45297811397",
+    "result_status": "published",
+    "task_generation": 1,
+    "task_revision": 3,
+    "task_work": "luhenry--d2vm/3@g1.r3:development_patch",
+    "to_state": "development.fix_needed",
+    "verb": "record_late_effect",
+    "why": "late Result for a stopped contribution"
+  },
+  "from": {},
+  "kind": "record_late_effect",
+  "revision_bumped": false,
+  "schema_version": 1,
+  "sequence": 19,
+  "to": {}
+}

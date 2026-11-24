@@ -25,7 +25,7 @@ This page records the decisions behind the [lifecycle table]({{ '/state-machine/
 2. Park means "the approach is not working" or "a human said stop". Nothing parks from `upstream_review` automatically.
 3. A Result is reused only while the pipeline ran continuously. Any stop of unknown length (pause, human wait, park) invalidates it; the next step is a fresh task.
 4. The plan is refreshed after a park, and after a pause or human wait longer than 7 days in provisioning or development. It is never refreshed automatically from `handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses `/upstreaming refresh`.
-5. Every row with a `Task: allocate` or `Task: reallocate` effect charges one per-generation counter, `work_total`. `lifecycle check` verifies this.
+5. Every row with a `Task: allocate` or `Task: reallocate` effect charges one per-generation counter, `task_total`. `lifecycle check` verifies this.
 6. Prefer a guard or a derived status over a new state or flag.
 7. Every stop that clears the requested task also clears `pending_publication`: the flag set verbs, `park_contribution`, `abandon`, and every other transition that ends the generation. `lifecycle check` verifies this.
 
@@ -176,7 +176,7 @@ flowchart TB
 
 Where repair-budget exhaustion is decided, and what it does.
 
-**Decision.** Exhaustion is decided at `development.fix_needed` only. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, the tick row `refresh_on_exhaustion` leads to `queued.idle` and starts both counters again, but not `work_total`. Once that automatic refresh is used, `exhaust_repair_attempts` parks.
+**Decision.** Exhaustion is decided at `development.fix_needed` only. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, the tick row `refresh_on_exhaustion` leads to `queued.idle` and starts both counters again, but not `task_total`. Once that automatic refresh is used, `exhaust_repair_attempts` parks.
 
 ```mermaid
 flowchart TB
@@ -240,7 +240,7 @@ flowchart TB
 
 Whether dispatch exhaustion and task exhaustion lead to the same place.
 
-**Decision.** Both wait for a human: the exhaustion of `dispatch_recovery` leads to the phase's `waiting_human` in planning, development, and upstream review, like the exhaustion of `work_recovery` (one row, `exhaust_recovery`). An observed development PR that does not match the record takes `record_pr_mismatch` to `development.waiting_human`.
+**Decision.** Both wait for a human: the exhaustion of `dispatch_recovery` leads to the phase's `waiting_human` in planning, development, and upstream review, like the exhaustion of `task_recovery` (one row, `exhaust_recovery`). An observed development PR that does not match the record takes `record_pr_mismatch` to `development.waiting_human`.
 
 ```mermaid
 flowchart TB
@@ -478,7 +478,7 @@ flowchart TB
 
 Whether budgets get their own `policy.json` keys.
 
-**Decision.** Keys are split by what is spent. `work_total` reads `retries.max_attempts_per_contribution`, `work_recovery` reads `retries.work_recovery`, `planning_attempts` reads `retries.planning_attempts`, and the infrastructure budgets share `retries.infrastructure_per_head_failure`. The reminder interval reads `human_sla_business_days.reminder`. Each Result records its token usage in the events.
+**Decision.** Keys are split by what is spent. `task_total` reads `retries.max_attempts_per_contribution`, `task_recovery` reads `retries.task_recovery`, `planning_attempts` reads `retries.planning_attempts`, and the infrastructure budgets share `retries.infrastructure_per_head_failure`. The reminder interval reads `human_sla_business_days.reminder`. Each Result records its token usage in the events.
 
 ```mermaid
 flowchart TB
@@ -489,7 +489,7 @@ flowchart TB
     end
 
     planning_agent_running -->|retry_dispatch| planning_agent_running
-    planning_agent_running ==>|allocate_work_retry| planning_agent_running
+    planning_agent_running ==>|allocate_task_retry| planning_agent_running
     planning_agent_running ==>|reject_plan| planning_idle
     planning_agent_running -->|exhaust_recovery| planning_waiting_human
     planning_waiting_human ==>|record_reminder| planning_waiting_human
@@ -719,7 +719,7 @@ flowchart TB
 
 What a resume does to the counter whose exhaustion caused the human wait.
 
-**Decision.** The resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. It was settled for `exhaust_work_total`, `exhaust_planning_recovery`, and `exhaust_repair_attempts` in upstream review; O14 extends it to every exhaustion that leads to a human wait.
+**Decision.** The resume starts again the one counter named in `pending_human_action.counter`, and no other. The event records the actor, the counter, and its count at that point. It was settled for `exhaust_task_total`, `exhaust_planning_recovery`, and `exhaust_repair_attempts` in upstream review; O14 extends it to every exhaustion that leads to a human wait.
 
 ```mermaid
 flowchart TB
@@ -733,7 +733,7 @@ flowchart TB
         upstream_waiting_human["upstream_review.waiting_human"]
     end
 
-    planning_idle -->|exhaust_work_total| planning_waiting_human
+    planning_idle -->|exhaust_task_total| planning_waiting_human
     planning_agent_running -->|exhaust_planning_recovery| planning_waiting_human
     planning_waiting_human ==>|resume_planning<br/>/upstreaming resume| planning_idle
     upstream_fix_needed -->|exhaust_repair_attempts| upstream_waiting_human
@@ -769,7 +769,7 @@ flowchart TB
 
 Values and names the decisions left open.
 
-**Decision.** `retries.max_attempts_per_contribution` stays 24, `retries.work_recovery` stays 2, and the verb names stay. The human waits of handoff are one `handoff.waiting_human`: four resume verbs leave it, each guarded by its `pending_human_action`, so exactly one applies (the submission rewrite, the branch write, CI on the clean head, and the package).
+**Decision.** `retries.max_attempts_per_contribution` stays 24, `retries.task_recovery` stays 2, and the verb names stay. The human waits of handoff are one `handoff.waiting_human`: four resume verbs leave it, each guarded by its `pending_human_action`, so exactly one applies (the submission rewrite, the branch write, CI on the clean head, and the package).
 
 ```mermaid
 flowchart TB
@@ -782,7 +782,7 @@ flowchart TB
         handoff_waiting_human["handoff.waiting_human"]
     end
 
-    handoff_review_due -->|exhaust_work_total| handoff_waiting_human
+    handoff_review_due -->|exhaust_task_total| handoff_waiting_human
     handoff_agent_running -->|exhaust_recovery| handoff_waiting_human
     handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
     handoff_waiting_ci -->|exhaust_interrupted_reruns| handoff_waiting_human
@@ -902,7 +902,7 @@ flowchart TB
 
 Whether `resume_ci` starts `interrupted_reruns` again for the head.
 
-**Decision.** It does, in both `development.waiting_human` and `handoff.waiting_human`. The rule has no exception: every exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, and every resume from that wait starts exactly that counter again. This holds for the budgets spent on infrastructure failures too: `dispatch_recovery`, `work_recovery`, `publish_recovery`, `operation_launch`, `upstream_branch`, `submission_comment`, and `interrupted_reruns`. `require_provisioning_intervention` names `operation_launch` when that budget is the cause and no counter for its other causes. `resume_stale` starts the named counter again like every other resume. The check verifies the rule for every exhaustion and every resume.
+**Decision.** It does, in both `development.waiting_human` and `handoff.waiting_human`. The rule has no exception: every exhaustion that leads to a human wait names its counter in `pending_human_action.counter`, and every resume from that wait starts exactly that counter again. This holds for the budgets spent on infrastructure failures too: `dispatch_recovery`, `task_recovery`, `publish_recovery`, `operation_launch`, `upstream_branch`, `submission_comment`, and `interrupted_reruns`. `require_provisioning_intervention` names `operation_launch` when that budget is the cause and no counter for its other causes. `resume_stale` starts the named counter again like every other resume. The check verifies the rule for every exhaustion and every resume.
 
 ```mermaid
 flowchart TB
@@ -928,7 +928,7 @@ flowchart TB
 
 Which verb requests a task when a proposal was rejected before the head had any CI evidence.
 
-**Decision.** `request_patch`: a rejected proposal records no failing CI job for the head. `request_patch` charges `work_total` and requires that `no_progress` remains; it does not charge `repair_attempts_cluster`.
+**Decision.** `request_patch`: a rejected proposal records no failing CI job for the head. `request_patch` charges `task_total` and requires that `no_progress` remains; it does not charge `repair_attempts_cluster`.
 
 ```mermaid
 flowchart TB
@@ -950,11 +950,11 @@ flowchart TB
     development_fix_needed -->|exhaust_repair_attempts| parked_idle
 ```
 
-### O16. Exhaustion of `work_total` found while a task is running
+### O16. Exhaustion of `task_total` found while a task is running
 
-Whether the resume after `exhaust_recovery` starts `work_total` again when `work_total` was the exhausted budget.
+Whether the resume after `exhaust_recovery` starts `task_total` again when `task_total` was the exhausted budget.
 
-**Decision.** It does. When a task retry cannot be allocated because `work_total` is exhausted, `exhaust_recovery` records `pending_human_action.counter=work_total`, and one resume starts it again, in planning, development, and upstream review. When `work_recovery` itself is exhausted, it names `work_recovery`. The slice shows planning and development; in upstream review `resume_upstream_revision` does the same.
+**Decision.** It does. When a task retry cannot be allocated because `task_total` is exhausted, `exhaust_recovery` records `pending_human_action.counter=task_total`, and one resume starts it again, in planning, development, and upstream review. When `task_recovery` itself is exhausted, it names `task_recovery`. The slice shows planning and development; in upstream review `resume_upstream_revision` does the same.
 
 ```mermaid
 flowchart TB
@@ -979,7 +979,7 @@ flowchart TB
 
 Names and values the decisions left open.
 
-**Decision.** They stay. `interrupted_reruns` allows as many reruns per head as `retries.infrastructure_per_head_failure` (2), without a free first one. Its exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in both `development.waiting_human` and `handoff.waiting_human`. The pending actions of the handoff wait are `upstream_branch_failed`, `upstream_branch_blocked`, `submission_comment_failed`, `ci_interrupted`, and those of the rewrite task (`work_budget_exhausted`, `dispatch_failed`, `work_failed`). An exhaustion names its counter in `pending_human_action.counter`.
+**Decision.** They stay. `interrupted_reruns` allows as many reruns per head as `retries.infrastructure_per_head_failure` (2), without a free first one. Its exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in both `development.waiting_human` and `handoff.waiting_human`. The pending actions of the handoff wait are `upstream_branch_failed`, `upstream_branch_blocked`, `submission_comment_failed`, `ci_interrupted`, and those of the rewrite task (`task_budget_exhausted`, `dispatch_failed`, `task_failed`). An exhaustion names its counter in `pending_human_action.counter`.
 
 ```mermaid
 flowchart TB
@@ -997,11 +997,11 @@ flowchart TB
     handoff_waiting_human ==>|resume_ci<br/>/upstreaming resume| handoff_waiting_ci
 ```
 
-### O18. Exhaustion of `work_total` found when a development task is due
+### O18. Exhaustion of `task_total` found when a development task is due
 
-Where `work_total` exhaustion leads when it is found at `development.fix_needed`.
+Where `task_total` exhaustion leads when it is found at `development.fix_needed`.
 
-**Decision.** To the human wait, as in the other phases. At `development.fix_needed`, exhaustion of `work_total` takes `exhaust_work_total` to `development.waiting_human` with `pending_human_action.counter=work_total`, and one resume starts it again. `exhaust_repair_attempts` parks only for `repair_attempts_cluster` and `no_progress`, after `refresh_on_exhaustion` is used. The reply at exhaustion states the number of task allocations spent and names both `/upstreaming resume` and `/upstreaming park`. The guards of `request_patch`, `request_repair`, `refresh_on_exhaustion`, `exhaust_repair_attempts`, and `exhaust_work_total` are mutually exclusive, and the check verifies it: the first four require that `work_total` remains.
+**Decision.** To the human wait, as in the other phases. At `development.fix_needed`, exhaustion of `task_total` takes `exhaust_task_total` to `development.waiting_human` with `pending_human_action.counter=task_total`, and one resume starts it again. `exhaust_repair_attempts` parks only for `repair_attempts_cluster` and `no_progress`, after `refresh_on_exhaustion` is used. The reply at exhaustion states the number of task allocations spent and names both `/upstreaming resume` and `/upstreaming park`. The guards of `request_patch`, `request_repair`, `refresh_on_exhaustion`, `exhaust_repair_attempts`, and `exhaust_task_total` are mutually exclusive, and the check verifies it: the first four require that `task_total` remains.
 
 ```mermaid
 flowchart TB
@@ -1021,7 +1021,7 @@ flowchart TB
     development_fix_needed -->|request_repair| development_agent_running
     development_fix_needed -->|refresh_on_exhaustion| queued_idle
     development_fix_needed ==>|exhaust_repair_attempts| parked_idle
-    development_fix_needed ==>|exhaust_work_total| development_waiting_human
+    development_fix_needed ==>|exhaust_task_total| development_waiting_human
     development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
@@ -1030,7 +1030,7 @@ flowchart TB
 
 Which row clears `pending_feedback_evidence_ids` in development and upstream review.
 
-**Decision.** The task request carries the pending feedback ids present at allocation, in `active_work.feedback_evidence_ids`. `record_publish_success` clears exactly those ids, and `record_revision_publish_success` does the same in upstream review; feedback recorded while the task ran stays pending. `reject_patch_proposal`, `replan_development`, `record_head_change`, and both refresh verbs keep the pending feedback, and every resume that requests a task again keeps the pending feedback; `resume_upstream_review` is the one resume that clears it, because a human answered it. A fresh task graph and a publish retry carry the same ids. A task that carries feedback cannot take `request_ci_rerun`: that outcome counts as `reject_patch_proposal`. The check verifies each of these.
+**Decision.** The task request carries the pending feedback ids present at allocation, in `active_task.feedback_evidence_ids`. `record_publish_success` clears exactly those ids, and `record_revision_publish_success` does the same in upstream review; feedback recorded while the task ran stays pending. `reject_patch_proposal`, `replan_development`, `record_head_change`, and both refresh verbs keep the pending feedback, and every resume that requests a task again keeps the pending feedback; `resume_upstream_review` is the one resume that clears it, because a human answered it. A fresh task graph and a publish retry carry the same ids. A task that carries feedback cannot take `request_ci_rerun`: that outcome counts as `reject_patch_proposal`. The check verifies each of these.
 
 ```mermaid
 flowchart TB
@@ -1121,7 +1121,7 @@ flowchart TB
 
 Which cluster a repair charges when no CI job failed.
 
-**Decision.** None: `repair_attempts_cluster` is charged only when a failing CI job is recorded for the head. In development, `request_repair` is guarded by that, and `request_patch` by its complement: it covers the first patch, a rejected proposal, and a repair driven only by feedback, and charges `work_total` only. In upstream review, `request_upstream_revision` keeps the failing-job guard and the cluster charge, and `request_review_revision` covers a revision driven only by feedback and charges `work_total` only. All four require that `no_progress` remains. Exhaustion of `repair_attempts_cluster` applies only while a failing CI job is recorded, so in each state exactly one of the rows applies; the check verifies it.
+**Decision.** None: `repair_attempts_cluster` is charged only when a failing CI job is recorded for the head. In development, `request_repair` is guarded by that, and `request_patch` by its complement: it covers the first patch, a rejected proposal, and a repair driven only by feedback, and charges `task_total` only. In upstream review, `request_upstream_revision` keeps the failing-job guard and the cluster charge, and `request_review_revision` covers a revision driven only by feedback and charges `task_total` only. All four require that `no_progress` remains. Exhaustion of `repair_attempts_cluster` applies only while a failing CI job is recorded, so in each state exactly one of the rows applies; the check verifies it.
 
 ```mermaid
 flowchart TB
@@ -1305,7 +1305,7 @@ flowchart TB
 
 Whether a contribution-policy item of the plan that needs a change to the series (for example a changelog entry) blocks the nomination for handoff, or is requested as a development task. Before, nothing checked it until the submission rewrite and its review, which sent the series back after a human had asked for `submit-upstream`.
 
-**Decision.** It is requested as a development task. A plan of schema version 4 records its measurable items as `contribution_guidelines.series_requirements`, each a path the non-debug commits of the series must change, and each path is one of the plan's `allowed_paths`. When CI passes on the exact head without pending feedback, the observation reads the changed paths of the series once: `nominate_for_handoff` requires every requirement met (or none recorded, or a series too large to read, which the event says), and `return_for_feedback` leads to `development.fix_needed` otherwise. That row records the passing CI evidence, records the unmet requirements as `series_requirements` evidence, sets it as pending feedback, and bumps the revision; `request_patch` then requests a repair that carries it, and the trusted worker gate rejects a patch whose non-debug commits still do not change a matching path while the fork head is the head the evidence names. No budget is charged by the row: the task is bounded by `no_progress` and `work_total`, then the automatic refresh, park, or a human wait. Qualitative items stay with the submission rewrite and its review loop (`reject_submission_rewrite`). A plan of an earlier version records none. The check verifies that every state that blocks a nomination on the requirements has such a row.
+**Decision.** It is requested as a development task. A plan of schema version 4 records its measurable items as `contribution_guidelines.series_requirements`, each a path the non-debug commits of the series must change, and each path is one of the plan's `allowed_paths`. When CI passes on the exact head without pending feedback, the observation reads the changed paths of the series once: `nominate_for_handoff` requires every requirement met (or none recorded, or a series too large to read, which the event says), and `return_for_feedback` leads to `development.fix_needed` otherwise. That row records the passing CI evidence, records the unmet requirements as `series_requirements` evidence, sets it as pending feedback, and bumps the revision; `request_patch` then requests a repair that carries it, and the trusted worker gate rejects a patch whose non-debug commits still do not change a matching path while the fork head is the head the evidence names. No budget is charged by the row: the task is bounded by `no_progress` and `task_total`, then the automatic refresh, park, or a human wait. Qualitative items stay with the submission rewrite and its review loop (`reject_submission_rewrite`). A plan of an earlier version records none. The check verifies that every state that blocks a nomination on the requirements has such a row.
 
 ```mermaid
 flowchart TB
@@ -1327,9 +1327,9 @@ flowchart TB
 
 ### O32. Result of a completed task graph
 
-When a task graph that the queue reports completed is terminal without a usable Result. The graph becomes completed in the `safe_outputs` job of the worker, before its `publish` job uploads the `porting-publication` artifact, and `work_recovery` allows a single retry, so a tick between the two retried healthy tasks and the Result that arrived later was recorded as late.
+When a task graph that the queue reports completed is terminal without a usable Result. The graph becomes completed in the `safe_outputs` job of the worker, before its `publish` job uploads the `porting-publication` artifact, and `task_recovery` allows a single retry, so a tick between the two retried healthy tasks and the Result that arrived later was recorded as late.
 
-**Decision.** A cancelled graph is terminal without a usable Result at once: the publish job runs only for a completed outcome. A completed graph is when a publication collected in the tick names the task and left it requested, when the worker run the queue bound to it (`queue_result.work_runs`) ended or is gone without an unexpired `porting-publication` artifact, when the queue binds no run to it, or when the artifact of the ended run was not collected within 60 minutes of the end of the run. While the run has not ended, or was not read in the tick, nothing is decided and nothing is charged: the wait is derived from the queue and the run each tick, with no new state, flag, record field or deadline, and GitHub's job timeouts bound it. The event of `allocate_work_retry` or `exhaust_recovery` names `worker_run`, `run_conclusion` and `result`. A Result collected after the retry still takes `record_late_effect`. The same reading applies in `planning.agent_running` and `upstream_review.agent_running`.
+**Decision.** A cancelled graph is terminal without a usable Result at once: the publish job runs only for a completed outcome. A completed graph is when a publication collected in the tick names the task and left it requested, when the worker run the queue bound to it (`queue_result.work_runs`) ended or is gone without an unexpired `porting-publication` artifact, when the queue binds no run to it, or when the artifact of the ended run was not collected within 60 minutes of the end of the run. While the run has not ended, or was not read in the tick, nothing is decided and nothing is charged: the wait is derived from the queue and the run each tick, with no new state, flag, record field or deadline, and GitHub's job timeouts bound it. The event of `allocate_task_retry` or `exhaust_recovery` names `worker_run`, `run_conclusion` and `result`. A Result collected after the retry still takes `record_late_effect`. The same reading applies in `planning.agent_running` and `upstream_review.agent_running`.
 
 ```mermaid
 flowchart TB
@@ -1342,10 +1342,10 @@ flowchart TB
         handoff_waiting_human["handoff.waiting_human"]
     end
 
-    development_agent_running ==>|allocate_work_retry| development_agent_running
+    development_agent_running ==>|allocate_task_retry| development_agent_running
     development_agent_running ==>|exhaust_recovery| development_waiting_human
     development_agent_running ==>|record_late_effect| development_agent_running
-    handoff_agent_running ==>|allocate_work_retry| handoff_agent_running
+    handoff_agent_running ==>|allocate_task_retry| handoff_agent_running
     handoff_agent_running ==>|exhaust_recovery| handoff_waiting_human
     handoff_agent_running ==>|record_late_effect| handoff_agent_running
 ```
@@ -1394,7 +1394,7 @@ flowchart TB
 
 When does a request in `queued.idle` take `begin_planning`, and can it still be withdrawn while it waits for a worker slot?
 
-**Decision.** In the first tick that processes it while it is not paused, whether or not a worker slot is free, and never in the commit that allocates its task: `dispatch_planning` or `exhaust_work_total` is taken from `planning.idle` in a later tick, as decision 14 states (two transitions, written in two commits). A request that waits for a worker slot waits in `planning.idle`, where `withdraw_request` applies with the same guards as in `queued.idle` (intake label removed, no task requested, no plan, no fork), so removing the intake label still withdraws it. This completes decision 14.
+**Decision.** In the first tick that processes it while it is not paused, whether or not a worker slot is free, and never in the commit that allocates its task: `dispatch_planning` or `exhaust_task_total` is taken from `planning.idle` in a later tick, as decision 14 states (two transitions, written in two commits). A request that waits for a worker slot waits in `planning.idle`, where `withdraw_request` applies with the same guards as in `queued.idle` (intake label removed, no task requested, no plan, no fork), so removing the intake label still withdraws it. This completes decision 14.
 
 ```mermaid
 flowchart TB
@@ -1606,7 +1606,7 @@ flowchart TB
 
 What each budget counts and where its exhaustion leads.
 
-**Change.** Every row that allocates or reallocates a task charges the per-generation `work_total`. `provisioning_attempts` and `repair_attempts_total` are removed. Exhaustion of an infrastructure budget leads to a human wait of the same phase and never ends the generation. The budgets table of the lifecycle table page lists every budget with its charge, counter, limit, and exhaustion.
+**Change.** Every row that allocates or reallocates a task charges the per-generation `task_total`. `provisioning_attempts` and `repair_attempts_total` are removed. Exhaustion of an infrastructure budget leads to a human wait of the same phase and never ends the generation. The budgets table of the lifecycle table page lists every budget with its charge, counter, limit, and exhaustion.
 
 ```mermaid
 flowchart TB
@@ -1617,8 +1617,8 @@ flowchart TB
     end
 
     planning_idle ==>|dispatch_planning| planning_agent_running
-    planning_idle ==>|exhaust_work_total| planning_waiting_human
-    planning_agent_running -->|allocate_work_retry| planning_agent_running
+    planning_idle ==>|exhaust_task_total| planning_waiting_human
+    planning_agent_running -->|allocate_task_retry| planning_agent_running
     planning_agent_running ==>|exhaust_recovery| planning_waiting_human
 ```
 
@@ -1652,7 +1652,7 @@ flowchart TB
 
 `request_patch` and `record_no_change` charged nothing, so the first patch could loop without bound, and with CI evidence on the head it had no automatic exit.
 
-**Change.** `request_patch` charges `work_total`, `request_ci_rerun` replaces `record_no_change`, and `replan_development` leads to `development.fix_needed`.
+**Change.** `request_patch` charges `task_total`, `request_ci_rerun` replaces `record_no_change`, and `replan_development` leads to `development.fix_needed`.
 
 ```mermaid
 flowchart TB
@@ -1807,7 +1807,7 @@ flowchart TB
 
 Which branches development and the upstream PR use, whether the development PR is closed at submission, and how the upstream PR follows the project's pull request template, contributing instructions, commit conventions, and reviewers.
 
-**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and a worker task, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates an uncredentialed rewrite task (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections, and that the worker's review loop left no P0 finding open: `accept_submission_rewrite` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). The worker reviewed the series and text in the same run with fresh reviewers (the review loop of `pi-subagents`) against the template, the contributing instructions, the commit conventions, and the reviewers' expectations. A failed rewrite check or a P0 finding left open (`reject_submission_rewrite`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a task retry (`allocate_work_retry`, `exhaust_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
+**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and a worker task, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates an uncredentialed rewrite task (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections, and that the worker's review loop left no P0 finding open: `accept_submission_rewrite` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). The worker reviewed the series and text in the same run with fresh reviewers (the review loop of `pi-subagents`) against the template, the contributing instructions, the commit conventions, and the reviewers' expectations. A failed rewrite check or a P0 finding left open (`reject_submission_rewrite`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a task retry (`allocate_task_retry`, `exhaust_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
 
 ```mermaid
 flowchart TB
@@ -2029,7 +2029,7 @@ flowchart TB
 
 Whether a task payload that names neither `generation` nor `dedupe_key`, or a requested task recorded without a generation, is still read as generation 0.
 
-**Change.** No. A task payload names its identity only with an integer `generation` and a string `dedupe_key`; one that lacks either, also one that names neither, names no task identity in any generation. Its Result is late and takes `record_late_effect`, and the publisher refuses its write as stale. A requested task whose recorded generation is absent or not the record's is never dispatched and matches no Result; the field migration carries a task recorded without a generation as generation 0. The task such a Result leaves requested is terminal without a usable Result and is answered by `allocate_work_retry` within `work_recovery` and `work_total`, then `exhaust_recovery` to the human wait of the phase. This completes decision 2 (the generation fence) and decision 19 (late Results): a Result that differs in the generation, the revision, or the task id is never folded and never published.
+**Change.** No. A task payload names its identity only with an integer `generation` and a string `dedupe_key`; one that lacks either, also one that names neither, names no task identity in any generation. Its Result is late and takes `record_late_effect`, and the publisher refuses its write as stale. A requested task whose recorded generation is absent or not the record's is never dispatched and matches no Result; the field migration carries a task recorded without a generation as generation 0. The task such a Result leaves requested is terminal without a usable Result and is answered by `allocate_task_retry` within `task_recovery` and `task_total`, then `exhaust_recovery` to the human wait of the phase. This completes decision 2 (the generation fence) and decision 19 (late Results): a Result that differs in the generation, the revision, or the task id is never folded and never published.
 
 ```mermaid
 flowchart TB
@@ -2039,7 +2039,7 @@ flowchart TB
     end
 
     development_agent_running ==>|record_late_effect| development_agent_running
-    development_agent_running ==>|allocate_work_retry| development_agent_running
+    development_agent_running ==>|allocate_task_retry| development_agent_running
     development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
@@ -2203,7 +2203,7 @@ flowchart TB
 
 Which counter `exhaust_recovery` names for a task graph terminal without a usable Result when both of its budgets are spent.
 
-**Change.** `pending_human_action.counter` names `work_total` when that budget is exhausted, also when `work_recovery` is exhausted too, and `work_recovery` otherwise. A resume starts exactly the counter the wait names. `work_recovery` is counted in `active_work.attempt`, which the exhaustion clears with the task, so the next task starts at attempt 1 anyway; naming `work_total` is the only choice with which one resume makes a task possible again. No row, state, or record field changes.
+**Change.** `pending_human_action.counter` names `task_total` when that budget is exhausted, also when `task_recovery` is exhausted too, and `task_recovery` otherwise. A resume starts exactly the counter the wait names. `task_recovery` is counted in `active_task.attempt`, which the exhaustion clears with the task, so the next task starts at attempt 1 anyway; naming `task_total` is the only choice with which one resume makes a task possible again. No row, state, or record field changes.
 
 ```mermaid
 flowchart TB
@@ -2219,7 +2219,7 @@ flowchart TB
 
 Which counter `exhaust_repair_attempts` names in upstream review when several revision budgets are spent at once.
 
-**Change.** It names the first spent counter in the order `no_progress`, `work_total`, `repair_attempts_cluster` (the order of its guard), and its event lists every spent counter. The resume (`resume_upstream_revision`) starts only the named counter again, so with several spent the next tick waits again on the next one: one bounded human decision per budget.
+**Change.** It names the first spent counter in the order `no_progress`, `task_total`, `repair_attempts_cluster` (the order of its guard), and its event lists every spent counter. The resume (`resume_upstream_revision`) starts only the named counter again, so with several spent the next tick waits again on the next one: one bounded human decision per budget.
 
 ```mermaid
 flowchart TB
@@ -2245,7 +2245,7 @@ flowchart TB
         development_waiting_human["development.waiting_human"]
     end
 
-    development_fix_needed ==>|exhaust_work_total| development_waiting_human
+    development_fix_needed ==>|exhaust_task_total| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
@@ -2620,7 +2620,7 @@ flowchart TB
 
 How is the worker's `no_change` report of a development task folded?
 
-**Change.** As "a failure not caused by the patch": `request_ci_rerun` when the task carries no feedback (`active_work.feedback_evidence_ids` is empty; the task's `reason_ids` are not feedback) and `flaky_reruns` remains for the head, and `reject_patch_proposal` otherwise. The rerun row keeps the revision, so from the first rerun on the task id names the head's rerun count (`.rerun<n>`), and the repair task requested after a rerun is never the task whose Result asked for it. A blocked Result's rehearsal evidence is stored and named in the event and is never pending feedback. A rehearsal id that an older record still holds as pending feedback is answered like any feedback (`return_for_feedback` when CI passes, then a task that carries it, cleared when its Result is published), so it heals without a migration. This completes the CI rerun decision.
+**Change.** As "a failure not caused by the patch": `request_ci_rerun` when the task carries no feedback (`active_task.feedback_evidence_ids` is empty; the task's `reason_ids` are not feedback) and `flaky_reruns` remains for the head, and `reject_patch_proposal` otherwise. The rerun row keeps the revision, so from the first rerun on the task id names the head's rerun count (`.rerun<n>`), and the repair task requested after a rerun is never the task whose Result asked for it. A blocked Result's rehearsal evidence is stored and named in the event and is never pending feedback. A rehearsal id that an older record still holds as pending feedback is answered like any feedback (`return_for_feedback` when CI passes, then a task that carries it, cleared when its Result is published), so it heals without a migration. This completes the CI rerun decision.
 
 ```mermaid
 flowchart TB
@@ -2673,7 +2673,7 @@ flowchart TB
 
 What happens when a row that keeps the revision allocates a task whose graph already returned a Result or is terminal in the queue?
 
-**Change.** That task is "the task graph is terminal without a usable Result": the allocation row is taken, and then `allocate_work_retry` or `exhaust_recovery` in the same tick. The allocation charges `work_total` (and its own budgets), and the fresh graph charges `work_recovery` and `work_total` again; the spent graph is never submitted.
+**Change.** That task is "the task graph is terminal without a usable Result": the allocation row is taken, and then `allocate_task_retry` or `exhaust_recovery` in the same tick. The allocation charges `task_total` (and its own budgets), and the fresh graph charges `task_recovery` and `task_total` again; the spent graph is never submitted.
 
 ```mermaid
 flowchart TB
@@ -2684,7 +2684,7 @@ flowchart TB
     end
 
     development_fix_needed -->|request_repair| development_agent_running
-    development_agent_running ==>|allocate_work_retry| development_agent_running
+    development_agent_running ==>|allocate_task_retry| development_agent_running
     development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
@@ -2692,7 +2692,7 @@ flowchart TB
 
 Which dispatcher runs does `dispatch_recovery` count, and what happens to a launch that never shows up as a run?
 
-**Change.** It counts the dispatcher runs created since the task was requested, or since its history was recorded or the queue's retry time (`retry_not_before`) when later; every counted run has ended. Each ended run is decided once: `retry_dispatch` records the run it decided in `active_work.dispatched_run_id` as an effect of the row, and `exhaust_recovery` is taken once the count reaches the limit (`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never shows up as a run is launched again at once and then on every tick until a run shows up, without a row and without a charge, also for a queue retry once its backoff has passed: such a launch is lost to the control plane, not to the task. The launch step of the controller ends only once its run is listed, and the launches are serialized, so a run launched by an earlier tick is always listed, and a dispatcher run still in flight, whenever it was created, is waited for. A task whose `retry_not_before` is not representable is left out of the retries and reported.
+**Change.** It counts the dispatcher runs created since the task was requested, or since its history was recorded or the queue's retry time (`retry_not_before`) when later; every counted run has ended. Each ended run is decided once: `retry_dispatch` records the run it decided in `active_task.dispatched_run_id` as an effect of the row, and `exhaust_recovery` is taken once the count reaches the limit (`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never shows up as a run is launched again at once and then on every tick until a run shows up, without a row and without a charge, also for a queue retry once its backoff has passed: such a launch is lost to the control plane, not to the task. The launch step of the controller ends only once its run is listed, and the launches are serialized, so a run launched by an earlier tick is always listed, and a dispatcher run still in flight, whenever it was created, is waited for. A task whose `retry_not_before` is not representable is left out of the retries and reported.
 
 ```mermaid
 flowchart TB
@@ -2709,7 +2709,7 @@ flowchart TB
 
 What happens to a task whose last Claim failed before its agent ran, for a step that does not depend on the contribution?
 
-**Change.** The failure is the pipeline's, not the task's, so none of the budgets of the task is charged. A run is such a failure when it concluded `failure` and its `activation` job failed, or its `agent` job failed in a step while the step `Execute Pi CLI` was skipped and the first failed step is not one that reads the contribution (the checkout of its fork or of the upstream project, the task and its history, the reproduction image). A cancelled or timed-out run, a lost runner, a failed agent and a failed contribution step are the task's. The failure carries the version of the pipeline code the run ran, the one the controller resumes its own stop at. While that is the version running now, an available task with a retry, a cancelled graph and a dispatcher run that ended without claiming are held: nothing is launched, staged or charged, and an alert and a warning say why. A transient failure heals by itself: the task is launched again free by the first controller run after 30 minutes, 2 hours and 8 hours at one version of the code, and then stays held. Once the pipeline code changes, or a human launches the controller, a retry and a dispatcher are launched again, and a cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh graph at the next revision and charges nothing, so `work_recovery`, `work_total` and the attempts counted so far are unchanged. `allocate_work_retry` and `exhaust_recovery` are refused for such a failure. The record stays in its state instead of pausing: a pause clears the task while the queue still holds it available, and its resume would charge the repair again.
+**Change.** The failure is the pipeline's, not the task's, so none of the budgets of the task is charged. A run is such a failure when it concluded `failure` and its `activation` job failed, or its `agent` job failed in a step while the step `Execute Pi CLI` was skipped and the first failed step is not one that reads the contribution (the checkout of its fork or of the upstream project, the task and its history, the reproduction image). A cancelled or timed-out run, a lost runner, a failed agent and a failed contribution step are the task's. The failure carries the version of the pipeline code the run ran, the one the controller resumes its own stop at. While that is the version running now, an available task with a retry, a cancelled graph and a dispatcher run that ended without claiming are held: nothing is launched, staged or charged, and an alert and a warning say why. A transient failure heals by itself: the task is launched again free by the first controller run after 30 minutes, 2 hours and 8 hours at one version of the code, and then stays held. Once the pipeline code changes, or a human launches the controller, a retry and a dispatcher are launched again, and a cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh graph at the next revision and charges nothing, so `task_recovery`, `task_total` and the attempts counted so far are unchanged. `allocate_task_retry` and `exhaust_recovery` are refused for such a failure. The record stays in its state instead of pausing: a pause clears the task while the queue still holds it available, and its resume would charge the repair again.
 
 ```mermaid
 flowchart TB
@@ -2717,7 +2717,7 @@ flowchart TB
         development_agent_running["development.agent_running"]
     end
 
-    development_agent_running -->|allocate_work_retry| development_agent_running
+    development_agent_running -->|allocate_task_retry| development_agent_running
     development_agent_running ==>|reallocate_after_pipeline_failure| development_agent_running
 ```
 
@@ -3054,7 +3054,7 @@ flowchart TB
     end
 
     development_fix_needed ==>|request_patch| development_agent_running
-    development_fix_needed -->|exhaust_work_total| development_waiting_human
+    development_fix_needed -->|exhaust_task_total| development_waiting_human
 ```
 
 ### Every state names the invariants of its records
@@ -3189,7 +3189,7 @@ flowchart TB
 
 How does a task whose task outgrows the payload of the work queue reach its agent, and who pays for a dispatch that never reached the queue (the owner's decision of 2026-11-24)?
 
-**Change.** The owner's decision: everything the agents need is committed by the controller into `.state` as one task file (addressed by the task id, pinned by commit and SHA-256), and the gh-aw queue payload keeps only a fixed-size reference to it (repository, commit, path, SHA-256, plus what gh-aw needs: the task kind, the dedupe key, the resource scope and the effect contract). The controller commits the file (`task` evidence, derived from the task id) in the commit that records the task and its history, so the dispatcher defers a task without it and every reader resolves the reference (`task_file.resolve`) and gets the payload it always had. The controller builds the task and the payload before it takes a row that requests a task, and takes none when it cannot: it is a failure of the pipeline, held with an alert, never charged to the contribution. A wait with `dispatch_failed` takes `rearm_dispatch` once the pipeline code is not the version it failed at (the version is recorded by `exhaust_recovery`, so it resumes once per version), and the row gives back the budgets the lost allocation charged (`Effects.credits`, `active_work.charged`, `pending_human_action.credit`). No new verb, state or flag.
+**Change.** The owner's decision: everything the agents need is committed by the controller into `.state` as one task file (addressed by the task id, pinned by commit and SHA-256), and the gh-aw queue payload keeps only a fixed-size reference to it (repository, commit, path, SHA-256, plus what gh-aw needs: the task kind, the dedupe key, the resource scope and the effect contract). The controller commits the file (`task` evidence, derived from the task id) in the commit that records the task and its history, so the dispatcher defers a task without it and every reader resolves the reference (`task_file.resolve`) and gets the payload it always had. The controller builds the task and the payload before it takes a row that requests a task, and takes none when it cannot: it is a failure of the pipeline, held with an alert, never charged to the contribution. A wait with `dispatch_failed` takes `rearm_dispatch` once the pipeline code is not the version it failed at (the version is recorded by `exhaust_recovery`, so it resumes once per version), and the row gives back the budgets the lost allocation charged (`Effects.credits`, `active_task.charged`, `pending_human_action.credit`). No new verb, state or flag.
 
 ```mermaid
 flowchart TB
@@ -3208,7 +3208,7 @@ flowchart TB
 
 Whether a development patch and a submission rewrite are reviewed by a separate task, or by the worker that wrote them.
 
-**Change.** The worker implements the patch and reviews it in its own run with a review loop on the `subagent` tool of `pi-subagents`: after it commits, fresh reviewers (read only, on the development model) review the series, the worker fixes what a P0 or a worthwhile P1 finding asks, and the loop stops after 3 rounds at most. Its report records the rounds and every finding. A P0 finding is closed only by a later round of fresh reviewers, never by the worker itself; trusted code rejects the Result while one is open, which is `reject_patch_proposal` (a rejected proposal, charged to `no_progress`) and publishes nothing. Otherwise the worker's publication job pushes the patch in the same run and posts the summary of the loop as a comment on the pushed commit. So the states `development.review_pending`, `development.reviewing` and `development.publishing`, the task kind `development_review`, the budget `dev_reviews` and the record fields `held_patch` and `review_comments` are gone, and `record_publish_success` of `development.agent_running` is the only row that publishes a development patch. It folds the Result once the development PR of the pushed head is recorded: the three rows that open it (`launch_development_pr`, `confirm_development_pr`, `exhaust_development_pr_launches`) are rows of `development.agent_running` too, with no new verb. A record written in one of the removed states is not refused: the record migration drops its held patch and review comments, moves it to `development.fix_needed` with no task, and turns the pending action `patch_review_unavailable` into `work_failed`. A Result held for a publish-only retry whose report records no review loop at all is of a worker run of the earlier pipeline: `reallocate_after_pipeline_failure` takes it, charging nothing, and drops the held Result. A Result with a review loop must also say which series its last round reviewed: the SHA-256 of that series is the `patch_digest` of the proposal, so a patch changed after its last review is rejected. The submission rewrite reviews its own series and text the same way: its trusted check also requires a review loop with no P0 finding open (an open one is a `fail` verdict with one reason per finding, a missing or unusable loop is a Result that is not usable), and `accept_submission_rewrite` leads straight to `handoff.building_upstream_branch` without bumping the revision. The states `handoff.review_pending` and `handoff.reviewing`, the task kind `submission_review`, the verbs `request_submission_review`, `accept_submission_review` and `reject_submission_review`, and the record field `submission_review_id` are gone: the accepted rewrite evidence is what the build of `riscv64` and the package read. A record in a removed handoff state is moved to `handoff.review_due` by the record migration.
+**Change.** The worker implements the patch and reviews it in its own run with a review loop on the `subagent` tool of `pi-subagents`: after it commits, fresh reviewers (read only, on the development model) review the series, the worker fixes what a P0 or a worthwhile P1 finding asks, and the loop stops after 3 rounds at most. Its report records the rounds and every finding. A P0 finding is closed only by a later round of fresh reviewers, never by the worker itself; trusted code rejects the Result while one is open, which is `reject_patch_proposal` (a rejected proposal, charged to `no_progress`) and publishes nothing. Otherwise the worker's publication job pushes the patch in the same run and posts the summary of the loop as a comment on the pushed commit. So the states `development.review_pending`, `development.reviewing` and `development.publishing`, the task kind `development_review`, the budget `dev_reviews` and the record fields `held_patch` and `review_comments` are gone, and `record_publish_success` of `development.agent_running` is the only row that publishes a development patch. It folds the Result once the development PR of the pushed head is recorded: the three rows that open it (`launch_development_pr`, `confirm_development_pr`, `exhaust_development_pr_launches`) are rows of `development.agent_running` too, with no new verb. A record written in one of the removed states is not refused: the record migration drops its held patch and review comments, moves it to `development.fix_needed` with no task, and turns the pending action `patch_review_unavailable` into `task_failed`. A Result held for a publish-only retry whose report records no review loop at all is of a worker run of the earlier pipeline: `reallocate_after_pipeline_failure` takes it, charging nothing, and drops the held Result. A Result with a review loop must also say which series its last round reviewed: the SHA-256 of that series is the `patch_digest` of the proposal, so a patch changed after its last review is rejected. The submission rewrite reviews its own series and text the same way: its trusted check also requires a review loop with no P0 finding open (an open one is a `fail` verdict with one reason per finding, a missing or unusable loop is a Result that is not usable), and `accept_submission_rewrite` leads straight to `handoff.building_upstream_branch` without bumping the revision. The states `handoff.review_pending` and `handoff.reviewing`, the task kind `submission_review`, the verbs `request_submission_review`, `accept_submission_review` and `reject_submission_review`, and the record field `submission_review_id` are gone: the accepted rewrite evidence is what the build of `riscv64` and the package read. A record in a removed handoff state is moved to `handoff.review_due` by the record migration.
 
 ```mermaid
 flowchart TB

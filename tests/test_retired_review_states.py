@@ -22,7 +22,9 @@ WORK = {"dedupe_key": "closeio--ciso8601/1@g0.r7:submission_review", "task": "su
 
 
 def live():
-    return json.loads(LIVE.read_text())
+    """The live record under the current names (the file is as committed
+    before the task rename)."""
+    return state.migrate_names("contributions", json.loads(LIVE.read_text()))[0]
 
 
 def old_handoff(activity, **over):
@@ -44,9 +46,9 @@ class TestRetiredStates(unittest.TestCase):
         for activity in ("review_pending", "reviewing"):
             with self.subTest(activity=activity):
                 work = dict(WORK) if activity == "reviewing" else None
-                new, event = self.migrate(old_handoff(activity, active_work=work))
+                new, event = self.migrate(old_handoff(activity, active_task=work))
                 self.assertEqual(engine.state_key(new), "handoff.review_due")
-                self.assertEqual((new["active_work"], new["submission_rewrite_id"]), (None, None))
+                self.assertEqual((new["active_task"], new["submission_rewrite_id"]), (None, None))
                 self.assertNotIn("submission_review_id", new)
                 self.assertEqual((event["details"]["from_state"], event["details"]["to_state"]),
                                  (f"handoff.{activity}", "handoff.review_due"))
@@ -77,11 +79,11 @@ class TestRetiredStates(unittest.TestCase):
                 record.update(phase="development", activity=activity, handoff_approval=None,
                               pending_human_action=None, clean_head_sha=None,
                               held_patch={"candidate": "c" * 40}, submission_rewrite_id=None,
-                              active_work=dict(WORK, task="patch_review") if activity == "reviewing"
+                              active_task=dict(WORK, task="patch_review") if activity == "reviewing"
                               else None)
                 new, event = self.migrate(record)
                 self.assertEqual(engine.state_key(new), "development.fix_needed")
-                self.assertEqual(new["active_work"], None)
+                self.assertEqual(new["active_task"], None)
                 self.assertNotIn("held_patch", new)
                 self.assertEqual(event["details"]["from_state"], f"development.{activity}")
 
@@ -97,7 +99,7 @@ class TestRetiredStates(unittest.TestCase):
         record = state.migrate_record_fields(live(), now=NOW)[0]
         record.update(phase="development", activity="publishing", handoff_approval=None,
                       pending_human_action=None, clean_head_sha=None, submission_rewrite_id=None,
-                      held_patch={"candidate": "c" * 40}, active_work=None,
+                      held_patch={"candidate": "c" * 40}, active_task=None,
                       pending_publication={"worker_run_id": "777", "attempts": 1,
                                            "last_reason": "infra", "next_attempt_at": NOW})
         new, event = self.migrate(record)
@@ -120,7 +122,7 @@ class TestRetiredStates(unittest.TestCase):
 
         record = state.migrate_record_fields(live(), now=NOW)[0]
         record.update(phase="development", activity="fix_needed", handoff_approval=None,
-                      clean_head_sha=None, submission_rewrite_id=None, active_work=None)
+                      clean_head_sha=None, submission_rewrite_id=None, active_task=None)
         self.assertIsNone(engine.state_problem(record))
         self.assertIn("holds the publication",
                       engine.state_problem(dict(record, pending_publication={"worker_run_id": "7"})))
@@ -139,9 +141,9 @@ class TestRetiredStates(unittest.TestCase):
                       held_patch={"candidate": "c" * 40},
                       pending_human_action={"kind": "patch_review_unavailable", "requested_at": NOW,
                                             "reminded_at": None, "escalated_at": None,
-                                            "counter": "work_recovery"})
+                                            "counter": "task_recovery"})
         new, event = self.migrate(record)
-        self.assertEqual(new["pending_human_action"]["kind"], "work_failed")
+        self.assertEqual(new["pending_human_action"]["kind"], "task_failed")
         self.assertIn("pending_human_action.kind patch_review_unavailable",
                       event["details"]["removed"])
 
@@ -149,7 +151,7 @@ class TestRetiredStates(unittest.TestCase):
         record = state.migrate_record_fields(live(), now=NOW)[0]
         record.update(phase="development", activity="reviewing", handoff_approval=None,
                       clean_head_sha=None, submission_rewrite_id=None,
-                      held_patch={"candidate": "c" * 40}, active_work=dict(WORK))
+                      held_patch={"candidate": "c" * 40}, active_task=dict(WORK))
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".state/contributions/closeio--ciso8601--1.json"
             path.parent.mkdir(parents=True)

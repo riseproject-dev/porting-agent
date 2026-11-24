@@ -52,7 +52,7 @@ class _ForkFixture:
                      "allowed_paths": [".github/workflows/*"], "reason_ids": ["ci-1"], "ref": "riscv64-dev",
                      "generation": 0, "dedupe_key": KEY}
         # The task named by the `task` field is the task the record holds.
-        self.record["active_work"] = {
+        self.record["active_task"] = {
             "dedupe_key": KEY, "task": "development_repair", "revision": 0, "generation": 0,
             "attempt": 1, "requested_at": NOW, "deadline_at": "2026-11-24T09:00:00+00:00",
             "dispatched_run_id": None, "reason_ids": ["ci-1"], "feedback_evidence_ids": []}

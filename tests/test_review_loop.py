@@ -299,7 +299,7 @@ class TestComment(unittest.TestCase):
 
 def running(task="development_patch", revision=3, **over):
     key = f"example--proj/12@g0.r{revision}:{task}"
-    return contribution(activity="agent_running", revision=revision, active_work={
+    return contribution(activity="agent_running", revision=revision, active_task={
         "dedupe_key": key, "task": task, "generation": 0, "revision": revision, "attempt": 1,
         "requested_at": NOW, "deadline_at": NOW, "dispatched_run_id": "4000",
         "reason_ids": ["plan-1"], "feedback_evidence_ids": []}, plan_evidence_id="plan-1", **over)
@@ -324,7 +324,7 @@ def kinds(out):
 
 def published(rec, *, run="4242", artifact=903):
     """The Result of the worker run that pushed its patch."""
-    work_ = rec["active_work"]
+    work_ = rec["active_task"]
     task = {"task": work_["task"], "contribution_id": rec["contribution_id"],
             "revision": work_["revision"], "generation": 0, "dedupe_key": work_["dedupe_key"],
             "expected_head": SHA_A, "fork": rec["fork"]["name"], "ref": "riscv64-dev",
@@ -370,17 +370,17 @@ class TestFirstPatch(unittest.TestCase):
     def test_a_deferred_result_is_not_task_without_a_usable_result(self):
         """The queue says the graph completed and the artifact is collected,
         but the Result is only deferred: dispatch recovery must not allocate
-        a retry, bump the revision or charge `work_recovery`."""
+        a retry, bump the revision or charge `task_recovery`."""
         import tasks
 
         rec = self.first()
-        graph = tasks.graph_id(rec["active_work"]["dedupe_key"])
+        graph = tasks.graph_id(rec["active_task"]["dedupe_key"])
         out = tick(rec, [published(rec)], queue_works={graph: "completed"})
         after = final(out)
-        self.assertNotIn("allocate_work_retry", kinds(out))
+        self.assertNotIn("allocate_task_retry", kinds(out))
         self.assertEqual(kinds(out), ["launch_development_pr"])
-        self.assertEqual((after["revision"], after["active_work"]["dedupe_key"]),
-                         (rec["revision"], rec["active_work"]["dedupe_key"]))
+        self.assertEqual((after["revision"], after["active_task"]["dedupe_key"]),
+                         (rec["revision"], rec["active_task"]["dedupe_key"]))
         self.assertEqual(after["budget"], rec["budget"])
 
     def test_the_intent_names_the_commit_the_worker_pushed_only(self):
@@ -428,8 +428,8 @@ class TestOldWork(unittest.TestCase):
         new = final(out)
         self.assertEqual(engine.state_key(new), "development.agent_running")
         self.assertEqual(new["budget"]["attempts_used"], rec["budget"]["attempts_used"])
-        self.assertEqual(new["active_work"]["attempt"], 1)
-        self.assertNotEqual(new["active_work"]["dedupe_key"], None)
+        self.assertEqual(new["active_task"]["attempt"], 1)
+        self.assertNotEqual(new["active_task"]["dedupe_key"], None)
 
     def test_a_held_result_of_the_earlier_contract_is_relaunched_nothing_charged(self):
         """The publish-only retry of a Result held before the deploy finds a
@@ -439,7 +439,7 @@ class TestOldWork(unittest.TestCase):
                 "next_attempt_at": NOW}
         # The task was cleared when the Result was held.
         work_ = running()
-        rec = dict(work_, pending_publication=held, active_work=None)
+        rec = dict(work_, pending_publication=held, active_task=None)
         result = dict(published(work_), status="unreviewed")
         result.pop("operation")
         out = tick(rec, [result])
@@ -448,7 +448,7 @@ class TestOldWork(unittest.TestCase):
         self.assertEqual(engine.state_key(new), "development.agent_running")
         self.assertIsNone(new["pending_publication"])
         self.assertEqual(new["budget"], rec["budget"])
-        self.assertEqual(new["active_work"]["attempt"], 1)
+        self.assertEqual(new["active_task"]["attempt"], 1)
         self.assertEqual(new["revision"], rec["revision"] + 1)
 
     def test_task_that_carries_the_review_contract_publishes_like_any_other(self):

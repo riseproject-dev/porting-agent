@@ -257,7 +257,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
 
     def undispatched_repair(self):
         rec = self.record(activity="agent_running")
-        rec["active_work"] = {
+        rec["active_task"] = {
             "dedupe_key": "closeio--ciso8601/1@5:development_repair",
             "task": "development_repair", "revision": 5, "attempt": 1,
             "requested_at": NOW, "deadline_at": "2026-11-18T18:00:00+00:00",
@@ -286,7 +286,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         a head row: a moved fork head is recorded from
         `development.fix_needed` once the stale Result is replanned."""
         held = self.undispatched_repair()
-        held["active_work"] = None
+        held["active_task"] = None
         held["pending_publication"] = {"worker_run_id": "5", "attempts": 1, "last_reason": "x",
                                        "next_attempt_at": NOW, "exhausted": False}
         moved = "c" * 40
@@ -817,7 +817,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(tick.report["intake"][-1]["decision"], "cancelled")
 
         active = contribution(phase="planning", activity="agent_running")
-        active["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
+        active["active_task"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                                  "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         tick = controller.tick(contributions={"c": active}, operations={}, consumed={}, projects={},
                                policy=policy(), inputs=controller.Inputs(now=T,
@@ -956,7 +956,7 @@ class TestTick(unittest.TestCase):
         import reconcile
         from tests.test_plan_gate import plan
         rec = contribution(phase="planning", activity="agent_running")
-        rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
+        rec["active_task"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                               "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         pub = {"status": "planning", "task": {"contribution_id": rec["contribution_id"], "revision": 0,
                                                 "generation": 0, "dedupe_key": "k"},
@@ -1011,7 +1011,7 @@ class TestTick(unittest.TestCase):
             command_id="comment-9", actor=OWNER, now=NOW).record
         refreshed["phase"] = "planning"
         refreshed["activity"] = "agent_running"
-        refreshed["active_work"] = {"dedupe_key": "refresh", "task": "planning",
+        refreshed["active_task"] = {"dedupe_key": "refresh", "task": "planning",
                                     "revision": 8, "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         pub = {"status": "planning",
                "task": {"contribution_id": rec["contribution_id"], "revision": 8,
@@ -1041,7 +1041,7 @@ class TestTick(unittest.TestCase):
         import reconcile
         from tests.test_plan_gate import plan
         rec = contribution(phase="planning", activity="agent_running")
-        rec["active_work"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
+        rec["active_task"] = {"dedupe_key": "k", "task": "planning", "revision": 0,
                               "requested_at": NOW, "deadline_at": NOW, "generation": 0, "attempt": 1, "dispatched_run_id": None, "reason_ids": [], "feedback_evidence_ids": []}
         research = plan()
         research["proposal"].update(decision="park", admission_class=None, allowed_paths=[],
@@ -1055,7 +1055,7 @@ class TestTick(unittest.TestCase):
                              pressure=capacity.Pressure(ok=True), observe=False)
         final = [r for k, r in out.staged if k == "contributions"][-1]
         # `park_planning` ends the generation without a revision bump.
-        self.assertEqual((final["phase"], final["activity"], final["active_work"], final["revision"]),
+        self.assertEqual((final["phase"], final["activity"], final["active_task"], final["revision"]),
                          ("parked", "idle", None, 0))
         self.assertIn("No concrete upstream patch", final["parked_reason"])
         self.assertEqual(out.report["provision_requests"], [])
@@ -1114,7 +1114,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(len(why), 1)
         self.assertIn("planning began in this tick", why[0])
         begun = [r for k, r in res.staged if k == "contributions"][-1]
-        self.assertEqual((begun["phase"], begun["activity"], begun["active_work"]),
+        self.assertEqual((begun["phase"], begun["activity"], begun["active_task"]),
                          ("planning", "idle", None))
         waiting = controller.tick(contributions={begun["contribution_id"]: begun}, operations={},
                                   consumed={}, projects={}, policy=policy(),
@@ -1183,7 +1183,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
         self.assertEqual(len(res.requested_effects), 1)
         self.assertEqual(res.requested_effects[0]["task"], "planning")
         self.assertEqual(res.requested_effects[0]["dedupe_key"],
-                         final["active_work"]["dedupe_key"])
+                         final["active_task"]["dedupe_key"])
 
     def test_refresh_without_snapshot_waits_unbound(self):
         for snapshots in ({}, {"example/proj": {"error": "upstream unavailable"}}):
@@ -1192,7 +1192,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
                 self.assertEqual(res.report["commands"][0]["result"], "accepted")
                 final = self.final(res)
                 self.assertEqual((final["phase"], final["activity"]), ("planning", "idle"))
-                self.assertIsNone(final["active_work"])
+                self.assertIsNone(final["active_task"])
                 self.assertEqual(final["upstream"]["repository_id"], None)
                 self.assertEqual(res.requested_effects, [])
                 self.assertTrue(any(d["contribution"] == final["contribution_id"]
@@ -1342,7 +1342,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
                          ("queued", "idle", True))
         self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
                                              "base_ref": "trunk", "base_sha": SHA_B})
-        self.assertIsNone(final["active_work"])
+        self.assertIsNone(final["active_task"])
         self.assertEqual(res.requested_effects, [])
 
 

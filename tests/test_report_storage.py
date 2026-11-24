@@ -35,7 +35,7 @@ POLICY = policy()
 def with_report(rec: dict, outcome: dict, *, task: str | None = None, **report_fields) -> dict:
     """``outcome`` as the Result of the record's task, carrying a history
     and a valid report of that task."""
-    work = rec.get("active_work") or {}
+    work = rec.get("active_task") or {}
     name = task or work.get("task") or "development_repair"
     outcome = copy.deepcopy(outcome)
     outcome["task"] = dict(outcome.get("task") or {}, contribution_id=rec["contribution_id"],
@@ -106,7 +106,7 @@ class TestDevelopment(unittest.TestCase):
                 self.assertEqual(event["kind"], verb)
                 self.assertEqual(event["details"]["report_evidence_id"], evidence["evidence_id"])
                 self.assertEqual(evidence["data"]["work"], {
-                    "dedupe_key": rec["active_work"]["dedupe_key"], "generation": 0,
+                    "dedupe_key": rec["active_task"]["dedupe_key"], "generation": 0,
                     "revision": rec["revision"], "task": "development_repair",
                     "worker_run_id": "555"})
                 self.assertEqual(evidence["data"]["verb"], verb)
@@ -125,7 +125,7 @@ class TestDevelopment(unittest.TestCase):
                 self.assertNotIn("report_evidence_id", events(staged)[0]["details"])
         # A no-change report counted as a rejection (the task carries
         # feedback) is discarded too.
-        rec = dev.running(active_work=dict(dev.running()["active_work"],
+        rec = dev.running(active_task=dict(dev.running()["active_task"],
                                            feedback_evidence_ids=["review-1"]),
                           pending_feedback_evidence_ids=["review-1"])
         _new, staged = fold(rec, with_report(rec, publication(rec, "no_change")))
@@ -304,7 +304,7 @@ class TestDevelopment(unittest.TestCase):
                 paused = dev.final(out, rec)
                 self.assertIn("carries no report that can be stored",
                               paused["paused_reason"])
-                self.assertIn(rec["active_work"]["dedupe_key"], paused["paused_reason"])
+                self.assertIn(rec["active_task"]["dedupe_key"], paused["paused_reason"])
                 # The Result is never folded without its report.
                 self.assertEqual(engine.state_key(paused), "development.fix_needed")
                 self.assertTrue(paused["paused"])
@@ -312,7 +312,7 @@ class TestDevelopment(unittest.TestCase):
 
 class TestUpstreamReview(unittest.TestCase):
     def running(self):
-        return up.record("agent_running", active_work=dict(up.REVISION_TASK))
+        return up.record("agent_running", active_task=dict(up.REVISION_TASK))
 
     def test_a_published_revision_and_a_no_change_answer_store_the_report(self):
         for name, verb in (("published", "record_revision_publish_success"),
@@ -357,7 +357,7 @@ class TestSubmission(unittest.TestCase):
         outcome = with_report(world.record, world.rewrite_outcome(verdict="maybe"),
                               task="submission_rewrite")
         out = world.tick(th.at(1), publications=[outcome])
-        self.assertIn("allocate_work_retry", world.kinds(out))
+        self.assertIn("allocate_task_retry", world.kinds(out))
         self.assertEqual(stored(out.staged), [])
 
 
@@ -384,7 +384,7 @@ class TestLargeReport(unittest.TestCase):
                  for name, verb in (("published", "record_publish_success"),
                                     ("no_change", "request_ci_rerun"))]
         def revision():
-            return up.record("agent_running", active_work=dict(up.REVISION_TASK))
+            return up.record("agent_running", active_task=dict(up.REVISION_TASK))
         cases += [(revision, lambda rec, name: (up.published(rec, SHA_B) if name == "published"
                                                 else publication(rec, name)), name, verb)
                   for name, verb in (("published", "record_revision_publish_success"),
@@ -569,7 +569,7 @@ class TestUncertainPublicationHistory(unittest.TestCase):
             return snapshot
         rec, verbs = step(rec, minutes=50, head=SHA_B, ci=attempt("failed"))
         self.assertEqual(verbs, ["record_ci_failure", "request_repair"])
-        key = rec["active_work"]["dedupe_key"]
+        key = rec["active_task"]["dedupe_key"]
         history = evidence[task_history.evidence_id(key)]["data"]
         return own, history
 
@@ -686,9 +686,9 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
                         at(minutes).isoformat())
             rec, _ = step(dict(rec, active_operation_id=None), minutes=minutes, head=SHA_B,
                           verdict=verdict)
-            if rec.get("active_work"):
+            if rec.get("active_task"):
                 break
-        self.assertEqual(rec["active_work"]["task"], "development_repair")
+        self.assertEqual(rec["active_task"]["task"], "development_repair")
         return rec, evidence, held
 
     def test_the_repair_reads_the_held_report_with_the_failing_ci(self):
@@ -697,7 +697,7 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
             with self.subTest(end=end):
                 rec, evidence, held = self.chain(end)
                 history = evidence[task_history.evidence_id(
-                    rec["active_work"]["dedupe_key"])]["data"]
+                    rec["active_task"]["dedupe_key"])]["data"]
                 entries = {t.get("evidence_id"): t for t in history["timeline"]}
                 report_entry = entries[held["evidence_id"]]
                 self.assertEqual(report_entry.get("head_candidate"), SHA_B)
@@ -826,7 +826,7 @@ class TestHeldRevisionReport(unittest.TestCase):
                 if kind == "operations":
                     ops[item["operation_id"]] = item
             return up.final(out, rec), up.kinds(out)
-        rec = up.record("agent_running", active_work=dict(up.REVISION_TASK))
+        rec = up.record("agent_running", active_task=dict(up.REVISION_TASK))
         lost = up.branch_operation(rec, SHA_B, confirmed=False)
         rec, verbs = step(rec, [with_report(rec, dict(
             publication(rec, "uncertain"), candidate=SHA_B, operation=lost))])
@@ -856,7 +856,7 @@ class TestHeldRevisionReport(unittest.TestCase):
         rec, verbs = step(resumed.record, now=now + timedelta(minutes=30),
                           pr=up.pull(head=SHA_B), branch=SHA_B, capacity_ok=True)
         self.assertEqual(verbs, ["request_review_revision"])
-        history = evidence[task_history.evidence_id(rec["active_work"]["dedupe_key"])]["data"]
+        history = evidence[task_history.evidence_id(rec["active_task"]["dedupe_key"])]["data"]
         return history, held
 
     def test_the_next_revision_reads_the_held_report(self):
@@ -871,7 +871,7 @@ class TestHeldRevisionReport(unittest.TestCase):
         """A revision retry rejected as stale behind the confirmed operation
         of an earlier attempt takes `reject_patch_proposal`; that push
         landed, so the report is stored with its commit."""
-        rec = up.record("agent_running", active_work=dict(up.REVISION_TASK),
+        rec = up.record("agent_running", active_task=dict(up.REVISION_TASK),
                         pending_publication=dict(PENDING))
         landed = up.branch_operation(rec, SHA_B, confirmed=True)
         retry = dict(publication(rec, "rejected_stale"), attempt=2)

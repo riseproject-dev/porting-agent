@@ -136,7 +136,7 @@ class TestCommandsByTheTable(unittest.TestCase):
                 out = apply_command(record, commands.parse('/upstreaming pause reason="later"'))
                 self.assertEqual(out.event["kind"], "pause")
                 self.assertEqual(engine.state_key(out.record), target)
-                self.assertEqual((out.record["active_work"], out.record["pending_publication"],
+                self.assertEqual((out.record["active_task"], out.record["pending_publication"],
                                   out.record["paused_reason"], out.record["paused_by"]),
                                  (None, None, "later", "human"))
                 self.assertEqual(out.record["revision"], record["revision"])
@@ -172,14 +172,14 @@ class TestCommandsByTheTable(unittest.TestCase):
         self.assertEqual(again.reason, "already paused")
 
     def test_resume_of_a_paused_human_wait_names_the_wait_that_remains(self):
-        record = table_record("development.waiting_human", paused=True, pending="work_failed")
+        record = table_record("development.waiting_human", paused=True, pending="task_failed")
         out = apply_command(record, commands.parse('/upstreaming resume revision=0 reason="go"'))
         self.assertEqual(out.event["kind"], "resume_pause")
-        self.assertEqual(out.event["details"]["pending_human_action"], "work_failed")
+        self.assertEqual(out.event["details"]["pending_human_action"], "task_failed")
         self.assertEqual(engine.state_key(out.record), "development.waiting_human")
         text = status_ledger.render(dict(out.event, sequence=3), out.record, "https://run")
         self.assertIn("The contribution stays in `development.waiting_human`", text)
-        self.assertIn("Pending human action: `work_failed`", text)
+        self.assertIn("Pending human action: `task_failed`", text)
         second = apply_command(out.record, commands.parse('/upstreaming resume revision=1 reason="go"'))
         self.assertEqual(second.event["kind"], "resume_development")
         self.assertEqual(engine.state_key(second.record), "development.fix_needed")
@@ -326,7 +326,7 @@ class TestStaleResume(unittest.TestCase):
                 self.assertEqual(stale.record["fork"], record["fork"])
 
     def test_a_human_wait_in_development_refreshes_after_a_long_wait(self):
-        record = table_record("development.waiting_human", pending="work_failed")
+        record = table_record("development.waiting_human", pending="task_failed")
         self.assertEqual(self.resume(record, NOW).event["kind"], "resume_development")
         self.assertEqual(self.resume(record, self.LATER).event["kind"], "resume_stale")
 
@@ -355,7 +355,7 @@ class TestStaleResume(unittest.TestCase):
         self.assertIsNotNone(stale["refresh"]["head_sha"])
         fork = dict(stale["fork"], pr_number=(stale["fork"]["pr_number"] or 0) + 5)
         rec = dict(stale, phase="planning", activity="agent_running", fork=fork,
-                   active_work=dict(WORK, task="planning"))
+                   active_task=dict(WORK, task="planning"))
         new, staged = reconcile.apply_publication(
             rec, {"status": "planning", "plan": plan("develop")},
             now=NOW, policy=policy(), worker_run_id="7")
@@ -366,7 +366,7 @@ class TestStaleResume(unittest.TestCase):
     def test_a_refreshed_plan_without_a_development_pr_is_admitted_afresh(self):
         stale = self.resume(table_record("provisioning.idle", paused=True), self.LATER).record
         rec = dict(stale, phase="planning", activity="agent_running",
-                   active_work=dict(WORK, task="planning"))
+                   active_task=dict(WORK, task="planning"))
         new, _staged = reconcile.apply_publication(
             rec, {"status": "planning", "plan": plan("develop")},
             now=NOW, policy=policy(), worker_run_id="7")
@@ -383,7 +383,7 @@ class TestReminders(unittest.TestCase):
         return final(output, record), events(output)
 
     def test_cadence_in_business_days(self):
-        record = table_record("development.waiting_human", pending="work_failed")
+        record = table_record("development.waiting_human", pending="task_failed")
         record["pending_human_action"]["requested_at"] = "2026-11-20T10:00:00+00:00"  # a Friday
         # Monday and Tuesday count; the weekend does not.
         for now, due in (("2026-11-24T09:59:59+00:00", False), ("2026-11-24T10:00:00+00:00", False),
@@ -403,7 +403,7 @@ class TestReminders(unittest.TestCase):
         self.assertEqual(self.ticks(paused, "2026-12-30T10:00:00+00:00")[1], [])
 
     def test_a_request_on_a_weekend_counts_from_monday(self):
-        record = table_record("development.waiting_human", pending="work_failed")
+        record = table_record("development.waiting_human", pending="task_failed")
         # Saturday, Sunday, and a Friday evening at -05:00 that is a Saturday
         # in UTC: the days ending on Monday, Tuesday, and Wednesday count.
         for requested, due in (("2026-11-21T10:00:00+00:00", "2026-11-25T10:00:00+00:00"),
@@ -472,7 +472,7 @@ class TestReminders(unittest.TestCase):
                                  ["record_reminder"])
 
     def test_a_stale_resume_of_a_development_wait_posts_no_reminder(self):
-        record = table_record("development.waiting_human", paused=True, pending="work_failed")
+        record = table_record("development.waiting_human", paused=True, pending="task_failed")
         record["pending_human_action"]["requested_at"] = "2026-11-02T10:00:00+00:00"
         after, evs = self.resume_tick(record, "2026-12-01T10:00:00+00:00")
         self.assertEqual([e["kind"] for e in evs][:1], ["resume_stale"])
@@ -494,7 +494,7 @@ class TestReminders(unittest.TestCase):
     def test_an_error_in_the_reminder_step_pauses_only_that_contribution(self):
         from unittest import mock
 
-        record = table_record("development.waiting_human", pending="work_failed")
+        record = table_record("development.waiting_human", pending="task_failed")
         with mock.patch("controller.reminder_details", side_effect=RuntimeError("injected")):
             after, evs = self.ticks(record, "2026-12-30T10:00:00+00:00")
         self.assertEqual([e["kind"] for e in evs], ["pause_on_processing_error"])
@@ -567,7 +567,7 @@ class TestControllerStops(unittest.TestCase):
         paused = recs[-1]
         self.assertEqual(engine.state_key(paused), "development.fix_needed")
         self.assertEqual((paused["paused"], paused["paused_by"], paused["paused_reason"],
-                          paused["active_work"], "blocked_reason" in paused),
+                          paused["active_task"], "blocked_reason" in paused),
                          (True, "controller", "upstream_identity_changed", None, False))
         self.assertEqual(result.requested_effects, [])
         # Already paused: nothing again.
@@ -590,7 +590,7 @@ class TestControllerStops(unittest.TestCase):
                          ["resume_pause"])
         self.assertEqual(result.requested_effects, [])
         resumed = [r for k, r in result.staged if k == "contributions"][-1]
-        self.assertEqual((engine.state_key(resumed), resumed["paused"], resumed["active_work"]),
+        self.assertEqual((engine.state_key(resumed), resumed["paused"], resumed["active_task"]),
                          ("development.fix_needed", False, None))
         result = self.identity_tick(resumed)
         self.assertEqual([e["kind"] for k, e in result.staged if k == "events"],

@@ -118,7 +118,7 @@ class TestCanonicalIssueBody(unittest.TestCase):
         # Planning begins in the tick that accepts the request; its task is
         # requested in the next tick, from the description frozen at intake.
         self.assertEqual((record["phase"], record["activity"]), ("planning", "idle"))
-        self.assertIsNone(record["active_work"])
+        self.assertIsNone(record["active_task"])
         issue["body"] = "edited after intake"
         later = reconcile.tick(
             None,
@@ -142,7 +142,7 @@ class TestCanonicalIssueBody(unittest.TestCase):
         )
         requested = [r for kind, r in later.staged if kind == "contributions"][-1]
         self.assertEqual(
-            requested["active_work"]["tracking_issue"]["description_digest"], BODY_SHA256
+            requested["active_task"]["tracking_issue"]["description_digest"], BODY_SHA256
         )
         result.staged.extend(later.staged)
         self.assertEqual(record["tracking_issue"]["description"], BODY_PATH.read_text())
