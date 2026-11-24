@@ -2038,8 +2038,12 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             failures[failure.contribution_id] = failure
             # A pause requested by trusted code (``ContributionPause``) is
             # specific to its contribution and never stops the tick.
+            # A contribution that is already stopped does not count either:
+            # its failure changes nothing, or only re-stops it at the new
+            # version of the pipeline code.
             errors = [f for f in failures.values() if isinstance(f, isolation.ProcessingError)
-                      and not isinstance(f, isolation.ContributionPause)]
+                      and not isinstance(f, isolation.ContributionPause)
+                      and not _already_stopped(snap, f.contribution_id)]
             if len(errors) > 1:
                 raise isolation.TickFailure(
                     "processing failed for more than one contribution in one tick; the tick "
@@ -2075,6 +2079,13 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         outcome = None
         if record is not None:
             try:
+                # A stop of the controller from an earlier version of the
+                # pipeline code, resumed in this tick and failing again, is
+                # stopped again at the version that ran.
+                for step in _restop_steps(record, policy=policy, now=iso,
+                                          version=inputs.get("pipeline")):
+                    out.staged.extend([("contributions", step.record), ("events", step.event)])
+                    record = step.record
                 outcome = pause_on_processing_error(record, description, policy=policy, now=iso,
                                                     version=inputs.get("pipeline"))
             except Exception as error:
@@ -2121,6 +2132,26 @@ def check_staged_operations(staged: list[tuple[str, dict]], committed: dict[str,
 
 
 PROCESSING_ERROR_VERB = "pause_on_processing_error"
+
+
+def _already_stopped(snap: Snapshot, cid: str) -> bool:
+    """Whether the committed record of ``cid`` is paused: a failure in it
+    stops nothing more and never stops the tick."""
+    return any(c["contribution_id"] == cid and c.get("paused")
+               for c in snap.contributions.values())
+
+
+def _restop_steps(record: dict, *, policy: dict, now: str,
+                  version: str | None) -> list[engine.Applied]:
+    """The rows that stop again, at the version of the pipeline code that
+    ran, a record the controller paused for an error at an earlier version:
+    ``resume_pause`` (the tick variant), whose record the stop then takes
+    over. Empty when the record is not such a stop or ran at that version, so
+    the stop stays as it is."""
+    if version is None or record.get("paused_at_commit") == version:
+        return []
+    resumed = _resume_after_error(record, policy=policy, now=now, version=version)
+    return [resumed] if resumed is not None else []
 
 
 def pause_on_processing_error(record: dict, description: dict, *, policy: dict,

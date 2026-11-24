@@ -220,6 +220,37 @@ class TestTheAutomaticResume(unittest.TestCase):
         # Without a version nothing is resumed.
         self.assertEqual(kinds(tick(live(), pipeline=None)), [])
 
+    def test_a_retry_that_fails_again_stops_at_the_new_version_and_does_not_loop(self):
+        def broken(rec, *a, **k):
+            raise RuntimeError("still broken")
+
+        old, new = "a" * 64, "b" * 64
+        first = dict(live(), paused_at_commit=old)
+        second = dict(copy.deepcopy(first), contribution_id="luhenry--d2vm/4")
+        for names in (("c",), ("c", "d")):
+            records = {"c": first, "d": second}
+            snapshot = lambda: reconcile.Snapshot(
+                {k: copy.deepcopy(records[k]) for k in names}, {}, {}, {},
+                {report()["evidence_id"]: report()})
+            with mock.patch("reconcile._heal_invariant", broken), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                out = reconcile.tick(None, snapshot(), policy=POLICY, now=T, publications=[],
+                                     pressure=capacity.Pressure(ok=True), observe=False,
+                                     pipeline=new)
+                committed = {r["contribution_id"]: r for kind, r in out.staged
+                             if kind == "contributions"}
+                self.assertEqual(len(committed), len(names))
+                self.assertTrue(all(r["paused"] and r["paused_at_commit"] == new
+                                    for r in committed.values()), names)
+                # The next tick, on the same code, resumes neither and stops nothing.
+                again = reconcile.Snapshot(
+                    {k: r for k, r in zip(names, committed.values())}, {}, {}, {},
+                    {report()["evidence_id"]: report()})
+                out = reconcile.tick(None, again, policy=POLICY, now=T, publications=[],
+                                     pressure=capacity.Pressure(ok=True), observe=False,
+                                     pipeline=new)
+                self.assertEqual(kinds(out), [], names)
+
     def test_a_human_pause_takes_the_stop_over(self):
         out = apply_command(live(), commands.parse(
             f"/upstreaming pause contribution={CID} revision=4 reason=hold"), actor=OWNER,

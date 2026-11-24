@@ -2840,7 +2840,9 @@ FLAGS: dict[str, Flag] = {
                             "(`paused_at_commit` differs from the version that runs, or the "
                             "pause recorded none), with no counter: a retry that fails again "
                             "pauses at the new version and waits for the next change, or for a "
-                            "human `resume`. The effects are those of the command."),
+                            "human `resume`: the tick takes this row and then "
+                            "`pause_on_processing_error` on the committed record. The effects "
+                            "are those of the command."),
         },
     ),
 }
