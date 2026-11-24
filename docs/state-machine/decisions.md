@@ -2794,6 +2794,23 @@ flowchart TB
     development_agent_running -->|exhaust_recovery| development_waiting_human
 ```
 
+### Every decided wait is woken
+
+What ends a wait that a controller tick decided, and what keeps the pipeline from depending on the schedule of the controller?
+
+**Change.** Every wait a tick decides names what ends it: a time (the queue's retry backoff, the wait for a history, the collection grace of a Result whose download failed, a publish-only retry or the wait for its Result, the expiry of a held patch, a review comment, the relaunch of a launched operation, the discovery of an uncertain operation, a reminder, the throttle of the Policy reinstall) or an event that triggers the controller by itself (the completion of a dispatcher or worker run, a push, a command, a resume). The tick reports the earliest time as `wake_at`, and the controller workflow dispatches `controller-wake.yml` for it, which sleeps until then (at most 5 hours 45 minutes, after which the controller run it dispatches reports the wait again) and runs the controller. A time that is not later than the tick is an alert, not a wake. A tick that could not read its inputs looks again 10 minutes later, so a later report never replaces a sooner wake. The schedule of the controller repairs only an event that was missed and what has no wait to name.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_agent_running ==>|retry_dispatch| development_agent_running
+    development_agent_running -->|exhaust_recovery| development_waiting_human
+```
+
 ### A review observed with a CI failure while CI is awaited
 
 In `development.waiting_ci`, which row applies when an actionable review and an executed CI failure on the exact head are observed in the same tick?

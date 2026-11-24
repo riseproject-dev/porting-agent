@@ -55,6 +55,7 @@ import schemas
 import state
 import steering
 import submission
+import wake
 import work
 import work_history
 import worker_report
@@ -109,6 +110,8 @@ RESULT_COLLECTION_GRACE_MINUTES = PUBLISH_RESULT_WAIT_MINUTES
 # created: a run stuck queued or waiting does not hold dispatch recovery
 # forever.
 DISPATCHER_RUN_WAIT = timedelta(minutes=60)
+# A wait for a read that failed this tick looks again after this long.
+READ_RETRY = timedelta(minutes=10)
 
 
 def publish_retry_delay(attempts: int) -> int:
@@ -150,6 +153,7 @@ def migration_report(
         "review_comment_requests": [],
         "dev_pr_requests": [],
         "handoff_requests": [],
+        "wake_at": None,
     }
 
 
@@ -262,7 +266,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                     and now - requested < HISTORY_WAIT:
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
                                "queue_state": state,
-                               "decision": "waiting for the history of the Work"})
+                               "decision": "waiting for the history of the Work",
+                               "wake_at": (requested + HISTORY_WAIT).isoformat()})
                 continue
             if isinstance(history, dict):
                 try:
@@ -293,7 +298,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 if details.get("worker_run"):
                     entry["worker_run"] = details["worker_run"]
                 if not decided:
-                    report.append(entry | {"decision": waiting})
+                    report.append(entry | {"decision": waiting} | {
+                        k: v for k, v in details.items() if k in ("wake_at", "wake_on")})
                     continue
                 new, event, decision = _terminal_work(c, aw, state, now=now, policy=policy,
                                                       details=details)
@@ -310,17 +316,19 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             running = _dispatchers_in_flight(runs, now)
             if running:
                 report.append(entry | {
-                    "decision": "dispatcher running",
+                    "decision": "dispatcher running", "wake_on": "dispatcher run completion",
                     "wake_at": (min(_created(r) for r in running)
                                 + DISPATCHER_RUN_WAIT).isoformat()})
                 continue
             if queue_policy and not queue_policy["preserved"] and not queue_policy["quiescent"]:
                 report.append(entry | {"decision": "waiting for the queue to drain: the installed "
                                                    "Policy refuses every dispatch until the "
-                                                   "dispatcher reinstalls it"})
+                                                   "dispatcher reinstalls it",
+                                       "wake_on": "dispatcher run completion"})
                 continue
             if not after and retry is not None and now < retry["retry_at"]:
-                report.append(entry | {"decision": "waiting for the queue's retry backoff"})
+                report.append(entry | {"decision": "waiting for the queue's retry backoff",
+                                       "wake_at": retry["retry_at"].isoformat()})
                 continue
             if not after:
                 # With a retry, `requested` is the retry time: the worker run
@@ -388,14 +396,19 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
       decides at once, and so does an artifact the collector marked as never
       collectable (``never_collected`` in the reading); an artifact on an
       ended run whose download failed is waited for
-      ``RESULT_COLLECTION_GRACE_MINUTES`` after the run ended."""
+      ``RESULT_COLLECTION_GRACE_MINUTES`` after the run ended.
+
+    While nothing is decided, the details name what ends the wait:
+    ``wake_at`` (a time) or ``wake_on`` (an event)."""
     if state == "cancelled":
         return True, "", {"result": "cancelled"}
     if graph in collected:
         return True, "", {"result": "collected"}
     reading = (work_results or {}).get(graph)
     if not isinstance(reading, dict):
-        return False, "waiting: the worker run of the completed Work was not read", {}
+        # A failed read: look again soon.
+        return (False, "waiting: the worker run of the completed Work was not read",
+                {"wake_at": (now + READ_RETRY).isoformat()})
     status = reading.get("status")
     if status == "unbound":
         return True, "", {"result": "unbound"}
@@ -404,7 +417,8 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
     if status == "gone" or (status == "completed" and reading.get("publication") is False):
         return True, "", details | {"result": "missing"}
     if status != "completed":
-        return False, f"waiting for worker run {run_id} to publish its Result", {}
+        return (False, f"waiting for worker run {run_id} to publish its Result",
+                {"wake_on": "worker run completion"})
     if reading.get("never_collected"):
         return True, "", details | {"result": "uncollected",
                                     "never_collected": reading["never_collected"]}
@@ -416,7 +430,8 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
             and now - ended < timedelta(minutes=RESULT_COLLECTION_GRACE_MINUTES):
         return False, (f"waiting for the Result of worker run {run_id} to be collected "
                        f"(at most {RESULT_COLLECTION_GRACE_MINUTES} minutes after the run "
-                       "ended)"), {}
+                       "ended)"), {"wake_at": (ended + timedelta(
+            minutes=RESULT_COLLECTION_GRACE_MINUTES)).isoformat()}
     return True, "", details | {"result": "uncollected"}
 
 
@@ -580,8 +595,15 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
             r for r in runs if r.get("status") == "completed" and now - _created(r) < timedelta(
                 minutes=POLICY_REINSTALL_LAUNCH_MINUTES)]
         if recent:
-            report.append({"decision": "Policy reinstall due; a dispatcher run is recent",
-                           "dropped": queue_policy["dropped"]})
+            entry = {"decision": "Policy reinstall due; a dispatcher run is recent",
+                     "dropped": queue_policy["dropped"]}
+            if _dispatchers_in_flight(runs, now):
+                entry["wake_on"] = "dispatcher run completion"
+            else:
+                entry["wake_at"] = (max(datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
+                                        for r in recent)
+                                    + timedelta(minutes=POLICY_REINSTALL_LAUNCH_MINUTES)).isoformat()
+            report.append(entry)
         else:
             launch.append({"type": "reinstall_queue_policy"})
             report.append({"decision": "launch the dispatcher to reinstall the Policy",
@@ -3109,9 +3131,21 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # is being opened: its Result is folded once the PR is
                 # recorded, so nothing is retried or expired meanwhile.
                 continue
-            if pp and not pp.get("exhausted") and not engine.stopped(c) \
-                    and engine.state_key(c) in WORK_RESULT_STATES \
-                    and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
+            cid = c["contribution_id"]
+            retrying = bool(pp) and not pp.get("exhausted") and not engine.stopped(c) \
+                and engine.state_key(c) in WORK_RESULT_STATES
+            if retrying and datetime.fromisoformat(pp["next_attempt_at"]) > now:
+                # The retry is due, or the Result of the launched one is
+                # waited for no longer, at that time; a held patch the
+                # retry reads expires at its own time.
+                wake.note(out.report, pp["next_attempt_at"],
+                          "publish-only retry or its Result" if pp.get("launched_at")
+                          else "publish-only retry", now=now, contribution=cid)
+                expires = patch_review.held_patch_expiry_due_at(c) \
+                    if engine.state_key(c) == lifecycle.PUBLISHING else None
+                if expires is not None and expires > now:
+                    wake.note(out.report, expires, "held patch expiry", now=now, contribution=cid)
+            if retrying and datetime.fromisoformat(pp["next_attempt_at"]) <= now:
                 # `schedule_publish_retry` held the Result and charged
                 # `publish_recovery` when its publication failed; the retry
                 # is launched once it is due, and the launch time is
@@ -3155,6 +3189,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     pp, launched_at=now.isoformat(),
                     next_attempt_at=(now + timedelta(
                         minutes=PUBLISH_RESULT_WAIT_MINUTES)).isoformat()))
+                wake.note(out.report, now + timedelta(minutes=PUBLISH_RESULT_WAIT_MINUTES),
+                          "Result of the publish-only retry", now=now, contribution=cid)
                 contributions[key] = changed
                 out.staged.append(("contributions", changed))
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
@@ -3177,6 +3213,22 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             api, contributions, out, snap, policy=policy, now=iso,
             tracking_issues=tracking_issues or {}, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
+    # 6. What ends every wait of this tick: the time of the earliest timed
+    # wait, which the controller workflow wakes the controller at.
+    wake.harvest(out.report, out.report.get("dispatch_recovery") or [], now=now,
+                 why="dispatch recovery")
+    # What could not be read decides nothing this tick, and the sleeper of a
+    # later report replaces an earlier one: look again soon, so the earliest
+    # wake is never lost.
+    if (dispatcher_runs is None or queue_works is None) and any(
+            c.get("active_work") for c in contributions.values()):
+        wake.note(out.report, now + READ_RETRY, "dispatch recovery read nothing this tick",
+                  now=now)
+    if skip:
+        wake.note(out.report, now + READ_RETRY, "contributions skipped this tick", now=now)
+    wake.harvest(out.report, (out.report.get("queue_policy") or {}).get("recovery") or [], now=now,
+                 why="queue policy")
+    wake.finish(out.report, now)
     return out
 
 
@@ -3339,6 +3391,19 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
                 if due.get("launched_at") or held or policy.get("read_only", True) \
                         or due_at > now or (last and due.get("exhausted")):
                     launched.append(due)
+                    # What ends the wait: the receipt wait of a launched
+                    # post, or the time its next attempt is due. A held
+                    # post is woken by the resume or the PR that ends the
+                    # hold.
+                    if not policy.get("read_only", True) and not held:
+                        if due.get("launched_at"):
+                            wake.note(out.report, datetime.fromisoformat(due["launched_at"])
+                                      + timedelta(minutes=patch_review.COMMENT_RECEIPT_WAIT_MINUTES),
+                                      "receipt of the review comment post", now=now,
+                                      contribution=cid)
+                        elif due_at > now:
+                            wake.note(out.report, due_at, "next attempt of the review comment",
+                                      now=now, contribution=cid)
                     if not due.get("launched_at"):
                         report.append(entry | {"status": "exhausted" if due.get("exhausted")
                                                else "held" if held and due_at <= now
@@ -3348,6 +3413,9 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
                 attempt += 1
                 launched.append(dict(due, attempts=attempt, launched_at=iso,
                                      repository=repository, pr_number=number))
+                wake.note(out.report, now + timedelta(
+                    minutes=patch_review.COMMENT_RECEIPT_WAIT_MINUTES),
+                    "receipt of the review comment post", now=now, contribution=cid)
                 requests.append({
                     "type": "post_review_comment", "contribution_id": cid,
                     "contribution_file": contribution_file_id(cid),
@@ -3462,6 +3530,12 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                                 f"{int(waited.total_seconds()) // 60} minutes, and once it "
                                 f"has waited {STEERING_FAILURE_GRACE} its history is built "
                                 "without the lists that still fail"})
+                # The list is read again at the end of the grace, or soon
+                # when it already is read without the lists that fail.
+                moment = datetime.fromisoformat(now)
+                wake.note(out.report, moment + (READ_RETRY if degrade else
+                                                STEERING_FAILURE_GRACE - waited),
+                          "steering list read again", now=moment, contribution=cid)
                 continue
             # One record holds at most ``steering.MAX_ITEMS`` items; the
             # rest are recorded in further records of the same tick, within
@@ -3510,6 +3584,11 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                     launches.append({"type": "relaunch_dispatcher", "contribution_id": cid})
             if collected.get("failed"):
                 entry["steering_failed"] = dict(collected["failed"])
+                if not degrade:
+                    moment = datetime.fromisoformat(now)
+                    wake.note(out.report, moment + STEERING_FAILURE_GRACE - waited,
+                              "steering list read without the lists that fail", now=moment,
+                              contribution=cid)
                 out.report["controller"]["alerts"].append({
                     "contribution": cid,
                     "alert": "steering lists failing for longer than "

@@ -128,6 +128,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         self.assertEqual((staged, report[0]["decision"]), ([], "dispatcher running"))
         self.assertEqual(at(report[0]["wake_at"]),
                          created + reconcile.DISPATCHER_RUN_WAIT)
+        self.assertEqual(report[0]["wake_on"], "dispatcher run completion")
         # Past it, the run no longer holds the Work: it is launched again.
         relaunch, staged, report = self.recover(
             (created + reconcile.DISPATCHER_RUN_WAIT).isoformat(), runs=runs)

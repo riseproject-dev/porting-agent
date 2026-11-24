@@ -53,6 +53,7 @@ Every App token is minted for one purpose, with the narrowest permissions and re
 | Handoff, `upstream-branch`, CI | Destination | The one fork | `actions: write` | Only when the clean head needs its own CI dispatched. |
 | Handoff, `submission-comment` | Control | This repository | `issues: write` | To post the submission package. |
 | Handoff, `ci-rerun` | Destination | The one fork | `actions: write` | To rerun interrupted CI on the clean head. |
+| Controller Wake, `wake` | Control | This repository | `actions: write` | After it slept until the time a controller run reported, to run the controller. The token is minted after the sleep, because an App token lasts one hour; the workflow holds no other permission and no model or destination credential. |
 | Every `continuation` job | Control | This repository | `contents: read`, `actions: write` | To continue the controller. |
 | Website, `deploy` | `GITHUB_TOKEN` | This repository | `contents: read`, `pull-requests: read`, `pages: write`, `id-token: write` | Always. |
 | Website, `preview-comment` | `GITHUB_TOKEN` | This repository | `pull-requests: write` | To link a preview. |

@@ -210,16 +210,26 @@ def held_patch_expires_at(outcome: dict, *, run: str, requested_at: str | None,
     return series.isoformat()
 
 
+def held_patch_expiry_due_at(record: dict) -> datetime | None:
+    """The time from which an artifact the held patch depends on counts as
+    expired (a day before ``held_patch.expires_at``, which every pin
+    records); ``None`` when the record holds no patch."""
+    held = record.get("held_patch")
+    if not held:
+        return None
+    _, margin = _retention()
+    expires = datetime.fromisoformat(str(held["expires_at"]).replace("Z", "+00:00"))
+    return expires - margin
+
+
 def held_patch_expired(record: dict, now: Any) -> bool:
     """Whether an artifact the held patch depends on expired or expires
     within a day (``held_patch.expires_at``, which every pin records)."""
-    held = record.get("held_patch")
-    if not held:
+    at = held_patch_expiry_due_at(record)
+    if at is None:
         return False
-    _, margin = _retention()
-    expires = datetime.fromisoformat(str(held["expires_at"]).replace("Z", "+00:00"))
     now = now if isinstance(now, datetime) else datetime.fromisoformat(str(now))
-    return now >= expires - margin
+    return now >= at
 
 
 def held_patch(record: dict, outcome: dict, *, run: str, now: str,

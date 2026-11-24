@@ -571,6 +571,22 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: Wake the controller at the next due time
+        # A tick that decided a wait with a time names the earliest one
+        # (`wake_at`); `controller-wake.yml` runs the controller then. It runs
+        # whether or not this run committed: the follow-up above covers a run
+        # that committed, this covers a run that committed nothing.
+        if: >-
+          !cancelled() &&
+          steps.policy.outputs.read_only == 'false'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          [ -f report.json ] && [ -n "$GH_TOKEN" ] || exit 0
+          wake_at=$(jq -r '.wake_at // empty' report.json)
+          [ -n "$wake_at" ] || exit 0
+          gh workflow run controller-wake.yml --repo "$GITHUB_REPOSITORY" --ref main -f at="$wake_at"
       - name: Confirm that the dispatcher run is listed
         # Dispatch recovery relaunches a dispatcher whose run is not listed,
         # so the launch ends only once its run is. Runs of this workflow are
