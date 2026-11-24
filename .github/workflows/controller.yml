@@ -34,13 +34,6 @@ on:
       - Handoff
     types: [completed]
   workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Why this run was dispatched: "event" or "follow-up" (a run that follows one that committed state; it never dispatches another)'
-        required: false
-        default: event
-        type: choice
-        options: [event, follow-up]
 
 permissions:
   contents: read
@@ -529,18 +522,18 @@ jobs:
             gh workflow run handoff.yml --repo "$GITHUB_REPOSITORY" --ref main \
               -f operation-id="$operation"
           done
-      - name: Follow up once after a state commit
-        # A commit can make Work due that only a later tick sees. A follow-up
-        # run never dispatches another, and the concurrency group coalesces
-        # it with any other pending run.
+      - name: Follow up after a state commit
+        # A commit can make Work due that only a later tick sees. The follow-up
+        # run commits only if it changes something, so the chain stops by
+        # itself, and the concurrency group coalesces it with any other
+        # pending run.
         if: >-
           !cancelled() &&
           steps.policy.outputs.read_only == 'false' &&
-          steps.state-commit.outputs.committed == 'true' &&
-          github.event.inputs.reason != 'follow-up'
+          steps.state-commit.outputs.committed == 'true'
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-        run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main -f reason=follow-up
+        run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

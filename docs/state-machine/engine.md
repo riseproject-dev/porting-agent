@@ -299,7 +299,7 @@ A decision close ends the contribution for good, so the plan's word alone never 
 
 ## When a tick runs
 
-The controller runs on every pipeline event (a pushed change to the code, an issue or command, the completion of a pipeline workflow, a launched operation's own continuation) and on a schedule of every 10 minutes (`3-59/10 * * * *`, off the round minute), which repairs any event that was missed. When a run's reconcile publishes a state commit, it dispatches exactly one more run of `controller.yml` with the input `reason` set to `follow-up` (the default is `event`), because the commit can make Work due that only a later tick observes. A follow-up run never dispatches another follow-up, a failed launch step earlier in the run does not skip the follow-up, and the concurrency group `porting-agent-controller` coalesces it with any other pending run. No other tick source exists.
+The controller runs on every pipeline event (a pushed change to the code, an issue or command, the completion of a pipeline workflow, a launched operation's own continuation) and on a schedule of every 10 minutes (`3-59/10 * * * *`, off the round minute), which repairs any event that was missed. Every run whose reconcile publishes a state commit dispatches one more run of `controller.yml` (the workflow has no inputs), because the commit can make Work due that only a later tick observes. A run commits only when state really changed, so the chain ends by itself when a follow-up changes nothing. A failed launch step earlier in the run does not skip the follow-up, and the concurrency group `porting-agent-controller` coalesces it with any other pending run. No other tick source exists.
 
 ## Errors while a tick runs
 
