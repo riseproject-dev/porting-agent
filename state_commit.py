@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Build and publish one state-only commit on control ``main`` (plan 6.3).
+"""Build and publish one state-only commit on control ``main``.
 
 * Build: a commit whose parent is the expected ``main`` tip and whose tree
   is that tip's tree plus the staged state files, using a private index (the
@@ -13,8 +13,9 @@
   machine state, never repeat a remote effect to obtain a receipt.
 
 Publishing is refused unless the reviewed policy has ``read_only: false``.
-The App-token / ruleset route that permits the push is an integration
-deliverable (see ``INTEGRATION.md``), not assumed here.
+The App token with ``contents: write`` and the ``protect-main-history``
+ruleset that permit the push are described in
+``docs/security/state-publication.md``.
 """
 
 from __future__ import annotations

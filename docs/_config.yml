@@ -16,7 +16,3 @@ aux_links_new_tab: false
 back_to_top: true
 back_to_top_text: "Back to top"
 footer_content: "Generated from <a href=\"https://github.com/riseproject-dev/porting-agent\">riseproject-dev/porting-agent</a>. Available under the MIT License."
-exclude:
-  - migration-inventory.json
-  - test-deferrals.json
-  - workflow-migration.json

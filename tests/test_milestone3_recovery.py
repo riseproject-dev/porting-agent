@@ -241,9 +241,8 @@ class TestDocsSite(unittest.TestCase):
         self.assertTrue(config["search_enabled"])
         self.assertRegex(config["mermaid"]["version"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(config["baseurl"], "/porting-agent")
-        inventories = {path.name for path in (ROOT / "docs").glob("*.json")}
-        self.assertTrue(inventories)
-        self.assertLessEqual(inventories, set(config["exclude"]))
+        self.assertEqual(sorted((ROOT / "docs").rglob("*.json")), [])
+        self.assertNotIn("exclude", config)
 
     def test_every_docs_page_has_navigation_front_matter(self):
         orders = []

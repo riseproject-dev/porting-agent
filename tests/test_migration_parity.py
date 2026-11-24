@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Milestone 2 root-module, CLI, golden, and deferral contracts."""
+"""Root-module, CLI and golden contracts."""
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -233,41 +232,7 @@ class TestCliContracts(unittest.TestCase):
             self.assertEqual(result.stderr, "")
 
 
-class TestDeferredAndWorkflowContracts(unittest.TestCase):
-    def test_every_deferred_source_test_has_a_restoring_owner(self):
-        deferrals = json.loads((ROOT / "docs/test-deferrals.json").read_text())["deferrals"]
-        identifiers = {item["test"] for item in deferrals}
-        for item in deferrals:
-            self.assertIn(item["restoringMilestone"], (4, 5, 6))
-            self.assertTrue(item["prerequisite"])
-        reference = ROOT / "tests/deferred/test_workflow_contracts.py.reference"
-        tree = ast.parse(reference.read_text())
-        methods = {
-            node.name
-            for item in tree.body
-            if isinstance(item, ast.ClassDef) and item.name == "TestWorkflowContracts"
-            for node in item.body
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
-        }
-        deferred_methods = {
-            identifier.rsplit(".", 1)[-1]
-            for identifier in identifiers
-            if "test_workflow_contracts.py.reference" in identifier
-        }
-        restored_tree = ast.parse((ROOT / "tests/test_workflow_contracts.py").read_text())
-        restored_methods = {
-            node.name
-            for item in restored_tree.body
-            if isinstance(item, ast.ClassDef) and item.name == "TestWorkflowContracts"
-            for node in item.body
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
-        }
-        self.assertEqual(methods, deferred_methods | (methods & restored_methods))
-        self.assertNotIn(
-            "tests.test_observation.TestTriggers.test_repository_state_only_push_refreshes_only_the_website",
-            identifiers,
-        )
-
+class TestWorkflowCommands(unittest.TestCase):
     def test_workflow_python_commands_use_root_modules_or_scripts(self):
         workflow_root = ROOT / ".github/workflows"
         paths = [

@@ -2,6 +2,7 @@
 title: Known gaps
 parent: State machine
 nav_order: 4
+permalink: /state-machine/known-gaps/
 ---
 
 # Known gaps between the code and the table

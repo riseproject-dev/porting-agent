@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "workflows": [
+    {
+      "file": "controller.yml",
+      "owner": "lifecycle controller",
+      "agentic": false
+    },
+    {
+      "file": "dev-pr.yml",
+      "owner": "development pull request",
+      "agentic": false
+    },
+    {
+      "file": "dispatcher.lock.yml",
+      "owner": "generated dispatcher lock",
+      "agentic": false
+    },
+    {
+      "file": "dispatcher.md",
+      "owner": "native Work admission and dispatch",
+      "agentic": true
+    },
+    {
+      "file": "handoff.yml",
+      "owner": "submission handoff operations",
+      "agentic": false
+    },
+    {
+      "file": "image.yml",
+      "owner": "reproduction image",
+      "agentic": false
+    },
+    {
+      "file": "planner.lock.yml",
+      "owner": "generated planner lock",
+      "agentic": false
+    },
+    {
+      "file": "planner.md",
+      "owner": "verified planning",
+      "agentic": true
+    },
+    {
+      "file": "provision.yml",
+      "owner": "trusted fork provisioning",
+      "agentic": false
+    },
+    {
+      "file": "publish-retry.yml",
+      "owner": "trusted publication recovery",
+      "agentic": false
+    },
+    {
+      "file": "review-comment.yml",
+      "owner": "review comment on the development PR",
+      "agentic": false
+    },
+    {
+      "file": "reviewer.lock.yml",
+      "owner": "generated reviewer lock",
+      "agentic": false
+    },
+    {
+      "file": "reviewer.md",
+      "owner": "review of a held development patch",
+      "agentic": true
+    },
+    {
+      "file": "validate.yml",
+      "owner": "repository validation",
+      "agentic": false
+    },
+    {
+      "file": "website.yml",
+      "owner": "public website: docs, status page and previews",
+      "agentic": false
+    },
+    {
+      "file": "worker.lock.yml",
+      "owner": "generated worker lock",
+      "agentic": false
+    },
+    {
+      "file": "worker.md",
+      "owner": "bounded patch proposal",
+      "agentic": true
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 title: Transition engine
 parent: State machine
 nav_order: 3
+permalink: /state-machine/engine/
 ---
 
 # Transition engine

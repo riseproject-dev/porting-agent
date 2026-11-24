@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Milestone 1 repository, migration, intake, and safety contracts."""
+"""Repository, intake, and safety contracts."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-SOURCE_COMMIT = "c21e458f67541af8b6e988eda7a20e30fbad201d"
 
 
 def files() -> list[Path]:
@@ -49,8 +48,12 @@ class TestRepositoryLayout(unittest.TestCase):
             any(path.name.startswith("upstreaming-") for path in WORKFLOWS.iterdir())
         )
 
+
+class TestWorkflowOwnership(unittest.TestCase):
+    def owners(self) -> list[dict]:
+        return json.loads((ROOT / ".github/workflow-owners.json").read_text())["workflows"]
+
     def test_generated_workflow_files_are_expected_and_paired(self):
-        manifest = json.loads((ROOT / "docs/workflow-migration.json").read_text())
         self.assertEqual(
             {
                 path.relative_to(ROOT).as_posix()
@@ -59,64 +62,28 @@ class TestRepositoryLayout(unittest.TestCase):
             },
             {".github/aw/actions-lock.json"},
         )
-        expected_targets = {item["target"] for item in manifest["workflows"]}
+        expected_files = {item["file"] for item in self.owners()}
         for lock in WORKFLOWS.glob("*.lock.yml"):
-            self.assertIn(lock.name, expected_targets)
+            self.assertIn(lock.name, expected_files)
             self.assertTrue(lock.with_name(lock.name.removesuffix(".lock.yml") + ".md").is_file())
         for source in WORKFLOWS.glob("*.md"):
             self.assertTrue(source.with_name(source.stem + ".lock.yml").is_file())
 
-
-class TestMigrationInventory(unittest.TestCase):
-    def test_every_frozen_source_file_has_one_decision(self):
-        inventory = json.loads((ROOT / "docs/migration-inventory.json").read_text())
-        self.assertEqual(inventory["sourceCommit"], SOURCE_COMMIT)
-        entries = inventory["entries"]
-        sources = [entry["source"] for entry in entries]
-        self.assertEqual(len(sources), 93)
-        self.assertEqual(len(sources), len(set(sources)))
-        self.assertTrue(all(source.startswith("upstreaming/") for source in sources))
-        digest = hashlib.sha256(("\n".join(sorted(sources)) + "\n").encode()).hexdigest()
-        self.assertEqual(digest, inventory["sourceTreeSha256"])
-        for entry in entries:
-            self.assertIn(entry["action"], {"move", "remove", "split", "defer"})
-            self.assertIn(entry["milestone"], range(1, 11))
-            self.assertTrue(entry["rationale"])
-            if entry["action"] == "remove":
-                self.assertEqual(entry["targets"], [])
-            else:
-                self.assertTrue(entry["targets"])
-            if entry["action"] == "defer":
-                self.assertTrue(entry["restoringMilestones"])
-                self.assertEqual(entry["status"], "deferred")
-            for target in entry["targets"]:
-                self.assertNotRegex(target, r"(^|/)(upstreaming|.state|src)(/|$)")
-        for entry in entries:
-            if entry["status"] in {"migrated", "partially-migrated", "deferred"}:
-                for target in entry["targets"]:
-                    self.assertTrue((ROOT / target).exists(), target)
-
-    def test_workflow_rename_and_ownership_is_one_to_one(self):
-        manifest = json.loads((ROOT / "docs/workflow-migration.json").read_text())
-        self.assertEqual(manifest["sourceCommit"], SOURCE_COMMIT)
-        workflows = manifest["workflows"]
-        # A workflow added after the migration (the reviewer of development
-        # patches) has no source in the migrated repository.
+    def test_every_workflow_file_has_exactly_one_owner(self):
+        workflows = self.owners()
         for item in workflows:
-            self.assertEqual(item["source"] is None, item["status"] == "added", item["target"])
-        sources = [item["source"] for item in workflows if item["source"] is not None]
-        targets = [item["target"] for item in workflows]
-        self.assertEqual(len(sources), len(set(sources)))
-        self.assertEqual(len(targets), len(set(targets)))
-        self.assertFalse(any(target.startswith("upstreaming-") for target in targets))
+            self.assertEqual(set(item), {"file", "owner", "agentic"})
+        files_listed = [item["file"] for item in workflows]
+        self.assertEqual(len(files_listed), len(set(files_listed)))
+        self.assertEqual(
+            set(files_listed), {path.name for path in WORKFLOWS.iterdir() if path.is_file()}
+        )
         for item in workflows:
+            self.assertIsInstance(item["owner"], str)
             self.assertTrue(item["owner"])
-            self.assertIn(item["milestone"], range(1, 11))
-            present = (WORKFLOWS / item["target"]).exists()
-            self.assertEqual(present, item["milestone"] <= 6, item["target"])
-        for item in workflows:
-            if item["agentic"] and (WORKFLOWS / item["target"]).exists():
-                stem = item["target"].removesuffix(".md")
+            self.assertEqual(item["agentic"], item["file"].endswith(".md"), item["file"])
+            if item["agentic"]:
+                stem = item["file"].removesuffix(".md")
                 self.assertTrue((WORKFLOWS / f"{stem}.lock.yml").is_file())
 
 
@@ -189,23 +156,18 @@ class TestIssueFormAndCanary(unittest.TestCase):
 
 
 class TestDocumentationLinks(unittest.TestCase):
-    def test_current_and_historical_links_are_distinct(self):
-        markdown = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+    def test_links_use_https_and_name_this_repository(self):
+        markdown = [ROOT / "README.md", *sorted((ROOT / "docs").rglob("*.md"))]
         link_pattern = re.compile(r"https://github\.com/[^)\s`]+")
         current_seen = False
-        historical_seen = False
         for path in markdown:
-            for line in path.read_text().splitlines():
-                for url in link_pattern.findall(line):
-                    parsed = urlparse(url)
-                    self.assertEqual(parsed.scheme, "https")
-                    if "/riseproject-dev/python-wheels" in parsed.path:
-                        historical_seen = True
-                        self.assertIn("Earlier implementation evidence:", line)
-                    if "/riseproject-dev/porting-agent" in parsed.path:
-                        current_seen = True
+            for url in link_pattern.findall(path.read_text()):
+                parsed = urlparse(url)
+                self.assertEqual(parsed.scheme, "https")
+                self.assertNotIn("/riseproject-dev/python-wheels", parsed.path, path)
+                if "/riseproject-dev/porting-agent" in parsed.path:
+                    current_seen = True
         self.assertTrue(current_seen)
-        self.assertTrue(historical_seen)
 
 
 class TestRepositoryHygiene(unittest.TestCase):
