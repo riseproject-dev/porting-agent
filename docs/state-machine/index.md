@@ -965,7 +965,7 @@ flowchart TB
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
 ```
 
-Revision Work carries the same history as development Work, including the reviews of upstream maintainers. Automated upstream revisions require that the upstream PR head is the controlled fork ref. `request_upstream_revision` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster`; `request_review_revision` applies to a revision driven only by review feedback and charges `work_total` only. A published revision clears exactly the feedback its Work carried. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without requesting Work. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and CI run. Upstream CI is never rerun by the pipeline.
+Revision Work carries the same history as development Work, including the reviews of upstream maintainers. Automated upstream revisions require that the upstream PR head is the controlled fork ref. `request_upstream_revision` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster`; `request_review_revision` applies to a revision driven only by review feedback and charges `work_total` only. A published revision clears exactly the feedback its Work carried. A rejected proposal is repaired within `no_progress`. When the worker reports that no change is needed, a human answers the reviewer; `resume_upstream_review` then clears the pending feedback and returns to `upstream_review.waiting_ci` without requesting Work. After a budget is exhausted, `resume_upstream_revision` starts again the one counter named in `pending_human_action.counter`. A CI failure is recorded once per head and set of failing jobs. Upstream CI is never rerun by the pipeline.
 
 ### Failure case 4: revision Work or its publication fails
 
@@ -1009,7 +1009,7 @@ flowchart TB
     upstream_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
 ```
 
-The pipeline does not reopen the PR or create a replacement. `resume_upstream_review` returns to `upstream_review.waiting_ci` after a head change, and after a closed PR once it is observed open again. `resume_upstream_revision` applies only when revision Work failed. Human triage either resumes or parks.
+The pipeline does not reopen the PR or create a replacement. `resume_upstream_review` returns to `upstream_review.waiting_ci` after a head change, and after a closed PR once it is observed open again or merged. `resume_upstream_revision` applies only when revision Work failed. Human triage either resumes or parks.
 
 ### Failure case 6: the base branch is renamed while the upstream PR is open
 

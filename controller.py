@@ -1897,8 +1897,10 @@ def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> 
     observation of this tick read. A human `/upstreaming resume` of a
     provisioning wait the controller entered is the human's assertion that
     the prerequisite is corrected. A resume after `pr_closed_unmerged` needs
-    the upstream PR observed open again, and a refresh from `parked.idle` of
-    a record that names an upstream PR needs it observed closed or merged."""
+    the upstream PR observed open again or merged (the observation of
+    `upstream_review.waiting_ci` then records the merge), and a refresh from
+    `parked.idle` of a record that names an upstream PR needs it observed
+    closed or merged."""
     pending = rec.get("pending_human_action") or {}
     state = engine.state_key(rec)
     if cmd.verb == "resume" and state == "provisioning.waiting_human" \
@@ -1906,8 +1908,9 @@ def _command_facts(rec: dict, cmd: Command, upstream_pr: dict | None = None) -> 
         return frozenset({"prerequisite_corrected"})
     if upstream_pr is not None:
         is_open = upstream_pr.get("state") == "open" and not upstream_pr.get("merged")
-        if cmd.verb == "resume" and state == "upstream_review.waiting_human" and is_open:
-            return frozenset({"upstream_pr_reopened"})
+        if cmd.verb == "resume" and state == "upstream_review.waiting_human" \
+                and (is_open or upstream_pr.get("merged")):
+            return frozenset({"upstream_pr_open_or_merged"})
         if cmd.verb == "refresh" and state == "parked.idle" and not is_open:
             return frozenset({"upstream_pr_not_open"})
     return frozenset()

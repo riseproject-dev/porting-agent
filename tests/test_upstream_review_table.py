@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import capacity
+import ci_evidence
 import collect
 import commands
 import engine
@@ -78,7 +79,7 @@ def pull(head=SHA_A, state="open", merged=False):
 
 def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feedback=None,
          now=T, evidence=None, operations=None, contracts=(), pypi=None, contains=None,
-         audited=None, comments=(), capacity_ok=False):
+         audited=None, comments=(), capacity_ok=False, snap=None):
     evidence = dict(evidence or {})
     evidence.update({c["evidence_id"]: c for c in contracts})
     snapshot = reconcile.Snapshot({"c": copy.deepcopy(rec)}, copy.deepcopy(operations or {}), {},
@@ -96,7 +97,7 @@ def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feed
                        return_value=copy.deepcopy(feedback)), \
             mock.patch("observe_ci.collect.development_review_feedback", return_value=None), \
             mock.patch("observe_ci.collect.ci_snapshot",
-                       return_value=ci_snapshot((pr or pull())["head_sha"], verdict)), \
+                       return_value=snap or ci_snapshot((pr or pull())["head_sha"], verdict)), \
             mock.patch("observe_ci.collect.pypi_project",
                        side_effect=lambda name: copy.deepcopy((pypi or {}).get(name))), \
             mock.patch("observe_ci.collect.release_contains",
@@ -109,6 +110,38 @@ def tick(rec, publications=(), *, verdict="pending", pr=None, branch=SHA_A, feed
                              dispatcher_runs=[], queue_works={})
     out.reads = reads
     return out
+
+
+def run_snapshot(*runs, head=SHA_A):
+    """A CI snapshot of ``head`` from ``(run id, attempt, job id, conclusion)``
+    tuples: one run with one required job each."""
+    run_rows, jobs = [], {}
+    for run_id, attempt, job_id, conclusion in runs:
+        run_rows.append({"id": run_id, "head_sha": head, "run_attempt": attempt,
+                         "status": "completed", "conclusion": conclusion, "workflow_id": 1,
+                         "event": "pull_request", "path": ".github/workflows/lint.yml"})
+        jobs[run_id] = [{"id": job_id, "run_id": run_id, "name": "Build - ubuntu-24.04-riscv (riscv64)",
+                         "status": "completed", "conclusion": conclusion, "started_at": "x",
+                         "labels": ["ubuntu-24.04-riscv"]}]
+    return collect.CiSnapshot(repository={"id": 2, "full_name": "riseproject-upstreaming/proj"},
+                              head_sha=head, runs=run_rows, jobs_by_run=jobs, artifacts_by_run={})
+
+
+class StaticApi:
+    """An API that serves fixed lists for the review reads of the upstream PR."""
+
+    def __init__(self, reviews, comments, conversation):
+        self.lists = {"reviews": reviews, "pulls/9/comments": comments,
+                      "issues/9/comments": conversation}
+
+    def paginate(self, path, **_kwargs):
+        for key, items in self.lists.items():
+            if f"/{key}" in path or (key == "reviews" and path.endswith("/reviews?per_page=100")):
+                return copy.deepcopy(items)
+        return []
+
+    def get(self, _path, **_kwargs):
+        return {"commit": {"committer": {"date": "2026-11-20T00:00:00Z"}}}
 
 
 def branch_operation(rec, head, *, confirmed=True):
@@ -219,6 +252,72 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(kinds(out), [])
         self.assertEqual(engine.state_key(final(out, rec)), "upstream_review.waiting_ci")
 
+    def test_feedback_from_outside_the_command_authority_is_not_recorded(self):
+        def items(user):
+            return ([{"id": 1, "body": "Please change this.", "commit_id": SHA_A,
+                      "state": "CHANGES_REQUESTED", "user": dict(user)}],
+                    [{"id": 2, "body": "Please rename it.", "commit_id": SHA_A, "path": "a",
+                      "line": 1, "user": dict(user)}],
+                    [{"id": 3, "body": "Please add a test.", "created_at": "2026-11-21T00:00:00Z",
+                      "user": dict(user)}])
+        rec = record()
+        stranger = {"id": 999, "login": "maintainer"}
+        self.assertIsNone(collect.upstream_review_feedback(StaticApi(*items(stranger)), rec,
+                                                           [OWNER["id"]]))
+        found = collect.upstream_review_feedback(StaticApi(*items(OWNER)), rec, [OWNER["id"]])
+        self.assertEqual((found["review_ids"], found["comment_ids"],
+                          found["conversation_comment_ids"]), ([1], [2], [3]))
+
+    def test_a_rerun_of_the_failing_run_is_recorded_and_a_new_passing_run_is_not(self):
+        rec = record(last_ci_evidence_id=None)
+        first = run_snapshot((777, 1, 1, "failure"), (778, 1, 2, "success"))
+        out = tick(rec, snap=first)
+        self.assertEqual(kinds(out), ["record_upstream_ci_failure"])
+        recorded = final(out, rec)
+        self.assertEqual(recorded["last_ci_evidence_id"], "ci-2-778-1")
+        store = {e["evidence_id"]: e for e in staged(out, "evidence")}
+        # A new passing run has a higher id, and the failure is recorded.
+        newer = run_snapshot((777, 1, 1, "failure"), (778, 1, 2, "success"),
+                             (779, 1, 3, "success"))
+        waiting = dict(recorded, activity="waiting_ci")
+        again = tick(waiting, snap=newer, evidence=store)
+        self.assertEqual(kinds(again), [])
+        self.assertEqual(engine.state_key(final(again, waiting)), "upstream_review.waiting_ci")
+        # A rerun of the failing run has new job ids and fails again: recorded
+        # anew, while the newest run is still 778.
+        rerun = run_snapshot((777, 2, 5, "failure"), (778, 1, 2, "success"))
+        out = tick(waiting, snap=rerun, evidence=store)
+        self.assertEqual(kinds(out), ["record_upstream_ci_failure"])
+        self.assertEqual(final(out, waiting)["last_ci_evidence_id"], "ci-2-778-1")
+        # Without the recorded evidence in the store the evidence ids are compared.
+        out = tick(waiting, snap=first)
+        self.assertEqual(kinds(out), [])
+
+    def test_the_recorded_failure_is_judged_by_its_failing_jobs(self):
+        def evidence(eid, head, *jobs):
+            return {"evidence_id": eid, "kind": "ci", "ci": {"head_sha": head, "jobs": [
+                {"job_id": job, "name": "build", "executed": True, "conclusion": conclusion}
+                for job, conclusion in jobs]}}
+        old = evidence("ci-2-778-1", SHA_A, (1, "failure"), (2, "success"))
+        self.assertEqual(ci_evidence.failed_job_ids(old), frozenset({1}))
+        self.assertEqual(ci_evidence.failed_job_ids(None), frozenset())
+        self.assertEqual(ci_evidence.failed_job_ids({"kind": "review"}), frozenset())
+        publish = evidence("x", SHA_A, (9, "failure"))
+        publish["ci"]["jobs"][0]["name"] = "Publish to PyPI"
+        self.assertEqual(ci_evidence.failed_job_ids(publish), frozenset())
+        same = evidence("ci-2-779-1", SHA_A, (1, "failure"), (3, "success"))
+        rerun = evidence("ci-2-778-1", SHA_A, (5, "failure"))
+        other_head = evidence("ci-2-778-1", SHA_B, (1, "failure"))
+        self.assertTrue(ci_evidence.failure_recorded(same, old))
+        self.assertFalse(ci_evidence.failure_recorded(rerun, old))
+        # Another head, a failure without a failing job, or no recorded evidence
+        # fall back to the evidence ids.
+        self.assertTrue(ci_evidence.failure_recorded(other_head, old))
+        self.assertFalse(ci_evidence.failure_recorded(dict(other_head, evidence_id="z"), old))
+        nameless = evidence("ci-2-778-1", SHA_A, (1, "success"))
+        self.assertTrue(ci_evidence.failure_recorded(nameless, old))
+        self.assertFalse(ci_evidence.failure_recorded(same, None))
+
     def test_a_merged_pr_is_recorded_without_its_branch(self):
         rec = record()
         out = tick(rec, pr=pull(merged=True, state="closed"), branch=None)
@@ -266,6 +365,20 @@ class TestObservation(unittest.TestCase):
         self.assertIn("resume_upstream_review", kinds(out))
         self.assertEqual(engine.state_key(final(out, rec)), "upstream_review.waiting_ci")
 
+    def test_a_closed_pr_merged_since_is_resumed_and_recorded(self):
+        rec = final(tick(record(), pr=pull(state="closed")), record())
+        resume = f'/upstreaming resume revision={rec["revision"]} reason="merged"'
+        merged = pull(state="closed", merged=True)
+        out = tick(rec, pr=merged,
+                   comments=[{"issue_number": 12, "comment": {"id": 903, "body": resume,
+                                                              "user": dict(OWNER)}}])
+        self.assertEqual(kinds(out), ["resume_upstream_review"])
+        resumed = final(out, rec)
+        self.assertEqual(engine.state_key(resumed), "upstream_review.waiting_ci")
+        out = tick(resumed, pr=merged)
+        self.assertEqual(kinds(out), ["record_merge"])
+        self.assertEqual(engine.state_key(final(out, resumed)), "release_wait.idle")
+
     def test_a_failed_read_for_a_resume_holds_no_other_command_back(self):
         parked = contribution(phase="parked", activity="idle", parked_reason="x",
                               previous_phase="upstream_review",
@@ -290,6 +403,9 @@ class TestObservation(unittest.TestCase):
         self.assertFalse(apply_command(closed, body, upstream_pr={"state": "closed"}).accepted)
         self.assertFalse(apply_command(closed, body).accepted)
         self.assertTrue(apply_command(closed, body, upstream_pr={"state": "open"}).accepted)
+        merged = apply_command(closed, body, upstream_pr={"state": "closed", "merged": True})
+        self.assertTrue(merged.accepted, merged.reason)
+        self.assertEqual(engine.state_key(merged.record), "upstream_review.waiting_ci")
         parked = contribution(phase="parked", activity="idle", parked_reason="x",
                               previous_phase="upstream_review",
                               upstream_pr=copy.deepcopy(UPSTREAM_PR))
@@ -342,6 +458,26 @@ class TestRevisionResults(unittest.TestCase):
                                      ["review-old", "review-new"])
                 if verb == "require_reviewer_answer":
                     self.assertEqual(after["pending_human_action"]["kind"], "answer_reviewer")
+
+    def test_no_change_of_a_ci_revision_asks_a_human(self):
+        rec = record("agent_running", last_ci_evidence_id="ci-2-777-1",
+                     pending_feedback_evidence_ids=[],
+                     active_work=dict(REVISION_WORK, feedback_evidence_ids=[]))
+        out = tick(rec, [publication(rec, "no_change")])
+        self.assertEqual(kinds(out)[0], "require_reviewer_answer")
+        waiting = final(out, rec)
+        self.assertEqual(engine.state_key(waiting), "upstream_review.waiting_human")
+        self.assertEqual(waiting["pending_human_action"]["kind"], "answer_reviewer")
+        resume = f'/upstreaming resume revision={waiting["revision"]} reason="judged"'
+        out = tick(waiting, comments=[{"issue_number": 12, "comment": {
+            "id": 910, "body": resume, "user": dict(OWNER)}}])
+        self.assertEqual(kinds(out), ["resume_upstream_review"])
+        resumed = final(out, waiting)
+        self.assertEqual((engine.state_key(resumed), resumed["last_ci_evidence_id"]),
+                         ("upstream_review.waiting_ci", "ci-2-777-1"))
+        # The same failing run is not recorded again, so no revision is requested.
+        out = tick(resumed, verdict="failed")
+        self.assertEqual(kinds(out), [])
 
     def test_the_published_head_is_recorded_by_the_row(self):
         rec = self.running()

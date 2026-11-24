@@ -2749,6 +2749,125 @@ flowchart TB
     handoff_review_pending -->|request_submission_review| handoff_reviewing
 ```
 
+### Feedback on the upstream PR from outside the command authority
+
+Whose review of the upstream PR steers a revision?
+
+**Change.** Only an account in the command authority steers a revision of the upstream PR, as on the development PR. Feedback from any other account, an upstream maintainer's included, is not recorded: it reaches the pipeline only through an authorized human, normally the author of the upstream PR (a User in the command authority, whom GitHub notifies of every review), who restates it on the upstream PR. No untrusted maintainer text drives Work.
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+    end
+
+    upstream_waiting_ci ==>|record_actionable_review| upstream_fix_needed
+```
+
+### What identifies a recorded upstream CI failure
+
+When is a failure of upstream CI "not yet recorded for this head and CI run"?
+
+**Change.** The evidence id names the newest run of the head, not the failing run, so comparing it would miss a rerun of the failing run whenever another run has a higher id, and would make an old failure look new after a passing run. A failure is recorded when every failing job of it failed in the recorded evidence of the same head: GitHub gives each run attempt new job ids, so a rerun that fails again is recorded anew and a new passing run leaves the failure recorded. When the recorded evidence is missing or the failure names no job, the evidence ids are compared. Only `record_head_change` clears `last_ci_evidence_id` in upstream review. Development and handoff compare evidence ids.
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    upstream_waiting_ci ==>|record_upstream_ci_failure| upstream_fix_needed
+    upstream_waiting_ci -->|record_head_change| upstream_waiting_human
+```
+
+### A no_change report of revision Work
+
+What happens when revision Work in upstream review reports that no change is needed, or its proposal is stale?
+
+**Change.** A stale proposal takes `reject_patch_proposal`, as every other rejection there, since no row replans in upstream review. A `no_change` report takes `require_reviewer_answer` also when the Work answered an upstream CI failure: the pipeline never reruns upstream CI, so a human judges the failure and resumes. The failure stays recorded, so the resume requests no revision for it, and a rerun that fails again is recorded anew. The pending action stays `answer_reviewer`; the row description tells the human what to do. This completes decision 16.
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_agent_running["upstream_review.agent_running"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+    end
+
+    upstream_agent_running ==>|require_reviewer_answer| upstream_waiting_human
+    upstream_agent_running -->|reject_patch_proposal| upstream_fix_needed
+    upstream_waiting_human -->|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
+```
+
+### A closed upstream PR merged while a human is awaited
+
+What ends the wait after `pr_closed_unmerged` when the PR is merged after it was closed?
+
+**Change.** The upstream PR is read without any change in this wait and in `parked.idle` with an upstream PR, and the facts of a command come from that read of the same tick. The resume accepts a PR observed open again or merged, and the observation of `upstream_review.waiting_ci` then takes `record_merge`; before, a PR merged while the wait was open could never satisfy "observed open again" and the wait could only end in a park. A refresh from `parked.idle` still needs no open PR, and a merged PR is not open. This completes decision 3 and O12.
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+    end
+    subgraph release_wait["release_wait"]
+        release_wait_idle["release_wait.idle"]
+    end
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+
+    upstream_waiting_human ==>|resume_upstream_review<br/>/upstreaming resume| upstream_waiting_ci
+    upstream_waiting_ci -->|record_merge| release_wait_idle
+    parked_idle -->|restart_generation<br/>/upstreaming refresh| queued_idle
+```
+
+### The expiry of a submission rewrite
+
+When is the rewritten series held in a publication artifact treated as expired?
+
+**Change.** At the earliest of the expiry GitHub reported for its artifact, recorded as `artifact.expires_at` of the rewrite evidence when the controller collected it, and the retention (30 days or `GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS`) after it was collected, a day before (half the retention for a retention of one day), as for a held patch. A rewrite recorded without a reported expiry uses the retention only. The trusted workflow refuses an artifact GitHub reports expired, as an infrastructure failure of that attempt, and the next plan finds the rewrite expired, even under a repository or organization retention limit below the variable.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_review_pending["handoff.review_pending"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_review_due["handoff.review_due"]
+    end
+
+    handoff_review_pending ==>|expire_submission_rewrite| handoff_review_due
+    handoff_building_upstream_branch ==>|expire_submission_rewrite| handoff_review_due
+```
+
+### The submission check of a plan without measurable rules, and template sections
+
+What does the submission check apply for a plan of schema version 1, and how is a template section matched?
+
+**Change.** A plan of schema version 1 records no measurable rules and no template sections: the check applies the rules and sections the review reports having found in the project. They are untrusted, so they can only refuse a submission, never admit one. A required template section is present when the description has a Markdown heading with the same words, case and emphasis ignored. Checklists are not parsed: whether every checklist item is answered honestly is the review's judgment.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_agent_running["handoff.agent_running"]
+        handoff_review_pending["handoff.review_pending"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_agent_running ==>|accept_submission_rewrite| handoff_review_pending
+    handoff_agent_running ==>|reject_submission_rewrite| development_fix_needed
+```
+
 ### CI on the clean head and the recorded head of upstream review
 
 Which workflow is dispatched on the clean head, and which head upstream review records.
@@ -2771,4 +2890,42 @@ flowchart TB
     handoff_waiting_ci ==>|require_clean_head_ci| handoff_waiting_human
     handoff_waiting_human -->|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
     upstream_waiting_ci ==>|record_head_change| upstream_waiting_human
+```
+
+### CI on the clean head by its tree
+
+When is CI on the candidate head CI on the clean head?
+
+**Change.** CI is a function of the tree: when the reviewed series has the tree of the candidate head, the CI evidence of the candidate head on `riscv64-dev` is CI on the clean head (`handoff.ci_head`), and `accept_clean_head_ci` records it. The end-to-end handoff test pins it.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_preparing_submission["handoff.preparing_submission"]
+    end
+
+    handoff_waiting_ci ==>|accept_clean_head_ci| handoff_preparing_submission
+```
+
+### An upstream PR open from riscv64
+
+What does "an upstream PR is open from `riscv64`" mean?
+
+**Change.** The upstream repository lists an open pull request whose head is `riscv64` of the fork owner, whoever opened it. It blocks a write of `riscv64` and is checked only then: a `riscv64` that already resolves to the reviewed head is read back without a write and without that check, and such a PR is then verified in the locked wait.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
+    handoff_building_upstream_branch ==>|require_branch_intervention| handoff_waiting_human
 ```

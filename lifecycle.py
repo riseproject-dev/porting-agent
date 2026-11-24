@@ -1896,7 +1896,10 @@ LIFECYCLE: dict[str, State] = {
                  "not yet recorded for this head and CI run"),
                 _E(sets=("last_ci_evidence_id",)),
                 description="Fires once per head and CI run, so a failure that was already recorded does not "
-                "request a revision again after a resume."),
+                "request a revision again after a resume. A failure is recorded when a failing job "
+                "of it is not failing in the recorded evidence of the head, so a rerun that fails "
+                "again is recorded, and only record_head_change clears last_ci_evidence_id in "
+                "upstream review."),
             ("record_actionable_review", "upstream_review.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
@@ -1986,9 +1989,13 @@ LIFECYCLE: dict[str, State] = {
                 ("the worker reports that no change is needed",),
                 _E(work="clear", sets=("pending_human_action=answer_reviewer",),
                    clears=(HELD_RESULT,)),
-                description="A human answers the reviewer; the pipeline posts nothing on the "
-                            "upstream PR. The report of the Work is stored as `worker_report` "
-                            "evidence."),
+                description="The worker found that no change is needed: a human answers the "
+                            "reviewer, or, when the Work answered an upstream CI failure, "
+                            "judges that failure (the pipeline never reruns upstream CI) and "
+                            "resumes. The failure stays recorded, so the resume requests no "
+                            "revision for it, and a rerun that fails again is recorded anew. "
+                            "The pipeline posts nothing on the upstream PR. The report of the "
+                            "Work is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
@@ -2005,12 +2012,14 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION,
                  pending_is("pr_closed_unmerged", "answer_reviewer", "upstream_head_changed"),
-                 "for pr_closed_unmerged, the upstream PR is observed open again"),
+                 "for pr_closed_unmerged, the upstream PR is observed open again or merged"),
                 _E(revision="bump", clears=("pending_human_action", "pending_feedback_evidence_ids")),
                 description="No revision Work is requested. The pending feedback is cleared: "
                             "after `answer_reviewer` a human answered it, and this is the one "
                             "resume that clears feedback; the other two pending actions are "
-                            "entered from `upstream_review.waiting_ci`, which holds none."),
+                            "entered from `upstream_review.waiting_ci`, which holds none. A PR "
+                            "merged since it was closed is followed: the observation of "
+                            "`upstream_review.waiting_ci` takes `record_merge`."),
             ("rearm_dispatch", "upstream_review.fix_needed"): _REARM_DISPATCH,
             ("resume_upstream_revision", "upstream_review.fix_needed"): Transition(
                 _C, RESUME,
@@ -3478,7 +3487,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "returns to `upstream_review.waiting_ci` without requesting Work. After a "
                      "budget is exhausted, `resume_upstream_revision` starts again the one "
                      "counter named in `pending_human_action.counter`. A CI failure is recorded "
-                     "once per head and CI run. Upstream CI is never rerun by the pipeline."),
+                     "once per head and set of failing jobs. Upstream CI is never rerun by the pipeline."),
             Diagram(
                 "Failure case 4: revision Work or its publication fails",
                 ("upstream_review.agent_running", "upstream_review.waiting_human",
@@ -3505,7 +3514,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 start="upstream_review.waiting_ci",
                 text="The pipeline does not reopen the PR or create a replacement. "
                      "`resume_upstream_review` returns to `upstream_review.waiting_ci` after a "
-                     "head change, and after a closed PR once it is observed open again. "
+                     "head change, and after a closed PR once it is observed open again or merged. "
                      "`resume_upstream_revision` applies only when revision Work failed. Human "
                      "triage either resumes or parks."),
             Diagram(

@@ -241,3 +241,40 @@ def failing_job(evidence: dict | None, head_sha: str | None) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+def failed_job_ids(evidence: dict | None) -> frozenset[int]:
+    """The ids of the jobs of CI ``evidence`` that executed and did not
+    succeed, the jobs ``failing_job`` considers (the credentialless ones
+    excluded). GitHub gives every run attempt new job ids, so these ids name
+    a failure of one attempt. Empty for evidence that is not CI evidence."""
+    if not evidence or evidence.get("kind") != "ci":
+        return frozenset()
+    ids = set()
+    for job in (evidence.get("ci") or {}).get("jobs") or []:
+        name = str(job.get("name") or "")
+        if job.get("executed") and job.get("conclusion") != SUCCESS \
+                and not any(marker in name.lower() for marker in CREDENTIALLESS_JOB_MARKERS) \
+                and isinstance(job.get("job_id"), int):
+            ids.add(job["job_id"])
+    return frozenset(ids)
+
+
+def failure_recorded(new: dict, recorded: dict | None) -> bool:
+    """Whether the failure of CI evidence ``new`` is already recorded by
+    ``recorded``, the evidence the record names as its last CI evidence.
+
+    The evidence id names the newest run of the head, not the failing run,
+    so when ``recorded`` is CI evidence of the same head and ``new`` has
+    failing jobs, the failure is recorded when every failing job of ``new``
+    failed in ``recorded``: a rerun of the failing run (new job ids) is a new
+    failure, and a new passing run leaves the failure recorded. Otherwise
+    (``recorded`` of another head, or ``new`` without a failing job, as for a
+    failure of the runner-label check alone) the evidence ids are
+    compared; a caller whose ``recorded`` is missing from the store compares
+    the id the record names itself."""
+    failed = failed_job_ids(new)
+    if failed and recorded is not None and recorded.get("kind") == "ci" \
+            and (recorded.get("ci") or {}).get("head_sha") == (new.get("ci") or {}).get("head_sha"):
+        return failed <= failed_job_ids(recorded)
+    return recorded is not None and new["evidence_id"] == recorded.get("evidence_id")

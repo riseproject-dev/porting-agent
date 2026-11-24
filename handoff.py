@@ -238,8 +238,11 @@ def review_evidence(record: dict, evidence: dict) -> dict:
 # kept this long unless the repository variable
 # GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS, which the generated worker lock
 # uses instead, sets another number of days; the controller's workflow hands
-# that variable to the tick as RETENTION_ENV. A rewrite is treated as
-# expired a day before (half the retention, for a retention of one day).
+# that variable to the tick as RETENTION_ENV. A rewrite expires at the
+# earliest of the expiry GitHub reported for its artifact (recorded as
+# ``artifact.expires_at`` of the rewrite evidence) and the retention after it
+# was collected; it is treated as expired a day before (half the retention,
+# for a retention of one day).
 ARTIFACT_RETENTION_DAYS = 30
 EXPIRY_MARGIN_DAYS = 1
 RETENTION_ENV = "UPSTREAMING_ARTIFACT_RETENTION_DAYS"
@@ -258,9 +261,12 @@ def artifact_retention_days() -> int:
 
 def rewrite_expired(record: dict, evidence: dict, now, *, review: bool = False) -> bool:
     """Whether the publication artifact of the record's accepted rewrite has
-    expired or expires within a day (``expire_submission_rewrite``), for the
-    effective retention (``artifact_retention_days``). With
-    ``review``, the rewrite is the one the accepted review passed."""
+    expired or expires within a day (``expire_submission_rewrite``). It
+    expires at the earliest of the expiry GitHub reported for it
+    (``artifact.expires_at`` of its evidence, when present and valid) and the
+    effective retention (``artifact_retention_days``) after it was collected;
+    a rewrite recorded without a reported expiry uses the retention only.
+    With ``review``, the rewrite is the one the accepted review passed."""
     from datetime import datetime, timedelta
 
     if review:
@@ -274,9 +280,15 @@ def rewrite_expired(record: dict, evidence: dict, now, *, review: bool = False) 
     if not collected:
         return False
     now = now if isinstance(now, datetime) else datetime.fromisoformat(str(now))
-    age = now - datetime.fromisoformat(collected)
     retention = timedelta(days=artifact_retention_days())
-    return age >= retention - min(timedelta(days=EXPIRY_MARGIN_DAYS), retention / 2)
+    expiry = datetime.fromisoformat(collected) + retention
+    reported = ((rewrite.get("data") or {}).get("artifact") or {}).get("expires_at")
+    try:
+        if reported:
+            expiry = min(expiry, datetime.fromisoformat(str(reported).replace("Z", "+00:00")))
+    except ValueError:
+        pass
+    return now >= expiry - min(timedelta(days=EXPIRY_MARGIN_DAYS), retention / 2)
 
 
 def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,

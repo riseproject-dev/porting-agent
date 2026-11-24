@@ -43,6 +43,21 @@ def series(*messages: str, path=".github/workflows/build-wheels.yml") -> bytes:
                               check=True, capture_output=True).stdout
 
 
+class TestTemplateSections(unittest.TestCase):
+    def test_a_section_matches_its_words_whatever_case_and_emphasis(self):
+        for body in ("### **testing**\n\nDone.", "## _Testing_\n\nDone.", "# TESTING"):
+            with self.subTest(body=body):
+                self.assertEqual(commit_rules.body_problems(body, ["Testing"]), [])
+        problems = commit_rules.body_problems("Testing:\n\nDone.", ["Testing"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("'Testing'", problems[0])
+
+    def test_checklists_are_not_parsed(self):
+        body = ("## Summary\n\nAdds riscv64.\n\n## Checklist\n\n- [ ] Tests added\n"
+                "- [ ] Docs updated\n")
+        self.assertEqual(commit_rules.body_problems(body, ["Summary", "Checklist"]), [])
+
+
 class TestRules(unittest.TestCase):
     def test_a_message_that_follows_every_rule(self):
         self.assertEqual(commit_rules.message_problems(GOOD, commit_rules.normalize(RULES)), [])

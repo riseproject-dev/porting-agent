@@ -371,7 +371,7 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                 # recorded. The branch is read only to discover its
                 # operations above.
                 _observe_upstream_review(api, obs, entry, rec, contracts=contracts,
-                                         policy=policy, now=now)
+                                         policy=policy, now=now, evidence=evidence)
                 obs.report.append(entry)
                 continue
             if head is None:
@@ -994,7 +994,8 @@ def _upstream_feedback(api: collect.Api, record: dict, *, policy: dict, now: str
 
 
 def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, rec: dict, *,
-                             contracts: dict, policy: dict, now: str) -> None:
+                             contracts: dict, policy: dict, now: str,
+                             evidence: dict) -> None:
     """Observe ``upstream_review.waiting_ci`` by its rows, in order:
     ``record_merge`` for a merged upstream PR, ``record_pr_closed_unmerged``
     for one closed without merge, ``record_head_change`` for a head other
@@ -1003,7 +1004,9 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
     ``record_actionable_review`` for an actionable review (the observation
     then ends in ``upstream_review.fix_needed``), and
     ``record_upstream_ci_failure`` for an executed blocking failure of a CI
-    run on the upstream PR head that is not recorded yet. Passing CI keeps
+    run on the upstream PR head that is not recorded yet: a failure is
+    recorded when a failing job of it is not failing in the recorded evidence
+    of the head (``ci_evidence.failure_recorded``). Passing CI keeps
     the state; upstream CI is never rerun.
 
     ``upstream_review.fix_needed`` (revision Work is due) and
@@ -1076,10 +1079,15 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
         obs.staged.append(("evidence", ev))
         entry["evidence"] = ev["evidence_id"]
     if verdict.state == "failed" and ev is not None:
-        if ev["evidence_id"] == cur.get("last_ci_evidence_id"):
-            # Recorded once per head and CI run: a failure already recorded
-            # does not request a revision again (after a resume, for
-            # example). Upstream CI is never rerun by the pipeline.
+        last = cur.get("last_ci_evidence_id")
+        recorded = evidence.get(last or "")
+        if ci_evidence.failure_recorded(ev, recorded) \
+                or (recorded is None and ev["evidence_id"] == last):
+            # Recorded once per head and set of failing jobs: a failure
+            # already recorded does not request a revision again (after a
+            # resume, for example), and a rerun that fails again, which has
+            # new job ids, is recorded anew. Upstream CI is never rerun by
+            # the pipeline.
             entry["note"] = f"{ev['evidence_id']} is already recorded for this head"
             _poll(obs, cur, None)
             return

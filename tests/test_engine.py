@@ -345,7 +345,7 @@ class TestTableIsExercised(unittest.TestCase):
             rec, kwargs = scenario(state, verb, t)
             for fact in sorted(kwargs["facts"]):
                 with self.subTest(state=state, verb=verb, missing=fact):
-                    if verb == "resume_upstream_review" and fact == "upstream_pr_reopened":
+                    if verb == "resume_upstream_review" and fact == "upstream_pr_open_or_merged":
                         continue  # required for pr_closed_unmerged only, tested below
                     fewer = dict(kwargs, facts=kwargs["facts"] - {fact})
                     if verb == "require_provisioning_intervention":

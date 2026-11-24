@@ -869,14 +869,14 @@ for _guard, _name in (
 ):
     _fact(_guard, _name)
 
-# ``upstream_pr_reopened`` is required only when the pending action is
+# ``upstream_pr_open_or_merged`` is required only when the pending action is
 # ``pr_closed_unmerged``; the guard text states the condition.
-_register("for pr_closed_unmerged, the upstream PR is observed open again",
-          "upstream_pr_reopened", "fact",
+_register("for pr_closed_unmerged, the upstream PR is observed open again or merged",
+          "upstream_pr_open_or_merged", "fact",
           lambda ctx: None
           if (ctx.record.get("pending_human_action") or {}).get("kind") != "pr_closed_unmerged"
-          or _asserted(ctx, "upstream_pr_reopened")
-          else "the upstream PR is not observed open again")
+          or _asserted(ctx, "upstream_pr_open_or_merged")
+          else "the upstream PR is not observed open again or merged")
 
 # Facts read by a record predicate in addition to the fact predicates above.
 EXTRA_FACTS = frozenset({"upstream_pr_not_open", "provisioning_blocked",

@@ -1778,6 +1778,106 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("handoff.agent_running", "reject_submission_rewrite")),
     ),
     Item(
+        "Feedback on the upstream PR from outside the command authority",
+        "Whose review of the upstream PR steers a revision?",
+        "Only an account in the command authority steers a revision of the upstream PR, as on "
+        "the development PR. Feedback from any other account, an upstream maintainer's "
+        "included, is not recorded: it reaches the pipeline only through an authorized human, "
+        "normally the author of the upstream PR (a User in the command authority, whom GitHub "
+        "notifies of every review), who restates it on the upstream PR. No untrusted "
+        "maintainer text drives Work.",
+        ("upstream_review.waiting_ci", "upstream_review.fix_needed"),
+        edges=(("upstream_review.waiting_ci", "record_actionable_review"),),
+        highlighted=(("upstream_review.waiting_ci", "record_actionable_review"),),
+    ),
+    Item(
+        "What identifies a recorded upstream CI failure",
+        "When is a failure of upstream CI \"not yet recorded for this head and CI run\"?",
+        "The evidence id names the newest run of the head, not the failing run, so comparing it "
+        "would miss a rerun of the failing run whenever another run has a higher id, and would "
+        "make an old failure look new after a passing run. A failure is recorded when every "
+        "failing job of it failed in the recorded evidence of the same head: GitHub gives each "
+        "run attempt new job ids, so a rerun that fails again is recorded anew and a new "
+        "passing run leaves the failure recorded. When the recorded evidence is missing or the "
+        "failure names no job, the evidence ids are compared. Only `record_head_change` clears "
+        "`last_ci_evidence_id` in upstream review. Development and handoff compare evidence "
+        "ids.",
+        ("upstream_review.waiting_ci", "upstream_review.fix_needed",
+         "upstream_review.waiting_human"),
+        edges=(("upstream_review.waiting_ci", "record_upstream_ci_failure"),
+               ("upstream_review.waiting_ci", "record_head_change")),
+        highlighted=(("upstream_review.waiting_ci", "record_upstream_ci_failure"),),
+    ),
+    Item(
+        "A no_change report of revision Work",
+        "What happens when revision Work in upstream review reports that no change is needed, "
+        "or its proposal is stale?",
+        "A stale proposal takes `reject_patch_proposal`, as every other rejection there, since "
+        "no row replans in upstream review. A `no_change` report takes "
+        "`require_reviewer_answer` also when the Work answered an upstream CI failure: the "
+        "pipeline never reruns upstream CI, so a human judges the failure and resumes. The "
+        "failure stays recorded, so the resume requests no revision for it, and a rerun that "
+        "fails again is recorded anew. The pending action stays `answer_reviewer`; the row "
+        "description tells the human what to do. This completes decision 16.",
+        ("upstream_review.agent_running", "upstream_review.waiting_human",
+         "upstream_review.waiting_ci", "upstream_review.fix_needed"),
+        edges=(("upstream_review.agent_running", "require_reviewer_answer"),
+               ("upstream_review.agent_running", "reject_patch_proposal"),
+               ("upstream_review.waiting_human", "resume_upstream_review")),
+        highlighted=(("upstream_review.agent_running", "require_reviewer_answer"),),
+    ),
+    Item(
+        "A closed upstream PR merged while a human is awaited",
+        "What ends the wait after `pr_closed_unmerged` when the PR is merged after it was "
+        "closed?",
+        "The upstream PR is read without any change in this wait and in `parked.idle` with an "
+        "upstream PR, and the facts of a command come from that read of the same tick. The "
+        "resume accepts a PR observed open again or merged, and the observation of "
+        "`upstream_review.waiting_ci` then takes `record_merge`; before, a PR merged while "
+        "the wait was open could never satisfy \"observed open again\" and the wait could only "
+        "end in a park. A refresh from `parked.idle` still needs no open PR, and a merged PR "
+        "is not open. This completes decision 3 and O12.",
+        ("upstream_review.waiting_human", "upstream_review.waiting_ci", "release_wait.idle",
+         "parked.idle", "queued.idle"),
+        edges=(("upstream_review.waiting_human", "resume_upstream_review"),
+               ("upstream_review.waiting_ci", "record_merge"),
+               ("parked.idle", "restart_generation")),
+        highlighted=(("upstream_review.waiting_human", "resume_upstream_review"),),
+    ),
+    Item(
+        "The expiry of a submission rewrite",
+        "When is the rewritten series held in a publication artifact treated as expired?",
+        "At the earliest of the expiry GitHub reported for its artifact, recorded as "
+        "`artifact.expires_at` of the rewrite evidence when the controller collected it, and "
+        "the retention (30 days or `GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS`) after it was "
+        "collected, a day before (half the retention for a retention of one day), as for a "
+        "held patch. A rewrite recorded without a reported expiry uses the retention only. "
+        "The trusted workflow refuses an artifact GitHub reports expired, as an "
+        "infrastructure failure of that attempt, and the next plan finds the rewrite "
+        "expired, even under a repository or organization retention limit below the variable.",
+        ("handoff.review_pending", "handoff.building_upstream_branch", "handoff.review_due"),
+        edges=(("handoff.review_pending", "expire_submission_rewrite"),
+               ("handoff.building_upstream_branch", "expire_submission_rewrite")),
+        highlighted=(("handoff.review_pending", "expire_submission_rewrite"),
+                     ("handoff.building_upstream_branch", "expire_submission_rewrite")),
+    ),
+    Item(
+        "The submission check of a plan without measurable rules, and template sections",
+        "What does the submission check apply for a plan of schema version 1, and how is a "
+        "template section matched?",
+        "A plan of schema version 1 records no measurable rules and no template sections: the "
+        "check applies the rules and sections the review reports having found in the project. "
+        "They are untrusted, so they can only refuse a submission, never admit one. A required "
+        "template section is present when the description has a Markdown heading with the same "
+        "words, case and emphasis ignored. Checklists are not parsed: whether every checklist "
+        "item is answered honestly is the review's judgment.",
+        ("handoff.agent_running", "handoff.review_pending", "development.fix_needed"),
+        edges=(("handoff.agent_running", "accept_submission_rewrite"),
+               ("handoff.agent_running", "reject_submission_rewrite")),
+        highlighted=(("handoff.agent_running", "accept_submission_rewrite"),
+                     ("handoff.agent_running", "reject_submission_rewrite")),
+    ),
+    Item(
         "CI on the clean head and the recorded head of upstream review",
         "Which workflow is dispatched on the clean head, and which head upstream review "
         "records.",
@@ -1796,6 +1896,31 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                ("upstream_review.waiting_ci", "record_head_change")),
         highlighted=(("handoff.waiting_ci", "require_clean_head_ci"),
                      ("upstream_review.waiting_ci", "record_head_change")),
+    ),
+    Item(
+        "CI on the clean head by its tree",
+        "When is CI on the candidate head CI on the clean head?",
+        "CI is a function of the tree: when the reviewed series has the tree of the candidate "
+        "head, the CI evidence of the candidate head on `riscv64-dev` is CI on the clean head "
+        "(`handoff.ci_head`), and `accept_clean_head_ci` records it. The end-to-end handoff "
+        "test pins it.",
+        ("handoff.waiting_ci", "handoff.building_upstream_branch",
+         "handoff.preparing_submission"),
+        edges=(("handoff.waiting_ci", "accept_clean_head_ci"),),
+        highlighted=(("handoff.waiting_ci", "accept_clean_head_ci"),),
+    ),
+    Item(
+        "An upstream PR open from riscv64",
+        "What does \"an upstream PR is open from `riscv64`\" mean?",
+        "The upstream repository lists an open pull request whose head is `riscv64` of the fork "
+        "owner, whoever opened it. It blocks a write of `riscv64` and is checked only then: a "
+        "`riscv64` that already resolves to the reviewed head is read back without a write and "
+        "without that check, and such a PR is then verified in the locked wait.",
+        ("handoff.building_upstream_branch", "handoff.waiting_ci", "handoff.waiting_human",
+         "development.fix_needed"),
+        edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
+               ("handoff.building_upstream_branch", "require_branch_intervention")),
+        highlighted=(("handoff.building_upstream_branch", "require_branch_intervention"),),
     ),
 )
 

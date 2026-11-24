@@ -265,7 +265,7 @@ class World:
     def review(self):
         return self.evidence[self.record["submission_review_id"]]
 
-    def rewrite_outcome(self, verdict="pass", reasons=(), **over):
+    def rewrite_outcome(self, verdict="pass", reasons=(), expires_at=None, **over):
         """The trusted outcome of the requested rewrite Work, as the worker's
         publish job writes it and the controller collects it."""
         work = self.record["active_work"]
@@ -276,6 +276,8 @@ class World:
                         "revision": work["revision"], "generation": work["generation"],
                         "dedupe_key": work["dedupe_key"], "expected_head": HEAD},
                "worker_run_id": str(self.publication * 10), "publication_artifact_id": self.publication}
+        if expires_at is not None:
+            out["publication_artifact_expires_at"] = expires_at
         if verdict == submission.PASS:
             out.update(title=TITLE, body=BODY, head=CLEAN, clean_tree=TREE, candidate_tree=TREE,
                        commits=[{"message": REVIEWED_MESSAGE, "tree": TREE}],
@@ -789,6 +791,70 @@ class TestRewriteExpiry(unittest.TestCase):
                     self.assertEqual(handoff.rewrite_expired(
                         world.record, copy_, datetime.fromisoformat(
                             world.evidence[eid]["collected_at"])), expired, days)
+
+    @staticmethod
+    def expiring(world, expires_at):
+        eid = world.record["submission_rewrite_id"]
+        evidence = copy.deepcopy(world.evidence)
+        data = evidence[eid]["data"]
+        data["artifact"] = dict(data["artifact"], expires_at=expires_at)
+        return evidence, datetime.fromisoformat(evidence[eid]["collected_at"])
+
+    def test_the_expiry_is_the_earliest_of_the_reported_expiry_and_the_retention(self):
+        world = rewritten()
+        eid = world.record["submission_rewrite_id"]
+        collected = datetime.fromisoformat(world.evidence[eid]["collected_at"])
+        with mock.patch.dict("os.environ", {}):
+            os.environ.pop(handoff.RETENTION_ENV, None)
+            for reported_days, days, expired in ((7, 5.9, False), (7, 6, True),
+                                                 (90, 28.9, False), (90, 29, True)):
+                with self.subTest(reported=reported_days, days=days):
+                    evidence, _ = self.expiring(
+                        world, (collected + timedelta(days=reported_days)).isoformat())
+                    self.assertEqual(handoff.rewrite_expired(
+                        world.record, evidence, collected + timedelta(days=days)), expired)
+                    self.assertEqual(handoff.rewrite_expired(
+                        world.record, evidence, collected + timedelta(days=days), review=True),
+                        expired)
+            # A Z suffix is read, and an invalid expiry is ignored.
+            evidence, _ = self.expiring(world, (collected + timedelta(days=7)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"))
+            self.assertTrue(handoff.rewrite_expired(world.record, evidence,
+                                                    collected + timedelta(days=6)))
+            for invalid in ("soon", "", None, 12):
+                with self.subTest(invalid=invalid):
+                    evidence, _ = self.expiring(world, invalid)
+                    self.assertFalse(handoff.rewrite_expired(
+                        world.record, evidence, collected + timedelta(days=28.9)))
+                    self.assertTrue(handoff.rewrite_expired(
+                        world.record, evidence, collected + timedelta(days=29)))
+            # A rewrite recorded without a reported expiry keeps the age rule.
+            self.assertFalse(handoff.rewrite_expired(world.record, world.evidence,
+                                                     collected + timedelta(days=28.9)))
+
+    def test_the_rewrite_evidence_records_the_reported_expiry(self):
+        world = submitted()
+        world.tick(at(1), publications=[world.rewrite_outcome(
+            expires_at="2026-12-20T09:00:00Z")])
+        data = world.evidence[world.record["submission_rewrite_id"]]["data"]
+        self.assertEqual(data["artifact"]["expires_at"], "2026-12-20T09:00:00Z")
+        world = submitted()
+        world.tick(at(1), publications=[world.rewrite_outcome()])
+        data = world.evidence[world.record["submission_rewrite_id"]]["data"]
+        self.assertIsNone(data["artifact"]["expires_at"])
+
+    def test_a_reported_expiry_leads_back_to_a_fresh_rewrite(self):
+        world = rewritten()
+        world.record = dict(world.record, activity="review_pending", active_work=None)
+        eid = world.record["submission_rewrite_id"]
+        collected = datetime.fromisoformat(world.evidence[eid]["collected_at"])
+        world.evidence, _ = self.expiring(world, (collected + timedelta(days=2)).isoformat())
+        self.assertFalse(handoff.rewrite_expired(world.record, world.evidence, at(2)))
+        late = collected + timedelta(days=1.1)
+        self.assertTrue(handoff.rewrite_expired(world.record, world.evidence, late))
+        out = world.tick(late)
+        self.assertEqual(world.kinds(out), ["expire_submission_rewrite"])
+        self.assertEqual(world.state, "handoff.review_due")
 
     def test_an_expired_rewrite_is_never_reviewed(self):
         world = rewritten()
@@ -2745,6 +2811,9 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
                          "jobs: []")
         # A second run finds it written and reads it back without a write.
         pushes = []
+        # An upstream PR open from `riscv64` blocks a write only: the branch
+        # already at the reviewed head is read back without it.
+        self.upstream_prs = [{"number": 9}]
         again = self.build(state, op, mbox, push=lambda *a: pushes.append(a))
         self.assertEqual((again["written"], pushes), (False, []))
 
@@ -2965,6 +3034,11 @@ class TestCollector(unittest.TestCase):
         api.get.assert_called_once_with(
             "/repos/closeio/ciso8601/pulls?state=open&head=riseproject-upstreaming%3Ariscv64&per_page=100")
         self.assertEqual(prs, [handoff.normalize_pull(upstream_pr())])
+        # Whoever opened it: a pull request of another account is returned too.
+        api.get.return_value = [upstream_pr(user={"id": 4242, "login": "someone", "type": "User"})]
+        self.assertEqual(collect.upstream_pull_requests(api, record),
+                         [handoff.normalize_pull(upstream_pr(
+                             user={"id": 4242, "login": "someone", "type": "User"}))])
         api.get.return_value = {"message": "x"}
         with self.assertRaises(collect.CollectError):
             collect.upstream_pull_requests(api, record)

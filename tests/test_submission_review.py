@@ -350,6 +350,12 @@ class TestCheck(unittest.TestCase):
                                          template_sections=[]),
                          commit_rules=dict(RULES, max_commits=None), template_sections=["x"])
         self.assertEqual(out["verdict"], "pass")
+        # A review that found no rules and no sections applies none: the
+        # values it reports are untrusted and only add refusals.
+        out = self.check(mbox, commit_rules=None, template_sections=None)
+        self.assertEqual((out["verdict"], out["reasons"]), ("pass", []))
+        out = self.check(mbox, commit_rules=commit_rules.normalize({}), template_sections=[])
+        self.assertEqual((out["verdict"], out["reasons"]), ("pass", []))
 
 
 class TestReviewCheck(unittest.TestCase):

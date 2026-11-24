@@ -1065,7 +1065,8 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
     data = {"verdict": outcome["verdict"], "reasons": list(outcome["reasons"]),
             "approved_head": outcome["approved_head"], "base_sha": outcome["base_sha"],
             "artifact": {"run_id": str(worker_run_id),
-                         "artifact_id": outcome.get("publication_artifact_id")}}
+                         "artifact_id": outcome.get("publication_artifact_id"),
+                         "expires_at": outcome.get("publication_artifact_expires_at")}}
     if passed:
         data.update({k: outcome[k] for k in ("title", "body", "head", "clean_tree",
                                              "candidate_tree", "series_digest", "text_digest")},
