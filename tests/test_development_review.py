@@ -363,6 +363,26 @@ class TestVerdicts(unittest.TestCase):
         item = work._reason_item(review)
         self.assertEqual(item["data"]["findings"][0]["severity"], "blocker")
         self.assertEqual(item["data"]["disposition"], "return_for_repair")
+        # The repair gets the rejected patch itself, by the artifact and the
+        # digest the review pinned.
+        evidence = {review["evidence_id"]: review}
+        request = work.request_from_active(new)
+        _paths, context = work.payload_inputs(request, new, evidence,
+                                              plan_reference=lambda eid: {})
+        self.assertEqual(context["previous_patch"], {
+            "evidence_id": review["evidence_id"], "artifact_run_id": "4242", "artifact_id": 901,
+            "patch_digest": DIGEST, "candidate": CANDIDATE, "expected_head": SHA_A,
+            "operation": "append"})
+        # Not once its artifact expired when the Work was requested.
+        late = dict(new, active_work=dict(new["active_work"], requested_at=(
+            datetime.fromisoformat(NOW) + timedelta(days=30)).isoformat()))
+        _paths, context = work.payload_inputs(work.request_from_active(late), late, evidence,
+                                              plan_reference=lambda eid: {})
+        self.assertNotIn("previous_patch", context)
+        # A patch Work without a rejected review names none.
+        _paths, context = work.payload_inputs(work.request_from_active(running()), running(),
+                                              {}, plan_reference=lambda eid: {})
+        self.assertNotIn("previous_patch", context)
 
     def test_successive_failed_reviews_publish_the_patch_anyway(self):
         rec = running(feedback=["review-1"])
@@ -695,6 +715,44 @@ class TestWorkflows(unittest.TestCase):
         lock = (self.root / "reviewer.lock.yml").read_text()
         self.assertIn("GH_AW_PI_COMMAND: /tmp/gh-aw/agent/pi-scrubbed", lock)
         self.assertFalse("secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY" in lock)
+
+    def test_the_worker_reads_the_rejected_patch_it_amends(self):
+        import io
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        from scripts import held_patch
+
+        source = self.front("worker.md")
+        steps = "\n".join(step.get("run", "") for step in source["pre-agent-steps"])
+        self.assertIn("python3 scripts/held_patch.py --task \"$task\" --key previous_patch", steps)
+        self.assertNotIn("--key previous_patch \\\n          --out /tmp/gh-aw/agent/previous-patch "
+                         "--required", steps)
+        self.assertIn("git checkout -q -B previous-patch", steps)
+        # An expired artifact only means there is no rejected patch to read.
+        task = {"context": {"previous_patch": {"artifact_run_id": "4242", "artifact_id": 901,
+                                               "patch_digest": DIGEST}}}
+
+        def get(path):
+            if path.endswith("/zip"):
+                buffer = io.BytesIO()
+                with zipfile.ZipFile(buffer, "w") as z:
+                    z.writestr("patches.mbox", b"x")
+                    z.writestr("proposal.json", b"{}")
+                return buffer.getvalue()
+            return json.dumps({"name": "porting-publication", "expired": True,
+                               "workflow_run": {"id": 4242}}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = held_patch.fetch(task, "previous_patch", Path(tmp), repository="o/r",
+                                      get=get)
+            self.assertEqual(status["status"], "absent")
+            with self.assertRaises(held_patch.Gone):
+                held_patch.fetch(task, "previous_patch", Path(tmp), repository="o/r", get=get,
+                                 required=True)
+            self.assertEqual(held_patch.fetch({"context": {}}, "previous_patch", Path(tmp),
+                                              repository="o/r", get=get)["status"], "absent")
 
     def test_the_worker_verifies_a_development_patch_without_a_token(self):
         source = self.front("worker.md")

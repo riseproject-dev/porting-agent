@@ -1191,7 +1191,10 @@ LIFECYCLE: dict[str, State] = {
                    clears=(HELD_PATCH,)),
                 ("dev_reviews",),
                 "The review is stored as `patch_review` evidence and is pending feedback of the "
-                "next development Work, which amends the patch; the feedback its Work carried "
+                "next development Work, which amends the patch: its payload names the rejected "
+                "series (`context.previous_patch`, by the artifact and digest the review "
+                "pinned, while the artifact is kept), which its trusted pre-agent step "
+                "downloads and checks. The feedback its Work carried "
                 "stays pending. The held patch is discarded and nothing is posted. A Result "
                 "that is not a usable review takes `allocate_work_retry` or "
                 "`exhaust_work_recovery` instead."),
@@ -2868,7 +2871,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 start="development.agent_running",
                 text="A review fails on a blocker or a major finding, whatever it declares. "
                      "`reject_patch_review` discards the held patch and makes the review "
-                     "pending feedback of the next development Work, which amends the patch, "
+                     "pending feedback of the next development Work, which amends the patch it "
+                     "is given (`context.previous_patch`), "
                      "and charges `dev_reviews` (1: one failed review in succession). Once "
                      "`dev_reviews` is exhausted, the next failed review, the second in "
                      "succession, takes `publish_after_failed_reviews`: the held patch is "

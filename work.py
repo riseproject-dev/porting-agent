@@ -439,6 +439,9 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
     requirements = (series_requirements_context(record, evidence)
                     if request["task"] in WRITE_TASKS else None)
     patch = held_patch_reference(record) if request["task"] == DEVELOPMENT_REVIEW else None
+    previous = (previous_patch_reference(request, evidence,
+                                         requested_at=record["active_work"]["requested_at"])
+                if request["task"] in REVIEWED_TASKS else None)
     report = None
     if patch is not None and patch.get("report_evidence_id"):
         if patch["report_evidence_id"] not in evidence:
@@ -479,6 +482,10 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
         # at the pinned commit with its SHA-256.
         **({"patch": patch} if patch is not None else {}),
         **({"report": report} if report is not None else {}),
+        # The patch the newest review of this Work's feedback rejected: the
+        # trusted pre-agent step downloads its series from this artifact and
+        # checks it against this digest, so the worker amends that patch.
+        **({"previous_patch": previous} if previous is not None else {}),
     }
     return allowed_paths, context
 
@@ -609,6 +616,39 @@ def held_patch_reference(record: dict) -> dict:
     return {key: held.get(key) for key in (
         "worker_run_id", "artifact_run_id", "artifact_id", "work", "revision", "patch_digest", "candidate", "tree",
         "expected_head", "operation", "changed_files", "report_evidence_id")}
+
+
+def previous_patch_reference(request: dict, evidence: dict[str, dict], *,
+                             requested_at: str) -> dict | None:
+    """The patch the newest review among the Work's feedback returned for
+    repair, as the payload names it for the worker that amends it: the
+    publication artifact that carries its series, the run that owns it, and
+    the SHA-256 of the series. ``None`` when the Work carries no such review,
+    the review names no artifact, or the artifact expired (or expires within
+    a day) when the Work was requested."""
+    import patch_review
+
+    for evidence_id in reversed(list(request.get("feedback_evidence_ids") or [])):
+        found = evidence.get(evidence_id) or {}
+        if found.get("kind") != patch_review.STATUS:
+            continue
+        data = found.get("data") or {}
+        held = data.get("patch") or {}
+        if data.get("disposition") != "return_for_repair" \
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", str(held.get("artifact_run_id"))) \
+                or not isinstance(held.get("artifact_id"), int) \
+                or not re.fullmatch(r"[0-9a-f]{64}", str(held.get("patch_digest"))) \
+                or not held.get("held_at"):
+            return None
+        # Fixed by the request, so a replay of the same Work names the same
+        # payload.
+        if patch_review.held_patch_expired({"held_patch": held}, requested_at):
+            return None
+        return {"evidence_id": evidence_id, "artifact_run_id": str(held["artifact_run_id"]),
+                "artifact_id": held["artifact_id"], "patch_digest": held["patch_digest"],
+                "candidate": held.get("candidate"), "expected_head": held.get("expected_head"),
+                "operation": held.get("operation")}
+    return None
 
 
 def rewrite_reference(evidence: dict | None) -> dict:
