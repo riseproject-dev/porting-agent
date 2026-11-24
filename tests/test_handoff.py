@@ -209,7 +209,10 @@ class World:
                 if e["kind"] == "record_audit_observation"}
         return {CID: {k for k in keys if k}}
 
-    def tick(self, now: datetime, *, comments=(), receipts=(), publications=(), ci_reruns=()):
+    def tick(self, now: datetime, *, comments=(), receipts=(), publications=(), ci_reruns=(),
+             handoff_runs=()):
+        """``handoff_runs`` names the operations whose run is in flight; the
+        run list is read and lists no other run. None: it was not read."""
         gh = self.gh
         snap = reconcile.Snapshot({"c": self.record}, copy.deepcopy(self.operations),
                                   dict(self.consumed), {}, dict(self.evidence), self.audited())
@@ -223,6 +226,8 @@ class World:
                                  publications=list(publications),
                                  comments=list(comments), handoffs=list(receipts),
                                  ci_reruns=list(ci_reruns),
+                                 handoff_runs=(None if handoff_runs is None
+                                               else {op: 1 for op in handoff_runs}),
                                  pressure=capacity.Pressure(ok=True), dispatcher_runs=[],
                                  queue_works={})
         self.assertion_free(out)
@@ -626,6 +631,84 @@ class TestLivePath(unittest.TestCase):
         out = world.tick(at(20), receipts=[late])
         self.assertEqual(world.kinds(out), [])
         self.assertEqual(world.operations[op_id]["status"], "failed")
+
+    def test_a_run_in_flight_is_neither_relaunched_nor_closed(self):
+        world = reviewed()
+        op_id = world.record["active_operation_id"]
+        for minute in (7, 13, 19, 40):
+            out = world.tick(at(minute), handoff_runs=[op_id])
+            self.assertEqual((out.report["handoff_requests"], world.kinds(out)), ([], []))
+            self.assertEqual(recovery.launch_attempts(world.operations[op_id]), 1)
+            self.assertIn({"contribution": CID, "operation": op_id,
+                           "why": "upstream_branch run 1 is still in flight"},
+                          out.report["controller"]["deferred"])
+        out = world.tick(at(41), receipts=[world.run_workflow()])
+        self.assertEqual(world.kinds(out)[0], "confirm_clean_head")
+        self.assertEqual(world.operations[op_id]["status"], "confirmed")
+        self.assertEqual(world.operations[op_id]["reason_ids"][1:3], ["attempt:1", "count:1"])
+
+    def test_spent_launches_are_not_closed_while_the_last_run_is_in_flight(self):
+        world = reviewed()
+        op_id = world.record["active_operation_id"]
+        world.tick(at(7))
+        world.tick(at(13))
+        self.assertEqual(recovery.launch_attempts(world.operations[op_id]), 3)
+        for minute in (19, 30, 50):
+            out = world.tick(at(minute), handoff_runs=[op_id])
+            self.assertEqual(world.kinds(out), [])
+            self.assertEqual(world.operations[op_id]["status"], "planned")
+        out = world.tick(at(51))
+        self.assertEqual(world.kinds(out), ["retry_upstream_branch"])
+        self.assertEqual(world.operations[op_id]["external_ids"]["launches_spent"], 3)
+
+    def test_a_run_in_flight_longer_than_the_bound_is_relaunched_then_spent(self):
+        world = reviewed()
+        bound = handoff.RUN_SECONDS // 60
+        minute, closes = 1, []
+        while world.state != "handoff.waiting_human":
+            op_id = world.record["active_operation_id"]
+            out = world.tick(at(minute + bound - 1), handoff_runs=[op_id])
+            self.assertEqual((out.report["handoff_requests"], world.kinds(out)), ([], []))
+            minute += bound
+            out = world.tick(at(minute), handoff_runs=[op_id])
+            if world.kinds(out):
+                closes.append(world.kinds(out))
+                event = [e for k, e in out.staged if k == "events"][0]
+                self.assertIn(f"(run still listed after {handoff.RUN_SECONDS} s)",
+                              event["details"]["reason"])
+                self.assertEqual(world.operations[op_id]["external_ids"]["launches_spent"], 3)
+            else:
+                self.assertEqual(len(out.report["handoff_requests"]), 1)
+            self.assertLess(minute, 20 * bound)
+        self.assertEqual(closes[-1], ["exhaust_upstream_branch_retries"])
+        self.assertEqual(world.record["pending_human_action"]["counter"], "upstream_branch")
+
+    def test_an_unread_run_list_holds_for_the_bound_only(self):
+        world = reviewed()
+        op_id = world.record["active_operation_id"]
+        out = world.tick(at(7), handoff_runs=None)
+        self.assertEqual(out.report["handoff_requests"], [])
+        self.assertIn({"contribution": CID, "operation": op_id,
+                       "why": "upstream_branch run status not observed"},
+                      out.report["controller"]["deferred"])
+        out = world.tick(at(61), handoff_runs=None)
+        self.assertEqual([r["attempt"] for r in out.report["handoff_requests"]], [2])
+
+    def test_a_submission_comment_run_in_flight_is_held(self):
+        world = through("handoff.preparing_submission")
+        op_id = world.record["active_operation_id"]
+        self.assertEqual(world.active["kind"], "submission_comment")
+        start = datetime.fromisoformat(world.active["updated_at"])
+        out = world.tick(start + timedelta(minutes=20), handoff_runs=[op_id])
+        self.assertEqual((out.report["handoff_requests"], world.kinds(out)), ([], []))
+        self.assertEqual(recovery.launch_attempts(world.operations[op_id]), 1)
+        out = world.tick(start + timedelta(minutes=21))
+        self.assertEqual([r["attempt"] for r in out.report["handoff_requests"]], [2])
+
+    def test_a_run_of_another_operation_does_not_hold(self):
+        world = reviewed()
+        out = world.tick(at(7), handoff_runs=["op-" + "0" * 24])
+        self.assertEqual([r["attempt"] for r in out.report["handoff_requests"]], [2])
 
     def test_a_refused_attempt_is_not_folded(self):
         world = reviewed()

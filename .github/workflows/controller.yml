@@ -255,6 +255,21 @@ jobs:
             unzip -q -o -j "ci-reruns/$run/a.zip" -d "ci-reruns/$run" || continue
             printf '%s' "$id" > "ci-reruns/$run/artifact-id"
           done
+      - name: Observe the handoff runs still in flight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Read before the receipts: a run that completes in between is seen
+          # in flight or as a receipt, never as neither. Without the list the
+          # controller holds a launched handoff attempt as possibly in flight.
+          if gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/handoff.yml/runs?branch=main&event=workflow_dispatch&per_page=100" \
+            --jq '[.workflow_runs[] | select(.status != "completed") | {id, status, title: .display_title}]' > handoff-runs.tmp; then
+            mv handoff-runs.tmp handoff-runs.json
+          else
+            rm -f handoff-runs.tmp handoff-runs.json
+            echo "handoff run inventory unavailable this tick" >&2
+          fi
       - name: Collect trusted handoff receipts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -284,7 +299,7 @@ jobs:
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
           uv run --locked python -m reconcile --publications publications \
             --provisions provisions --development-prs development-prs --handoffs handoffs \
-            --ci-reruns ci-reruns \
+            --handoff-runs handoff-runs.json --ci-reruns ci-reruns \
             --report report.json \
             ${gh_aw:+--gh-aw "$gh_aw"}
           {

@@ -752,6 +752,14 @@ def receipt_problem(record: dict, op: dict, receipt: dict) -> str | None:
 # What a failed attempt records when its launches are spent without a
 # receipt: the controller closes it as a failed infrastructure attempt.
 LAUNCHES_SPENT = "launches spent without a receipt"
+# The longest a launched handoff run can stay queued or in progress: the
+# longest job chain of `handoff.yml` (5 + 15 + 5 minutes) behind one running
+# run of the concurrency group `porting-fork-writer` (at most 30 minutes, the
+# chain of `publish-retry.yml`), so 55 minutes, rounded up. The controller
+# neither launches an attempt again nor closes it as spent while a run of it
+# is in flight or the run list was not read, for at most this long after the
+# last launch. A test pins it against the workflows.
+RUN_SECONDS = 3600
 
 
 def fail_attempt(record: dict, op: dict, *, policy: dict, now: str, failure: str, reason: str,

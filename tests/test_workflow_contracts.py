@@ -847,3 +847,80 @@ class TestHistoryAndReports(unittest.TestCase):
         for name in ("worker", "planner"):
             lock = (WORKFLOWS / f"{name}.lock.yml").read_text()
             self.assertIn("history digest mismatch", lock)
+
+
+def _longest_chain(jobs: dict) -> int:
+    """The longest `needs` chain of job timeouts of a workflow, in minutes."""
+    memo: dict[str, int] = {}
+
+    def chain(name: str) -> int:
+        if name not in memo:
+            needs = jobs[name].get("needs") or []
+            needs = [needs] if isinstance(needs, str) else needs
+            memo[name] = int(jobs[name]["timeout-minutes"]) + max(
+                (chain(n) for n in needs), default=0)
+        return memo[name]
+
+    return max(chain(name) for name in jobs)
+
+
+class TestHandoffRunObservation(unittest.TestCase):
+    def test_the_handoff_run_bound_covers_the_workflow_and_its_queue(self):
+        import controller
+        import handoff
+
+        group = {}
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            data = yaml.safe_load(path.read_text())
+            concurrency = (data or {}).get("concurrency")
+            if isinstance(concurrency, dict) and concurrency.get("group") == "porting-fork-writer":
+                group[path.name] = data
+        self.assertIn("handoff.yml", group)
+        for name, data in group.items():
+            for job, body in data["jobs"].items():
+                self.assertIn("timeout-minutes", body, f"{name} {job}")
+        chains = {name: _longest_chain(data["jobs"]) for name, data in group.items()}
+        self.assertGreaterEqual(handoff.RUN_SECONDS,
+                                60 * (chains["handoff.yml"] + max(chains.values())))
+        self.assertGreaterEqual(handoff.RUN_SECONDS, controller.LAUNCH_INTERVAL_SECONDS)
+
+    def test_the_controller_observes_handoff_runs_before_their_receipts(self):
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        names = [step.get("name") for step in steps]
+        observe = names.index("Observe the handoff runs still in flight")
+        self.assertLess(observe, names.index("Collect trusted handoff receipts"))
+        step = steps[observe]
+        self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertIn('select(.status != "completed")', step["run"])
+        self.assertIn(".display_title", step["run"])
+        self.assertIn("handoff-runs.json", step["run"])
+        command = steps[names.index("Reconcile deterministic state locally")]["run"]
+        self.assertIn("--handoff-runs handoff-runs.json", command)
+        self.assertEqual(workflow("handoff.yml")["run-name"], "Handoff ${{ inputs.operation-id }}")
+
+    def test_the_run_list_is_read_strictly(self):
+        op = "op-" + "a" * 24
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runs.json"
+            self.assertIsNone(reconcile._handoff_runs(None))
+            self.assertIsNone(reconcile._handoff_runs(str(path)))
+            for bad in ("{}", '"x"', "not json"):
+                path.write_text(bad)
+                self.assertIsNone(reconcile._handoff_runs(str(path)))
+            entries = [
+                "x", 3, None,
+                {"id": 1, "status": "completed", "title": f"Handoff {op}"},
+                {"id": "2", "status": "queued", "title": f"Handoff {op}"},
+                {"id": True, "status": "queued", "title": f"Handoff {op}"},
+                {"id": 3, "status": None, "title": f"Handoff {op}"},
+                {"id": 4, "status": "queued", "title": "Handoff op-xyz"},
+                {"id": 5, "status": "queued", "title": f"Handoff {op} extra"},
+                {"id": 6, "status": "queued", "title": f"Handoff {op}\n"},
+                {"id": 7, "status": "queued", "title": f"Handoff {op[:-1]}\nb"},
+                {"id": 8, "status": "queued", "title": 9},
+                {"id": 9, "status": "in_progress", "title": f"Handoff {op}"},
+            ]
+            path.write_text(json.dumps(entries))
+            self.assertEqual(reconcile._handoff_runs(str(path)), {op: 9})
+            path.write_text("[]")
+            self.assertEqual(reconcile._handoff_runs(str(path)), {})

@@ -1856,6 +1856,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
          ci_reruns: list[dict] | None = None,
+         handoff_runs: dict[str, int] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
          queue_policy: dict | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
@@ -2188,6 +2189,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {},
                                                    spent_graphs=spent_graphs,
+                                                   handoff_runs=handoff_runs,
                                                    resolution_evidence={
                                                        e["evidence_id"]: e for e in evidence.values()
                                                        if e.get("kind") == "resolution"}),
@@ -2511,6 +2513,38 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
     return publications
 
 
+# The run name `handoff.yml` gives a run: `Handoff <operation id>`.
+_HANDOFF_RUN_TITLE = re.compile(r"Handoff (op-[0-9a-f]{24})")
+
+
+def _handoff_runs(path: str | None) -> dict[str, int] | None:
+    """The handoff workflow runs that are not completed, by operation, from
+    the run list the controller workflow wrote (``id``, ``status``,
+    ``title``), or None when it was not read this tick. An entry of another
+    shape is ignored; the title is only matched, never rendered."""
+    if not path:
+        return None
+    try:
+        entries = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(entries, list):
+        return None
+    runs: dict[str, int] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        status, run_id, title = entry.get("status"), entry.get("id"), entry.get("title")
+        if not isinstance(status, str) or status == "completed":
+            continue
+        if not isinstance(run_id, int) or isinstance(run_id, bool) or not isinstance(title, str):
+            continue
+        match = _HANDOFF_RUN_TITLE.fullmatch(title)
+        if match:
+            runs[match.group(1)] = run_id
+    return runs
+
+
 def _receipt_outcomes(directory: str | None, *, kind: str) -> list[dict]:
     receipts = []
     for path in sorted(Path(directory).glob("*/outcome.json")) if directory else []:
@@ -2602,6 +2636,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     ci_reruns = _receipt_outcomes(getattr(args, "ci_reruns", None), kind="ci_rerun")
     provisions = _receipt_outcomes(args.provisions, kind="provision")
     handoffs = _receipt_outcomes(getattr(args, "handoffs", None), kind="handoff")
+    handoff_runs = None if args.offline else _handoff_runs(getattr(args, "handoff_runs", None))
     issues = [] if args.offline else collect.intake_issues(api)
     tracking = sorted(
         {record["tracking_issue"]["number"] for record in snapshot.contributions.values()}
@@ -2675,6 +2710,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             development_prs=development_prs,
             handoffs=handoffs,
             ci_reruns=ci_reruns,
+            handoff_runs=handoff_runs,
         )
     except isolation.TickFailure as failure:
         # A pipeline failure: nothing is written, so nothing is committed.
@@ -2732,6 +2768,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--development-prs")
     parser.add_argument("--ci-reruns")
     parser.add_argument("--handoffs")
+    parser.add_argument("--handoff-runs")
     parser.add_argument("--report")
     parser.add_argument("--since")
     parser.add_argument("--offline", action="store_true")

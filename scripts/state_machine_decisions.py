@@ -905,6 +905,28 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("handoff.building_upstream_branch", "confirm_clean_head"),
                      ("handoff.preparing_submission", "confirm_submission_package")),
     ),
+    Item(
+        "A handoff run in flight holds its attempt",
+        "Whether a slow or queued but healthy `handoff.yml` run can have its attempt launched "
+        "again or closed as spent. Before, an attempt was launched again 300 seconds after its "
+        "last launch without a receipt and closed as failed once its last allowed launch was "
+        "300 seconds old, while a run may take 25 minutes and wait behind another run of the "
+        "concurrency group `porting-fork-writer`.",
+        "The controller workflow reads the `handoff.yml` runs that are not completed before it "
+        "collects the receipts, and matches them to operations by their run name `Handoff "
+        "<operation id>`. A handoff attempt is neither launched again nor closed as spent while "
+        "a run of it is queued or in progress, or while the run list could not be read in the "
+        "tick, for at most `handoff.RUN_SECONDS` (3600 seconds) after the last launch; then it "
+        "is launched again or closed as before, so a stuck queue still ends in "
+        "`handoff.waiting_human`. A failed dispatch is still launched again after 300 seconds, "
+        "since the run list then names no run of the attempt. No row, budget, or record field "
+        "changes.",
+        ("handoff.building_upstream_branch", "handoff.preparing_submission"),
+        edges=(("handoff.building_upstream_branch", "retry_upstream_branch"),
+               ("handoff.preparing_submission", "retry_submission_comment")),
+        highlighted=(("handoff.building_upstream_branch", "retry_upstream_branch"),
+                     ("handoff.preparing_submission", "retry_submission_comment")),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (

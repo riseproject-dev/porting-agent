@@ -1766,3 +1766,20 @@ flowchart TB
     handoff_building_upstream_branch ==>|confirm_clean_head| handoff_waiting_ci
     handoff_preparing_submission ==>|confirm_submission_package| handoff_waiting_upstream_pr
 ```
+
+### A handoff run in flight holds its attempt
+
+Whether a slow or queued but healthy `handoff.yml` run can have its attempt launched again or closed as spent. Before, an attempt was launched again 300 seconds after its last launch without a receipt and closed as failed once its last allowed launch was 300 seconds old, while a run may take 25 minutes and wait behind another run of the concurrency group `porting-fork-writer`.
+
+**Change.** The controller workflow reads the `handoff.yml` runs that are not completed before it collects the receipts, and matches them to operations by their run name `Handoff <operation id>`. A handoff attempt is neither launched again nor closed as spent while a run of it is queued or in progress, or while the run list could not be read in the tick, for at most `handoff.RUN_SECONDS` (3600 seconds) after the last launch; then it is launched again or closed as before, so a stuck queue still ends in `handoff.waiting_human`. A failed dispatch is still launched again after 300 seconds, since the run list then names no run of the attempt. No row, budget, or record field changes.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_preparing_submission["handoff.preparing_submission"]
+    end
+
+    handoff_building_upstream_branch ==>|retry_upstream_branch| handoff_building_upstream_branch
+    handoff_preparing_submission ==>|retry_submission_comment| handoff_preparing_submission
+```

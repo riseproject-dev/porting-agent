@@ -71,6 +71,9 @@ class Inputs:
     # submitted again: Work allocated under one takes `allocate_work_retry`
     # or `exhaust_work_recovery` in the same tick.
     spent_graphs: frozenset[str] = frozenset()
+    # The handoff workflow runs that are not completed, by operation (run id);
+    # None when the run list was not read this tick.
+    handoff_runs: dict[str, int] | None = None
 
 
 @dataclass
@@ -1338,16 +1341,32 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
         return
     launches = recovery.launch_attempts(op)
     limit = lifecycle.budget_limit("operation_launch", policy)
-    if launches >= limit:
-        if (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
-                < LAUNCH_INTERVAL_SECONDS:
+    op_id = op["operation_id"]
+    age = (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds()
+    if launches and age < LAUNCH_INTERVAL_SECONDS:
+        return
+    # A run of the attempt that is still queued or in progress (or a run list
+    # that was not read) holds the attempt: it is neither launched again nor
+    # closed as spent, for at most `handoff.RUN_SECONDS` after the last
+    # launch, so a slow or queued healthy run is not charged.
+    runs = inputs.handoff_runs
+    run = None if runs is None else runs.get(op_id)
+    if launches and (runs is None or run is not None):
+        if age < handoff.RUN_SECONDS:
+            why = (f"{kind} run status not observed" if runs is None
+                   else f"{kind} run {run} is still in flight")
+            rep["deferred"].append({"contribution": cid, "operation": op_id, "why": why})
             return
+    late = (f" (run still listed after {handoff.RUN_SECONDS} s)"
+            if launches and run is not None else "")
+    if launches >= limit:
         # The last allowed launch is old and no receipt came back: the attempt
         # is a definite infrastructure failure. It is closed as failed and
         # fires the retry row of the state, or its exhaustion row.
         failed, fired = handoff.fail_attempt(
             c, op, policy=policy, now=now, failure=handoff.INFRASTRUCTURE,
-            reason=f"{kind} {handoff.LAUNCHES_SPENT}", external_ids={"launches_spent": launches})
+            reason=f"{kind} {handoff.LAUNCHES_SPENT}{late}",
+            external_ids={"launches_spent": launches})
         operations[op["operation_id"]] = failed
         by_id[cid] = fired.record
         res.stage("operations", failed)
@@ -1357,9 +1376,6 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
                               "alert": f"{kind} {handoff.LAUNCHES_SPENT}: {fired.verb}"})
         if engine.state_key(fired.record) == state:
             _launch_handoff(fired.record, by_id, operations, res, inputs, now, policy, evidence)
-        return
-    if launches and (inputs.now - datetime.fromisoformat(op["updated_at"])).total_seconds() \
-            < LAUNCH_INTERVAL_SECONDS:
         return
     launched = recovery.charge_launch(op, now)
     operations[op["operation_id"]] = launched
@@ -1376,7 +1392,9 @@ def _open_operations(record: dict, operations: dict) -> tuple[str, ...]:
 
 
 # A planned operation is launched again once this long has passed since its
-# last launch without a receipt, within `operation_launch`.
+# last launch without a receipt, within `operation_launch`. It is also the
+# time a dispatched run needs to appear in the run list. A handoff attempt
+# additionally waits while a run of it is in flight (`handoff.RUN_SECONDS`).
 LAUNCH_INTERVAL_SECONDS = 300
 # The operations the development PR workflow executes (a `ci_rerun` of
 # `handoff.waiting_ci` is executed by the handoff workflow).
