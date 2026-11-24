@@ -1,5 +1,5 @@
 {
-  "active_operation_id": null,
+  "active_operation_id": "op-196103627c420a3cfc338a6d",
   "active_work": null,
   "activity": "waiting_ci",
   "admission_class": "architecture_correctness",
@@ -38,7 +38,7 @@
   "held_patch": null,
   "last_ci_evidence_id": null,
   "merge": null,
-  "next_poll_at": "2026-11-24T11:24:57.566760+00:00",
+  "next_poll_at": "2026-11-24T12:14:05.040020+00:00",
   "owners": {
     "backup": null,
     "handoff_reviewer": null,
@@ -46,10 +46,11 @@
     "submitter": null
   },
   "parked_reason": null,
-  "paused": true,
-  "paused_at": "2026-11-24T01:38:40.668757+00:00",
-  "paused_by": "controller",
-  "paused_reason": "processing_error: SchemaError: invalid contribution record: scope_paths: ['.github/workflows/*', '.goreleaser.yaml', 'Makefile', 'Dockerfile', 'README.md', '.gitignore', 'builder.go', 'bootloader.go', 'grub.go', 'grub_bios.go', 'grub_efi.go', 'grub_common.go', 'syslinux.go', 'config.go', 'config_test.go', 'dockerfile.go', 'doc... (step publication, run 45306486508)",
+  "paused": false,
+  "paused_at": null,
+  "paused_at_commit": null,
+  "paused_by": null,
+  "paused_reason": null,
   "pending_feedback_evidence_ids": [],
   "pending_human_action": null,
   "pending_publication": null,
@@ -75,7 +76,7 @@
   "release_acceptance": null,
   "retirement": null,
   "review_comments": [],
-  "revision": 4,
+  "revision": 5,
   "schema_version": 1,
   "scope_coverage_complete": true,
   "scope_paths": [
@@ -122,7 +123,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-24T02:36:41.537141+00:00",
+  "updated_at": "2026-11-24T12:13:05.040020+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
