@@ -148,6 +148,12 @@ class Applied:
     restarted: dict[str, Any] | None = None
 
 
+class CommandRefused(lc.TransitionError):
+    """A command whose value the table's row cannot use (an invalid target
+    branch): the reply is a rejection. Any other ``TransitionError`` raised
+    while a command is applied is a programming error."""
+
+
 class TransitionRefused(lc.TransitionError):
     """A refusal whose disposition at its call site is ``Bug``: the caller
     raises it, and the tick pauses the contribution for a processing error."""
@@ -404,10 +410,7 @@ _record("no Work requested", "no_work_requested")(_no_work)
 
 @_record("development PR and head recorded", "development_pr_recorded")
 def _development_pr_recorded(ctx: Context) -> str | None:
-    fork = ctx.record.get("fork") or {}
-    if fork.get("pr_number") and fork.get("head_sha"):
-        return None
-    return "no development PR and head are recorded"
+    return lc.dev_pr_problem(ctx.record)
 
 
 def stopped_since(record: dict) -> datetime | None:
@@ -1521,7 +1524,7 @@ def _derived(name: str, ctx: Context) -> tuple[bool, Any]:
         try:
             return True, intake.canonical_branch(branch)
         except intake.IntakeError as error:
-            raise TransitionError(str(error)) from None
+            raise CommandRefused(str(error)) from None
     return False, None
 
 

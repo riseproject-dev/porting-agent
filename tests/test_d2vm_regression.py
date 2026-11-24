@@ -153,7 +153,7 @@ class TestTheLiveRecordHeals(unittest.TestCase):
                           rec["paused_by"], rec["fork"]["pr_number"]),
                          ("development.waiting_ci", 4, True, "controller", None))
         self.assertEqual(engine.invariant_problems(rec),
-                         [("dev_pr", "no development PR and head are recorded")])
+                         [("dev_pr", "no development PR is recorded")])
         self.assertNotIn("paused_at_commit", rec)
 
     def test_the_first_tick_resumes_and_opens_the_development_pr_of_its_head(self):

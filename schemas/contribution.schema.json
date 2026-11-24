@@ -191,6 +191,7 @@
       ]
     },
     "paused_at_commit": {
+      "description": "The version of the pipeline code that ran when the controller paused the contribution after a processing error: the SHA-256 of the top-level git tree of HEAD without .state (reconcile.pipeline_version), a tree hash and not a commit id.",
       "type": [
         "string",
         "null"

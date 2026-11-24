@@ -53,29 +53,125 @@ class Site:
         self.verbs: set[str | None] = set()
 
 
-def sites() -> dict[tuple[str, str], Site]:
+STATIC_TAKERS = frozenset({"engine.try_apply_transition", "engine.try_apply_one_of",
+                           "engine.try_apply_command"})
+
+
+def called(call: ast.Call, module: str, bindings) -> str | None:
+    """The qualified name a call resolves to: ``engine.<name>`` for the
+    engine under any alias (`import engine as e`, `from engine import x`,
+    ``getattr(engine, "x")``), else ``<module>.<name>`` for another module's
+    attribute or a name of this module."""
+    modules, names = bindings
+    func = call.func
+    if isinstance(func, ast.Call) and isinstance(func.func, ast.Name) \
+            and func.func.id == "getattr" and len(func.args) > 1 \
+            and isinstance(func.args[0], ast.Name) and func.args[0].id in modules \
+            and isinstance(func.args[1], ast.Constant):
+        return f"engine.{func.args[1].value}"
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return f"engine.{func.attr}" if func.value.id in modules else \
+            f"{func.value.id}.{func.attr}"
+    if isinstance(func, ast.Name):
+        return f"engine.{names[func.id]}" if func.id in names else f"{module}.{func.id}"
+    return None
+
+
+def own_nodes(function):
+    """The nodes of a function, but those of the functions defined in it
+    (each is analysed on its own)."""
+    stack = list(ast.iter_child_nodes(function))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def analyse(sources: dict[str, str]) -> tuple[dict[tuple[str, str], Site], list[str]]:
+    """Every function of ``sources`` (module name to source) that takes rows
+    and the problems found: each take must be consumed by exactly one
+    dispatch, in the function (an argument of it, or a name it dispatches
+    once per assignment) or in the caller of a function that returns it, and
+    every function that returns a take has a caller, which takes it in turn.
+    The engine under any alias is resolved (``called``)."""
+    trees = {module: ast.parse(text) for module, text in sources.items()}
+    bindings = {module: lc.engine_bindings(tree) for module, tree in trees.items()}
+    functions = [(module, node) for module, tree in trees.items() for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    takers = set(STATIC_TAKERS) | {"recovery.fire"}
     found: dict[tuple[str, str], Site] = {}
-    for path in modules():
-        tree = ast.parse(path.read_text())
-        module = path.stem
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+    problems: list[str] = []
+    while True:
+        found, problems = {}, []
+        grown = False
+        for module, function in functions:
+            where = f"{module}.{function.name}"
             site = Site(module, function.name)
-            matched: dict[int, set[str]] = {}
-            values = [value for node in ast.walk(function) if isinstance(node, ast.Return)
-                      for value in ([node.value] if not isinstance(node.value, ast.Tuple)
-                                    else node.value.elts)]
-            names = {value.id for value in values if isinstance(value, ast.Name)}
-            returned = {id(value) for value in values} | {
-                id(node.value) for node in ast.walk(function)
-                if isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name) and node.targets[0].id in names}
-            for node in ast.walk(function):
-                if isinstance(node, ast.Match) and isinstance(node.subject, ast.Call) \
-                        and ast.unparse(node.subject.func) == "engine.dispatch":
+            values = [value for node in own_nodes(function) if isinstance(node, ast.Return)
+                      and node.value is not None
+                      for value in (node.value.elts if isinstance(node.value, ast.Tuple)
+                                    else [node.value])]
+            returned_names = {value.id for value in values if isinstance(value, ast.Name)}
+            returned = {id(value) for value in values}
+            calls = [node for node in own_nodes(function) if isinstance(node, ast.Call)]
+            take_calls = [c for c in calls if called(c, module, bindings[module]) in takers]
+            dispatch_calls = [c for c in calls
+                              if called(c, module, bindings[module]) in
+                              ("engine.dispatch", "engine.applied")]
+            assigned: dict[str, list[ast.Call]] = {}
+            for node in own_nodes(function):
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                        and isinstance(node.value, ast.Call) and node.value in take_calls:
+                    target = node.targets[0]
+                    for name in (target.elts if isinstance(target, ast.Tuple) else [target]):
+                        if isinstance(name, ast.Name):
+                            assigned.setdefault(name.id, []).append(node.value)
+            consumed: dict[int, int] = {}
+            for dispatch in dispatch_calls:
+                arg = dispatch.args[0] if dispatch.args else None
+                if isinstance(arg, ast.Call) and arg in take_calls:
+                    consumed[id(arg)] = consumed.get(id(arg), 0) + 1
+                elif isinstance(arg, ast.Name) and arg.id in assigned:
+                    for take in assigned[arg.id]:
+                        consumed[id(take)] = consumed.get(id(take), 0) + 1
+                else:
+                    problems.append(f"{where}: a dispatch of something that is not the outcome "
+                                    "of a row taken here")
+            for name, takes in assigned.items():
+                uses = sum(1 for d in dispatch_calls
+                           if d.args and isinstance(d.args[0], ast.Name) and d.args[0].id == name)
+                if uses > len(takes):
+                    problems.append(f"{where}: the outcome {name} is dispatched {uses} times")
+            for take in take_calls:
+                is_returned = id(take) in returned or any(
+                    take in takes and name in returned_names for name, takes in assigned.items())
+                if is_returned:
+                    site.returned.append(take)
+                    if where not in takers:
+                        takers.add(where)
+                        grown = True
+                    if consumed.get(id(take)):
+                        problems.append(f"{where}: a row is returned and dispatched")
+                elif not consumed.get(id(take)):
+                    problems.append(f"{where}:{take.lineno}: the outcome of a row is not "
+                                    "dispatched")
+                else:
+                    site.takes.append(take)
+                    name = called(take, module, bindings[module])
+                    if name == "engine.try_apply_transition" and len(take.args) > 1 \
+                            and isinstance(take.args[1], ast.Constant):
+                        site.verbs.add(take.args[1].value)
+                    else:
+                        site.verbs.add(None)
+            for dispatch in dispatch_calls:
+                kind = called(dispatch, module, bindings[module])
+                names = None
+                if kind == "engine.dispatch":
+                    parent = next((n for n in own_nodes(function) if isinstance(n, ast.Match)
+                                   and n.subject is dispatch), None)
                     names = set()
-                    for case in node.cases:
+                    for case in (parent.cases if parent else []):
                         pattern = case.pattern
                         if isinstance(pattern, ast.MatchAs) and pattern.pattern is not None:
                             pattern = pattern.pattern
@@ -83,28 +179,27 @@ def sites() -> dict[tuple[str, str], Site]:
                             names.add(ast.unparse(pattern.cls).removeprefix("engine."))
                         else:
                             names.add("<default>")
-                    matched[id(node.subject)] = names
-            for node in ast.walk(function):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = ast.unparse(node.func)
-                if name in TAKERS and id(node) in returned:
-                    site.returned.append(node)
-                elif name in TAKERS:
-                    site.takes.append(node)
-                    if name == "engine.try_apply_transition" and len(node.args) > 1 \
-                            and isinstance(node.args[1], ast.Constant):
-                        site.verbs.add(node.args[1].value)
-                    else:
-                        site.verbs.add(None)
-                elif name in DISPATCHERS:
-                    site.dispatches.append((node, matched.get(id(node))
-                                            if name == "engine.dispatch" else {"Applied", "Bug"}))
-                    if len(node.args) > 1:
-                        site.sites.append(ast.literal_eval(node.args[1]))
+                    if parent is None:
+                        names = None
+                site.dispatches.append((dispatch, names if kind == "engine.dispatch"
+                                        else {"Applied", "Bug"}))
+                if len(dispatch.args) > 1:
+                    site.sites.append(ast.literal_eval(dispatch.args[1]))
             if site.takes or site.dispatches or site.returned:
                 found[(module, function.name)] = site
-    return found
+        if not grown:
+            break
+    for key in sorted(name for name in takers if name not in STATIC_TAKERS):
+        module, _, function = key.partition(".")
+        callers = [1 for m, node in functions for c in ast.walk(node)
+                   if isinstance(c, ast.Call) and called(c, m, bindings[m]) == key]
+        if not callers and (module, function) in found:
+            problems.append(f"{key}: returns the outcome of a row to no caller")
+    return found, problems
+
+
+def sites() -> dict[tuple[str, str], Site]:
+    return analyse({path.stem: path.read_text() for path in modules()})[0]
 
 
 class TestTheTable(unittest.TestCase):
@@ -152,6 +247,44 @@ class TestTheTable(unittest.TestCase):
 
 
 class TestTheCallSites(unittest.TestCase):
+    def test_every_outcome_of_a_row_is_dispatched_once_or_returned_to_a_dispatching_caller(self):
+        _found, problems = analyse({path.stem: path.read_text() for path in modules()})
+        self.assertEqual(problems, [])
+
+    def test_the_lint_resolves_aliases_and_finds_what_is_not_dispatched(self):
+        bad = {
+            "a": "import engine as e\n"
+                 "def f(r):\n    e.try_apply_transition(r, 'x')\n",
+            "b": "from engine import try_apply_transition as t\n"
+                 "def f(r):\n    out = t(r, 'x')\n    return 1\n",
+            "c": "import engine\n"
+                 "def f(r):\n    return getattr(engine, 'try_apply_transition')(r, 'x')\n",
+            "d": "import engine\n"
+                 "def f(r):\n    out = engine.try_apply_transition(r, 'x')\n"
+                 "    engine.dispatch(out, ('d', 'f'))\n    engine.dispatch(out, ('d', 'f'))\n",
+        }
+        for module, source in bad.items():
+            with self.subTest(module=module):
+                _found, problems = analyse({module: source})
+                self.assertTrue(problems, source)
+        good = {"g": "import engine as e\n"
+                     "def f(r):\n    out = e.try_apply_transition(r, 'x')\n"
+                     "    match e.dispatch(out, ('g', 'f')):\n"
+                     "        case e.Applied():\n            pass\n"}
+        self.assertEqual(analyse(good)[1], [])
+
+    def test_the_private_api_is_found_under_any_alias(self):
+        for source in ("import engine as e\ne.preconditions\n",
+                       "from engine import preconditions\n",
+                       "from engine import *\n",
+                       "import engine\ngetattr(engine, 'apply_transition')\n",
+                       "import engine\ngetattr(engine, name)\n",
+                       "import engine\nx = engine\nx._evaluate\n"):
+            with self.subTest(source=source):
+                self.assertTrue(lc.private_engine_names_in(ast.parse(source)), source)
+        self.assertEqual(lc.private_engine_names_in(ast.parse(
+            "import engine as e\ne.try_apply_transition\n")), [])
+
     def test_every_row_taken_is_dispatched_at_its_own_site(self):
         for (module, function), site in sites().items():
             with self.subTest(site=(module, function)):

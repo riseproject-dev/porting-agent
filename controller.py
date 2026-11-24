@@ -2336,10 +2336,13 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
                     reason=f"command names {cmd.contribution}, but this issue tracks {rec['contribution_id']}")
     receipt = dict(receipt, contribution_id=rec["contribution_id"],
                    revision=cmd.revision if cmd.revision is not None else rec["revision"])
+    # A refusal of the table is a `Rejected` reply, and so is a command value
+    # the row cannot use (`engine.CommandRefused`); any other error raised
+    # here is a programming error, a processing error of the contribution.
     try:
         out = apply_command(rec, cmd, receipt, operations=operations, policy=policy, now=now,
                             upstream_pr=inputs.upstream_pr_observations.get(rec["contribution_id"]))
-    except lifecycle.TransitionError as e:
+    except engine.CommandRefused as e:
         return dict(receipt, result="rejected", reason=str(e))
     if isinstance(out, Rejected):
         if out.kind in (engine.Refusal.SOURCE_INVALID, engine.Refusal.TARGET_INVALID):

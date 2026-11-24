@@ -542,16 +542,24 @@ class TestExpectedRejections(unittest.TestCase):
         self.assertEqual((receipt["result"], receipt["reason"]), ("rejected", "not paused"))
         self.assertFalse((record_of(output, A) or a)["paused"])
 
-    def test_transition_error_from_a_command(self):
+    def test_a_command_value_the_row_cannot_use_is_rejected(self):
         a, b = waiting(), other_waiting()
-        refused = lifecycle.TransitionError("the table refuses this")
+        refused = engine.CommandRefused("invalid upstream target branch")
         output = tick([a, b], comments=[comment("/upstreaming pause", 12)], patches=[
             ("controller.apply_command", only_for(A, REAL["apply_command"], refused))])
         self.assert_not_isolated(output)
         receipt = [r for kind, r in output.staged if kind == "commands"][0]
         self.assertEqual((receipt["result"], receipt["reason"]),
-                         ("rejected", "the table refuses this"))
+                         ("rejected", "invalid upstream target branch"))
         self.assertFalse((record_of(output, A) or a)["paused"])
+
+    def test_a_programming_error_from_a_command_is_a_processing_error(self):
+        a, b = waiting(), other_waiting()
+        bug = lifecycle.TransitionError("a row that cannot be taken")
+        output = tick([a, b], comments=[comment("/upstreaming pause", 12)], patches=[
+            ("controller.apply_command", only_for(A, REAL["apply_command"], bug))])
+        self.assertEqual([e["contribution"] for e in output.report["processing_errors"]], [A])
+        self.assertTrue((record_of(output, A) or a)["paused"])
 
     def test_intake_error(self):
         a, b = waiting(), other_waiting()

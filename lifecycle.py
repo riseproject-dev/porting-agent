@@ -664,7 +664,9 @@ _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by", "paused_at_
 # The controller resumes a contribution it paused after a processing error
 # once, after the pipeline code changed (`resume_pause` from the tick):
 # `pause_on_processing_error` records the version of the pipeline code it
-# ran (`paused_at_commit`), and an absent one counts as changed. A failed
+# ran (`paused_at_commit`, a tree hash: the SHA-256 of the top-level git tree
+# of `HEAD` without `.state`, not a commit id), and an absent one counts as
+# changed. A failed
 # retry pauses again at the new version; a human `pause` takes the stop over
 # and ends the automatic resume.
 PAUSED_FOR_ERROR = "paused by the controller after a processing error"
@@ -2302,10 +2304,20 @@ def _fork(record: dict) -> str | None:
     return None if fork.get("repository_id") and fork.get("name") else "no fork is recorded"
 
 
-def _dev_pr(record: dict) -> str | None:
+def dev_pr_problem(record: dict) -> str | None:
+    """Why the record names no development PR and head, or ``None``: what
+    is missing, the PR, the head, or both."""
     fork = record.get("fork") or {}
-    return None if fork.get("pr_number") and fork.get("head_sha") else \
-        "no development PR and head are recorded"
+    if fork.get("pr_number") and fork.get("head_sha"):
+        return None
+    if fork.get("head_sha"):
+        return "no development PR is recorded"
+    if fork.get("pr_number"):
+        return "no development head is recorded"
+    return "no development PR and head are recorded"
+
+
+_dev_pr = dev_pr_problem
 
 
 def _work_or_publication(record: dict) -> str | None:
@@ -5375,9 +5387,69 @@ PRIVATE_ENGINE_NAMES = ("_apply_transition", "preconditions", "_evaluate", "_gua
                         "apply_transition", "refusal", "resolve_command", "apply_command")
 
 
+def engine_bindings(tree) -> tuple[set[str], dict[str, str]]:
+    """The names a module (a parsed ``ast`` tree) binds to the engine: the
+    ones that name the module (`import engine`, `import engine as e`, `x =
+    e`) and the ones that name something in it (`from engine import a as b`
+    gives ``{"b": "a"}``, `from engine import *` gives ``{"*": "*"}``)."""
+    import ast
+
+    modules: set[str] = set()
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(a.asname or a.name for a in node.names if a.name == "engine")
+        elif isinstance(node, ast.ImportFrom) and node.module == "engine" and not node.level:
+            names.update({a.asname or a.name: a.name for a in node.names})
+    grown = True
+    while grown:
+        grown = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) \
+                    and node.value.id in modules:
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id not in modules:
+                        modules.add(target.id)
+                        grown = True
+    return modules, names
+
+
+def private_engine_names_in(tree) -> list[tuple[int, str]]:
+    """Where a parsed module names a private name of the engine
+    (``PRIVATE_ENGINE_NAMES``), however it reaches it: an attribute of the
+    module under any alias, a name imported from it, a star import, or
+    ``getattr`` of the module (a name that is not a constant string cannot
+    be resolved, so it counts)."""
+    import ast
+
+    modules, names = engine_bindings(tree)
+    found: list[tuple[int, str]] = []
+    for local, original in names.items():
+        if original == "*" or original in PRIVATE_ENGINE_NAMES:
+            found.append((0, f"from engine import {original}"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in modules and node.attr in PRIVATE_ENGINE_NAMES:
+            found.append((node.lineno, f"engine.{node.attr}"))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == "getattr" and node.args \
+                and isinstance(node.args[0], ast.Name) and node.args[0].id in modules:
+            attr = node.args[1] if len(node.args) > 1 else None
+            if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)):
+                found.append((node.lineno, "getattr of the engine by a computed name"))
+            elif attr.value in PRIVATE_ENGINE_NAMES:
+                found.append((node.lineno, f"getattr(engine, {attr.value!r})"))
+        elif isinstance(node, ast.Name) and node.id in names \
+                and names[node.id] in PRIVATE_ENGINE_NAMES \
+                and isinstance(node.ctx, ast.Load):
+            found.append((node.lineno, f"engine.{names[node.id]}"))
+    return found
+
+
 def private_engine_uses(root) -> list[str]:
     """Where a module of the repository, other than ``engine.py``, names a
-    private name of the engine (``PRIVATE_ENGINE_NAMES``)."""
+    private name of the engine (``PRIVATE_ENGINE_NAMES``), under any alias
+    (``private_engine_names_in``)."""
     import ast
     from pathlib import Path
 
@@ -5385,10 +5457,8 @@ def private_engine_uses(root) -> list[str]:
     for path in sorted(Path(root).glob("*.py")):
         if path.name == "engine.py":
             continue
-        for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
-                    and node.value.id == "engine" and node.attr in PRIVATE_ENGINE_NAMES:
-                found.append(f"{path.name}:{node.lineno}: engine.{node.attr}")
+        for lineno, what in private_engine_names_in(ast.parse(path.read_text())):
+            found.append(f"{path.name}:{lineno}: {what}")
     return found
 
 
