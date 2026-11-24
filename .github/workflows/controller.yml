@@ -5,7 +5,7 @@ name: Controller
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '3-59/10 * * * *'
   push:
     branches: [main]
     paths:
@@ -34,6 +34,13 @@ on:
       - Handoff
     types: [completed]
   workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this run was dispatched: "event" or "follow-up" (a run that follows one that committed state; it never dispatches another)'
+        required: false
+        default: event
+        type: choice
+        options: [event, follow-up]
 
 permissions:
   contents: read
@@ -364,6 +371,7 @@ jobs:
           repositories: porting-agent
           permission-contents: write
       - name: Publish one validated state-only commit on main
+        id: state-commit
         if: steps.policy.outputs.read_only == 'false'
         env:
           GH_TOKEN: ${{ steps.state-token.outputs.token }}
@@ -373,7 +381,13 @@ jobs:
           scripts/git_identity.sh
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           uv run --locked python -m state_commit \
-            --message "porting-agent: reconcile state (run ${GITHUB_RUN_ID})"
+            --message "porting-agent: reconcile state (run ${GITHUB_RUN_ID})" \
+            | tee state-commit.out
+          # state_commit prints a commit sha when it published and
+          # "no state changes" when it did not.
+          if tail -n 1 state-commit.out | grep -Eqx '[0-9a-f]{40}'; then
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         if: steps.policy.outputs.read_only == 'false'
         id: issue-token
@@ -498,6 +512,18 @@ jobs:
             gh workflow run handoff.yml --repo "$GITHUB_REPOSITORY" --ref main \
               -f operation-id="$operation"
           done
+      - name: Follow up once after a state commit
+        # A commit can make Work due that only a later tick sees. A follow-up
+        # run never dispatches another, and the concurrency group coalesces
+        # it with any other pending run.
+        if: >-
+          !cancelled() &&
+          steps.policy.outputs.read_only == 'false' &&
+          steps.state-commit.outputs.committed == 'true' &&
+          github.event.inputs.reason != 'follow-up'
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+        run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main -f reason=follow-up
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

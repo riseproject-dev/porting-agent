@@ -598,7 +598,7 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_controller_chains_every_pipeline_completion_and_has_schedule_fallback(self):
         controller = workflow("controller.yml")
         triggers = controller.get("on", controller.get(True))
-        self.assertEqual(triggers["schedule"], [{"cron": "*/5 * * * *"}])
+        self.assertEqual(triggers["schedule"], [{"cron": "3-59/10 * * * *"}])
         self.assertEqual(
             set(triggers["workflow_run"]["workflows"]),
             {
@@ -655,6 +655,31 @@ class TestWorkflowContracts(unittest.TestCase):
                         r'^python3 scripts/(pi_provider_credential\.py "\$RUNNER_TEMP/gh-aw/actions"'
                         r'|held_patch\.py --task "\$task" --key (patch|previous_patch) )',
                     )
+
+    def test_controller_follows_up_once_after_a_state_commit(self):
+        controller = workflow("controller.yml")
+        inputs = controller.get("on", controller.get(True))["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["reason"]["default"], "event")
+        self.assertEqual(inputs["reason"]["options"], ["event", "follow-up"])
+        steps = controller["jobs"]["reconcile"]["steps"]
+        commit = next(s for s in steps if s.get("id") == "state-commit")
+        self.assertIn("committed=true", commit["run"])
+        self.assertIn("no state changes", commit["run"])
+        self.assertIn("grep -Eqx '[0-9a-f]{40}'", commit["run"])
+        follow = next(s for s in steps if s.get("name") == "Follow up once after a state commit")
+        for condition in ("!cancelled()",
+                          "steps.state-commit.outputs.committed == 'true'",
+                          "github.event.inputs.reason != 'follow-up'"):
+            self.assertIn(condition, follow["if"])
+        self.assertIn("steps.dispatch-token.outputs.token", follow["env"]["GH_TOKEN"])
+        self.assertIn("gh workflow run controller.yml", follow["run"])
+        self.assertIn("-f reason=follow-up", follow["run"])
+        # Exactly one step dispatches a follow-up, and the group coalesces it.
+        self.assertEqual(
+            sum("reason=follow-up" in s.get("run", "") for s in steps), 1)
+        self.assertEqual(controller["jobs"]["reconcile"]["concurrency"]["group"],
+                         "porting-agent-controller")
+        self.assertFalse(controller["jobs"]["reconcile"]["concurrency"]["cancel-in-progress"])
 
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")
