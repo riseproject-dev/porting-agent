@@ -141,11 +141,13 @@ jobs:
         id: policy
         run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
       # The HTTP cache of the reads (docs/state-machine/engine.md, "HTTP
-      # cache") comes from the artifact of the previous Controller run on main.
+      # cache"): the newest entry saved by an earlier run.
       - name: Restore the HTTP cache
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: uv run --locked python scripts/restore_http_cache.py porting-http-cache "$RUNNER_TEMP/porting-http-cache"
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/porting-http-cache
+          key: porting-http-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: porting-http-cache-
       - name: Collect verified planner, worker, reviewer, and publish-only retry outcomes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -377,13 +379,13 @@ jobs:
             cat report.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      # Uploaded only when the step succeeded: a failed run hands on no file.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # Saved only when the reconcile step succeeded: a failed run hands on no file.
+      - name: Save the HTTP cache
+        if: success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: porting-http-cache
-          path: ${{ runner.temp }}/porting-http-cache/http-cache.sqlite
-          if-no-files-found: ignore
-          retention-days: 1
+          path: ${{ runner.temp }}/porting-http-cache
+          key: porting-http-cache-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Mint a control-repository token for the state commit
         id: state-token
         if: steps.policy.outputs.read_only == 'false'

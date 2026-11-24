@@ -145,6 +145,13 @@ The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** no row of `development.waiting_ci` reads the absence of CI.
 - **Required:** a deadline for CI to start on the exact head, and a row to a human wait (the handoff's `require_clean_head_ci` made phase-neutral, through `lifecycle.HISTORIC_NAMES`, would add no verb).
 
+## The HTTP cache is restored from a cache every job on main can write
+
+- **Where:** the "Restore the HTTP cache" step of the `reconcile` job in `controller.yml`; `collect.py` (`PORTING_HTTP_CACHE`).
+- **Today:** the cache of the controller's reads is restored from `actions/cache`, which every job running on `main` can write, including the planner and worker agents, which run outside the sandbox and can reach the runner's Actions runtime token. An entry planted with a real validator (`ETag` or `Last-Modified`) and a forged body is served after a 304. The open-time checks of `collect.py` (rows without validators, null or future expiry, unreadable rows, redirect aliases, the 64 MiB bound) do not detect it. The owner accepted this risk.
+- **Table:** not a row of the table.
+- **Required:** a signature over the file, made and checked with a key only the `reconcile` job holds, or sandboxing the planner and worker agents so that they cannot reach the runtime token.
+
 ## Readings to confirm
 
 These follow the literal reading of a decision and are kept until a decision says otherwise:

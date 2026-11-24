@@ -555,6 +555,33 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("gh workflow run publish-retry.yml --repo \"$GITHUB_REPOSITORY\" --ref main",
                       str(launch))
 
+    def test_controller_keeps_its_http_cache_in_actions_cache(self):
+        """The reconcile job restores and saves the HTTP cache with the stock
+        cache actions, pinned by commit, and no script or artifact carries it."""
+        job = workflow("controller.yml")["jobs"]["reconcile"]
+        steps = job["steps"]
+        sha = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+        restore = next(s for s in steps if str(s.get("uses", "")).startswith("actions/cache/restore@"))
+        save = next(s for s in steps if str(s.get("uses", "")).startswith("actions/cache/save@"))
+        key = "porting-http-cache-${{ github.run_id }}-${{ github.run_attempt }}"
+        path = "${{ runner.temp }}/porting-http-cache"
+        self.assertEqual(restore["uses"], f"actions/cache/restore@{sha}")
+        self.assertEqual(save["uses"], f"actions/cache/save@{sha}")
+        self.assertEqual(restore["with"], {"path": path, "key": key,
+                                           "restore-keys": "porting-http-cache-"})
+        self.assertEqual(save["with"], {"path": path, "key": key})
+        self.assertEqual(save["if"], "success()")
+        self.assertLess(steps.index(restore), steps.index(save))
+        text = (WORKFLOWS / "controller.yml").read_text()
+        self.assertIn("# v6.1.0", text)
+        self.assertNotIn("restore_http_cache", text)
+        self.assertFalse(any("porting-http-cache" in str(s.get("with", {}).get("name", ""))
+                             for s in steps))
+        holders = [s["name"] for s in steps
+                   if "PORTING_HTTP_CACHE" in str(s.get("env", {}))]
+        self.assertEqual(holders, ["Reconcile deterministic state locally"])
+        self.assertNotIn("PORTING_HTTP_CACHE", str(workflow("controller.yml")["jobs"]["observe"]))
+
     @unittest.skipUnless(shutil.which("unzip") and shutil.which("jq"), "unzip and jq needed")
     def test_collector_drops_a_worker_run_id_from_planner_and_worker_artifacts(self):
         """Only a publish-only retry names the worker run it publishes: a
