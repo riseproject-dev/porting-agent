@@ -23,6 +23,7 @@ import provisioning
 import reconcile
 import schemas
 import status_ledger
+import work
 from tests.helpers import NOW, SHA_A, SHA_C, apply_command, contribution, plan, policy
 from tests.test_provisioning import Api as ProvisioningApi
 
@@ -206,6 +207,9 @@ class TestPlanDecisionMatrix(unittest.TestCase):
             self.assertEqual((new["parked_reason"], new["previous_phase"]),
                              (RATIONALE, "planning"))
             self.assertIsNone(new["pending_publication"])
+            # A recorded refresh and the fork it began with are kept, inert in
+            # `parked.idle` until `restart_generation` resets the generation.
+            self.assertEqual((new["refresh"], new["fork"]), (record["refresh"], record["fork"]))
         elif verb == "close_planning":
             # The reason is derived from PyPI: the reader serves a riscv64 wheel.
             self.assertEqual((new["terminal_reason"], new["revision"]),
@@ -301,6 +305,70 @@ class TestPlanDecisionMatrix(unittest.TestCase):
                     self.assertIn("Admission override: class", body)
                 if decision == "close" and override:
                     self.assertIn("override was not applied", body)
+
+
+class TestPlanDecisionReadings(unittest.TestCase):
+    """What a park decided by the plan records, and what a partial or
+    uncovering admission override does."""
+
+    HOSTILE = "@everyone **pwned** [x](http://evil.example) <!-- hidden -->"
+
+    def test_the_rationale_of_a_park_is_stored_and_never_rendered(self):
+        for refresh in REFRESHES:
+            with self.subTest(refresh=refresh):
+                record = planning(refresh=refresh)
+                new, staged = fold(record, plan("park", rationale=self.HOSTILE))
+                self.assertEqual(verb_of(staged), "park_planning")
+                self.assertEqual(new["parked_reason"], self.HOSTILE)
+                event = dict([r for kind, r in staged if kind == "events"][0], sequence=5)
+                self.assertEqual(set(event["details"]),
+                                 {"verb", "from_state", "to_state", "decision", "evidence_id"})
+                body = status_ledger.render(event, new, "https://github.com/run")
+                for fragment in ("@everyone", "pwned", "evil.example", "hidden"):
+                    self.assertNotIn(fragment, body)
+
+    def test_an_empty_rationale_parks_with_a_fixed_reason(self):
+        new, staged = fold(planning(), plan("park", rationale=""))
+        self.assertEqual((verb_of(staged), new["parked_reason"]),
+                         ("park_planning", "the plan decided park"))
+
+    def test_a_partial_override_waits_for_a_human_and_park_then_refresh_exits(self):
+        limit = POLICY["retries"]["planning_attempts"]
+        record = planning(override=OVERRIDES["class_only"], attempts=limit)
+        waiting, staged = fold(record, copy.deepcopy(DECISIONS["park"]))
+        self.assertEqual(verb_of(staged), "exhaust_planning_recovery")
+        self.assertEqual(engine.state_key(waiting), "planning.waiting_human")
+        self.assertEqual(waiting["admission_override"], OVERRIDES["class_only"])
+        parked = apply_command(waiting, commands.parse('/upstreaming park reason="partial"'))
+        self.assertTrue(parked.accepted, parked.reason)
+        self.assertEqual(engine.state_key(parked.record), "parked.idle")
+        refreshed = apply_command(parked.record, commands.parse(
+            f'/upstreaming refresh revision={parked.record["revision"]} '
+            'class=optimized_backend paths="src/*,setup.py" reason="reviewed"'))
+        self.assertTrue(refreshed.accepted, refreshed.reason)
+        self.assertEqual(engine.state_key(refreshed.record), "queued.idle")
+        override = refreshed.record["admission_override"]
+        self.assertEqual((override["class"], override["paths"]),
+                         ("optimized_backend", ["src/*", "setup.py"]))
+
+    def test_an_override_that_does_not_cover_the_plan_lets_repair_extend_the_scope(self):
+        """The override's paths are the human's scope: a plan coverage they
+        miss does not refuse them, it is recorded false, and later repair
+        Work may add exact, safe paths the trusted publisher checks."""
+        new, staged = fold(planning(override=dict(OVERRIDE, paths=["setup.py"])),
+                           copy.deepcopy(DECISIONS["park"]))
+        self.assertEqual(verb_of(staged), "admit_development")
+        self.assertFalse(new["scope_coverage_complete"])
+        self.assertEqual(new["scope_paths"], ["setup.py"])
+        repair = dict(new, phase="development", activity="agent_running")
+        repair["active_work"] = {"task": "development_repair", "reason_ids": [],
+                                 "requested_at": NOW, "revision": new["revision"],
+                                 "dedupe_key": "repair", "deadline_at": NOW, "generation": 0,
+                                 "attempt": 1, "dispatched_run_id": None,
+                                 "feedback_evidence_ids": []}
+        node = work.node(work.request_from_active(repair), repair, control_repo_id="7",
+                         allowed_paths=new["scope_paths"], context={})
+        self.assertTrue(node["payload"]["legacy_scope_extension"])
 
 
 class TestCloseConfirmedFromPyPI(unittest.TestCase):

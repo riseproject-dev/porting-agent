@@ -755,6 +755,19 @@ class TestHeldPatchEnds(unittest.TestCase):
             with self.subTest(status=pub["failure_class"]):
                 self.assertEqual(final(tick(anyway, [pub]))["budget"]["review_rejections"], 0)
 
+    def test_a_legacy_proposal_in_publishing_is_a_rejected_publication(self):
+        """No trusted publication job writes `proposal` any more; an artifact
+        that still carries it is folded as rejected in trusted validation."""
+        reviewing, _ = held(running())
+        publishing = final(tick(reviewing, [review_result(reviewing)]))
+        base = dict(published(publishing), reason="the series rebuilds to another commit",
+                    operation=None)
+        rejected = tick(publishing, [dict(base, status="rejected", failure_class="validation")])
+        proposal = tick(publishing, [dict(base, status="proposal", failure_class=None)])
+        self.assertEqual(kinds(proposal), kinds(rejected))
+        self.assertEqual(kinds(proposal)[0], "reject_patch_proposal")
+        self.assertEqual(final(proposal), final(rejected))
+
     def test_only_successive_failed_reviews_publish_a_patch_anyway(self):
         # A failed review, then a passing one whose publication is
         # rejected: the next failed review is the first in succession, so

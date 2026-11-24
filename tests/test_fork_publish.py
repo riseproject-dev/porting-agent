@@ -431,6 +431,18 @@ class TestPublishRetryIdentity(_ForkFixture, unittest.TestCase):
         self.assertEqual(len({failed["operation_id"], uncertain["operation_id"]}), 2)
         self.assertEqual(self.commit_all(), [])
 
+    def test_only_a_later_attempt_names_itself(self):
+        self.assertEqual(fork_publish.publish_attempt_reasons(1), [])
+        self.assertEqual(fork_publish.publish_attempt_reasons(3), ["publish-attempt:3"])
+
+    def test_the_dispatched_attempt_is_at_least_one(self):
+        for env, attempt in (({}, 1), ({"UPSTREAMING_PUBLISH_ATTEMPT": "0"}, 1),
+                             ({"UPSTREAMING_PUBLISH_ATTEMPT": "-2"}, 1),
+                             ({"UPSTREAMING_PUBLISH_ATTEMPT": "1"}, 1),
+                             ({"UPSTREAMING_PUBLISH_ATTEMPT": "3"}, 3)):
+            with self.subTest(env=env):
+                self.assertEqual(fork_publish.dispatched_attempt(env), attempt)
+
     def test_the_attempt_is_a_positive_number(self):
         for bad in (0, -1, True, "2"):
             with self.subTest(attempt=bad), self.assertRaises(ValueError):

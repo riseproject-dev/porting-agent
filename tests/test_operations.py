@@ -711,6 +711,29 @@ class TestProvisioningWaitExits(ReceiptWorld, unittest.TestCase):
         self.assertEqual(ops[failed["operation_id"]], failed)
         self.assertEqual(resumed["active_operation_id"], fresh["operation_id"])
 
+    def test_a_failure_receipt_in_the_wait_closes_the_operation_and_keeps_the_wait(self):
+        rec, op, _at = exhausted_wait()
+        receipt, api = self.receipt_for(rec, op, "failed")
+        result = self.fold(rec, op, receipt, api)
+        [failed] = staged(result, "operations")
+        self.assertEqual(failed["status"], "failed")
+        final = staged(result, "contributions")[-1]
+        self.assertEqual(engine.state_key(final), "provisioning.waiting_human")
+        self.assertIsNone(final["active_operation_id"])
+        self.assertEqual(final["pending_human_action"], rec["pending_human_action"])
+        self.assertEqual(final["revision"], rec["revision"])
+        self.assertEqual(staged(result, "events"), [])
+
+    def test_a_failure_receipt_for_an_uncertain_operation_is_not_folded(self):
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        op = dict(op, status="uncertain")
+        result = self.fold(rec, op, dict(receipt, status="failed"), api)
+        self.assertEqual(staged(result, "operations"), [])
+        self.assertEqual(staged(result, "contributions"), [])
+        self.assertEqual(staged(result, "events"), [])
+        self.assertEqual(result.report["provisions"],
+                         [{"contribution": rec["contribution_id"], "status": "failure not folded"}])
+
     def waits(self):
         """Every wait of provisioning the pipeline reaches, with its store."""
         rec, op, at = exhausted_wait()

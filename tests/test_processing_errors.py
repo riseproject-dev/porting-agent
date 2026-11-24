@@ -309,6 +309,20 @@ class TestOneContributionErrors(unittest.TestCase):
                          [(A, "work_selection", "MissingEvidence")])
         self.assertEqual(output.report["requested_effects"], [])
 
+    def test_a_gate_does_not_read_its_ci_evidence(self):
+        """A state that allocates no Work (here the gate of a submission) does
+        not read `last_ci_evidence_id`, so evidence the store does not hold
+        pauses nothing there."""
+        a = contribution(phase="handoff", activity="awaiting_submission",
+                         plan_evidence_id="plan-1", scope_paths=["a"],
+                         scope_coverage_complete=True, last_ci_evidence_id="ci-gone")
+        output = tick([a, other_waiting()], observe=False)
+        self.assertEqual(output.report.get("processing_errors", []), [])
+        self.assertEqual(kinds(output, A), [])
+        staged_a = [r for k, r in output.staged
+                    if k == "contributions" and r["contribution_id"] == A]
+        self.assertFalse(any(r["paused"] for r in staged_a))
+
     def test_the_other_contribution_gets_the_worker_slot(self):
         """The errored contribution requests nothing; the slot it would have
         taken goes to the next candidate in the same tick."""

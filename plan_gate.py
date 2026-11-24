@@ -241,9 +241,12 @@ def scope_problem(decision: dict, *, admission_class: str | None,
     The scope is complete when it has an admission class, names 1..32 safe
     scope paths, and, with ``coverage``, matches every path the plan's
     ``path_coverage`` lists as possibly needing a riscv64 change. The
-    reconciler asserts the fact "the verified plan names `scope_paths`,
-    and `scope_coverage_complete` holds" of ``admit_development`` and
-    ``readmit_development`` from this."""
+    reconciler asserts the fact "the admitted scope names an admission
+    class and 1 to 32 safe `scope_paths`, and a plan's own scope matches
+    every path of its `path_coverage`" (``lifecycle.PATCH_SCOPE_COMPLETE``)
+    of ``admit_development`` and ``readmit_development`` from this: with
+    ``coverage`` for a plan's own scope, without it for an admission
+    override, whose coverage is recorded but does not refuse it."""
     if not isinstance(admission_class, str) or not admission_class:
         return "no admission class"
     if not isinstance(allowed_paths, list) or not all(isinstance(p, str) for p in allowed_paths):

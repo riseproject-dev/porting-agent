@@ -1097,8 +1097,9 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`readmit_development` had no scope guard, so such a plan was readmitted with "
         "`scope_coverage_complete` false, and the next repair Work could change paths outside "
         "the admitted scope.",
-        "No. `readmit_development` has the guard of `admit_development`: \"the verified plan "
-        "names `scope_paths`, and `scope_coverage_complete` holds\". A refreshed plan whose "
+        "No. `readmit_development` has the guard of `admit_development`: \"the admitted scope "
+        "names an admission class and 1 to 32 safe `scope_paths`, and a plan's own scope "
+        "matches every path of its `path_coverage`\". A refreshed plan whose "
         "scope is incomplete takes `reject_plan`, which charges `planning_attempts` and keeps "
         "the refresh, the fork, and any override, so a new planning run is due; once the "
         "attempts are spent `exhaust_planning_recovery` waits for a human, with reminders. "
@@ -1337,6 +1338,150 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         edges=(("provisioning.waiting_human", "resume_provisioning"),
                ("provisioning.idle", "start_operation")),
         highlighted=(("provisioning.waiting_human", "resume_provisioning"),),
+    ),
+    Item(
+        "A provisioning receipt that reports a failure or a refusal",
+        "Which provisioning receipts other than `provisioned` are folded, which of several is "
+        "folded, and what a receipt or a confirmed resolution does in the provisioning wait.",
+        "A verified receipt `failed` is a definite failure. It is folded only for a `planned` "
+        "or `applying` `fork_provision` operation that the record names at its revision; for "
+        "any other operation it is reported `failure not folded`. From `provisioning.idle` it "
+        "takes `require_provisioning_intervention` (`provisioning_operation_failed`, no "
+        "counter); in `provisioning.waiting_human` it closes and releases the operation and "
+        "keeps the wait, with no event. `refused` and any other status are reported and never "
+        "folded. Of several foldable receipts for one operation only the newest run's is "
+        "folded; older ones are reported `superseded`, and a newer refusal does not hide an "
+        "older foldable receipt. A `provisioned` receipt in the wait closes the operation as "
+        "confirmed and keeps the wait. A human `resolve-operation disposition=confirmed` fires "
+        "no row, because `confirm_provisioning` needs the receipt and its readback. This "
+        "completes decision 15.",
+        ("provisioning.idle", "provisioning.waiting_human", "development.fix_needed"),
+        edges=(("provisioning.idle", "require_provisioning_intervention"),
+               ("provisioning.idle", "confirm_provisioning"),
+               ("provisioning.waiting_human", "resume_provisioning")),
+        highlighted=(("provisioning.idle", "require_provisioning_intervention"),),
+    ),
+    Item(
+        "The identity of a retried publication and of a re-planned CI bootstrap",
+        "Which attempt makes the operation of a publish-only retry its own, and how a CI "
+        "bootstrap `dev_pr_update` planned again is told apart from the earlier ones.",
+        "An operation id is never reused once closed. A publish-only retry adds "
+        "`publish-attempt:<n>` from the second attempt on, n being the attempt the controller "
+        "dispatched the retry with (`pending_publication.attempts + 1`, passed as "
+        "`UPSTREAMING_PUBLISH_ATTEMPT` and read by `fork_publish.dispatched_attempt`, never "
+        "below 1). The first attempt keeps the id of the Result alone. The `ci_rerun` "
+        "operation of a publication job always names the attempt. A CI bootstrap "
+        "`dev_pr_update` planned again after a failed or never-launched one adds "
+        "`replan:<n>`, n being the number of earlier bootstrap operations for the same head "
+        "in the store, whatever their revision. A re-plan needs a closed predecessor, which "
+        "only launch exhaustion with a human resume, a pause, or a human resolution produces, "
+        "so the number is bounded by human commands.",
+        operations=True,
+    ),
+    Item(
+        "An operation the tick stages that the store would refuse",
+        "What happens when a contribution's processing stages an operation that the state "
+        "publisher's check would refuse against the committed one.",
+        "`reconcile.tick` checks every staged operation against the committed one "
+        "(`recovery.transition_problem`) before the publisher's final guard. A violation is an "
+        "unexpected error of that contribution in step `operation_check`: its staging is "
+        "discarded, it takes `pause_on_processing_error`, and the commit goes ahead for the "
+        "others. Two such contributions in one tick stop the tick, like any two unexpected "
+        "errors.",
+        ("development.waiting_ci", "development.waiting_ci+paused"),
+        edges=(("development.waiting_ci", "pause_on_processing_error"),
+               ("development.waiting_ci+paused", "resume_pause")),
+        highlighted=(("development.waiting_ci", "pause_on_processing_error"),),
+    ),
+    Item(
+        "CI evidence the record names but the store does not hold",
+        "What a record whose `last_ci_evidence_id` names evidence missing from the store does.",
+        "Evidence is never removed from the store. A record in a state where Work is "
+        "allocated or its exhaustion decided, whose `last_ci_evidence_id` names missing "
+        "evidence, is never deferred silently and never read as \"no failing job\": "
+        "`controller.MissingEvidence` in step `work_selection` takes "
+        "`pause_on_processing_error`, with the missing id in `paused_reason`. States that "
+        "allocate no Work (gates and waits, such as `handoff.awaiting_submission`) do not read "
+        "it.",
+        ("development.fix_needed", "development.fix_needed+paused"),
+        edges=(("development.fix_needed", "pause_on_processing_error"),
+               ("development.fix_needed+paused", "resume_pause")),
+        highlighted=(("development.fix_needed", "pause_on_processing_error"),),
+    ),
+    Item(
+        "What a park decided by the plan records",
+        "What `park_planning` records besides the state, and what becomes of a recorded "
+        "refresh.",
+        "`park_planning` ends the generation without a revision bump, like every row into "
+        "`parked.idle`. `previous_phase` is `planning`. `parked_reason` is the plan's "
+        "rationale, bounded to 2000 characters, or \"the plan decided park\" when empty. It "
+        "is worker text, stored as data and never rendered on the tracking issue or status "
+        "page; the event carries only the decision and the evidence id. A recorded refresh, "
+        "and the fork it began with, are kept: nothing reads them in `parked.idle`, and "
+        "`restart_generation` resets them with the generation. This completes decisions 13 "
+        "and 22.",
+        ("planning.agent_running", "parked.idle", "queued.idle"),
+        edges=(("planning.agent_running", "park_planning"),
+               ("parked.idle", "restart_generation")),
+        highlighted=(("planning.agent_running", "park_planning"),),
+    ),
+    Item(
+        "An admission override that names only a class or only paths",
+        "What a recorded admission override that names a class without paths, or paths "
+        "without a class, does against the plan's decision.",
+        "An override applies against a decision park only when it names a class and 1 to 32 "
+        "safe paths. `/upstreaming refresh` refuses any other form (`controller."
+        "PARTIAL_OVERRIDE`), so only a record written before that refusal can hold a partial "
+        "one. Such a record is neither admitted nor parked (the guard of `park_planning` is "
+        "\"no admission_override recorded\"): the Result takes `reject_plan` within "
+        "`planning_attempts`, with the override and the refresh kept, then "
+        "`exhaust_planning_recovery` waits for a human. The exit from that wait is "
+        "`/upstreaming park` followed by `/upstreaming refresh class=... paths=...`. With a "
+        "decision develop the plan's class and paths are admitted and the override is cleared "
+        "(event detail `admission_override_cleared`). With a decision close the override is "
+        "not applied. This completes O11.",
+        ("planning.agent_running", "planning.idle", "planning.waiting_human",
+         "provisioning.idle", "parked.idle"),
+        edges=(("planning.agent_running", "reject_plan"),
+               ("planning.agent_running", "exhaust_planning_recovery"),
+               ("planning.agent_running", "admit_development"),
+               ("planning.agent_running", "park_planning")),
+        highlighted=(("planning.agent_running", "reject_plan"),),
+    ),
+    Item(
+        "The scope an admission records",
+        "How the scope guard of the admissions is established, and which row writes "
+        "`scope_coverage_complete`, which the reconciler wrote beside the row.",
+        "The guard \"the admitted scope names an admission class and 1 to 32 safe "
+        "`scope_paths`, and a plan's own scope matches every path of its `path_coverage`\" "
+        "is established by `plan_gate.scope_problem`; a plan without `path_coverage` is "
+        "incomplete. Both admissions set `scope_coverage_complete` as an effect of the row, "
+        "and `lifecycle check` reports an admission that does not. For an override the class "
+        "and the paths are required and the coverage is recorded but does not refuse them. A "
+        "record with `scope_coverage_complete` false gives its repair and revision Work "
+        "`legacy_scope_extension`, under which the trusted publisher admits only exact, safe, "
+        "additional paths.",
+        ("planning.agent_running", "provisioning.idle", "development.fix_needed",
+         "planning.idle"),
+        edges=(("planning.agent_running", "admit_development"),
+               ("planning.agent_running", "readmit_development"),
+               ("planning.agent_running", "reject_plan")),
+        highlighted=(("planning.agent_running", "admit_development"),
+                     ("planning.agent_running", "readmit_development")),
+    ),
+    Item(
+        "A worker outcome `proposal`",
+        "What a publication artifact whose status is `proposal` does.",
+        "No trusted publication job writes the status `proposal` any more. An artifact that "
+        "still carries it (a run on older trusted code within the collection window) is "
+        "folded as rejected in trusted validation: `reject_patch_proposal` in "
+        "`development.agent_running` and `upstream_review.agent_running`, charging "
+        "`no_progress`, with the pending feedback kept and nothing held or published; in "
+        "`development.publishing` it is folded as a rejected publication. It is bounded by "
+        "`no_progress`.",
+        ("development.agent_running", "development.fix_needed"),
+        edges=(("development.agent_running", "reject_patch_proposal"),),
+        highlighted=(("development.agent_running", "reject_patch_proposal"),),
     ),
 )
 

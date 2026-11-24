@@ -434,6 +434,15 @@ def verify(*, record: dict, task: dict, proposal: dict, mbox: bytes,
                    save_operation=lambda _op: None, workdir=workdir, verify_only=True)
 
 
+def dispatched_attempt(env: dict | None = None) -> int:
+    """The attempt a publication job was dispatched with
+    (`UPSTREAMING_PUBLISH_ATTEMPT`, set by the controller to
+    `pending_publication.attempts + 1` for a publish-only retry): 1 when it
+    is unset, and never below 1."""
+    env = os.environ if env is None else env
+    return max(int(env.get("UPSTREAMING_PUBLISH_ATTEMPT", "1")), 1)
+
+
 def publish_attempt_reasons(attempt: int) -> list[str]:
     """The reason id that makes the operation of a publish-only retry its
     own: the first attempt keeps the identity of the Result alone."""
@@ -532,7 +541,7 @@ def main(argv=None) -> int:
     token = os.environ.pop("UPSTREAMING_FORK_TOKEN", None)
     api = Api(token=token)
     ops: list[dict] = []
-    attempt = max(int(os.environ.get("UPSTREAMING_PUBLISH_ATTEMPT", "1")), 1)
+    attempt = dispatched_attempt()
     out = publish(record=record, task=task, proposal=proposal, mbox=mbox, token=token,
                   observe_head=lambda: (branch_head(api, task["fork"], task["ref"]) or {}).get("head"),
                   scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=policy,

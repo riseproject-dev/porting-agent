@@ -43,7 +43,8 @@ SAMPLE = {
                     "base_ref": "main", "registered_by": OWNER},
     "upstream_pr.head_sha": SHA_B,
     "plan_evidence_id": "plan-1", "admission_class": "configuration_integration",
-    "scope_paths": ["pyproject.toml"], "parked_reason": "no bounded patch",
+    "scope_paths": ["pyproject.toml"], "scope_coverage_complete": True,
+    "parked_reason": "no bounded patch",
     "terminal_reason": "not applicable", "last_ci_evidence_id": "ci-2-8-1",
     "clean_head_sha": SHA_B, "submission_review_id": "submission-review-1",
     "submission_rewrite_id": "submission-rewrite-1",
@@ -760,7 +761,8 @@ class TestTableDecisions(unittest.TestCase):
         self.assertIn(lc.PATCH_SCOPE_COMPLETE, admit.guard)
         running = contribution(phase="planning", activity="agent_running", fork=None)
         values = {"plan_evidence_id": "plan-1", "scope_paths": ["pyproject.toml"],
-                  "admission_class": "configuration_integration"}
+                  "admission_class": "configuration_integration",
+                  "scope_coverage_complete": True}
         facts = {"development_admitted", "fresh_fork_required"}
         refused = engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
                                           facts=facts, values=values)
@@ -768,6 +770,18 @@ class TestTableDecisions(unittest.TestCase):
         admitted = engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
                                            facts=facts | {"patch_scope_complete"}, values=values)
         self.assertEqual(engine.state_key(admitted.record), "provisioning.idle")
+        # The row sets `scope_coverage_complete`: a value is required, and
+        # nothing writes it beside the row.
+        partial = {k: v for k, v in values.items() if k != "scope_coverage_complete"}
+        with self.assertRaisesRegex(lc.TransitionError, "a value is required"):
+            engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
+                                    facts=facts | {"patch_scope_complete"}, values=partial)
+        uncovered = engine.apply_transition(
+            running, "admit_development", policy=POLICY, now=NOW,
+            facts=facts | {"patch_scope_complete"},
+            values=dict(values, scope_coverage_complete=False))
+        self.assertIs(uncovered.record["scope_coverage_complete"], False)
+        self.assertNotIn("scope_checked", engine.BESIDE_ROW)
         # A readmission to the recorded fork checks the scope the same way.
         readmit = lc.find_edge("planning.agent_running", "readmit_development").transition
         self.assertIn(lc.PATCH_SCOPE_COMPLETE, readmit.guard)

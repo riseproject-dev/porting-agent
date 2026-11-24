@@ -1822,8 +1822,6 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     "dispatcher_run_decided": ("active_work.dispatched_run_id",),
     # Work held in a handoff state that requests none is dropped.
     "handoff_work_dropped": ("active_work",),
-    # The admitted scope was checked complete for its plan.
-    "scope_checked": ("scope_coverage_complete",),
     # A published patch: its files join the admitted scope, and `no_progress`
     # and `dev_reviews` start again.
     "patch_published": ("scope_paths", "budget.no_progress_streak", "budget.review_rejections"),

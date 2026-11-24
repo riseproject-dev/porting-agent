@@ -57,6 +57,7 @@ from typing import Any, Callable, Iterable
 import ci_evidence
 import collect
 import engine
+import fork_publish
 import lifecycle
 import recovery
 import schemas
@@ -479,7 +480,7 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
     receipt = request(api, fork, head, runs, sleep=sleep)
     reason_ids = [str(record.get("last_ci_evidence_id") or "no-ci-evidence"),
                   f"work:{work_key or task.get('revision')}",
-                  f"publish-attempt:{max(int(os.environ.get('UPSTREAMING_PUBLISH_ATTEMPT', '1')), 1)}"]
+                  f"publish-attempt:{fork_publish.dispatched_attempt()}"]
     op = operation(record, head, runs, reason_ids, policy, now)
     if receipt["status"] == "rerun":
         op = recovery.fold_receipt(op, external_ids=attempt_ids(receipt["runs"]),
@@ -662,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
         result = publish(record=json.loads(a.record.read_text()),
                          task=json.loads(a.task.read_text()),
                          api=Api(token=token, reader=collect.Api()), policy=policy, now=now)
-        result["attempt"] = max(int(os.environ.get("UPSTREAMING_PUBLISH_ATTEMPT", "1")), 1)
+        result["attempt"] = fork_publish.dispatched_attempt()
         code = {"no_change": 0, "infra_error": 3}.get(result["status"], 1)
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(result, indent=2))

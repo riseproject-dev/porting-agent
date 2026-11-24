@@ -840,8 +840,8 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
       override is not applied, and the event says so.
 
     The plan is recorded as evidence first. The rows set the plan, the
-    admission class, and the scope paths; the complete coverage the scope
-    was checked for is recorded beside them in ``scope_coverage_complete``.
+    admission class, the scope paths, and whether the coverage was complete
+    for the admitted scope.
     """
     if engine.state_key(rec) != "planning.agent_running":
         raise lifecycle.TransitionError(
@@ -928,7 +928,8 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
             details["admission_override_cleared"] = override
         values = {"plan_evidence_id": evidence["evidence_id"],
                   "admission_class": admission_class,
-                  "scope_paths": list(paths) if isinstance(paths, list) else paths}
+                  "scope_paths": list(paths) if isinstance(paths, list) else paths,
+                  "scope_coverage_complete": problem is None}
         if readmit:
             out = engine.apply_transition(
                 rec, "readmit_development", policy=policy, now=now, cause_id=cause,
@@ -944,10 +945,6 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
         raise lifecycle.TransitionError(f"the plan decision {kind} is refused in "
                                         f"{engine.state_key(rec)}: {out.reason}")
     new = out.record
-    if out.verb in ("admit_development", "readmit_development"):
-        # The scope was checked complete for the plan it came from.
-        new = engine.record_beside(new, "scope_checked", now=now,
-                                   scope_coverage_complete=problem is None)
     staged.extend([("events", out.event), ("contributions", new)])
     return new, staged
 

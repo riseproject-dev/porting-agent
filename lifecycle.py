@@ -947,8 +947,9 @@ DEVELOPMENT_PROPOSAL_REJECTED = (
     "the Work carries feedback")
 _ADMISSION = ("verified plan decision develop, or verified plan decision park and a "
               "recorded admission_override")
-PATCH_SCOPE_COMPLETE = ("the verified plan names `scope_paths`, and `scope_coverage_complete` "
-                        "holds")
+PATCH_SCOPE_COMPLETE = ("the admitted scope names an admission class and 1 to 32 safe "
+                        "`scope_paths`, and a plan's own scope matches every path of its "
+                        "`path_coverage`")
 # The trusted confirmation of a decision close: the reconciler reads PyPI
 # itself, since `closed.idle` is final and the plan is worker output. PyPI is
 # the one registry it reads, so a project not released there is never closed
@@ -1009,16 +1010,22 @@ LIFECYCLE: dict[str, State] = {
                 (_ADMISSION, PATCH_SCOPE_COMPLETE,
                  "no refresh recorded, or the recorded fork or development PR no longer matches"),
                 _E(revision="bump", work="clear",
-                  sets=("plan_evidence_id", "admission_class", "scope_paths"),
+                  sets=("plan_evidence_id", "admission_class", "scope_paths",
+                        "scope_coverage_complete"),
                   clears=("refresh", "admission_override")),
                 description="The scope of the patch is checked here, before a fork exists: "
-                            "no patch Work is requested before `confirm_provisioning`."),
+                            "no patch Work is requested before `confirm_provisioning`. "
+                            "`scope_coverage_complete` records whether the admitted scope "
+                            "matches every path of the plan's `path_coverage`: always true "
+                            "for a plan's own scope, and for an admission override whatever "
+                            "the human's paths cover."),
             ("readmit_development", "development.fix_needed"): Transition(
                 _R, None,
                 (_ADMISSION, PATCH_SCOPE_COMPLETE,
                  "refresh recorded", "the recorded fork and development PR still match"),
                 _E(revision="bump", work="clear",
-                  sets=("plan_evidence_id", "admission_class", "scope_paths"),
+                  sets=("plan_evidence_id", "admission_class", "scope_paths",
+                        "scope_coverage_complete"),
                   clears=("refresh", "admission_override")),
                 description="A refreshed planning returns to the existing fork for repair. The "
                             "scope is checked as for `admit_development`: a refreshed plan "
@@ -4106,6 +4113,9 @@ def _check_patch_work(problems: list[str]) -> None:
                 and PATCH_SCOPE_COMPLETE not in e.transition.guard:
             problems.append(f"{e.source} --{e.verb}-->: without the guard "
                             f"{PATCH_SCOPE_COMPLETE!r}")
+        if e.verb in ("admit_development", "readmit_development") \
+                and "scope_coverage_complete" not in e.transition.effects.sets:
+            problems.append(f"{e.source} --{e.verb}-->: does not set scope_coverage_complete")
     if not any(e.verb == "admit_development" for e in table_edges()):
         problems.append("admit_development: missing")
     # The first entry into development is the confirmed fork.

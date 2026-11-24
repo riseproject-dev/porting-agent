@@ -1966,7 +1966,7 @@ flowchart TB
 
 Whether a refreshed develop plan whose patch scope is incomplete (coverage the scope omits, no admission class, or no scope paths) returns to the recorded fork. `readmit_development` had no scope guard, so such a plan was readmitted with `scope_coverage_complete` false, and the next repair Work could change paths outside the admitted scope.
 
-**Change.** No. `readmit_development` has the guard of `admit_development`: "the verified plan names `scope_paths`, and `scope_coverage_complete` holds". A refreshed plan whose scope is incomplete takes `reject_plan`, which charges `planning_attempts` and keeps the refresh, the fork, and any override, so a new planning run is due; once the attempts are spent `exhaust_planning_recovery` waits for a human, with reminders. The next complete plan returns to the recorded fork. An admission override keeps its reading on both rows. The check reports either admission without the guard. This completes O24 and decision 12: no patch Work is requested without a checked scope, on a new fork or on the recorded one.
+**Change.** No. `readmit_development` has the guard of `admit_development`: "the admitted scope names an admission class and 1 to 32 safe `scope_paths`, and a plan's own scope matches every path of its `path_coverage`". A refreshed plan whose scope is incomplete takes `reject_plan`, which charges `planning_attempts` and keeps the refresh, the fork, and any override, so a new planning run is due; once the attempts are spent `exhaust_planning_recovery` waits for a human, with reminders. The next complete plan returns to the recorded fork. An admission override keeps its reading on both rows. The check reports either admission without the guard. This completes O24 and decision 12: no patch Work is requested without a checked scope, on a new fork or on the recorded one.
 
 ```mermaid
 flowchart TB
@@ -2261,4 +2261,186 @@ flowchart TB
 
     provisioning_waiting_human ==>|resume_provisioning<br/>/upstreaming resume| provisioning_idle
     provisioning_idle -->|start_operation| provisioning_idle
+```
+
+### A provisioning receipt that reports a failure or a refusal
+
+Which provisioning receipts other than `provisioned` are folded, which of several is folded, and what a receipt or a confirmed resolution does in the provisioning wait.
+
+**Change.** A verified receipt `failed` is a definite failure. It is folded only for a `planned` or `applying` `fork_provision` operation that the record names at its revision; for any other operation it is reported `failure not folded`. From `provisioning.idle` it takes `require_provisioning_intervention` (`provisioning_operation_failed`, no counter); in `provisioning.waiting_human` it closes and releases the operation and keeps the wait, with no event. `refused` and any other status are reported and never folded. Of several foldable receipts for one operation only the newest run's is folded; older ones are reported `superseded`, and a newer refusal does not hide an older foldable receipt. A `provisioned` receipt in the wait closes the operation as confirmed and keeps the wait. A human `resolve-operation disposition=confirmed` fires no row, because `confirm_provisioning` needs the receipt and its readback. This completes decision 15.
+
+```mermaid
+flowchart TB
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+        provisioning_waiting_human["provisioning.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    provisioning_idle ==>|require_provisioning_intervention| provisioning_waiting_human
+    provisioning_idle -->|confirm_provisioning| development_fix_needed
+    provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
+```
+
+### The identity of a retried publication and of a re-planned CI bootstrap
+
+Which attempt makes the operation of a publish-only retry its own, and how a CI bootstrap `dev_pr_update` planned again is told apart from the earlier ones.
+
+**Change.** An operation id is never reused once closed. A publish-only retry adds `publish-attempt:<n>` from the second attempt on, n being the attempt the controller dispatched the retry with (`pending_publication.attempts + 1`, passed as `UPSTREAMING_PUBLISH_ATTEMPT` and read by `fork_publish.dispatched_attempt`, never below 1). The first attempt keeps the id of the Result alone. The `ci_rerun` operation of a publication job always names the attempt. A CI bootstrap `dev_pr_update` planned again after a failed or never-launched one adds `replan:<n>`, n being the number of earlier bootstrap operations for the same head in the store, whatever their revision. A re-plan needs a closed predecessor, which only launch exhaustion with a human resume, a pause, or a human resolution produces, so the number is bounded by human commands.
+
+```mermaid
+flowchart TB
+    subgraph open_operations["open"]
+        op_planned["planned"]
+        op_applying["applying"]
+        op_uncertain["uncertain"]
+    end
+    subgraph closed_operations["closed"]
+        op_confirmed["confirmed"]
+        op_failed["failed"]
+        op_not_launched["not_launched"]
+    end
+
+    start_1(( )) -->|record_intent| op_planned
+    op_planned -->|begin_effect| op_applying
+    op_planned -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_planned -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_planned -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_applying -->|record_response| op_uncertain
+    op_applying -->|record_failure| op_failed
+    op_applying -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_applying -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_applying -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_uncertain -->|confirm_by_discovery| op_confirmed
+    op_uncertain -->|record_discovery| op_uncertain
+    op_uncertain -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_uncertain -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_uncertain -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_confirmed --> end_2(( ))
+    op_failed --> end_3(( ))
+    op_not_launched --> end_4(( ))
+```
+
+### An operation the tick stages that the store would refuse
+
+What happens when a contribution's processing stages an operation that the state publisher's check would refuse against the committed one.
+
+**Change.** `reconcile.tick` checks every staged operation against the committed one (`recovery.transition_problem`) before the publisher's final guard. A violation is an unexpected error of that contribution in step `operation_check`: its staging is discarded, it takes `pause_on_processing_error`, and the commit goes ahead for the others. Two such contributions in one tick stop the tick, like any two unexpected errors.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_ci_paused["development.waiting_ci, paused=true"]
+    end
+
+    development_waiting_ci ==>|pause_on_processing_error| development_waiting_ci_paused
+    development_waiting_ci_paused -->|resume_pause<br/>/upstreaming resume| development_waiting_ci
+```
+
+### CI evidence the record names but the store does not hold
+
+What a record whose `last_ci_evidence_id` names evidence missing from the store does.
+
+**Change.** Evidence is never removed from the store. A record in a state where Work is allocated or its exhaustion decided, whose `last_ci_evidence_id` names missing evidence, is never deferred silently and never read as "no failing job": `controller.MissingEvidence` in step `work_selection` takes `pause_on_processing_error`, with the missing id in `paused_reason`. States that allocate no Work (gates and waits, such as `handoff.awaiting_submission`) do not read it.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_fix_needed_paused["development.fix_needed, paused=true"]
+    end
+
+    development_fix_needed ==>|pause_on_processing_error| development_fix_needed_paused
+    development_fix_needed_paused -->|resume_pause<br/>/upstreaming resume| development_fix_needed
+```
+
+### What a park decided by the plan records
+
+What `park_planning` records besides the state, and what becomes of a recorded refresh.
+
+**Change.** `park_planning` ends the generation without a revision bump, like every row into `parked.idle`. `previous_phase` is `planning`. `parked_reason` is the plan's rationale, bounded to 2000 characters, or "the plan decided park" when empty. It is worker text, stored as data and never rendered on the tracking issue or status page; the event carries only the decision and the evidence id. A recorded refresh, and the fork it began with, are kept: nothing reads them in `parked.idle`, and `restart_generation` resets them with the generation. This completes decisions 13 and 22.
+
+```mermaid
+flowchart TB
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+    end
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+
+    planning_agent_running ==>|park_planning| parked_idle
+    parked_idle -->|restart_generation<br/>/upstreaming refresh| queued_idle
+```
+
+### An admission override that names only a class or only paths
+
+What a recorded admission override that names a class without paths, or paths without a class, does against the plan's decision.
+
+**Change.** An override applies against a decision park only when it names a class and 1 to 32 safe paths. `/upstreaming refresh` refuses any other form (`controller.PARTIAL_OVERRIDE`), so only a record written before that refusal can hold a partial one. Such a record is neither admitted nor parked (the guard of `park_planning` is "no admission_override recorded"): the Result takes `reject_plan` within `planning_attempts`, with the override and the refresh kept, then `exhaust_planning_recovery` waits for a human. The exit from that wait is `/upstreaming park` followed by `/upstreaming refresh class=... paths=...`. With a decision develop the plan's class and paths are admitted and the override is cleared (event detail `admission_override_cleared`). With a decision close the override is not applied. This completes O11.
+
+```mermaid
+flowchart TB
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+        planning_idle["planning.idle"]
+        planning_waiting_human["planning.waiting_human"]
+    end
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+    end
+    subgraph parked["parked"]
+        parked_idle["parked.idle"]
+    end
+
+    planning_agent_running ==>|reject_plan| planning_idle
+    planning_agent_running -->|exhaust_planning_recovery| planning_waiting_human
+    planning_agent_running -->|admit_development| provisioning_idle
+    planning_agent_running -->|park_planning| parked_idle
+```
+
+### The scope an admission records
+
+How the scope guard of the admissions is established, and which row writes `scope_coverage_complete`, which the reconciler wrote beside the row.
+
+**Change.** The guard "the admitted scope names an admission class and 1 to 32 safe `scope_paths`, and a plan's own scope matches every path of its `path_coverage`" is established by `plan_gate.scope_problem`; a plan without `path_coverage` is incomplete. Both admissions set `scope_coverage_complete` as an effect of the row, and `lifecycle check` reports an admission that does not. For an override the class and the paths are required and the coverage is recorded but does not refuse them. A record with `scope_coverage_complete` false gives its repair and revision Work `legacy_scope_extension`, under which the trusted publisher admits only exact, safe, additional paths.
+
+```mermaid
+flowchart TB
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+        planning_idle["planning.idle"]
+    end
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    planning_agent_running ==>|admit_development| provisioning_idle
+    planning_agent_running ==>|readmit_development| development_fix_needed
+    planning_agent_running -->|reject_plan| planning_idle
+```
+
+### A worker outcome `proposal`
+
+What a publication artifact whose status is `proposal` does.
+
+**Change.** No trusted publication job writes the status `proposal` any more. An artifact that still carries it (a run on older trusted code within the collection window) is folded as rejected in trusted validation: `reject_patch_proposal` in `development.agent_running` and `upstream_review.agent_running`, charging `no_progress`, with the pending feedback kept and nothing held or published; in `development.publishing` it is folded as a rejected publication. It is bounded by `no_progress`.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_agent_running ==>|reject_patch_proposal| development_fix_needed
 ```

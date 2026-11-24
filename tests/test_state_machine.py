@@ -285,6 +285,17 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertTrue(any("nominate_for_handoff and return_for_series_requirements can apply "
                             "together" in p for p in problems), problems)
 
+    def test_both_admissions_set_the_scope_coverage(self):
+        for verb in ("admit_development", "readmit_development"):
+            with self.subTest(verb=verb):
+                sets = lc.find_edge("planning.agent_running", verb).transition.effects.sets
+                self.assertIn("scope_coverage_complete", sets)
+                problems = self.mutated("planning.agent_running", verb, sets=tuple(
+                    f for f in sets if f != "scope_coverage_complete"))
+                self.assertTrue(any(p.startswith(f"planning.agent_running --{verb}-->")
+                                    and "scope_coverage_complete" in p for p in problems),
+                                problems)
+
     def test_the_check_holds_the_settled_rows(self):
         gate = "handoff.awaiting_submission"
         review = lc.find_edge(gate, "record_actionable_review").transition
