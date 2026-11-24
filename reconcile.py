@@ -819,8 +819,9 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
     ``planning.agent_running``.
 
     * no plan, a decision that is none of develop, park, and close, a
-      patch scope that is incomplete where ``admit_development`` checks it,
-      or a decision close that PyPI does not confirm: ``reject_plan``
+      patch scope that is incomplete where ``admit_development`` and
+      ``readmit_development`` check it, or a decision close that PyPI does
+      not confirm: ``reject_plan``
       (``exhaust_planning_recovery`` once ``planning_attempts`` is
       exhausted);
     * develop, or park with a recorded ``admission_override``:
@@ -906,16 +907,18 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
         fork = rec.get("fork") or {}
         readmit = bool(refresh and refresh.get("head_sha") and fork.get("repository_id")
                        and fork.get("pr_number") == refresh.get("pr_number"))
-        # The scope is a guard of `admit_development`. An override is checked
-        # whichever row admits it, since nothing else names its class and
-        # paths; its paths are the human's scope, so the plan's coverage
-        # is recorded for it but does not refuse it.
+        # The scope is a guard of both admissions: a refreshed plan whose
+        # scope is incomplete is rejected as a plan for a fresh fork is, so
+        # no patch Work is requested without a checked scope. An override is
+        # checked whichever row admits it, since nothing else names its
+        # class and paths; its paths are the human's scope, so the plan's
+        # coverage is recorded for it but does not refuse it.
         problem = plan_gate.scope_problem(decision, admission_class=admission_class,
                                              allowed_paths=paths)
         refused = (plan_gate.scope_problem(decision, admission_class=admission_class,
                                               allowed_paths=paths, coverage=False)
                    if kind == "park" else problem)
-        if refused and (kind == "park" or not readmit):
+        if refused:
             return _reject_plan(
                 rec, outcome, why=f"the admitted patch scope is incomplete: {refused}",
                 **common)
@@ -929,7 +932,8 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
         if readmit:
             out = engine.apply_transition(
                 rec, "readmit_development", policy=policy, now=now, cause_id=cause,
-                facts={"development_admitted", "recorded_fork_matches"}, values=values,
+                facts={"development_admitted", "patch_scope_complete", "recorded_fork_matches"},
+                values=values,
                 details=details)
         else:
             out = engine.apply_transition(

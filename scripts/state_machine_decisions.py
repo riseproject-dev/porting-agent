@@ -1090,6 +1090,28 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.waiting_ci", "record_actionable_review"),
                      ("development.fix_needed", "record_actionable_review")),
     ),
+    Item(
+        "The scope guard of a readmission",
+        "Whether a refreshed develop plan whose patch scope is incomplete (coverage the scope "
+        "omits, no admission class, or no scope paths) returns to the recorded fork. "
+        "`readmit_development` had no scope guard, so such a plan was readmitted with "
+        "`scope_coverage_complete` false, and the next repair Work could change paths outside "
+        "the admitted scope.",
+        "No. `readmit_development` has the guard of `admit_development`: \"the verified plan "
+        "names `scope_paths`, and `scope_coverage_complete` holds\". A refreshed plan whose "
+        "scope is incomplete takes `reject_plan`, which charges `planning_attempts` and keeps "
+        "the refresh, the fork, and any override, so a new planning run is due; once the "
+        "attempts are spent `exhaust_planning_recovery` waits for a human, with reminders. "
+        "The next complete plan returns to the recorded fork. An admission override keeps its "
+        "reading on both rows. The check reports either admission without the guard. This "
+        "completes O24 and decision 12: no patch Work is requested without a checked scope, "
+        "on a new fork or on the recorded one.",
+        ("planning.agent_running", "development.fix_needed", "planning.idle"),
+        edges=(("planning.agent_running", "readmit_development"),
+               ("planning.agent_running", "reject_plan")),
+        highlighted=(("planning.agent_running", "readmit_development"),
+                     ("planning.agent_running", "reject_plan")),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (

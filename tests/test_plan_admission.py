@@ -142,8 +142,8 @@ def expected(decision, override, refresh):
         return "park_planning"
     if decision == "park" and override == "class_only":
         return "reject_plan"  # no scope paths: the admitted scope is incomplete
-    if decision == "develop_incomplete_scope" and not readmit:
-        return "reject_plan"
+    if decision == "develop_incomplete_scope":
+        return "reject_plan"  # both admissions check the scope
     return "readmit_development" if readmit else "admit_development"
 
 
@@ -241,6 +241,42 @@ class TestPlanDecisionMatrix(unittest.TestCase):
                 self.assertEqual((resumed.verb, engine.state_key(resumed.record),
                                   resumed.record["budget"]["planning_attempts"]),
                                  ("resume_planning", "planning.idle", 0))
+
+    def test_a_refreshed_plan_with_an_incomplete_scope_is_rejected(self):
+        """`readmit_development` has the scope guard of `admit_development`:
+        a refreshed develop plan whose scope is incomplete takes
+        `reject_plan` and keeps the refresh and the fork, so no repair Work
+        is requested with a scope the worker could widen; the next complete
+        plan returns to the fork, and spent attempts wait for a human."""
+        incomplete = {
+            "coverage the scope omits": plan("develop", covered=("a", "docs/index.md"),
+                                             rationale=RATIONALE),
+            "no admission class": plan("develop", admission_class=None, rationale=RATIONALE),
+            "no scope paths": plan("develop", allowed_paths=[], rationale=RATIONALE),
+        }
+        limit = POLICY["retries"]["planning_attempts"]
+        for name, research in incomplete.items():
+            with self.subTest(scope=name):
+                record = planning(refresh="matching")
+                new, staged = fold(record, copy.deepcopy(research))
+                self.assertEqual(verb_of(staged), "reject_plan")
+                self.assertEqual(engine.state_key(new), "planning.idle")
+                self.assertEqual((new["refresh"], new["fork"]),
+                                 (record["refresh"], record["fork"]))
+                self.assertEqual(new["budget"]["planning_attempts"], 1)
+                # The next complete plan returns to the recorded fork.
+                again = planning(refresh="matching", attempts=1)
+                readmitted, staged = fold(again, copy.deepcopy(DECISIONS["develop"]))
+                self.assertEqual(verb_of(staged), "readmit_development")
+                self.assertEqual(engine.state_key(readmitted), "development.fix_needed")
+                self.assertTrue(readmitted["scope_coverage_complete"])
+                self.assertEqual(readmitted["fork"], record["fork"])
+                # Spent attempts wait for a human with reminders.
+                spent = planning(refresh="matching", attempts=limit)
+                waiting, staged = fold(spent, copy.deepcopy(research))
+                self.assertEqual(verb_of(staged), "exhaust_planning_recovery")
+                self.assertEqual(engine.state_key(waiting), "planning.waiting_human")
+                self.assertEqual(waiting["refresh"], record["refresh"])
 
     def test_a_result_outside_the_running_planning_is_never_folded_by_the_plan(self):
         record = planning()

@@ -768,6 +768,22 @@ class TestTableDecisions(unittest.TestCase):
         admitted = engine.apply_transition(running, "admit_development", policy=POLICY, now=NOW,
                                            facts=facts | {"patch_scope_complete"}, values=values)
         self.assertEqual(engine.state_key(admitted.record), "provisioning.idle")
+        # A readmission to the recorded fork checks the scope the same way.
+        readmit = lc.find_edge("planning.agent_running", "readmit_development").transition
+        self.assertIn(lc.PATCH_SCOPE_COMPLETE, readmit.guard)
+        refreshed = contribution(phase="planning", activity="agent_running",
+                                 refresh={"command_id": "c", "reason": "r",
+                                          "from_phase": "development", "head_sha": SHA_A,
+                                          "pr_number": 1})
+        facts = {"development_admitted", "recorded_fork_matches"}
+        refused = engine.apply_transition(refreshed, "readmit_development", policy=POLICY,
+                                          now=NOW, facts=facts, values=values)
+        self.assertFalse(refused.accepted)
+        readmitted = engine.apply_transition(refreshed, "readmit_development", policy=POLICY,
+                                             now=NOW, facts=facts | {"patch_scope_complete"},
+                                             values=values)
+        self.assertTrue(readmitted.accepted, readmitted.reason)
+        self.assertEqual(engine.state_key(readmitted.record), "development.fix_needed")
         sources = {e.source for e in lc.table_edges()
                    if e.transition.effects.work == "allocate" and lc.LIFECYCLE[e.source].writes}
         self.assertEqual(sources, {"development.fix_needed", "upstream_review.fix_needed"})

@@ -375,6 +375,7 @@ class TestLifecycleTable(unittest.TestCase):
         review = lc.find_edge("upstream_review.fix_needed", "request_review_revision").transition
         patch = lc.find_edge("development.fix_needed", "request_patch").transition
         admit = lc.find_edge("planning.agent_running", "admit_development").transition
+        readmit = lc.find_edge("planning.agent_running", "readmit_development").transition
         gate = lc.find_edge("handoff.awaiting_submission", "record_actionable_review").transition
         cases = (
             ("development.waiting_ci", "record_head_change",
@@ -392,6 +393,10 @@ class TestLifecycleTable(unittest.TestCase):
             ("planning.agent_running", "admit_development",
              {"guard": self.without(admit.guard, lc.PATCH_SCOPE_COMPLETE)},
              lc.PATCH_SCOPE_COMPLETE),
+            ("planning.agent_running", "readmit_development",
+             {"guard": self.without(readmit.guard, lc.PATCH_SCOPE_COMPLETE)},
+             f"planning.agent_running --readmit_development-->: without the guard "
+             f"{lc.PATCH_SCOPE_COMPLETE!r}"),
         )
         for state, verb, change, expected in cases:
             with self.subTest(verb=verb, expected=expected):

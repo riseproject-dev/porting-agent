@@ -242,7 +242,8 @@ def scope_problem(decision: dict, *, admission_class: str | None,
     scope paths, and, with ``coverage``, matches every path the plan's
     ``path_coverage`` lists as possibly needing a riscv64 change. The
     reconciler asserts the fact "the verified plan names `scope_paths`,
-    and `scope_coverage_complete` holds" of ``admit_development`` from this."""
+    and `scope_coverage_complete` holds" of ``admit_development`` and
+    ``readmit_development`` from this."""
     if not isinstance(admission_class, str) or not admission_class:
         return "no admission class"
     if not isinstance(allowed_paths, list) or not all(isinstance(p, str) for p in allowed_paths):

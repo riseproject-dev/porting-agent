@@ -1961,3 +1961,23 @@ flowchart TB
     development_waiting_ci ==>|record_actionable_review| development_fix_needed
     development_fix_needed ==>|record_actionable_review| development_fix_needed
 ```
+
+### The scope guard of a readmission
+
+Whether a refreshed develop plan whose patch scope is incomplete (coverage the scope omits, no admission class, or no scope paths) returns to the recorded fork. `readmit_development` had no scope guard, so such a plan was readmitted with `scope_coverage_complete` false, and the next repair Work could change paths outside the admitted scope.
+
+**Change.** No. `readmit_development` has the guard of `admit_development`: "the verified plan names `scope_paths`, and `scope_coverage_complete` holds". A refreshed plan whose scope is incomplete takes `reject_plan`, which charges `planning_attempts` and keeps the refresh, the fork, and any override, so a new planning run is due; once the attempts are spent `exhaust_planning_recovery` waits for a human, with reminders. The next complete plan returns to the recorded fork. An admission override keeps its reading on both rows. The check reports either admission without the guard. This completes O24 and decision 12: no patch Work is requested without a checked scope, on a new fork or on the recorded one.
+
+```mermaid
+flowchart TB
+    subgraph planning["planning"]
+        planning_agent_running["planning.agent_running"]
+        planning_idle["planning.idle"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    planning_agent_running ==>|readmit_development| development_fix_needed
+    planning_agent_running ==>|reject_plan| planning_idle
+```

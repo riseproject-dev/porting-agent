@@ -1008,12 +1008,14 @@ LIFECYCLE: dict[str, State] = {
                             "no patch Work is requested before `confirm_provisioning`."),
             ("readmit_development", "development.fix_needed"): Transition(
                 _R, None,
-                (_ADMISSION,
+                (_ADMISSION, PATCH_SCOPE_COMPLETE,
                  "refresh recorded", "the recorded fork and development PR still match"),
                 _E(revision="bump", work="clear",
                   sets=("plan_evidence_id", "admission_class", "scope_paths"),
                   clears=("refresh", "admission_override")),
-                description="A refreshed planning returns to the existing fork for repair."),
+                description="A refreshed planning returns to the existing fork for repair. The "
+                            "scope is checked as for `admit_development`: a refreshed plan "
+                            "whose scope is incomplete takes `reject_plan`."),
             ("park_planning", "parked.idle"): Transition(
                 _R, None,
                 ("verified plan decision park", "no admission_override recorded"),
@@ -4056,7 +4058,8 @@ def _check_patch_work(problems: list[str]) -> None:
         if any("proposal" in g and "admission" in g for g in e.transition.guard):
             problems.append(f"{e.source} --{e.verb}-->: a proposal admission guard; no patch is "
                             "proposed before the fork exists")
-        if e.verb == "admit_development" and PATCH_SCOPE_COMPLETE not in e.transition.guard:
+        if e.verb in ("admit_development", "readmit_development") \
+                and PATCH_SCOPE_COMPLETE not in e.transition.guard:
             problems.append(f"{e.source} --{e.verb}-->: without the guard "
                             f"{PATCH_SCOPE_COMPLETE!r}")
     if not any(e.verb == "admit_development" for e in table_edges()):
