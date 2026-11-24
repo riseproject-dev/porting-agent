@@ -36,6 +36,7 @@ import capacity
 import commands
 import common
 import controller
+import dev_pr
 import engine
 import lifecycle as lc
 import reconcile
@@ -320,6 +321,42 @@ class TestTheAutomaticResume(unittest.TestCase):
                       "resume_pause", problems)
 
 
+class TestTheSpentWorkTotal(unittest.TestCase):
+    """`development.fix_needed` with `work_total` spent and a head without a
+    PR: the rows that open the PR need `work_total`, so the Work loop takes
+    `exhaust_work_total` and nothing is paused."""
+
+    def spent(self):
+        rec = dict(live(), activity="fix_needed", paused=False, paused_by=None,
+                   paused_reason=None, paused_at=None)
+        limit = lc.budget_limit("work_total", POLICY)
+        rec["budget"] = dict(rec["budget"], attempts_used=limit)
+        return rec
+
+    def test_exhaust_work_total_is_taken_and_nothing_is_paused(self):
+        rec = self.spent()
+        self.assertEqual(engine.state_key(rec), "development.fix_needed")
+        out = tick(rec)
+        self.assertEqual(kinds(out), ["exhaust_work_total"])
+        self.assertIsNone(out.report.get("processing_errors"))
+        self.assertEqual(engine.state_key(final(out, rec)), "development.waiting_human")
+        self.assertTrue([d for d in out.report["controller"]["deferred"]
+                         if "work_total" in d["why"]])
+        # Nothing is left to do in the next tick.
+        again = tick(final(out, rec))
+        self.assertEqual((kinds(again), again.report.get("processing_errors")), ([], None))
+
+    def test_a_planned_operation_waits_for_the_work_loop_too(self):
+        first = tick(dict(self.spent(), budget=live()["budget"]))
+        [op] = [r for k, r in first.staged if k == "operations"]
+        rec = final(first, live())
+        spent = dict(rec, budget=dict(rec["budget"],
+                                      attempts_used=lc.budget_limit("work_total", POLICY)))
+        out = tick(spent, now=T + timedelta(minutes=10), operations={op["operation_id"]: op})
+        self.assertIsNone(out.report.get("processing_errors"))
+        self.assertEqual(out.report["dev_pr_requests"], [])
+
+
 class TestARestopThatFails(unittest.TestCase):
     def test_an_automatic_resume_that_fails_again_does_not_stop_the_tick(self):
         real = engine.try_apply_transition
@@ -338,6 +375,62 @@ class TestARestopThatFails(unittest.TestCase):
                                  pipeline="2" * 64)
         [error] = out.report["processing_errors"]
         self.assertTrue(error["decision"].startswith("not paused again"), error)
+
+
+class TestAPauseHoldsALaunchedOperation(unittest.TestCase):
+    def paused(self):
+        first = tick(live())
+        rec = final(first, live())
+        [op] = [r for k, r in first.staged if k == "operations"]
+        out = apply_command(rec, commands.parse(
+            f"/upstreaming pause contribution={CID} revision={rec['revision']} reason=hold"),
+            actor=OWNER, now=T.isoformat())
+        self.assertTrue(out.accepted, out.reason)
+        return out.record, op
+
+    def receipt(self, rec, op):
+        return {"status": "published", "operation_id": op["operation_id"],
+                "contribution_id": CID, "revision": rec["revision"],
+                "repository": op["target"]["repository"],
+                "repository_id": op["target"]["repository_id"], "pr_id": 77, "pr_number": 9,
+                "head_sha": op["target"]["expected_head"], "development_pr_run_id": 100}
+
+    def test_it_is_held_not_launched_and_closed_once_its_run_window_has_passed(self):
+        rec, op = self.paused()
+        ops = {op["operation_id"]: op}
+        held = tick(rec, now=T + timedelta(minutes=10), operations=ops)
+        self.assertEqual(held.report["dev_pr_requests"], [])
+        self.assertEqual([r["status"] for k, r in held.staged if k == "operations"], [])
+        self.assertFalse(held.report["controller"].get("development_pr_closures"))
+        self.assertTrue([d for d in held.report["controller"]["deferred"]
+                         if d.get("operation") == op["operation_id"]])
+        late = tick(rec, now=T + timedelta(seconds=controller.DEV_PR_RUN_SECONDS + 600),
+                    operations=ops)
+        self.assertEqual([r["status"] for k, r in late.staged if k == "operations"], ["failed"])
+        self.assertEqual(late.report["controller"]["development_pr_closures"][0]["closed"],
+                         "the contribution is paused")
+
+    def test_its_receipt_completes_while_paused(self):
+        rec, op = self.paused()
+        receipt = self.receipt(rec, op)
+
+        class Api:
+            def get(self, path):
+                return {"id": 77, "number": 9, "state": "open",
+                        "body": dev_pr.marker_prefix(CID) + " x",
+                        "head": {"sha": op["target"]["expected_head"], "ref": "riscv64-dev",
+                                 "repo": {"id": op["target"]["repository_id"]}},
+                        "base": {"ref": rec["upstream"]["base_ref"]}}
+
+        snap = reconcile.Snapshot({"c": copy.deepcopy(rec)}, {op["operation_id"]: op}, {}, {},
+                                  {report()["evidence_id"]: report()})
+        with contextlib.redirect_stderr(io.StringIO()):
+            out = reconcile.tick(Api(), snap, policy=POLICY, now=T + timedelta(minutes=5),
+                                 publications=[], pressure=capacity.Pressure(ok=True),
+                                 observe=False, pipeline=VERSION, development_prs=[receipt])
+        self.assertEqual(kinds(out), ["confirm_development_pr"])
+        self.assertEqual(final(out, rec)["fork"]["pr_number"], 9)
+        self.assertTrue(final(out, rec)["paused"])
 
 
 class TestTheHealAlert(unittest.TestCase):
@@ -360,6 +453,16 @@ class TestTheHealAlert(unittest.TestCase):
         rec = final(first, live())
         second = tick(rec, now=T + timedelta(minutes=10), operations={op["operation_id"]: op})
         self.assertEqual(self.alerts(second), [])
+
+
+class TestTheOperationRowsAreNeverMasked(unittest.TestCase):
+    def test_the_receipt_of_an_operation_completes_while_paused_whatever_it_moves(self):
+        rows = [(source, verb, t, target) for source, verb, t, target in lc.requirement_edges()
+                if t.trigger == lc.Trigger.OPERATION]
+        self.assertTrue(rows)
+        self.assertTrue([r for r in rows if r[0] != r[3]], "a receipt that moves the state")
+        for source, verb, t, target in rows:
+            self.assertFalse(lc.masked_while_paused(verb, t, source, target), (source, verb))
 
 
 if __name__ == "__main__":

@@ -72,13 +72,14 @@ DECISIONS: tuple[Item, ...] = (
         "retry is launched while paused. `resume_pause` bumps the "
         "revision, so a Result that lands during the pause no longer matches and takes "
         "`record_late_effect`. While paused, observations and receipts still converge, but "
-        "nothing outward starts and nothing moves the record to its next state: an "
+        "no new outward work starts and no observation moves the record to its next state: an "
         "observation that keeps the state and the revision (an explanation, a review comment "
-        "fence) is folded and saved, an operation receipt finishes the operation in flight, "
-        "and an observation that would move the record to another state (but one that ends "
-        "it), bump the revision, or charge a budget is read again after the resume (see "
-        "\"A pause holds back what would move the record\"). The publisher's final check reads "
-        "`paused`.",
+        "fence) is folded and saved, and an observation that would move the record to another "
+        "state (but one that ends it), bump the revision, or charge a budget is read again "
+        "after the resume. The receipt of an operation launched before the pause is the "
+        "owner's intended exception: it completes its transition even when that moves the "
+        "state or bumps the revision (see \"A pause holds back what would move the record\"). "
+        "The publisher's final check reads `paused`.",
         ("development.agent_running", "development.fix_needed+paused", "development.fix_needed",
          "development.waiting_ci", "development.waiting_ci+paused"),
         edges=(("development.agent_running", "pause"),
@@ -2030,18 +2031,27 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "A pause holds back what would move the record",
         "What still runs while a contribution is paused (the owner's decision D2 of "
         "2026-11-24).",
-        "While paused, observations and receipts still converge, but nothing outward starts "
-        "and nothing moves the record to its next state; the resume takes that step. The mask "
-        "of the flag (`lifecycle.masked_while_paused`) refuses, besides the commands other "
-        "than the stops, the tick rows and the Result rows other than `record_late_effect`, "
-        "an observation that would move the record to another state (but one that ends the "
-        "contribution), bump the revision, or charge a budget; it is read again after the "
-        "resume. An observation that keeps the state and the revision is folded and saved, "
-        "and an operation receipt finishes the operation in flight, also when its row enters "
-        "the CI wait. A head pushed during the pause, CI that fails or passes, and actionable "
-        "review feedback are therefore recorded by the first observation after the resume, "
-        "and the revision a resume names is the revision the pause saw unless a stop or a "
-        "receipt changed it.",
+        "While paused, observations and receipts still converge, but no new outward work "
+        "starts and no observation moves the record to its next state; the resume takes that "
+        "step. The mask of the flag (`lifecycle.masked_while_paused`) refuses, besides the "
+        "commands other than the stops, the tick rows and the Result rows other than "
+        "`record_late_effect`, an observation that would move the record to another state "
+        "(but one that ends the contribution), bump the revision, or charge a budget; it is "
+        "read again after the resume. An observation that keeps the state and the revision is "
+        "folded and saved. A head pushed during the pause, CI that fails or passes, and "
+        "actionable review feedback are therefore recorded by the first observation after "
+        "the resume. The owner decided on 2026-11-24 (option B) that the one exception is "
+        "the receipt of an operation launched before the pause: its row (trigger "
+        "`operation`) is never masked and completes its transition even when it moves the "
+        "state (a development PR confirmed in `development.publishing`, a fork provisioned, "
+        "a clean head confirmed) or bumps the revision, because the effect it reports "
+        "already happened and leaving it open would fence `park` and the stale resume; "
+        "nothing new starts with it. The development PR and `ci_rerun` operations a pause "
+        "finds launched are therefore held, and launched no more, for the time their run "
+        "needs (`controller.DEV_PR_RUN_SECONDS`, `handoff.RUN_SECONDS` for the rerun in "
+        "`handoff.waiting_ci`) before the controller closes them as failed; one planned and "
+        "never launched is closed at once. The revision a resume names is the revision the "
+        "pause saw unless a stop or a receipt changed it.",
         ("development.waiting_ci", "development.waiting_ci+paused", "development.fix_needed"),
         edges=(("development.waiting_ci", "pause"),
                ("development.waiting_ci+paused", "resume_pause"),

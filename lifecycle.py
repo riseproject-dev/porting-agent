@@ -5277,9 +5277,12 @@ def masked_while_paused(verb: str, t: Transition, source: str, target: str) -> b
     are refused, and so is an observation that moves the record to another
     state (but one that ends the contribution), bumps the revision, or
     charges a budget (a launch); an observation that keeps the state and the
-    revision is folded and saved, and an operation receipt finishes the
-    operation in flight. The resume takes the next step from what was
-    saved."""
+    revision is folded and saved. The owner's intended exception (decision
+    of 2026-11-24, option B): a row of the trigger ``OPERATION``, the
+    receipt of an operation launched before the pause, is never masked and
+    completes its transition even when it moves the state or bumps the
+    revision; nothing new starts with it. The resume takes the next step
+    from what was saved."""
     if any(verb in flag.set_by or verb in flag.cleared_by for flag in FLAGS.values()):
         return False
     if t.trigger == Trigger.COMMAND:

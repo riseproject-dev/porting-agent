@@ -1292,10 +1292,16 @@ class TestCleanHeadCi(unittest.TestCase):
         out = world.tick(at(4), comments=[comment(
             f'/upstreaming pause revision={world.record["revision"]} reason="x"', cid=994)])
         self.assertIn("pause", world.kinds(out))
-        # The paused rerun is closed and nothing new is planned.
+        # The rerun launched before the pause is held for the time its run
+        # needs (its receipt would complete), launched no more, and closed
+        # after it; nothing new is planned.
+        self.assertEqual(world.operations[op["operation_id"]]["status"], "planned")
+        out = world.tick(at(5))
+        self.assertEqual(world.kinds(out), [])
+        self.assertEqual(world.operations[op["operation_id"]]["status"], "planned")
+        out = world.tick(at(3 + handoff.RUN_SECONDS // 60 + 2))
         self.assertEqual(world.operations[op["operation_id"]]["status"], "failed")
         self.assertIsNone(world.record["active_operation_id"])
-        out = world.tick(at(5))
         self.assertEqual(world.kinds(out), [])
         self.assertFalse(any(o["kind"] == "ci_rerun" and o["status"] == "planned"
                              for o in world.operations.values()))

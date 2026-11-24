@@ -1393,7 +1393,9 @@ class TestDecidedOperationRows(ReceiptWorld, unittest.TestCase):
         rec, ops = test_dev_pr.published()
         _res, rec, ops, _events = test_dev_pr.run(rec, ops)
         op = ops[rec["active_operation_id"]]
-        res, *_rest = test_dev_pr.run(dict(rec, paused=True), ops, 1)
+        # A pause holds a launched operation for its run first.
+        res, *_rest = test_dev_pr.run(
+            dict(rec, paused=True), ops, 1 + controller.DEV_PR_RUN_SECONDS // 60)
         yield "a stale development PR operation", op, res
         rec, ops = test_dev_pr.published()
         _res, rec, ops, _events = test_dev_pr.run(rec, ops)

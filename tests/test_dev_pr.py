@@ -326,10 +326,18 @@ class TestDevelopmentPRRows(unittest.TestCase):
         self.assertEqual((events, res.report["dev_pr_requests"]), ([], []))
         res, _rec, _ops, events = run(rec, ops, 6)
         self.assertEqual([e["kind"] for e in events], ["launch_development_pr"])
-        # A paused contribution launches nothing: its planned operation is
-        # closed and released without a row.
+        # A paused contribution launches nothing: its planned operation,
+        # launched before the pause, is held while its run may still be
+        # going (its receipt would complete), then closed and released
+        # without a row.
         paused = dict(rec, paused=True)
         res, current, closed, events = run(paused, ops, 12)
+        self.assertEqual((events, res.report["dev_pr_requests"]), ([], []))
+        self.assertEqual(current["active_operation_id"], rec["active_operation_id"])
+        self.assertEqual(closed[rec["active_operation_id"]]["status"], "planned")
+        self.assertIn(rec["active_operation_id"],
+                      [d.get("operation") for d in res.report["deferred"]])
+        res, current, closed, events = run(paused, ops, controller.DEV_PR_RUN_SECONDS // 60 + 1)
         self.assertEqual((events, res.report["dev_pr_requests"]), ([], []))
         self.assertIsNone(current["active_operation_id"])
         self.assertEqual(closed[rec["active_operation_id"]]["status"], "failed")
@@ -455,7 +463,9 @@ class TestDevelopmentPRRows(unittest.TestCase):
         }
         for why, changed in changes.items():
             with self.subTest(change=why):
-                res, current, closed, _events = run(changed, ops, 1)
+                # A pause holds a launched operation for its run first.
+                minutes = 1 + (controller.DEV_PR_RUN_SECONDS // 60 if why == "pause" else 0)
+                res, current, closed, _events = run(changed, ops, minutes)
                 self.assertEqual(closed[oid]["status"], "failed")
                 self.assertNotEqual(current.get("active_operation_id"), oid)
                 self.assertEqual(res.report["development_pr_closures"][0]["operation_id"], oid)

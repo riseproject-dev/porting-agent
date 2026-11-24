@@ -1435,9 +1435,10 @@ class TestInterruptedRerun(unittest.TestCase):
         self.assertIn("paused", out.report["observation"][0]["note"])
 
     def test_a_pause_closes_the_planned_rerun_so_park_and_a_late_resume_apply(self):
-        """The workflow refuses a paused record, so a planned rerun cannot
-        get a receipt while paused: it is closed as failed and released
-        instead of fencing `park` and a stale `resume` forever."""
+        """The workflow refuses a record paused at the launch, so a planned
+        rerun launched before the pause is held for its run and then closed
+        as failed and released, instead of fencing `park` and a stale
+        `resume` forever."""
         _out, planned, op = self.planned()
         ops = {op["operation_id"]: op}
         # While the operation is open, the pause holds it and park is refused.
@@ -1449,7 +1450,14 @@ class TestInterruptedRerun(unittest.TestCase):
             policy_=POLICY, operations=ops)
         self.assertIsNone(refused.event)
         self.assertIn("is open", refused.reason)
-        out = tick(paused, ci=interrupted_ci(), operations=ops, now=T + timedelta(minutes=10))
+        # The rerun launched before the pause is held for the time its run
+        # needs, and launched no more.
+        held = tick(paused, ci=interrupted_ci(), operations=ops, now=T + timedelta(minutes=10))
+        self.assertEqual((held.report["dev_pr_requests"], kinds(held)), ([], []))
+        self.assertEqual([o for kind, o in held.staged if kind == "operations"], [])
+        self.assertNotIn("ci_rerun_closures", held.report["controller"])
+        out = tick(paused, ci=interrupted_ci(), operations=ops,
+                   now=T + timedelta(seconds=controller.DEV_PR_RUN_SECONDS + 600))
         self.assertEqual(out.report["dev_pr_requests"], [])
         self.assertEqual(kinds(out), [])
         self.assertEqual(out.report["controller"]["ci_rerun_closures"][0]["closed"],

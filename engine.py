@@ -697,6 +697,12 @@ def remains(name: str, ctx: Context) -> bool | None:
     return count < lc.budget_limit(name, ctx.policy)
 
 
+def work_total_spent(record: dict, policy: dict) -> bool:
+    """Whether ``work_total`` is exhausted for the record."""
+    ctx = Context(record, state_key(record), policy, "")
+    return remains("work_total", ctx) is False
+
+
 # The fields beside `budget.source_unavailable` that a run of failed reads
 # records, cleared with it.
 SOURCE_READ_FIELDS = ("source_unavailable_since", "source_unavailable_at",

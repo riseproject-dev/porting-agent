@@ -873,16 +873,30 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             attempts = recovery.launch_attempts(operation)
             waited = (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() \
                 >= LAUNCH_INTERVAL_SECONDS
+            # A launched operation of a paused contribution is held for the
+            # time its run needs (a receipt of an operation launched before
+            # the pause completes its transition), and launched no more.
+            held = bool(c.get("paused")) and _held_for_run(
+                operation, attempts, inputs.now,
+                handoff.RUN_SECONDS if engine.state_key(c) == "handoff.waiting_ci"
+                else DEV_PR_RUN_SECONDS)
             if operation["kind"] in DEV_PR_KINDS:
-                why = _stale_development_pr(c, operation)
+                why = _stale_development_pr(c, operation, held=held)
                 if why:
                     _close_development_pr(c, operation, why, by_id, operations, res, now)
+                    continue
+                if held:
+                    rep["deferred"].append({
+                        "contribution": cid, "operation": operation["operation_id"],
+                        "why": "the contribution is paused: the receipt of the launched "
+                               "operation is still awaited"})
                     continue
                 if (attempts == 0 or waited) and _launch_development_pr(
                         c, operation, by_id, operations, inputs, res, now, policy):
                     break
                 continue
-            why = _spent_rerun(c, operation, attempts, waited, policy, evidence or {})
+            why = _spent_rerun(c, operation, attempts, waited, policy, evidence or {},
+                               held=held)
             if why:
                 # The rerun failed: it is closed and released, and no row
                 # is fired. The next observation of interrupted CI takes
@@ -897,6 +911,12 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 res.report.setdefault("ci_rerun_closures", []).append(
                     {"operation_id": closed["operation_id"], "contribution_id": cid,
                      "closed": why})
+                continue
+            if held:
+                rep["deferred"].append({
+                    "contribution": cid, "operation": operation["operation_id"],
+                    "why": "the contribution is paused: the receipt of the launched "
+                           "operation is still awaited"})
                 continue
             due = attempts == 0 or (
                 waited and attempts < lifecycle.budget_limit("operation_launch", policy))
@@ -937,6 +957,15 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                             "resumed" if c.get("paused") else
                             f"the development PR of {head} waits for the open operation "
                             f"{c['active_operation_id']}")})
+                continue
+            if engine.state_key(c) == "development.fix_needed" \
+                    and engine.work_total_spent(c, policy):
+                # The Work loop takes `exhaust_work_total`; the rows that
+                # open the PR of this state need `work_total`.
+                rep["deferred"].append({
+                    "contribution": cid,
+                    "why": f"work_total is exhausted: the development PR of {head} is opened "
+                           "once it is restored"})
                 continue
             marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{head} -->"
             reasons, digest = development_pr_reasons(c, head, evidence or {})
@@ -1636,16 +1665,24 @@ DEV_PR_RUN_SECONDS = 1800
 MAX_REPLANS = 20
 
 
-def _stale_development_pr(record: dict, op: dict) -> str | None:
+def _held_for_run(op: dict, attempts: int, now: datetime, seconds: int) -> bool:
+    """Whether an operation launched before a pause may still have its run
+    going: it was launched and its last launch is younger than `seconds`."""
+    return attempts > 0 and \
+        (now - datetime.fromisoformat(op["updated_at"])).total_seconds() < seconds
+
+
+def _stale_development_pr(record: dict, op: dict, *, held: bool = False) -> str | None:
     """Why a planned development PR operation is closed as failed without a
-    row: the contribution is paused (the workflow refuses a paused record,
-    so the operation would otherwise burn its launches and fence `park` and
-    a stale `resume`), or it is no longer the record's intent
+    row: the contribution is paused and the operation is not held for its
+    run (`held`; it is launched no more, and once the run window has passed
+    it would otherwise fence `park` and a stale `resume`), or it is no
+    longer the record's intent
     (``dev_pr.intent_problem``: another state, revision, fork, head or
     base, or a PR already recorded for a create, or none for the CI
     bootstrap). A new one is planned when a published head again has no
     PR."""
-    if record.get("paused"):
+    if record.get("paused") and not held:
         return "the contribution is paused"
     if dev_pr.intent_problem(record, op):
         return "the operation no longer matches the record"
@@ -1777,6 +1814,16 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
                 "operation_id": oid, "contribution_id": cid, "kind": operation["kind"],
                 "attempt": attempts + 1})
             return True
+        case engine.Take(verb="exhaust_development_pr_launches", refused=refused) \
+                if _refused_by_work_total(refused):
+            # The row of `development.fix_needed` also needs `work_total`:
+            # its exhaustion is the Work loop's (`exhaust_work_total`), not
+            # that of the launches of the operation.
+            rep.setdefault("deferred", []).append(
+                {"contribution": cid, "operation": oid,
+                 "why": "work_total is exhausted: the development PR is opened once it is "
+                        "restored"})
+            return False
         case engine.Take(verb="exhaust_development_pr_launches"):
             if _waits_without_pr(c):
                 # No PR can be opened for the head a record waits on for CI
@@ -1811,6 +1858,12 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
             return False
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("controller", "_launch_development_pr"))
+
+
+def _refused_by_work_total(refused) -> bool:
+    """Whether the refusal of a launch is that of `work_total` (the budget
+    the row of `development.fix_needed` adds to `operation_launch`)."""
+    return isinstance(refused, engine.Refused) and refused.guard == lifecycle.WORK_TOTAL_REMAINS
 
 
 _NO_PR_MISMATCH = ("the development PR of the recorded head could not be opened: no PR is "
@@ -1852,15 +1905,15 @@ def _exhaust_development_pr_replans(c: dict, last: dict, by_id: dict, operations
 
 
 def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict,
-                 evidence: dict) -> str | None:
+                 evidence: dict, *, held: bool = False) -> str | None:
     """Why a planned ``ci_rerun`` operation is closed as failed: the
-    contribution is paused (the workflow refuses a paused record, so the
-    operation would otherwise stay open through the pause and fence `park`
-    and a stale `resume`), its launches are spent without a receipt, or it
+    contribution is paused and the operation is not held for its run
+    (`held`; the operation would otherwise stay open through the pause and
+    fence `park` and a stale `resume`), its launches are spent without a receipt, or it
     no longer matches the record (another head, revision, or a state that
     does not rerun interrupted CI, ``ci_rerun.INTERRUPTED_STATES``). The
     head is the one the CI of the state is on (``ci_rerun.expected_head``)."""
-    if record.get("paused"):
+    if record.get("paused") and not held:
         return "the contribution is paused"
     if engine.state_key(record) not in ci_rerun.INTERRUPTED_STATES \
             or op["target"].get("expected_head") != ci_rerun.expected_head(record, evidence) \
