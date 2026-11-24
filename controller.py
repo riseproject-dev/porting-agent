@@ -127,7 +127,8 @@ def _actionable(c: dict) -> str | None:
 
 # The deadline recorded with requested Work (`active_work.deadline_at`): the
 # queue's attempts at it (the `retry` attempts of the pool's Policy, 3), each
-# a worker run of up to 6 hours (the job bound of `worker.md`). No row reads
+# a worker run of up to 350 minutes (the agent job bound of `worker.md`), so
+# 18 hours covers the three with time to spare. No row reads
 # it: Work whose graph ends without a usable Result is recovered by
 # `allocate_work_retry` and `exhaust_work_recovery`.
 WORK_DEADLINE_HOURS = 18

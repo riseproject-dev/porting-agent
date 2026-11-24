@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -75,27 +76,54 @@ def audit(snapshot: Path, expected_path: Path = DEFAULT_EXPECTED) -> list[str]:
     return forbidden_secrets(expected) + forbidden_secrets(actual) + differences(expected, actual)
 
 
+class LiveAuditError(Exception):
+    """A GitHub listing the live audit needs could not be read in full."""
+
+
 def _gh_api(path: str) -> list[dict]:
     """Every page of a read-only GitHub REST listing, through ``gh api``."""
-    out = subprocess.run(["gh", "api", "--paginate", "--slurp", path],
-                         check=True, capture_output=True, text=True).stdout
-    return json.loads(out)
+    try:
+        result = subprocess.run(["gh", "api", "--paginate", "--slurp", path],
+                                capture_output=True, text=True)
+    except OSError as error:
+        raise LiveAuditError(f"gh api {path}: {error}") from error
+    if result.returncode != 0:
+        raise LiveAuditError(f"gh api {path} exited with {result.returncode}: "
+                             f"{result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise LiveAuditError(f"gh api {path} returned no JSON: {error}") from error
 
 
 def live_settings(repository: str, api: Callable[[str], list[dict]] = _gh_api) -> dict:
     """The names of the Actions secrets ``repository`` can use, in the shape
     of the settings document: its own, the organization's visible to it, and
-    those of each of its environments."""
-    def names(pages: list[dict], key: str) -> list[str]:
-        return sorted(item["name"] for page in pages for item in page.get(key) or [])
+    those of each of its environments. Fails closed: a listing that is not
+    a list of pages each carrying ``key`` as a list of named items raises
+    ``LiveAuditError`` rather than reading as no secrets."""
+    def names(path: str, key: str) -> list[str]:
+        pages = api(path)
+        if not isinstance(pages, list) or not pages:
+            raise LiveAuditError(f"{path}: expected a list of pages, got {pages!r}")
+        found = []
+        for page in pages:
+            items = page.get(key) if isinstance(page, dict) else None
+            if not isinstance(items, list):
+                raise LiveAuditError(f"{path}: a page has no {key!r} list: {page!r}")
+            for item in items:
+                if not (isinstance(item, dict) and isinstance(item.get("name"), str)):
+                    raise LiveAuditError(f"{path}: an item of {key!r} has no name: {item!r}")
+                found.append(item["name"])
+        return sorted(found)
 
-    environments = names(api(f"repos/{repository}/environments"), "environments")
+    environments = names(f"repos/{repository}/environments", "environments")
     return {
-        "repositorySecrets": names(api(f"repos/{repository}/actions/secrets"), "secrets"),
+        "repositorySecrets": names(f"repos/{repository}/actions/secrets", "secrets"),
         "selectedOrganizationSecrets": names(
-            api(f"repos/{repository}/actions/organization-secrets"), "secrets"),
+            f"repos/{repository}/actions/organization-secrets", "secrets"),
         "environments": {env: {"secrets": names(
-            api(f"repos/{repository}/environments/{quote(env, safe='')}/secrets"), "secrets")}
+            f"repos/{repository}/environments/{quote(env, safe='')}/secrets", "secrets")}
             for env in environments},
     }
 
@@ -109,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected", type=Path, default=DEFAULT_EXPECTED)
     args = parser.parse_args(argv)
     if args.live:
-        issues = forbidden_secrets(live_settings(args.live))
+        try:
+            issues = forbidden_secrets(live_settings(args.live))
+        except LiveAuditError as error:
+            print(f"live audit of {args.live} failed: {error}", file=sys.stderr)
+            return 2
         for issue in issues:
             print(issue)
         if issues:

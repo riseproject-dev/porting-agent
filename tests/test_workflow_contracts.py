@@ -1058,6 +1058,13 @@ class TestWorkerRunBound(unittest.TestCase):
         self.assertEqual(stopped, agent)
         self.assertLessEqual(finish, agent - 30)
 
+    def test_the_mcp_gateway_session_outlasts_the_agent_job(self):
+        jobs = workflow("worker.lock.yml")["jobs"]
+        job = int(jobs["agent"]["timeout-minutes"])
+        [step] = [s for s in jobs["agent"]["steps"] if s.get("id") == "start-mcp-gateway"]
+        hours = int(re.search(r'"sessionTimeout": "(\d+)h"', step["run"]).group(1))
+        self.assertGreater(hours * 60, job)
+
     def test_the_work_deadline_covers_every_queue_attempt(self):
         import controller
         import queue_policy

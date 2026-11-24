@@ -14,6 +14,10 @@ engine:
   id: pi
   version: "1.5.0"
   command: /tmp/gh-aw/agent/pi-scrubbed
+  # The MCP gateway's session lifetime, stated rather than left to gh-aw's
+  # default: it must outlast the agent step (330 minutes) and its job (350).
+  mcp:
+    session-timeout: 6h
 model: anthropic/claude-opus-5-5
 concurrency:
   job-discriminator: ${{ github.run_id }}

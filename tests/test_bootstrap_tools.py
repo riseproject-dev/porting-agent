@@ -5,13 +5,17 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts import audit_repository_settings, gh_aw_compat
 from scripts.dependencies import sync
@@ -71,6 +75,29 @@ class TestRepositorySettingsAudit(unittest.TestCase):
         pages["repos/o/r/actions/organization-secrets"] = [{"secrets": [{"name": "ANTHROPIC_API_KEY"}]}]
         self.assertEqual(audit_repository_settings.forbidden_secrets(
             audit_repository_settings.live_settings("o/r", pages.__getitem__)), [])
+
+    def test_a_failed_gh_api_call_fails_the_live_audit_with_its_stderr(self):
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 403: Resource not accessible")
+        stderr = io.StringIO()
+        with mock.patch.object(audit_repository_settings.subprocess, "run", return_value=failed), \
+                contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+            code = audit_repository_settings.main(["--live", "o/r"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("HTTP 403: Resource not accessible", stderr.getvalue())
+
+    def test_a_page_without_the_expected_key_fails_the_live_audit_closed(self):
+        pages = {
+            "repos/o/r/environments": [{"environments": []}],
+            "repos/o/r/actions/secrets": [{"secrets": []}],
+            "repos/o/r/actions/organization-secrets": [
+                {"secrets": [{"name": "ANTHROPIC_API_KEY"}]}, {"message": "Not Found"}],
+        }
+        with self.assertRaisesRegex(audit_repository_settings.LiveAuditError,
+                                    "organization-secrets: a page has no 'secrets' list"):
+            audit_repository_settings.live_settings("o/r", pages.__getitem__)
+        pages["repos/o/r/actions/organization-secrets"] = []
+        with self.assertRaises(audit_repository_settings.LiveAuditError):
+            audit_repository_settings.live_settings("o/r", pages.__getitem__)
 
 
 class TestDependencySynchronization(unittest.TestCase):

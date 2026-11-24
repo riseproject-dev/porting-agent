@@ -64,8 +64,8 @@ safe-outputs:
   # below. The reviewer reads and diffs a patch and runs no reproduction; the
   # custom engine wrapper removes every credential before the model runs, and
   # trusted post-processing keeps its separately scoped tokens. The owner
-  # accepted this posture on 2026-11-24 ("Keep running planner and worker
-  # outside of the sandbox"); the risk is described in
+  # decided on 2026-11-24 that the reviewer will be sandboxed; until a
+  # separate change does so, it runs with the risk described in
   # docs/state-machine/known-gaps.md, "The reviewer runs without the agent
   # sandbox".
   threat-detection: false
@@ -336,8 +336,8 @@ jobs:
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
 timeout-minutes: 45
 max-turns: 150
-# The same sandbox posture as the planner and the worker (see the
-# safe-outputs comment above). The custom engine wrapper above
+# The same sandbox posture as the planner and the worker until the reviewer
+# is sandboxed (see the safe-outputs comment above). The custom engine wrapper above
 # strips and verifies model credentials first.
 strict: false
 features:
