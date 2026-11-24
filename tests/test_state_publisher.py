@@ -246,7 +246,7 @@ class TestStateDiff(unittest.TestCase):
         )
         with patch.object(state, "LEGACY_TEXT_MIGRATIONS", (migration,)):
             written = state.apply_pending_text_migration(
-                self.repo, self.p, now=self.rec["created_at"]
+                self.repo, self.p, now=self.rec["created_at"], run={"id": 77, "attempt": 1}
             )
         self.assertEqual(len(written), 2)
         self.assertIn(path, written)
@@ -256,6 +256,7 @@ class TestStateDiff(unittest.TestCase):
         event = next(iter(events.values()))
         self.assertEqual(event["kind"], "state_text_normalized")
         self.assertEqual(event["cause"], {"type": "migration", "id": migration.migration_id})
+        self.assertEqual(event["run"], {"id": 77, "attempt": 1})
 
     def test_live_observe_reports_exact_pending_migration_without_loading_state(self):
         migration, path, original = self.observe_migration()

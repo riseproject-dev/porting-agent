@@ -3300,7 +3300,8 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     root = Path(args.root) if args.root else repository_root()
     now = datetime.now(timezone.utc)
     try:
-        migrated = state.apply_pending_text_migration(root, policy, now=now.isoformat())
+        migrated = state.apply_pending_text_migration(
+            root, policy, now=now.isoformat(), run=state.run_from_env())
     except state.StateError as error:
         print(f"legacy state text migration refused: {error}", file=sys.stderr)
         return 1
@@ -3330,7 +3331,8 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     # A record the lifecycle table does not describe is migrated in its own
     # state-only commit, before anything reads it as ordinary state.
     try:
-        migrated = state.apply_pending_record_migrations(root, policy, now=now.isoformat())
+        migrated = state.apply_pending_record_migrations(
+            root, policy, now=now.isoformat(), run=state.run_from_env())
     except state.StateError as error:
         print(f"record migration refused: {error}", file=sys.stderr)
         return 1

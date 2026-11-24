@@ -100,6 +100,27 @@ class TestNameMigration(StateCopy):
         self.assertEqual(sorted(written["written"]), MIGRATED)
         self.assertEqual(written["requested_effects"], [])
 
+    def test_migration_events_record_the_workflow_run(self):
+        env = {"GITHUB_RUN_ID": "4242", "GITHUB_RUN_ATTEMPT": "2"}
+        with mock.patch.dict("os.environ", env):
+            state.apply_pending_record_migrations(self.repo, self.p, now=NOW,
+                                                  run=state.run_from_env())
+        for rel in (LIVE_EVENT, PARKED_EVENT):
+            self.assertEqual(self.read(rel)["run"], {"id": 4242, "attempt": 2})
+
+    def test_the_controller_records_its_run_on_migration_events(self):
+        env = {"GITHUB_RUN_ID": "4242", "GITHUB_RUN_ATTEMPT": "1"}
+        with redirect_stderr(io.StringIO()), mock.patch.dict("os.environ", env), \
+                mock.patch("reconcile.datetime") as clock, \
+                mock.patch.object(collect, "Api", side_effect=AssertionError("no API")):
+            clock.now.return_value = datetime.fromisoformat(NOW)
+            clock.fromisoformat = datetime.fromisoformat
+            result = reconcile.cmd_reconcile(SimpleNamespace(
+                root=str(self.repo), report=str(self.repo / "report.json")))
+        self.assertEqual(result, 0)
+        for rel in (LIVE_EVENT, PARKED_EVENT):
+            self.assertEqual(self.read(rel)["run"], {"id": 4242, "attempt": 1})
+
     def test_only_the_names_change(self):
         written = state.apply_pending_record_migrations(self.repo, self.p, now=NOW)
         self.assertEqual(sorted(written), MIGRATED)

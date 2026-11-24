@@ -452,7 +452,8 @@ def pending_text_migrations(root: Path) -> list[LegacyTextMigration]:
     return [migration for migration, _record in _pending_text_migration_records(root)]
 
 
-def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[str]:
+def apply_pending_text_migration(root: Path, policy: dict, *, now: str,
+                                 run: dict | None = None) -> list[str]:
     """Normalize the one reviewed legacy blob and append its migration event.
 
     A matching path with any unexpected content fails closed. When a migration
@@ -465,7 +466,7 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str) -> list[
     if not pending:
         return []
     migration, normalized = pending[0]
-    store = StateStore(root, policy)
+    store = StateStore(root, policy, run=run)
     evidence_path = store.stage("evidence", normalized)
     event_path = store.stage("events", {
         "schema_version": 1,
@@ -747,7 +748,8 @@ def pending_record_migrations(root: Path, policy: dict) -> list[str]:
                    if rel})
 
 
-def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> list[str]:
+def apply_pending_record_migrations(root: Path, policy: dict, *, now: str,
+                                    run: dict | None = None) -> list[str]:
     """Rewrite every record written before the plan rename
     (``migrate_record_names``) or the strict record schema
     (``migrate_record_fields``) and append one migration event per
@@ -760,7 +762,7 @@ def apply_pending_record_migrations(root: Path, policy: dict, *, now: str) -> li
     pending = _pending_record_migrations(root, policy, now=now)
     if not pending:
         return []
-    store = StateStore(Path(root), policy)
+    store = StateStore(Path(root), policy, run=run)
     expected = set()
     for rel, kind, record in pending:
         staged = store.stage(kind, record)
