@@ -247,6 +247,12 @@ def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str |
         # Only a published Result read its head back; the candidate of an
         # uncertain one may not be on the branch.
         if outcome.get("status") != "published":
+            # The confirmed branch operation the row names (a retry rejected
+            # as stale behind the operation of an earlier attempt) was read
+            # back on the branch: its commit is the head the Work left.
+            if operation is not None and operation.get("status") == "confirmed" \
+                    and operation.get("kind") in ("branch_update", "branch_rewrite"):
+                return _sha((operation.get("proposed") or {}).get("commit"))
             return None
         try:
             return reconcile.published_head(outcome)
@@ -266,8 +272,8 @@ def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str |
 def head_candidate(outcome: dict, verb: str, operation: dict | None = None) -> str | None:
     """The commit a publication proposed that the row does not record as
     the head it left: the proposed commit of an open (``applying`` or
-    ``uncertain``) branch operation, of a ``confirmed`` one that a row
-    other than the success row names (a revision retry rejected as stale
+    ``uncertain``) branch operation (a ``confirmed`` one is the head the
+    Work left, ``head_after``, also for a revision retry rejected as stale
     behind the confirmed operation of an earlier attempt), or the candidate
     of an ``uncertain`` Result or of a ``verified`` one (a development patch
     held for its review). It may be on the branch or not; the history

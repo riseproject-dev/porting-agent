@@ -284,6 +284,16 @@ class TestEvidence(unittest.TestCase):
              "e" * 40, None),
             ({"status": "published", "operation": op("confirmed")}, None, None, None),
         ]
+        # The same for a revision retry: its Result is rejected, and the
+        # confirmed operation of the earlier attempt is the head it left.
+        revision = "record_revision_publish_success"
+        stale = {"status": "rejected", "failure_class": "stale"}
+        self.assertEqual((worker_report.head_after(stale, revision, op("confirmed", "e" * 40)),
+                          worker_report.head_candidate(stale, revision, op("confirmed", "e" * 40))),
+                         ("e" * 40, None))
+        self.assertEqual((worker_report.head_after(stale, revision, op("uncertain", "e" * 40)),
+                          worker_report.head_candidate(stale, revision, op("uncertain", "e" * 40))),
+                         (None, "e" * 40))
         for index, (outcome, named, after, candidate) in enumerate(cases):
             row = "request_ci_rerun" if index == len(cases) - 1 else verb
             with self.subTest(case=index):

@@ -1798,12 +1798,18 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 "why": "the failed publication of this publish-only retry was already "
                        "charged when its Result did not arrive within "
                        f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"}
+        # The push of an uncertain retry may have landed: its report is kept
+        # all the same (`late_report_evidence`, which never fails the fold of
+        # the late Result), as the hold of that retry would have kept it.
+        reported = late_report_evidence(
+            rec, dict(outcome, worker_run_id=run), now=now, policy=policy,
+            known=evidence or {}, details=late) if status == "uncertain" else []
         due = _landed_due(rec, landed, late, now=now)
         if due is not None and due != (rec.get("review_comments") or []):
             rec = engine.record_beside(rec, "review_comment_due", now=now, review_comments=due)
         event = engine.record_late_effect(rec, policy=policy, now=now, cause_id=cause,
                                           details=late)
-        return rec, staged + [("contributions", rec), ("events", event)]
+        return rec, staged + reported + [("contributions", rec), ("events", event)]
     landed_due = None
     scope = rec.get("scope_paths")
     if failed:

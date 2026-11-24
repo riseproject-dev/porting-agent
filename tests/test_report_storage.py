@@ -745,6 +745,36 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
         self.assertEqual(events(out.staged)[0]["details"]["report_evidence_id"],
                          evidence["evidence_id"])
 
+    def test_a_late_uncertain_result_of_a_charged_launch_keeps_the_report(self):
+        """The wait for the Result of a publish-only retry charged the
+        launch; the `uncertain` Result arriving later may have pushed, so its
+        report is stored with the commit it proposed, while nothing is
+        charged again."""
+        from datetime import timedelta
+        rec = dev.running()
+        held = dev.final(dev.tick(rec, [dict(publication(rec, "infra_error"),
+                                             publication_artifact_id=1)], observe=False), rec)
+        launched = dev.final(dev.tick(held, observe=False, now=dev.T + timedelta(minutes=20)),
+                             held)
+        lost = dev.final(dev.tick(launched, observe=False, now=dev.T + timedelta(minutes=80)),
+                         launched)
+        self.assertNotIn("launched_at", lost["pending_publication"])
+        late = dict(with_report(rec, dev.uncertain(lost, dev.branch_operation(lost))),
+                    publication_artifact_id=2)
+        out = dev.tick(lost, [late], observe=False, now=dev.T + timedelta(minutes=90))
+        self.assertEqual(dev.kinds(out), ["record_late_effect"])
+        self.assertEqual(dev.final(out, lost)["pending_publication"], lost["pending_publication"])
+        [evidence] = stored(out.staged)
+        self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_after"],
+                          evidence["data"]["head_candidate"]),
+                         ("record_late_effect", None, SHA_B))
+        self.assertEqual(events(out.staged)[0]["details"]["report_evidence_id"],
+                         evidence["evidence_id"])
+        # A Result that published nothing stores nothing.
+        none = dict(with_report(rec, publication(lost, "infra_error")), publication_artifact_id=3)
+        out = dev.tick(lost, [none], observe=False, now=dev.T + timedelta(minutes=90))
+        self.assertEqual(stored(out.staged), [])
+
     def test_a_report_that_cannot_be_stored_at_the_hold_pauses(self):
         """Like a success row: the gate accepted the Result with its report,
         so a report the reconciler cannot store pauses the contribution
@@ -856,9 +886,11 @@ class TestHeldRevisionReport(unittest.TestCase):
                       pr=up.pull(head=SHA_B), branch=SHA_B)
         self.assertEqual(up.kinds(out)[:1], ["reject_patch_proposal"])
         [evidence] = stored(out.staged)
+        # The operation was read back on the branch: the commit is the head
+        # the Work left, not a candidate that may not be there.
         self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_after"],
-                          evidence["data"]["head_candidate"]),
-                         ("reject_patch_proposal", None, SHA_B))
+                          evidence["data"].get("head_candidate")),
+                         ("reject_patch_proposal", SHA_B, None))
 
 
 if __name__ == "__main__":
