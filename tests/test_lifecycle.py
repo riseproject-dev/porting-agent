@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Section 21: lifecycle, pause/park, handoff and revision rules."""
 
+import re
 import unittest
 
 import commands
@@ -277,6 +278,13 @@ class TestRestartGeneration(unittest.TestCase):
         self.assertIn(commands.REFRESH_FORM, out.reason)
         self.assertEqual(out.record, parked)
         self.assertIsNone(out.event)
+
+    def test_a_resume_that_names_an_override_is_rejected_when_parsed(self):
+        for name in ("class", "paths"):
+            with self.subTest(field=name), \
+                    self.assertRaisesRegex(commands.CommandError,
+                                           re.escape(commands.MOVED_FIELDS[("resume", name)])):
+                commands.parse(f'/upstreaming resume revision=8 {name}=a reason=r')
 
     def test_a_resume_in_paused_parked_only_ends_the_pause(self):
         parked = self.parked(paused=True, paused_at=NOW, paused_by="human", proposal_artifact=None)

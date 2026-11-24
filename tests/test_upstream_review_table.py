@@ -445,6 +445,55 @@ class TestRevisionResults(unittest.TestCase):
         self.assertIsNone(out.record["active_work"])
 
 
+    def waiting(self, kind):
+        return record("waiting_human", pending_feedback_evidence_ids=["review-1"],
+                      pending_human_action={"kind": kind, "requested_at": NOW,
+                                            "reminded_at": None, "escalated_at": None,
+                                            "counter": None})
+
+    def resumed(self, rec):
+        body = f'/upstreaming resume revision={rec["revision"]} reason="answered"'
+        return tick(rec, comments=[{"issue_number": 12, "comment": {
+            "id": 903, "body": body, "user": dict(OWNER)}}])
+
+    def test_the_resume_after_an_answered_reviewer_clears_the_feedback(self):
+        """`resume_upstream_review` is the one resume that clears the
+        pending feedback: a human answered it, so no revision Work carries
+        it again; the review stays fenced, so nothing is requested next."""
+        rec = dict(self.waiting("answer_reviewer"), processed_review_ids=[77])
+        out = self.resumed(rec)
+        self.assertEqual(kinds(out), ["resume_upstream_review"])
+        after = final(out, rec)
+        self.assertEqual((engine.state_key(after), after["revision"],
+                          after["pending_feedback_evidence_ids"], after["active_work"]),
+                         ("upstream_review.waiting_ci", rec["revision"] + 1, [], None))
+        # The review stays fenced, so the collector reads nothing new and no
+        # Work is requested for it.
+        self.assertEqual(after["processed_review_ids"], [77])
+        again = tick(after, capacity_ok=True)
+        self.assertEqual(kinds(again), [])
+        self.assertEqual(engine.state_key(final(again, after)), "upstream_review.waiting_ci")
+
+    def test_a_resume_that_requests_work_again_keeps_the_feedback(self):
+        rec = self.waiting("work_failed")
+        out = self.resumed(rec)
+        self.assertEqual(kinds(out), ["resume_upstream_revision"])
+        after = final(out, rec)
+        self.assertEqual((engine.state_key(after), after["pending_feedback_evidence_ids"]),
+                         ("upstream_review.fix_needed", ["review-1"]))
+        work = final(tick(after, capacity_ok=True), after)
+        self.assertEqual(work["active_work"]["task"], "upstream_revision")
+        self.assertEqual(work["active_work"]["feedback_evidence_ids"], ["review-1"])
+
+    def test_only_published_results_and_the_answered_review_clear_feedback(self):
+        self.assertEqual(lifecycle.check_table(POLICY), [])
+        self.assertEqual(lifecycle.FEEDBACK_ANSWERED_BY, ("resume_upstream_review",))
+        clearing = {e.verb for e in lifecycle.table_edges()
+                    if "pending_feedback_evidence_ids" in e.transition.effects.clears}
+        resumes = {verb for verb in clearing if verb.startswith("resume")}
+        self.assertEqual(resumes, {"resume_upstream_review"})
+
+
 class TestRevisionWork(unittest.TestCase):
     """Revision Work is allocated and exhausted by the rows of
     `upstream_review.fix_needed`; nothing parks without a command."""

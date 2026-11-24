@@ -1944,9 +1944,10 @@ LIFECYCLE: dict[str, State] = {
                  pending_is("pr_closed_unmerged", "answer_reviewer", "upstream_head_changed"),
                  "for pr_closed_unmerged, the upstream PR is observed open again"),
                 _E(revision="bump", clears=("pending_human_action", "pending_feedback_evidence_ids")),
-                description="No revision Work is requested. The pending feedback is cleared when "
-                            "the pending action is `answer_reviewer`, because a human answered "
-                            "it; the other two pending actions hold none."),
+                description="No revision Work is requested. The pending feedback is cleared: "
+                            "after `answer_reviewer` a human answered it, and this is the one "
+                            "resume that clears feedback; the other two pending actions are "
+                            "entered from `upstream_review.waiting_ci`, which holds none."),
             ("rearm_dispatch", "upstream_review.fix_needed"): _REARM_DISPATCH,
             ("resume_upstream_revision", "upstream_review.fix_needed"): Transition(
                 _C, RESUME,
@@ -1997,7 +1998,9 @@ LIFECYCLE: dict[str, State] = {
                    sets=("admission_override", "upstream.base_ref")),
                 description="Starts a clean generation that runs complete planning; "
                             "identity, events, evidence, and replay fences are kept. An optional "
-                            "class, paths, and reason are stored as `admission_override`. "
+                            "class and paths, given together, are stored with the reason as "
+                            "`admission_override`; a refresh that names only one of them is "
+                            "refused and changes nothing. "
                             "`upstream.base_ref` is the optional `branch` of the command, else "
                             "the target branch the request asked for at intake, else none (the "
                             "upstream default branch is bound). Accepted while paused."),
@@ -2054,7 +2057,10 @@ RULES: dict[str, Rule] = {
             _E(sets=("pending_human_action.reminded_at",)),
             description="Posts an append-only reminder of the pending human step. In "
                         "`handoff.waiting_upstream_pr` the reminder text carries the package "
-                        "link and the exact head, and states when an observed PR does not match."),
+                        "link and the exact head, and states when an observed PR does not match. "
+                        "Days are whole days from the exact time of the request or of the last "
+                        "reminder; a day counts when it ends on a weekday (UTC). A reminder that "
+                        "came due during a pause is posted after the resume, in the same tick."),
         "every state of kind `gate`, `human_wait`, or `locked`",
         kinds=REMINDER_KINDS),
     "record_source_unavailable": Rule(
@@ -2317,7 +2323,11 @@ FLAGS: dict[str, Flag] = {
                 _E(work="clear", sets=("paused", "paused_at",
                                        "paused_reason=upstream_identity_changed",
                                        "paused_by=controller"),
-                  clears=_HELD)),
+                  clears=_HELD),
+                description="A contribution that is already paused is not paused again: the "
+                            "change sets nothing, so the flag keeps its reason and who set it; "
+                            "no Work is selected while the identity differs, and the first "
+                            "tick after the resume takes this row."),
             "pause_on_processing_error": Transition(
                 _K, None,
                 (NOT_PAUSED, "not terminal", PROCESSING_ERROR),

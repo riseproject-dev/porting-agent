@@ -74,6 +74,9 @@ def render(receipt: dict, original: dict) -> str:
     if reason == "not paused" and verb == "resume":
         text += "\n\n**No action is needed:** the contribution is already active."
         return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
+    if reason == commands.ENDED_RESUME:
+        text += "\n\n**Nothing was changed.**"
+        return text + f"\n\n<!-- upstreaming-command-feedback:{receipt['comment_id']} -->"
     if reason in engine.HELD_COMMANDS.values():
         text += ("\n\n**Nothing was changed.** The command was well-formed; no other form of it "
                  "is accepted.")

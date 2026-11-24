@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import ci_evidence
@@ -310,8 +310,16 @@ def _flag_not_stale(ctx: Context) -> str | None:
     return _not_stale(ctx)
 
 
+def _utc(t: datetime) -> datetime:
+    """``t`` in UTC; a naive value is read as UTC."""
+    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t.astimezone(timezone.utc)
+
+
 def business_days_between(start: datetime, end: datetime) -> int:
-    """Whole business days (Monday to Friday) elapsed from ``start`` to ``end``."""
+    """Whole business days (Monday to Friday) elapsed from ``start`` to
+    ``end``: a day counts when it ends on a weekday (UTC). Both are read in
+    UTC, whatever offset they carry."""
+    start, end = _utc(start), _utc(end)
     days, t = 0, start
     while t + timedelta(days=1) <= end:
         t += timedelta(days=1)

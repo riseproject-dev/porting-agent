@@ -149,6 +149,22 @@ class TestCommandsByTheTable(unittest.TestCase):
         record = table_record("development.waiting_ci")
         resume = apply_command(record, commands.parse('/upstreaming resume revision=0 reason="x"'))
         self.assertEqual(resume.reason, "not paused")
+        # A resume of a contribution that is not paused: `not paused` in
+        # every state that is not a human wait, the refresh form in
+        # `parked.idle`, and in an ended contribution that nothing resumes it.
+        for state, spec in lc.LIFECYCLE.items():
+            if spec.kind == "human_wait":
+                continue
+            rec = table_record(state)
+            with self.subTest(state=state):
+                out = apply_command(rec, commands.parse(
+                    f'/upstreaming resume revision={rec["revision"]} reason="x"'))
+                self.assertFalse(out.accepted)
+                expected = {"generation_end": commands.PARKED_RESUME,
+                            "terminal": commands.ENDED_RESUME}.get(spec.kind, "not paused")
+                self.assertEqual(out.reason, expected)
+        self.assertEqual({k for k, spec in lc.LIFECYCLE.items() if spec.kind == "terminal"},
+                         {"closed.idle", "released.idle"})
         paused = apply_command(record, commands.parse("/upstreaming pause")).record
         again = apply_command(paused, commands.parse("/upstreaming pause"))
         self.assertEqual(again.reason, "already paused")
@@ -254,6 +270,30 @@ class TestStaleResume(unittest.TestCase):
                      "pending_human_action"):
             self.assertEqual(out.record[name], record[name])
 
+    def test_a_stale_resume_without_a_fork_records_a_provisioning_refresh(self):
+        record = table_record("provisioning.waiting_human", paused=True)
+        self.assertIsNone(record["fork"])
+        stale = self.resume(record, self.LATER)
+        self.assertEqual(stale.event["kind"], "resume_stale")
+        refresh = stale.record["refresh"]
+        self.assertEqual((refresh["from_phase"], refresh["head_sha"], refresh["pr_number"]),
+                         ("provisioning", None, None))
+        self.assertEqual(refresh["reason"], "long stop")
+
+    def test_a_refreshed_plan_whose_development_pr_changed_is_admitted_afresh(self):
+        stale = self.resume(table_record("development.waiting_ci", paused=True),
+                            self.LATER).record
+        self.assertIsNotNone(stale["refresh"]["head_sha"])
+        fork = dict(stale["fork"], pr_number=(stale["fork"]["pr_number"] or 0) + 5)
+        rec = dict(stale, phase="planning", activity="agent_running", fork=fork,
+                   active_work=dict(WORK, task="planning"))
+        new, staged = reconcile.apply_publication(
+            rec, {"status": "planning", "plan": plan("develop")},
+            now=NOW, policy=policy(), worker_run_id="7")
+        self.assertEqual([e["kind"] for k, e in staged if k == "events"], ["admit_development"])
+        self.assertEqual(engine.state_key(new), "provisioning.idle")
+        self.assertIsNone(new["refresh"])
+
     def test_a_refreshed_plan_without_a_development_pr_is_admitted_afresh(self):
         stale = self.resume(table_record("provisioning.idle", paused=True), self.LATER).record
         rec = dict(stale, phase="planning", activity="agent_running",
@@ -292,6 +332,83 @@ class TestReminders(unittest.TestCase):
         # Paused, no reminder.
         paused = dict(record, paused=True, paused_at=NOW, paused_by="human")
         self.assertEqual(self.ticks(paused, "2026-12-30T10:00:00+00:00")[1], [])
+
+    def test_a_request_on_a_weekend_counts_from_monday(self):
+        record = table_record("development.waiting_human", pending="work_failed")
+        # Saturday, Sunday, and a Friday evening at -05:00 that is a Saturday
+        # in UTC: the days ending on Monday, Tuesday, and Wednesday count.
+        for requested, due in (("2026-11-21T10:00:00+00:00", "2026-11-25T10:00:00+00:00"),
+                               ("2026-11-22T10:00:00+00:00", "2026-11-25T10:00:00+00:00"),
+                               ("2026-11-20T23:30:00-05:00", "2026-11-25T04:30:00+00:00")):
+            rec = copy.deepcopy(record)
+            rec["pending_human_action"]["requested_at"] = requested
+            just_before = (datetime.fromisoformat(due) - timedelta(seconds=1)).isoformat()
+            with self.subTest(requested=requested):
+                self.assertEqual(self.ticks(rec, just_before)[1], [])
+                self.assertEqual([e["kind"] for e in self.ticks(rec, due)[1]],
+                                 ["record_reminder"])
+
+    def test_business_days_are_counted_in_utc(self):
+        def days(start, end):
+            return engine.business_days_between(datetime.fromisoformat(start),
+                                                datetime.fromisoformat(end))
+        self.assertEqual(days("2026-11-21T10:00:00+00:00", "2026-11-23T10:00:00+00:00"), 1)
+        self.assertEqual(days("2026-11-22T10:00:00+00:00", "2026-11-23T10:00:00+00:00"), 1)
+        # Friday 23:30 at -05:00 is Saturday 04:30 UTC: Sunday does not count.
+        self.assertEqual(days("2026-11-20T23:30:00-05:00", "2026-11-22T04:30:00+00:00"), 0)
+        self.assertEqual(days("2026-11-20T23:30:00-05:00", "2026-11-23T04:30:00+00:00"), 1)
+        # The same instant written at another offset counts the same.
+        self.assertEqual(days("2026-11-21T04:30:00+00:00", "2026-11-25T04:30:00+00:00"),
+                         days("2026-11-20T23:30:00-05:00", "2026-11-24T23:30:00-05:00"))
+        # A naive time is read as UTC.
+        self.assertEqual(days("2026-11-21T10:00:00", "2026-11-23T10:00:00+00:00"), 1)
+
+    def resume_tick(self, record, now):
+        resume = {"issue_number": record["tracking_issue"]["number"], "comment": {
+            "id": 7, "body": f'/upstreaming resume revision={record["revision"]} reason="back"',
+            "user": dict(OWNER)}}
+        output = reconcile.tick(None, reconcile.Snapshot({"c": copy.deepcopy(record)}, {}, {}, {},
+                                                         {}),
+                                policy=POLICY, now=datetime.fromisoformat(now), publications=[],
+                                comments=[resume],
+                                pressure=reconcile.capacity.Pressure(ok=False, reason="none"),
+                                observe=False, dispatcher_runs=[], queue_works={})
+        return final(output, record), events(output)
+
+    def test_a_reminder_due_during_a_pause_is_posted_after_the_resume(self):
+        """The interval keeps running during a pause: nothing is posted while
+        paused, and a reminder that came due is posted in the tick that ends
+        the pause, after the resume, naming the new revision; the next one
+        is due a full interval after it."""
+        for state, pending in (("handoff.awaiting_submission", None),
+                               ("upstream_review.waiting_human", "answer_reviewer")):
+            record = table_record(state, paused=True, pending=pending)
+            record["pending_human_action"]["requested_at"] = "2026-11-02T10:00:00+00:00"
+            with self.subTest(state=state):
+                for now in ("2026-11-10T10:00:00+00:00", "2026-11-20T10:00:00+00:00"):
+                    self.assertEqual(self.ticks(record, now)[1], [])
+                after, evs = self.resume_tick(record, "2026-11-20T10:00:00+00:00")
+                self.assertEqual([e["kind"] for e in evs], ["resume_pause", "record_reminder"])
+                self.assertEqual(after["revision"], record["revision"] + 1)
+                self.assertEqual(evs[1]["cause"]["id"], f"reminder-{record['revision'] + 1}")
+                if state == "handoff.awaiting_submission":
+                    self.assertEqual(evs[1]["details"]["bound_to"]["revision"],
+                                     record["revision"] + 1)
+                self.assertEqual(after["pending_human_action"]["reminded_at"],
+                                 "2026-11-20T10:00:00+00:00")
+                # Monday, Tuesday, Wednesday after Friday's reminder.
+                self.assertEqual(self.ticks(after, "2026-11-25T09:59:59+00:00")[1], [])
+                self.assertEqual([e["kind"] for e in
+                                  self.ticks(after, "2026-11-25T10:00:00+00:00")[1]],
+                                 ["record_reminder"])
+
+    def test_a_stale_resume_of_a_development_wait_posts_no_reminder(self):
+        record = table_record("development.waiting_human", paused=True, pending="work_failed")
+        record["pending_human_action"]["requested_at"] = "2026-11-02T10:00:00+00:00"
+        after, evs = self.resume_tick(record, "2026-12-01T10:00:00+00:00")
+        self.assertEqual([e["kind"] for e in evs][:1], ["resume_stale"])
+        self.assertNotIn("record_reminder", [e["kind"] for e in evs])
+        self.assertIsNone(after["pending_human_action"])
 
     def test_every_reminder_state_and_no_other(self):
         states = set(lc.rule_states("record_reminder"))
@@ -363,11 +480,11 @@ class TestControllerStops(unittest.TestCase):
         return {"example/proj": {"repository_id": upstream_id, "base_ref": "main",
                                  "base_sha": "c" * 40}}
 
-    def identity_tick(self, record):
+    def identity_tick(self, record, comments=()):
         result = controller.tick(
             contributions={"c": copy.deepcopy(record)}, operations={}, consumed={}, projects={},
             policy=POLICY, inputs=controller.Inputs(
-                now=datetime.fromisoformat(NOW), issues=[], comments=[],
+                now=datetime.fromisoformat(NOW), issues=[], comments=list(comments),
                 pressure=reconcile.capacity.Pressure(ok=True),
                 upstream_snapshots=self.snapshot()))
         return result
@@ -386,6 +503,33 @@ class TestControllerStops(unittest.TestCase):
         self.assertEqual(result.requested_effects, [])
         # Already paused: nothing again.
         self.assertEqual(self.identity_tick(paused).staged, [])
+
+    def test_an_identity_change_while_paused_by_a_human_waits_for_the_resume(self):
+        """An identity change observed while the contribution is paused sets
+        nothing: the human's pause keeps its reason. The tick that consumes
+        the resume selects no Work while the identity differs, and the next
+        tick pauses it again for the identity change."""
+        record = contribution(phase="development", activity="fix_needed", paused=True,
+                              paused_at=NOW, paused_by="human", paused_reason="hold")
+        held = self.identity_tick(record)
+        self.assertEqual((held.staged, held.requested_effects), ([], []))
+        resume = {"issue_number": record["tracking_issue"]["number"], "comment": {
+            "id": 5, "body": f'/upstreaming resume revision={record["revision"]} reason="go"',
+            "user": dict(OWNER)}}
+        result = self.identity_tick(record, comments=[resume])
+        self.assertEqual([e["kind"] for k, e in result.staged if k == "events"],
+                         ["resume_pause"])
+        self.assertEqual(result.requested_effects, [])
+        resumed = [r for k, r in result.staged if k == "contributions"][-1]
+        self.assertEqual((engine.state_key(resumed), resumed["paused"], resumed["active_work"]),
+                         ("development.fix_needed", False, None))
+        result = self.identity_tick(resumed)
+        self.assertEqual([e["kind"] for k, e in result.staged if k == "events"],
+                         ["pause_on_identity_change"])
+        paused = [r for k, r in result.staged if k == "contributions"][-1]
+        self.assertEqual((paused["paused_by"], paused["paused_reason"]),
+                         ("controller", "upstream_identity_changed"))
+        self.assertEqual(result.requested_effects, [])
 
     def test_identity_change_in_upstream_review(self):
         record = contribution(phase="upstream_review", activity="agent_running",

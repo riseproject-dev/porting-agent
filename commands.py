@@ -92,6 +92,10 @@ PARKED_RESUME = ("`/upstreaming resume` does not apply in `parked.idle`: a new g
                  f"starts with `{REFRESH_FORM}`, `class=` and `paths=` on it record an "
                  f"admission override, and `branch=` names another upstream target branch: "
                  f"`{BRANCH_FORM}`")
+# The reply to a resume of a contribution that has ended (`closed.idle`,
+# `released.idle`) and is not paused: there is nothing to resume.
+ENDED_RESUME = ("`/upstreaming resume` does not apply: the contribution has ended, and no "
+                "command resumes it")
 # Fields that moved from one command to another, with the reply that names
 # where they are given now.
 MOVED_FIELDS: dict[tuple[str, str], str] = {

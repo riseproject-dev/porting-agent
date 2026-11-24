@@ -71,6 +71,21 @@ class TestCommandFeedback(unittest.TestCase):
         self.assertIn("**Expected form:**\n```text\n/upstreaming refresh revision=3 "
                       "class=configuration_integration", body)
 
+    def test_a_resume_of_an_ended_contribution_changes_nothing(self):
+        import commands
+        receipt = {"comment_id": 42, "actor": {"login": "luhenry"}, "verb": "resume",
+                   "reason": commands.ENDED_RESUME, "revision": 3}
+        body = command_feedback.render(receipt, {"body": '/upstreaming resume revision=3 reason=r',
+                                                 "user": {"login": "luhenry"}})
+        self.assertIn("the contribution has ended", body)
+        self.assertIn("**Nothing was changed.**", body)
+        self.assertNotIn("Expected form", body)
+        self.assertNotIn("already active", body)
+        active = command_feedback.render(dict(receipt, reason="not paused"),
+                                         {"body": '/upstreaming resume revision=3 reason=r',
+                                          "user": {"login": "luhenry"}})
+        self.assertIn("the contribution is already active", active)
+
     def test_repeated_pause_explains_that_pause_remains_effective(self):
         receipt = {"comment_id": 42, "actor": {"login": "luhenry"}, "verb": "pause",
                    "reason": "already paused", "revision": 8}

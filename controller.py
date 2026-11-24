@@ -1802,6 +1802,8 @@ def _refusal(record: dict, cmd: Command, why: str, open_ops: tuple[str, ...] = (
     if cmd.verb == "resume" and not record.get("paused") and state is not None:
         if state.kind == "generation_end":
             return commands.PARKED_RESUME
+        if state.kind == "terminal":
+            return commands.ENDED_RESUME
         if state.kind != "human_wait":
             return "not paused"
     if cmd.verb in FENCED_COMMANDS and open_ops \

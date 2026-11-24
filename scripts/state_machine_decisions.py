@@ -1112,6 +1112,50 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("planning.agent_running", "readmit_development"),
                      ("planning.agent_running", "reject_plan")),
     ),
+    Item(
+        "An identity change while paused",
+        "What an upstream identity change observed while the contribution is already paused "
+        "does, given that `pause_on_identity_change` is guarded by `not paused`.",
+        "Nothing is set: the pause keeps its reason and who set it, a human or the "
+        "controller. No Work is selected for the contribution while the identity differs, "
+        "also in the tick that consumes its resume, so a resume never lets Work run against "
+        "another repository; the first tick after the resume takes `pause_on_identity_change`, "
+        "with `paused_by` `controller` and `paused_reason` `upstream_identity_changed`. No "
+        "row, state, or record field changes.",
+        ("development.waiting_ci", "development.waiting_ci+paused"),
+        edges=(("development.waiting_ci", "pause_on_identity_change"),
+               ("development.waiting_ci+paused", "resume_pause")),
+        highlighted=(("development.waiting_ci", "pause_on_identity_change"),),
+    ),
+    Item(
+        "Reminders across a pause",
+        "How the reminder interval is counted, and what a pause does to it.",
+        "The interval is counted in whole business days from the exact time of the request "
+        "or of the last reminder; a day counts when it ends on a weekday in UTC, whatever "
+        "offset the times carry, and every pending action of a state of kind `gate`, "
+        "`human_wait`, or `locked` gets reminders. A pause posts nothing but does not restart "
+        "the interval: a reminder that came due during the pause is posted in the tick that "
+        "ends it, after the resume, and names the new revision; the next one is due a full "
+        "interval after it. A stale resume clears the pending action, so no reminder follows "
+        "it. No row, state, or record field changes.",
+        ("handoff.awaiting_submission",),
+        edges=(("handoff.awaiting_submission", "record_reminder"),),
+        highlighted=(("handoff.awaiting_submission", "record_reminder"),),
+    ),
+    Item(
+        "A resume with nothing to resume",
+        "What `/upstreaming resume` answers on a contribution that is not paused and not in "
+        "a human wait.",
+        "`not paused` in every state that is not a human wait, `parked.idle`, or an end "
+        "state, the submission gate and the locked upstream-PR wait among them. In "
+        "`parked.idle` the reply gives the refresh form that starts a new generation. In "
+        "`closed.idle` and `released.idle` the reply states that the contribution has ended "
+        "and no command resumes it, and that nothing was changed, instead of calling an ended "
+        "contribution active. No row, state, or record field changes.",
+        ("parked.idle", "closed.idle"),
+        edges=(("parked.idle", "abandon"),),
+        highlighted=(("parked.idle", "abandon"),),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
@@ -1288,8 +1332,11 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "Where the resume leads when the pending action was to answer the reviewer.",
         "Two verbs. `resume_upstream_review` leads to `upstream_review.waiting_ci` when the "
         "pending action is `pr_closed_unmerged` (the PR is observed open again), "
-        "`answer_reviewer`, or `upstream_head_changed`; after `answer_reviewer` it clears the "
-        "pending feedback. `resume_upstream_revision` leads to `upstream_review.fix_needed` "
+        "`answer_reviewer`, or `upstream_head_changed`, and clears the pending feedback: "
+        "every resume that requests Work again keeps the pending feedback; "
+        "`resume_upstream_review` is the one resume that clears it, because a human answered "
+        "it (the other two pending actions are entered from `upstream_review.waiting_ci`, "
+        "which holds none). `resume_upstream_revision` leads to `upstream_review.fix_needed` "
         "only when revision Work failed: dispatch, Work, publication, or budget exhaustion. "
         "`record_upstream_ci_failure` fires once per head and CI run, so the failure that was "
         "answered does not request a revision again.",
@@ -1434,9 +1481,10 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`active_work.feedback_evidence_ids`. `record_publish_success` clears exactly those "
         "ids, and `record_revision_publish_success` does the same in upstream review; feedback "
         "recorded while the Work ran stays pending. `reject_patch_proposal`, "
-        "`replan_development`, `record_head_change`, every resume that requests Work again, and both refresh verbs "
-        "keep the pending feedback; `resume_upstream_review` still clears it after a human "
-        "answered the reviewer. A fresh Work graph and a publish retry carry the same ids. Work "
+        "`replan_development`, `record_head_change`, and both refresh verbs keep the pending "
+        "feedback, and every resume that requests Work again keeps the pending feedback; "
+        "`resume_upstream_review` is the one resume that clears it, because a human answered "
+        "it. A fresh Work graph and a publish retry carry the same ids. Work "
         "that carries feedback cannot take `request_ci_rerun`: that outcome counts as "
         "`reject_patch_proposal`. The check verifies each of these.",
         ("development.fix_needed", "development.agent_running", "development.waiting_ci"),
