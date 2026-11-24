@@ -39,10 +39,12 @@ import collect
 import controller
 import dev_pr
 import engine
+import fork_publish
 import handoff
 import isolation
 import lifecycle
 import observe_ci
+import patch_review
 import plan_gate
 import provisioning
 import queue_policy as queue_policy_facts
@@ -603,7 +605,8 @@ def _holds_dispatched_work(rec: dict) -> bool:
 
 # The phase in which the table requests Work of each task.
 WORK_PHASE = {"planning": "planning", "development_patch": "development",
-              "development_repair": "development", "upstream_revision": "upstream_review",
+              "development_repair": "development", patch_review.TASK: "development",
+              "upstream_revision": "upstream_review",
               work.SUBMISSION_REWRITE: "handoff", work.SUBMISSION_REVIEW: "handoff"}
 # The states of the handoff phase that hold requested Work: the rewrite and
 # the review of the submission.
@@ -620,7 +623,9 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     A Result is folded only when it matches the Work identity: the current
     generation and revision of the record, and the requested Work, which is
     the Work the record holds (its Work id), or the held Result of the same
-    worker run (a publish-only retry). Everything else takes
+    worker run (a publish-only retry). In ``development.publishing`` the
+    held patch pins the Result instead: the worker run, the Work, and the
+    revision it names. Everything else takes
     ``record_late_effect``. Park, abandon, and
     pause clear the Work and the pending publication, so a matching revision
     alone does not prove a match.
@@ -651,15 +656,30 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if generation != current:
         return f"late Result of generation {generation}, current is {current}"
     revision = task.get("revision")
-    if revision != rec["revision"]:
-        return f"late Result of revision {revision}, current is {rec['revision']}"
     run = str(pub.get("worker_run_id"))
+    pinned = state == lifecycle.PUBLISHING and revision == (rec.get("held_patch") or {}).get(
+        "revision")
+    if revision != rec["revision"] and not pinned:
+        return f"late Result of revision {revision}, current is {rec['revision']}"
     if (pub.get("status") == "planning") != (rec["phase"] == "planning"):
         # A plan answers planning Work only, and planning Work
         # is answered by a plan only.
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
     if pub.get("status") == submission.STATUS and rec["phase"] != "handoff":
         return f"late Result: a submission review has no row in the {rec['phase']} phase"
+    if pub.get("status") == patch_review.STATUS and state != "development.reviewing":
+        # A review of a held patch answers its review Work only.
+        return f"late Result: a review of a held patch has no row in {state}"
+    if state == lifecycle.PUBLISHING:
+        # The publication of the held patch: the Result of the worker run
+        # the held patch pins, of the Work and revision it names, whatever
+        # revisions its review took since.
+        held = rec.get("held_patch") or {}
+        if held and rec.get("pending_publication") and run == held.get("worker_run_id") \
+                and key == held.get("work") and revision == held.get("revision") \
+                and pub.get("status") != "planning":
+            return None
+        return "late Result: not the publication of the held patch"
     requested = rec.get("active_work")
     if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
         # Each phase requests its own Work only: a Result of Work of another
@@ -1133,6 +1153,88 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
                         ("contributions", out.record)]
 
 
+def _patch_review_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str | None:
+    """Why the trusted outcome of a review of the held patch is unusable, or
+    ``None``: it must review exactly the patch the record holds."""
+    if outcome.get("status") != patch_review.STATUS:
+        return (f"the review Result is not usable: {outcome.get('status')}: "
+                f"{outcome.get('reason') or ''}")
+    held = rec.get("held_patch") or {}
+    if not held or outcome.get("patch_digest") != held.get("patch_digest") \
+            or outcome.get("candidate") != held.get("candidate"):
+        return "the outcome does not review the patch the record holds"
+    if outcome.get("verdict") not in (patch_review.PASS, patch_review.FAIL) \
+            or not isinstance(outcome.get("findings"), list) \
+            or patch_review.derived_verdict(outcome["findings"]) != outcome["verdict"] \
+            or not isinstance(outcome.get("summary"), str):
+        return "the outcome's verdict or findings are malformed"
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", str(worker_run_id or "")):
+        return "the outcome names no reviewer run"
+    return None
+
+
+def fold_patch_review(rec: dict, outcome: dict, *, now: str, policy: dict,
+                      worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
+    """Fold the Result of the review Work of a held patch through the rows of
+    ``development.reviewing``.
+
+    The reviewer's publish job checked the review without a token
+    (``patch_review.check``): it reviews exactly the held patch, and its
+    verdict is derived from its findings. Every usable review is stored as
+    ``patch_review`` evidence, which the history of every later Work and
+    review carries. A pass takes ``accept_patch_review``: the held patch is
+    pending publication at once, with the feedback its Work carried. A fail
+    takes ``reject_patch_review`` while ``dev_reviews`` remains: the review
+    becomes pending feedback of the next development Work and the held
+    patch is discarded; once ``dev_reviews`` is exhausted it takes
+    ``publish_after_failed_reviews``: the held patch is published anyway and
+    the pending publication names the review, which trusted code posts on
+    the development PR once the patch is published. A review that is not
+    usable is Work without a usable Result."""
+    why = _patch_review_problem(rec, outcome, worker_run_id)
+    if why:
+        return _unusable_submission_result(rec, why, now=now, policy=policy)
+    held = rec["held_patch"]
+    run = str(worker_run_id)
+    cause = _result_cause(outcome, worker_run_id)
+    passed = outcome["verdict"] == patch_review.PASS
+    rejections = int(rec["budget"].get("review_rejections", 0))
+    if passed:
+        verb, facts, disposition = "accept_patch_review", {"patch_review_passed"}, "publish"
+    else:
+        facts = {"patch_review_failed"}
+        verb = ("reject_patch_review" if engine.refusal(
+            rec, "reject_patch_review", policy=policy, now=now, facts=facts) is None
+            else "publish_after_failed_reviews")
+        disposition = "return_for_repair" if verb == "reject_patch_review" else "publish_anyway"
+        rejections += 1
+    review = patch_review.evidence(rec, outcome, now=now, policy=policy, run=run,
+                                   disposition=disposition,
+                                   rejections=0 if passed else rejections)
+    eid = review["evidence_id"]
+    blocking = [f for f in outcome["findings"] if f.get("severity") in patch_review.BLOCKING]
+    details = {"evidence_id": eid, "verdict": outcome["verdict"], "disposition": disposition,
+               "candidate": held.get("candidate"),
+               "findings": [isolation.clean_text(f"{f['severity']}: {f['title']}", 300)
+                            for f in (blocking or outcome["findings"])[:8]]}
+    if verb == "reject_patch_review":
+        pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
+        values: dict[str, Any] = {"pending_feedback_evidence_ids": pending[-64:]}
+    else:
+        values = {"pending_publication": {
+            "worker_run_id": held["worker_run_id"], "attempts": 0, "last_reason": "",
+            "next_attempt_at": now,
+            "feedback_evidence_ids": list(held.get("feedback_evidence_ids") or []),
+            "patch_review": {"evidence_id": eid, "verdict": outcome["verdict"],
+                             "published_anyway": verb == "publish_after_failed_reviews"}}}
+    out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
+                                  facts=facts, values=values, details=details)
+    if not out.accepted:
+        raise lifecycle.TransitionError(f"{verb} refused: {out.reason}")
+    return out.record, [("evidence", review), ("events", out.event),
+                        ("contributions", out.record)]
+
+
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None, evidence: dict | None = None,
                       pypi=None, operations: dict[str, dict] | None = None
@@ -1142,6 +1244,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     * planning Work: the plan decides, by the table (``fold_plan``);
     * the submission rewrite and review Work: their trusted checks decide
       (``fold_submission_rewrite``, ``fold_submission_review``);
+    * the review Work of a held development patch: its trusted check
+      decides (``fold_patch_review``);
     * patch Work in development and revision Work in upstream review: the
       table's rows (``fold_patch_result``).
 
@@ -1159,6 +1263,9 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if engine.state_key(rec) == SUBMISSION_REVIEW_STATE:
         return fold_submission_review(rec, outcome, now=now, policy=policy or {},
                                       worker_run_id=worker_run_id, evidence=evidence)
+    if engine.state_key(rec) == "development.reviewing":
+        return fold_patch_review(rec, outcome, now=now, policy=policy or {},
+                                 worker_run_id=worker_run_id)
     return fold_patch_result(rec, outcome, now=now, policy=policy or {},
                              worker_run_id=worker_run_id, operations=operations)
 
@@ -1172,13 +1279,15 @@ _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_i
 # (`pushed_report_evidence`); the report of any other fold is discarded
 # with the artifact.
 REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_success",
+                          "hold_patch_for_review",
                           "accept_submission_rewrite", "accept_submission_review",
                           "request_ci_rerun", "require_reviewer_answer"})
 
 
 def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: dict,
                     run: str | None, details: dict,
-                    operation: dict | None = None) -> list[tuple[str, dict]]:
+                    operation: dict | None = None, head_verb: str | None = None,
+                    revision: int | None = None) -> list[tuple[str, dict]]:
     """The report of a Result folded by ``verb``, staged as ``worker_report``
     evidence when ``verb`` is a success row; its id is named in
     ``details``, or that it is absent when the Work carries no history and
@@ -1187,11 +1296,15 @@ def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: di
     be stored, so the contribution pauses and the Result stays unfolded.
     Nothing is staged for any other row. ``operation`` is the branch
     operation the row names, whose commit the report records as the head
-    the Work left."""
+    the Work left. ``head_verb`` names the success row whose head the
+    report records when ``verb`` holds a patch it did not publish, and
+    ``revision`` the revision of the Work when the record has left it (the
+    publication of a held patch)."""
     if verb not in REPORT_VERBS:
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
-                                      run=str(run or "0"), operation=operation)
+                                      run=str(run or "0"), operation=operation,
+                                      head_verb=head_verb, revision=revision)
     if evidence is None:
         details["report"] = "absent"
         return []
@@ -1201,7 +1314,8 @@ def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: di
 
 def pushed_report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: dict,
                            run: str, details: dict,
-                           operation: dict | None = None) -> list[tuple[str, dict]]:
+                           operation: dict | None = None,
+                           revision: int | None = None) -> list[tuple[str, dict]]:
     """The report of a Result of patch or revision Work that a row other
     than the success row folds although its push may have landed: an
     ``uncertain`` Result held for a publish-only retry, or a retry rejected
@@ -1220,7 +1334,8 @@ def pushed_report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, pol
             and worker_report.head_candidate(outcome, landed, operation) is None:
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
-                                      run=str(run), head_verb=landed, operation=operation)
+                                      run=str(run), head_verb=landed, operation=operation,
+                                      revision=revision)
     if evidence is None:
         details["report"] = "absent"
         return []
@@ -1259,10 +1374,13 @@ def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dic
     """A publication of the Result of ``run`` failed: ``schedule_publish_retry``
     holds the Result for a publish-only retry and charges ``publish_recovery``;
     ``exhaust_publish_recovery`` once it is spent."""
-    before = int((rec.get("pending_publication") or {}).get("attempts", 0))
+    held = rec.get("pending_publication") or {}
+    before = int(held.get("attempts", 0))
     pending = {"worker_run_id": run, "attempts": before + 1, "last_reason": reason[:2000],
                "next_attempt_at": (datetime.fromisoformat(now) + timedelta(
-                   minutes=publish_retry_delay(before + 1))).isoformat()}
+                   minutes=publish_retry_delay(before + 1))).isoformat(),
+               # The review a held patch was published after stays with it.
+               **({"patch_review": held["patch_review"]} if held.get("patch_review") else {})}
     out = engine.apply_transition(
         rec, "schedule_publish_retry", policy=policy, now=now, cause_id=cause,
         facts={"publication_infrastructure_error"}, values={"pending_publication": pending},
@@ -1302,7 +1420,15 @@ WORK_RESULT_STATES = {
     "development.agent_running": {"published": "record_publish_success",
                                   "success": ("published",),
                                   "failed": ("infra_error", "uncertain"),
-                                  "stale": "replan_development"},
+                                  "stale": "replan_development",
+                                  "verified": "hold_patch_for_review"},
+    # The publication of a held patch after its review: its rejection is
+    # the held patch no longer rebuilding to the reviewed commit.
+    lifecycle.PUBLISHING: {"published": "record_publish_success",
+                           "success": ("published",),
+                           "failed": ("infra_error", "uncertain"),
+                           "stale": "replan_development",
+                           "rejected": "held_patch_rejected"},
     "upstream_review.agent_running": {"published": "record_revision_publish_success",
                                       "success": ("published",),
                                       "failed": ("infra_error", "uncertain"),
@@ -1451,6 +1577,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     run = str(worker_run_id or (held or {}).get("worker_run_id")
               or (outcome.get("artifact") or {}).get("run_id") or "0")
     cause = _result_cause(outcome, worker_run_id)
+    # The revision of the Work the Result answers: the record's, but for the
+    # publication of a held patch, whose review took revisions since.
+    revision = (outcome.get("task") or {}).get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        revision = None
     staged: list[tuple[str, dict]] = []
     op = outcome.get("operation")
     if op:
@@ -1511,13 +1642,18 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 rec, "schedule_publish_retry", policy=policy, now=now,
                 facts={"publication_infrastructure_error"}) else "schedule_publish_retry"
             staged.extend(pushed_report_evidence(
-                rec, outcome, holds, now=now, policy=policy, run=run, details=details))
+                rec, outcome, holds, now=now, policy=policy, run=run, details=details,
+                revision=revision))
         out = _fail_publication(rec, run, rerun_missing or str(outcome.get("reason") or ""),
                                 now=now, policy=policy, cause=cause, details=details)
     else:
         if status in rows["success"]:
             verb = rows["published"]
             facts = {"result_published" if verb == "record_publish_success" else "revision_published"}
+        elif status == "verified" and "verified" in rows:
+            # The worker's trusted publication job verified the patch and
+            # published nothing: it is held for its review.
+            verb, facts = rows["verified"], {"patch_verified"}
         elif status == "rejected" and fclass == "stale" and "stale" in rows \
                 and earlier and earlier["status"] == "confirmed":
             # The publication of the held Result landed (an earlier attempt's
@@ -1534,7 +1670,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 # commit it proposed.
                 staged.extend(pushed_report_evidence(
                     rec, outcome, verb, now=now, policy=policy, run=run, details=details,
-                    operation=earlier))
+                    operation=earlier, revision=revision))
         elif status == "no_change" and "no_change" in rows:
             verb, facts = rows["no_change"], {"no_change_needed"}
         elif status == "no_change":
@@ -1554,6 +1690,10 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                     "runs": [{k: int(r[k]) for k in ("run_id", "from_attempt", "run_attempt")}
                              for r in rerun["runs"][:ci_rerun.MAX_RUNS]],
                     "operation": (op or {}).get("operation_id")}
+        elif status in ("rejected", "worker_blocked") and "rejected" in rows:
+            # The held patch no longer rebuilds to the reviewed commit, or
+            # the trusted validation rejects it: nothing is pushed.
+            verb, facts = "reject_patch_proposal", {rows["rejected"]}
         elif status in ("rejected", "worker_blocked"):
             verb, facts = "reject_patch_proposal", {"proposal_rejected_or_blocked"}
             if status == "rejected" and fclass == "stale" and earlier:
@@ -1562,9 +1702,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 # report is kept with the commit it proposed.
                 staged.extend(pushed_report_evidence(
                     rec, outcome, verb, now=now, policy=policy, run=run, details=details,
-                    operation=earlier))
+                    operation=earlier, revision=revision))
         else:
             raise lifecycle.TransitionError(f"no row folds a patch Result with status {status!r}")
+        if verb == "record_publish_success" and engine.state_key(rec) == "development.agent_running" \
+                and not fork_publish.review_required(outcome.get("task") or {}):
+            # Work dispatched before development patches were reviewed still
+            # publishes its Result here; every other patch is held.
+            facts = set(facts) | {"no_review_contract"}
         values: dict[str, Any] = {}
         if verb in ("record_publish_success", "record_revision_publish_success"):
             art = outcome.get("artifact") or {}
@@ -1584,9 +1729,23 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             staged.append(("evidence", evidence))
             details["evidence_id"] = evidence["evidence_id"]
         # The report of a successful worker is kept for later Work; any
-        # other report is discarded.
-        staged.extend(report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
-                                      details=details, operation=op))
+        # other report is discarded. The report of a held patch is stored at
+        # the hold with the commit it proposed, and again with the head its
+        # publication read back.
+        reports = report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
+                                  details=details, operation=op, revision=revision,
+                                  head_verb=("record_publish_success"
+                                             if verb == "hold_patch_for_review" else None))
+        staged.extend(reports)
+        if verb == "hold_patch_for_review":
+            try:
+                values["held_patch"] = patch_review.held_patch(
+                    rec, outcome, run=run, now=now,
+                    report_evidence_id=reports[0][1]["evidence_id"] if reports else None)
+            except ValueError as error:
+                raise lifecycle.TransitionError(str(error)) from None
+            details.update(candidate=values["held_patch"]["candidate"],
+                           patch_digest=values["held_patch"]["patch_digest"])
         out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
                                       facts=facts, values=values, details=details)
     if not out.accepted:
@@ -1596,12 +1755,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     if out.verb in ("record_publish_success", "record_revision_publish_success"):
         # Beside the row: the published files join the admitted scope (a
         # repair backed by review feedback may change a path the plan
-        # missed), and a published patch starts `no_progress` again.
+        # missed), and a published patch starts `no_progress` and
+        # `dev_reviews` again.
         changed_files = ((op or {}).get("proposed") or {}).get("changed_files") or []
         scope = (list(dict.fromkeys((new.get("scope_paths") or []) + changed_files))
                  if changed_files else new.get("scope_paths"))
         new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope,
-                                   budget=dict(new["budget"], no_progress_streak=0))
+                                   budget=dict(new["budget"], no_progress_streak=0,
+                                               review_rejections=0))
     if held and out.verb not in ("schedule_publish_retry", "exhaust_publish_recovery"):
         # The held Result is answered: the publication is no longer pending.
         new = engine.record_beside(new, "publication_answered", now=now,

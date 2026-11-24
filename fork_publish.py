@@ -26,6 +26,14 @@ The branch is the Work's ``ref``: ``riscv64-dev`` in development, and in
 upstream review ``riscv64``, the branch of the upstream PR
 (``lifecycle.work_ref``).
 
+A development patch whose Work carries the review contract
+(``review_required``) is never pushed by its worker run: ``verify`` runs
+steps 1 to 4 without a token and returns the pin of the patch (the digest
+of the series, the commit it rebuilds to, its tree and changed files),
+which the reconciler holds for the review. Only the publish-only workflow
+pushes it, from ``development.publishing``, and only when the series has
+the held digest and rebuilds to exactly the held commit.
+
 The token is passed in by the caller (minted for exactly one fork with
 contents/workflows/pull-requests write) and is only placed in a transient
 HTTP header for the push. It is never written to disk.
@@ -77,15 +85,30 @@ FAILURE_CLASSES = ("validation", "stale", "infrastructure")
 PUSH_FACTS = frozenset({"capacity_available", "contribution_not_paused", "final_check_passed"})
 
 
+# The development tasks whose patch is reviewed before it is published, and
+# the value of the payload's ``review`` that says so.
+REVIEWED_TASKS = ("development_patch", "development_repair")
+REVIEW_REQUIRED = "required"
+
+
+def review_required(task: dict) -> bool:
+    """Whether the Work's patch is held for its review before it is
+    published: a development patch whose payload carries the review
+    contract. Work dispatched before development patches were reviewed
+    carries none, and its worker run publishes as before."""
+    return task.get("task") in REVIEWED_TASKS and task.get("review") == REVIEW_REQUIRED
+
+
 @dataclass
 class Outcome:
-    status: str                      # published | rejected | no_change | uncertain | infra_error
+    status: str                      # published | verified | rejected | no_change | uncertain | infra_error
     reason: str | None = None
     failure_class: str | None = None
     candidate: str | None = None
     tree: str | None = None
     operation: dict | None = None
     report: dict = field(default_factory=dict)
+    patch_digest: str | None = None
 
 
 def _git(repo: Path, *args: str, check: bool = True, input: bytes | None = None,
@@ -221,11 +244,13 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
             save_operation: Callable[[dict], None], workdir: Path | None = None,
             artifact: dict | None = None, previous_candidate: str | None = None,
             push: Callable[[Path, list[str], list[str]], subprocess.CompletedProcess] | None = None,
-            attempt: int = 1) -> Outcome:
+            attempt: int = 1, verify_only: bool = False) -> Outcome:
     """Validate and publish one proposal. ``observe_head()`` reads the fork's
     current ``riscv64`` head via the API (fresh, right before the push).
     ``attempt`` is the publish attempt of the same Result: a publish-only
-    retry records a new operation, never one an earlier attempt closed."""
+    retry records a new operation, never one an earlier attempt closed.
+    With ``verify_only`` (``verify``) nothing is pushed and no operation is
+    recorded: a patch that passes every check is ``verified``."""
     if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
         raise ValueError(f"invalid publish attempt {attempt!r}")
     try:
@@ -242,10 +267,23 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
     if generation is None:
         return Outcome("rejected", "publication check: the task names no Work identity",
                        failure_class="stale")
+    reviewed = review_required(task) and not verify_only
+    held = record.get("held_patch") or {}
+    if verify_only and (not review_required(task)
+                        or f"{record['phase']}.{record['activity']}" != "development.agent_running"):
+        return Outcome("rejected", "verification: only a development patch held for its review "
+                       "is verified, while its Work runs", failure_class="stale")
+    if reviewed and held and (hashlib.sha256(mbox).hexdigest() != held.get("patch_digest")
+                              or held.get("expected_head") != expected):
+        # The pin of the held patch: exactly the series that was verified
+        # and reviewed, on the head it was verified on.
+        return Outcome("rejected", "the series is not the held patch that was reviewed",
+                       failure_class="validation")
     why = lifecycle.publication_check(record, expected_revision=task["revision"], expected_head=expected,
                                       observed_head=observed_before, ref=task.get("ref"),
                                       repository=fork,
-                                      expected_generation=generation, work_key=work_key)
+                                      expected_generation=generation, work_key=work_key,
+                                      reviewed=reviewed)
     if why and observed_before != expected and previous_candidate and observed_before == previous_candidate:
         # A previous attempt of this same publication already landed (its
         # receipt was lost). Confirm it; never push again.
@@ -304,6 +342,16 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         if not rep.ok:
             return Outcome("rejected", "; ".join(rep.problems[:5]), candidate=cand, tree=rep.final_tree, report=report,
                            failure_class="validation")
+        if reviewed and cand != held.get("candidate"):
+            return Outcome("rejected", f"the series rebuilds to {cand}, not to the reviewed commit "
+                           f"{held.get('candidate')}", candidate=cand, tree=rep.final_tree,
+                           report=report, failure_class="validation")
+        if verify_only:
+            # Held for its review: nothing is pushed and no operation is
+            # recorded. The pin is the digest of the series and the commit
+            # it rebuilds to, deterministically.
+            return Outcome("verified", None, candidate=cand, tree=rep.final_tree, report=report,
+                           patch_digest=digest)
         parents = _git(work, "rev-list", "--parents", "-n1", cand).stdout.decode().split()[1:]
         if policy.get("read_only", True):
             return Outcome("rejected", "policy is read-only; validated but not pushed", candidate=cand,
@@ -370,6 +418,17 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
             tmp.cleanup()
 
 
+def verify(*, record: dict, task: dict, proposal: dict, mbox: bytes,
+           observe_head: Callable[[], str | None], scope: publisher.Scope, policy: dict, now: str,
+           workdir: Path | None = None, read_token: str | None = None) -> Outcome:
+    """Rebuild and validate a development patch held for its review, as
+    ``publish`` does up to the push, without a token: ``verified`` with the
+    pin of the patch, or the rejection ``publish`` would give."""
+    return publish(record=record, task=task, proposal=proposal, mbox=mbox, token=read_token,
+                   observe_head=observe_head, scope=scope, policy=policy, now=now,
+                   save_operation=lambda _op: None, workdir=workdir, verify_only=True)
+
+
 def publish_attempt_reasons(attempt: int) -> list[str]:
     """The reason id that makes the operation of a publish-only retry its
     own: the first attempt keeps the identity of the Result alone."""
@@ -399,6 +458,11 @@ def preflight(*, record: dict, task: dict, proposal: dict, fork_lookup: Callable
     if repo.get("archived"):
         return {"publish": False, "status": "rejected", "reason": "fork is archived", "fork_name": "",
                 "failure_class": "stale"}
+    if review_required(task) and f"{record['phase']}.{record['activity']}" != lifecycle.PUBLISHING:
+        # Held for its review: verified without a token, never pushed by
+        # the worker's own run or by a retry of its verification.
+        return {"publish": False, "status": "verify", "reason": None, "fork_name": "",
+                "failure_class": None}
     return {"publish": True, "status": "publish", "reason": None,
             "fork_name": repo["full_name"].split("/", 1)[1], "failure_class": None}
 
@@ -407,10 +471,13 @@ def main(argv=None) -> int:
     """CLI used by the trusted publish job.
 
     python -m fork_publish preflight --record R --task T --proposal P --out O
+    python -m fork_publish verify --record R --task T --proposal P --mbox M \
+        --result RES [--out O]
     python -m fork_publish publish --record R --task T --proposal P --mbox M \
         --result RES [--out O]
 
-    The fork token comes from UPSTREAMING_FORK_TOKEN (publish only).
+    The fork token comes from UPSTREAMING_FORK_TOKEN (publish only); verify
+    runs without one.
     """
     import argparse
     from datetime import datetime, timezone
@@ -418,7 +485,7 @@ def main(argv=None) -> int:
     from collect import Api, branch_head, repository
     from common import load_policy
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["preflight", "publish"])
+    ap.add_argument("cmd", choices=["preflight", "verify", "publish"])
     for a in ("--record", "--task", "--proposal"):
         ap.add_argument(a, required=True, type=Path)
     ap.add_argument("--mbox", type=Path)
@@ -436,11 +503,30 @@ def main(argv=None) -> int:
         (a.out.write_text(text) if a.out else print(text))
         return 0
     policy = load_policy()
+    artifact = json.loads(a.result.read_text()) if a.result else None
+    mbox = a.mbox.read_bytes() if a.mbox and a.mbox.exists() else b""
+    if a.cmd == "verify":
+        # No token: the fork and the upstream are public, and the head is
+        # read with the job's read-only token at most.
+        os.environ.pop("UPSTREAMING_FORK_TOKEN", None)
+        api = Api()
+        out = verify(record=record, task=task, proposal=proposal, mbox=mbox,
+                     observe_head=lambda: (branch_head(api, task["fork"], task["ref"]) or {}).get("head"),
+                     scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=policy,
+                     now=datetime.now(timezone.utc).isoformat())
+        result = {"status": out.status, "reason": out.reason, "failure_class": out.failure_class,
+                  "candidate": out.candidate, "tree": out.tree, "operation": None,
+                  "report": out.report, "artifact": artifact,
+                  "patch_digest": out.patch_digest,
+                  "changed_files": (out.report or {}).get("delta") or [],
+                  "operation_kind": proposal.get("operation"),
+                  "expected_head": task.get("expected_head")}
+        text = json.dumps(result, indent=2)
+        (a.out.write_text(text) if a.out else print(text))
+        return {"verified": 0, "infra_error": 3}.get(out.status, 1)
     token = os.environ.pop("UPSTREAMING_FORK_TOKEN", None)
     api = Api(token=token)
-    artifact = json.loads(a.result.read_text()) if a.result else None
     ops: list[dict] = []
-    mbox = a.mbox.read_bytes() if a.mbox and a.mbox.exists() else b""
     attempt = max(int(os.environ.get("UPSTREAMING_PUBLISH_ATTEMPT", "1")), 1)
     out = publish(record=record, task=task, proposal=proposal, mbox=mbox, token=token,
                   observe_head=lambda: (branch_head(api, task["fork"], task["ref"]) or {}).get("head"),

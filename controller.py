@@ -33,6 +33,7 @@ import handoff
 import intake
 import isolation
 import lifecycle
+import patch_review
 import recovery
 import schemas
 import work as work_queue
@@ -110,6 +111,8 @@ def _actionable(c: dict) -> str | None:
         return work_queue.SUBMISSION_REWRITE
     if engine.state_key(c) == "handoff.review_pending":
         return work_queue.SUBMISSION_REVIEW
+    if engine.state_key(c) == "development.review_pending":
+        return work_queue.DEVELOPMENT_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
     if c["phase"] in ("queued", "planning") and c["activity"] == "idle":
@@ -123,7 +126,7 @@ def _actionable(c: dict) -> str | None:
 WORK_DEADLINE_HOURS = 6
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
-            "development_repair": 1,
+            "development_review": 0, "development_repair": 1,
             "development_patch": 2, "planning": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
@@ -134,6 +137,7 @@ WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 ALLOCATIONS = {
     "planning.idle": ("dispatch_planning",),
     "development.fix_needed": ("request_repair", "request_patch"),
+    "development.review_pending": ("request_patch_review",),
     "handoff.review_due": ("request_submission_rewrite",),
     "handoff.review_pending": ("request_submission_review",),
     "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
@@ -144,6 +148,7 @@ EXHAUSTIONS = {
     "planning.idle": ("exhaust_work_total",),
     "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
+    "development.review_pending": ("exhaust_work_total",),
     "handoff.review_due": ("exhaust_work_total",),
     "handoff.review_pending": ("exhaust_work_total",),
     "upstream_review.fix_needed": ("exhaust_repair_attempts",),
@@ -161,6 +166,8 @@ def task_for(verb: str, record: dict) -> str:
         return work_queue.SUBMISSION_REWRITE
     if verb == "request_submission_review":
         return work_queue.SUBMISSION_REVIEW
+    if verb == "request_patch_review":
+        return work_queue.DEVELOPMENT_REVIEW
     if verb in ("request_upstream_revision", "request_review_revision"):
         return "upstream_revision"
     if verb == "request_repair" or record.get("pending_feedback_evidence_ids"):
@@ -988,6 +995,22 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                         continue
                 else:
                     facts = ALLOCATION_FACTS | {"submission_rewrite_current"}
+            if engine.state_key(due) == "development.review_pending":
+                # The review reads the held series from the worker run's
+                # artifact: an expired one is never reviewed or published,
+                # fresh development Work is due.
+                if patch_review.held_patch_expired(due, inputs.now):
+                    out = engine.apply_transition(
+                        due, "expire_held_patch", policy=policy, now=now,
+                        facts={"held_patch_expired"}, open_operations=ops,
+                        cause_id=f"expired-{(due.get('held_patch') or {}).get('worker_run_id')}")
+                    if out.accepted:
+                        by_id[c["contribution_id"]] = out.record
+                        res.stage("contributions", out.record)
+                        res.stage("events", out.event)
+                        continue
+                else:
+                    facts = ALLOCATION_FACTS | {"held_patch_current"}
             spent = next((verb for verb in EXHAUSTIONS.get(engine.state_key(due), ())
                           if engine.refusal(due, verb, policy=policy, now=now, ci_evidence=ci,
                                             open_operations=ops) is None), None)
@@ -1033,6 +1056,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             claimed = _take(claimed, verb, res, policy, now, cause_id=request["dedupe_key"],
                             facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
                                                       if verb == "request_submission_review"
+                                                      else {"held_patch_current"}
+                                                      if verb == "request_patch_review"
                                                       else set()),
                             values={"active_work": request},
                             ci_evidence=ci,
@@ -1075,6 +1100,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "effect_contract": (
                     {"kind": "none"}
                     if kind == "planning" or kind in work_queue.SUBMISSION_TASKS
+                    or kind == work_queue.DEVELOPMENT_REVIEW
                     else {
                         "kind": "fork_branch",
                         "repository": (claimed.get("fork") or {}).get("name"),
@@ -1270,6 +1296,10 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
         # of the candidate head the rewrite and the review describe.
         reason_ids = [i for i in (record.get("plan_evidence_id"),
                                   record.get("last_ci_evidence_id")) if i]
+    if kind == work_queue.DEVELOPMENT_REVIEW:
+        # What the worker of the held patch answered: the reasons of its
+        # Work (its pending feedback, the CI evidence, the plan).
+        reason_ids = list((record.get("held_patch") or {}).get("reason_ids") or [])
     if kind in ("development_repair", "upstream_revision"):
         reason_ids = list(dict.fromkeys(
             list(record.get("pending_feedback_evidence_ids") or [])

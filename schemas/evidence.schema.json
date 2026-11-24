@@ -48,7 +48,8 @@
         "worker_report",
         "human_steering",
         "work_history",
-        "series_requirements"
+        "series_requirements",
+        "patch_review"
       ]
     },
     "policy_version": {

@@ -13,7 +13,8 @@ report is untrusted text.
   a valid report naming that history; a payload dispatched before reports
   existed may return none.
 * ``evidence`` builds the ``worker_report`` evidence of a Result that one of
-  the success rows folds (``reconcile.REPORT_VERBS``). The report of a
+  the success rows folds (``reconcile.REPORT_VERBS``), the hold of a
+  verified development patch for its review among them. The report of a
   failed, rejected or blocked worker is never stored: it is discarded with
   its artifact. The report of a successful Work that carries a history is
   never dropped: the reconciler checks the very bytes the gate checked
@@ -268,7 +269,8 @@ def head_candidate(outcome: dict, verb: str, operation: dict | None = None) -> s
     ``uncertain``) branch operation, of a ``confirmed`` one that a row
     other than the success row names (a revision retry rejected as stale
     behind the confirmed operation of an earlier attempt), or the candidate
-    of an ``uncertain`` Result. It may be on the branch or not; the history
+    of an ``uncertain`` Result or of a ``verified`` one (a development patch
+    held for its review). It may be on the branch or not; the history
     treats it as the head the Work left only when the recorded head (or the
     head a CI run ran on) is that very commit. ``None`` when ``head_after``
     names a head, or nothing was proposed."""
@@ -278,7 +280,9 @@ def head_candidate(outcome: dict, verb: str, operation: dict | None = None) -> s
     if op and op.get("status") in ("applying", "uncertain", "confirmed") \
             and op.get("kind") in ("branch_update", "branch_rewrite"):
         return _sha((op.get("proposed") or {}).get("commit"))
-    if outcome.get("status") == "uncertain":
+    if outcome.get("status") in ("uncertain", "verified"):
+        # A push that was not read back, or a patch verified and held for
+        # its review that is not published yet.
         return _sha(outcome.get("candidate"))
     return None
 

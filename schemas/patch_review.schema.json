@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Review Result of a held development patch (untrusted)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contribution_id",
+    "expected_revision",
+    "expected_head",
+    "patch_digest",
+    "candidate",
+    "verdict",
+    "summary",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "contribution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 127
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expected_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "patch_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "candidate": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 3000
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "file",
+          "line",
+          "title",
+          "detail"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+          },
+          "severity": {
+            "enum": [
+              "blocker",
+              "major",
+              "minor",
+              "nit"
+            ]
+          },
+          "category": {
+            "enum": [
+              "correctness",
+              "scope",
+              "plan_deviation",
+              "steering",
+              "upstream_convention",
+              "ci_coverage",
+              "tests",
+              "security",
+              "report_mismatch"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "end_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 300
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 1500
+          },
+          "suggestion": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "previous_findings": {
+      "type": "array",
+      "maxItems": 60,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "status"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "status": {
+            "enum": [
+              "resolved",
+              "unresolved",
+              "withdrawn"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "checked": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "fail"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "findings": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

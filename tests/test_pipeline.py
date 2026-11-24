@@ -42,6 +42,10 @@ from tests.helpers import (
 WF = ".github/workflows/worker.lock.yml"
 
 
+def engine_state(record):
+    return f"{record['phase']}.{record['activity']}"
+
+
 class FakeApi:
     """Answers the GET paths collect.py uses, from in-memory data."""
 
@@ -108,6 +112,16 @@ class TestPipeline(unittest.TestCase):
         return git(self.fork_bare, "rev-parse", "refs/heads/riscv64-dev")
 
     def test_full_loop(self):
+        """The patch is verified and held, reviewed by its own Work, then
+        published by the publish-only path pinned to the reviewed commit."""
+        self.loop(reviewed=True)
+
+    def test_full_loop_of_work_dispatched_before_reviews(self):
+        """Work whose payload carries no review contract still publishes in
+        its worker run (the legacy row)."""
+        self.loop(reviewed=False)
+
+    def loop(self, *, reviewed):
         pol = policy(read_only=False)
         # 1. Controller selects a development patch; work.py builds the Work node.
         res = controller.tick(contributions={"c": self.rec}, operations={}, consumed={}, projects={}, policy=pol,
@@ -124,6 +138,9 @@ class TestPipeline(unittest.TestCase):
         plan = work.plan([node])
         self.assertEqual(plan["dispatch"], {"pool": "default", "max_claims": 1, "max_dispatches": 1})
         task = node["payload"]
+        self.assertEqual(task["review"], "required")
+        if not reviewed:
+            del task["review"]
         self.assertEqual(task["effect_contract"]["outputs"][-1], {"type": "upload_artifact", "min": 1, "max": 1})
         self.assertEqual((task["fork_name"], task["fork_repository_id"]), ("proj", 2))
 
@@ -167,36 +184,52 @@ class TestPipeline(unittest.TestCase):
                          (0, claimed["active_work"]["dedupe_key"]))
         pf = fork_publish.preflight(record=claimed, task=task, proposal=proposal,
                                     fork_lookup=lambda n: {"id": 2, "full_name": n, "archived": False})
-        self.assertEqual(pf["fork_name"], "proj")
+        publishing = claimed
+        events: list[str] = []
+        if reviewed:
+            # 4a. The worker's publish job verifies without a token and
+            # pushes nothing; the patch is held for its review.
+            self.assertEqual((pf["publish"], pf["status"]), (False, "verify"))
+            publishing, events = self.review(pol, claimed, task, out, art)
+        else:
+            self.assertEqual(pf["fork_name"], "proj")
         ops = []
         outcome = fork_publish.publish(
-            record=claimed, task=task, proposal=json.loads((out / "proposal.json").read_text()),
+            record=publishing, task=task, proposal=json.loads((out / "proposal.json").read_text()),
             mbox=(out / "patches.mbox").read_bytes(), token=None, observe_head=self.fork_head,
             scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=pol,
             now=self.now.isoformat(), save_operation=ops.append, workdir=self.root / "pub",
             artifact=art.__dict__)
         self.assertEqual(outcome.status, "published", outcome.reason)
+        if reviewed:
+            self.assertEqual(outcome.candidate, publishing["held_patch"]["candidate"])
         new_head = self.fork_head()
         self.assertNotEqual(new_head, self.base)
         self.assertIn("artifact:900", outcome.operation["reason_ids"])
 
         # 5. Reconcile: fold the publication, observe the new head and its CI.
-        rec = claimed
+        rec = publishing
         runs = {"all": [{"id": 7, "head_sha": new_head, "run_attempt": 1, "status": "completed",
                          "conclusion": "success", "workflow_id": 1, "event": "push", "path": ".github/workflows/wheels.yml"}]}
         jobs = {7: [{"id": 70, "run_id": 7, "name": "build riscv64", "status": "completed",
                      "conclusion": "success", "started_at": "x", "labels": ["ubuntu-24.04-riscv"]}]}
         api = FakeApi({"riseproject-upstreaming/proj": new_head}, runs, jobs)
         snap = reconcile.Snapshot(contributions={"c": rec}, operations={}, consumed={}, projects={}, evidence={})
-        pub = {"status": outcome.status, "operation": ops[-1], "artifact": art.__dict__, "task": task}
+        pub = {"status": outcome.status, "operation": ops[-1], "artifact": art.__dict__, "task": task,
+               "worker_run_id": "4242", "publication_artifact_id": 903, "candidate": outcome.candidate}
         tick = reconcile.tick(api, snap, policy=pol, now=self.now, publications=[pub],
                               pressure=capacity.Pressure(ok=True))
         kinds = [k for k, _ in tick.staged]
         final = [r for k, r in tick.staged if k == "contributions"][-1]
         self.assertEqual(final["fork"]["head_sha"], new_head)
-        self.assertEqual(final["revision"], self.rec["revision"] + 1)     # head change = new work revision
-        self.assertEqual([e["kind"] for k, e in tick.staged if k == "events"],
-                         ["record_publish_success", "record_head_change", "nominate_for_handoff"])
+        # head change = new work revision (and the hold of a reviewed patch)
+        self.assertEqual(final["revision"], self.rec["revision"] + 1 + reviewed)
+        self.assertEqual(events + [e["kind"] for k, e in tick.staged if k == "events"],
+                         (["hold_patch_for_review", "request_patch_review", "accept_patch_review"]
+                          if reviewed else [])
+                         + ["record_publish_success", "record_head_change", "nominate_for_handoff"])
+        self.assertIsNone(final["held_patch"])
+        self.assertIsNone(final["pending_publication"])
         self.assertEqual(final["proposal_artifact"]["artifact_id"], 900)
         self.assertEqual(final["publication_operation_id"], ops[-1]["operation_id"])
         self.assertTrue(final["last_ci_evidence_id"].startswith("ci-2-7-1"))
@@ -208,6 +241,66 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("operations", kinds)
         # Passed CI on the new head: nothing more for an agent to do right now.
         self.assertEqual(tick.report["requested_effects"], [])
+
+    def review(self, pol, claimed, task, out, art):
+        """The held patch: verified, held, reviewed, and pending publication."""
+        import patch_review
+
+        proposal = json.loads((out / "proposal.json").read_text())
+        mbox = (out / "patches.mbox").read_bytes()
+        verified = fork_publish.verify(
+            record=claimed, task=task, proposal=proposal, mbox=mbox, observe_head=self.fork_head,
+            scope=publisher.Scope(allowed_globs=task["allowed_paths"]), policy=pol,
+            now=self.now.isoformat(), workdir=self.root / "verify")
+        self.assertEqual(verified.status, "verified", verified.reason)
+        self.assertEqual(self.fork_head(), self.base, "verification pushes nothing")
+        api = FakeApi({"riseproject-upstreaming/proj": self.base})
+        pub = {"status": "verified", "candidate": verified.candidate, "tree": verified.tree,
+               "patch_digest": verified.patch_digest, "changed_files": verified.report["delta"],
+               "operation_kind": "append", "expected_head": task["expected_head"],
+               "artifact": art.__dict__, "task": task, "worker_run_id": "4242",
+               "publication_artifact_id": 901}
+        snap = reconcile.Snapshot(contributions={"c": claimed}, operations={}, consumed={},
+                                  projects={}, evidence={})
+        tick = reconcile.tick(api, snap, policy=pol, now=self.now, publications=[pub],
+                              pressure=capacity.Pressure(ok=True), observe=False)
+        events = [e["kind"] for k, e in tick.staged if k == "events"]
+        held = [r for k, r in tick.staged if k == "contributions"][-1]
+        self.assertEqual(held["held_patch"]["candidate"], verified.candidate)
+        self.assertEqual(held["fork"]["head_sha"], self.base)
+        # The review Work of the held patch, on the reviewer profile.
+        self.assertEqual(held["active_work"]["task"], "development_review")
+        request = work.request_from_active(held)
+        _paths, context = work.payload_inputs(request, held, {}, plan_reference=lambda eid: {})
+        review_node = work.node(request, held, control_repo_id="123",
+                                allowed_paths=[".github/workflows/*"], context=context)
+        self.assertEqual(review_node["worker_profile"], "reviewer")
+        review_task = review_node["payload"]
+        self.assertNotIn("review", review_task)
+        self.assertEqual(review_task["context"]["patch"]["patch_digest"], verified.patch_digest)
+        review = {"schema_version": 1, "contribution_id": review_task["contribution_id"],
+                  "expected_revision": review_task["revision"],
+                  "expected_head": review_task["expected_head"],
+                  "patch_digest": verified.patch_digest, "candidate": verified.candidate,
+                  "verdict": "pass", "summary": "The riscv64 row follows the project's matrix.",
+                  "findings": [{"id": "f1", "severity": "nit", "category": "upstream_convention",
+                                "file": ".github/workflows/wheels.yml", "line": 1,
+                                "title": "Job name", "detail": "Name the job after its arch."}]}
+        outcome = patch_review.check(review_task, review)
+        self.assertEqual(outcome["verdict"], "pass", outcome)
+        pub = dict(outcome, task=review_task, worker_run_id="5000", publication_artifact_id=902)
+        snap = reconcile.Snapshot(contributions={"c": held}, operations={}, consumed={},
+                                  projects={}, evidence={})
+        tick = reconcile.tick(api, snap, policy=pol, now=self.now, publications=[pub],
+                              pressure=capacity.Pressure(ok=True), observe=False)
+        events += [e["kind"] for k, e in tick.staged if k == "events"]
+        publishing = [r for k, r in tick.staged if k == "contributions"][-1]
+        self.assertEqual(engine_state(publishing), "development.publishing")
+        self.assertEqual(tick.report["publication_retries"],
+                         [{"type": "retry_publication", "contribution_id": held["contribution_id"],
+                           "worker_run_id": "4242", "attempt": 1}])
+        self.assertEqual([r["kind"] for k, r in tick.staged if k == "evidence"], ["patch_review"])
+        return publishing, events
 
     def test_result_without_publication_does_not_enter_waiting_ci(self):
         # A blocked proposal is a delivered Result, but nothing is pushed.

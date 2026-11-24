@@ -319,12 +319,21 @@ class TestRerunFenceMigration(unittest.TestCase):
                 schemas.validate("contribution", new)
                 self.assertFalse(state.needs_field_migration(new))
 
-    def test_the_live_record_needs_no_migration(self):
+    def test_the_live_record_needs_only_the_held_patch_field(self):
         path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
         if not path.exists():
             self.skipTest("no live record in this checkout")
         import schemas
         rec = json.loads(path.read_text())
-        schemas.validate("contribution", rec)
         self.assertNotIn("answered_ci_evidence_id", rec["budget"]["reruns"])
-        self.assertFalse(state.needs_field_migration(rec))
+        if "held_patch" in rec:
+            schemas.validate("contribution", rec)
+            self.assertFalse(state.needs_field_migration(rec))
+            return
+        # The review of development patches added `held_patch`: the evented
+        # field migration adds it, null, and changes nothing else.
+        self.assertTrue(state.needs_field_migration(rec))
+        new, event = state.migrate_record_fields(rec, now="2026-11-23T13:00:00+00:00")
+        self.assertEqual((event["details"]["added"], event["details"]["removed"]),
+                         (["held_patch"], []))
+        schemas.validate("contribution", new)

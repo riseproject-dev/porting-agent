@@ -526,7 +526,8 @@ class TestWorkflowContracts(unittest.TestCase):
         dispatched, and its trusted recovery reads the worker run."""
         text = (WORKFLOWS / "controller.yml").read_text()
         self.assertIn(
-            "for workflow in planner.lock.yml worker.lock.yml publish-retry.yml", text)
+            "for workflow in planner.lock.yml worker.lock.yml reviewer.lock.yml publish-retry.yml",
+            text)
         self.assertIn("filter='&status=completed&branch=main&event=workflow_dispatch'", text)
         self.assertIn('runs?per_page=20$filter"', text)
         self.assertIn('worker_run=$(cat "publications/$run/worker-run-id"', text)
@@ -552,7 +553,7 @@ class TestWorkflowContracts(unittest.TestCase):
         deleted, so the Result is the Result of the run that uploaded it."""
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         script = next(step["run"] for step in steps if str(step.get("name", "")).startswith(
-            "Collect verified planner, worker, and publish-only retry outcomes"))
+            "Collect verified planner, worker, reviewer, and publish-only retry outcomes"))
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             bundle = tmp / "artifact.zip"
@@ -595,6 +596,7 @@ class TestWorkflowContracts(unittest.TestCase):
                 "Dispatcher",
                 "Planner",
                 "Worker",
+                "Reviewer",
                 "Reproduction Image",
                 "Fork Provisioning",
                 "Development PR",
@@ -633,7 +635,7 @@ class TestWorkflowContracts(unittest.TestCase):
                 joined = script.replace("\\\n", " ")
                 direct = re.search(r"(?:^|[\n;&|])\s*python(?:3)?(?:\s|$)", joined)
                 if direct is not None:
-                    self.assertEqual(path.name, "worker.md")
+                    self.assertIn(path.name, ("worker.md", "reviewer.md"))
                     self.assertEqual(
                         script,
                         'python3 scripts/pi_provider_credential.py "$RUNNER_TEMP/gh-aw/actions"',
@@ -763,6 +765,8 @@ class TestWorkflowContracts(unittest.TestCase):
                 "planner.lock.yml",
                 "worker.md",
                 "worker.lock.yml",
+                "reviewer.md",
+                "reviewer.lock.yml",
                 "image.yml",
                 "provision.yml",
                 "dev-pr.yml",

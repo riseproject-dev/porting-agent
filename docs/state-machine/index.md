@@ -60,6 +60,9 @@ flowchart TB
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
+        development_review_pending["development.review_pending"]
+        development_reviewing["development.reviewing"]
+        development_publishing["development.publishing"]
         development_waiting_ci["development.waiting_ci"]
         development_waiting_human["development.waiting_human"]
     end
@@ -109,7 +112,12 @@ flowchart TB
     provisioning_idle -->|confirm_provisioning| development_fix_needed
     development_fix_needed -->|request_patch| development_agent_running
     development_fix_needed -->|request_repair| development_agent_running
-    development_agent_running -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|hold_patch_for_review| development_review_pending
+    development_review_pending -->|request_patch_review| development_reviewing
+    development_reviewing -->|accept_patch_review| development_publishing
+    development_reviewing -->|reject_patch_review| development_fix_needed
+    development_reviewing -->|publish_after_failed_reviews| development_publishing
+    development_publishing -->|record_publish_success| development_waiting_ci
     development_agent_running -->|reject_patch_proposal| development_fix_needed
     development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|record_ci_failure| development_fix_needed
@@ -155,7 +163,7 @@ flowchart TB
     closed_idle --> end_3(( ))
 ```
 
-On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and linked from the event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
+On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. Every development patch is reviewed before it is published. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and linked from the event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
 
 ## Planning and provisioning failure cases
 
@@ -271,15 +279,18 @@ flowchart TB
 
 ## Development and repair cases
 
-Development is one bounded loop around the same development PR. A worker proposes a patch, trusted code validates and publishes it, and CI plus authorized review evaluate the exact head. Only `nominate_for_handoff` leaves development forward.
+Development is one bounded loop around the same development PR. A worker proposes a patch, trusted code validates it, a separate review Work reviews exactly that patch, trusted code publishes it, and CI plus authorized review evaluate the exact head. Only `nominate_for_handoff` leaves development forward.
 
-### Success case: patch, publish, CI, and handoff
+### Success case: patch, review, publish, CI, and handoff
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
+        development_review_pending["development.review_pending"]
+        development_reviewing["development.reviewing"]
+        development_publishing["development.publishing"]
         development_waiting_ci["development.waiting_ci"]
     end
     subgraph handoff["handoff"]
@@ -288,11 +299,16 @@ flowchart TB
 
     start_1(( )) --> development_fix_needed
     development_fix_needed -->|request_patch| development_agent_running
-    development_agent_running -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|hold_patch_for_review| development_review_pending
+    development_review_pending -->|request_patch_review| development_reviewing
+    development_reviewing -->|accept_patch_review| development_publishing
+    development_publishing -->|record_publish_success| development_waiting_ci
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
 ```
 
-Every Work carries its history: the reports of the earlier successful workers, the CI runs and reviews that followed them, and the owner's steering from the tracking issue and the pull requests. A repair after failing CI reads the report of the worker whose head failed.
+Every Work carries its history: the reports of the earlier successful workers, the CI runs and reviews that followed them, every review of a development patch, and the owner's steering from the tracking issue and the pull requests. A repair after failing CI reads the report of the worker whose head failed.
+
+The worker's trusted publication job verifies the patch without a token and publishes nothing: `hold_patch_for_review` holds it, pinned to its series and the commit it rebuilds to. A separate review Work, on its own workflow and model, reads and diffs exactly that patch with the worker's report, the plan, and the history; `accept_patch_review` makes it pending publication, and the publish-only workflow pushes it only when it rebuilds to the reviewed commit.
 
 `development.fix_needed` is the one state in which development Work is due, and it is entered only after `confirm_provisioning`: no patch is proposed before the fork exists. `request_repair` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster` for that job; `request_patch` applies otherwise (the first patch, a rejected proposal, a repair driven only by review feedback) and charges `work_total` only. Both need write admission. Every applicable build and test job must execute and pass on the exact head.
 
@@ -327,20 +343,28 @@ Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion
 flowchart TB
     subgraph development["development"]
         development_agent_running["development.agent_running"]
+        development_publishing["development.publishing"]
         development_fix_needed["development.fix_needed"]
         development_waiting_human["development.waiting_human"]
         development_waiting_ci["development.waiting_ci"]
+        development_review_pending["development.review_pending"]
     end
 
     start_1(( )) --> development_agent_running
+    development_agent_running -->|hold_patch_for_review| development_review_pending
     development_agent_running -->|record_publish_success| development_waiting_ci
     development_agent_running -->|schedule_publish_retry| development_agent_running
     development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_publishing -->|record_publish_success| development_waiting_ci
+    development_publishing -->|schedule_publish_retry| development_publishing
+    development_publishing -->|exhaust_publish_recovery| development_waiting_human
+    development_publishing -->|replan_development| development_fix_needed
+    development_publishing -->|reject_patch_proposal| development_fix_needed
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
 ```
 
-An infrastructure failure publishes the same verified Result again within `publish_recovery`. After exhaustion and a resume, fresh Work is requested; the held Result is not reused.
+An infrastructure failure of the worker's verification, or of the publication of a reviewed patch, runs the same trusted step again for the same Result within `publish_recovery`, with no model call. The reviewed patch is pushed only when it rebuilds to the reviewed commit; a fork head that moved replans, and a patch that no longer rebuilds is rejected. After exhaustion and a resume, fresh Work is requested; the held Result is not reused. Work dispatched before development patches were reviewed still publishes its Result in `development.agent_running`.
 
 ### The development PR operation
 
@@ -362,7 +386,40 @@ flowchart TB
 
 A published head without a recorded development PR gets one through a trusted operation, planned and launched by the controller in `development.waiting_ci` within `operation_launch` (counted on the operation); a PR created at this head with no CI evidence gets the CI bootstrap the same way. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human; the resume plans a new operation, which adopts a PR a lost launch created.
 
-### Failure case 3: internal PR CI or review failure
+### Failure case 3: the review of a held patch fails, or its Work fails
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_review_pending["development.review_pending"]
+        development_reviewing["development.reviewing"]
+        development_publishing["development.publishing"]
+        development_waiting_human["development.waiting_human"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+
+    start_1(( )) --> development_agent_running
+    development_agent_running -->|hold_patch_for_review| development_review_pending
+    development_review_pending -->|request_patch_review| development_reviewing
+    development_review_pending -->|expire_held_patch| development_fix_needed
+    development_review_pending -->|exhaust_work_total| development_waiting_human
+    development_reviewing -->|retry_dispatch| development_reviewing
+    development_reviewing -->|allocate_work_retry| development_reviewing
+    development_reviewing -->|exhaust_dispatch_recovery| development_waiting_human
+    development_reviewing -->|exhaust_work_recovery| development_waiting_human
+    development_reviewing -->|reject_patch_review| development_fix_needed
+    development_reviewing -->|publish_after_failed_reviews| development_publishing
+    development_reviewing -->|accept_patch_review| development_publishing
+    development_publishing -->|record_publish_success| development_waiting_ci
+    development_fix_needed -->|request_repair| development_agent_running
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+```
+
+A review fails on a blocker or a major finding, whatever it declares. `reject_patch_review` discards the held patch and makes the review pending feedback of the next development Work, which amends the patch, and charges `dev_reviews`. Once `dev_reviews` is exhausted, the next failed review takes `publish_after_failed_reviews`: the held patch is published anyway, and trusted code posts on the development PR the latest review and why it failed. A published patch starts `dev_reviews` again. Every review, passed or failed, is stored as evidence that the history of every later Work and review carries; nothing about a review is posted on the tracking issue. A review Work that fails to dispatch or returns no usable Result is recovered like any Work, and its exhaustion waits for a human, discarding the held patch: the resume requests fresh development Work. A held patch whose artifact expires is never reviewed or published.
+
+### Failure case 4: internal PR CI or review failure
 
 ```mermaid
 flowchart TB
@@ -370,6 +427,9 @@ flowchart TB
         development_waiting_ci["development.waiting_ci"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
+        development_review_pending["development.review_pending"]
+        development_reviewing["development.reviewing"]
+        development_publishing["development.publishing"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -382,7 +442,10 @@ flowchart TB
     development_fix_needed -->|record_actionable_review| development_fix_needed
     development_waiting_ci -->|record_explanation| development_waiting_ci
     development_fix_needed -->|request_repair| development_agent_running
-    development_agent_running -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|hold_patch_for_review| development_review_pending
+    development_review_pending -->|request_patch_review| development_reviewing
+    development_reviewing -->|accept_patch_review| development_publishing
+    development_publishing -->|record_publish_success| development_waiting_ci
     development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
     development_waiting_ci -->|rerun_interrupted_ci| development_waiting_ci
@@ -397,7 +460,7 @@ flowchart TB
 
 Build and test failures and actionable comments request repair automatically. The repair worker classifies a failure: one not caused by the patch takes `request_ci_rerun` within `flaky_reruns`. The collector reruns on its own only jobs that were cancelled or lost their runner, within `interrupted_reruns` per head; after that a human resumes with `resume_ci`, after which the collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` and start again whenever the recorded head changes. The Work request carries the pending feedback present at allocation, and `record_publish_success` clears exactly that feedback. Work that carries feedback never takes `request_ci_rerun`. Explanation-only comments do not bump the revision, invalidate CI, or request repair. A push to the development branch while CI is awaited or Work is due records the new head and waits for its CI. Passing CI while feedback is pending returns to `development.fix_needed` (`return_for_feedback`), so a push while Work is due for a review never strands the review. Passing CI on a series that does not meet a series requirement of the plan (a path it must change, such as a changelog entry) returns there too (`return_for_series_requirements`), with the unmet requirements as the feedback of the next Work.
 
-### Failure case 4: a repair budget is exhausted
+### Failure case 5: a repair budget is exhausted
 
 ```mermaid
 flowchart TB
@@ -427,7 +490,7 @@ flowchart TB
 
 Exhaustion is decided at `development.fix_needed`. The first time `repair_attempts_cluster` or `no_progress` is exhausted in a generation, `refresh_on_exhaustion` runs complete planning again on the existing fork. After that, `exhaust_repair_attempts` parks. Both apply only while `work_total` remains. `repair_attempts_cluster` counts only while a failing CI job is recorded for the head.
 
-### Failure case 5: the Work budget is exhausted
+### Failure case 6: the Work budget is exhausted
 
 ```mermaid
 flowchart TB
@@ -449,7 +512,7 @@ flowchart TB
 
 When `work_total` is exhausted at `development.fix_needed`, `exhaust_work_total` waits for a human and names `work_total` in `pending_human_action.counter`, whatever the repair budgets hold. The reply states the number of Work allocations spent in this generation and names both `/upstreaming resume` and `/upstreaming park`. One resume starts `work_total` again and returns to `development.fix_needed`; the repair budgets are not started again.
 
-### Failure case 6: development must be re-planned
+### Failure case 7: development must be re-planned
 
 ```mermaid
 flowchart TB
@@ -574,6 +637,7 @@ flowchart TB
     end
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
+        development_review_pending["development.review_pending"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -596,6 +660,8 @@ flowchart TB
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
     development_fix_needed -->|require_base_branch| development_waiting_human
     development_fix_needed -->|exhaust_source_reads| development_waiting_human
+    development_review_pending -->|require_base_branch| development_waiting_human
+    development_review_pending -->|exhaust_source_reads| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     handoff_review_due -->|require_base_branch| handoff_waiting_human
     handoff_review_due -->|exhaust_source_reads| handoff_waiting_human
@@ -631,6 +697,7 @@ flowchart TB
     end
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
+        development_review_pending["development.review_pending"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -657,6 +724,8 @@ flowchart TB
     provisioning_waiting_human -->|require_base_branch| provisioning_waiting_human
     development_fix_needed -->|require_upstream_access| development_waiting_human
     development_fix_needed -->|require_renamed_upstream| development_waiting_human
+    development_review_pending -->|require_upstream_access| development_waiting_human
+    development_review_pending -->|require_renamed_upstream| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|resume_renamed_upstream| development_fix_needed
     development_waiting_human -->|require_base_branch| development_waiting_human
@@ -1034,7 +1103,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, handoff.review_due, handoff.review_pending, and upstream_review.fix_needed"]
+    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, development.review_pending, handoff.review_due, handoff.review_pending, and upstream_review.fix_needed"]
 
     any -->|record_source_unavailable| any
 ```

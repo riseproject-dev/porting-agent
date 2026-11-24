@@ -39,12 +39,16 @@ from common import (
 )
 
 POOL = "default"
-# Two worker profiles in one pool: planning runs (read and report, cheaper
-# model, no publish job) and patch work (stronger model, trusted publish job).
+# Three worker profiles in one pool: planning runs (read and report, cheaper
+# model, no publish job), patch work (stronger model, trusted publish job),
+# and the review of a held development patch (its own model, read and diff
+# only, a publish job that only checks the review).
 WORKER_PROFILE = "worker"
 PLANNER_PROFILE = "planner"
+REVIEWER_PROFILE = "reviewer"
 PROFILE_WORKFLOWS = {WORKER_PROFILE: ".github/workflows/worker.lock.yml",
-                     PLANNER_PROFILE: ".github/workflows/planner.lock.yml"}
+                     PLANNER_PROFILE: ".github/workflows/planner.lock.yml",
+                     REVIEWER_PROFILE: ".github/workflows/reviewer.lock.yml"}
 PROPOSAL_ARTIFACT = "porting-out"
 
 WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
@@ -57,6 +61,12 @@ WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
 SUBMISSION_REWRITE = "submission_rewrite"
 SUBMISSION_REVIEW = "submission_review"
 SUBMISSION_TASKS = (SUBMISSION_REWRITE, SUBMISSION_REVIEW)
+# The review of a held development patch: it reads and diffs exactly the
+# patch the worker's trusted publication job verified and held, and writes
+# nothing. Development patch Work carries the review contract (``review``),
+# so its worker run verifies the patch and never pushes it.
+DEVELOPMENT_REVIEW = "development_review"
+REVIEWED_TASKS = ("development_patch", "development_repair")
 ALLOWED_OPERATIONS = {
     "development_patch": ["append", "rewrite"],
     "development_repair": ["append", "rewrite"],
@@ -64,6 +74,7 @@ ALLOWED_OPERATIONS = {
     "planning": [],
     SUBMISSION_REWRITE: [],
     SUBMISSION_REVIEW: [],
+    DEVELOPMENT_REVIEW: [],
 }
 
 # Diagnostic no-write outputs are always allowed alongside.
@@ -76,7 +87,7 @@ def effect_contract(task: str) -> dict:
         # The plan comes back as an artifact too, but planning runs must
         # not need a write-capable Claim: they report via artifact only.
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
-    if task in WRITE_TASKS or task in SUBMISSION_TASKS:
+    if task in WRITE_TASKS or task in SUBMISSION_TASKS or task == DEVELOPMENT_REVIEW:
         return {"version": 1, "outputs": _DIAG + [{"type": "upload_artifact", "min": 1, "max": 1}]}
     raise ValueError(f"unknown task {task}")
 
@@ -126,6 +137,10 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
             {"host": "github.com", "repository": CONTROL_REPO, "repository_id": str(control_repo_id)}]},
         "effect_contract": effect_contract(task),
     }
+    if task in REVIEWED_TASKS:
+        # The review contract: the patch is held for its review and published
+        # only after it (``fork_publish.review_required``).
+        p["review"] = "required"
     p.update(_identity(request))
     return p
 
@@ -146,6 +161,8 @@ def _identity(request: dict) -> dict:
 def profile_for(task: str) -> str:
     if task == "planning":
         return PLANNER_PROFILE
+    if task == DEVELOPMENT_REVIEW:
+        return REVIEWER_PROFILE
     if task in WRITE_TASKS or task in SUBMISSION_TASKS:
         return WORKER_PROFILE
     raise ValueError(f"unknown task {task}")
@@ -221,7 +238,8 @@ def node(request: dict, record: dict, **kw) -> dict:
         "graph_id": graph_id(key),
         "node_key": "task",
         "pool": POOL,
-        "priority": 2 if request["task"] in ("upstream_revision", "development_repair") else 3,
+        "priority": 2 if request["task"] in ("upstream_revision", "development_repair",
+                                             DEVELOPMENT_REVIEW) else 3,
         "fairness_key": "",
         "worker_profile": profile_for(request["task"]),
         "payload": pl,
@@ -283,6 +301,16 @@ _INSTRUCTIONS = {
         "request template, contributing instructions, commit conventions, and the reviewers' "
         "expectations. Report pass or fail with one reason per problem. Change nothing. "
         "Return the review as the artifact."),
+    DEVELOPMENT_REVIEW: (
+        "Review exactly the held development patch in context.patch, which the trusted "
+        "pre-agent step downloaded, verified and rebuilt in ./fork on expected_head, before it "
+        "is published. Read the worker's report, the verified plan, the reason evidence and the "
+        "history first: the owner's steering comes first, then every earlier report and review. "
+        "Check the patch for correctness, scope, the plan, the steering, the upstream "
+        "conventions, the CI coverage of riscv64, its tests, security, and whether the report "
+        "says what the patch does. Report every finding with its severity; a blocker or major "
+        "finding fails the review. Run no reproduction and change nothing. Return the review "
+        "as the artifact."),
 }
 
 
@@ -410,6 +438,14 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
                if request["task"] == SUBMISSION_REVIEW else None)
     requirements = (series_requirements_context(record, evidence)
                     if request["task"] in WRITE_TASKS else None)
+    patch = held_patch_reference(record) if request["task"] == DEVELOPMENT_REVIEW else None
+    report = None
+    if patch is not None and patch.get("report_evidence_id"):
+        if patch["report_evidence_id"] not in evidence:
+            raise ValueError("the report of the held patch is not committed")
+        report = plan_reference(patch["report_evidence_id"])
+        report.pop("url", None)
+        report["evidence_id"] = patch["report_evidence_id"]
     reason_evidence = []
     for evidence_id in request.get("reason_ids") or []:
         item_evidence = evidence.get(evidence_id)
@@ -437,6 +473,12 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
         # The unmet series requirements of the plan this Work answers, which
         # the trusted worker gate checks.
         **({"series_requirements": requirements} if requirements is not None else {}),
+        # The held patch a review reviews: the trusted pre-agent step
+        # downloads its series from this artifact, checks it against this
+        # digest, and rebuilds it to this commit; and the worker's report,
+        # at the pinned commit with its SHA-256.
+        **({"patch": patch} if patch is not None else {}),
+        **({"report": report} if report is not None else {}),
     }
     return allowed_paths, context
 
@@ -511,6 +553,8 @@ def _reason_item(evidence: dict) -> dict:
         item["data"] = {"head": data.get("head"),
                         "unmet": [{"id": u.get("id"), "paths": list(u.get("paths") or [])}
                                   for u in (data.get("unmet") or [])[:6]]}
+    elif evidence.get("kind") == "patch_review":
+        item["data"] = _patch_review_data(evidence.get("data") or {})
     return item
 
 
@@ -531,6 +575,39 @@ def series_requirements_context(record: dict, evidence: dict[str, dict]) -> list
         return [{"id": u["id"], "paths": list(u["paths"])}
                 for u in ((found.get("data") or {}).get("unmet") or [])[:6]]
     return None
+
+
+# The findings of a failed review a payload carries as reason evidence: the
+# blocking ones first, each cut short. The history holds the whole review.
+REVIEW_FINDINGS_IN_PAYLOAD = 8
+
+
+def _patch_review_data(data: dict) -> dict:
+    findings = sorted((f for f in data.get("findings") or [] if isinstance(f, dict)),
+                      key=lambda f: ("blocker", "major", "minor", "nit").index(f.get("severity"))
+                      if f.get("severity") in ("blocker", "major", "minor", "nit") else 4)
+    return {
+        "verdict": data.get("verdict"), "disposition": data.get("disposition"),
+        "candidate": (data.get("patch") or {}).get("candidate"),
+        "findings": [{"id": f.get("id"), "severity": f.get("severity"),
+                      "category": f.get("category"), "file": f.get("file"), "line": f.get("line"),
+                      "title": _short(f.get("title") or "", 200),
+                      "detail": _short(f.get("detail") or "", 400)}
+                     for f in findings[:REVIEW_FINDINGS_IN_PAYLOAD]],
+        "findings_not_listed": max(0, len(findings) - REVIEW_FINDINGS_IN_PAYLOAD),
+    }
+
+
+def held_patch_reference(record: dict) -> dict:
+    """The held patch a review Work reviews, as the payload names it. Raises
+    ``ValueError`` when the record holds none."""
+    held = record.get("held_patch") or {}
+    if not held or not re.fullmatch(r"[1-9][0-9]{0,19}", str(held.get("worker_run_id"))) \
+            or not isinstance(held.get("artifact_id"), int):
+        raise ValueError("the review Work names no held patch")
+    return {key: held.get(key) for key in (
+        "worker_run_id", "artifact_id", "work", "revision", "patch_digest", "candidate", "tree",
+        "expected_head", "operation", "changed_files", "report_evidence_id")}
 
 
 def rewrite_reference(evidence: dict | None) -> dict:

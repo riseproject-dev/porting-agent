@@ -67,6 +67,7 @@
     "requested_at": "2026-11-22T22:54:12.110885+00:00"
   },
   "pending_publication": null,
+  "held_patch": null,
   "phase": "handoff",
   "prerequisite_ids": [],
   "previous_phase": null,

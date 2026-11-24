@@ -4,6 +4,7 @@
 
 import hashlib
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -386,3 +387,58 @@ class TestPublishRetryIdentity(_ForkFixture, unittest.TestCase):
         for bad in (0, -1, True, "2"):
             with self.subTest(attempt=bad), self.assertRaises(ValueError):
                 self.attempt(bad)
+
+
+class TestReviewedPublication(_ForkFixture, unittest.TestCase):
+    """A development patch held for its review is verified without a push in
+    its worker run, then published later, in another run, only when it
+    rebuilds to exactly the verified and reviewed commit."""
+
+    def setUp(self):
+        super().setUp()
+        self.task.update(task="development_patch", review=fork_publish.REVIEW_REQUIRED)
+        self.record.update(activity="agent_running")
+
+    def verify(self):
+        self.invocations += 1
+        return fork_publish.verify(
+            record=self.record, task=self.task, proposal=self.proposal(), mbox=self.mbox,
+            observe_head=self.fork_head,
+            scope=publisher.Scope(allowed_globs=[".github/workflows/*"]),
+            policy=policy(read_only=False), now=NOW, workdir=self.root / f"pub-{self.invocations}")
+
+    def publishing(self, candidate):
+        self.record.update(activity="publishing", pending_publication={
+            "worker_run_id": "7", "attempts": 0, "last_reason": "", "next_attempt_at": NOW})
+        self.record["held_patch"] = {
+            "worker_run_id": "7", "artifact_id": 8, "work": None, "revision": 0,
+            "patch_digest": hashlib.sha256(self.mbox).hexdigest(), "candidate": candidate,
+            "expected_head": self.base}
+
+    def test_the_verified_commit_is_rebuilt_exactly_when_it_is_published(self):
+        verified = self.verify()
+        self.assertEqual(verified.status, "verified", verified.reason)
+        self.assertEqual(verified.patch_digest, hashlib.sha256(self.mbox).hexdigest())
+        self.assertEqual((self.fork_head(), self.ops), (self.base, []))
+        # The worker's own run never pushes a patch held for its review.
+        self.assertIn("published only from development.publishing", self.run_publish().reason)
+        self.assertEqual(self.fork_head(), self.base)
+        # Later, in another run and at another time, the reviewed patch
+        # rebuilds to the very commit that was verified and is pushed.
+        time.sleep(1.1)
+        self.publishing(verified.candidate)
+        out = self.run_publish()
+        self.assertEqual(out.status, "published", out.reason)
+        self.assertEqual((out.candidate, self.fork_head()), (verified.candidate, verified.candidate))
+
+    def test_a_rebuild_other_than_the_reviewed_commit_is_never_pushed(self):
+        verified = self.verify()
+        self.publishing("f" * 40)
+        out = self.run_publish()
+        self.assertEqual((out.status, out.failure_class), ("rejected", "validation"))
+        self.assertIn("not to the reviewed commit", out.reason)
+        self.assertEqual(self.fork_head(), self.base)
+        self.publishing(verified.candidate)
+        self.record["held_patch"]["patch_digest"] = "0" * 64
+        self.assertIn("not the held patch", self.run_publish().reason)
+        self.assertEqual(self.fork_head(), self.base)

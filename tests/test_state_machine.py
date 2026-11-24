@@ -186,6 +186,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_submission_rewrite", "request_submission_review",
+                          "request_patch_review",
                           "request_upstream_revision", "request_review_revision",
                           "allocate_work_retry"})
         for e in allocating:
@@ -395,7 +396,7 @@ class TestLifecycleTable(unittest.TestCase):
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
                           "request_submission_rewrite", "request_submission_review",
-                          "allocate_work_retry"})
+                          "request_patch_review", "allocate_work_retry"})
         for e in allocating:
             self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
 
@@ -549,7 +550,7 @@ class TestLifecycleTable(unittest.TestCase):
         exhaustions = [e for e in lc.table_edges() if lc.exhausted_budgets(e)
                        and e.target != e.source and lc.LIFECYCLE[e.target].kind == "human_wait"]
         self.assertEqual({b for e in exhaustions for b in lc.exhausted_budgets(e)},
-                         set(lc.BUDGETS) - {"flaky_reruns"})
+                         set(lc.BUDGETS) - {"flaky_reruns", "dev_reviews"})
         for e in exhaustions:
             named = lc.counters_named(e)
             self.assertTrue(named, (e.source, e.verb))
@@ -621,6 +622,10 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual([(e.source, e.verb, e.target) for e in lc.exhaustion_edges("work_total")
                           if lc.state_phase(e.source) == "development"],
                          [("development.agent_running", "exhaust_work_recovery",
+                           "development.waiting_human"),
+                          ("development.review_pending", "exhaust_work_total",
+                           "development.waiting_human"),
+                          ("development.reviewing", "exhaust_work_recovery",
                            "development.waiting_human"),
                           (state, "exhaust_work_total", "development.waiting_human")])
         self.assertFalse([e for e in lc.exhaustion_edges("work_total")
@@ -718,6 +723,7 @@ class TestLifecycleTable(unittest.TestCase):
             "repair_attempts_cluster": "retries.patch_attempts_per_cluster",
             "no_progress": "retries.no_progress_review_after",
             "flaky_reruns": "retries.flaky_reruns",
+            "dev_reviews": "retries.patch_review_rejections",
             "dispatch_recovery": infrastructure, "publish_recovery": infrastructure,
             "interrupted_reruns": infrastructure,
             "operation_launch": infrastructure, "upstream_branch": infrastructure,
@@ -1042,7 +1048,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertEqual(stop.guard, (lc.NOT_PAUSED, "not terminal", lc.PROCESSING_ERROR))
         self.assertEqual(stop.effects, lc.Effects(
             work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller"),
-            clears=(lc.HELD_RESULT,)))
+            clears=(lc.HELD_RESULT, lc.HELD_PATCH)))
         self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))
 
         def problems_with(**changes):

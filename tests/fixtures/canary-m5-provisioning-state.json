@@ -42,6 +42,7 @@
   "paused": false,
   "pending_human_action": null,
   "pending_publication": null,
+  "held_patch": null,
   "phase": "provisioning",
   "prerequisite_ids": [],
   "previous_phase": null,

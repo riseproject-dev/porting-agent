@@ -14,7 +14,7 @@ A request starts as an issue labelled `upstreaming-request` in the control repos
 
 - `.state/` on `main` is lifecycle authority. Only schema-valid state may be published, in a plain fast-forward commit.
 - Pull-request validation is read-only and receives no App private key, destination token, or package credential.
-- The planner and the worker run as pinned agentic workflows. Neither receives a destination credential; trusted jobs verify and publish their results.
+- The planner, the worker, and the reviewer run as pinned agentic workflows. None receives a destination credential; trusted jobs verify and publish their results. Every development patch is reviewed by the reviewer, on its own model, before it is published.
 - The [status page]({{ '/status/' | relative_url }}) is regenerated from committed state whenever that state or these pages change.
 
 ## Pages

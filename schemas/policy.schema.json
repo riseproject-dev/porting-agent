@@ -148,6 +148,10 @@
         "source_unavailable_minutes": {
           "type": "integer",
           "minimum": 1
+        },
+        "patch_review_rejections": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

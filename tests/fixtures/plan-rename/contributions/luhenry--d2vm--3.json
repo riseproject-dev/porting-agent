@@ -47,6 +47,7 @@
   "pending_feedback_evidence_ids": [],
   "pending_human_action": null,
   "pending_publication": null,
+  "held_patch": null,
   "phase": "parked",
   "prerequisite_ids": [],
   "previous_phase": "investigation",

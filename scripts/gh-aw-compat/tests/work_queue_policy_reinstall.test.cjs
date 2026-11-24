@@ -75,6 +75,7 @@ function policy(names, ref) {
 }
 
 const administrator = { role: "administrator", principal: "1001", repository: REPOSITORY, workflow: ".github/workflows/dispatcher.lock.yml", run_id: "77", run_attempt: 1 };
+const dispatcher = { ...administrator, role: "dispatcher", run_id: "78" };
 
 // An in-memory ledger whose reads and writes use the library's replay and
 // commit validation, as the Git-backed store does.
@@ -129,6 +130,62 @@ describe("queue Policy reinstall", () => {
     expect((await reinstall({ lib, proposal, context, authenticate, queue })).decision).toBe("current");
     // gh-aw's own dispatch check accepts the compiled policy again.
     expect(() => lib.binding.assertPolicyProposal(after, { policyProposal: proposal })).not.toThrow();
+  });
+
+  it("installs an added reviewer profile on a live queue without a reinstall", async () => {
+    // The queue as it is installed today, and the compiled policy once the
+    // dispatcher dispatches the reviewer workflow too.
+    const before = policy(["planner", "worker"], "1".repeat(40));
+    const queue = ledger(before);
+    const proposal = policy(["planner", "worker", "reviewer"], "2".repeat(40));
+    expect(proposal.pools.default.profiles.reviewer.workflow).toBe(".github/workflows/reviewer.lock.yml");
+    // Nothing for the dispatcher's reinstall to do: the compiled policy
+    // preserves every installed profile, so no dispatch is refused.
+    expect(decide(lib, queue.state(), proposal)).toBe("current");
+    const epoch = queue.state().policy_epoch;
+    expect((await reinstall({ lib, proposal, context, authenticate, queue })).decision).toBe("current");
+    expect(queue.state().policy_epoch).toBe(epoch);
+    expect(() => lib.binding.assertPolicyProposal(queue.state(), { policyProposal: proposal })).not.toThrow();
+    // gh-aw's own on-demand installation, as a dispatcher submission or
+    // dispatch runs it, installs the new profile at the verified default
+    // revision. Only the GitHub reads that verify the workflow on the
+    // default branch are stubbed; the pool installation, its checks and the
+    // ledger commit are the library's own.
+    const configRef = "3".repeat(40);
+    const provisioningPath = require.resolve("./work_queue_provisioning.cjs");
+    const installPath = require.resolve("./work_queue_pool_install.cjs");
+    const real = require(provisioningPath);
+    const verified = [];
+    require.cache[provisioningPath].exports = {
+      ...real,
+      verifiedDefaultReference: async () => configRef,
+      configuredWorkerDeployment: async ({ profile: wanted }, revision) => {
+        verified.push(["deployment", wanted.workflow, revision]);
+        return { profile: { ...wanted, ref: revision, logical_contract: profile("reviewer", revision).logical_contract }, available: true };
+      },
+      verifyWorkerRoute: async ({ profile: route }) => { verified.push(["route", route.workflow, route.ref]); },
+    };
+    delete require.cache[installPath];
+    try {
+      const { installWorkQueuePools } = require(installPath);
+      await installWorkQueuePools({ context, githubClient: {}, readWorkQueueLog: queue.readWorkQueueLog, publishWorkQueueRequest: queue.publishWorkQueueRequest, policyProposal: proposal, core: core() }, { ...dispatcher, authenticated: true, roles: ["dispatcher"] }, ["default"]);
+    } finally {
+      require.cache[provisioningPath].exports = real;
+      delete require.cache[installPath];
+    }
+    expect(verified).toEqual([
+      ["deployment", ".github/workflows/reviewer.lock.yml", configRef],
+      ["route", ".github/workflows/reviewer.lock.yml", configRef],
+    ]);
+    const after = queue.state();
+    expect(after.policy_epoch).toBe(epoch);
+    expect(Object.keys(after.policy.pools.default.profiles).sort()).toEqual(["planner", "reviewer", "worker"]);
+    expect(after.policy.pools.default.default_profile).toBe("planner");
+    expect([...after.deployments.get("default").keys()].sort()).toEqual(["planner", "reviewer", "worker"]);
+    expect(decide(lib, after, proposal)).toBe("current");
+    expect(() => lib.binding.assertPolicyProposal(after, { policyProposal: proposal })).not.toThrow();
+    // A rollback that drops the reviewer again is a reinstall on a quiescent queue.
+    expect(decide(lib, after, policy(["planner", "worker"], "4".repeat(40)))).toBe("reinstall");
   });
 
   it("waits for a busy queue", () => {

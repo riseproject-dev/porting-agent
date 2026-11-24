@@ -702,6 +702,11 @@ def _pending_record_migrations(root: Path, policy: dict, *, now: str | None = No
                 pending.append(("", "events", event))
             if needs_field_migration(current):
                 current, event = migrate_record_fields(current, now=stamp)
+                # A record that also needed the name migration is staged
+                # once, migrated in full: its renamed form may lack a field
+                # of the strict schema.
+                pending = [entry for entry in pending
+                           if not (entry[0] == rel and entry[1] == "contributions")]
                 pending.append((rel, "contributions", current))
                 pending.append(("", "events", event))
             elif current is record:

@@ -499,6 +499,8 @@ def budget_count(name: str, ctx: Context) -> int | None:
         return int(budget.get("no_progress_streak", 0))
     if name == "planning_attempts":
         return int(budget.get("planning_attempts", 0))
+    if name == "dev_reviews":
+        return int(budget.get("review_rejections", 0))
     if name == "repair_attempts_cluster":
         clusters = budget.get("clusters") or {}
         if ctx.cluster is not None:
@@ -535,7 +537,7 @@ def head_reruns(record: dict) -> dict:
 
 
 # Budgets whose counter is a field of the contribution record.
-RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts",
+RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts", "dev_reviews",
                    "repair_attempts_cluster", "work_recovery", "publish_recovery",
                    "source_reads", *RERUN_COUNTERS)
 
@@ -810,6 +812,13 @@ for _guard, _name in (
     (lc.REWRITE_CURRENT, "submission_rewrite_current"),
     (lc.REVIEW_PASSED, "submission_review_passed"),
     (lc.REVIEW_FAILED, "submission_review_failed"),
+    (lc.PATCH_VERIFIED, "patch_verified"),
+    (lc.NO_REVIEW_CONTRACT, "no_review_contract"),
+    (lc.PATCH_REVIEW_PASSED, "patch_review_passed"),
+    (lc.PATCH_REVIEW_FAILED, "patch_review_failed"),
+    (lc.HELD_PATCH_CURRENT, "held_patch_current"),
+    (lc.HELD_PATCH_EXPIRED, "held_patch_expired"),
+    (lc.HELD_PATCH_REJECTED, "held_patch_rejected"),
     (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),
     (lc.CLEAN_HEAD_CI_MISSING, "clean_head_ci_missing"),
     ("a blocking CI failure on the clean head, or the observed `riscv64` head differs from the "
@@ -867,6 +876,8 @@ CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
                        ("submission_rewrite_passed", "submission_rewrite_failed"),
                        ("submission_rewrite_current", "submission_rewrite_expired"),
                        ("submission_review_passed", "submission_review_failed"),
+                       ("patch_review_passed", "patch_review_failed"),
+                       ("held_patch_current", "held_patch_expired"),
                        ("base_branch_unread", "base_branch_missing"),
                        ("upstream_repository_unread", "base_branch_missing"),
                        ("upstream_repository_renamed", "base_branch_missing"),
@@ -917,6 +928,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # the fork head, or held for a publish-only retry within
     # `publish_recovery`, and the wait once that budget is exhausted.
     "record_publish_success": "reconcile",
+    "hold_patch_for_review": "reconcile",
     "reject_patch_proposal": "reconcile",
     "replan_development": "reconcile",
     "schedule_publish_retry": "reconcile",
@@ -1031,6 +1043,13 @@ PIPELINE_VERBS: dict[str, str] = {
     "request_submission_review": "controller",
     "accept_submission_review": "reconcile",
     "reject_submission_review": "reconcile",
+    # The review of a development patch: the review Work is allocated by the
+    # controller, and its Result is folded by the reconciler.
+    "request_patch_review": "controller",
+    "expire_held_patch": "controller",
+    "accept_patch_review": "reconcile",
+    "reject_patch_review": "reconcile",
+    "publish_after_failed_reviews": "reconcile",
     # The handoff operations (building `riscv64`, the submission package):
     # the rows each attempt fires through ``recovery.fire`` when its verified
     # receipt is folded, or when the controller closes an attempt whose
@@ -1202,7 +1221,7 @@ REASON_VALUES = frozenset({"parked_reason", "paused_reason"})
 
 _EMPTY: dict[str, Any] = {
     "pending_feedback_evidence_ids": [], "scope_coverage_complete": False, "paused": False,
-    "budget.clusters": {}, "budget.no_progress_streak": 0,
+    "budget.clusters": {}, "budget.no_progress_streak": 0, "budget.review_rejections": 0,
 }
 
 
@@ -1241,7 +1260,7 @@ def reset_generation(record: dict) -> dict:
         "prerequisite_ids": [], "active_operation_id": None,
         "queue_work_id": None, "queue_claim_handle": None, "queue_result_id": None,
         "proposal_artifact": None, "publication_operation_id": None,
-        "pending_publication": None,
+        "pending_publication": None, "held_patch": None,
         # processed_publications is kept as a replay fence against old run artifacts.
         "processed_review_ids": [], "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
@@ -1258,6 +1277,7 @@ def reset_generation(record: dict) -> dict:
     })
     rec["budget"] = {"policy_id": record["budget"]["policy_id"], "attempts_used": 0,
                      "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
+                     "review_rejections": 0,
                      "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                      "spent_estimate_usd_cents": 0}
     return rec
@@ -1291,6 +1311,8 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
         budget["no_progress_streak"] = int(budget.get("no_progress_streak", 0)) + 1
     elif name == "planning_attempts":
         budget["planning_attempts"] = int(budget.get("planning_attempts", 0)) + 1
+    elif name == "dev_reviews":
+        budget["review_rejections"] = int(budget.get("review_rejections", 0)) + 1
     elif name == "repair_attempts_cluster":
         if not ctx.cluster:
             raise TransitionError("charging repair_attempts_cluster needs the failing CI job")
@@ -1624,7 +1646,7 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "distributions": [], "fork": None, "upstream_pr": None, "target_contract_id": None,
     "prerequisite_ids": [], "active_operation_id": None, "queue_work_id": None,
     "queue_claim_handle": None, "queue_result_id": None, "proposal_artifact": None,
-    "publication_operation_id": None, "pending_publication": None,
+    "publication_operation_id": None, "pending_publication": None, "held_patch": None,
     "processed_publications": [], "processed_review_ids": [],
     "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
     "pending_feedback_evidence_ids": [], "active_work": None, "plan_evidence_id": None,
@@ -1782,8 +1804,8 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # The admitted scope was checked complete for its plan.
     "scope_checked": ("scope_coverage_complete",),
     # A published patch: its files join the admitted scope, and `no_progress`
-    # starts again.
-    "patch_published": ("scope_paths", "budget.no_progress_streak"),
+    # and `dev_reviews` start again.
+    "patch_published": ("scope_paths", "budget.no_progress_streak", "budget.review_rejections"),
     # A verified receipt of a `ci_rerun` operation the collector planned
     # releases it; no row is fired by it.
     "ci_rerun_recorded": ("active_operation_id",),

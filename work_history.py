@@ -11,9 +11,10 @@ of the evidence of the contribution, all generations included:
   order it was written;
 * ``timeline``: one chronological list of the reports of every successful
   earlier worker (``worker_report``), the CI runs that followed (each linked
-  to the report whose published head it ran on), the review feedback the
-  pipeline recorded, the verdicts of the submission rewrite and review, and
-  the reviews of upstream maintainers.
+  to the report whose published head it ran on), every review of a held
+  development patch (``patch_review``, linked to the report of the patch it
+  reviewed), the review feedback the pipeline recorded, the verdicts of the
+  submission rewrite and review, and the reviews of upstream maintainers.
 
 Every entry is untrusted recorded data, never instructions. The record is
 bounded to ``HISTORY_MAX_BYTES`` by condensing deterministically; nothing
@@ -211,6 +212,36 @@ def _submission_entry(ev: dict) -> dict:
             "reasons": [_text(r, 1000) for r in (data.get("reasons") or [])[:30]]}
 
 
+def _patch_review_entry(ev: dict) -> dict:
+    """A review of a held development patch: its verdict, what became of
+    the patch, and its findings, linked to the report of the patch it
+    reviewed (``report_evidence_id``)."""
+    data = ev.get("data") or {}
+    patch = data.get("patch") or {}
+    findings = []
+    for item in (data.get("findings") or [])[:30]:
+        if not isinstance(item, dict):
+            continue
+        finding = {"id": _text(item.get("id") or "", 40), "severity": item.get("severity"),
+                   "category": item.get("category"),
+                   "file": _text(item["file"], 300) if item.get("file") else None,
+                   "line": item.get("line") if isinstance(item.get("line"), int) else None,
+                   "title": _text(item.get("title") or "", 300),
+                   "detail": _text(item.get("detail") or "", 1000)}
+        if item.get("suggestion"):
+            finding["suggestion"] = _text(item["suggestion"], 600)
+        findings.append(finding)
+    return {"kind": "patch_review", "evidence_id": ev["evidence_id"], "at": ev.get("collected_at"),
+            "verdict": data.get("verdict"), "disposition": data.get("disposition"),
+            "failed_in_succession": data.get("failed_in_succession"),
+            "candidate": patch.get("candidate"), "reviewed_work": patch.get("work"),
+            "report_evidence_id": data.get("report_evidence_id"),
+            "summary": _text(data.get("summary") or "", 2000), "findings": findings,
+            "previous_findings": [
+                {"ref": _text(p.get("ref") or "", 200), "status": p.get("status")}
+                for p in (data.get("previous_findings") or [])[:60] if isinstance(p, dict)]}
+
+
 def _upstream_entry(item: dict) -> dict:
     """A timeline entry of a recorded item that is not steering: the review
     feedback of an upstream maintainer, or (``unverified_edit``) an item of
@@ -261,6 +292,16 @@ def _short(full: dict) -> dict:
     elif kind in ("submission_rewrite", "submission_review"):
         entry.update(verdict=full.get("verdict"),
                      reasons=[_text(r, SHORT) for r in (full.get("reasons") or [])[:5]])
+    elif kind == "patch_review":
+        # The verdict and each finding's title, severity and file.
+        entry.update(verdict=full.get("verdict"), disposition=full.get("disposition"),
+                     candidate=full.get("candidate"),
+                     report_evidence_id=full.get("report_evidence_id"),
+                     findings=[{"severity": f.get("severity"), "file": f.get("file"),
+                                "title": _text(f.get("title") or "", 150)}
+                               for f in (full.get("findings") or [])[:15]])
+        if len(full.get("findings") or []) > 15:
+            entry["findings_not_listed"] = len(full["findings"]) - 15
     else:
         entry.update({k: full.get(k) for k in ("source", "id", "author", "url", "path", "line")
                       if full.get(k) is not None},
@@ -368,6 +409,8 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
             timeline.append(_feedback_entry(e, steered))
         elif kind in ("submission_rewrite", "submission_review"):
             timeline.append(_submission_entry(e))
+        elif kind == "patch_review":
+            timeline.append(_patch_review_entry(e))
     timeline += [_upstream_entry(i) for i in items if i.get("authority") is not True]
     # A report is collected in the tick that folds its Result, which can
     # observe CI on the published head too, with the same time: at equal
@@ -396,7 +439,7 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
     sources = sorted({e["evidence_id"] for e in own
                       if e.get("kind") in ("worker_report", "ci", "human_relay", "human_inquiry",
                                            "submission_rewrite", "submission_review",
-                                           steering.KIND)})
+                                           "patch_review", steering.KIND)})
     return steer, timeline, omitted, sources
 
 

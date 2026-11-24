@@ -59,7 +59,10 @@ class TestRepositoryLayout(unittest.TestCase):
             },
             {".github/aw/actions-lock.json"},
         )
-        expected_targets = {item["target"] for item in manifest["workflows"]}
+        # The reviewer of development patches has no source in the migrated
+        # repository: it was added after the migration.
+        expected_targets = {item["target"] for item in manifest["workflows"]} | {
+            "reviewer.lock.yml"}
         for lock in WORKFLOWS.glob("*.lock.yml"):
             self.assertIn(lock.name, expected_targets)
             self.assertTrue(lock.with_name(lock.name.removesuffix(".lock.yml") + ".md").is_file())

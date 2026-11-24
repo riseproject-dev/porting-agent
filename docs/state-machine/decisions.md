@@ -1835,3 +1835,31 @@ flowchart TB
     handoff_building_upstream_branch ==>|retry_upstream_branch| handoff_building_upstream_branch
     handoff_preparing_submission ==>|retry_submission_comment| handoff_preparing_submission
 ```
+
+### The review of every development patch before it is published
+
+Whether a development patch is reviewed by a separate model before it is published, where the unpublished patch lives, what pins it, and what ends successive failed reviews.
+
+**Change.** Every development patch is reviewed before it is published. Development Work carries the review contract; its worker's trusted publication job verifies the patch without a token and pushes nothing, and `hold_patch_for_review` holds it in `development.review_pending`, pinned in `held_patch` to the worker run, its publication artifact (where the series stays, 30 days), the Work, the digest of the series, and the commit it rebuilds to. A separate uncredentialed review Work (`development_review`, on its own `reviewer` workflow and model, read and diff only, no reproduction) reads exactly that patch with the worker's report, the plan, and the history. The verdict is derived from its findings: a blocker or a major finding fails it; minor findings and nits pass and are recorded. A pass takes `accept_patch_review` to `development.publishing`, the one state that publishes a held patch, through the publish-only workflow, which pushes only the held series rebuilt to the reviewed commit. A fail takes `reject_patch_review`: the review is the pending feedback of the next Work, which amends the patch and charges `repair_attempts_cluster` again when CI failed (so `work_total` is 36). After `dev_reviews` (2) failed reviews in succession, the next failed review takes `publish_after_failed_reviews`: there is no human wait and no override command; the patch is published anyway and trusted code posts the latest review and why it failed on the development PR. Nothing about reviews is posted on the tracking issue. Every review, passed or failed, is `patch_review` evidence that the history of every later Work and review carries; the report of the patch is stored at the hold. A stop, an expired artifact, or an exhausted recovery of the review Work discards the held patch, and fresh development Work follows. Work dispatched before the review keeps publishing in its own run (`record_publish_success` from `development.agent_running` with no review contract). New states `development.review_pending`, `development.reviewing`, and `development.publishing`, the budget `dev_reviews`, and the record field `held_patch`.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_review_pending["development.review_pending"]
+        development_reviewing["development.reviewing"]
+        development_publishing["development.publishing"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+
+    development_fix_needed -->|request_patch| development_agent_running
+    development_agent_running ==>|hold_patch_for_review| development_review_pending
+    development_review_pending -->|request_patch_review| development_reviewing
+    development_review_pending -->|expire_held_patch| development_fix_needed
+    development_reviewing -->|accept_patch_review| development_publishing
+    development_reviewing ==>|reject_patch_review| development_fix_needed
+    development_reviewing ==>|publish_after_failed_reviews| development_publishing
+    development_publishing -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|record_publish_success| development_waiting_ci
+```

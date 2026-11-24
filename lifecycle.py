@@ -85,7 +85,8 @@ def recorded_head(record: dict) -> str | None:
 
 def publication_check(record: dict, *, expected_revision: int, expected_head: str | None,
                       observed_head: str | None, ref: str, repository: str,
-                      expected_generation: int = 0, work_key: str | None = None) -> str | None:
+                      expected_generation: int = 0, work_key: str | None = None,
+                      reviewed: bool = False) -> str | None:
     """Re-read immediately before a fork write. Returns None when the write
     may proceed, otherwise the reason it must not. An effect that already
     passed this check may still finish after a later pause (best-effort
@@ -94,10 +95,16 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
     The Result must match the Work identity: the generation and revision of
     the record, and the Work id of the requested Work (``work_key``), or a
     pending publication of a held Result. A payload written before the Work
-    identity carried the Work id passes ``work_key=None`` and generation 0."""
+    identity carried the Work id passes ``work_key=None`` and generation 0.
+
+    A development patch whose Work carries the review contract
+    (``reviewed``) is written only from ``development.publishing``, where
+    the held patch (``held_patch``) pins it: the Result must be the Work the
+    held patch names, at the revision of that Work."""
     if record["phase"] not in WRITE_PHASES:
         return f"phase {record['phase']} does not permit fork writes"
-    state = LIFECYCLE.get(f"{record['phase']}.{record['activity']}")
+    state_name = f"{record['phase']}.{record['activity']}"
+    state = LIFECYCLE.get(state_name)
     if record["phase"] == "handoff" and not (state and state.writes):
         # Every handoff state is a table state; the table says which of them
         # an automated writer may write the fork in.
@@ -114,14 +121,31 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
         return "repository is not the recorded contribution fork"
     if int(record.get("generation", 0)) != expected_generation:
         return "work generation changed"
-    if record["revision"] != expected_revision:
-        return "work revision changed"
-    if work_key is not None:
-        work = record.get("active_work")
-        if work is not None and work.get("dedupe_key") != work_key:
-            return "the requested Work is other Work"
-        if work is None and not record.get("pending_publication"):
-            return "no requested Work or pending publication"
+    held = record.get(HELD_PATCH) if state_name == PUBLISHING else None
+    if reviewed and state_name != PUBLISHING:
+        return (f"a development patch is published only from {PUBLISHING}, after its review; "
+                f"the contribution is in {state_name}")
+    if reviewed and not held:
+        return "no held patch is recorded for publication"
+    if held:
+        # The reviewed patch is pinned: it answers the Work the held patch
+        # names, at the revision of that Work, whatever revisions its
+        # review took since.
+        if held.get("revision") != expected_revision:
+            return "the Result is not the held patch (revision)"
+        if work_key is not None and held.get("work") != work_key:
+            return "the Result is not the held patch (Work id)"
+        if not record.get("pending_publication"):
+            return "no pending publication of the held patch"
+    else:
+        if record["revision"] != expected_revision:
+            return "work revision changed"
+        if work_key is not None:
+            work = record.get("active_work")
+            if work is not None and work.get("dedupe_key") != work_key:
+                return "the requested Work is other Work"
+            if work is None and not record.get("pending_publication"):
+                return "no requested Work or pending publication"
     if observed_head != expected_head:
         return "fork head changed since the proposal was made"
     if record.get("active_operation_id"):
@@ -167,6 +191,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "proposal_artifact": None,
         "publication_operation_id": None,
         "pending_publication": None,
+        "held_patch": None,
         "processed_publications": [],
         "processed_review_ids": [],
         "processed_review_comment_ids": [],
@@ -188,7 +213,7 @@ def new_contribution(*, contribution_id: str, project_id: str, issue: dict, upst
         "retirement": None,
         "release_acceptance": None,
         "budget": {"policy_id": policy_id, "attempts_used": 0, "no_progress_streak": 0,
-                   "clusters": {}, "planning_attempts": 0,
+                   "clusters": {}, "planning_attempts": 0, "review_rejections": 0,
                    "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                    "spent_estimate_usd_cents": 0},
         "pending_human_action": None,
@@ -599,7 +624,7 @@ _REFRESH_EFFECTS = _E(
     revision="bump", sets=("refresh",),
     clears=("plan_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
-            "pending_human_action", "publication_operation_id"))
+            "pending_human_action", "publication_operation_id", "held_patch"))
 _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
 # The guard of the controller's stop after a processing error, and the stops
 # set by the controller whose reason the caller states: the engine refuses
@@ -613,6 +638,10 @@ CALLER_REASONS = ("pause_on_processing_error",)
 # already pushed is recorded by head observation. A stop is a transition that
 # sets a flag or ends the generation.
 HELD_RESULT = "pending_publication"
+# A verified development patch held, unpublished, for its review: its pin
+# (the worker run, the artifact, the Work, the digest of the series, and the
+# commit it rebuilds to). A stop discards it like a held Result.
+HELD_PATCH = "held_patch"
 STOP_KINDS = ("generation_end", "terminal")
 # Clears that take only a part of a field, as (field, the part cleared).
 # A published Result clears exactly the feedback its Work carried.
@@ -625,7 +654,7 @@ QUALIFIED_CLEARS: dict[str, tuple[str, str]] = {
 }
 # What every stop clears beside the requested Work. `proposal_artifact` only
 # ever holds a published Result, which a stop keeps.
-_HELD = (HELD_RESULT,)
+_HELD = (HELD_RESULT, HELD_PATCH)
 # The pending feedback a Work request carries: the ids present at allocation.
 # A fresh Work graph for the same task and a publish retry of its Result carry
 # the same ids.
@@ -710,6 +739,28 @@ REVIEW_FAILED = "the review of exactly the rewritten series and text fails"
 # which GitHub keeps 30 days.
 REWRITE_EXPIRED = "the publication artifact of the rewritten series expired or expires within a day"
 REWRITE_CURRENT = "the publication artifact of the rewritten series is current"
+# The review of a development patch. The worker's trusted publication job
+# verifies the patch without a token and publishes nothing; the verified
+# patch is held, its separate uncredentialed review Work reads and diffs it,
+# and only `development.publishing` publishes it, pinned to exactly the
+# series and commit that were verified and reviewed.
+PATCH_VERIFIED = ("the patch rebuilds on the expected head and passes the trusted validation, "
+                  "and the Work carries the review contract")
+NO_REVIEW_CONTRACT = ("the Work carries no review contract (it was dispatched before development "
+                      "patches were reviewed)")
+PATCH_REVIEW_PASSED = ("the review of exactly the held patch passes: it names no blocker or "
+                       "major finding")
+PATCH_REVIEW_FAILED = "the review of exactly the held patch names a blocker or major finding"
+# The held patch lives in the worker run's publication artifact, which
+# GitHub keeps 30 days.
+HELD_PATCH_EXPIRED = "the publication artifact of the held patch expired or expires within a day"
+HELD_PATCH_CURRENT = "the publication artifact of the held patch is current"
+HELD_PATCH_REJECTED = ("the held patch no longer rebuilds to the reviewed commit, or the trusted "
+                       "validation rejects it")
+REVIEW_STATES = ("development.review_pending", "development.reviewing")
+PUBLISHING = "development.publishing"
+# The states in which a held patch is recorded.
+HELD_PATCH_STATES = (*REVIEW_STATES, PUBLISHING)
 # CI on the clean head of `riscv64` is waited for this long before a human
 # is asked: `riscv64` has no pull request, so the project's CI runs on it
 # only when the trusted build dispatched its workflow or a push triggers it.
@@ -744,6 +795,7 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((NO_FAILING_JOB, REVIEW_REVISION_BUDGETS_REMAIN), (REVISION_BUDGET_EXHAUSTED,)),
     ((CANDIDATE_FAILED,), (CANDIDATE_NOT_FAILED,)),
     ((REWRITE_CURRENT,), (REWRITE_EXPIRED,)),
+    ((HELD_PATCH_CURRENT,), (HELD_PATCH_EXPIRED,)),
     ((NO_PENDING_FEEDBACK,), (PENDING_FEEDBACK,)),
     ((SERIES_REQUIREMENTS_MET,), (SERIES_REQUIREMENTS_UNMET,)),
 )
@@ -825,6 +877,18 @@ _RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
 _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts again the one "
                  "counter named in `pending_human_action.counter`, and no other. The event "
                  "records the actor, the counter, and its count at that point.")
+
+
+def _discarding(t: Transition, why: str = "") -> Transition:
+    """``t`` as it is taken from a state that holds a patch for its review:
+    it also discards the held patch, so the wait or the state it leads to
+    never keeps one."""
+    from dataclasses import replace
+
+    note = why or ("The held patch is discarded: after the wait, fresh development Work is "
+                   "requested.")
+    return replace(t, effects=replace(t.effects, clears=(*t.effects.clears, HELD_PATCH)),
+                   description=(t.description + " " + note).strip())
 
 
 def _resume_restarting(*budgets: str) -> Effects:
@@ -973,18 +1037,35 @@ LIFECYCLE: dict[str, State] = {
         }),
     "development.agent_running": State(
         "work", False, True,
-        "Patch Work is requested or running, or its verified Result is being published.",
+        "Patch Work is requested or running, or its Result is being verified. Work dispatched "
+        "before development patches were reviewed may still publish its Result here.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_dispatch_recovery", "development.waiting_human"): _EXHAUST_DISPATCH_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
             ("exhaust_work_recovery", "development.waiting_human"): _EXHAUST_WORK_RECOVERY,
+            ("hold_patch_for_review", "development.review_pending"): Transition(
+                _R, None,
+                (PATCH_VERIFIED,),
+                _E(revision="bump", work="clear", sets=(HELD_PATCH,)),
+                description="The worker's trusted publication job rebuilt the series on the "
+                            "expected head and validated it without a token, and published "
+                            "nothing. The patch is held, pinned to the worker run, its "
+                            "publication artifact, the Work, the digest of the series, and the "
+                            "commit it rebuilds to; it carries the feedback its Work carried. "
+                            "The revision is bumped: the review Work is new Work of the next "
+                            "revision. The report of the Work is stored as `worker_report` "
+                            "evidence with the commit it proposed (`head_candidate`), so the "
+                            "review and every later Work read it whatever the review decides."),
             ("record_publish_success", "development.waiting_ci"): Transition(
                 _R, None,
-                ("the Result is published, or uncertain and later confirmed",),
+                ("the Result is published, or uncertain and later confirmed", NO_REVIEW_CONTRACT),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
                   clears=(CARRIED_FEEDBACK,)),
-                description="The published patch answers exactly the feedback its Work "
+                description="Taken only for Work dispatched before development patches were "
+                            "reviewed, whose worker still pushes in its own run; every other "
+                            "patch is held for its review (`hold_patch_for_review`). "
+                            "The published patch answers exactly the feedback its Work "
                             "carried; feedback recorded while the Work ran stays pending. A "
                             "publication whose push was not read back (`uncertain`) does not "
                             "take this row when its Result is folded: it is a failed "
@@ -1021,6 +1102,118 @@ LIFECYCLE: dict[str, State] = {
                 "The report of the Work is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
+        }),
+    "development.review_pending": State(
+        "auto_wait", True, False,
+        "A verified patch is held, unpublished, for its review; the controller allocates the "
+        "review Work when a worker slot is free.",
+        transitions={
+            ("request_patch_review", "development.reviewing"): Transition(
+                _K, None,
+                ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
+                 HELD_PATCH_CURRENT, UPSTREAM_BOUND),
+                _E(work="allocate"), ("work_total",),
+                "The uncredentialed review Work starts in a fresh context, on its own reviewer "
+                "workflow and model, and can change nothing. The trusted pre-agent step "
+                "downloads the held series from the worker run's publication artifact, checks "
+                "its digest, and rebuilds it on the expected head, so the review reads and "
+                "diffs exactly the held patch. It also reads the worker's report, the verified "
+                "plan, the reason evidence of the worker's Work, and the history, which holds "
+                "the owner's steering and every earlier review. It runs no reproduction."),
+            ("exhaust_work_total", "development.waiting_human"): Transition(
+                _K, None, (WORK_TOTAL_EXHAUSTED,),
+                _E(sets=("pending_human_action=work_budget_exhausted",
+                         f"{PENDING_COUNTER}=work_total"), clears=(HELD_PATCH,)),
+                exhausts=("work_total",),
+                description="The held patch is discarded: after the resume, fresh development "
+                            "Work is requested."),
+            ("expire_held_patch", "development.fix_needed"): Transition(
+                _K, None, (HELD_PATCH_EXPIRED, WORK_TOTAL_REMAINS),
+                _E(clears=(HELD_PATCH,)),
+                description="Fresh development Work is due; an expired patch is never reviewed "
+                            "or published."),
+        }),
+    "development.reviewing": State(
+        "work", False, False,
+        "Review Work of the held patch is requested or running; its Result is pass or fail "
+        "with findings for exactly the held patch.",
+        transitions={
+            ("retry_dispatch", SELF): _RETRY_DISPATCH,
+            ("exhaust_dispatch_recovery", "development.waiting_human"):
+                _discarding(_EXHAUST_DISPATCH_RECOVERY),
+            ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("exhaust_work_recovery", "development.waiting_human"):
+                _discarding(_EXHAUST_WORK_RECOVERY),
+            ("accept_patch_review", PUBLISHING): Transition(
+                _R, None,
+                (PATCH_REVIEW_PASSED,),
+                _E(work="clear", sets=(HELD_RESULT,)),
+                description="The trusted check of the Result requires a review of exactly the "
+                            "held patch (its digest and commit) and derives the verdict from "
+                            "the findings: a blocker or a major finding fails the review "
+                            "whatever it declares; minor findings and nits pass and are "
+                            "recorded. The review is stored as `patch_review` evidence, which "
+                            "the history of every later Work carries. The held patch is "
+                            "pending publication at once, with the feedback its Work carried. "
+                            "Nothing is posted."),
+            ("reject_patch_review", "development.fix_needed"): Transition(
+                _R, None,
+                (PATCH_REVIEW_FAILED, "dev_reviews remains"),
+                _E(revision="bump", work="clear", sets=("pending_feedback_evidence_ids",),
+                   clears=(HELD_PATCH,)),
+                ("dev_reviews",),
+                "The review is stored as `patch_review` evidence and is pending feedback of the "
+                "next development Work, which amends the patch; the feedback its Work carried "
+                "stays pending. The held patch is discarded and nothing is posted. A Result "
+                "that is not a usable review takes `allocate_work_retry` or "
+                "`exhaust_work_recovery` instead."),
+            ("publish_after_failed_reviews", PUBLISHING): Transition(
+                _R, None,
+                (PATCH_REVIEW_FAILED, "dev_reviews exhausted"),
+                _E(work="clear", sets=(HELD_RESULT,)),
+                description="Successive failed reviews do not stop development: the held "
+                            "patch, verified and pinned like a passing one, is published "
+                            "anyway, with the feedback its Work carried, and the pending "
+                            "publication records the failed review. Once it is published, "
+                            "trusted code posts on the development PR the latest review and "
+                            "why it failed; nothing is posted on the tracking issue. The "
+                            "review is stored as `patch_review` evidence for the history of "
+                            "every later Work; it is not made pending feedback, so it does "
+                            "not request another repair.",
+                exhausts=("dev_reviews",)),
+        }),
+    PUBLISHING: State(
+        "work", False, True,
+        "The reviewed patch is published: the publish-only workflow rebuilds exactly the held "
+        "series and pushes it under the exact-head lease only when it rebuilds to the "
+        "reviewed commit.",
+        transitions={
+            ("record_publish_success", "development.waiting_ci"): Transition(
+                _R, None,
+                ("the Result is published, or uncertain and later confirmed",),
+                _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
+                   clears=(CARRIED_FEEDBACK, HELD_PATCH)),
+                description="The published patch answers exactly the feedback its Work "
+                            "carried. An `uncertain` publication is confirmed as in "
+                            "`development.agent_running`. The report stored at the hold is "
+                            "stored again with the head the publication read back "
+                            "(`head_after`). A published patch starts `dev_reviews` and "
+                            "`no_progress` again."),
+            ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
+            ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
+            ("replan_development", "development.fix_needed"): Transition(
+                _R, None,
+                ("the proposal no longer applies to the fork head",),
+                _E(revision="bump", work="clear", clears=(HELD_PATCH,)),
+                description="The fork head moved while the patch was held: it is discarded, "
+                            "and the pending feedback is kept."),
+            ("reject_patch_proposal", "development.fix_needed"): Transition(
+                _R, None,
+                (HELD_PATCH_REJECTED, "no_progress remains"),
+                _E(revision="bump", work="clear", clears=("clean_head_sha", HELD_PATCH)),
+                ("no_progress",),
+                "Nothing is pushed: only exactly the reviewed commit is ever published. The "
+                "pending feedback is kept."),
         }),
     "development.waiting_ci": State(
         "auto_wait", False, True,
@@ -1137,10 +1330,11 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 (REPAIR_BUDGET_EXHAUSTED, WORK_TOTAL_REMAINS, REFRESH_UNUSED, NOT_PAUSED),
                 _E(revision="bump", sets=("refresh", "automatic_refresh_used"),
-                  clears=(*_REFRESH_EFFECTS.clears, "budget.clusters", "budget.no_progress_streak")),
+                  clears=(*_REFRESH_EFFECTS.clears, "budget.clusters", "budget.no_progress_streak",
+                          "budget.review_rejections")),
                 description="One automatic refresh per generation: complete planning runs "
-                            "again on the existing fork. The per-job and no-progress counters "
-                            "start again; `work_total` does not.",
+                            "again on the existing fork. The per-job, no-progress, and failed "
+                            "review counters start again; `work_total` does not.",
                 exhausts=("repair_attempts_cluster", "no_progress")),
             ("exhaust_repair_attempts", "parked.idle"): Transition(
                 _K, None,
@@ -1179,8 +1373,9 @@ LIFECYCLE: dict[str, State] = {
         }),
     "development.waiting_human": State(
         "human_wait", False, False,
-        "Development recovery or `work_total` is exhausted, the development PR does not match, "
-        "CI on the head was interrupted repeatedly, or the development PR operation could not be "
+        "Development recovery, the recovery of the review Work or of the publication of a "
+        "held patch, or `work_total` is exhausted, the development PR does not match, CI on "
+        "the head was interrupted repeatedly, or the development PR operation could not be "
         "completed; a human corrects the cause and resumes.",
         transitions={
             ("resume_ci", "development.waiting_ci"): Transition(
@@ -1203,8 +1398,9 @@ LIFECYCLE: dict[str, State] = {
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
                             "source_reads")),
-                description="Fresh Work is requested; a Result held for publication is not "
-                            "reused. The pending feedback is kept. " + _RESTART_NOTE),
+                description="Fresh Work is requested; a Result held for publication and a "
+                            "patch held for its review are not reused. The pending feedback is "
+                            "kept. " + _RESTART_NOTE),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "handoff.awaiting_submission": State(
@@ -1789,9 +1985,11 @@ RULES: dict[str, Rule] = {
                         "the upstream starts `source_reads` again."),
         "every state in which the controller needs the upstream base branch: "
         "`queued.idle`, `planning.idle`, `provisioning.idle`, `development.fix_needed`, "
-        "`handoff.review_due`, `handoff.review_pending`, and `upstream_review.fix_needed`",
+        "`development.review_pending`, `handoff.review_due`, `handoff.review_pending`, and "
+        "`upstream_review.fix_needed`",
         states=("queued.idle", "planning.idle", "provisioning.idle", "development.fix_needed",
-                "handoff.review_due", "handoff.review_pending", "upstream_review.fix_needed")),
+                "development.review_pending", "handoff.review_due", "handoff.review_pending",
+                "upstream_review.fix_needed")),
     "record_late_effect": Rule(
         SELF,
         Transition(
@@ -1839,6 +2037,7 @@ BASE_BRANCH_WAITS = {
     "planning.idle": "planning.waiting_human",
     "provisioning.idle": "provisioning.waiting_human",
     "development.fix_needed": "development.waiting_human",
+    "development.review_pending": "development.waiting_human",
     "handoff.review_due": "handoff.waiting_human",
     "handoff.review_pending": "handoff.waiting_human",
     "upstream_review.fix_needed": "upstream_review.waiting_human",
@@ -1887,11 +2086,15 @@ _REQUIRE_RENAMED_UPSTREAM = Transition(
                 "the wait. A repository that moved is a new request: the contribution is "
                 "parked, then abandoned.")
 for _state, _wait in BASE_BRANCH_WAITS.items():
-    LIFECYCLE[_state].transitions[("require_base_branch", _wait)] = _REQUIRE_BASE_BRANCH
-    LIFECYCLE[_state].transitions[("exhaust_source_reads", _wait)] = _EXHAUST_SOURCE_READS
-    LIFECYCLE[_state].transitions[("require_upstream_access", _wait)] = _REQUIRE_UPSTREAM_ACCESS
+    # From a state that holds a patch for its review, the wait discards it:
+    # whatever ends the wait, fresh development Work is due after it.
+    _held = (lambda t: _discarding(t)) if _state in HELD_PATCH_STATES else (lambda t: t)
+    LIFECYCLE[_state].transitions[("require_base_branch", _wait)] = _held(_REQUIRE_BASE_BRANCH)
+    LIFECYCLE[_state].transitions[("exhaust_source_reads", _wait)] = _held(_EXHAUST_SOURCE_READS)
+    LIFECYCLE[_state].transitions[("require_upstream_access", _wait)] = \
+        _held(_REQUIRE_UPSTREAM_ACCESS)
     LIFECYCLE[_state].transitions[("require_renamed_upstream", _wait)] = \
-        _REQUIRE_RENAMED_UPSTREAM
+        _held(_REQUIRE_RENAMED_UPSTREAM)
 
 # The wait that failed reads caused ends once the upstream is read again: the
 # same transition as the resume a human would post, taken by the controller.
@@ -1996,7 +2199,10 @@ FLAGS: dict[str, Flag] = {
         "activity, evidence, and pending feedback are kept. "
         "The one exception: setting it in an `agent_running` state leads to the state in which the "
         "Work is due again, `planning.idle`, `development.fix_needed`, "
-        "`handoff.review_due` (also from `handoff.reviewing`), or `upstream_review.fix_needed`. "
+        "`handoff.review_due` (also from `handoff.reviewing`), or `upstream_review.fix_needed`; "
+        "setting it while a development patch is held for its review or its publication "
+        "(`development.review_pending`, `development.reviewing`, `development.publishing`) "
+        "discards the held patch and leads to `development.fix_needed`. "
         "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
         "keeps the plan, candidate head, clean head, `handoff_request`, and the posted "
         "package. `verify_upstream_pr` binds to the exact head only, so the revision bump "
@@ -2043,6 +2249,9 @@ FLAGS: dict[str, Flag] = {
         {
             "planning.agent_running": "planning.idle",
             "development.agent_running": "development.fix_needed",
+            "development.review_pending": "development.fix_needed",
+            "development.reviewing": "development.fix_needed",
+            PUBLISHING: "development.fix_needed",
             "handoff.agent_running": "handoff.review_due",
             "handoff.reviewing": "handoff.review_due",
             "upstream_review.agent_running": "upstream_review.fix_needed",
@@ -2088,6 +2297,12 @@ BUDGETS: dict[str, Budget] = {
         "`budget.no_progress_streak`, started again by a published patch and by "
         "`refresh_on_exhaustion`",
         ("refresh_on_exhaustion", "exhaust_repair_attempts")),
+    "dev_reviews": Budget(
+        "retries.patch_review_rejections", 0,
+        "one failed review of a held development patch in succession, which returns it for "
+        "repair",
+        "`budget.review_rejections`, started again by a published patch and by "
+        "`refresh_on_exhaustion`", ("publish_after_failed_reviews",)),
     "flaky_reruns": Budget(
         "retries.flaky_reruns", 0,
         "one rerun of the failed CI jobs on the exact head, requested by the repair worker",
@@ -2320,7 +2535,8 @@ _SIMPLIFIED_NODES = (
     "queued.idle",
     "planning.idle", "planning.agent_running", "planning.waiting_human",
     "provisioning.idle", "provisioning.waiting_human",
-    "development.fix_needed", "development.agent_running", "development.waiting_ci",
+    "development.fix_needed", "development.agent_running", "development.review_pending",
+    "development.reviewing", "development.publishing", "development.waiting_ci",
     "development.waiting_human",
     "handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
     "handoff.review_pending", "handoff.reviewing",
@@ -2354,7 +2570,12 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 ("provisioning.idle", "confirm_provisioning"),
                 ("development.fix_needed", "request_patch"),
                 ("development.fix_needed", "request_repair"),
-                ("development.agent_running", "record_publish_success"),
+                ("development.agent_running", "hold_patch_for_review"),
+                ("development.review_pending", "request_patch_review"),
+                ("development.reviewing", "accept_patch_review"),
+                ("development.reviewing", "reject_patch_review"),
+                ("development.reviewing", "publish_after_failed_reviews"),
+                ("development.publishing", "record_publish_success"),
                 ("development.agent_running", "reject_patch_proposal"),
                 ("development.agent_running", "request_ci_rerun"),
                 ("development.waiting_ci", "record_ci_failure"),
@@ -2399,7 +2620,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
             ), start=INITIAL_STATE, start_verb=INITIAL_VERB, ends=("released.idle", "closed.idle"),
                 text="On both the development PR and the upstream PR, a CI failure keeps the "
                      "contribution in its phase while a bounded repair is prepared and tested, and "
-                     "an actionable review comment is included in the next repair. An "
+                     "an actionable review comment is included in the next repair. Every "
+                     "development patch is reviewed before it is published. An "
                      "explanation-only comment is answered on the development PR; at the "
                      "submission gate and on the upstream PR it is recorded and linked from the "
                      "event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, "
@@ -2485,21 +2707,34 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
     DiagramSection(
         "Development and repair cases",
         "Development is one bounded loop around the same development PR. A worker proposes a patch, "
-        "trusted code validates and publishes it, and CI plus authorized review evaluate the exact "
-        "head. Only `nominate_for_handoff` leaves development forward.",
+        "trusted code validates it, a separate review Work reviews exactly that patch, trusted "
+        "code publishes it, and CI plus authorized review evaluate the exact head. Only "
+        "`nominate_for_handoff` leaves development forward.",
         (
             Diagram(
-                "Success case: patch, publish, CI, and handoff",
-                ("development.fix_needed", "development.agent_running", "development.waiting_ci",
-                 "handoff.awaiting_submission"),
+                "Success case: patch, review, publish, CI, and handoff",
+                ("development.fix_needed", "development.agent_running",
+                 "development.review_pending", "development.reviewing", "development.publishing",
+                 "development.waiting_ci", "handoff.awaiting_submission"),
                 (("development.fix_needed", "request_patch"),
-                 ("development.agent_running", "record_publish_success"),
+                 ("development.agent_running", "hold_patch_for_review"),
+                 ("development.review_pending", "request_patch_review"),
+                 ("development.reviewing", "accept_patch_review"),
+                 ("development.publishing", "record_publish_success"),
                  ("development.waiting_ci", "nominate_for_handoff")),
                 start="development.fix_needed",
                 text="Every Work carries its history: the reports of the earlier successful "
-                     "workers, the CI runs and reviews that followed them, and the owner's "
-                     "steering from the tracking issue and the pull requests. A repair after "
-                     "failing CI reads the report of the worker whose head failed.\n\n"
+                     "workers, the CI runs and reviews that followed them, every review of a "
+                     "development patch, and the owner's steering from the tracking issue and "
+                     "the pull requests. A repair after failing CI reads the report of the "
+                     "worker whose head failed.\n\n"
+                     "The worker's trusted publication job verifies the patch without a token "
+                     "and publishes nothing: `hold_patch_for_review` holds it, pinned to its "
+                     "series and the commit it rebuilds to. A separate review Work, on its own "
+                     "workflow and model, reads and diffs exactly that patch with the worker's "
+                     "report, the plan, and the history; `accept_patch_review` makes it pending "
+                     "publication, and the publish-only workflow pushes it only when it "
+                     "rebuilds to the reviewed commit.\n\n"
                      "`development.fix_needed` is the one state in which development Work is due, "
                      "and it is entered only after `confirm_provisioning`: no patch is proposed "
                      "before the fork exists. `request_repair` applies while a failing CI job is "
@@ -2530,17 +2765,29 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`rearm_dispatch` once the dispatcher has reinstalled the compiled policy."),
             Diagram(
                 "Failure case 2: trusted publication failure",
-                ("development.agent_running", "development.fix_needed", "development.waiting_human",
-                 "development.waiting_ci"),
-                (("development.agent_running", "record_publish_success"),
+                ("development.agent_running", "development.publishing", "development.fix_needed",
+                 "development.waiting_human", "development.waiting_ci",
+                 "development.review_pending"),
+                (("development.agent_running", "hold_patch_for_review"),
+                 ("development.agent_running", "record_publish_success"),
                  ("development.agent_running", "schedule_publish_retry"),
                  ("development.agent_running", "exhaust_publish_recovery"),
+                 ("development.publishing", "record_publish_success"),
+                 ("development.publishing", "schedule_publish_retry"),
+                 ("development.publishing", "exhaust_publish_recovery"),
+                 ("development.publishing", "replan_development"),
+                 ("development.publishing", "reject_patch_proposal"),
                  ("development.waiting_human", "resume_development"),
                  ("development.fix_needed", "request_repair")),
                 start="development.agent_running",
-                text="An infrastructure failure publishes the same verified Result again within "
-                     "`publish_recovery`. After exhaustion and a resume, fresh Work is requested; "
-                     "the held Result is not reused."),
+                text="An infrastructure failure of the worker's verification, or of the "
+                     "publication of a reviewed patch, runs the same trusted step again for the "
+                     "same Result within `publish_recovery`, with no model call. The reviewed "
+                     "patch is pushed only when it rebuilds to the reviewed commit; a fork head "
+                     "that moved replans, and a patch that no longer rebuilds is rejected. After "
+                     "exhaustion and a resume, fresh Work is requested; the held Result is not "
+                     "reused. Work dispatched before development patches were reviewed still "
+                     "publishes its Result in `development.agent_running`."),
             Diagram(
                 "The development PR operation",
                 ("development.agent_running", "development.waiting_ci",
@@ -2560,15 +2807,53 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "as failed and wait for a human; the resume plans a new operation, which "
                      "adopts a PR a lost launch created."),
             Diagram(
-                "Failure case 3: internal PR CI or review failure",
+                "Failure case 3: the review of a held patch fails, or its Work fails",
+                ("development.fix_needed", "development.agent_running",
+                 "development.review_pending", "development.reviewing", "development.publishing",
+                 "development.waiting_human", "development.waiting_ci"),
+                (("development.agent_running", "hold_patch_for_review"),
+                 ("development.review_pending", "request_patch_review"),
+                 ("development.review_pending", "expire_held_patch"),
+                 ("development.review_pending", "exhaust_work_total"),
+                 ("development.reviewing", "retry_dispatch"),
+                 ("development.reviewing", "allocate_work_retry"),
+                 ("development.reviewing", "exhaust_dispatch_recovery"),
+                 ("development.reviewing", "exhaust_work_recovery"),
+                 ("development.reviewing", "reject_patch_review"),
+                 ("development.reviewing", "publish_after_failed_reviews"),
+                 ("development.reviewing", "accept_patch_review"),
+                 ("development.publishing", "record_publish_success"),
+                 ("development.fix_needed", "request_repair"),
+                 ("development.waiting_human", "resume_development")),
+                start="development.agent_running",
+                text="A review fails on a blocker or a major finding, whatever it declares. "
+                     "`reject_patch_review` discards the held patch and makes the review "
+                     "pending feedback of the next development Work, which amends the patch, "
+                     "and charges `dev_reviews`. Once `dev_reviews` is exhausted, the next "
+                     "failed review takes `publish_after_failed_reviews`: the held patch is "
+                     "published anyway, and trusted code posts on the development PR the latest "
+                     "review and why it failed. A published patch starts `dev_reviews` again. "
+                     "Every review, passed or failed, is stored as evidence that the history of "
+                     "every later Work and review carries; nothing about a review is posted on "
+                     "the tracking issue. A review Work that fails to dispatch or returns no "
+                     "usable Result is recovered like any Work, and its exhaustion waits for a "
+                     "human, discarding the held patch: the resume requests fresh development "
+                     "Work. A held patch whose artifact expires is never reviewed or "
+                     "published."),
+            Diagram(
+                "Failure case 4: internal PR CI or review failure",
                 ("development.waiting_ci", "development.fix_needed", "development.agent_running",
+                 "development.review_pending", "development.reviewing", "development.publishing",
                  "development.waiting_human", "handoff.awaiting_submission"),
                 (("development.waiting_ci", "record_ci_failure"),
                  ("development.waiting_ci", "record_actionable_review"),
                  ("development.fix_needed", "record_actionable_review"),
                  ("development.waiting_ci", "record_explanation"),
                  ("development.fix_needed", "request_repair"),
-                 ("development.agent_running", "record_publish_success"),
+                 ("development.agent_running", "hold_patch_for_review"),
+                 ("development.review_pending", "request_patch_review"),
+                 ("development.reviewing", "accept_patch_review"),
+                 ("development.publishing", "record_publish_success"),
                  ("development.agent_running", "request_ci_rerun"),
                  ("development.waiting_ci", "nominate_for_handoff"),
                  ("development.waiting_ci", "rerun_interrupted_ci"),
@@ -2600,7 +2885,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "(`return_for_series_requirements`), with the unmet requirements as the "
                      "feedback of the next Work."),
             Diagram(
-                "Failure case 4: a repair budget is exhausted",
+                "Failure case 5: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",
                  "planning.idle", "planning.agent_running", "parked.idle"),
                 (("development.fix_needed", "request_repair"),
@@ -2617,7 +2902,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`work_total` remains. `repair_attempts_cluster` counts only while a failing "
                      "CI job is recorded for the head."),
             Diagram(
-                "Failure case 5: the Work budget is exhausted",
+                "Failure case 6: the Work budget is exhausted",
                 ("development.fix_needed", "development.agent_running",
                  "development.waiting_human", "parked.idle"),
                 (("development.fix_needed", "request_repair"),
@@ -2633,7 +2918,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`work_total` again and returns to `development.fix_needed`; the repair "
                      "budgets are not started again."),
             Diagram(
-                "Failure case 6: development must be re-planned",
+                "Failure case 7: development must be re-planned",
                 ("development.waiting_ci", "development.fix_needed",
                  "development.waiting_human", "queued.idle", "planning.agent_running"),
                 (("development.waiting_ci", "refresh_planning"),
@@ -2712,7 +2997,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 "Failure case 2: the upstream base branch is missing or cannot be read",
                 ("queued.idle", "planning.idle", "planning.waiting_human", "provisioning.idle",
                  "provisioning.waiting_human", "development.fix_needed",
-                 "development.waiting_human", "handoff.review_due", "handoff.review_pending",
+                 "development.review_pending", "development.waiting_human",
+                 "handoff.review_due", "handoff.review_pending",
                  "handoff.waiting_human", "upstream_review.fix_needed",
                  "upstream_review.waiting_human"),
                 (("queued.idle", "require_base_branch"),
@@ -2725,6 +3011,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("provisioning.waiting_human", "resume_provisioning"),
                  ("development.fix_needed", "require_base_branch"),
                  ("development.fix_needed", "exhaust_source_reads"),
+                 ("development.review_pending", "require_base_branch"),
+                 ("development.review_pending", "exhaust_source_reads"),
                  ("development.waiting_human", "resume_development"),
                  ("handoff.review_due", "require_base_branch"),
                  ("handoff.review_due", "exhaust_source_reads"),
@@ -2760,7 +3048,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 "Failure case 3: the upstream repository cannot be read",
                 ("queued.idle", "planning.idle", "planning.waiting_human", "provisioning.idle",
                  "provisioning.waiting_human", "development.fix_needed",
-                 "development.waiting_human", "handoff.review_due", "handoff.review_pending",
+                 "development.review_pending", "development.waiting_human",
+                 "handoff.review_due", "handoff.review_pending",
                  "handoff.waiting_human", "upstream_review.fix_needed",
                  "upstream_review.waiting_human"),
                 (("queued.idle", "require_upstream_access"),
@@ -2777,6 +3066,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("provisioning.waiting_human", "require_base_branch"),
                  ("development.fix_needed", "require_upstream_access"),
                  ("development.fix_needed", "require_renamed_upstream"),
+                 ("development.review_pending", "require_upstream_access"),
+                 ("development.review_pending", "require_renamed_upstream"),
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "resume_renamed_upstream"),
                  ("development.waiting_human", "require_base_branch"),
@@ -3562,6 +3853,46 @@ def _check_settled_rows(problems: list[str]) -> None:
                         f"requested; the row clears {HELD_RESULT}")
 
 
+def _check_held_patch(problems: list[str]) -> None:
+    """A development patch is published only after its review, pinned: only
+    `hold_patch_for_review` records a held patch, from the patch Work state,
+    into the state where its review is due; only `development.publishing`
+    writes the fork among the states that hold one; a held patch is
+    published only from the review Work, into `development.publishing`;
+    and every row that leaves the states that hold a patch discards it,
+    but the exhaustion of `publish_recovery`, whose wait keeps the held
+    Result and its pin until a resume or a refresh discards them."""
+    setters = [e for e in table_edges()
+               if HELD_PATCH in {_field_name(f) for f in e.transition.effects.sets}]
+    if [(e.source, e.verb, e.target) for e in setters] != [
+            ("development.agent_running", "hold_patch_for_review", REVIEW_STATES[0])]:
+        problems.append(f"{HELD_PATCH}: only development.agent_running --hold_patch_for_review--> "
+                        f"{REVIEW_STATES[0]} records a held patch")
+    writers = [k for k in HELD_PATCH_STATES if LIFECYCLE[k].writes]
+    if writers != [PUBLISHING]:
+        problems.append(f"{HELD_PATCH}: the states that hold a patch and write the fork are "
+                        f"{writers}, not only {PUBLISHING}")
+    for e in table_edges():
+        sets = {_field_name(f) for f in e.transition.effects.sets}
+        if e.source in REVIEW_STATES and HELD_RESULT in sets and e.target != PUBLISHING:
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: a held patch is published "
+                            f"only from {PUBLISHING}")
+        if e.source not in HELD_PATCH_STATES or e.target in HELD_PATCH_STATES:
+            continue
+        if is_rule_row(e) and e.verb == "record_late_effect":
+            continue
+        if e.verb == "exhaust_publish_recovery" and e.source == PUBLISHING:
+            continue
+        if HELD_PATCH not in e.transition.effects.clears:
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: leaves the states that hold "
+                            f"a patch without clearing {HELD_PATCH}")
+    for verb in ("resume_development", "refresh_planning"):
+        t = find_edge("development.waiting_human", verb).transition
+        if HELD_PATCH not in t.effects.clears:
+            problems.append(f"development.waiting_human --{verb}-->: discards the {HELD_PATCH} "
+                            "kept by the wait")
+
+
 def _check_reruns(problems: list[str]) -> None:
     """Rerun counts are kept for the current head: exactly the rows that
     record a new head start them again, and both rerun budgets count there."""
@@ -3789,9 +4120,10 @@ def _check_flags(problems: list[str]) -> None:
             extra = [c for c in t.effects.clears if not c.startswith(f.field)]
             if extra or t.effects.sets:
                 problems.append(f"{where}: changes more than the flag: {extra or t.effects.sets}")
-        if set(f.set_moves) != allocated:
+        holding = allocated | set(HELD_PATCH_STATES)
+        if set(f.set_moves) != holding:
             problems.append(f"flag {name}: set_moves {sorted(f.set_moves)} differ from the states "
-                            f"that hold requested Work {sorted(allocated)}")
+                            f"that hold requested Work or a held patch {sorted(holding)}")
         for source, target in f.set_moves.items():
             state = LIFECYCLE.get(target)
             if state is None or state_phase(source) != state_phase(target) or not state.launches \
@@ -4222,6 +4554,7 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_stops(problems)
     _check_feedback(problems)
     _check_reruns(problems)
+    _check_held_patch(problems)
     _check_settled_rows(problems)
     _check_patch_work(problems)
     _check_exclusive_observations(problems)

@@ -407,7 +407,15 @@ jobs:
                 --proposal ../in/proposal.json --out ../in/preflight.json
               jq -r '"fork_name=" + .fork_name, "publish=" + (.publish|tostring)' \
                 ../in/preflight.json >> "$GITHUB_OUTPUT"
-              if [ "$(jq -r .publish ../in/preflight.json)" != true ]; then
+              if [ "$(jq -r .status ../in/preflight.json)" = verify ]; then
+                # A development patch is reviewed before it is published:
+                # it is rebuilt and validated here without a fork token, and
+                # nothing is pushed. The reconciler holds it for its review.
+                uv run --locked python -m fork_publish verify \
+                  --record ../in/record.json --task ../in/task.json \
+                  --proposal ../in/proposal.json --mbox ../in/patches.mbox \
+                  --result ../in/result.json --out ../in/outcome.json || true
+              elif [ "$(jq -r .publish ../in/preflight.json)" != true ]; then
                 jq '{status:(.status // "rejected"), failure_class, reason, stage:"preflight"}' \
                   ../in/preflight.json > ../in/outcome.json
               fi
@@ -581,8 +589,25 @@ research or edit. It holds:
   contribution (what was attempted and why, each approach and its outcome,
   what failed, what remained open, the verification done), the CI runs that
   followed each published head (`after_report` names the report of that head),
-  the review feedback, the submission rewrite and review verdicts, and the
-  reviews of upstream maintainers.
+  every review of an earlier development patch (`patch_review`: its verdict,
+  what became of the patch, and its findings, linked by `report_evidence_id` to
+  the report of the patch it reviewed), the review feedback, the submission
+  rewrite and review verdicts, and the reviews of upstream maintainers.
+
+## The review of your patch
+
+A development patch (`task.review` is `required`) is not published by this
+run: trusted code verifies it and holds it, and a separate reviewer reads and
+diffs exactly your series, your report and the history before it is
+published. A blocker or major finding sends the patch back for repair: the
+next worker gets that review as a `patch_review` entry of
+`context.reason_evidence` and in the history, and amends the patch instead of
+starting over. When your task carries such a review, answer every blocker and
+major finding in the report: in `attempted` for one you addressed, with the
+change that addresses it, or in `open_items` for one you dispute, with the
+reason and the evidence. Minor findings and nits of earlier reviews are worth
+following too. Write the report for that reviewer as much as for the next
+worker.
 
 `omitted` counts what the newest steering collection left out (accounts
 outside the command authority, bots, lists read in full whose oldest items
@@ -818,7 +843,8 @@ can run past that point; bound each one with a timeout.
 
 You cannot push, open PRs, comment or change any repository. A trusted job
 re-applies your series in a fresh repository, validates it against the
-approved scope and pushes it to the task's `ref` itself. Anything outside
+approved scope and pushes it to the task's `ref` itself (a development patch
+only after its review). Anything outside
 `allowed_paths`, any `{debug}` commit when `upstream_facing` is true, any
 `pull_request_target`, new secret, or interpolation of untrusted event text into
 scripts is rejected. For a repair backed by authorized review feedback,
