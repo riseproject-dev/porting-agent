@@ -1,27 +1,7 @@
 {
   "active_operation_id": null,
-  "active_work": {
-    "attempt": 1,
-    "deadline_at": "2026-11-24T02:13:29.927419+00:00",
-    "dedupe_key": "luhenry--d2vm/3@g1.r3:development_patch",
-    "dispatched_run_id": "45257187396",
-    "feedback_evidence_ids": [],
-    "generation": 1,
-    "reason_ids": [
-      "plan-luhenry--d2vm--3-r2"
-    ],
-    "requested_at": "2026-11-23T20:13:29.927419+00:00",
-    "revision": 3,
-    "task": "development_patch",
-    "tracking_issue": {
-      "description": "### Upstream repository\n\nhttps://github.com/luhenry/d2vm\n\n### Packages\n\n_No response_\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nYou MUST NOT look at riscv64-draft at ALL. You ARE NOT ALLOWED to look at it. ",
-      "description_digest": "1dc460f7d5fa47d53093644c327e86fca29c4ce79174c6a61e554ad751c1629b",
-      "id": 6563486409,
-      "number": 3,
-      "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
-    }
-  },
-  "activity": "agent_running",
+  "active_work": null,
+  "activity": "fix_needed",
   "admission_class": "architecture_correctness",
   "admission_override": null,
   "automatic_refresh_used": false,
@@ -65,10 +45,10 @@
     "submitter": null
   },
   "parked_reason": null,
-  "paused": false,
-  "paused_at": null,
-  "paused_by": null,
-  "paused_reason": null,
+  "paused": true,
+  "paused_at": "2026-11-24T01:38:40.668757+00:00",
+  "paused_by": "controller",
+  "paused_reason": "processing_error: SchemaError: invalid contribution record: scope_paths: ['.github/workflows/*', '.goreleaser.yaml', 'Makefile', 'Dockerfile', 'README.md', '.gitignore', 'builder.go', 'bootloader.go', 'grub.go', 'grub_bios.go', 'grub_efi.go', 'grub_common.go', 'syslinux.go', 'config.go', 'config_test.go', 'dockerfile.go', 'doc... (step publication, run 45306486508)",
   "pending_feedback_evidence_ids": [],
   "pending_human_action": null,
   "pending_publication": null,
@@ -139,7 +119,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-23T22:21:19.289761+00:00",
+  "updated_at": "2026-11-24T01:38:40.668757+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
