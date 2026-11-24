@@ -233,6 +233,11 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(kinds(out), ["record_head_change"])
         after = final(out, rec)
         self.assertEqual(after["pending_human_action"]["kind"], "upstream_head_changed")
+        # The recorded head of upstream review is the upstream PR's; the fork
+        # keeps the approved head of `riscv64-dev`.
+        self.assertEqual(after["upstream_pr"]["head_sha"], SHA_B)
+        self.assertEqual(after["fork"]["head_sha"], rec["fork"]["head_sha"])
+        self.assertEqual(lifecycle.recorded_head(after), SHA_B)
 
     def test_states_without_an_observation_row_are_not_read(self):
         pending = {"kind": "answer_reviewer", "requested_at": NOW, "reminded_at": None,

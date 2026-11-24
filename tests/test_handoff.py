@@ -523,6 +523,9 @@ class TestLivePath(unittest.TestCase):
         # observing it there is no head change and bumps no revision.
         revision = world.record["revision"]
         self.assertEqual(lifecycle.recorded_head(world.record), CLEAN)
+        # The recorded head of upstream review is the upstream PR's; the fork
+        # keeps the approved head of `riscv64-dev`.
+        self.assertEqual(world.record["fork"]["head_sha"], HEAD)
         out = world.tick(at(5))
         self.assertNotIn("head_changed", world.kinds(out))
         self.assertNotIn("record_head_change", world.kinds(out))
@@ -567,6 +570,19 @@ class TestLivePath(unittest.TestCase):
                 # The ledger entry renders no untrusted reason.
                 entry = status_ledger.render(rejected, world.record, "https://run")
                 self.assertNotIn("CHANGELOG", entry)
+
+    def test_a_split_the_project_requires_fails_the_rewrite_and_returns_to_development(self):
+        """The rewrite may squash and reword; a split into trees the approved
+        series never has fails its check, so the split commits are made and
+        approved in development."""
+        world = submitted()
+        reasons = ["commit 2: its tree is not a tree of the approved series (a split)"]
+        out = world.tick(at(2), publications=[world.rewrite_outcome("fail", reasons)])
+        self.assertEqual(world.kinds(out)[0], "reject_submission_rewrite")
+        self.assertEqual(world.state, "development.agent_running")
+        [eid] = world.record["pending_feedback_evidence_ids"]
+        self.assertEqual(world.evidence[eid]["data"]["reasons"], reasons)
+        self.assertEqual(world.gh.branches["riscv64"], None)
 
     def test_an_unusable_rewrite_or_review_is_a_work_retry(self):
         for step, state in (("rewrite", "handoff.agent_running"), ("review", "handoff.reviewing")):
@@ -891,6 +907,44 @@ class TestInfrastructureRetries(unittest.TestCase):
         self.assertEqual(world.active["reason_ids"][2], "count:3")
         out = world.tick(at(4), receipts=[failed(world, handoff.INVALID)])
         self.assertEqual(world.kinds(out)[0], "return_for_repair")
+
+
+class TestSubmitWithoutAFreeSlot(unittest.TestCase):
+    def test_the_approval_is_recorded_and_the_rewrite_waits_for_a_slot(self):
+        busy = policy()
+        busy["concurrency"] = dict(busy["concurrency"], coding_workers=0)
+        world = World(p=busy)
+        out = world.tick(at(0), comments=[comment(SUBMIT)])
+        self.assertEqual(world.kinds(out), ["submit_upstream"])
+        self.assertEqual(world.state, "handoff.review_due")
+        self.assertEqual(world.record["handoff_approval"]["evidence_ids"], [CI_EVIDENCE, PLAN])
+        self.assertIsNone(world.record["active_operation_id"])
+        self.assertEqual([o for o in world.operations.values()
+                          if o["kind"] == "upstream_branch"], [])
+        self.assertEqual(out.report["requested_effects"], [])
+        world.policy = policy()
+        out = world.tick(at(1))
+        self.assertEqual(world.kinds(out), ["request_submission_rewrite"])
+        self.assertEqual(world.state, "handoff.agent_running")
+
+
+class TestCandidateWorkflow(unittest.TestCase):
+    def test_only_the_workflow_of_the_recorded_evidence_is_dispatched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".state/evidence").mkdir(parents=True)
+
+            def write(path):
+                (root / ".state/evidence/ci-1.json").write_text(
+                    json.dumps({"ci": {"workflow_path": path}}))
+
+            record = {"last_ci_evidence_id": "ci-1"}
+            write(".github/workflows/build.yml")
+            self.assertEqual(handoff._candidate_workflow(root, record),
+                             ".github/workflows/build.yml")
+            write("../../etc/passwd")
+            self.assertIsNone(handoff._candidate_workflow(root, record))
+            self.assertIsNone(handoff._candidate_workflow(root, {"last_ci_evidence_id": None}))
 
 
 class TestCleanHeadCiDispatch(unittest.TestCase):

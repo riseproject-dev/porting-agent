@@ -315,6 +315,31 @@ class TestTableIsExercised(unittest.TestCase):
                 self.assertIsNone(engine.state_problem(new) if new["phase"] != "handoff"
                                   else engine.state_problem(new))
 
+    def test_the_rows_that_wait_for_an_open_operation_refuse_while_one_is_open(self):
+        """The nomination, the return for feedback or series requirements and
+        the Work allocations of development and upstream review wait for an
+        open operation, through the record and through the store."""
+        waiting = {"nominate_for_handoff", "return_for_feedback",
+                   "return_for_series_requirements", "request_patch", "request_repair",
+                   "request_upstream_revision", "request_review_revision"}
+        seen = set()
+        for state, verb, t, _target in all_rows():
+            if verb not in waiting:
+                continue
+            seen.add(verb)
+            self.assertIn("no open operation", t.guard, (state, verb))
+            rec, kwargs = scenario(state, verb, t)
+            kwargs = {k: v for k, v in kwargs.items() if k != "open_operations"}
+            self.assertTrue(engine.apply_transition(rec, verb, **kwargs).accepted)
+            with self.subTest(state=state, verb=verb, via="record"):
+                busy = dict(rec, active_operation_id="op-7")
+                out = engine.apply_transition(busy, verb, **kwargs)
+                self.assertEqual((out.accepted, out.reason), (False, "operation op-7 is open"))
+            with self.subTest(state=state, verb=verb, via="store"):
+                out = engine.apply_transition(rec, verb, open_operations=("op-8",), **kwargs)
+                self.assertEqual((out.accepted, out.reason), (False, "operation op-8 is open"))
+        self.assertEqual(seen, waiting)
+
     def test_no_row_is_taken_without_each_of_its_facts(self):
         for state, verb, t, _target in all_rows():
             rec, kwargs = scenario(state, verb, t)

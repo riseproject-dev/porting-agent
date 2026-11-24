@@ -124,6 +124,33 @@ class TestCiEvidence(unittest.TestCase):
                                   required_runner_label="ubuntu-24.04-riscv")
         self.assertEqual(native_contract.state, "failed")
 
+    def test_the_runner_label_check_counts_only_for_an_executed_job(self):
+        """An executed blocking failure is a job that executed without
+        success, or an executed required job on a runner without the
+        contract's label; a job that did not execute is never a failure."""
+        other = ("riscv-custom",)
+        label = "ubuntu-24.04-riscv"
+        executed = self.ev([run(1)], {1: [job(1, "wheels riscv64", labels=other)]},
+                           required_runner_label=label)
+        self.assertEqual(executed.state, "failed")
+        self.assertIn("runner-label", " ".join(executed.problems))
+        failure = self.ev([run(1)], {1: [job(1, "wheels riscv64", conclusion="failure",
+                                              labels=other)]}, required_runner_label=label)
+        self.assertEqual(failure.state, "failed")
+        cancelled = self.ev([run(1)], {1: [job(1, "wheels riscv64", conclusion="cancelled",
+                                               labels=other)]}, required_runner_label=label)
+        self.assertEqual(cancelled.state, "not_executed")
+        self.assertEqual([j["id"] for j in cancelled.interrupted_jobs], [1])
+        skipped = self.ev([run(1)], {1: [job(1, "wheels riscv64", conclusion="skipped",
+                                             labels=other)]}, required_runner_label=label)
+        self.assertEqual(skipped.state, "not_executed")
+        self.assertEqual(skipped.interrupted_jobs, [])
+        lost = job(1, "wheels riscv64", conclusion="failure", labels=other)
+        lost["runner_lost"] = True
+        runner_lost = self.ev([run(1)], {1: [lost]}, required_runner_label=label)
+        self.assertEqual(runner_lost.state, "not_executed")
+        self.assertEqual([j["id"] for j in runner_lost.interrupted_jobs], [1])
+
 
 USAGE = Path.home() / "notes/ecosystem-wg/python/python-wheels-upstreaming/research/2026-11-17-reassessment/runner-usage.json"
 

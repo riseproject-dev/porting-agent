@@ -122,7 +122,7 @@ def evaluate(*, runs: list[dict], jobs_by_run: dict[int, list[dict]], head_sha: 
             else:
                 v.executed_jobs.append(j)
             labels = j.get("labels") or []
-            if required_runner_label and required_runner_label not in labels:
+            if required_runner_label and job_executed(j) and required_runner_label not in labels:
                 # Runner topology is project-specific. Dedicated native rows
                 # pin a label; shared QEMU/cross matrices deliberately do not.
                 v.problems.append(

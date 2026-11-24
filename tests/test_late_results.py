@@ -375,6 +375,29 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                          ("record_late_effect", "late Result: planning Work is not requested in "
                                                 "the development phase"))
 
+    def test_work_held_where_no_row_folds_a_result_is_late(self):
+        """Only a state with a Result row folds a Result: Work a record holds
+        in any other state has no row for its Result."""
+        dev = running("development")
+        review = running("upstream_review")
+        records = {
+            "development.fix_needed": dict(dev, activity="fix_needed"),
+            "development.waiting_ci": dict(dev, activity="waiting_ci"),
+            "upstream_review.fix_needed": dict(review, activity="fix_needed"),
+        }
+        for state, record in records.items():
+            self.assertEqual(engine.state_key(record), state)
+            for name in RESULTS:
+                with self.subTest(state=state, result=name):
+                    pub = publication(record, name)
+                    why = reconcile.result_mismatch(record, pub)
+                    if name.startswith("planning"):
+                        self.assertTrue(why.startswith("late Result"), why)
+                    else:
+                        self.assertEqual(
+                            why, f"late Result: {state} has no row that folds a Result")
+                    self.assert_recorded_only(record, name)
+
     def test_the_event_keeps_the_state(self):
         details = {"result_status": "published", "task_revision": 0}
         for record in (contribution(phase="parked", activity="idle", parked_reason="x",

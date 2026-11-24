@@ -637,7 +637,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` "
         "allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes "
         "the non-debug commits of the approved series after the plan's measured commit "
-        "conventions (squashing or splitting only where the contributing instructions or "
+        "conventions (squashing only where the contributing instructions or "
         "reviewers require it) and writes the upstream PR title and description after the pull "
         "request template and contributing instructions, which take precedence over the "
         "pipeline's instructions for content and style. Trusted code checks every commit, the "
@@ -1670,6 +1670,132 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                ("development.fix_needed", "request_repair")),
         highlighted=(("development.waiting_ci", "record_ci_failure"),
                      ("development.fix_needed", "record_actionable_review")),
+    ),
+    Item(
+        "What an executed blocking failure is",
+        "Whether a required job that was cancelled, skipped, or lost its runner is a CI "
+        "failure when the project's contract names a runner label.",
+        "No. An executed blocking failure is a blocking job that executed without success, or an "
+        "executed required job that ran on a runner without the contract's runner label. The "
+        "runner-label check counts only for a job that executed: a job that was cancelled, "
+        "skipped, or lost its runner did not execute, so it is never a failure, with or without "
+        "a label contract. A cancelled or runner-lost job takes `rerun_interrupted_ci` within "
+        "`interrupted_reruns`, and a skipped job waits. An executed job on the wrong runner "
+        "stays a failure (`record_ci_failure`, `return_for_repair`), so a repair fixes the "
+        "workflow's runner.",
+        ("development.waiting_ci", "development.fix_needed"),
+        edges=(("development.waiting_ci", "record_ci_failure"),
+               ("development.waiting_ci", "rerun_interrupted_ci")),
+        highlighted=(("development.waiting_ci", "record_ci_failure"),
+                     ("development.waiting_ci", "rerun_interrupted_ci")),
+    ),
+    Item(
+        "A closed development PR",
+        "Whether a closed or merged development PR still matches the record.",
+        "It does not. The observation of `development.waiting_ci` reads the development PR "
+        "and takes `record_pr_mismatch` to `development.waiting_human` "
+        "(`development_pr_mismatch`, with reminders) when it is closed, because "
+        "`pull_request`-triggered CI would never run for later heads. The check is skipped "
+        "while an operation of the contribution is open: the trusted CI bootstrap closes and "
+        "reopens the PR. The pipeline does not reopen the PR itself: a human reopens it and "
+        "posts `/upstreaming resume` (`resume_development`).",
+        ("development.waiting_ci", "development.waiting_human", "development.fix_needed"),
+        edges=(("development.waiting_ci", "record_pr_mismatch"),
+               ("development.waiting_human", "resume_development")),
+        highlighted=(("development.waiting_ci", "record_pr_mismatch"),),
+    ),
+    Item(
+        "Open operations and the rows that wait for them",
+        "Which rows wait while an operation of the contribution is open.",
+        "Every row that allocates Work carries the guard `no open operation` (or the quiescence "
+        "guard), and so does every row of `development.waiting_ci` that acts on passing CI: "
+        "`nominate_for_handoff`, `return_for_feedback`, `return_for_series_requirements`, and "
+        "the Work allocations `request_patch`, `request_repair`, `request_upstream_revision`, "
+        "and `request_review_revision`. The observation keeps the contribution in its state "
+        "and reports `handoff_deferred` naming the operation, and the engine refuses the row "
+        "while an operation is open. `lifecycle check` verifies both. Rows that reallocate "
+        "Work (Work recovery) do not wait.",
+        ("development.waiting_ci", "development.fix_needed", "development.agent_running",
+         "upstream_review.fix_needed", "upstream_review.agent_running",
+         "handoff.awaiting_submission"),
+        edges=(("development.waiting_ci", "nominate_for_handoff"),
+               ("development.waiting_ci", "return_for_feedback"),
+               ("development.waiting_ci", "return_for_series_requirements"),
+               ("development.fix_needed", "request_patch"),
+               ("development.fix_needed", "request_repair"),
+               ("upstream_review.fix_needed", "request_upstream_revision"),
+               ("upstream_review.fix_needed", "request_review_revision")),
+        highlighted=(("development.waiting_ci", "nominate_for_handoff"),
+                     ("development.fix_needed", "request_patch")),
+    ),
+    Item(
+        "Work held where no row folds a Result",
+        "What happens to a Result of Work the record holds in a state without a row that "
+        "folds a Result.",
+        "It is late. Only a state with a Result row folds a Result; Work a record holds in any "
+        "other state (for example `development.fix_needed`) has no row for its Result, which "
+        "takes `record_late_effect`: the artifact is marked processed once and the state, the "
+        "Work, and the budgets are kept. No row produces such a record. This completes the "
+        "decision on late Results.",
+        ("development.fix_needed",),
+        edges=(("development.fix_needed", "record_late_effect"),),
+        highlighted=(("development.fix_needed", "record_late_effect"),),
+    ),
+    Item(
+        "What `submit_upstream` records",
+        "What the approval of the submission records, and when the rewrite Work is allocated.",
+        "`submit_upstream` records `handoff_approval` (command, actor, exact revision and head, "
+        "and `evidence_ids`: the CI evidence, then the plan the approval saw), clears the "
+        "pending action, and plans no operation. The rewrite Work is allocated in "
+        "`handoff.review_due` by `request_submission_rewrite` in the same tick when a worker "
+        "slot is free, and in a later tick otherwise.",
+        ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running"),
+        edges=(("handoff.awaiting_submission", "submit_upstream"),
+               ("handoff.review_due", "request_submission_rewrite")),
+        highlighted=(("handoff.awaiting_submission", "submit_upstream"),),
+    ),
+    Item(
+        "What the submission rewrite may reshape, and its revision",
+        "Whether the rewrite may squash or split, and which revision its review runs at.",
+        "Whether a squash is required is the rewrite model's judgment, checked by the separate "
+        "review Work. Trusted code checks every commit, the unchanged final tree, the "
+        "measurable rules including `max_commits`, and that every reviewed tree is a tree of "
+        "the approved series without its debug commits, later than the previous one: a squash "
+        "and a reword pass; a reorder, a resurrection, and a split into trees the series never "
+        "has fail. A split the project requires fails the rewrite "
+        "(`reject_submission_rewrite` to `development.fix_needed` with the reasons as pending "
+        "feedback), so the split commits are made and approved in development. "
+        "`accept_submission_rewrite` bumps the revision, since the review is new Work of the "
+        "next revision; `accept_submission_review` does not. The package marker, the "
+        "`upstream_branch` operation marker, and the headline name the approval's revision.",
+        ("handoff.review_due", "handoff.agent_running", "handoff.review_pending",
+         "handoff.reviewing", "development.fix_needed"),
+        edges=(("handoff.review_due", "request_submission_rewrite"),
+               ("handoff.agent_running", "accept_submission_rewrite"),
+               ("handoff.agent_running", "reject_submission_rewrite"),
+               ("handoff.review_pending", "request_submission_review")),
+        highlighted=(("handoff.agent_running", "accept_submission_rewrite"),
+                     ("handoff.agent_running", "reject_submission_rewrite")),
+    ),
+    Item(
+        "CI on the clean head and the recorded head of upstream review",
+        "Which workflow is dispatched on the clean head, and which head upstream review "
+        "records.",
+        "The build of `riscv64` dispatches exactly the workflow of the recorded required CI "
+        "run (`workflow_path` of `last_ci_evidence_id`), read at the clean head as data, only "
+        "when it can be dispatched. Other workflows holding required jobs run only if a push "
+        "triggers them; otherwise `require_clean_head_ci` asks a human, at once when dispatch "
+        "is unsupported and no run exists, else after 12 hours. In upstream review the "
+        "recorded head is `upstream_pr.head_sha`, which `record_head_change` updates; "
+        "`fork.head_sha` keeps the approved head of `riscv64-dev`.",
+        ("handoff.building_upstream_branch", "handoff.waiting_ci", "handoff.waiting_human",
+         "upstream_review.waiting_ci", "upstream_review.waiting_human"),
+        edges=(("handoff.building_upstream_branch", "confirm_clean_head"),
+               ("handoff.waiting_ci", "require_clean_head_ci"),
+               ("handoff.waiting_human", "resume_clean_head_ci"),
+               ("upstream_review.waiting_ci", "record_head_change")),
+        highlighted=(("handoff.waiting_ci", "require_clean_head_ci"),
+                     ("upstream_review.waiting_ci", "record_head_change")),
     ),
 )
 

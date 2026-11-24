@@ -1391,18 +1391,19 @@ LIFECYCLE: dict[str, State] = {
                   clears=("last_ci_evidence_id",))),
             ("record_pr_mismatch", "development.waiting_human"): Transition(
                 _O, None,
-                ("the observed development PR does not match the recorded fork, ref, or PR",),
+                ("the observed development PR does not match the recorded fork, ref, or PR, or is closed",),
                 _E(sets=("pending_human_action=development_pr_mismatch",))),
             ("nominate_for_handoff", "handoff.awaiting_submission"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
-                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET, "no requested Work"),
+                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET, "no requested Work",
+                 "no open operation"),
                 _E(sets=("last_ci_evidence_id", "handoff_request",
                         "pending_human_action=submit_upstream"))),
             ("return_for_feedback", "development.fix_needed"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head", PENDING_FEEDBACK,
-                 "no requested Work"),
+                 "no requested Work", "no open operation"),
                 _E(sets=("last_ci_evidence_id",)),
                 description="CI passed on the exact head while actionable feedback is still "
                             "pending (a push while Work was due for a review, or feedback the "
@@ -1413,7 +1414,8 @@ LIFECYCLE: dict[str, State] = {
             ("return_for_series_requirements", "development.fix_needed"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
-                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_UNMET, "no requested Work"),
+                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_UNMET, "no requested Work",
+                 "no open operation"),
                 _E(revision="bump", sets=("last_ci_evidence_id", "pending_feedback_evidence_ids")),
                 description="CI passed on the exact head, no feedback is pending, and the series "
                             "does not meet a series requirement of the verified plan (a path "
@@ -1437,14 +1439,15 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 (NO_FAILING_JOB, "write admission", "worker slot free",
                  "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS, NOT_PAUSED,
-                 UPSTREAM_BOUND),
+                 "no open operation", UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)), ("work_total",),
                 "Covers the first patch, the patch after a rejected proposal, and a repair "
                 "driven only by review feedback." + _FEEDBACK_NOTE),
             ("request_repair", "development.agent_running"): Transition(
                 _K, None,
                 (FAILING_JOB, "write admission", "worker slot free", "capacity available",
-                 REPAIR_BUDGETS_REMAIN, WORK_TOTAL_REMAINS, NOT_PAUSED, UPSTREAM_BOUND),
+                 REPAIR_BUDGETS_REMAIN, WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
+                 UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)),
                 ("repair_attempts_cluster", "work_total"),
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
@@ -1601,9 +1604,11 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="allocate"), ("work_total",),
                 "The uncredentialed rewrite Work reads the plan's contribution guidelines and "
                 "the non-debug commits of the approved `riscv64-dev` series. It reshapes the "
-                "commit messages (squashing or splitting only where the project's contributing "
-                "instructions or reviewers require it, with the same final tree and no content "
-                "the approved series does not have) and writes the upstream PR title and "
+                "commit messages (squashing only where the project's contributing "
+                "instructions or reviewers require it, never splitting into trees the approved "
+                "series does not have: a split the project requires returns the submission to "
+                "development; the final tree is the same and no content the approved series "
+                "does not have is added) and writes the upstream PR title and "
                 "description after the project's pull request template and contributing "
                 "instructions."),
             ("exhaust_work_total", "handoff.waiting_human"): Transition(
@@ -1924,7 +1929,8 @@ LIFECYCLE: dict[str, State] = {
             ("request_upstream_revision", "upstream_review.agent_running"): Transition(
                 _K, None,
                 ("the upstream PR head is the controlled fork ref", FAILING_JOB,
-                 "worker slot free", REVISION_BUDGETS_REMAIN, NOT_PAUSED, UPSTREAM_BOUND),
+                 "worker slot free", REVISION_BUDGETS_REMAIN, NOT_PAUSED, "no open operation",
+                 UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)),
                 ("repair_attempts_cluster", "work_total"),
                 "Charges `repair_attempts_cluster` for the failing CI job." + _FEEDBACK_NOTE),
@@ -1932,7 +1938,7 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 ("the upstream PR head is the controlled fork ref", NO_FAILING_JOB,
                  "worker slot free", REVIEW_REVISION_BUDGETS_REMAIN, NOT_PAUSED,
-                 UPSTREAM_BOUND),
+                 "no open operation", UPSTREAM_BOUND),
                 _E(work="allocate", sets=(WORK_FEEDBACK,)), ("work_total",),
                 "A revision driven only by review feedback; it charges no "
                 "`repair_attempts_cluster`." + _FEEDBACK_NOTE),
@@ -3680,6 +3686,8 @@ def _check_transition(where: str, t: Transition, problems: list[str], *,
         problems.append(f"{where}: a generation bump must bump the revision and clear Work")
     if e.work == "allocate" and NOT_PAUSED not in t.guard:
         problems.append(f"{where}: allocates Work without the guard {NOT_PAUSED!r}")
+    if e.work == "allocate" and "no open operation" not in t.guard and QUIESCENT not in t.guard:
+        problems.append(f"{where}: allocates Work without the guard 'no open operation'")
     guard_text = "; ".join(t.guard)
     for name in t.charges:
         if name not in BUDGETS:
@@ -3950,8 +3958,9 @@ def _check_feedback(problems: list[str]) -> None:
 # allocation of development shares; no proposal or scope admission.
 REQUEST_PATCH_GUARDS = frozenset({NO_FAILING_JOB, "write admission", "worker slot free",
                                   "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS,
-                                  NOT_PAUSED, UPSTREAM_BOUND})
+                                  NOT_PAUSED, "no open operation", UPSTREAM_BOUND})
 CONTROLLED_REF = "the upstream PR head is the controlled fork ref"
+PASSED_CI_GUARD = "every required CI job executed and passed on the exact head"
 
 
 def _check_settled_rows(problems: list[str]) -> None:
@@ -4036,6 +4045,12 @@ def _check_settled_rows(problems: list[str]) -> None:
                             "no_progress")
         if CONTROLLED_REF not in t.guard:
             problems.append(f"{where}: requires {CONTROLLED_REF!r}")
+    # Passing CI at the gate of development defers behind an open operation.
+    for (verb, _target), edge in LIFECYCLE["development.waiting_ci"].transitions.items():
+        if (PASSED_CI_GUARD in edge.guard and "no open operation" not in edge.guard):
+            problems.append(f"development.waiting_ci --{verb}-->: passing CI is acted on "
+                            "only while no operation of the contribution is open: requires "
+                            "'no open operation'")
     t = row("development.fix_needed", "request_patch")
     if t is not None and set(t.guard) - REQUEST_PATCH_GUARDS:
         extra = ", ".join(sorted(set(t.guard) - REQUEST_PATCH_GUARDS))

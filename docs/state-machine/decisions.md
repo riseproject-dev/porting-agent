@@ -1629,7 +1629,7 @@ flowchart TB
 
 Which branches development and the upstream PR use, whether the development PR is closed at submission, and how the upstream PR follows the project's pull request template, contributing instructions, commit conventions, and reviewers.
 
-**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing or splitting only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections: `accept_submission_rewrite` bumps the revision and leads to `handoff.review_pending`, where `request_submission_review` allocates separate uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews exactly the rewritten series and text against the template, the contributing instructions, the commit conventions, and the reviewers' expectations and can change nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check (`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
+**Change.** Development happens on `riscv64-dev`: fork provisioning creates it from the base, and worker Work, publication, the development PR, its CI, and head observation use it. It is never changed for upstreaming, and the development PR is never closed: the development PR closure, its operation, budget, state, and resume are removed. `submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes the non-debug commits of the approved series after the plan's measured commit conventions (squashing only where the contributing instructions or reviewers require it) and writes the upstream PR title and description after the pull request template and contributing instructions, which take precedence over the pipeline's instructions for content and style. Trusted code checks every commit, the same final tree, the attribution trailers, the measurable rules, and the template's required sections: `accept_submission_rewrite` bumps the revision and leads to `handoff.review_pending`, where `request_submission_review` allocates separate uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews exactly the rewritten series and text against the template, the contributing instructions, the commit conventions, and the reviewers' expectations and can change nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which creates `riscv64` from the rewritten series or replaces it under a lease, never while an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check (`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns to development with the reasons as pending feedback and posts nothing; a Result that is not usable is a Work retry (`allocate_work_retry`, `exhaust_work_recovery`), not a verdict. A rewrite whose artifact expires before `riscv64` is built (`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of `riscv64` as before, the package names `riscv64` and the reviewed title and description, and verification, reminders, and the retraction refer to `riscv64`. A retraction leaves `riscv64` as it is.
 
 ```mermaid
 flowchart TB
@@ -2625,4 +2625,150 @@ flowchart TB
     development_waiting_ci -->|record_actionable_review| development_fix_needed
     development_fix_needed ==>|record_actionable_review| development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
+```
+
+### What an executed blocking failure is
+
+Whether a required job that was cancelled, skipped, or lost its runner is a CI failure when the project's contract names a runner label.
+
+**Change.** No. An executed blocking failure is a blocking job that executed without success, or an executed required job that ran on a runner without the contract's runner label. The runner-label check counts only for a job that executed: a job that was cancelled, skipped, or lost its runner did not execute, so it is never a failure, with or without a label contract. A cancelled or runner-lost job takes `rerun_interrupted_ci` within `interrupted_reruns`, and a skipped job waits. An executed job on the wrong runner stays a failure (`record_ci_failure`, `return_for_repair`), so a repair fixes the workflow's runner.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_waiting_ci ==>|record_ci_failure| development_fix_needed
+    development_waiting_ci ==>|rerun_interrupted_ci| development_waiting_ci
+```
+
+### A closed development PR
+
+Whether a closed or merged development PR still matches the record.
+
+**Change.** It does not. The observation of `development.waiting_ci` reads the development PR and takes `record_pr_mismatch` to `development.waiting_human` (`development_pr_mismatch`, with reminders) when it is closed, because `pull_request`-triggered CI would never run for later heads. The check is skipped while an operation of the contribution is open: the trusted CI bootstrap closes and reopens the PR. The pipeline does not reopen the PR itself: a human reopens it and posts `/upstreaming resume` (`resume_development`).
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_waiting_ci ==>|record_pr_mismatch| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+```
+
+### Open operations and the rows that wait for them
+
+Which rows wait while an operation of the contribution is open.
+
+**Change.** Every row that allocates Work carries the guard `no open operation` (or the quiescence guard), and so does every row of `development.waiting_ci` that acts on passing CI: `nominate_for_handoff`, `return_for_feedback`, `return_for_series_requirements`, and the Work allocations `request_patch`, `request_repair`, `request_upstream_revision`, and `request_review_revision`. The observation keeps the contribution in its state and reports `handoff_deferred` naming the operation, and the engine refuses the row while an operation is open. `lifecycle check` verifies both. Rows that reallocate Work (Work recovery) do not wait.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_agent_running["upstream_review.agent_running"]
+    end
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+    end
+
+    development_waiting_ci ==>|nominate_for_handoff| handoff_awaiting_submission
+    development_waiting_ci -->|return_for_feedback| development_fix_needed
+    development_waiting_ci -->|return_for_series_requirements| development_fix_needed
+    development_fix_needed ==>|request_patch| development_agent_running
+    development_fix_needed -->|request_repair| development_agent_running
+    upstream_fix_needed -->|request_upstream_revision| upstream_agent_running
+    upstream_fix_needed -->|request_review_revision| upstream_agent_running
+```
+
+### Work held where no row folds a Result
+
+What happens to a Result of Work the record holds in a state without a row that folds a Result.
+
+**Change.** It is late. Only a state with a Result row folds a Result; Work a record holds in any other state (for example `development.fix_needed`) has no row for its Result, which takes `record_late_effect`: the artifact is marked processed once and the state, the Work, and the budgets are kept. No row produces such a record. This completes the decision on late Results.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_fix_needed ==>|record_late_effect| development_fix_needed
+```
+
+### What `submit_upstream` records
+
+What the approval of the submission records, and when the rewrite Work is allocated.
+
+**Change.** `submit_upstream` records `handoff_approval` (command, actor, exact revision and head, and `evidence_ids`: the CI evidence, then the plan the approval saw), clears the pending action, and plans no operation. The rewrite Work is allocated in `handoff.review_due` by `request_submission_rewrite` in the same tick when a worker slot is free, and in a later tick otherwise.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+        handoff_review_due["handoff.review_due"]
+        handoff_agent_running["handoff.agent_running"]
+    end
+
+    handoff_awaiting_submission ==>|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
+    handoff_review_due -->|request_submission_rewrite| handoff_agent_running
+```
+
+### What the submission rewrite may reshape, and its revision
+
+Whether the rewrite may squash or split, and which revision its review runs at.
+
+**Change.** Whether a squash is required is the rewrite model's judgment, checked by the separate review Work. Trusted code checks every commit, the unchanged final tree, the measurable rules including `max_commits`, and that every reviewed tree is a tree of the approved series without its debug commits, later than the previous one: a squash and a reword pass; a reorder, a resurrection, and a split into trees the series never has fail. A split the project requires fails the rewrite (`reject_submission_rewrite` to `development.fix_needed` with the reasons as pending feedback), so the split commits are made and approved in development. `accept_submission_rewrite` bumps the revision, since the review is new Work of the next revision; `accept_submission_review` does not. The package marker, the `upstream_branch` operation marker, and the headline name the approval's revision.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_review_due["handoff.review_due"]
+        handoff_agent_running["handoff.agent_running"]
+        handoff_review_pending["handoff.review_pending"]
+        handoff_reviewing["handoff.reviewing"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_review_due -->|request_submission_rewrite| handoff_agent_running
+    handoff_agent_running ==>|accept_submission_rewrite| handoff_review_pending
+    handoff_agent_running ==>|reject_submission_rewrite| development_fix_needed
+    handoff_review_pending -->|request_submission_review| handoff_reviewing
+```
+
+### CI on the clean head and the recorded head of upstream review
+
+Which workflow is dispatched on the clean head, and which head upstream review records.
+
+**Change.** The build of `riscv64` dispatches exactly the workflow of the recorded required CI run (`workflow_path` of `last_ci_evidence_id`), read at the clean head as data, only when it can be dispatched. Other workflows holding required jobs run only if a push triggers them; otherwise `require_clean_head_ci` asks a human, at once when dispatch is unsupported and no run exists, else after 12 hours. In upstream review the recorded head is `upstream_pr.head_sha`, which `record_head_change` updates; `fork.head_sha` keeps the approved head of `riscv64-dev`.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
+    handoff_waiting_ci ==>|require_clean_head_ci| handoff_waiting_human
+    handoff_waiting_human -->|resume_clean_head_ci<br/>/upstreaming resume| handoff_waiting_ci
+    upstream_waiting_ci ==>|record_head_change| upstream_waiting_human
 ```

@@ -506,7 +506,7 @@ def _poll(obs: Observation, record: dict, next_poll_at: str | None) -> dict:
 
 
 def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: str,
-              check_pull: bool = False) -> tuple[tuple[str, dict, dict] | None, tuple[str, dict, dict, list] | None,
+              check_pull: bool = False, operation_open: bool = False) -> tuple[tuple[str, dict, dict] | None, tuple[str, dict, dict, list] | None,
                              str | None]:
     """New authorized feedback on the development PR for the head: the
     actionable review (evidence id, evidence, feedback), the
@@ -514,7 +514,8 @@ def _feedback(api: collect.Api, record: dict, head: str, *, policy: dict, now: s
     its ids added, the comments), each or both ``None``, and why the
     development PR does not match the record (no feedback is read then)."""
     authority = policy["command_authority"]["actor_ids"]
-    feedback = (collect.development_review_feedback(api, record, authority, check_pull=True)
+    feedback = (collect.development_review_feedback(api, record, authority, check_pull=True,
+                                                    operation_open=operation_open)
                 if check_pull else collect.development_review_feedback(api, record, authority))
     if feedback and feedback.get("pr_mismatch"):
         return None, None, str(feedback["pr_mismatch"])
@@ -683,9 +684,10 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                     values={"fork.head_sha": head}, details={"head": head})
         entry["head_changed"] = True
         cur = landed_comment(obs, entry, cur, {head}, evidence or {}, now=now)
+    ops = recovery.open_operations(cur["contribution_id"], operations, cur.get("active_operation_id"))
     if cur["fork"].get("pr_number"):
         review, inquiry, mismatch = _feedback(api, cur, head, policy=policy, now=now,
-                                              check_pull=True)
+                                              check_pull=True, operation_open=bool(ops))
         if mismatch:
             _take(obs, cur, "record_pr_mismatch", policy=policy, now=now,
                   cause_id=f"pr-{cur['fork']['pr_number']}", facts={"development_pr_mismatch"},
@@ -739,14 +741,15 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         return
     if verdict.state == "passed" and ev is not None:
         pending = list(cur.get("pending_feedback_evidence_ids") or [])
-        if cur.get("active_operation_id"):
-            entry["handoff_deferred"] = f"operation {cur['active_operation_id']} is open"
+        if ops:
+            entry["handoff_deferred"] = f"operation {ops[0]} is open"
         elif pending:
             # Only a published Result clears pending feedback: Work that
             # carries it is due again rather than the nomination waiting.
             returned = engine.apply_transition(
                 cur, "return_for_feedback", policy=policy, now=now, cause_id=ev["evidence_id"],
                 facts={"ci_passed_on_head"}, values={"last_ci_evidence_id": ev["evidence_id"]},
+                open_operations=ops,
                 details={"evidence_id": ev["evidence_id"], "head": head,
                          "feedback": pending[:8]})
             if returned.accepted:
@@ -762,7 +765,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             if sev is not None:
                 returned = engine.apply_transition(
                     cur, "return_for_series_requirements", policy=policy, now=now,
-                    cause_id=sev["evidence_id"],
+                    cause_id=sev["evidence_id"], open_operations=ops,
                     facts={"ci_passed_on_head", "series_requirements_unmet"},
                     values={"last_ci_evidence_id": ev["evidence_id"],
                             "pending_feedback_evidence_ids": list(dict.fromkeys(
@@ -784,7 +787,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                 details["series_requirements"] = note
             nominated = engine.apply_transition(
                 cur, "nominate_for_handoff", policy=policy, now=now, cause_id=ev["evidence_id"],
-                facts={"ci_passed_on_head", "series_requirements_met"},
+                facts={"ci_passed_on_head", "series_requirements_met"}, open_operations=ops,
                 values={"last_ci_evidence_id": ev["evidence_id"],
                         "handoff_request": {"command_id": f"observation-{ev['evidence_id']}",
                                             "head": head, "revision": cur["revision"]}},

@@ -272,9 +272,9 @@ _INSTRUCTIONS = {
     SUBMISSION_REWRITE: (
         "Prepare the upstream submission of the approved riscv64-dev series at expected_head. "
         "Reshape its non-debug commits on base_sha after the project's commit conventions "
-        "(squash or split only where its contributing instructions or reviewers require it, "
-        "keeping the final tree identical and every intermediate tree a state of the approved "
-        "series), and write the upstream PR title and description following the project's "
+        "(squash only where its contributing instructions or reviewers require it; do not split: "
+        "report a split the project requires as a reason; keep the final tree identical and "
+        "every intermediate tree a state of the approved series), and write the upstream PR title and description following the project's "
         "pull request template exactly and its contributing instructions. Change no code. "
         "Return the rewrite and the reshaped series as the artifact."),
     SUBMISSION_REVIEW: (

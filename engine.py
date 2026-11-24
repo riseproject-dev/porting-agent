@@ -803,7 +803,7 @@ for _guard, _name in (
     ("authorized actionable review feedback", "actionable_review"),
     ("authorized explanation-only inquiry", "explanation_inquiry"),
     ("the observed fork head differs from the recorded head", "fork_head_changed"),
-    ("the observed development PR does not match the recorded fork, ref, or PR",
+    ("the observed development PR does not match the recorded fork, ref, or PR, or is closed",
      "development_pr_mismatch"),
     ("every required CI job executed and passed on the exact head", "ci_passed_on_head"),
     (lc.SERIES_REQUIREMENTS_MET, "series_requirements_met"),

@@ -234,7 +234,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual((edge.target, t.trigger, t.command, t.charges),
                          ("development.fix_needed", lc.Trigger.OBSERVATION, None, ()))
         self.assertEqual(t.guard, ("every required CI job executed and passed on the exact head",
-                                   lc.PENDING_FEEDBACK, "no requested Work"))
+                                   lc.PENDING_FEEDBACK, "no requested Work", "no open operation"))
         self.assertEqual((t.effects.sets, t.effects.clears, t.effects.revision, t.effects.work),
                          (("last_ci_evidence_id",), (), "keep", "keep"))
         self.assertFalse(lc.must_bump(edge))
@@ -315,7 +315,7 @@ class TestLifecycleTable(unittest.TestCase):
                          ("development.fix_needed", lc.Trigger.OBSERVATION, None, ()))
         self.assertEqual(t.guard, ("every required CI job executed and passed on the exact head",
                                    lc.NO_PENDING_FEEDBACK, lc.SERIES_REQUIREMENTS_UNMET,
-                                   "no requested Work"))
+                                   "no requested Work", "no open operation"))
         self.assertEqual((t.effects.sets, t.effects.revision),
                          (("last_ci_evidence_id", "pending_feedback_evidence_ids"), "bump"))
         self.assertIn(lc.SERIES_REQUIREMENTS_MET,
@@ -948,6 +948,25 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             self.with_row("development.fix_needed", "request_patch", charges=()),
             "development.fix_needed --request_patch--> development.agent_running: allocates Work "
             "without charging 'work_total'")
+
+    def test_work_allocation_without_the_operation_guard(self):
+        guard = tuple(g for g in lc.find_edge("upstream_review.fix_needed",
+                                              "request_review_revision").transition.guard
+                      if g != "no open operation")
+        self.assertReports(
+            self.with_row("upstream_review.fix_needed", "request_review_revision", guard=guard),
+            "upstream_review.fix_needed --request_review_revision--> "
+            "upstream_review.agent_running: allocates Work without the guard "
+            "'no open operation'")
+
+    def test_acting_on_passing_ci_without_the_operation_guard(self):
+        guard = tuple(g for g in lc.find_edge("development.waiting_ci",
+                                              "nominate_for_handoff").transition.guard
+                      if g != "no open operation")
+        self.assertReports(
+            self.with_row("development.waiting_ci", "nominate_for_handoff", guard=guard),
+            "development.waiting_ci --nominate_for_handoff-->: passing CI is acted on only "
+            "while no operation of the contribution is open: requires 'no open operation'")
 
     def test_a_row_that_ends_the_contribution_without_clearing_the_flag(self):
         edge = lc.find_edge("parked.idle", "abandon")

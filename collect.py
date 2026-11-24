@@ -297,7 +297,7 @@ def review_comment_intent(body: str) -> str:
 
 
 def development_review_feedback(api: Api, record: dict, authority: Iterable[int], *,
-                                check_pull: bool = False) -> dict | None:
+                                check_pull: bool = False, operation_open: bool = False) -> dict | None:
     """Return new authorized review feedback or inquiries bound to the current fork head.
 
     With ``check_pull`` the development PR is read first: when it does not
@@ -309,7 +309,7 @@ def development_review_feedback(api: Api, record: dict, authority: Iterable[int]
     head = fork.get("head_sha")
     if record.get("phase") not in ("development", "handoff") or not fork.get("name") or not number or not head:
         return None
-    mismatch = development_pull_problem(api, record) if check_pull else None
+    mismatch = development_pull_problem(api, record, operation_open=operation_open) if check_pull else None
     if mismatch:
         return {"pr_mismatch": mismatch}
     return _review_feedback(api, record, fork["name"], int(number), head, authority)
@@ -1061,10 +1061,12 @@ def dev_pull_request(api: Api, fork: str, ref: str = DEV_REF) -> dict | None:
     return prs[0] if prs else None
 
 
-def development_pull_problem(api: Api, record: dict) -> str | None:
+def development_pull_problem(api: Api, record: dict, *, operation_open: bool = False) -> str | None:
     """Why the development PR on GitHub does not match the fork, the ref,
     and the PR the record names, or ``None`` when it matches. A PR that
-    GitHub does not have does not match."""
+    GitHub does not have does not match, nor does a closed or merged one,
+    unless an operation of the contribution is open: the trusted CI
+    bootstrap closes and reopens the PR."""
     fork = record.get("fork") or {}
     number = fork.get("pr_number")
     try:
@@ -1076,6 +1078,8 @@ def development_pull_problem(api: Api, record: dict) -> str | None:
     head = pr.get("head") or {}
     if pr.get("number") != number:
         return f"development PR {number} reads back as PR {pr.get('number')}"
+    if pr.get("state") == "closed" and not operation_open:
+        return f"development PR {number} is closed"
     if (head.get("repo") or {}).get("id") != fork.get("repository_id"):
         return f"development PR {number} has its head in another repository"
     if head.get("ref") != DEV_REF:

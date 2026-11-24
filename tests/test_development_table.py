@@ -76,8 +76,8 @@ def tick(rec, publications=(), *, observe=True, verdict="pending", head=SHA_A, f
     snapshot = reconcile.Snapshot({"c": copy.deepcopy(rec)}, dict(operations or {}), {}, {},
                                   dict(evidence or {}))
 
-    def review_feedback(_api, _record, _authority, check_pull=False):
-        if check_pull and pull:
+    def review_feedback(_api, _record, _authority, check_pull=False, operation_open=False):
+        if check_pull and pull and not operation_open:
             return {"pr_mismatch": pull}
         return copy.deepcopy(feedback)
 
@@ -815,6 +815,31 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(collect.development_review_feedback(Api(None), rec, [OWNER["id"]],
                                                              check_pull=True),
                          {"pr_mismatch": "development PR 1 does not exist"})
+        # A closed or merged PR does not match, unless an operation of the
+        # contribution is open (the CI bootstrap closes and reopens it).
+        self.assertEqual(collect.development_pull_problem(Api(dict(good, state="closed")), rec),
+                         "development PR 1 is closed")
+        self.assertEqual(collect.development_pull_problem(
+            Api(dict(good, state="closed", merged=True)), rec), "development PR 1 is closed")
+        self.assertIsNone(collect.development_pull_problem(Api(dict(good, state="open")), rec))
+        self.assertIsNone(collect.development_pull_problem(Api(good), rec))
+        self.assertIsNone(collect.development_pull_problem(
+            Api(dict(good, state="closed")), rec, operation_open=True))
+        self.assertEqual(collect.development_review_feedback(
+            Api(dict(good, state="closed")), rec, [OWNER["id"]], check_pull=True),
+            {"pr_mismatch": "development PR 1 is closed"})
+
+    def test_a_closed_development_pr_waits_for_a_human_unless_an_operation_is_open(self):
+        rec = record()
+        out = tick(rec, pull="development PR 1 is closed")
+        after = final(out, rec)
+        self.assertEqual(kinds(out), ["record_pr_mismatch"])
+        self.assertEqual((engine.state_key(after), after["pending_human_action"]["kind"]),
+                         ("development.waiting_human", "development_pr_mismatch"))
+        busy = record(active_operation_id="op-9")
+        out = tick(busy, pull="development PR 1 is closed")
+        self.assertEqual(kinds(out), [])
+        self.assertEqual(engine.state_key(final(out, busy)), "development.waiting_ci")
 
     def test_ci_waiting_for_approval_is_not_a_state(self):
         rec = record()
@@ -942,6 +967,18 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(kinds(out), [])
         self.assertEqual(engine.state_key(final(out, rec)), "development.waiting_ci")
         self.assertIn("op-9", out.report["observation"][0]["handoff_deferred"])
+
+    def test_the_runner_label_contract_counts_for_an_executed_job_only(self):
+        contract = {"required_job_patterns": ["riscv64"], "expected_wheels": [],
+                    "required_runner_label": "other-label"}
+        rec = record()
+        with mock.patch("observe_ci.contract_for", return_value=contract):
+            # An executed job on a runner without the label is a failure.
+            out = tick(rec, verdict="passed")
+            self.assertEqual(kinds(out)[0], "record_ci_failure")
+            # A cancelled job did not execute: it is rerun, never a failure.
+            out = tick(rec, ci=interrupted_ci())
+            self.assertEqual(kinds(out), ["rerun_interrupted_ci"])
 
     def test_green_ci_at_the_gate_changes_nothing(self):
         from tests.helpers import awaiting_submission
