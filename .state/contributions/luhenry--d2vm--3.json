@@ -2,8 +2,8 @@
   "active_operation_id": null,
   "active_work": {
     "attempt": 1,
-    "deadline_at": "2026-11-25T06:46:16.080097+00:00",
-    "dedupe_key": "luhenry--d2vm/3@g1.r6:development_repair",
+    "deadline_at": "2026-11-25T09:47:26.090893+00:00",
+    "dedupe_key": "luhenry--d2vm/3@g1.r7:development_repair",
     "dispatched_run_id": null,
     "feedback_evidence_ids": [
       "review-1469259163-1-4680121101"
@@ -14,8 +14,8 @@
       "ci-1469259163-45391735151-1",
       "plan-luhenry--d2vm--3-r2"
     ],
-    "requested_at": "2026-11-24T12:46:16.080097+00:00",
-    "revision": 6,
+    "requested_at": "2026-11-24T15:47:26.090893+00:00",
+    "revision": 7,
     "task": "development_repair",
     "tracking_issue": {
       "description": "### Upstream repository\n\nhttps://github.com/luhenry/d2vm\n\n### Packages\n\n_No response_\n\n### Upstream target branch\n\n_No response_\n\n### Additional notes\n\nYou MUST NOT look at riscv64-draft at ALL. You ARE NOT ALLOWED to look at it. ",
@@ -30,11 +30,11 @@
   "admission_override": null,
   "automatic_refresh_used": false,
   "budget": {
-    "attempts_used": 4,
+    "attempts_used": 5,
     "clusters": {
-      "Test Templates (debian)": 1
+      "Test Templates (debian)": 2
     },
-    "no_progress_streak": 0,
+    "no_progress_streak": 1,
     "planning_attempts": 0,
     "policy_id": "2026-11-18.1-proposed",
     "reruns": {
@@ -89,7 +89,8 @@
   "processed_publications": [
     14837588488,
     14858093356,
-    14880039119
+    14880039119,
+    14937222730
   ],
   "processed_review_comment_ids": [
     4680087010,
@@ -107,7 +108,7 @@
   "release_acceptance": null,
   "retirement": null,
   "review_comments": [],
-  "revision": 6,
+  "revision": 7,
   "schema_version": 1,
   "scope_coverage_complete": true,
   "scope_paths": [
@@ -154,7 +155,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-24T14:16:58.378042+00:00",
+  "updated_at": "2026-11-24T15:47:26.090893+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
