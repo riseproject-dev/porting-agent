@@ -12,8 +12,10 @@ import contextlib
 import copy
 import io
 import json
+import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 import capacity
@@ -127,7 +129,7 @@ class FakeApi:
 
 class TestWorkerRunResult(unittest.TestCase):
     RUN = {"id": 7, "status": "completed", "conclusion": "success",
-           "updated_at": "2026-11-23T08:00:00Z"}
+           "created_at": "2026-11-23T07:00:00Z", "updated_at": "2026-11-23T08:00:00Z"}
 
     def test_a_run_in_progress(self):
         api = FakeApi(dict(self.RUN, status="in_progress", conclusion=None))
@@ -142,6 +144,7 @@ class TestWorkerRunResult(unittest.TestCase):
                                     ([], False)):
             got = collect.worker_run_result(FakeApi(self.RUN, artifacts), "7")
             self.assertEqual(got, {"run_id": "7", "status": "completed", "conclusion": "success",
+                                   "created_at": "2026-11-23T07:00:00Z",
                                    "ended_at": "2026-11-23T08:00:00Z",
                                    "publication": expected})
 
@@ -201,6 +204,19 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
         self.assertEqual(kinds(staged), ["allocate_work_retry"])
         self.assertEqual([e for k, e in staged if k == "events"][0]["details"]["result"],
                          "uncollected")
+
+    def test_an_artifact_that_will_never_be_collected_is_not_waited_for(self):
+        record = held(*STATES[1])
+        ended = T - timedelta(minutes=1)
+        for never in ("rejected", "ambiguous", "outside the run inventory"):
+            with self.subTest(never=never):
+                results = {graph(record): dict(reading(publication=True, ended=ended),
+                                               never_collected=never)}
+                _, staged, _ = recover(record, results=results)
+                self.assertEqual(kinds(staged), ["allocate_work_retry"])
+                details = [e for k, e in staged if k == "events"][0]["details"]
+                self.assertEqual((details["result"], details["never_collected"]),
+                                 ("uncollected", never))
 
     def test_unbound_gone_and_collected_are_retried_at_once(self):
         record = held(*STATES[1])
@@ -284,6 +300,52 @@ class TestWorkResultReadings(unittest.TestCase):
                                                  {})
         self.assertEqual(got, {graph(two): {"status": "unbound"}})
         self.assertEqual(sorted(calls), ["11", "22"])
+
+    def test_the_collector_marks_what_it_cannot_collect(self):
+        record = held(*STATES[1])
+        queue = {graph(record): "completed"}
+        runs = {graph(record): {"run_id": "4242"}}
+        listed = T
+        before, after = (T - timedelta(minutes=5)).isoformat(), (T + timedelta(minutes=1)).isoformat()
+        for uncollected, inventory, created, expected in (
+                ({"4242": "rejected"}, frozenset({"4242"}), before, "rejected"),
+                ({"4242": "ambiguous"}, frozenset({"4242"}), before, "ambiguous"),
+                ({}, frozenset({"1"}), before, "outside the run inventory"),
+                # A run created after the listing started is not out of reach.
+                ({}, frozenset({"1"}), after, None),
+                ({}, frozenset({"1"}), None, None),
+                ({"4242": "download_failed"}, frozenset({"4242"}), before, None),
+                ({}, frozenset({"4242"}), before, None),
+                ({}, None, before, None)):
+            with self.subTest(uncollected=uncollected, inventory=inventory, created=created):
+                with mock.patch("reconcile.collect.worker_run_result",
+                                return_value=dict(reading(publication=True), created_at=created)):
+                    got = reconcile.work_result_readings(
+                        None, {"a": record}, queue, runs, (uncollected, inventory, listed))
+                # Without the time of the listing nothing is out of reach.
+                if expected == "outside the run inventory":
+                    with mock.patch("reconcile.collect.worker_run_result",
+                                    return_value=dict(reading(publication=True),
+                                                      created_at=created)):
+                        unknown = reconcile.work_result_readings(
+                            None, {"a": record}, queue, runs, (uncollected, inventory, None))
+                    self.assertNotIn("never_collected", unknown[graph(record)])
+                self.assertEqual(got[graph(record)].get("never_collected"), expected)
+
+    def test_the_collection_files_are_read(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(reconcile.publication_collection(root), ({}, None, None))
+            (Path(root) / ".uncollected").write_text(
+                "11 rejected\n12 download_failed\n13 unknown\nx ambiguous\n14 ambiguous\n")
+            (Path(root) / ".inventory").write_text("11\n\n12\n")
+            (Path(root) / ".listed-at").write_text("2026-11-24T12:00:00Z\n")
+            self.assertEqual(reconcile.publication_collection(root),
+                             ({"11": "rejected", "12": "download_failed", "14": "ambiguous"},
+                              frozenset({"11", "12"}),
+                              datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)))
+            (Path(root) / ".listed-at").write_text("not a time")
+            self.assertIsNone(reconcile.publication_collection(root)[2])
+        self.assertEqual(reconcile.publication_collection(None), ({}, None, None))
 
 
 if __name__ == "__main__":

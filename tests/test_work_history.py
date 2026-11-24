@@ -883,7 +883,6 @@ class TestTick(unittest.TestCase):
         durable ``requested_at``; the ticks within the grace build no
         history and charge no dispatch, and the first tick after it builds
         the history without that list, with an alert."""
-        import reconcile
 
         calls = []
 
@@ -940,10 +939,9 @@ class TestTick(unittest.TestCase):
                          ("development.agent_running", None))
         # The dispatcher runs before the history was recorded charge
         # nothing: should the launch not show up as a run, a later tick
-        # relaunches it once the launch grace passed.
+        # relaunches it at once.
         later = dev.tick(rec, verdict="failed", evidence=evidence, observe=False,
-                         now=dev.T + timedelta(minutes=61) + timedelta(
-                             minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES),
+                         now=dev.T + timedelta(minutes=76),
                          runs=list(runs[1:]))
         self.assertEqual(later.report["dispatch_recovery"][0]["decision"],
                          "relaunch: no dispatcher run")
@@ -968,7 +966,7 @@ class TestTick(unittest.TestCase):
     def test_work_in_flight_gets_its_history(self):
         """Work an earlier tick requested whose history this tick records
         was deferred by the dispatcher: the tick asks for a dispatcher
-        launch at once, not after the launch grace of dispatch recovery."""
+        launch at once, not through dispatch recovery."""
         out = dev.tick(dev.running())
         [entry] = out.report["work_history"]
         self.assertEqual(entry["work"], dev.running()["active_work"]["dedupe_key"])

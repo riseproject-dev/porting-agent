@@ -154,6 +154,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p publications
+          # What this step could not collect, for the dispatch recovery of a
+          # completed Work: `<run> <reason>` lines, and the runs it listed
+          # when it listed all of them.
+          uncollected() { printf '%s %s\n' "$1" "$2" >> publications/.uncollected; }
+          listed=true
+          # When the listing started: a run created after it is not in the
+          # inventory for want of being listed, not for being out of reach.
+          date -u +%Y-%m-%dT%H:%M:%SZ > publications/.listed-at
           for workflow in planner.lock.yml worker.lock.yml reviewer.lock.yml publish-retry.yml; do
             filter=
             if [ "$workflow" = publish-retry.yml ]; then
@@ -162,20 +170,28 @@ jobs:
             fi
             runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?per_page=20$filter" \
               --jq '.workflow_runs[].id') \
-              || { echo "$workflow run inventory unavailable this tick" >&2; runs=; }
+              || { echo "$workflow run inventory unavailable this tick" >&2; runs=; listed=false; }
+            printf '%s\n' "$runs" >> publications/.inventory
             printf '%s\n' "$runs" | while read -r run; do
               [ -n "$run" ] || continue
               found=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
-                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))] | if length == 1 then "\(.[0].id) \(.[0].expires_at // "")" elif length == 0 then empty else error("expected one publication artifact") end') \
-                || { echo "publication artifact inventory unavailable or ambiguous for $run" >&2; continue; }
+                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))] | if length == 1 then "\(.[0].id) \(.[0].expires_at // "")" elif length == 0 then empty else error("expected one publication artifact") end' \
+                2> "$RUNNER_TEMP/found.err") \
+                || { echo "publication artifact inventory unavailable or ambiguous for $run" >&2
+                     if grep -q 'expected one publication artifact' "$RUNNER_TEMP/found.err"; then
+                       uncollected "$run" ambiguous
+                     else
+                       uncollected "$run" download_failed
+                     fi
+                     continue; }
               [ -n "$found" ] || continue
               id=${found%% *}
               expires=${found#* }
               mkdir -p "publications/$run"
               gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "publications/$run/a.zip" \
-                || { rm -rf "publications/$run"; continue; }
+                || { rm -rf "publications/$run"; uncollected "$run" download_failed; continue; }
               unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
-                || { rm -rf "publications/$run"; continue; }
+                || { rm -rf "publications/$run"; uncollected "$run" download_failed; continue; }
               printf '%s' "$id" > "publications/$run/artifact-id"
               # When GitHub deletes the artifact: a held patch is pinned to it.
               printf '%s' "$expires" > "publications/$run/artifact-expires-at"
@@ -198,10 +214,11 @@ jobs:
                     && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/plan.json" ]; then
                   uv run --locked python -m planning_recovery \
                     --directory "publications/$run" --run-id "$worker_run" \
-                    || { echo "trusted planning recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
+                    || { echo "trusted planning recovery rejected $run" >&2; rm -rf "publications/$run"; uncollected "$run" rejected; continue; }
                 else
                   echo "incomplete publication for $run" >&2
                   rm -rf "publications/$run"
+                  uncollected "$run" rejected
                   continue
                 fi
               fi
@@ -209,10 +226,12 @@ jobs:
                   && [ -f "publications/$run/proposal.json" ] && [ -f "publications/$run/result.json" ]; then
                 uv run --locked python -m worker_recovery \
                   --directory "publications/$run" --run-id "$worker_run" \
-                  || { echo "trusted worker recovery rejected $run" >&2; rm -rf "publications/$run"; continue; }
+                  || { echo "trusted worker recovery rejected $run" >&2; rm -rf "publications/$run"; uncollected "$run" rejected; continue; }
               fi
             done
           done
+          # An inventory missing a run listing is not an inventory.
+          [ "$listed" = true ] || rm -f publications/.inventory publications/.listed-at
       - name: Observe the provisioning runs still in flight
         env:
           GH_TOKEN: ${{ github.token }}
@@ -478,6 +497,7 @@ jobs:
           permission-contents: read
           permission-actions: write
       - name: Launch dispatcher for durable selected Work
+        id: dispatcher-launch
         if: steps.policy.outputs.read_only == 'false'
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
@@ -485,6 +505,7 @@ jobs:
           set -euo pipefail
           count=$(jq '(.requested_effects | length) + (.dispatch_relaunch // [] | length)' report.json)
           [ "$count" -gt 0 ] || exit 0
+          echo "since=$(date -u -d '30 seconds ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           gh workflow run dispatcher.lock.yml --repo "$GITHUB_REPOSITORY" --ref main
       - name: Launch durable fork provisioning operations
         if: steps.policy.outputs.read_only == 'false'
@@ -550,6 +571,27 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: Confirm that the dispatcher run is listed
+        # Dispatch recovery relaunches a dispatcher whose run is not listed,
+        # so the launch ends only once its run is. Runs of this workflow are
+        # serialized, so every later tick lists it. A run that never shows up
+        # fails the step and the next tick launches again.
+        if: >-
+          !cancelled() &&
+          steps.dispatcher-launch.outputs.since != ''
+        env:
+          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          SINCE: ${{ steps.dispatcher-launch.outputs.since }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 30); do
+            listed=$(gh api -X GET "/repos/$GITHUB_REPOSITORY/actions/workflows/dispatcher.lock.yml/runs" \
+              -f event=workflow_dispatch -f created=">=$SINCE" -f per_page=1 --jq .total_count) || listed=0
+            [ "$listed" -eq 0 ] || exit 0
+            sleep 4
+          done
+          echo "::error::the dispatcher run was not listed within 120 seconds of its launch"
+          exit 1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

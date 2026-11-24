@@ -590,9 +590,9 @@ class TestDispatchRecovery(unittest.TestCase):
                                   rec["pending_human_action"]["counter"]),
                                  ("waiting_human", None, "dispatch_recovery"))
 
-    def test_lost_launch_after_grace_and_unknown_queue(self):
+    def test_lost_launch_and_unknown_queue(self):
         t = self.tick([], {}, now=datetime(2026, 11, 18, 19, 30, tzinfo=timezone.utc))
-        self.assertEqual(t.report["dispatch_relaunch"], [])                  # within the grace period
+        self.assertEqual(len(t.report["dispatch_relaunch"]), 1)             # no grace period
         self.assertEqual(len(self.tick([], {}).report["dispatch_relaunch"]), 1)
         # Runs from before the request do not count.
         self.assertEqual(len(self.tick([self.drun(9, at="2026-11-18T18:00:00Z")], {}).report["dispatch_relaunch"]), 1)

@@ -99,9 +99,9 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
             queue_works={graph: "available"}, now=at(now), policy=policy(),
             queue_retries=queue_result.work_retries(p) if retries else None)
 
-    def test_the_retry_is_dispatched_after_the_launch_grace_and_charges_nothing(self):
+    def test_the_retry_is_dispatched_once_the_backoff_passed_and_charges_nothing(self):
         relaunch, staged, report = self.recover(
-            (RETRY_AT + timedelta(minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES)).isoformat())
+            (RETRY_AT + timedelta(seconds=1)).isoformat())
         self.assertEqual(staged, [])
         self.assertEqual(relaunch, [{"type": "relaunch_dispatcher",
                                      "contribution_id": "luhenry--d2vm/3"}])
@@ -109,17 +109,43 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         self.assertEqual(report[0]["queue_retry"]["attempts"], 1)
         self.assertEqual(report[0]["dispatcher_runs"], [])
 
-    def test_no_dispatcher_is_launched_within_the_launch_grace(self):
-        # A dispatcher run created since the retry time may not be listed
-        # yet: within the grace nothing is launched and nothing charged.
-        for now in ("2026-11-23T22:21:19+00:00",
-                    (RETRY_AT + timedelta(minutes=reconcile.DISPATCH_LAUNCH_GRACE_MINUTES)
-                     - timedelta(seconds=1)).isoformat()):
-            with self.subTest(now=now):
-                relaunch, staged, report = self.recover(now)
-                self.assertEqual((relaunch, staged), ([], []))
-                self.assertEqual(report[0]["decision"], "waiting for the dispatcher to start")
-                self.assertEqual(report[0]["queue_retry"]["attempts"], 1)
+    def test_a_dispatcher_run_in_flight_before_the_retry_is_waited_for(self):
+        # A run created before the retry time that has not ended claims the
+        # available Work when it stages: nothing is launched or charged.
+        runs = self.runs + [run(45278935001, (RETRY_AT - timedelta(minutes=2)).isoformat(),
+                                status="in_progress")]
+        relaunch, staged, report = self.recover(
+            (RETRY_AT + timedelta(minutes=5)).isoformat(), runs=runs)
+        self.assertEqual((relaunch, staged), ([], []))
+        self.assertEqual(report[0]["decision"], "dispatcher running")
+
+    def test_a_dispatcher_run_stuck_for_an_hour_does_not_block_recovery(self):
+        created = RETRY_AT - timedelta(minutes=2)
+        runs = self.runs + [run(45278935001, created.isoformat(), status="queued")]
+        # Within the hour it is waited for, with a wake at the bound.
+        _relaunch, staged, report = self.recover(
+            (created + timedelta(minutes=59)).isoformat(), runs=runs)
+        self.assertEqual((staged, report[0]["decision"]), ([], "dispatcher running"))
+        self.assertEqual(at(report[0]["wake_at"]),
+                         created + reconcile.DISPATCHER_RUN_WAIT)
+        # Past it, the run no longer holds the Work: it is launched again.
+        relaunch, staged, report = self.recover(
+            (created + reconcile.DISPATCHER_RUN_WAIT).isoformat(), runs=runs)
+        self.assertEqual((len(relaunch), staged), (1, []))
+
+    def test_a_lost_relaunch_is_relaunched_at_once(self):
+        # The run decided last tick is still the latest: the relaunch it led
+        # to is not listed, so it was lost.
+        ended = run(45278935001, (RETRY_AT + timedelta(seconds=5)).isoformat(),
+                    conclusion="failure")
+        record = copy.deepcopy(self.record)
+        record["active_work"]["dispatched_run_id"] = "45278935001"
+        relaunch, staged, report = self.recover(
+            (RETRY_AT + timedelta(seconds=40)).isoformat(), runs=self.runs + [ended],
+            record=record)
+        self.assertEqual(staged, [])
+        self.assertEqual(len(relaunch), 1)
+        self.assertEqual(report[0]["decision"], "relaunch: the requested run did not start")
 
     def test_without_the_retry_the_live_tick_charged_a_lost_dispatch(self):
         # What controller run 45278754335 decided: `retry_dispatch`, attempt

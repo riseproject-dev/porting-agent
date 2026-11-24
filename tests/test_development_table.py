@@ -1049,16 +1049,14 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                          "relaunch: no dispatcher run")
 
     def test_a_launch_that_shows_no_run_is_launched_again_without_a_row(self):
-        """No dispatcher run since the request: nothing before
-        `DISPATCH_LAUNCH_GRACE_MINUTES`, then the dispatcher is launched on
-        every tick until a run shows up, without a row and without a
-        charge."""
+        """No dispatcher run since the request: the dispatcher is launched on
+        every tick until a run shows up (the launch step confirms its run is
+        listed), without a row and without a charge."""
         rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair",
                                        requested_at=T.isoformat()))
         history = helpers.committed_history(rec, POLICY)
         relaunch = [{"type": "relaunch_dispatcher", "contribution_id": rec["contribution_id"]}]
-        grace = reconcile.DISPATCH_LAUNCH_GRACE_MINUTES
-        for minutes, expected in ((grace - 1, []), (grace, relaunch), (grace + 10, relaunch)):
+        for minutes, expected in ((1, relaunch), (15, relaunch), (25, relaunch)):
             with self.subTest(minutes=minutes):
                 out = tick(rec, observe=False, evidence=history,
                            now=T + timedelta(minutes=minutes))

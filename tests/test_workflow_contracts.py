@@ -614,10 +614,12 @@ class TestWorkflowContracts(unittest.TestCase):
             for name in ("gh", "uv"):
                 (bin_dir / name).chmod(0o755)
             env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
-                       GITHUB_REPOSITORY="o/r", GH_TOKEN="x")
+                       GITHUB_REPOSITORY="o/r", GH_TOKEN="x", RUNNER_TEMP=str(tmp))
             subprocess.run(["bash", "-c", script], cwd=tmp, env=env, check=True,
                            capture_output=True)
             self.assertTrue((tmp / "publications/11/outcome.json").exists())
+            self.assertEqual((tmp / "publications/.inventory").read_text().split(), ["11"])
+            self.assertFalse((tmp / "publications/.uncollected").exists())
             self.assertFalse((tmp / "publications/11/worker-run-id").exists())
             [outcome] = reconcile._publication_outcomes(str(tmp / "publications"))
             self.assertEqual(outcome["worker_run_id"], "11")
@@ -706,6 +708,37 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(controller["jobs"]["reconcile"]["concurrency"]["group"],
                          "porting-agent-controller")
         self.assertFalse(controller["jobs"]["reconcile"]["concurrency"]["cancel-in-progress"])
+
+    def test_the_dispatcher_launch_is_confirmed_to_be_listed(self):
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        launch = next(s for s in steps if s.get("name") == "Launch dispatcher for durable selected Work")
+        confirm = next(s for s in steps if s.get("name") == "Confirm that the dispatcher run is listed")
+        self.assertEqual(launch["id"], "dispatcher-launch")
+        self.assertLess(launch["run"].index("since="), launch["run"].index("gh workflow run"))
+        self.assertGreater(steps.index(confirm), steps.index(launch))
+        # It runs after every other launch, so a failure to list the run
+        # never skips them, and fails the job when the run never shows up.
+        later = [s for s in steps[steps.index(launch) + 1:steps.index(confirm)]
+                 if "gh workflow run" in s.get("run", "")]
+        self.assertTrue(later)
+        self.assertIn("!cancelled()", confirm["if"])
+        self.assertIn("steps.dispatcher-launch.outputs.since != ''", confirm["if"])
+        self.assertEqual(confirm["env"]["GH_TOKEN"], launch["env"]["GH_TOKEN"])
+        for text in ("dispatcher.lock.yml/runs", "event=workflow_dispatch",
+                     'created=">=$SINCE"', "--jq .total_count", "sleep 4", "seq 30",
+                     "::error::", "exit 1"):
+            self.assertIn(text, confirm["run"])
+
+    def test_the_collector_tells_the_reconciler_what_it_cannot_collect(self):
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        collect = next(s for s in steps if s.get("name", "").startswith(
+            "Collect verified planner, worker, reviewer"))
+        script = collect["run"]
+        for reason in ("ambiguous", "download_failed", "rejected"):
+            self.assertIn(f'uncollected "$run" {reason}', script)
+        self.assertIn("publications/.inventory", script)
+        self.assertIn("rm -f publications/.inventory", script)
+        subprocess.run(["bash", "-n"], input=script.encode(), check=True)
 
     def test_controller_pipeline_push_wakeup_excludes_state_commits(self):
         controller = workflow("controller.yml")

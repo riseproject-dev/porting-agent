@@ -142,11 +142,12 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
         with self.assertRaises(engine.TransitionError):
             engine.record_beside(self.record, "dispatcher_run_decided", now=decided["updated_at"],
                                  active_work=decided["active_work"])
-        # The relaunched run has not shown up yet: no row is taken again.
+        # The relaunched run is not listed: the launch was lost, so it is
+        # launched again, and no row is taken again.
         self.record = decided
         relaunch, staged, report = self.recover(1)
-        self.assertEqual((relaunch, staged), ([], []))
-        self.assertEqual(report[0]["decision"], "waiting for the relaunched dispatcher")
+        self.assertEqual((len(relaunch), staged), (1, []))
+        self.assertEqual(report[0]["decision"], "relaunch: the requested run did not start")
 
 
 class TestWorkerBlockedRecovery(unittest.TestCase):

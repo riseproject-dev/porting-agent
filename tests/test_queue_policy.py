@@ -230,8 +230,14 @@ class TestPolicyRecovery(unittest.TestCase):
                   "created_at": (now - timedelta(minutes=5)).isoformat()}
         self.assertEqual(self.recover(projection(), runs=[recent], now=now)[1], [])
         running = {"id": 2, "status": "in_progress",
-                   "created_at": (now - timedelta(hours=5)).isoformat()}
+                   "created_at": (now - timedelta(minutes=30)).isoformat()}
         self.assertEqual(self.recover(projection(), runs=[running], now=now)[1], [])
+        # A run stuck for more than the hour dispatch recovery waits for does
+        # not hold the reinstall forever.
+        stuck = {"id": 3, "status": "in_progress",
+                 "created_at": (now - timedelta(hours=5)).isoformat()}
+        self.assertEqual(self.recover(projection(), runs=[stuck], now=now)[1],
+                         [{"type": "reinstall_queue_policy"}])
 
     def test_a_busy_queue_launches_nothing(self):
         p = projection()

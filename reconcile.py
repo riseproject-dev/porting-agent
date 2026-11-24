@@ -105,6 +105,10 @@ PUBLISH_RESULT_WAIT_MINUTES = 60
 # outside the run inventory) is no usable Result: the completed Work graph is
 # then retried. It reuses the wait of a launched publish-only retry.
 RESULT_COLLECTION_GRACE_MINUTES = PUBLISH_RESULT_WAIT_MINUTES
+# A dispatcher run that has not completed is waited for this long after it was
+# created: a run stuck queued or waiting does not hold dispatch recovery
+# forever.
+DISPATCHER_RUN_WAIT = timedelta(minutes=60)
 
 
 def publish_retry_delay(attempts: int) -> int:
@@ -113,8 +117,6 @@ def publish_retry_delay(attempts: int) -> int:
     return RETRY_BACKOFF_MINUTES[min(max(attempts, 1), len(RETRY_BACKOFF_MINUTES)) - 1]
 
 
-# A dispatcher launch that has not shown up as a run by then is launched again.
-DISPATCH_LAUNCH_GRACE_MINUTES = 15
 # While the installed work-queue Policy refuses every dispatch and the queue
 # is quiescent, the dispatcher is launched to reinstall the compiled policy at
 # most once in this many minutes.
@@ -169,9 +171,13 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     For each ``active_work`` (oldest first) whose Work is absent from the
     queue, or admitted but still unclaimed:
 
-    * a dispatcher run created after the request is still queued/running: wait;
-    * no dispatcher run after the request, past a short grace: launch again
-      (the launch itself was lost; no run ended, so no row is taken);
+    * a dispatcher run is still queued/running, whenever it was created: wait.
+      It claims the Work it finds available when it stages, and its
+      completion wakes the controller;
+    * no dispatcher run after the request: launch again at once (the launch
+      itself was lost; no run ended, so no row is taken). The launch step of
+      the controller confirms that its run is listed before it ends, and
+      launches are serialized, so a run launched by an earlier tick is listed;
     * otherwise a dispatcher run ended without its Work being claimed. The
       table's ``retry_dispatch`` launches the dispatcher again within
       ``dispatch_recovery`` (the dispatcher never submits Work the queue
@@ -195,8 +201,10 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     (``collected``, graph ids) names it, or once ``work_results``
     (``work_result_readings``, by graph id) shows that its worker run ended
     or is gone without an unexpired ``porting-publication`` artifact, that
-    the queue binds no run to it, or that the artifact of the ended run was
-    not collected within ``RESULT_COLLECTION_GRACE_MINUTES``. While the
+    the queue binds no run to it, or that the artifact of the ended run will
+    never be collected (the trusted recovery rejected it, it is ambiguous, or
+    the run is outside the run inventory of the tick), or was not collected
+    within ``RESULT_COLLECTION_GRACE_MINUTES`` (its download failed). While the
     worker run has not ended, or was not read, nothing is decided and
     nothing is charged. A record in a state the table does not have is left
     unchanged and reported.
@@ -216,9 +224,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     cancelled, timed out or lost its runner): the queue retries it, within
     the retry attempts of its Policy, once its backoff has passed. Such a
     retry is not a lost dispatch. The dispatcher runs are counted from the
-    retry time, and when none was created within
-    ``DISPATCH_LAUNCH_GRACE_MINUTES`` of it, the dispatcher is launched
-    without a row and nothing is charged. A retry the queue exhausts
+    retry time, and when none was created since it, the dispatcher is
+    launched without a row and nothing is charged. A retry the queue exhausts
     cancels the Work, which ``allocate_work_retry`` or
     ``exhaust_recovery`` then decides.
 
@@ -300,8 +307,12 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                      "contribution_id": new["contribution_id"]})
                 report.append(entry | {"decision": decision})
                 continue
-            if any(r.get("status") != "completed" for r in after):
-                report.append(entry | {"decision": "dispatcher running"})
+            running = _dispatchers_in_flight(runs, now)
+            if running:
+                report.append(entry | {
+                    "decision": "dispatcher running",
+                    "wake_at": (min(_created(r) for r in running)
+                                + DISPATCHER_RUN_WAIT).isoformat()})
                 continue
             if queue_policy and not queue_policy["preserved"] and not queue_policy["quiescent"]:
                 report.append(entry | {"decision": "waiting for the queue to drain: the installed "
@@ -315,11 +326,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 # With a retry, `requested` is the retry time: the worker run
                 # of the last Claim ended without a Result and the queue holds
                 # the Work for its next attempt, which only a dispatcher run
-                # claims. The launch grace keeps a run list that lags behind
-                # a dispatcher run created since from launching another.
-                if now - requested < timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
-                    report.append(entry | {"decision": "waiting for the dispatcher to start"})
-                    continue
+                # claims. A launch of an earlier tick is listed by now: the
+                # launch step confirms its run before it ends.
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
                 report.append(entry | {"decision": "relaunch: the queue retries the Work after "
                                                    "its worker run ended without a Result"
@@ -327,16 +335,11 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 continue
             latest = max(after, key=lambda r: r["created_at"])
             if str(latest["id"]) == str(aw.get("dispatched_run_id")):
-                # This run was decided in an earlier tick; the relaunch it
-                # led to has not shown up as a run yet.
-                ended = datetime.fromisoformat(
-                    str(latest.get("updated_at") or latest["created_at"]).replace("Z", "+00:00"))
-                if now - ended >= timedelta(minutes=DISPATCH_LAUNCH_GRACE_MINUTES):
-                    relaunch.append({"type": "relaunch_dispatcher",
-                                     "contribution_id": c["contribution_id"]})
-                    report.append(entry | {"decision": "relaunch: the requested run did not start"})
-                else:
-                    report.append(entry | {"decision": "waiting for the relaunched dispatcher"})
+                # This run was decided in an earlier tick and the relaunch it
+                # led to is not listed, so the launch was lost.
+                relaunch.append({"type": "relaunch_dispatcher",
+                                 "contribution_id": c["contribution_id"]})
+                report.append(entry | {"decision": "relaunch: the requested run did not start"})
                 continue
             # A dispatcher run ended since the request with the Work unclaimed.
             new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
@@ -352,6 +355,17 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
             report.append(entry | {"decision": decision})
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
+
+
+def _created(run: dict) -> datetime:
+    return datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
+
+
+def _dispatchers_in_flight(runs: list[dict], now: datetime) -> list[dict]:
+    """The dispatcher runs that have not completed and were created within
+    ``DISPATCHER_RUN_WAIT``: they claim the Work they find available."""
+    return [r for r in runs if r.get("status") != "completed"
+            and now - _created(r) < DISPATCHER_RUN_WAIT]
 
 
 def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None,
@@ -371,8 +385,10 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
       bound to the graph (``work_results``): no reading, or a run that has
       not ended, decides nothing; a run that ended (or is gone) without an
       unexpired ``porting-publication`` artifact, or no bound run at all,
-      decides at once; an artifact on an ended run that no tick collected is
-      waited for ``RESULT_COLLECTION_GRACE_MINUTES`` after the run ended."""
+      decides at once, and so does an artifact the collector marked as never
+      collectable (``never_collected`` in the reading); an artifact on an
+      ended run whose download failed is waited for
+      ``RESULT_COLLECTION_GRACE_MINUTES`` after the run ended."""
     if state == "cancelled":
         return True, "", {"result": "cancelled"}
     if graph in collected:
@@ -389,6 +405,9 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
         return True, "", details | {"result": "missing"}
     if status != "completed":
         return False, f"waiting for worker run {run_id} to publish its Result", {}
+    if reading.get("never_collected"):
+        return True, "", details | {"result": "uncollected",
+                                    "never_collected": reading["never_collected"]}
     try:
         ended = datetime.fromisoformat(str(reading.get("ended_at")).replace("Z", "+00:00"))
     except ValueError:
@@ -401,15 +420,57 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
     return True, "", details | {"result": "uncollected"}
 
 
+def publication_collection(directory: str | None
+                           ) -> tuple[dict[str, str], frozenset[str] | None, datetime | None]:
+    """What the collector of ``directory`` (``--publications``) wrote about
+    the runs it could not collect: ``(uncollected, inventory)``.
+    ``uncollected`` maps a run id to ``rejected`` (the trusted recovery
+    rejected its artifact, or it is incomplete), ``ambiguous`` (more than one
+    publication artifact), or ``download_failed``, from the lines
+    ``<run> <reason>`` of ``.uncollected``. ``inventory`` is the run ids of
+    every run the collector listed (``.inventory``), ``None`` when it did not
+    list them all, and ``listed_at`` is when it started listing
+    (``.listed-at``): a run created after it is not in the inventory for want
+    of being listed."""
+    if not directory:
+        return {}, None, None
+    root = Path(directory)
+    uncollected: dict[str, str] = {}
+    path = root / ".uncollected"
+    for line in path.read_text().splitlines() if path.is_file() else []:
+        run, _, reason = line.partition(" ")
+        if re.fullmatch(r"[1-9][0-9]{0,19}", run) \
+                and reason in ("rejected", "ambiguous", "download_failed"):
+            uncollected[run] = reason
+    path = root / ".inventory"
+    inventory = frozenset(line.strip() for line in path.read_text().splitlines()
+                          if line.strip()) if path.is_file() else None
+    path = root / ".listed-at"
+    listed_at = None
+    if path.is_file():
+        try:
+            listed_at = datetime.fromisoformat(path.read_text().strip().replace("Z", "+00:00"))
+        except ValueError:
+            listed_at = None
+    return uncollected, inventory, listed_at
+
+
 def work_result_readings(api: collect.Api, contributions: dict[str, dict],
                          queue_works: dict[str, str] | None,
-                         queue_runs: dict[str, dict] | None) -> dict[str, dict]:
+                         queue_runs: dict[str, dict] | None,
+                         collection: tuple[dict[str, str], frozenset[str] | None,
+                                           datetime | None] | None = None,
+                         ) -> dict[str, dict]:
     """``graph_id -> reading`` of the worker run of every completed Work
     graph a record still holds (``dispatch_recovery`` decides from it):
     ``{"status": "unbound"}`` when the queue binds no run to the graph
     (``queue_runs``, ``queue_result.work_runs``), else
-    ``collect.worker_run_result``. A failed read of one graph is printed and
-    leaves that graph without a reading; the others are still read."""
+    ``collect.worker_run_result``. ``collection`` (``publication_collection``)
+    marks the artifact of an ended run that no tick can collect
+    (``never_collected``: ``rejected``, ``ambiguous``, or ``outside the run
+    inventory``). A failed read of one graph is printed and leaves that
+    graph without a reading; the others are still read."""
+    uncollected, inventory, listed_at = collection or ({}, None, None)
     readings: dict[str, dict] = {}
     for c in contributions.values():
         aw = c.get("active_work")
@@ -423,11 +484,29 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
             readings[graph] = {"status": "unbound"}
             continue
         try:
-            readings[graph] = collect.worker_run_result(api, run_id)
+            readings[graph] = reading = collect.worker_run_result(api, run_id)
+            if reading.get("status") == "completed" and reading.get("publication"):
+                reason = uncollected.get(str(run_id))
+                if reason in ("rejected", "ambiguous"):
+                    reading["never_collected"] = reason
+                elif inventory is not None and listed_at is not None \
+                        and str(run_id) not in inventory \
+                        and _created_before(reading.get("created_at"), listed_at):
+                    # A run created after the listing started is not "out of
+                    # reach": the next tick lists it.
+                    reading["never_collected"] = "outside the run inventory"
         except (collect.CollectError, OSError) as error:
             print(f"worker run {run_id} of completed Work {graph} not read this tick: {error}",
                   file=sys.stderr)
     return readings
+
+
+def _created_before(created: Any, moment: datetime) -> bool:
+    """Whether the run time ``created`` is known and not after ``moment``."""
+    try:
+        return datetime.fromisoformat(str(created).replace("Z", "+00:00")) <= moment
+    except ValueError:
+        return False
 
 
 def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
@@ -497,8 +576,9 @@ def queue_policy_recovery(contributions: dict[str, dict], *, queue_policy: dict 
                     raise engine.TransitionRefused(refused,
                                                    ("reconcile", "queue_policy_recovery"))
     if waiting and not queue_policy["preserved"] and queue_policy["quiescent"] and runs is not None:
-        recent = [r for r in runs if r.get("status") != "completed" or now - datetime.fromisoformat(
-            r["created_at"].replace("Z", "+00:00")) < timedelta(minutes=POLICY_REINSTALL_LAUNCH_MINUTES)]
+        recent = _dispatchers_in_flight(runs, now) + [
+            r for r in runs if r.get("status") == "completed" and now - _created(r) < timedelta(
+                minutes=POLICY_REINSTALL_LAUNCH_MINUTES)]
         if recent:
             report.append({"decision": "Policy reinstall due; a dispatcher run is recent",
                            "dropped": queue_policy["dropped"]})
@@ -3423,7 +3503,7 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                 # The Work was requested by an earlier tick and the
                 # dispatcher deferred it while its history was missing:
                 # the dispatcher is launched once this history is committed,
-                # without waiting for the launch grace of dispatch recovery.
+                # without waiting for dispatch recovery.
                 entry["dispatch"] = "relaunch: the history was recorded after the request"
                 launches = out.report.setdefault("dispatch_relaunch", [])
                 if not launches:
@@ -3744,7 +3824,8 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             for line in skipped_retries:
                 print(line, file=sys.stderr)
             results = work_result_readings(api, snapshot.contributions, queue,
-                                           queue_result.work_runs(projection))
+                                           queue_result.work_runs(projection),
+                                           publication_collection(args.publications))
             queue_state = queue_policy_facts.status(
                 projection or {}, queue_policy_facts.load_compiled(repository=collect.CONTROL_REPO))
         except (collect.CollectError, OSError, ValueError) as error:

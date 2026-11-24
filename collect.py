@@ -1046,6 +1046,8 @@ def worker_run_result(api: Api, run_id: str) -> dict:
         raise CollectError(f"GET worker run {run_id}: the response is not a run")
     status = run.get("status")
     reading = {"run_id": str(run_id), "status": status if isinstance(status, str) else None,
+               "created_at": run.get("created_at") if isinstance(run.get("created_at"), str)
+               else None,
                "conclusion": run.get("conclusion") if isinstance(run.get("conclusion"), str)
                else None,
                "ended_at": run.get("updated_at") if isinstance(run.get("updated_at"), str)

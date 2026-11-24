@@ -1654,10 +1654,12 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "run it decided in `active_work.dispatched_run_id` as an effect of the row, and "
         "`exhaust_recovery` is taken once the count reaches the limit "
         "(`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never "
-        "shows up as a run is launched again after `DISPATCH_LAUNCH_GRACE_MINUTES` (15) and "
-        "then on every tick until a run shows up, without a row and without a charge, also "
-        "for a queue retry (15 minutes after the retry time): such a launch is lost to the "
-        "control plane, not to the Work. A Work whose `retry_not_before` is not representable "
+        "shows up as a run is launched again at once and then on every tick until a run shows "
+        "up, without a row and without a charge, also for a queue retry once its backoff has "
+        "passed: such a launch is lost to the control plane, not to the Work. The launch step "
+        "of the controller ends only once its run is listed, and the launches are serialized, "
+        "so a run launched by an earlier tick is always listed, and a dispatcher run still in "
+        "flight, whenever it was created, is waited for. A Work whose `retry_not_before` is not representable "
         "is left out of the retries and reported.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "retry_dispatch"),
