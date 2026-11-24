@@ -170,7 +170,7 @@
         opacity: 0.5, label: "data(hl)", "font-size": 11, "font-family": colors.font,
         color: colors.text, "text-background-color": colors.bg, "text-background-opacity": 0.92,
         "text-background-padding": 2, "text-background-shape": "roundrectangle",
-        "text-rotation": "autorotate", "control-point-step-size": 34, "z-index": 5,
+        "text-rotation": "autorotate", "control-point-step-size": 60, "z-index": 5,
         "min-zoomed-font-size": 6 } },
       { selector: "edge.origin-rule", style: { "line-style": "dashed", "line-dash-pattern": [7, 4],
         width: 1 } },
@@ -722,7 +722,7 @@
     // The structure of the layout is the table rows that change state, so that the rule and
     // the flag rows (which every state has) do not pull the picture apart.
     var layoutElements = cy.nodes().union(cy.edges(".origin-table").not(".loop"));
-    layoutElements.layout({ name: "dagre", rankDir: "TB", nodeSep: 22, rankSep: 38, edgeSep: 10,
+    layoutElements.layout({ name: "dagre", rankDir: "TB", nodeSep: 50, rankSep: 70, edgeSep: 35,
       ranker: "network-simplex", animate: false, fit: false }).run();
     cy.on("mouseover", "node.state", function (ev) { hover(ev.target.id()); });
     cy.on("mouseout", "node.state", function () { hover(null); });
