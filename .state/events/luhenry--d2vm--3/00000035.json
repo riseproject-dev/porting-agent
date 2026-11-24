@@ -1,0 +1,27 @@
+{
+  "at": "2026-11-24T16:45:06.853502+00:00",
+  "cause": {
+    "id": "tick-r9",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "queued.idle",
+    "to_state": "planning.idle",
+    "verb": "begin_planning"
+  },
+  "from": {
+    "phase": "queued"
+  },
+  "kind": "begin_planning",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45440574406
+  },
+  "schema_version": 1,
+  "sequence": 35,
+  "to": {
+    "phase": "planning"
+  }
+}
