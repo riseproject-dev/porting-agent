@@ -851,6 +851,29 @@ def excluded_tools(args: list[str]) -> set[str]:
     return {name.strip() for name in value.split(",") if name.strip()}
 
 
+def enabled_tools(args: list[str]) -> set[str]:
+    # The tools Pi 1.5.0 activates at start (dist/core/sdk.js), with the
+    # defaultTools gh-aw's pi_runtime.cjs writes ("+codemode",
+    # "+tool_search" on Pi's read, bash, edit and write) and no other
+    # setting: the last --tools, which must hold only +name or -name
+    # entries (plain names are an allowlist that also hides the MCP tools
+    # gh-aw exposes directly), applied in order, then the last
+    # --exclude-tools removed.
+    selected = ["read", "bash", "edit", "write", "codemode", "tool_search"]
+    value = ""
+    for i, arg in enumerate(args[:-1]):
+        if arg in ("--tools", "-t"):
+            value = args[i + 1]
+    entries = [name.strip() for name in value.split(",") if name.strip()]
+    assert all(entry[:1] in "+-" for entry in entries), entries
+    for entry in entries:
+        if entry[0] == "+" and entry[1:] not in selected:
+            selected.append(entry[1:])
+        elif entry[0] == "-" and entry[1:] in selected:
+            selected.remove(entry[1:])
+    return set(selected) - excluded_tools(args)
+
+
 def pi_command_args(run: str) -> list[str]:
     command = re.search(r"\| pi (--print .*?) 2>&1", run).group(1)
     return shlex.split(command.replace("'", "").replace('"', ""))
@@ -994,27 +1017,68 @@ class TestReviewerSandbox(unittest.TestCase):
         for absent in ("web-fetch", "web-search", "playwright", "--enable-dind", "docker-sudo"):
             self.assertNotIn(absent, json.dumps(source("reviewer")))
 
-    def test_threat_detection_gates_the_review(self):
+    def test_no_threat_detection_job_reads_the_agent_output(self):
+        # Detection would be a second, unhardened model sandbox and never
+        # sees the review, which the publish job checks.
         jobs = self.lock()["jobs"]
-        self.assertEqual(source("reviewer")["safe-outputs"]["threat-detection"],
-                         {"continue-on-error": False, "report-as-issue": False})
-        execute = next(s for s in jobs["detection"]["steps"]
-                       if s.get("name") == "Execute threat detection with AWF")
-        self.assertEqual(execute["env"]["GH_AW_DETECTION_CONTINUE_ON_ERROR"], "false")
-        self.assertEqual(execute["env"]["ANTHROPIC_MODEL"], "claude-fable-5-2")
-        self.assertIn("threat-detect --engine claude", execute["run"])
-        self.assertEqual(jobs["detection"]["permissions"], {"contents": "read"})
-        self.assertIn("needs.detection.result == 'success'", jobs["safe_outputs"]["if"])
-        self.assertIn("needs.detection.outputs.detection_success == 'true'", jobs["publish"]["if"])
-        # The controller is continued whatever detection concludes.
+        self.assertIs(source("reviewer")["safe-outputs"]["threat-detection"], False)
+        self.assertNotIn("detection", jobs)
+        self.assertNotIn("detection-gate", source("reviewer")["jobs"]["continuation"])
+        for name in ("safe_outputs", "publish", "continuation", "conclusion"):
+            with self.subTest(job=name):
+                self.assertNotIn("detection", json.dumps(jobs[name].get("needs", [])))
+                self.assertNotIn("detection", jobs[name].get("if", ""))
+        self.assertEqual(jobs["publish"]["if"], "needs.safe_outputs.outputs.work_queue_outcome == 'completed'")
         self.assertEqual(jobs["continuation"]["if"], "always()")
-        self.assertEqual(source("reviewer")["jobs"]["continuation"]["detection-gate"], "status-only")
+
+    def test_the_agent_has_exactly_the_read_only_file_tools(self):
+        step = next(s for s in self.lock()["jobs"]["agent"]["steps"] if s.get("name") == "Execute Pi CLI")
+        expected = {"read", "ls", "grep", "find", "codemode", "tool_search"}
+        self.assertEqual(enabled_tools(pi_command_args(step["run"])), expected)
+        self.assertEqual(enabled_tools(json.loads(step["env"]["GH_AW_PI_SUBAGENT_ARGS"])), expected)
+        # No setting replaces the defaultTools the selection starts from.
+        self.assertNotIn("defaultTools", step["env"].get("GH_AW_PI_CONFIG", ""))
+        self.assertNotIn("config", source("reviewer")["engine"])
+        # Pi finds rg and fd on PATH and never downloads them.
+        self.assertEqual(str(step["env"]["PI_OFFLINE"]), "1")
+        self.assertEqual(self.lock()["jobs"]["agent"]["runs-on"], "ubuntu-24.04")
+        steps = self.lock()["jobs"]["agent"]["steps"]
+        names = [s.get("name") for s in steps]
+        install = names.index("Install ripgrep and fd for the agent's grep and find tools")
+        self.assertLess(install, names.index("Make the home directories the sandbox mounts read-only to the agent"))
+        for needle in ("ripgrep=14.1.0-1 fd-find=9.0.0-1", "dpkg-query -W -f='${Version}' ripgrep",
+                       "/usr/bin/rg --version", "/usr/bin/fdfind --version"):
+            self.assertIn(needle, steps[install]["run"])
+        prompt = (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2]
+        self.assertIn("read the files above\nwith your read, find, grep and ls tools", prompt)
+
+    def test_enabled_tools_follows_pi(self):
+        self.assertEqual(enabled_tools(["--print"]), {"read", "bash", "edit", "write", "codemode", "tool_search"})
+        self.assertEqual(enabled_tools(["--tools", "+ls", "--tools", "+grep,-read", "-xt", "bash,edit,write"]),
+                         {"grep", "codemode", "tool_search"})
+        with self.assertRaises(AssertionError):
+            enabled_tools(["--tools", "read,ls"])
+
+    def test_the_changed_files_are_copied_only_under_before(self):
+        step = next(s for s in source("reviewer")["pre-agent-steps"]
+                    if s["name"] == "Check out the fork and rebuild the held patch (read-only)")
+        loop = re.search(r"(case \"/\$file/\" in.*?esac)", step["run"], re.S).group(1)
+        for path, ok in (("a/b.c", True), (".github/x", True), ("a/..b", True), ("../x", False),
+                         ("a/../../x", False), ("a/./b", False), ("/etc/x", False), ("a//b", False),
+                         ("..", False), ("a/..", False)):
+            with self.subTest(path=path):
+                result = subprocess.run(["bash", "-c", f'file="$1"; {loop}; echo ok', "-", path],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, ok, result.stdout)
 
     def test_nothing_after_the_agent_runs_code_the_agent_could_change(self):
         steps = self.lock()["jobs"]["agent"]["steps"]
         agent = next(i for i, s in enumerate(steps) if s.get("name") == "Execute Pi CLI")
-        self.assertEqual([s["name"] for s in source("reviewer")["post-steps"]],
-                         ["Resume workflow commands after untrusted agent output"])
+        # No authored step runs after the agent: the runner scopes
+        # ::stop-commands:: to the step that writes it, so a pair around
+        # the agent step would suspend nothing in it.
+        self.assertNotIn("post-steps", source("reviewer"))
+        self.assertNotIn("stop-commands", (WORKFLOWS / "reviewer.md").read_text())
         for step in steps[agent + 1:]:
             with self.subTest(step=step.get("name")):
                 self.assertNotIn("actions/checkout", step.get("uses", ""))
@@ -1065,12 +1129,17 @@ class TestReviewerSandbox(unittest.TestCase):
                     self.assertTrue(answer["error"].startswith(error), answer)
             # The earlier review stands.
             self.assertEqual(json.loads(out.read_text())["verdict"], "pass")
+            # A link at proposal.json is replaced, not followed, and no
+            # temporary file is left.
             elsewhere = Path(tmp) / "elsewhere"
             elsewhere.write_text("keep")
             out.unlink()
             out.symlink_to(elsewhere)
-            self.assertEqual(json.loads(self.submit(workspace, "{}").stdout), {"thrown": "ELOOP"})
+            self.assertTrue(json.loads(self.submit(workspace, "{}").stdout)["written"])
             self.assertEqual(elsewhere.read_text(), "keep")
+            self.assertFalse(out.is_symlink())
+            self.assertEqual(json.loads(out.read_text()), {})
+            self.assertEqual([p.name for p in out.parent.iterdir()], ["proposal.json"])
             out.unlink()
             out.parent.rmdir()
             target = Path(tmp) / "dir"

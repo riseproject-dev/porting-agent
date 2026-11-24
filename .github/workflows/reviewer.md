@@ -17,10 +17,19 @@ engine:
   # `bash` and `edit,write` as two flags, so bash would stay registered.
   # These args come last for the agent; the sub-agents' arguments, which
   # gh-aw builds without engine.args, are set whole in the same way.
-  args: ["--exclude-tools", "bash,edit,write"]
+  # Pi enables read, bash, edit and write by default, and gh-aw adds
+  # codemode and tool_search through the defaultTools setting; Pi's
+  # read-only ls, grep and find are off unless enabled. `--tools` (also
+  # last-wins) with only `+name` entries adds them to that selection, and
+  # the exclusion then leaves read, ls, grep, find, codemode and
+  # tool_search. A list of plain names would instead be an allowlist that
+  # also hides the MCP tools gh-aw exposes directly.
+  args: ["--exclude-tools", "bash,edit,write", "--tools", "+ls,+grep,+find"]
   env:
-    GH_AW_PI_SUBAGENT_ARGS: '["--print","--mode","json","--no-session","--no-approve","--exclude-tools","bash,edit,write"]'
+    GH_AW_PI_SUBAGENT_ARGS: '["--print","--mode","json","--no-session","--no-approve","--exclude-tools","bash,edit,write","--tools","+ls,+grep,+find"]'
 model: anthropic/claude-fable-5-2
+# The Ubuntu release the pinned ripgrep and fd-find packages below are from.
+runs-on: ubuntu-24.04
 concurrency:
   job-discriminator: ${{ github.run_id }}
 # The agent reaches no host itself: it has no shell and no web tool, its
@@ -42,8 +51,8 @@ tools:
 # through this tool: gh-aw runs it on the runner, outside the sandbox, in a
 # separate Node.js process that sees only GITHUB_WORKSPACE and the other
 # runtime variables gh-aw keeps. It writes one fixed file, a JSON object
-# of at most 256 KiB, and follows no link; the publish job checks the
-# review itself.
+# of at most 256 KiB, through a new file renamed over it, and follows no
+# link; the publish job checks the review itself.
 mcp-scripts:
   submit_review:
     description: "Write the review, a JSON object matching schemas/patch_review.schema.json, to porting-out/proposal.json (replacing an earlier one)"
@@ -75,12 +84,23 @@ mcp-scripts:
       fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
       if (!fs.lstatSync(dir).isDirectory()) throw new Error("porting-out is not a directory");
       const data = JSON.stringify(value, null, 2) + "\n";
-      const { O_WRONLY, O_CREAT, O_TRUNC, O_NOFOLLOW } = fs.constants;
-      const fd = fs.openSync(path.join(dir, "proposal.json"), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0o644);
+      // A new file then a rename: an earlier review stays whole until the
+      // new one replaces it, and a link at proposal.json is replaced, not
+      // followed.
+      const temporary = path.join(dir, `.proposal.${require("node:crypto").randomBytes(16).toString("hex")}.tmp`);
+      const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+      const fd = fs.openSync(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
       try {
-        fs.writeFileSync(fd, data);
-      } finally {
-        fs.closeSync(fd);
+        try {
+          fs.writeFileSync(fd, data);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        fs.renameSync(temporary, path.join(dir, "proposal.json"));
+      } catch (error) {
+        fs.rmSync(temporary, { force: true });
+        throw error;
       }
       return { written: "porting-out/proposal.json", bytes: Buffer.byteLength(data, "utf8") };
 mcp-servers:
@@ -114,16 +134,23 @@ mcp-servers:
       - actions_list
     required: true
 safe-outputs:
-  # gh-aw's threat detection reads the agent's output in a separate job
-  # before any safe output is applied; for this Pi workflow on an Anthropic
-  # model it runs Claude Code on the same model. A threat it reports, or a
-  # detection that cannot conclude, fails the job, so the review is not
-  # completed: the conclusion job ends the Claim and the queue holds the
-  # Work for another attempt. No issue is filed (it would need issues:
-  # write).
-  threat-detection:
-    continue-on-error: false
-    report-as-issue: false
+  # No threat detection: gh-aw's detection job would be a second
+  # model-driven sandbox (Claude Code under AWF, with the home directories
+  # mounted read-write, ~/.local/bin first on PATH and the API key on the
+  # host side) reading the agent's text without this job's hardening, and
+  # it gates only the safe-output entries, not the review, which travels in
+  # the uploaded artifact. The review's control is the publish job's
+  # trusted `patch_review check`.
+  threat-detection: false
+  # gh-aw mounts its staging directory read-write into the sandbox whenever
+  # upload-artifact is configured (not configurable in v1.2.2); the agent
+  # has no tool that writes there, and the safe-outputs server that stages
+  # runs outside the sandbox. allowed-paths matches the staged path, and an
+  # absolute request is staged under its last component, so gh-aw cannot
+  # tell ./porting-out from another directory named porting-out in the
+  # workspace (./fork/porting-out); either way the agent chooses what it
+  # uploads, as it chooses the review, and the publish job extracts only
+  # proposal.json and checks it.
   upload-artifact:
     max-uploads: 1
     retention-days: 30
@@ -152,16 +179,10 @@ safe-outputs:
 # /tmp/gh-aw and the workspace with its .git and ./fork, where gh-aw's
 # "Configure Git credentials" step and the post step of the checkout run
 # git. ~/.copilot is left as it is: the MCP gateway writes it, nothing runs
-# from it, and it is not on PATH. The step comes last, after the trusted
-# steps that still use the home directories (gh, git, node).
+# from it, and it is not on PATH. The step comes last among the authored
+# pre-agent steps, after the trusted steps that still use the home
+# directories (gh, git, node, apt).
 pre-agent-steps:
-  - name: Suspend workflow commands around untrusted agent output
-    id: suspend_commands
-    run: |
-      set -euo pipefail
-      token="porting-stop-$(openssl rand -hex 32)"
-      echo "token=$token" >> "$GITHUB_OUTPUT"
-      printf '::stop-commands::%s\n' "$token"
   - name: Fetch and verify the held patch, its report, the plan and the history
     env:
       GH_AW_ACTIONS_DIR: ${{ runner.temp }}/gh-aw/actions
@@ -279,6 +300,9 @@ pre-agent-steps:
       git diff -z --name-only head patch > "$patch/changed-files"
       mkdir -p "$patch/before"
       while IFS= read -r -d '' file; do
+        case "/$file/" in
+          *//*|*/./*|*/../*) echo "unsafe changed path"; exit 1 ;;
+        esac
         if [ "$(git cat-file -t "head:$file" 2>/dev/null)" = blob ]; then
           mkdir -p -- "$patch/before/$(dirname -- "$file")"
           git cat-file blob "head:$file" > "$patch/before/$file"
@@ -287,6 +311,21 @@ pre-agent-steps:
       tr '\0' '\n' < "$patch/changed-files" > "$patch/changed-files.txt"
       rm -f -- "$patch/changed-files"
       echo "rebuilt the held patch on $start into ./fork (branches base, head, patch)"
+  # Pi's grep and find tools run rg and fd (Debian's fdfind), which it looks
+  # for in $PI_CODING_AGENT_DIR/bin and then on PATH; with PI_OFFLINE, which
+  # gh-aw sets, it never downloads them. They come from Ubuntu 24.04's
+  # archive, which apt verifies against its signed index, at pinned
+  # versions, into /usr/bin, which AWF mounts read-only into the sandbox.
+  - name: Install ripgrep and fd for the agent's grep and find tools
+    run: |
+      set -euo pipefail
+      sudo apt-get update -q
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+        ripgrep=14.1.0-1 fd-find=9.0.0-1
+      [ "$(dpkg-query -W -f='${Version}' ripgrep)" = 14.1.0-1 ] || { echo "unexpected ripgrep"; exit 1; }
+      [ "$(dpkg-query -W -f='${Version}' fd-find)" = 9.0.0-1 ] || { echo "unexpected fd-find"; exit 1; }
+      /usr/bin/rg --version
+      /usr/bin/fdfind --version
   - name: Make the home directories the sandbox mounts read-only to the agent
     run: |
       set -euo pipefail
@@ -304,16 +343,6 @@ pre-agent-steps:
           exit 1
         fi
       done
-post-steps:
-  - name: Resume workflow commands after untrusted agent output
-    if: always()
-    env:
-      STOP_COMMANDS_TOKEN: ${{ steps.suspend_commands.outputs.token }}
-    run: |
-      set -euo pipefail
-      if [ -n "$STOP_COMMANDS_TOKEN" ]; then
-        printf '::%s::\n' "$STOP_COMMANDS_TOKEN"
-      fi
 jobs:
   safe_outputs:
     pre-steps:
@@ -399,10 +428,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
   continuation:
-    # It reads nothing of the agent's, so it runs whatever threat detection
-    # concludes: a review that detection blocks still ends in a controller
-    # tick, which reads the Work the queue then holds for another attempt.
-    detection-gate: status-only
     needs: [safe_outputs, publish]
     if: always()
     runs-on: ubuntu-latest
@@ -537,7 +562,9 @@ at most 300 characters, `detail` 1500 and `suggestion` 1000),
 `previous_findings` (at most 60), `checked` (what you checked) and
 `limitations` (what you could not check). Keep it under
 256 KiB. Then upload the directory with a single `upload_artifact` call:
-`{"path": "porting-out"}`. Then call `work_queue_claim_finish` with
+`{"path": "porting-out"}`. You have one upload (`max-uploads` is 1), and
+staging never overwrites a file already staged, so submit your final review
+before it: a review submitted after the upload is not uploaded. Then call `work_queue_claim_finish` with
 `outcome: "completed"`. If you cannot produce a review, stage
 `report_incomplete` explaining why and finish with `outcome: "cancelled"`.
 
