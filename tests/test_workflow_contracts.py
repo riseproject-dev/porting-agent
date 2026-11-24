@@ -437,7 +437,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(ci["if"], "steps.series.outputs.needs_ci == 'true'")
         self.assertEqual(branch["env"]["UPSTREAMING_CI_TOKEN"], "${{ steps.ci-token.outputs.token }}")
 
-    def test_the_rewrite_and_review_tasks_are_checked_without_a_token(self):
+    def test_the_rewrite_task_is_checked_without_a_token(self):
         worker = workflow("worker.lock.yml")
         publish = worker["jobs"]["publish"]
         step = next(s for s in publish["steps"] if s.get("id") == "result")
@@ -447,20 +447,11 @@ class TestWorkflowContracts(unittest.TestCase):
         # The step's token reads the Result only; the checks run without it.
         self.assertIn("unset GH_TOKEN", run[start:run.index("python -m submission check")])
         self.assertIn("python -m submission check-rewrite", run[start:])
-        self.assertIn("python -m submission check-review", run[start:])
         # An artifact that cannot be read is Work without a usable Result.
         self.assertIn('status:"rejected", failure_class:"validation"', run[start:])
-        # The token step runs only for a publication, which neither ever is.
+        # The token step runs only for a publication, which a rewrite never is.
         token = next(s for s in publish["steps"] if s.get("id") == "fork-token")
         self.assertEqual(token["if"], "steps.result.outputs.publish == 'true'")
-
-    def test_the_review_reads_exactly_the_rewrite_it_is_given(self):
-        text = (WORKFLOWS / "worker.md").read_text()
-        pre = text[text.index("Check out the contribution fork"):text.index("post-steps:")]
-        for needle in ('.name == "porting-publication"', "(.expired | not)",
-                       ".workflow_run.id | tostring", "series digest mismatch",
-                       "text digest mismatch", ".context.rewrite.artifact_id"):
-            self.assertIn(needle, pre)
 
     def test_controller_collects_handoff_receipts_from_main_only(self):
         text = (WORKFLOWS / "controller.yml").read_text()
@@ -1268,8 +1259,7 @@ class TestHistoryAndReports(unittest.TestCase):
         self.assertLess(worker.index("## History and steering: read this first"),
                         worker.index("## The submission rewrite task"))
         for needle in ("porting-out/report.json", "schemas/worker_report.schema.json",
-                       "Do not repeat, and do not revert", "`revisited`", "`head_after`",
-                       "Read the reports in the history first"):
+                       "Do not repeat, and do not revert", "`revisited`", "`head_after`"):
             self.assertIn(needle, worker)
         self.assertIn("Read its `steering` section\nfirst", planner)
 
@@ -1293,7 +1283,7 @@ class TestHistoryAndReports(unittest.TestCase):
     def test_the_publish_jobs_check_and_keep_the_report(self):
         worker = (WORKFLOWS / "worker.md").read_text()
         self.assertIn("--report ../in/report.json --out ../in/worker-gate.json", worker)
-        self.assertEqual(worker.count("--report ../in/report.json"), 5)
+        self.assertEqual(worker.count("--report ../in/report.json"), 4)
         for name in ("worker.lock.yml", "publish-retry.yml"):
             with self.subTest(workflow=name):
                 jobs = workflow(name)["jobs"]

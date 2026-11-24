@@ -104,6 +104,5 @@
   "automatic_refresh_used": false,
   "pending_feedback_evidence_ids": [],
   "clean_head_ci_since": null,
-  "submission_rewrite_id": null,
-  "submission_review_id": null
+  "submission_rewrite_id": null
 }

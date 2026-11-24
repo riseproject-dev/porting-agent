@@ -19,7 +19,7 @@ Each worker reports what it attempted, and every Work receives the contribution'
 
 ## The worker report
 
-Every patch, repair, revision, submission rewrite, and submission review Work also uploads `report.json` in its `porting-out` artifact. It follows `schemas/worker_report.schema.json` and is at most 32 KiB. It records:
+Every patch, repair, revision, and submission rewrite Work also uploads `report.json` in its `porting-out` artifact. It follows `schemas/worker_report.schema.json` and is at most 32 KiB. It records:
 
 - what the worker attempted and why;
 - each approach and its outcome;

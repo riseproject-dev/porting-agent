@@ -27,8 +27,7 @@
         "development_patch",
         "development_repair",
         "upstream_revision",
-        "submission_rewrite",
-        "submission_review"
+        "submission_rewrite"
       ]
     },
     "instructions": {
@@ -316,9 +315,6 @@
         },
         "template_sections": {
           "type": "array"
-        },
-        "rewrite": {
-          "type": "object"
         },
         "series_requirements": {
           "type": "array",

@@ -50,7 +50,7 @@ T = datetime.fromisoformat(NOW)
 SUBMIT = f"/upstreaming submit-upstream revision=6 head={HEAD}"
 # The fields the record migration adds to the live record, and the one it
 # removes.
-ADDED = ["clean_head_ci_since", "submission_rewrite_id", "submission_review_id", "budget.reruns"]
+ADDED = ["clean_head_ci_since", "submission_rewrite_id", "budget.reruns"]
 REMOVED = ["blocked_reason"]
 
 
@@ -100,9 +100,8 @@ class TestRecordMigration(unittest.TestCase):
         after, event = state.migrate_record_fields(before, now=NOW)
         changed = {k for k in set(before) | set(after) if before.get(k, "-") != after.get(k, "-")}
         self.assertEqual(changed, {"clean_head_ci_since", "submission_rewrite_id",
-                                   "submission_review_id", "blocked_reason", "budget",
-                                   "updated_at"})
-        for name in ("clean_head_ci_since", "submission_rewrite_id", "submission_review_id"):
+                                   "blocked_reason", "budget", "updated_at"})
+        for name in ("clean_head_ci_since", "submission_rewrite_id"):
             self.assertIsNone(after[name])
         self.assertNotIn("blocked_reason", after)
         self.assertEqual(after["budget"], dict(before["budget"], reruns={

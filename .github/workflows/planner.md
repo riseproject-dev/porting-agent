@@ -571,8 +571,8 @@ You MUST research the project's upstream history, not just its checkout:
      a file matching one of the paths, and returns the series to development
      otherwise. Record at most six. Use an empty list when there is none, and
      always for a park or close. Qualitative instructions stay in
-     `instructions` and `expectations`, where the submission review checks
-     them.
+     `instructions` and `expectations`, where the review loop of the submission
+     rewrite checks them.
 
 For every research category, record the exact queries, source URLs, findings,
 search scope and whether pagination/discussion review is complete. Link concrete

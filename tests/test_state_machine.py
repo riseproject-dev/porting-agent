@@ -201,7 +201,7 @@ class TestLifecycleTable(unittest.TestCase):
                       if e.transition.effects.work in ("allocate", "reallocate")]
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
-                          "request_submission_rewrite", "request_submission_review",
+                          "request_submission_rewrite",
                           "request_upstream_revision", "request_review_revision",
                           "allocate_work_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
@@ -320,7 +320,7 @@ class TestLifecycleTable(unittest.TestCase):
 
     def test_retry_dispatch_records_the_decided_run(self):
         edges = [e for e in lc.table_edges() if e.verb == "retry_dispatch"]
-        self.assertGreaterEqual(len(edges), 5)
+        self.assertGreaterEqual(len(edges), 4)
         for e in edges:
             with self.subTest(state=e.source):
                 self.assertEqual(e.transition.effects.sets, ("active_work.dispatched_run_id",))
@@ -471,7 +471,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
-                          "request_submission_rewrite", "request_submission_review",
+                          "request_submission_rewrite",
                           "allocate_work_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
             if e.verb == "reallocate_after_pipeline_failure":

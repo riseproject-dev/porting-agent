@@ -172,7 +172,7 @@ def _observe_clean_head_ci(api: collect.Api, obs: Observation, entry: dict, rec:
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("observe_ci", "_observe_clean_head_ci"))
         return
-    clean = handoff.ci_head(rec, evidence.get(rec.get("submission_review_id") or "") or {})
+    clean = handoff.ci_head(rec, evidence.get(rec.get("submission_rewrite_id") or "") or {})
     entry["ci_head"] = clean
     fork = rec["fork"]["name"]
     verdict, ev, snap = _ci_snapshot(

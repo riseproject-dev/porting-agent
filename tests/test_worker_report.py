@@ -215,20 +215,13 @@ class TestGates(unittest.TestCase):
                                         Path(directory) / "report.json")
         self.assertEqual(gate["status"], "infrastructure_blocked")
 
-    def test_the_submission_checks_refuse_a_result_without_its_report(self):
+    def test_the_submission_check_refuses_a_result_without_its_report(self):
         rewrite_task = {"task": "submission_rewrite", "contribution_id": CID, "revision": 3,
                         "expected_head": "a" * 40, "base_sha": "b" * 40,
                         "context": {"history": {"sha256": HISTORY}}}
         out = submission.check_rewrite(rewrite_task, {"verdict": "pass"}, b"")
         self.assertEqual((out["status"], out["failure_class"], out["stage"]),
                          ("rejected", "validation", "submission_check"))
-        self.assertIn("worker report", out["reason"])
-        review_task = dict(rewrite_task, task="submission_review", context={
-            "history": {"sha256": HISTORY},
-            "rewrite": {"evidence_id": "r", "series_digest": "5" * 64, "text_digest": "6" * 64}})
-        out = submission.check_review(review_task, {"verdict": "pass"},
-                                      report=raw(report(task="submission_rewrite")))
-        self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
         self.assertIn("worker report", out["reason"])
 
 

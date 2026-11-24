@@ -1,26 +1,20 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The trusted checks of the submission rewrite and the submission review.
+"""The trusted check of the submission rewrite.
 
-At `/upstreaming submit-upstream` two uncredentialed Work tasks run one after
-the other, each in a fresh context:
+At `/upstreaming submit-upstream` one uncredentialed Work task runs:
 
 * ``submission_rewrite`` (``handoff.agent_running``) reshapes the non-debug
   commits of the approved `riscv64-dev` series after the project's commit
   conventions and writes the upstream pull request title and description
-  after its pull request template and contributing instructions. Its Result
-  (``proposal.json``, ``schemas/submission_rewrite.schema.json``, and
-  ``patches.mbox``, ``git format-patch`` on the frozen base) is untrusted.
-* ``submission_review`` (``handoff.reviewing``) reviews exactly that series
-  and text, which the trusted pre-agent step downloads from the rewrite's
-  publication artifact and checks against their digests, against the pull
-  request template, the contributing instructions, the commit conventions,
-  and the reviewers' expectations. Its Result
-  (``schemas/submission_review.schema.json``) is pass or fail with reasons;
-  it carries no series and can change nothing.
+  after its pull request template and contributing instructions, then
+  reviews both with the review loop of ``pi-subagents`` (``review_loop``).
+  Its Result (``proposal.json``, ``schemas/submission_rewrite.schema.json``,
+  and ``patches.mbox``, ``git format-patch`` on the frozen base) and its
+  report, which holds the loop, are untrusted.
 
 Trusted code decides, without a token, in a fresh repository
-(``check_rewrite``), before the review:
+(``check_rewrite``):
 
 * the rewritten series rebuilds on the frozen base, under the App identity,
   to a deterministic head; it and every one of its commits pass the
@@ -36,16 +30,17 @@ Trusted code decides, without a token, in a fresh repository
 * every attribution trailer names the App's commit identity or repeats one
   of the approved commits;
 * its commit messages follow the plan's measurable commit rules, and the
-  description has every required section of the pull request template.
+  description has every required section of the pull request template;
+* the worker's review loop ran at least one round and left no P0 finding
+  open (``review_loop.check``).
 
-A rewrite that fails a check, or reports that the series cannot be shaped
-without a code change, returns to development with the reasons as feedback
-(``reject_submission_rewrite``). The review (``check_review``) passes only
-for exactly the rewritten series and text, with every expectation it lists
-met; a failed review returns to development with its reasons
-(``reject_submission_review``). A Result that is not usable (malformed, for
-another Work, series, or text, or without its series) is a Work without a
-usable Result: ``allocate_work_retry`` within its budget, never a verdict.
+A rewrite that fails a check, leaves a P0 finding of its review open, or
+reports that the series cannot be shaped without a code change, returns to
+development with the reasons as feedback (``reject_submission_rewrite``). A
+Result that is not usable (malformed, for another Work or series, without
+its series, or with a review loop that is missing or contradicts itself) is
+a Work without a usable Result: ``allocate_work_retry`` within its budget,
+never a verdict.
 The trusted handoff workflow then builds `riscv64` from the same series,
 checks it again, and pushes exactly the head this check computed.
 
@@ -54,7 +49,6 @@ return a valid worker report (``worker_report.check``); one without it is a
 Work without a usable Result.
 
     python -m submission check-rewrite --task T --result R --mbox M --report P --out O
-    python -m submission check-review --task T --result R --report P --out O
 """
 
 from __future__ import annotations
@@ -70,12 +64,11 @@ from typing import Any
 import commit_rules
 import fork_publish
 import publisher
+import review_loop
 import schemas
 import worker_report
 
 REWRITE = "submission_rewrite"
-REVIEW = "submission_review"
-STATUS = REVIEW
 PASS, FAIL = "pass", "fail"
 MAX_TITLE = 256
 # The description is posted in full in the package comment, which holds at
@@ -277,14 +270,13 @@ def _exact(task: dict, kind: str) -> bool:
         and bool(_SHA.match(str(task.get("base_sha") or "")))
 
 
-def _report_problem(task: dict, report: bytes | dict | None) -> str | None:
-    """Why the worker report does not answer the Work, or ``None``. A Work
-    that carries a history must return a valid report."""
+def _report(task: dict, report: bytes | dict | None) -> tuple[dict | None, str | None]:
+    """The worker report and why it does not answer the Work, or ``None``. A
+    Work that carries a history must return a valid report."""
     try:
-        worker_report.check(task, report)
+        return worker_report.check(task, report), None
     except worker_report.ReportError as error:
-        return f"the worker report is missing or invalid: {error}"
-    return None
+        return None, f"the worker report is missing or invalid: {error}"
 
 
 def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
@@ -302,7 +294,7 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
 
     if not _exact(task, REWRITE):
         return unusable("the Work is not a submission rewrite of an exact head")
-    problem = _report_problem(task, report)
+    parsed, problem = _report(task, report)
     if problem:
         return unusable(problem)
     try:
@@ -314,12 +306,22 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
         return unusable(problem)
     if rewrite["verdict"] == FAIL:
         return fail([f"rewrite: {r}" for r in rewrite["reasons"]])
+    # The worker reviewed the series and text in its own run: a P0 finding it
+    # left open is a reason to return to development, and a loop that is
+    # missing or unusable is a Result that is not usable.
+    digest = hashlib.sha256(mbox or b"").hexdigest()
+    try:
+        loop = review_loop.check(parsed, series_digest=digest,
+                                 text_digest=text_digest(rewrite["title"], rewrite["body"]))
+    except review_loop.OpenP0 as error:
+        return fail([f"review loop: P0 finding left open: {title}" for title in error.titles])
+    except review_loop.LoopError as error:
+        return unusable(str(error))
     title, body = rewrite["title"], rewrite["body"]
     if "\n" in title or "\r" in title or not title.strip() or len(title) > MAX_TITLE:
         return unusable("the title is not one line of at most 256 characters")
     if len(body) > MAX_BODY:
         return unusable(f"the description has {len(body)} characters, more than {MAX_BODY}")
-    digest = hashlib.sha256(mbox or b"").hexdigest()
     if not mbox or rewrite["series_digest"] != digest:
         return unusable("the rewritten series is missing or does not match its digest")
     try:
@@ -355,54 +357,17 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
               "rules_from": notes}
     if reasons:
         return fail(reasons, **result)
-    return dict(out, verdict=PASS, reasons=[], **result)
-
-
-def check_review(task: dict, review: dict, *, report: bytes | dict | None = None) -> dict:
-    """The trusted outcome of one submission review Result: a review of
-    exactly the rewritten series and text the Work names
-    (``context.rewrite``). ``report`` is the worker's ``report.json``."""
-    out: dict[str, Any] = {"status": REVIEW, "stage": "review_check",
-                           "approved_head": task.get("expected_head"),
-                           "base_sha": task.get("base_sha")}
-    rewrite = (task.get("context") or {}).get("rewrite") or {}
-    if not _exact(task, REVIEW) or not re.fullmatch(r"[0-9a-f]{64}", str(rewrite.get("series_digest"))) \
-            or not re.fullmatch(r"[0-9a-f]{64}", str(rewrite.get("text_digest"))) \
-            or not rewrite.get("evidence_id"):
-        return unusable("the Work is not a submission review of a rewritten series")
-    problem = _report_problem(task, report)
-    if problem:
-        return unusable(problem)
-    try:
-        schemas.validate("submission_review", review)
-    except schemas.SchemaError as error:
-        return unusable(f"the review is malformed: {error}")
-    problem = _identity_problem(task, review)
-    if problem:
-        return unusable(problem)
-    if review["series_digest"] != rewrite["series_digest"] \
-            or review["text_digest"] != rewrite["text_digest"]:
-        return unusable("the review names another series or text than the rewrite it was given")
-    out.update(rewrite_evidence_id=str(rewrite["evidence_id"]),
-               series_digest=review["series_digest"], text_digest=review["text_digest"],
-               expectations=[{k: e[k] for k in ("expectation", "met", "source", "note") if k in e}
-                             for e in review["expectations"]])
-    if review["verdict"] == FAIL:
-        return dict(out, verdict=FAIL,
-                    reasons=[f"review: {r}"[:2000] for r in review["reasons"]][:MAX_REASONS])
-    unmet = [e["expectation"] for e in review["expectations"] if not e["met"]]
-    if unmet:
-        return dict(out, verdict=FAIL, reasons=[f"review: expectation not met: {e}"[:2000]
-                                                for e in unmet][:MAX_REASONS])
-    return dict(out, verdict=PASS, reasons=[])
+    # The stamp of a pass that went through the worker's review loop: a pass
+    # without it was checked before the loop existed.
+    return dict(out, verdict=PASS, reasons=[], review_loop_rounds=loop["rounds"], **result)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m submission")
-    parser.add_argument("command", choices=["check-rewrite", "check-review"])
+    parser.add_argument("command", choices=["check-rewrite"])
     parser.add_argument("--task", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True,
-                        help="the rewrite or review proposal.json")
+                        help="the rewrite proposal.json")
     parser.add_argument("--mbox", type=Path, help="the rewritten series (check-rewrite)")
     parser.add_argument("--report", type=Path,
                         help="the worker's report.json (required when the Work carries a history)")
@@ -417,12 +382,9 @@ def main(argv: list[str] | None = None) -> int:
             # A link or a non-regular file is no report: refused below when
             # the Work carries a history.
             report = None
-        if args.command == "check-review":
-            result = check_review(task, result_value, report=report)
-        else:
-            mbox = args.mbox.read_bytes() if args.mbox and args.mbox.is_file() \
-                and not args.mbox.is_symlink() else None
-            result = check_rewrite(task, result_value, mbox, report=report)
+        mbox = args.mbox.read_bytes() if args.mbox and args.mbox.is_file() \
+            and not args.mbox.is_symlink() else None
+        result = check_rewrite(task, result_value, mbox, report=report)
     except (OSError, ValueError) as error:
         result = unusable(f"the Result cannot be read: {str(error)[:300]}")
     except CheckError as error:

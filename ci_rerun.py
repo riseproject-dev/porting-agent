@@ -279,14 +279,14 @@ def target_ref(record: dict, head: str) -> str:
 def expected_head(record: dict, evidence: dict) -> str | None:
     """The head the CI a ``ci_rerun`` operation of ``record`` reruns is on:
     the development head, or in ``handoff.waiting_ci`` the head whose CI is
-    CI on the clean head (``handoff.ci_head``, from the submission review
+    CI on the clean head (``handoff.ci_head``, from the accepted submission rewrite
     in ``evidence``)."""
     if record.get("phase") == "handoff":
         import handoff
 
         if not record.get("clean_head_sha"):
             return None
-        return handoff.ci_head(record, evidence.get(record.get("submission_review_id") or "")
+        return handoff.ci_head(record, evidence.get(record.get("submission_rewrite_id") or "")
                                or {})
     return (record.get("fork") or {}).get("head_sha")
 
@@ -529,7 +529,7 @@ def load_request(root: Path, operation_id: str, policy: dict, *,
             or op["target"].get("repository_id") != fork.get("repository_id"):
         raise RerunError("CI rerun target does not match the recorded fork")
     if phase == "handoff":
-        review_id = record.get("submission_review_id") or ""
+        review_id = record.get("submission_rewrite_id") or ""
         path = root / ".state/evidence" / f"{review_id}.json"
         review = json.loads(path.read_text()) if review_id and path.is_file() else {}
         head = expected_head(record, {review_id: review})

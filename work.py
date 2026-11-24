@@ -52,22 +52,19 @@ PROFILE_WORKFLOWS = {WORKER_PROFILE: ".github/workflows/worker.lock.yml",
 PROPOSAL_ARTIFACT = "porting-out"
 
 WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
-# The two Work tasks at submission, run one after the other in fresh
-# contexts: the rewrite reshapes the series and writes the pull request
-# text; the review reviews exactly that series and text and can change
-# nothing. Both are uncredentialed like every Work and write nothing: the
-# rewrite is checked by trusted code in the worker's publish job without a
-# token, and only the trusted handoff workflow builds `riscv64` from it.
+# The Work task at submission: the rewrite reshapes the series, writes the
+# pull request text, and reviews both with the review loop. It is
+# uncredentialed like every Work and writes nothing: the rewrite is checked by
+# trusted code in the worker's publish job without a token, and only the
+# trusted handoff workflow builds `riscv64` from it.
 SUBMISSION_REWRITE = "submission_rewrite"
-SUBMISSION_REVIEW = "submission_review"
-SUBMISSION_TASKS = (SUBMISSION_REWRITE, SUBMISSION_REVIEW)
+SUBMISSION_TASKS = (SUBMISSION_REWRITE,)
 ALLOWED_OPERATIONS = {
     "development_patch": ["append", "rewrite"],
     "development_repair": ["append", "rewrite"],
     "upstream_revision": ["append"],   # history policy may widen this per project
     "planning": [],
     SUBMISSION_REWRITE: [],
-    SUBMISSION_REVIEW: [],
 }
 
 # Diagnostic no-write outputs are always allowed alongside.
@@ -308,13 +305,8 @@ _INSTRUCTIONS = {
         "report a split the project requires as a reason; keep the final tree identical and "
         "every intermediate tree a state of the approved series), and write the upstream PR title and description following the project's "
         "pull request template exactly and its contributing instructions. Change no code. "
-        "Return the rewrite and the reshaped series as the artifact."),
-    SUBMISSION_REVIEW: (
-        "Review exactly the rewritten series and pull request text in context.rewrite, which "
-        "the trusted pre-agent step downloaded and verified, against the project's pull "
-        "request template, contributing instructions, commit conventions, and the reviewers' "
-        "expectations. Report pass or fail with one reason per problem. Change nothing. "
-        "Return the review as the artifact."),
+        "Review the committed series and the text with the review loop of the worker prompt "
+        "before you return them. Return the rewrite and the reshaped series as the artifact."),
 }
 
 
@@ -409,7 +401,7 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
     of the record (else the paths of its target contract), the reason
     evidence of the request (a plan named by ``plan_reference``, a callable
     of its evidence id), the commit rules and template sections of the
-    verified plan, and the rewrite a review reviews. The history reference
+    verified plan. The history reference
     is added by the caller. Raises ``ValueError`` when a part cannot be
     built."""
     target = evidence.get(record.get("target_contract_id") or "") or {}
@@ -418,8 +410,6 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
     rules = commit_rules.from_plan(plan_document) if request["task"] != "planning" else None
     sections = (commit_rules.sections_from_plan(plan_document)
                 if request["task"] in SUBMISSION_TASKS else None)
-    rewrite = (rewrite_reference(evidence.get(record.get("submission_rewrite_id") or ""))
-               if request["task"] == SUBMISSION_REVIEW else None)
     requirements = (series_requirements_context(record, evidence)
                     if request["task"] in WRITE_TASKS else None)
     reason_evidence = []
@@ -442,10 +432,6 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
         # The required sections of the pull request template, which the
         # submission check requires in the reviewed description.
         **({"template_sections": sections} if sections is not None else {}),
-        # The rewrite a review reviews: the trusted pre-agent step downloads
-        # its series and text from this artifact and checks them against
-        # these digests.
-        **({"rewrite": rewrite} if rewrite is not None else {}),
         # The unmet series requirements of the plan this Work answers, which
         # the trusted worker gate checks.
         **({"series_requirements": requirements} if requirements is not None else {}),
@@ -493,20 +479,6 @@ def series_requirements_context(record: dict, evidence: dict[str, dict]) -> list
         return [{"id": u["id"], "paths": list(u["paths"])}
                 for u in ((found.get("data") or {}).get("unmet") or [])[:6]]
     return None
-
-
-def rewrite_reference(evidence: dict | None) -> dict:
-    """The accepted rewrite a review Work reviews, as the payload names it.
-    Raises ``ValueError`` when the record names no accepted rewrite."""
-    data = (evidence or {}).get("data") or {}
-    artifact = data.get("artifact") or {}
-    if (evidence or {}).get("kind") != SUBMISSION_REWRITE or data.get("verdict") != "pass" \
-            or not re.fullmatch(r"[1-9][0-9]{0,19}", str(artifact.get("run_id"))) \
-            or not isinstance(artifact.get("artifact_id"), int):
-        raise ValueError("the review Work names no accepted submission rewrite")
-    return {"evidence_id": evidence["evidence_id"], "head": data["head"],
-            "series_digest": data["series_digest"], "text_digest": data["text_digest"],
-            "run_id": str(artifact["run_id"]), "artifact_id": int(artifact["artifact_id"])}
 
 
 def read_task_file(root: Path, request: dict, control_ref: str) -> dict:

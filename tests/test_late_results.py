@@ -352,8 +352,8 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
             ("a patch in planning", planning, "published",
              "late Result: a published Result has no row in the planning phase"),
             # A submission Result outside handoff.
-            ("a submission review in development", development, submission.STATUS,
-             "late Result: a submission review has no row in the development phase"),
+            ("a submission rewrite in development", development, submission.REWRITE,
+             "late Result: a submission rewrite has no row in the development phase"),
             # The Result of a held publication outside development and
             # upstream review.
             ("a held publication in planning",
@@ -622,7 +622,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     if engine.stopped(after):
                         self.assertIsNone(after["pending_publication"])
                     count += 1
-        self.assertGreater(count, 2300)
+        self.assertGreater(count, 2000)
 
     # One function of every step of the tick that works on one contribution.
     INJECTIONS = {
@@ -673,8 +673,8 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                     self.assertEqual((after["paused_by"], after["active_work"],
                                       after["pending_publication"], after["revision"]),
                                      ("controller", None, None, record["revision"]))
-        self.assertGreater(count, 750)
-        self.assertGreater(errored, 300)
+        self.assertGreater(count, 650)
+        self.assertGreater(errored, 250)
 
     def test_no_stopped_state_retains_a_pending_publication(self):
         """From every admitted state with a pending publication, every stop

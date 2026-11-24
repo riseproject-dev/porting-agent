@@ -105,9 +105,22 @@ class TestCheck(unittest.TestCase):
         self.refused(value, "names 1 reviewed series for 2 rounds")
         self.refused(loop(), "did not review the delivered series", series=None)
 
+    def test_a_rewrite_text_must_be_the_text_the_last_round_read(self):
+        text = "2" * 64
+        value = loop(text_digest=text)
+        self.assertEqual(review_loop.check(report(review_loop=value), series_digest=SERIES,
+                                           text_digest=text)["rounds"], 2)
+        for bad in (loop(text_digest="3" * 64), loop()):
+            with self.assertRaisesRegex(review_loop.LoopError,
+                                        "did not review the delivered title and description"):
+                review_loop.check(report(review_loop=bad), series_digest=SERIES,
+                                  text_digest=text)
+        # A patch has no text: nothing is compared.
+        self.assertEqual(self.check(loop())["rounds"], 2)
+
     def test_the_schema_bounds_the_loop(self):
         import schemas
-        for bad in (loop(rounds=4), loop(stopped="because"), loop(digest="x"), loop(finding(severity="blocker")),
+        for bad in (loop(rounds=4), loop(stopped="because"), loop(digest="x"), loop(text_digest="x"), loop(finding(severity="blocker")),
                     loop(*[finding("P2", "deferred", 1, None)] * 11),
                     loop(finding(title="x" * 151)), loop(summary="x" * 1001)):
             with self.assertRaises(schemas.SchemaError):

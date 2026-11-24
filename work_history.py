@@ -258,7 +258,7 @@ def _short(full: dict) -> dict:
         dropped = max(0, len(full.get("items") or []) - 20) + (full.get("items_not_listed") or 0)
         if dropped:
             entry["items_not_listed"] = dropped
-    elif kind in ("submission_rewrite", "submission_review"):
+    elif kind == "submission_rewrite":
         entry.update(verdict=full.get("verdict"),
                      reasons=[_text(r, SHORT) for r in (full.get("reasons") or [])[:5]])
     else:
@@ -366,7 +366,7 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
             timeline.append(_ci_entry(e))
         elif kind in ("human_relay", "human_inquiry"):
             timeline.append(_feedback_entry(e, steered))
-        elif kind in ("submission_rewrite", "submission_review"):
+        elif kind == "submission_rewrite":
             timeline.append(_submission_entry(e))
     timeline += [_upstream_entry(i) for i in items if i.get("authority") is not True]
     # A report is collected in the tick that folds its Result, which can
@@ -395,8 +395,7 @@ def _entries(record: dict, evidence: dict[str, dict]) -> tuple[list[dict], list[
         item["seq"] = seq
     sources = sorted({e["evidence_id"] for e in own
                       if e.get("kind") in ("worker_report", "ci", "human_relay", "human_inquiry",
-                                           "submission_rewrite", "submission_review",
-                                           steering.KIND)})
+                                           "submission_rewrite", steering.KIND)})
     return steer, timeline, omitted, sources
 
 

@@ -335,7 +335,7 @@ class TestUpstreamReview(unittest.TestCase):
 
 
 class TestSubmission(unittest.TestCase):
-    def test_an_accepted_rewrite_and_review_store_their_reports(self):
+    def test_an_accepted_rewrite_stores_its_report(self):
         from tests import test_handoff as th
         world = th.submitted()
         outcome = with_report(world.record, world.rewrite_outcome(), task="submission_rewrite")
@@ -344,12 +344,8 @@ class TestSubmission(unittest.TestCase):
         accept = next(e for k, e in out.staged if k == "events"
                       and e["kind"] == "accept_submission_rewrite")
         self.assertEqual(accept["details"]["report_evidence_id"], evidence["evidence_id"])
-        outcome = with_report(world.record, world.review_outcome(), task="submission_review")
-        out = world.tick(th.at(2), publications=[outcome])
-        self.assertEqual([e["data"]["verb"] for e in stored(out.staged)],
-                         ["accept_submission_review"])
 
-    def test_a_failed_or_unusable_rewrite_or_review_discards_its_report(self):
+    def test_a_failed_or_unusable_rewrite_discards_its_report(self):
         from tests import test_handoff as th
         world = th.submitted()
         outcome = with_report(world.record, world.rewrite_outcome("fail", ["no changelog"]),
@@ -357,30 +353,12 @@ class TestSubmission(unittest.TestCase):
         out = world.tick(th.at(1), publications=[outcome])
         self.assertIn("reject_submission_rewrite", world.kinds(out))
         self.assertEqual(stored(out.staged), [])
-        world = th.rewritten()
-        outcome = with_report(world.record, world.review_outcome("fail", ["no changelog"]),
-                              task="submission_review")
-        out = world.tick(th.at(2), publications=[outcome])
-        self.assertIn("reject_submission_review", world.kinds(out))
-        self.assertEqual(stored(out.staged), [])
         world = th.submitted()
         outcome = with_report(world.record, world.rewrite_outcome(verdict="maybe"),
                               task="submission_rewrite")
         out = world.tick(th.at(1), publications=[outcome])
         self.assertIn("allocate_work_retry", world.kinds(out))
         self.assertEqual(stored(out.staged), [])
-
-    def test_the_next_work_carries_the_stored_report(self):
-        from tests import test_handoff as th
-        world = th.submitted()
-        world.tick(th.at(1), publications=[with_report(world.record, world.rewrite_outcome(),
-                                                       task="submission_rewrite")])
-        history = world.evidence[work_history.evidence_id(
-            world.record["active_work"]["dedupe_key"])]
-        [entry] = [t for t in history["data"]["timeline"] if t["kind"] == "worker_report"]
-        self.assertEqual(entry["work"]["task"], "submission_rewrite")
-        self.assertEqual(entry["report"]["summary"], report()["summary"])
-        self.assertEqual(world.record["active_work"]["task"], "submission_review")
 
 
 class TestLargeReport(unittest.TestCase):
@@ -432,12 +410,6 @@ class TestLargeReport(unittest.TestCase):
         out = world.tick(th.at(1), publications=[outcome])
         self.assertEqual([e["data"]["verb"] for e in stored(out.staged)],
                          ["accept_submission_rewrite"])
-        outcome = with_report(world.record, world.review_outcome(), task="submission_review",
-                              **large())
-        self.check_accepted(outcome)
-        out = world.tick(th.at(2), publications=[outcome])
-        self.assertEqual([e["data"]["verb"] for e in stored(out.staged)],
-                         ["accept_submission_review"])
 
     def test_a_dict_over_the_cap_in_compact_json_is_still_refused(self):
         rec = dev.running()

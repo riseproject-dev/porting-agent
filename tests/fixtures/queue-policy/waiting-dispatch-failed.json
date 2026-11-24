@@ -74,7 +74,6 @@
   "schema_version": 1,
   "scope_coverage_complete": false,
   "scope_paths": null,
-  "submission_review_id": null,
   "submission_rewrite_id": null,
   "target_contract_id": null,
   "terminal_reason": null,

@@ -67,8 +67,6 @@ flowchart TB
         handoff_awaiting_submission["handoff.awaiting_submission"]
         handoff_review_due["handoff.review_due"]
         handoff_agent_running["handoff.agent_running"]
-        handoff_review_pending["handoff.review_pending"]
-        handoff_reviewing["handoff.reviewing"]
         handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
         handoff_preparing_submission["handoff.preparing_submission"]
@@ -122,9 +120,7 @@ flowchart TB
     development_waiting_ci -->|return_for_feedback| development_fix_needed
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
-    handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
-    handoff_review_pending -->|request_submission_review| handoff_reviewing
-    handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
+    handoff_agent_running -->|accept_submission_rewrite| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|accept_clean_head_ci| handoff_preparing_submission
     handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
@@ -132,7 +128,6 @@ flowchart TB
     handoff_awaiting_submission -->|record_actionable_review| development_fix_needed
     handoff_awaiting_submission -->|record_explanation| handoff_awaiting_submission
     handoff_agent_running -->|reject_submission_rewrite| development_fix_needed
-    handoff_reviewing -->|reject_submission_review| development_fix_needed
     handoff_building_upstream_branch -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
     handoff_waiting_upstream_pr -->|retract_submission<br/>/upstreaming retract-pr| development_fix_needed
@@ -608,7 +603,6 @@ flowchart TB
     end
     subgraph handoff["handoff"]
         handoff_review_due["handoff.review_due"]
-        handoff_review_pending["handoff.review_pending"]
         handoff_waiting_human["handoff.waiting_human"]
     end
     subgraph upstream_review["upstream_review"]
@@ -629,8 +623,6 @@ flowchart TB
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     handoff_review_due -->|require_base_branch| handoff_waiting_human
     handoff_review_due -->|exhaust_source_reads| handoff_waiting_human
-    handoff_review_pending -->|require_base_branch| handoff_waiting_human
-    handoff_review_pending -->|exhaust_source_reads| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     upstream_fix_needed -->|require_base_branch| upstream_waiting_human
     upstream_fix_needed -->|exhaust_source_reads| upstream_waiting_human
@@ -665,7 +657,6 @@ flowchart TB
     end
     subgraph handoff["handoff"]
         handoff_review_due["handoff.review_due"]
-        handoff_review_pending["handoff.review_pending"]
         handoff_waiting_human["handoff.waiting_human"]
     end
     subgraph upstream_review["upstream_review"]
@@ -692,8 +683,6 @@ flowchart TB
     development_waiting_human -->|require_base_branch| development_waiting_human
     handoff_review_due -->|require_upstream_access| handoff_waiting_human
     handoff_review_due -->|require_renamed_upstream| handoff_waiting_human
-    handoff_review_pending -->|require_upstream_access| handoff_waiting_human
-    handoff_review_pending -->|require_renamed_upstream| handoff_waiting_human
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     handoff_waiting_human -->|resume_upstream_read| handoff_review_due
     handoff_waiting_human -->|require_base_branch| handoff_waiting_human
@@ -735,9 +724,9 @@ flowchart TB
 
 ## Handoff, upstream review, and release cases
 
-The submission request is bound to one exact revision and candidate head. Development happens on `riscv64-dev`, which the handoff never changes, and the development PR stays open. An uncredentialed review shapes the series and the pull request text after the project's guidelines; trusted code checks it, builds `riscv64` from it, and prepares the submission package. The Apps do not open the upstream PR.
+The submission request is bound to one exact revision and candidate head. Development happens on `riscv64-dev`, which the handoff never changes, and the development PR stays open. An uncredentialed worker shapes the series and the pull request text after the project's guidelines and reviews them with fresh reviewers; trusted code checks it, builds `riscv64` from it, and prepares the submission package. The Apps do not open the upstream PR.
 
-### Success case 1: one command reviews the series, builds `riscv64`, and publishes a prefilled PR package that a human submits
+### Success case 1: one command rewrites and reviews the series, builds `riscv64`, and publishes a prefilled PR package that a human submits
 
 ```mermaid
 flowchart TB
@@ -748,8 +737,6 @@ flowchart TB
         handoff_awaiting_submission["handoff.awaiting_submission"]
         handoff_review_due["handoff.review_due"]
         handoff_agent_running["handoff.agent_running"]
-        handoff_review_pending["handoff.review_pending"]
-        handoff_reviewing["handoff.reviewing"]
         handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
         handoff_preparing_submission["handoff.preparing_submission"]
@@ -763,9 +750,7 @@ flowchart TB
     handoff_awaiting_submission -->|record_reminder| handoff_awaiting_submission
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
-    handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
-    handoff_review_pending -->|request_submission_review| handoff_reviewing
-    handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
+    handoff_agent_running -->|accept_submission_rewrite| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|accept_clean_head_ci| handoff_preparing_submission
     handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
@@ -773,7 +758,7 @@ flowchart TB
     handoff_waiting_upstream_pr -->|verify_upstream_pr| upstream_waiting_ci
 ```
 
-`submit-upstream` is the only submission command. The rewrite Work reads the plan's contribution guidelines and the non-debug commits of the approved `riscv64-dev` series; the project's contributing instructions take precedence over the pipeline's for content and style. It returns the reshaped series and the upstream PR title and description written after the pull request template. Trusted code checks that every commit of the series is valid upstream, that its tree is the tree of the approved series without its debug commits, the attribution trailers, the plan's measurable commit rules, and the template's required sections. A separate review Work, in a fresh context, reviews exactly that series and text against the reviewers' expectations and blocks on failure. Trusted code then creates `riscv64` from the series, or replaces it under a lease, never while an upstream PR is open from it. The human follows the prefilled link and opens the PR under their own identity; observation verifies it before `upstream_review`. Both human steps are reminded.
+`submit-upstream` is the only submission command. The rewrite Work reads the plan's contribution guidelines and the non-debug commits of the approved `riscv64-dev` series; the project's contributing instructions take precedence over the pipeline's for content and style. It returns the reshaped series and the upstream PR title and description written after the pull request template. Trusted code checks that every commit of the series is valid upstream, that its tree is the tree of the approved series without its debug commits, the attribution trailers, the plan's measurable commit rules, and the template's required sections. In the same run the worker reviewed that series and text with fresh reviewers (the review loop, at most 3 rounds) against the reviewers' expectations, and its report names no P0 finding left open. Trusted code then creates `riscv64` from the series, or replaces it under a lease, never while an upstream PR is open from it. The human follows the prefilled link and opens the PR under their own identity; observation verifies it before `upstream_review`. Both human steps are reminded.
 
 ### Failure case 1: pre-submission changes versus the locked upstream-PR wait
 
@@ -783,8 +768,6 @@ flowchart TB
         handoff_awaiting_submission["handoff.awaiting_submission"]
         handoff_review_due["handoff.review_due"]
         handoff_agent_running["handoff.agent_running"]
-        handoff_review_pending["handoff.review_pending"]
-        handoff_reviewing["handoff.reviewing"]
         handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
         handoff_preparing_submission["handoff.preparing_submission"]
@@ -801,9 +784,7 @@ flowchart TB
     start_1(( )) --> handoff_awaiting_submission
     handoff_awaiting_submission -->|submit_upstream<br/>/upstreaming submit-upstream| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
-    handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
-    handoff_review_pending -->|request_submission_review| handoff_reviewing
-    handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
+    handoff_agent_running -->|accept_submission_rewrite| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
     handoff_waiting_ci -->|rerun_interrupted_ci| handoff_waiting_ci
     handoff_awaiting_submission -->|return_for_repair| development_fix_needed
@@ -812,7 +793,6 @@ flowchart TB
     handoff_awaiting_submission -->|record_explanation| handoff_awaiting_submission
     handoff_awaiting_submission -->|record_head_change| development_waiting_ci
     handoff_agent_running -->|reject_submission_rewrite| development_fix_needed
-    handoff_reviewing -->|reject_submission_review| development_fix_needed
     handoff_building_upstream_branch -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|return_for_repair| development_fix_needed
     handoff_waiting_ci -->|accept_clean_head_ci| handoff_preparing_submission
@@ -823,7 +803,7 @@ flowchart TB
     handoff_waiting_upstream_pr -->|refresh_planning<br/>/upstreaming refresh| queued_idle
 ```
 
-Before the package is posted, a changed candidate head, a rewrite that fails the trusted check, a failed review, a reviewed series that does not rebuild, a lease conflict on `riscv64`, blocking CI on the clean head, or a `riscv64` that no longer resolves to the clean head when the package is about to be posted returns to development; blocking CI on the clean head records its failing evidence, which names the candidate head it was built from, so the repair names the failing job; a failed review records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_planning` leave it, and none of them changes `riscv64`.
+Before the package is posted, a changed candidate head, a rewrite that fails the trusted check or leaves a P0 finding of its review open, a rewritten series that does not rebuild, a lease conflict on `riscv64`, blocking CI on the clean head, or a `riscv64` that no longer resolves to the clean head when the package is about to be posted returns to development; blocking CI on the clean head records its failing evidence, which names the candidate head it was built from, so the repair names the failing job; a failed rewrite records its reasons as the pending feedback of the next development Work, and nothing is posted. At the gate, a CI failure on the candidate head takes `return_for_repair` and records the failing evidence; an actionable review takes `record_actionable_review` and records the feedback; the guards are exclusive, and the failure applies first; a review observed with the failure is then recorded in `development.fix_needed`. An explanation-only comment takes `record_explanation` and keeps the gate. `handoff.waiting_upstream_pr` is locked: only `verify_upstream_pr`, `retract_submission`, and `refresh_planning` leave it, and none of them changes `riscv64`.
 
 ### Failure case 2: a handoff step fails repeatedly or needs a human
 
@@ -832,8 +812,6 @@ flowchart TB
     subgraph handoff["handoff"]
         handoff_review_due["handoff.review_due"]
         handoff_agent_running["handoff.agent_running"]
-        handoff_review_pending["handoff.review_pending"]
-        handoff_reviewing["handoff.reviewing"]
         handoff_building_upstream_branch["handoff.building_upstream_branch"]
         handoff_waiting_ci["handoff.waiting_ci"]
         handoff_preparing_submission["handoff.preparing_submission"]
@@ -850,15 +828,7 @@ flowchart TB
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     handoff_waiting_human -->|rearm_dispatch| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
-    handoff_agent_running -->|accept_submission_rewrite| handoff_review_pending
-    handoff_review_pending -->|expire_submission_rewrite| handoff_review_due
-    handoff_review_pending -->|exhaust_work_total| handoff_waiting_human
-    handoff_review_pending -->|request_submission_review| handoff_reviewing
-    handoff_reviewing -->|retry_dispatch| handoff_reviewing
-    handoff_reviewing -->|exhaust_recovery| handoff_waiting_human
-    handoff_reviewing -->|allocate_work_retry| handoff_reviewing
-    handoff_reviewing -->|reallocate_after_pipeline_failure| handoff_reviewing
-    handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
+    handoff_agent_running -->|accept_submission_rewrite| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|expire_submission_rewrite| handoff_review_due
     handoff_building_upstream_branch -->|retry_upstream_branch| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
@@ -875,7 +845,7 @@ flowchart TB
     handoff_preparing_submission -->|confirm_submission_package| handoff_waiting_upstream_pr
 ```
 
-The rewrite and review Work, the lease write of `riscv64`, the reruns of interrupted CI, and the package each retry within their budget and then wait for a human in the one `handoff.waiting_human`; a pull request that is open from `riscv64`, or a missing `riscv64-dev`, waits there at once. A rewritten series whose artifact expires before `riscv64` is built leads back to a fresh rewrite, never to an endless wait. `pending_human_action` names the step, and exactly one of the five resume verbs applies: it returns to that step. CI that never runs on the clean head of `riscv64` waits there too, after a bounded wait. Recovery does not need another `submit-upstream`.
+The rewrite Work, the lease write of `riscv64`, the reruns of interrupted CI, and the package each retry within their budget and then wait for a human in the one `handoff.waiting_human`; a pull request that is open from `riscv64`, or a missing `riscv64-dev`, waits there at once. A rewritten series whose artifact expires before `riscv64` is built leads back to a fresh rewrite, never to an endless wait. `pending_human_action` names the step, and exactly one of the five resume verbs applies: it returns to that step. CI that never runs on the clean head of `riscv64` waits there too, after a bounded wait. Recovery does not need another `submit-upstream`.
 
 ### Success case 2: upstream review, merge, and release
 
@@ -1062,7 +1032,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, handoff.review_due, handoff.review_pending, and upstream_review.fix_needed"]
+    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, handoff.review_due and upstream_review.fix_needed"]
 
     any -->|record_source_unavailable| any
 ```

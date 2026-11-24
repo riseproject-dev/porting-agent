@@ -285,18 +285,18 @@ class TestLiveRecord(unittest.TestCase):
         added, removed = engine.with_defaults(copy.deepcopy(rec))[1:]
         self.assertEqual(added, [])
         self.assertLessEqual(set(removed), {"held_patch", "review_comments",
-                                            "budget.review_rejections"})
+                                            "budget.review_rejections", "submission_review_id"})
         self.assertEqual(engine.state_key(rec), "handoff.awaiting_submission")
         plan = json.loads((ROOT / ".state/evidence" / f"{rec['plan_evidence_id']}.json").read_text())
         self.assertEqual(commit_rules.series_requirements_from_plan(plan["data"]), [])
 
 
 class TestQualitativeOnlyPlan(unittest.TestCase):
-    def test_qualitative_items_stay_with_the_submission_review(self):
+    def test_qualitative_items_stay_with_the_submission_rewrite(self):
         gh = FakeGitHub([], [])
         out = observed(record(), gh, plan_evidence())
         self.assertEqual(kinds(out), ["nominate_for_handoff"])
-        edge = lifecycle.find_edge("handoff.reviewing", "reject_submission_review")
+        edge = lifecycle.find_edge("handoff.agent_running", "reject_submission_rewrite")
         self.assertEqual(edge.target, "development.fix_needed")
         self.assertIn("pending_feedback_evidence_ids", edge.transition.effects.sets)
 

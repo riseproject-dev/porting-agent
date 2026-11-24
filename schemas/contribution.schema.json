@@ -38,7 +38,6 @@
     "clean_head_sha",
     "clean_head_ci_since",
     "submission_rewrite_id",
-    "submission_review_id",
     "handoff_request",
     "handoff_approval",
     "last_ci_evidence_id",
@@ -155,8 +154,6 @@
         "fix_needed",
         "awaiting_submission",
         "review_due",
-        "review_pending",
-        "reviewing",
         "building_upstream_branch",
         "preparing_submission",
         "waiting_upstream_pr"
@@ -660,17 +657,6 @@
       "format": "date-time"
     },
     "submission_rewrite_id": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
-        }
-      ]
-    },
-    "submission_review_id": {
       "anyOf": [
         {
           "type": "null"

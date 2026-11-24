@@ -966,7 +966,7 @@ def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
 
 def _may_hold_work(rec: dict) -> bool:
     """Whether the record is in a state that can request Work at all: a
-    working phase, or the submission review of the handoff phase, and not
+    working phase, or the submission rewrite of the handoff phase, and not
     paused."""
     return (rec["phase"] in WORK_PHASES or engine.state_key(rec) in SUBMISSION_WORK_STATES) \
         and not rec.get("paused")
@@ -984,12 +984,11 @@ def _holds_dispatched_work(rec: dict) -> bool:
 WORK_PHASE = {"planning": "planning", "development_patch": "development",
               "development_repair": "development",
               "upstream_revision": "upstream_review",
-              work.SUBMISSION_REWRITE: "handoff", work.SUBMISSION_REVIEW: "handoff"}
-# The states of the handoff phase that hold requested Work: the rewrite and
-# the review of the submission.
+              work.SUBMISSION_REWRITE: "handoff"}
+# The states of the handoff phase that hold requested Work: the rewrite of
+# the submission.
 SUBMISSION_REWRITE_STATE = lifecycle.SUBMISSION_REWRITE
-SUBMISSION_REVIEW_STATE = lifecycle.SUBMISSION_REVIEW
-SUBMISSION_WORK_STATES = (SUBMISSION_REWRITE_STATE, SUBMISSION_REVIEW_STATE)
+SUBMISSION_WORK_STATES = (SUBMISSION_REWRITE_STATE,)
 # The phases whose states can request Work outside the handoff phase.
 WORK_PHASES = frozenset({"planning", "provisioning", "development", "upstream_review"})
 
@@ -1034,8 +1033,8 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         # A plan answers planning Work only, and planning Work
         # is answered by a plan only.
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
-    if pub.get("status") == submission.STATUS and rec["phase"] != "handoff":
-        return f"late Result: a submission review has no row in the {rec['phase']} phase"
+    if pub.get("status") == submission.REWRITE and rec["phase"] != "handoff":
+        return f"late Result: a submission rewrite has no row in the {rec['phase']} phase"
     requested = rec.get("active_work")
     if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
         # Each phase requests its own Work only: a Result of Work of another
@@ -1382,26 +1381,9 @@ def _rewrite_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str
     return None
 
 
-def _review_problem(rec: dict, outcome: dict, worker_run_id: str | None,
-                    rewrite: dict | None) -> str | None:
-    """Why the trusted outcome of a submission review is unusable, or
-    ``None``: it must review exactly the rewrite the record names."""
-    problem = _outcome_basis_problem(rec, outcome, worker_run_id)
-    if problem:
-        return problem
-    data = (rewrite or {}).get("data") or {}
-    if not rewrite or outcome.get("rewrite_evidence_id") != rec.get("submission_rewrite_id") \
-            or outcome.get("series_digest") != data.get("series_digest") \
-            or outcome.get("text_digest") != data.get("text_digest"):
-        return "the outcome does not review the rewrite the record names"
-    if not isinstance(outcome.get("expectations"), list) or len(outcome["expectations"]) > 60:
-        return "the outcome's expectations are malformed"
-    return None
-
-
 def _unusable_submission_result(rec: dict, why: str, *, now: str,
                                 policy: dict) -> tuple[dict, list[tuple[str, dict]]]:
-    """A rewrite or review Result that is not usable: Work without a usable
+    """A rewrite Result that is not usable: Work without a usable
     Result (``allocate_work_retry``, then ``exhaust_recovery``)."""
     aw = rec.get("active_work") or {}
     new, event, decision = _terminal_work(rec, aw, "result_unusable",
@@ -1433,9 +1415,10 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
 
     The worker's publish job ran the trusted deterministic check
     (``submission.check_rewrite``) without a token: its outcome is the
-    verdict. A pass takes ``accept_submission_rewrite`` with the rewritten
-    series, title, and description recorded as rewrite evidence, which the
-    review Work reads and the build of `riscv64` writes. A fail takes
+    verdict, which includes the review loop the worker ran on its series. A
+    pass takes ``accept_submission_rewrite`` with the rewritten series,
+    title, and description recorded as rewrite evidence, which the build of
+    `riscv64` writes. A fail takes
     ``reject_submission_rewrite``: the reasons are recorded and become the
     pending feedback of the next development Work; nothing is posted. An
     outcome that is not usable is Work without a usable Result."""
@@ -1445,6 +1428,22 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
                 f"{outcome.get('reason') or ''}")
     if why:
         return _unusable_submission_result(rec, why, now=now, policy=policy)
+    if outcome["verdict"] == submission.PASS and not (
+            isinstance(outcome.get("review_loop_rounds"), int)
+            and not isinstance(outcome["review_loop_rounds"], bool)
+            and outcome["review_loop_rounds"] >= 1):
+        # A pass checked by a pipeline that had no review loop (the worker run
+        # began before the deploy): the rewrite was never reviewed, and it is
+        # not accepted. It is Work without a usable Result of the pipeline
+        # that dispatched it, relaunched with nothing charged.
+        new, event, decision = _terminal_work(
+            rec, rec.get("active_work") or {}, "result_unusable",
+            now=datetime.fromisoformat(now), policy=policy,
+            details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
+                     "why": "the rewrite passed a check that read no review loop"})
+        if new is None:
+            raise lifecycle.TransitionError(f"a rewrite Result of the retired review: {decision}")
+        return new, [("contributions", new), ("events", event)]
     passed = outcome["verdict"] == submission.PASS
     data = {"verdict": outcome["verdict"], "reasons": list(outcome["reasons"]),
             "approved_head": outcome["approved_head"], "base_sha": outcome["base_sha"],
@@ -1493,73 +1492,6 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
                         ("contributions", out.record)]
 
 
-def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
-                           worker_run_id: str | None,
-                           evidence: dict | None = None) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold the Result of the submission review Work through the table's
-    rows of ``handoff.reviewing``.
-
-    The worker's publish job checked that the review answers the Work and
-    reviews exactly the rewritten series and text
-    (``submission.check_review``). A pass takes ``accept_submission_review``:
-    the review evidence carries the rewrite it passed (the series, title,
-    description, and the artifact that holds the series), which the build of
-    `riscv64` and the package read. A fail takes ``reject_submission_review``
-    with its reasons as pending feedback. An outcome that is not usable is
-    Work without a usable Result. ``evidence`` holds the rewrite evidence the
-    record names."""
-    rewrite = (evidence or {}).get(rec.get("submission_rewrite_id") or "")
-    why = (_review_problem(rec, outcome, worker_run_id, rewrite)
-           if outcome.get("status") == submission.REVIEW
-           else f"the review Result is not usable: {outcome.get('status')}: "
-                f"{outcome.get('reason') or ''}")
-    if why:
-        return _unusable_submission_result(rec, why, now=now, policy=policy)
-    passed = outcome["verdict"] == submission.PASS
-    data = dict(copy.deepcopy(rewrite["data"]), verdict=outcome["verdict"],
-                reasons=list(outcome["reasons"]),
-                rewrite_evidence_id=rewrite["evidence_id"],
-                review_artifact={"run_id": str(worker_run_id),
-                                 "artifact_id": outcome.get("publication_artifact_id")},
-                expectations=[{k: str(e.get(k))[:1000] if k != "met" else bool(e.get("met"))
-                               for k in ("expectation", "met", "source", "note") if k in e}
-                              for e in outcome["expectations"][:60] if isinstance(e, dict)])
-    summary = ("The submission review passed the rewritten series and text." if passed else
-               "The submission review did not pass:\n"
-               + "\n".join(f"- {r}" for r in data["reasons"]))
-    review = _submission_evidence(rec, submission.REVIEW, outcome, data, summary, now=now,
-                                  policy=policy, worker_run_id=worker_run_id)
-    eid = review["evidence_id"]
-    cause = _result_cause(outcome, worker_run_id)
-    details = {"evidence_id": eid, "verdict": outcome["verdict"],
-               "reasons": [isolation.clean_text(r, 300) for r in data["reasons"][:8]]}
-    reports: list[tuple[str, dict]] = []
-    if passed:
-        details = dict(details, head=data.get("head"))
-        reports = report_evidence(rec, outcome, "accept_submission_review", now=now,
-                                  policy=policy, run=worker_run_id, details=details)
-        outcome_row = engine.try_apply_transition(
-            rec, "accept_submission_review", policy=policy, now=now, cause_id=cause,
-            facts={"submission_review_passed"}, values={"submission_review_id": eid},
-            details=details)
-    else:
-        pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or []) + [eid]))
-        outcome_row = engine.try_apply_transition(
-            rec, "reject_submission_review", policy=policy, now=now, cause_id=cause,
-            facts={"submission_review_failed"},
-            values={"pending_feedback_evidence_ids": pending[-64:]}, details=details)
-    match engine.dispatch(outcome_row, ("reconcile", "fold_submission_review")):
-        case engine.Applied() as out:
-            pass
-        case engine.LateEffect(refused):
-            return late_fold(rec, outcome, refused, now=now, policy=policy,
-                             worker_run_id=worker_run_id, staged=[])
-        case engine.Bug(refused):
-            raise engine.TransitionRefused(refused, ("reconcile", "fold_submission_review"))
-    return out.record, [("evidence", review), *reports, ("events", out.event),
-                        ("contributions", out.record)]
-
-
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None, evidence: dict | None = None,
                       pypi=None, operations: dict[str, dict] | None = None
@@ -1567,8 +1499,8 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     """Fold one Result (from fork_publish / queue_result) into the record.
 
     * planning Work: the plan decides, by the table (``fold_plan``);
-    * the submission rewrite and review Work: their trusted checks decide
-      (``fold_submission_rewrite``, ``fold_submission_review``);
+    * the submission rewrite Work: its trusted check decides
+      (``fold_submission_rewrite``);
     * patch Work in development and revision Work in upstream review: the
       table's rows (``fold_patch_result``).
 
@@ -1583,9 +1515,6 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if engine.state_key(rec) == SUBMISSION_REWRITE_STATE:
         return fold_submission_rewrite(rec, outcome, now=now, policy=policy or {},
                                        worker_run_id=worker_run_id)
-    if engine.state_key(rec) == SUBMISSION_REVIEW_STATE:
-        return fold_submission_review(rec, outcome, now=now, policy=policy or {},
-                                      worker_run_id=worker_run_id, evidence=evidence)
     return fold_patch_result(rec, outcome, now=now, policy=policy or {},
                              worker_run_id=worker_run_id, operations=operations,
                              evidence=evidence)
@@ -1600,7 +1529,7 @@ _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_i
 # (`pushed_report_evidence`); the report of any other fold is discarded
 # with the artifact.
 REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_success",
-                          "accept_submission_rewrite", "accept_submission_review",
+                          "accept_submission_rewrite",
                           "request_ci_rerun", "require_reviewer_answer"})
 
 
@@ -3118,8 +3047,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         out.report["observation"] = obs.report
         # Recovery is evaluated before live CI. A record that no longer holds
         # its Work once observed (CI accepted the head, or the head moved) is
-        # not launched again; the submission rewrite and review Work of the
-        # handoff phase are relaunched like development Work.
+        # not launched again; the submission rewrite Work of the
+        # handoff phase is relaunched like development Work.
         out.report["dispatch_relaunch"] = [
             item for item in out.report["dispatch_relaunch"]
             if "contribution_id" not in item

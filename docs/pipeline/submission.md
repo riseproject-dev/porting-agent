@@ -33,24 +33,25 @@ An uncredentialed rewrite Work reshapes the non-debug commits of the approved `r
 
 ## Trusted checks without a token
 
-Trusted code checks the rewrite before any review, without a token:
+Trusted code checks the rewrite without a token:
 
 - every commit of the series, and that the final tree is the same;
 - the attribution trailers;
 - the measurable commit rules;
 - the template sections;
-- the number of commits.
+- the number of commits;
+- the review loop of the worker's report, with no P0 finding open.
 
-## The submission review
+## The review of the rewrite
 
-A separate uncredentialed review Work, in a fresh context, reviews exactly that series and text against:
+Before it returns, the rewrite Work reviews its own series and text with the review loop (fresh reviewers, at most 3 rounds), against:
 
 - the pull request template;
 - the contributing instructions;
 - the commit conventions;
 - the reviewers' expectations.
 
-It blocks the submission on failure.
+A P0 finding that is still open blocks the submission.
 
 ## Building `riscv64`
 

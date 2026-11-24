@@ -136,6 +136,5 @@
   "admission_override": null,
   "automatic_refresh_used": false,
   "clean_head_ci_since": null,
-  "submission_rewrite_id": null,
-  "submission_review_id": null
+  "submission_rewrite_id": null
 }

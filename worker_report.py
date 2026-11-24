@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """The report of one worker run, and how trusted code stores it.
 
-Every patch, repair, revision, submission rewrite and submission review Work
+Every patch, repair, revision and submission rewrite Work
 writes ``report.json`` (``schemas/worker_report.schema.json``) beside its
 Result: what was attempted and why, each approach and its outcome, what
 failed with its evidence, what remains open, and the verification done. The

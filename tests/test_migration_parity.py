@@ -298,7 +298,7 @@ class TestRerunFenceMigration(unittest.TestCase):
             self.assertEqual(event["details"]["added"], [])
             self.assertLessEqual(set(event["details"]["removed"]),
                                  {"next_poll_at", "held_patch", "review_comments",
-                                  "budget.review_rejections"})
+                                  "budget.review_rejections", "submission_review_id"})
             rec = new
         schemas.validate("contribution", rec)
         self.assertFalse(state.needs_field_migration(rec))

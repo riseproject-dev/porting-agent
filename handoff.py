@@ -6,8 +6,9 @@ package.
 `/upstreaming submit-upstream` (``submit_upstream``) authorizes the review of
 the exact candidate head and a deterministic preparation. Development
 happens on ``riscv64-dev``; nothing here changes it, and the development PR
-is never closed. After the submission review Work and its trusted check
-(``submission``, ``accept_submission_review``), two states of the lifecycle
+is never closed. After the submission rewrite Work, which reviews its own
+series, and its trusted check (``submission``,
+``accept_submission_rewrite``), two states of the lifecycle
 table run one remote operation each, through the trusted workflow
 ``handoff.yml``:
 
@@ -211,14 +212,15 @@ def submission_marker(record: dict) -> str:
             f"{record['clean_head_sha']} -->")
 
 
-def review_evidence(record: dict, evidence: dict) -> dict:
-    """The accepted submission review the record names, checked: the review
-    of the approved head on the frozen base that passed the trusted check."""
-    eid = record.get("submission_review_id")
+def accepted_rewrite(record: dict, evidence: dict) -> dict:
+    """The accepted submission rewrite the record names, checked: the rewrite
+    of the approved head on the frozen base that passed the trusted check,
+    its review loop included."""
+    eid = record.get("submission_rewrite_id")
     review = evidence.get(eid or "")
     data = (review or {}).get("data") or {}
     approval = record.get("handoff_approval") or {}
-    if not review or review.get("kind") != "submission_review" \
+    if not review or review.get("kind") != "submission_rewrite" \
             or review.get("contribution_id") != record["contribution_id"] \
             or data.get("verdict") != "pass" or data.get("approved_head") != approval.get("head") \
             or data.get("base_sha") != record["upstream"].get("base_sha") \
@@ -230,7 +232,7 @@ def review_evidence(record: dict, evidence: dict) -> dict:
             or not re.fullmatch(r"[1-9][0-9]{0,19}", str((data.get("artifact") or {}).get("run_id"))) \
             or not isinstance((data.get("artifact") or {}).get("artifact_id"), int) \
             or data["artifact"]["artifact_id"] <= 0:
-        raise lifecycle.TransitionError(f"no accepted submission review {eid} of the approved head")
+        raise lifecycle.TransitionError(f"no accepted submission rewrite {eid} of the approved head")
     return review
 
 
@@ -259,23 +261,16 @@ def artifact_retention_days() -> int:
     return ARTIFACT_RETENTION_DAYS
 
 
-def rewrite_expired(record: dict, evidence: dict, now, *, review: bool = False) -> bool:
+def rewrite_expired(record: dict, evidence: dict, now) -> bool:
     """Whether the publication artifact of the record's accepted rewrite has
     expired or expires within a day (``expire_submission_rewrite``). It
     expires at the earliest of the expiry GitHub reported for it
     (``artifact.expires_at`` of its evidence, when present and valid) and the
     effective retention (``artifact_retention_days``) after it was collected;
-    a rewrite recorded without a reported expiry uses the retention only.
-    With ``review``, the rewrite is the one the accepted review passed."""
+    a rewrite recorded without a reported expiry uses the retention only."""
     from datetime import datetime, timedelta
 
-    if review:
-        accepted = evidence.get(record.get("submission_review_id") or "") or {}
-        eid = ((accepted.get("data") or {}).get("rewrite_evidence_id")
-               or record.get("submission_rewrite_id"))
-        rewrite = evidence.get(eid or "") or accepted
-    else:
-        rewrite = evidence.get(record.get("submission_rewrite_id") or "") or {}
+    rewrite = evidence.get(record.get("submission_rewrite_id") or "") or {}
     collected = rewrite.get("collected_at")
     if not collected:
         return False
@@ -295,7 +290,7 @@ def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,
                  kind: str | None = None, evidence: dict | None = None) -> dict:
     """``record_intent`` of the next attempt of the operation the record's
     handoff state runs (or of ``kind``). ``evidence`` holds the accepted
-    submission review that the build of `riscv64` writes."""
+    submission rewrite that the build of `riscv64` writes."""
     state = f"{record['phase']}.{record['activity']}"
     kind = kind or KINDS[state]
     approval = record.get("handoff_approval")
@@ -310,16 +305,16 @@ def plan_attempt(record: dict, operations: dict, *, policy: dict, now: str,
     base_sha = record["upstream"]["base_sha"]
     external_ids: dict[str, Any] = {}
     if kind == "upstream_branch":
-        review = review_evidence(record, evidence or {})
+        review = accepted_rewrite(record, evidence or {})
         data = review["data"]
-        # The candidate head the review read is the approved head of
+        # The candidate head the rewrite was made from is the approved head of
         # `riscv64-dev`; the operation writes `riscv64` only.
         target = {"repository": fork["name"], "repository_id": fork["repository_id"],
                   "ref": UPSTREAM_REF, "expected_head": approval["head"], "base_sha": base_sha}
         proposed = {"commit": data["head"], "tree": data["clean_tree"],
                     "content_digest": data["series_digest"],
                     "marker": f"upstream-branch:{record['contribution_id']}:r{approval['revision']}"}
-        reason_ids.append(f"review:{review['evidence_id']}")
+        reason_ids.append(f"rewrite:{review['evidence_id']}")
         external_ids = {"publication_run_id": str((data.get("artifact") or {}).get("run_id") or ""),
                         "publication_artifact_id": int((data.get("artifact") or {})
                                                        .get("artifact_id") or 0)}
@@ -492,7 +487,7 @@ def build_package(record: dict, *, plan: dict, ci: dict, review: dict, commits: 
                   files: list[str], operation_id: str, retract_revision: int | None = None) -> dict:
     """The submission package for the record's clean head of `riscv64`.
 
-    ``review`` is the accepted submission review: its title and description
+    ``review`` is the accepted submission rewrite: its title and description
     were written after the project's pull request template and contributing
     instructions and passed the trusted check. ``commits`` are the commits
     of ``base..clean head`` (``sha``, ``message``), oldest first, which must be
@@ -566,8 +561,8 @@ def build_package(record: dict, *, plan: dict, ci: dict, review: dict, commits: 
         f"- CI: {testing}. Checks: https://github.com/{fork}/commit/{ci_head}",
         f"- Package operation: {_code(operation_id, 40)}; approval: "
         f"{_code(approval['command_id'], 120)}; plan evidence: "
-        f"{_code(record.get('plan_evidence_id'), 120)}; review evidence: "
-        f"{_code(record.get('submission_review_id'), 120)}",
+        f"{_code(record.get('plan_evidence_id'), 120)}; rewrite evidence: "
+        f"{_code(record.get('submission_rewrite_id'), 120)}",
         "",
         "> [!WARNING]",
         f"> The compare form resolves the branch `{UPSTREAM_REF}` when it opens. Before you "
@@ -846,7 +841,7 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
     """Read back what a confirmed receipt reports. Returns the external ids,
     the values of the fields the confirm row sets, and a detail, or the
     reason the readback does not match. ``evidence`` holds the accepted
-    submission review whose series `riscv64` must be."""
+    submission rewrite whose series `riscv64` must be."""
     evidence = evidence or {}
     kind, target = op["kind"], op["target"]
     run = {"handoff_run_id": str(receipt.get("run_id") or "")}
@@ -859,7 +854,7 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
         if not head or head["head"] != clean or head.get("tree") != proposed.get("tree"):
             return f"{UPSTREAM_REF} does not resolve to the reviewed head and tree"
         review = evidence.get(next((r.split(":", 1)[1] for r in op.get("reason_ids") or []
-                                    if r.startswith("review:")), ""))
+                                    if r.startswith("rewrite:")), ""))
         messages = [str(c.get("message") or "").rstrip("\n")
                     for c in ((review or {}).get("data") or {}).get("commits") or []]
         cmp = collect.compare_commits(api, target["repository"], target["base_sha"], clean)
@@ -916,7 +911,7 @@ def readback(api: collect.Api, record: dict, op: dict, receipt: dict,
 def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dict]:
     """The operation and the record, checked against each other and against
     the committed state before any effect. For the build of `riscv64` the
-    accepted submission review the operation names is checked too. Raises
+    accepted submission rewrite the operation names is checked too. Raises
     ``HandoffRefused``."""
     if not _OP_ID.fullmatch(operation_id):
         raise HandoffRefused("invalid operation ID")
@@ -948,18 +943,18 @@ def load_request(root: Path, operation_id: str, policy: dict) -> tuple[dict, dic
             raise HandoffRefused("the build does not start from the approved head")
         try:
             review = json.loads((root / ".state/evidence"
-                                 / f"{safe_id(record.get('submission_review_id') or '')}.json")
+                                 / f"{safe_id(record.get('submission_rewrite_id') or '')}.json")
                                 .read_text())
             schemas.validate("evidence", review)
-            review_evidence(record, {review["evidence_id"]: review})
+            accepted_rewrite(record, {review["evidence_id"]: review})
         except (OSError, ValueError, schemas.SchemaError, lifecycle.TransitionError) as error:
-            raise HandoffRefused(f"no accepted submission review: {error}") from None
+            raise HandoffRefused(f"no accepted submission rewrite: {error}") from None
         data = review["data"]
-        if f"review:{review['evidence_id']}" not in (op.get("reason_ids") or []) \
+        if f"rewrite:{review['evidence_id']}" not in (op.get("reason_ids") or []) \
                 or op["proposed"].get("commit") != data["head"] \
                 or op["proposed"].get("tree") != data["clean_tree"] \
                 or op["proposed"].get("content_digest") != data["series_digest"]:
-            raise HandoffRefused("the operation is not bound to the accepted submission review")
+            raise HandoffRefused("the operation is not bound to the accepted submission rewrite")
     else:
         expected = record.get("clean_head_sha")
         if not expected or target.get("expected_head") != expected:
@@ -1058,11 +1053,11 @@ def check_upstream_series(root: Path, operation_id: str, *, policy: dict, series
     import submission
 
     record, op = load_request(root, operation_id, policy)
-    review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_review_id'])}"
+    review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_rewrite_id'])}"
                                                     ".json").read_text())["data"]
     target, proposed = op["target"], op["proposed"]
     if hashlib.sha256(series).hexdigest() != proposed["content_digest"]:
-        raise HandoffInvalid("the reviewed series does not match the accepted review")
+        raise HandoffInvalid("the reviewed series does not match the accepted rewrite")
     try:
         built = submission.reconstruct(
             workdir, fork=target["repository"], upstream=record["upstream"]["full_name"],
@@ -1089,7 +1084,7 @@ def verify_prepared(work: Path, op: dict, series: bytes) -> str:
     head with the reviewed tree. Nothing is fetched. Returns the head."""
     proposed = op["proposed"]
     if hashlib.sha256(series).hexdigest() != proposed["content_digest"]:
-        raise HandoffInvalid("the reviewed series does not match the accepted review")
+        raise HandoffInvalid("the reviewed series does not match the accepted rewrite")
     head = str(proposed.get("commit") or "")
     found = _git(work, "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}", check=False) \
         if _SHA.match(head) and (work / "HEAD").is_file() and (work / "objects").is_dir() \
@@ -1128,7 +1123,7 @@ def build_upstream_branch(root: Path, operation_id: str, *, policy: dict, read_a
     import fork_publish
 
     record, op = load_request(root, operation_id, policy)
-    review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_review_id'])}"
+    review = json.loads((root / ".state/evidence" / f"{safe_id(record['submission_rewrite_id'])}"
                                                     ".json").read_text())["data"]
     fork = op["target"]["repository"]
     if prepared and workdir is None:
@@ -1332,7 +1327,7 @@ def ci_head(record: dict, review: dict) -> str:
 
 
 def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
-    """The verified plan, the accepted submission review, the CI evidence
+    """The verified plan, the accepted submission rewrite, the CI evidence
     of the clean head, and the exact clean series of `riscv64`, read from
     committed state and the fork."""
     def evidence(eid: str | None) -> dict:
@@ -1343,9 +1338,9 @@ def package_inputs(root: Path, record: dict, read_api: collect.Api) -> dict:
         return value
 
     plan, ci = evidence(record.get("plan_evidence_id")), evidence(record.get("last_ci_evidence_id"))
-    review = evidence(record.get("submission_review_id"))
+    review = evidence(record.get("submission_rewrite_id"))
     try:
-        review_evidence(record, {review["evidence_id"]: review})
+        accepted_rewrite(record, {review["evidence_id"]: review})
     except lifecycle.TransitionError as error:
         raise HandoffError(str(error)) from None
     head = record["clean_head_sha"]
@@ -1374,7 +1369,7 @@ def is_package_of(body: str, record: dict, package: dict) -> bool:
     approval = _code(record["handoff_approval"]["command_id"], 120)
     # A package posted before the plan rename names its plan the `dossier`.
     named = re.compile(rf"- Package operation: `op-[0-9a-f]{{24}}`; approval: {re.escape(approval)}; "
-                       r"(?:plan|dossier) evidence: `[^`\n]*`; review evidence: `[^`\n]*`")
+                       r"(?:plan|dossier) evidence: `[^`\n]*`; (?:review|rewrite) evidence: `[^`\n]*`")
     return lines[-1] == package["marker"] and any(named.fullmatch(line) for line in lines)
 
 
@@ -1440,14 +1435,14 @@ def reviewed_series(root: Path, operation_id: str, series: Path | None,
     if record.get("id") != ids.get("publication_artifact_id") \
             or record.get("name") != "porting-publication" \
             or str((record.get("workflow_run") or {}).get("id")) != str(ids.get("publication_run_id")):
-        raise HandoffInvalid("the reviewed series is not from the accepted review's run")
+        raise HandoffInvalid("the reviewed series is not from the accepted rewrite's run")
     if record.get("expired"):
         # Not a verdict on the series: the controller leads an expired
         # rewrite back to a fresh one (`expire_submission_rewrite`).
         raise HandoffError("the artifact of the rewritten series expired")
     data = series.read_bytes()
     if hashlib.sha256(data).hexdigest() != (op.get("proposed") or {}).get("content_digest"):
-        raise HandoffInvalid("the reviewed series does not match the accepted review")
+        raise HandoffInvalid("the reviewed series does not match the accepted rewrite")
     return data
 
 
@@ -1534,13 +1529,12 @@ MAX_CHANGED_FILES = 300
 def authorizing_paths(record: dict, op: dict) -> frozenset[str]:
     """The files of this repository that authorize the operation and that
     it is built from: the policy, the operation, the record, and the plan,
-    CI, rewrite, and review evidence the record names (every file
+    CI and rewrite evidence the record names (every file
     ``load_request``, ``package_inputs``, ``_candidate_workflow``, and
     ``ci_rerun.load_request`` read from the checkout)."""
     paths = {"policy.json", f".state/operations/{safe_id(op['operation_id'])}.json",
              f".state/contributions/{contribution_file_id(op['contribution_id'])}.json"}
-    for name in ("plan_evidence_id", "last_ci_evidence_id", "submission_rewrite_id",
-                 "submission_review_id"):
+    for name in ("plan_evidence_id", "last_ci_evidence_id", "submission_rewrite_id"):
         if record.get(name):
             paths.add(f".state/evidence/{safe_id(record[name])}.json")
     return frozenset(paths)

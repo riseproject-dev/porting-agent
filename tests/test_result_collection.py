@@ -33,7 +33,6 @@ STATES = (
     ("planning", "agent_running", "planning", {"fork": None}),
     ("development", "agent_running", "development_repair", {"plan_evidence_id": "plan-1"}),
     ("handoff", "agent_running", work.SUBMISSION_REWRITE, {}),
-    ("handoff", "reviewing", work.SUBMISSION_REVIEW, {}),
     ("upstream_review", "agent_running", "upstream_revision",
      {"upstream_pr": {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
                       "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,

@@ -3,7 +3,7 @@
 """The submission of the live closeio--ciso8601/1 record.
 
 `/upstreaming submit-upstream` on the migrated live record runs the whole
-handoff by the table: the submission review Work and its trusted check, the
+handoff by the table: the submission rewrite Work (review loop included) and its trusted check, the
 build of the upstream branch `riscv64` from the reviewed series, CI on its
 clean head, the submission package, and the locked wait for the upstream PR
 with its three exits. Development stays on `riscv64-dev`, which nothing here
@@ -36,7 +36,6 @@ import reconcile
 import recovery
 import status_ledger
 import submission
-import work as work_plan
 from common import CONTROL_REPO, canonical_json, contribution_file_id
 from tests.helpers import OWNER, STRANGER, policy, refusal, steering_list, take
 from tests.test_live_handoff_migration import (
@@ -261,10 +260,6 @@ class World:
     def active(self):
         return self.operations[self.record["active_operation_id"]]
 
-    @property
-    def review(self):
-        return self.evidence[self.record["submission_review_id"]]
-
     def rewrite_outcome(self, verdict="pass", reasons=(), expires_at=None, **over):
         """The trusted outcome of the requested rewrite Work, as the worker's
         publish job writes it and the controller collects it."""
@@ -282,26 +277,7 @@ class World:
             out.update(title=TITLE, body=BODY, head=CLEAN, clean_tree=TREE, candidate_tree=TREE,
                        commits=[{"message": REVIEWED_MESSAGE, "tree": TREE}],
                        series_digest="5" * 64, text_digest=submission.text_digest(TITLE, BODY),
-                       rules_from=[])
-        out.update(over)
-        return out
-
-    def review_outcome(self, verdict="pass", reasons=(), **over):
-        """The trusted outcome of the requested review Work of the rewrite
-        the record names."""
-        work = self.record["active_work"]
-        rewrite = self.evidence[self.record["submission_rewrite_id"]]["data"]
-        self.publication += 1
-        out = {"status": submission.REVIEW, "stage": "review_check", "approved_head": HEAD,
-               "base_sha": BASE, "verdict": verdict, "reasons": list(reasons),
-               "task": {"task": "submission_review", "contribution_id": CID,
-                        "revision": work["revision"], "generation": work["generation"],
-                        "dedupe_key": work["dedupe_key"], "expected_head": HEAD},
-               "rewrite_evidence_id": self.record["submission_rewrite_id"],
-               "series_digest": rewrite["series_digest"], "text_digest": rewrite["text_digest"],
-               "expectations": [{"expectation": "The template's sections are filled",
-                                 "met": verdict == submission.PASS}],
-               "worker_run_id": str(self.publication * 10), "publication_artifact_id": self.publication}
+                       rules_from=[], review_loop_rounds=2)
         out.update(over)
         return out
 
@@ -382,19 +358,17 @@ def submitted(world: World | None = None) -> World:
 
 
 def rewritten(world: World | None = None) -> World:
-    """The live record once its rewrite passed the trusted check: the review
-    Work is requested in the same tick."""
+    """The live record once its rewrite (reviewed in the worker's own loop)
+    passed the trusted check: the build of `riscv64` is planned and launched
+    in the same tick."""
     world = submitted(world)
     world.tick(at(1), publications=[world.rewrite_outcome()])
     return world
 
 
 def reviewed(world: World | None = None) -> World:
-    """The live record once the review of its rewrite passed: the build of
-    `riscv64` is planned and launched in the same tick."""
-    world = rewritten(world)
-    world.tick(at(1), publications=[world.review_outcome()])
-    return world
+    """The same as ``rewritten``: the review is part of the rewrite Work."""
+    return rewritten(world)
 
 
 def through(target: str) -> World:
@@ -444,28 +418,16 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(out.report["handoff_requests"], [])
         self.assertIsNone(world.record["active_operation_id"])
 
-        # The checked rewrite: its review is requested in the same tick, as
-        # new Work of the next revision, in a fresh context.
+        # The checked rewrite, reviewed in the worker's own loop: `riscv64`
+        # is built from it, under a lease that it does not exist yet, with
+        # no revision bump.
         out = world.tick(at(1), publications=[world.rewrite_outcome()])
-        self.assertEqual(world.kinds(out), ["accept_submission_rewrite", "request_submission_review"])
-        self.assertEqual((world.state, world.record["revision"]), ("handoff.reviewing", 7))
+        self.assertEqual(world.kinds(out), ["accept_submission_rewrite"])
+        self.assertEqual((world.state, world.record["revision"]),
+                         ("handoff.building_upstream_branch", 6))
         rewrite = world.evidence[world.record["submission_rewrite_id"]]
         self.assertEqual((rewrite["kind"], rewrite["data"]["head"], rewrite["data"]["title"]),
                          ("submission_rewrite", CLEAN, TITLE))
-        [work] = out.report["requested_effects"]
-        self.assertEqual((work["task"], work["effect_contract"]),
-                         ("submission_review", {"kind": "none"}))
-        self.assertEqual(out.report["handoff_requests"], [])
-
-        # The review passes: `riscv64` is built from the rewrite, under a
-        # lease that it does not exist yet.
-        out = world.tick(at(1), publications=[world.review_outcome()])
-        self.assertEqual(world.kinds(out), ["accept_submission_review"])
-        self.assertEqual(world.state, "handoff.building_upstream_branch")
-        review = world.review
-        self.assertEqual((review["kind"], review["data"]["head"], review["data"]["title"],
-                          review["data"]["rewrite_evidence_id"]),
-                         ("submission_review", CLEAN, TITLE, rewrite["evidence_id"]))
         build = world.active
         self.assertEqual((build["kind"], build["status"], build["reason_ids"][1:3]),
                          ("upstream_branch", "planned", ["attempt:1", "count:1"]))
@@ -497,21 +459,22 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(world.state, "handoff.waiting_upstream_pr")
         self.assertEqual(world.record["pending_human_action"]["kind"], "open_upstream_pr")
         self.assertEqual(world.record["handoff_request"],
-                         {"command_id": package_op["operation_id"], "head": CLEAN, "revision": 7})
+                         {"command_id": package_op["operation_id"], "head": CLEAN, "revision": 6})
         self.assertIsNone(world.record["active_operation_id"])
         [posted] = world.gh.comments.values()
         self.assertEqual(posted["body"], handoff.build_package(
             world.record, plan=load("plan.json"), ci=world.evidence[CI_EVIDENCE],
-            review=world.review, commits=[{"sha": CLEAN, "message": REVIEWED_MESSAGE}],
+            review=world.evidence[world.record["submission_rewrite_id"]],
+            commits=[{"sha": CLEAN, "message": REVIEWED_MESSAGE}],
             files=[".github/workflows/build-wheels.yml", "pyproject.toml"],
             operation_id=package_op["operation_id"])["comment"])
         self.assertIn("riseproject-upstreaming:riscv64?quick_pull=1", posted["body"])
         self.assertIn("development PR #2, which stays open", posted["body"])
         self.assertEqual((world.record["revision"], world.record["fork"], world.record["generation"]),
-                         (7, FORK, 0))
+                         (6, FORK, 0))
         entry = status_ledger.render(world.events[-1], world.record, "https://run")
         self.assertIn(posted["html_url"], entry)
-        self.assertIn(f"/upstreaming retract-pr revision=7 head={CLEAN}", entry)
+        self.assertIn(f"/upstreaming retract-pr revision=6 head={CLEAN}", entry)
 
         # The human opens the PR from `riscv64`; observation verifies it.
         world.gh.upstream = [upstream_pr()]
@@ -541,14 +504,12 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(writes, [("PUSH", f"riscv64:->{CLEAN}"),
                                   ("POST", f"/repos/{CONTROL_REPO}/issues/1/comments")])
 
-    def test_a_failed_rewrite_or_review_returns_to_development_with_its_reasons(self):
-        for step, verb, revision in (("rewrite", "reject_submission_rewrite", 7),
-                                     ("review", "reject_submission_review", 8)):
+    def test_a_failed_rewrite_returns_to_development_with_its_reasons(self):
+        for step, verb, revision in (("rewrite", "reject_submission_rewrite", 7),):
             with self.subTest(step=step):
-                world = submitted() if step == "rewrite" else rewritten()
+                world = submitted()
                 reasons = [f"{step}: CONTRIBUTING.md asks for a CHANGELOG entry the series lacks"]
-                outcome = (world.rewrite_outcome("fail", reasons) if step == "rewrite"
-                           else world.review_outcome("fail", reasons))
+                outcome = world.rewrite_outcome("fail", reasons)
                 out = world.tick(at(2), publications=[outcome])
                 # The next development Work is requested in the same tick and
                 # carries the reasons as its feedback.
@@ -560,7 +521,7 @@ class TestLivePath(unittest.TestCase):
                 [eid] = world.record["pending_feedback_evidence_ids"]
                 self.assertEqual(world.evidence[eid]["data"]["reasons"], reasons)
                 self.assertIn(reasons[0], world.evidence[eid]["summary"])
-                for name in ("clean_head_sha", "submission_rewrite_id", "submission_review_id",
+                for name in ("clean_head_sha", "submission_rewrite_id",
                              "handoff_request", "pending_human_action", "active_operation_id"):
                     self.assertIsNone(world.record[name], name)
                 self.assertEqual(world.record["active_work"]["task"], "development_repair")
@@ -572,6 +533,26 @@ class TestLivePath(unittest.TestCase):
                 # The ledger entry renders no untrusted reason.
                 entry = status_ledger.render(rejected, world.record, "https://run")
                 self.assertNotIn("CHANGELOG", entry)
+
+    def test_a_pass_of_a_check_that_read_no_review_loop_is_relaunched_free(self):
+        """A rewrite Result checked before the deploy was never reviewed: it
+        is not accepted, and Work without a usable Result of the earlier
+        pipeline is relaunched with nothing charged."""
+        world = submitted()
+        before = copy.deepcopy(world.record)
+        outcome = world.rewrite_outcome()
+        outcome.pop("review_loop_rounds")
+        out = world.tick(at(1), publications=[outcome])
+        self.assertEqual(world.kinds(out), ["reallocate_after_pipeline_failure"])
+        self.assertEqual(world.state, "handoff.agent_running")
+        self.assertIsNone(world.record["submission_rewrite_id"])
+        self.assertEqual(world.record["budget"], before["budget"])
+        self.assertNotEqual(world.record["active_work"]["dedupe_key"],
+                            before["active_work"]["dedupe_key"])
+        # The stamped pass is accepted.
+        world = submitted()
+        self.assertEqual(world.kinds(world.tick(at(1), publications=[world.rewrite_outcome()])),
+                         ["accept_submission_rewrite"])
 
     def test_a_split_the_project_requires_fails_the_rewrite_and_returns_to_development(self):
         """The rewrite may squash and reword; a split into trees the approved
@@ -586,16 +567,15 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual(world.evidence[eid]["data"]["reasons"], reasons)
         self.assertEqual(world.gh.branches["riscv64"], None)
 
-    def test_an_unusable_rewrite_or_review_is_a_work_retry(self):
-        for step, state in (("rewrite", "handoff.agent_running"), ("review", "handoff.reviewing")):
+    def test_an_unusable_rewrite_is_a_work_retry(self):
+        for step, state in (("rewrite", "handoff.agent_running"),):
             with self.subTest(step=step):
-                world = submitted() if step == "rewrite" else rewritten()
-                make = world.rewrite_outcome if step == "rewrite" else world.review_outcome
+                world = submitted()
+                make = world.rewrite_outcome
                 first = world.record["active_work"]["dedupe_key"]
                 for outcome in ({"status": "rejected", "failure_class": "validation",
                                  "reason": "the review is malformed"},
-                                {"verdict": "pass", "commits": []} if step == "rewrite"
-                                else {"text_digest": "0" * 64}):
+                                {"verdict": "pass", "commits": []}):
                     out = world.tick(at(2), publications=[make(**outcome)])
                     self.assertEqual(world.kinds(out), ["allocate_work_retry"])
                     self.assertEqual(world.state, state)
@@ -813,9 +793,6 @@ class TestRewriteExpiry(unittest.TestCase):
                         world, (collected + timedelta(days=reported_days)).isoformat())
                     self.assertEqual(handoff.rewrite_expired(
                         world.record, evidence, collected + timedelta(days=days)), expired)
-                    self.assertEqual(handoff.rewrite_expired(
-                        world.record, evidence, collected + timedelta(days=days), review=True),
-                        expired)
             # A Z suffix is read, and an invalid expiry is ignored.
             evidence, _ = self.expiring(world, (collected + timedelta(days=7)).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"))
@@ -845,7 +822,9 @@ class TestRewriteExpiry(unittest.TestCase):
 
     def test_a_reported_expiry_leads_back_to_a_fresh_rewrite(self):
         world = rewritten()
-        world.record = dict(world.record, activity="review_pending", active_work=None)
+        # The first attempt of the build is not recorded yet.
+        world.record = dict(world.record, active_operation_id=None)
+        world.operations.clear()
         eid = world.record["submission_rewrite_id"]
         collected = datetime.fromisoformat(world.evidence[eid]["collected_at"])
         world.evidence, _ = self.expiring(world, (collected + timedelta(days=2)).isoformat())
@@ -853,23 +832,22 @@ class TestRewriteExpiry(unittest.TestCase):
         late = collected + timedelta(days=1.1)
         self.assertTrue(handoff.rewrite_expired(world.record, world.evidence, late))
         out = world.tick(late)
-        self.assertEqual(world.kinds(out), ["expire_submission_rewrite"])
-        self.assertEqual(world.state, "handoff.review_due")
+        self.assertEqual(world.kinds(out), ["expire_submission_rewrite", "request_submission_rewrite"])
+        self.assertEqual(world.state, "handoff.agent_running")
 
-    def test_an_expired_rewrite_is_never_reviewed(self):
+    def test_an_expired_rewrite_is_never_built(self):
         world = rewritten()
-        # The review is due but not allocated yet (no worker slot).
-        world.record = dict(world.record, activity="review_pending", active_work=None)
+        # The first attempt of the build is not recorded yet.
+        world.record = dict(world.record, active_operation_id=None)
+        world.operations.clear()
         self.age(world, 28)
         self.assertFalse(handoff.rewrite_expired(world.record, world.evidence, at(2)))
         self.age(world, 1)
         self.assertTrue(handoff.rewrite_expired(world.record, world.evidence, at(2)))
         out = world.tick(at(2))
-        self.assertEqual(world.kinds(out), ["expire_submission_rewrite"])
+        self.assertEqual(world.kinds(out), ["expire_submission_rewrite", "request_submission_rewrite"])
         self.assertEqual((world.state, world.record["submission_rewrite_id"]),
-                         ("handoff.review_due", None))
-        out = world.tick(at(3))
-        self.assertEqual(world.kinds(out), ["request_submission_rewrite"])
+                         ("handoff.agent_running", None))
 
     def test_a_long_human_wait_before_the_build_leads_to_a_fresh_rewrite(self):
         world = reviewed()
@@ -883,8 +861,7 @@ class TestRewriteExpiry(unittest.TestCase):
         self.assertEqual(world.kinds(out), ["resume_upstream_branch", "expire_submission_rewrite",
                                             "request_submission_rewrite"])
         self.assertEqual(world.state, "handoff.agent_running")
-        for name in ("submission_rewrite_id", "submission_review_id"):
-            self.assertIsNone(world.record[name], name)
+        self.assertIsNone(world.record["submission_rewrite_id"])
         self.assertEqual(world.gh.fork_writes(), [])
 
 
@@ -940,8 +917,8 @@ class TestInfrastructureRetries(unittest.TestCase):
         world = reviewed()
         out = world.tick(at(2), receipts=[failed(world, handoff.INVALID)])
         self.assertEqual(world.kinds(out), ["return_for_repair", "request_patch"])
-        self.assertEqual((world.state, world.record["revision"]), ("development.agent_running", 8))
-        for name in ("clean_head_sha", "submission_review_id", "handoff_request",
+        self.assertEqual((world.state, world.record["revision"]), ("development.agent_running", 7))
+        for name in ("clean_head_sha", "handoff_request",
                      "pending_human_action", "active_operation_id"):
             self.assertIsNone(world.record[name], name)
         self.assertEqual(world.gh.fork_writes(), [])
@@ -1142,7 +1119,6 @@ class TestCleanHeadCi(unittest.TestCase):
         gate_evidence = world.record["last_ci_evidence_id"]
         world.tick(at(1), publications=[world.rewrite_outcome(clean_tree="9" * 40, commits=[
             {"message": REVIEWED_MESSAGE, "tree": "9" * 40}])])
-        world.tick(at(1), publications=[world.review_outcome()])
         world.gh.trees[CLEAN] = "9" * 40
         world.gh.ci_state = "failure"
         world.gh.ci_attempt = 3
@@ -1167,7 +1143,6 @@ class TestCleanHeadCi(unittest.TestCase):
         world = submitted()
         world.tick(at(1), publications=[world.rewrite_outcome(clean_tree="9" * 40, commits=[
             {"message": REVIEWED_MESSAGE, "tree": "9" * 40}])])
-        world.tick(at(1), publications=[world.review_outcome()])
         world.gh.trees[CLEAN] = "9" * 40
         out = world.tick(at(2), receipts=[world.run_workflow()])
         self.assertEqual(world.kinds(out), ["confirm_clean_head", "accept_clean_head_ci"])
@@ -1333,7 +1308,6 @@ class TestCleanHeadCi(unittest.TestCase):
         world = submitted()
         world.tick(at(1), publications=[world.rewrite_outcome(clean_tree="9" * 40, commits=[
             {"message": REVIEWED_MESSAGE, "tree": "9" * 40}])])
-        world.tick(at(1), publications=[world.review_outcome()])
         world.gh.trees[CLEAN] = "9" * 40
         return world
 
@@ -1441,7 +1415,7 @@ class TestCleanHeadRerun(unittest.TestCase):
         self.assertEqual(spent(world.record, attempts=3, waited=True),
                          "operation_launch is spent without a receipt")
         self.assertEqual(spent(dict(world.record, clean_head_sha="e" * 40,
-                                    submission_review_id=None)),
+                                    submission_rewrite_id=None)),
                          "the operation no longer matches the record")
         # `riscv64` moved: `return_for_repair`, and the open rerun is closed
         # in the same tick.
@@ -1494,9 +1468,9 @@ class TestLockedWait(unittest.TestCase):
     def test_retract_leaves_riscv64_and_the_next_submission_replaces_it(self):
         world = through("handoff.waiting_upstream_pr")
         out = world.tick(at(30), comments=[comment(
-            f"/upstreaming retract-pr revision=7 head={CLEAN}", cid=970)])
+            f"/upstreaming retract-pr revision=6 head={CLEAN}", cid=970)])
         self.assertEqual(world.kinds(out), ["retract_submission", "request_patch"])
-        self.assertEqual((world.state, world.record["revision"]), ("development.agent_running", 8))
+        self.assertEqual((world.state, world.record["revision"]), ("development.agent_running", 7))
         for name in ("pending_human_action", "handoff_request", "handoff_approval"):
             self.assertIsNone(world.record[name])
         self.assertEqual(world.gh.branches, {"riscv64-dev": HEAD, "riscv64": CLEAN})
@@ -1505,7 +1479,7 @@ class TestLockedWait(unittest.TestCase):
 
         world = through("handoff.waiting_upstream_pr")
         out = world.tick(at(30), comments=[comment(
-            f'/upstreaming refresh revision=7 head={CLEAN} reason="new base"', cid=971)])
+            f'/upstreaming refresh revision=6 head={CLEAN} reason="new base"', cid=971)])
         self.assertEqual(world.kinds(out), ["refresh_planning", "begin_planning"])
         self.assertEqual(world.record["refresh"]["head_sha"], HEAD)
         self.assertEqual(world.record["fork"], FORK)
@@ -1514,7 +1488,7 @@ class TestLockedWait(unittest.TestCase):
     def test_a_second_submission_replaces_riscv64_under_the_lease(self):
         world = through("handoff.waiting_upstream_pr")
         world.tick(at(30), comments=[comment(
-            f"/upstreaming retract-pr revision=7 head={CLEAN}", cid=970)])
+            f"/upstreaming retract-pr revision=6 head={CLEAN}", cid=970)])
         # Development continues on `riscv64-dev`, CI passes again, and a new
         # submission is reviewed and built.
         self.assertEqual(world.state, "development.agent_running")
@@ -1533,9 +1507,7 @@ class TestLockedWait(unittest.TestCase):
         world.gh.trees[second] = TREE
         out = world.tick(at(33), publications=[world.rewrite_outcome(
             head=second, commits=[{"message": world.gh.messages[second], "tree": TREE}])])
-        self.assertEqual(world.kinds(out), ["accept_submission_rewrite", "request_submission_review"])
-        out = world.tick(at(33), publications=[world.review_outcome()])
-        self.assertEqual(world.kinds(out), ["accept_submission_review"])
+        self.assertEqual(world.kinds(out), ["accept_submission_rewrite"])
         out = world.tick(at(34), receipts=[world.run_workflow()])
         self.assertEqual(world.kinds(out)[0], "confirm_clean_head")
         self.assertEqual(world.gh.fork_writes()[-1], ("PUSH", f"riscv64:{CLEAN}->{second}"))
@@ -1568,14 +1540,14 @@ class TestReminders(unittest.TestCase):
         event = world.events[-1]
         self.assertEqual((event["details"]["package_url"], event["details"]["submitter"],
                           event["details"]["mismatch"]), (package_url, OWNER["login"], None))
-        self.assertEqual(event["details"]["bound_to"], {"revision": 7, "head": CLEAN})
+        self.assertEqual(event["details"]["bound_to"], {"revision": 6, "head": CLEAN})
         text = status_ledger.render(event, world.record, "https://run")
         self.assertIn(f"Submitter: @{OWNER['login']}.", text)
         self.assertIn(f"]({package_url})", text)
         self.assertIn(f"`{CLEAN}`", text)
         self.assertIn("Pending human action: `open_upstream_pr`", text)
         self.assertNotIn("Observed:", text)
-        self.assertIn(f"/upstreaming retract-pr revision=7 head={CLEAN}", text)
+        self.assertIn(f"/upstreaming retract-pr revision=6 head={CLEAN}", text)
         world.gh.branches["riscv64"] = "f" * 40
         world.tick(at(0, "2026-12-02"))
         out = world.tick(at(10, "2026-12-01"))
@@ -1642,11 +1614,11 @@ class TestPullRequestDiscovery(unittest.TestCase):
 
 class TestApprovalKept(unittest.TestCase):
     """A return to development and a failed review keep `handoff_approval`:
-    their rows clear the clean head, the review, the request and the pending
+    their rows clear the clean head, the rewrite, the request and the pending
     action only, and the next `submit_upstream` replaces the approval."""
 
     def test_the_rows_do_not_clear_the_approval(self):
-        for state, verb in (("handoff.reviewing", "reject_submission_review"),
+        for state, verb in (("handoff.agent_running", "reject_submission_rewrite"),
                             ("handoff.building_upstream_branch", "return_for_repair"),
                             ("handoff.waiting_ci", "return_for_repair"),
                             ("handoff.preparing_submission", "return_for_repair")):
@@ -1656,10 +1628,10 @@ class TestApprovalKept(unittest.TestCase):
                 self.assertNotIn("handoff_approval", row.effects.clears)
                 self.assertIn("handoff_request", row.effects.clears)
 
-    def test_a_failed_review_and_a_moved_clean_head_keep_it(self):
-        world = rewritten()
+    def test_a_failed_rewrite_and_a_moved_clean_head_keep_it(self):
+        world = submitted()
         approval = copy.deepcopy(world.record["handoff_approval"])
-        world.tick(at(2), publications=[world.review_outcome("fail", ["no"])])
+        world.tick(at(2), publications=[world.rewrite_outcome("fail", ["no"])])
         self.assertEqual(world.state, "development.agent_running")
         self.assertEqual(world.record["handoff_approval"], approval)
         world = reviewed()
@@ -1683,7 +1655,7 @@ def package_args(record, review_data=None, commits=None, **over):
             "artifact": {"run_id": "91010", "artifact_id": 9101}}
     data.update(review_data or {})
     args = {"plan": load("plan.json"), "ci": load("evidence-ci.json"),
-            "review": {"evidence_id": record.get("submission_review_id") or "r", "data": data},
+            "review": {"evidence_id": record.get("submission_rewrite_id") or "r", "data": data},
             "commits": commits, "files": [f["filename"] for f in compare["files"]],
             "operation_id": PACKAGE_OP}
     args.update(over)
@@ -1707,12 +1679,12 @@ class TestPackage(unittest.TestCase):
                      "`riscv64-dev` (development PR #2, which stays open)",
                      f"Exact head: `{CLEAN}`", f"Package operation: `{PACKAGE_OP}`",
                      f"plan evidence: `{PLAN}`",
-                     f"review evidence: `{record['submission_review_id']}`",
+                     f"rewrite evidence: `{record['submission_rewrite_id']}`",
                      "19 required jobs executed and passed, including "
                      "`Build - ubuntu-24.04-riscv (riscv64)`",
                      f"on `{HEAD}`, the candidate head with the same tree",
                      "> [!WARNING]", "The compare form resolves the branch `riscv64`",
-                     f"/upstreaming retract-pr revision=7 head={CLEAN}",
+                     f"/upstreaming retract-pr revision=6 head={CLEAN}",
                      "use the revision of the latest entry on this issue",
                      "```text\nNo CLA/DCO", "`CHANGELOG.md`", "If GitHub does not let your account",
                      "written after the project's pull request template", one["marker"]):
@@ -1859,14 +1831,14 @@ class TestValidationBeforeAnyWrite(unittest.TestCase):
         world = reviewed()
         self.check(world)
         op_id = world.record["active_operation_id"]
-        review_id = world.record["submission_review_id"]
+        review_id = world.record["submission_rewrite_id"]
         variants = {
             "paused": lambda w: w.record.update(paused=True),
             "not active": lambda w: w.record.update(active_operation_id=None),
             "other state": lambda w: w.record.update(activity="preparing_submission"),
             "other approved head": lambda w: w.record["handoff_approval"].update(head="c" * 40),
-            "no review": lambda w: w.record.update(submission_review_id=None),
-            "failed review": lambda w: w.evidence[review_id]["data"].update(verdict="fail"),
+            "no rewrite": lambda w: w.record.update(submission_rewrite_id=None),
+            "failed rewrite": lambda w: w.evidence[review_id]["data"].update(verdict="fail"),
             "another reviewed head": lambda w: w.operations[op_id]["proposed"].update(commit="c" * 40),
             "another reviewed tree": lambda w: w.operations[op_id]["proposed"].update(tree="c" * 40),
             "another series": lambda w: w.operations[op_id]["proposed"].update(content_digest="6" * 64),
@@ -1981,9 +1953,8 @@ class TestNoReceipt(unittest.TestCase):
                     world.tick(at(minute + 1), receipts=[world.run_workflow()])
                     self.assertNotIn(world.state, (state, "handoff.waiting_human"))
 
-    def test_the_rewrite_and_review_work_have_an_exit(self):
-        for world, state in ((submitted(), "handoff.agent_running"),
-                             (rewritten(), "handoff.reviewing")):
+    def test_the_rewrite_work_has_an_exit(self):
+        for world, state in ((submitted(), "handoff.agent_running"),):
             self.assertEqual(world.state, state)
             out = world.tick(at(1), comments=[comment("/upstreaming pause", cid=930)])
             self.assertEqual((world.kinds(out), world.state), (["pause"], "handoff.review_due"))
@@ -2192,7 +2163,7 @@ class TestPackageBranchCheck(unittest.TestCase):
         self.assertEqual(world.state, "development.agent_running")
         record = world.record
         self.assertEqual(record["revision"], before["revision"] + 1)
-        for name in ("clean_head_sha", "submission_rewrite_id", "submission_review_id",
+        for name in ("clean_head_sha", "submission_rewrite_id",
                      "handoff_request", "active_operation_id"):
             self.assertIsNone(record[name], name)
         self.assertEqual(record["last_ci_evidence_id"], before["last_ci_evidence_id"])
@@ -2455,9 +2426,8 @@ class TestFinalCheckAtHeadOfMain(unittest.TestCase):
 
     def test_a_change_to_what_authorizes_the_operation_refuses(self):
         evidence = [f".state/evidence/{self.record[name]}.json"
-                    for name in ("plan_evidence_id", "last_ci_evidence_id", "submission_rewrite_id",
-                                 "submission_review_id")]
-        self.assertEqual(len(evidence), 4)
+                    for name in ("plan_evidence_id", "last_ci_evidence_id", "submission_rewrite_id")]
+        self.assertEqual(len(evidence), 3)
         for path in ["policy.json", self.record_path, *evidence]:
             with self.subTest(path=path):
                 with self.assertRaisesRegex(handoff.HandoffRefused, re.escape(path)):
@@ -2660,8 +2630,8 @@ class TestOperationTable(unittest.TestCase):
                     self.assertIn(verb, engine.PIPELINE_VERBS)
         self.assertEqual(engine.HELD_COMMANDS, {})
         for verb in ("submit_upstream", "retract_submission", "accept_clean_head_ci",
-                     "verify_upstream_pr", "record_audit_observation", "request_submission_review",
-                     "accept_submission_review", "reject_submission_review"):
+                     "verify_upstream_pr", "record_audit_observation", "request_submission_rewrite",
+                     "accept_submission_rewrite", "reject_submission_rewrite"):
             self.assertIn(verb, engine.PIPELINE_VERBS)
         # The interrupted-CI rows are taken by the observation of
         # development CI only; CI on the clean head does not take them yet.
@@ -2757,8 +2727,9 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         rewrite = {"schema_version": 1, "contribution_id": "example--proj/12", "expected_revision": 4,
                    "expected_head": approved, "verdict": "pass", "reasons": [], "title": "Build",
                    "body": "Body", "series_digest": hashlib.sha256(mbox).hexdigest()}
-        checked = submission.check_rewrite(task, rewrite, mbox,
-                                           workdir=self.root / f"check-{approved[:6]}")
+        with mock.patch("review_loop.check", return_value={"rounds": 2}):
+            checked = submission.check_rewrite(task, rewrite, mbox,
+                                               workdir=self.root / f"check-{approved[:6]}")
         self.assertEqual((checked["verdict"], checked["reasons"]), ("pass", []))
         record = self.contribution(phase="handoff", activity="agent_running", revision=4,
                                    scope_paths=list(scope),
@@ -2773,27 +2744,8 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         record, staged = reconcile.fold_submission_rewrite(
             record, dict(checked, publication_artifact_id=77), now=T0, policy=policy(),
             worker_run_id="7001")
-        self.assertEqual(engine.state_key(record), "handoff.review_pending")
-        evidence = {r["evidence_id"]: r for k, r in staged if k == "evidence"}
-        record = dict(record, activity="reviewing", active_work=dict(
-            record.get("active_work") or {}, dedupe_key="k2", task="submission_review",
-            generation=0, revision=record["revision"], attempt=1, requested_at=T0,
-            deadline_at=T0, dispatched_run_id=None, reason_ids=[]))
-        review_task = {"task": "submission_review", "contribution_id": "example--proj/12",
-                       "revision": record["revision"], "expected_head": approved,
-                       "base_sha": self.base,
-                       "context": {"rewrite": work_plan.rewrite_reference(
-                           evidence[record["submission_rewrite_id"]])}}
-        reviewed = submission.check_review(review_task, {
-            "schema_version": 1, "contribution_id": "example--proj/12",
-            "expected_revision": record["revision"], "expected_head": approved, "verdict": "pass",
-            "reasons": [], "series_digest": checked["series_digest"],
-            "text_digest": checked["text_digest"],
-            "expectations": [{"expectation": "The text follows the template", "met": True}]})
-        record, staged = reconcile.fold_submission_review(
-            record, dict(reviewed, publication_artifact_id=78), now=T0, policy=policy(),
-            worker_run_id="7002", evidence=evidence)
         self.assertEqual(engine.state_key(record), "handoff.building_upstream_branch")
+        evidence = {r["evidence_id"]: r for k, r in staged if k == "evidence"}
         evidence.update({r["evidence_id"]: r for k, r in staged if k == "evidence"})
         op = handoff.plan_attempt(record, {}, policy=policy(), now=T0, evidence=evidence)
         record["active_operation_id"] = op["operation_id"]
@@ -2992,7 +2944,7 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         approved = self.development(("Build riscv64", {"setup.py": "b\n"}))
         mbox = self.reviewed_series(approved, "Build riscv64 wheels")
         state, op, _checked = self.state(approved, mbox)
-        with self.assertRaisesRegex(handoff.HandoffInvalid, "accepted review"):
+        with self.assertRaisesRegex(handoff.HandoffInvalid, "accepted rewrite"):
             self.build(state, op, mbox + b"\n")
         self.assertIsNone(self.branch())
 
@@ -3046,7 +2998,7 @@ class TestUpstreamBranchWithGit(unittest.TestCase):
         self.assertEqual(out, {"head": checked["head"], "needs_ci": False})
         # A series that is not the reviewed one, or a work directory the
         # series step did not prepare, is not pushed.
-        with self.assertRaisesRegex(handoff.HandoffInvalid, "accepted review"):
+        with self.assertRaisesRegex(handoff.HandoffInvalid, "accepted rewrite"):
             self.build_prepared(state, op, mbox + b"x", work)
         with self.assertRaisesRegex(handoff.HandoffError, "not prepared"):
             self.build_prepared(state, op, mbox, self.root / "nothing")

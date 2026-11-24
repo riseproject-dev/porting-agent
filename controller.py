@@ -126,8 +126,6 @@ def _actionable(c: dict) -> str | None:
         return "upstream_revision"
     if engine.state_key(c) == "handoff.review_due":
         return work_queue.SUBMISSION_REWRITE
-    if engine.state_key(c) == "handoff.review_pending":
-        return work_queue.SUBMISSION_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
     if engine.state_key(c) == "planning.idle":
@@ -143,7 +141,7 @@ def _actionable(c: dict) -> str | None:
 # `allocate_work_retry` and `exhaust_recovery`.
 WORK_DEADLINE_HOURS = 18
 
-PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
+PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0,
             "development_repair": 1,
             "development_patch": 2, "planning": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
@@ -156,7 +154,6 @@ ALLOCATIONS = {
     "planning.idle": ("dispatch_planning",),
     "development.fix_needed": ("request_repair", "request_patch"),
     "handoff.review_due": ("request_submission_rewrite",),
-    "handoff.review_pending": ("request_submission_review",),
     "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
 }
 # The rows taken instead when a budget of that Work is exhausted. They need no
@@ -166,7 +163,6 @@ EXHAUSTIONS = {
     "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
     "handoff.review_due": ("exhaust_work_total",),
-    "handoff.review_pending": ("exhaust_work_total",),
     "upstream_review.fix_needed": ("exhaust_repair_attempts",),
 }
 # The facts the controller establishes for an allocation it is about to take.
@@ -180,8 +176,6 @@ def task_for(verb: str, record: dict) -> str:
         return "planning"
     if verb == "request_submission_rewrite":
         return work_queue.SUBMISSION_REWRITE
-    if verb == "request_submission_review":
-        return work_queue.SUBMISSION_REVIEW
     if verb in ("request_upstream_revision", "request_review_revision"):
         return "upstream_revision"
     if verb == "request_repair" or record.get("pending_feedback_evidence_ids"):
@@ -1119,30 +1113,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             ci = _recorded_ci_evidence(due, evidence)
             ops = _open_operations(due, operations)
             facts = ALLOCATION_FACTS
-            if engine.state_key(due) == "handoff.review_pending":
-                # The review reads the rewritten series from its artifact:
-                # an expired one is never reviewed, a fresh rewrite is due.
-                if handoff.rewrite_expired(due, evidence, inputs.now):
-                    match engine.dispatch(engine.try_apply_transition(
-                            due, "expire_submission_rewrite", policy=policy, now=now,
-                            facts={"submission_rewrite_expired"}, open_operations=ops,
-                            cause_id=f"expired-{due.get('submission_rewrite_id')}"),
-                            ("controller", "tick")):
-                        case engine.Applied() as out:
-                            _stage(res, by_id, out)
-                            continue
-                        case engine.Take(verb="exhaust_work_total"):
-                            # The rewrite is due again but `work_total` is
-                            # spent: the exhaustion below takes it.
-                            pass
-                        case engine.Skip(refused):
-                            rep["deferred"].append({"contribution": c["contribution_id"],
-                                                    "why": refused.detail})
-                            continue
-                        case engine.Bug(refused):
-                            raise engine.TransitionRefused(refused, ("controller", "tick"))
-                else:
-                    facts = ALLOCATION_FACTS | {"submission_rewrite_current"}
             state = engine.state_key(due)
             exhaustions = EXHAUSTIONS.get(state, ())
             if exhaustions:
@@ -1219,9 +1189,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             source = engine.state_key(claimed)
             claimed = _stage(res, by_id, engine.applied(engine.try_apply_transition(
                 claimed, verb, policy=policy, now=now, cause_id=request["dedupe_key"],
-                facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
-                                          if verb == "request_submission_review"
-                                          else set()),
+                facts=ALLOCATION_FACTS,
                 values={"active_work": request}, ci_evidence=ci,
                 open_operations=_open_operations(claimed, operations),
                 details={"task": kind, "work": request["dedupe_key"],
@@ -1598,9 +1566,9 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
         raise lifecycle.TransitionError(f"{state} names the operation {active}, which the store "
                                         "does not hold")
     if state == lifecycle.UPSTREAM_BRANCH_WRITER and (op is None or not recovery.is_open(op)) \
-            and handoff.rewrite_expired(c, evidence, inputs.now, review=True):
+            and handoff.rewrite_expired(c, evidence, inputs.now):
         # The series `riscv64` would be built from is no longer available: a
-        # fresh rewrite and review are due, never an endless wait.
+        # fresh rewrite is due, never an endless wait.
         match engine.dispatch(engine.try_apply_transition(
                 c, "expire_submission_rewrite", policy=policy, now=now,
                 facts={"submission_rewrite_expired"},

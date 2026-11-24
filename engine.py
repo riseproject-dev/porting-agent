@@ -1007,9 +1007,6 @@ for _guard, _name in (
     (lc.REWRITE_PASSED, "submission_rewrite_passed"),
     (lc.REWRITE_FAILED, "submission_rewrite_failed"),
     (lc.REWRITE_EXPIRED, "submission_rewrite_expired"),
-    (lc.REWRITE_CURRENT, "submission_rewrite_current"),
-    (lc.REVIEW_PASSED, "submission_review_passed"),
-    (lc.REVIEW_FAILED, "submission_review_failed"),
     (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),
     (lc.CLEAN_HEAD_CI_MISSING, "clean_head_ci_missing"),
     ("a blocking CI failure on the clean head, or the observed `riscv64` head differs from the "
@@ -1066,8 +1063,6 @@ FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") 
 CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
                        ("ci_failed_on_head", "head_not_failed"),
                        ("submission_rewrite_passed", "submission_rewrite_failed"),
-                       ("submission_rewrite_current", "submission_rewrite_expired"),
-                       ("submission_review_passed", "submission_review_failed"),
                        ("base_branch_unread", "base_branch_missing"),
                        ("upstream_repository_unread", "base_branch_missing"),
                        ("upstream_repository_renamed", "base_branch_missing"),
@@ -1229,9 +1224,6 @@ PIPELINE_VERBS: dict[str, str] = {
     "accept_submission_rewrite": "reconcile",
     "reject_submission_rewrite": "reconcile",
     "expire_submission_rewrite": "controller",
-    "request_submission_review": "controller",
-    "accept_submission_review": "reconcile",
-    "reject_submission_review": "reconcile",
     # The handoff operations (building `riscv64`, the submission package):
     # the rows each attempt fires through ``recovery.fire`` when its verified
     # receipt is folded, or when the controller closes an attempt whose
@@ -1585,7 +1577,6 @@ def reset_generation(record: dict) -> dict:
         "scope_paths": None, "debug_commits": [], "clean_head_sha": None,
         "clean_head_ci_since": None,
         "submission_rewrite_id": None,
-        "submission_review_id": None,
         "handoff_request": None, "handoff_approval": None,
         "last_ci_evidence_id": None, "merge": None, "retirement": None,
         "release_acceptance": None, "pending_human_action": None,
@@ -2069,7 +2060,7 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "pending_feedback_evidence_ids": [], "active_work": None, "plan_evidence_id": None,
     "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
     "clean_head_sha": None, "clean_head_ci_since": None, "submission_rewrite_id": None,
-    "submission_review_id": None, "handoff_request": None, "handoff_approval": None,
+    "handoff_request": None, "handoff_approval": None,
     "last_ci_evidence_id": None, "merge": None, "retirement": None,
     "release_acceptance": None, "pending_human_action": None, "follows": None,
 }
@@ -2096,15 +2087,18 @@ RETIRED_FIELDS = ("blocked_reason",)
 # observation (nothing read it for CI) and by release observation (which now
 # reads PyPI on every run); `held_patch` was the unpublished patch of the
 # review Work that no longer exists, `review_comments` the comments due on
-# development PRs for the same review.
-RETIRED_ANY_FIELDS = ("next_poll_at", "held_patch", "review_comments")
+# development PRs for the same review, and `submission_review_id` the accepted
+# review of a submission rewrite, which the rewrite's own review loop replaced.
+RETIRED_ANY_FIELDS = ("next_poll_at", "held_patch", "review_comments", "submission_review_id")
 # The states of the separate reviews, which the review loop of the worker
 # retired, and the state each record in one goes to: the unpublished patch
-# is dropped, and the Work is requested again.
+# (or the accepted rewrite) is dropped, and the Work is requested again.
 RETIRED_STATES = {
     "development.review_pending": "development.fix_needed",
     "development.reviewing": "development.fix_needed",
     "development.publishing": "development.fix_needed",
+    "handoff.review_pending": "handoff.review_due",
+    "handoff.reviewing": "handoff.review_due",
 }
 # The pending action of a review of a held patch that could not run, which
 # now is a failed Work.
@@ -2139,6 +2133,9 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
         if new.get("pending_publication") is not None:
             removed.append("pending_publication")
         new["pending_publication"] = None
+        if moved == "handoff.review_due":
+            # The accepted rewrite is made again with the Work.
+            new["submission_rewrite_id"] = None
     pending = new.get("pending_human_action")
     if isinstance(pending, dict) and pending.get("kind") in RETIRED_PENDING_KINDS:
         replacement = RETIRED_PENDING_KINDS[pending["kind"]]
@@ -2450,7 +2447,6 @@ def handles(module: str, function: str, verbs, base: dict, **overrides) -> None:
 # kind a site never expects (the observation or the fold established what
 # the row needs).
 _OBS_STRICT = _handling(D_OBS, GUARD_UNMET=BUG)
-_TAKE_WORK_TOTAL = TAKE("exhaust_work_total")
 
 # engine
 handles("engine", "record_late_effect", "record_late_effect", _ALL_BUG)
@@ -2495,8 +2491,6 @@ handles("reconcile", "fold_plan",
         ("close_planning", "park_planning", "readmit_development", "admit_development"), D_RESULT)
 handles("reconcile", "fold_submission_rewrite",
         ("accept_submission_rewrite", "reject_submission_rewrite"), D_RESULT)
-handles("reconcile", "fold_submission_review",
-        ("accept_submission_review", "reject_submission_review"), D_RESULT)
 handles("reconcile", "_fail_publication", "schedule_publish_retry", _ALL_BUG,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
 handles("reconcile", "_fail_publication", "exhaust_recovery", _ALL_BUG)
@@ -2544,20 +2538,18 @@ handles("controller", "_source_unavailable",
          "require_upstream_access", "require_renamed_upstream"), D_TICK)
 handles("controller", "tick", "withdraw_request", D_OBS, FACT_MISSING=SKIP)
 handles("controller", "tick", "record_reminder", D_TICK)
-handles("controller", "tick", "expire_submission_rewrite", D_TICK,
-        BUDGET_EXHAUSTED=_TAKE_WORK_TOTAL)
 handles("controller", "tick",
         ("exhaust_work_total", "exhaust_work_total|refresh_on_exhaustion|exhaust_repair_attempts",
          "exhaust_repair_attempts"), D_TICK, BUDGET_EXHAUSTED=SKIP)
 handles("controller", "_due_allocation",
         ("dispatch_planning", "request_repair|request_patch",
-         "request_submission_rewrite", "request_submission_review",
+         "request_submission_rewrite",
          "request_upstream_revision|request_review_revision"), D_TICK, BUDGET_EXHAUSTED=SKIP)
 # A paused request does not begin planning.
 handles("controller", "tick", "begin_planning", D_TICK)
 handles("controller", "tick",
         ("dispatch_planning", "request_repair", "request_patch",
-         "request_submission_rewrite", "request_submission_review",
+         "request_submission_rewrite",
          "request_upstream_revision", "request_review_revision"), _ALL_BUG)
 # A record that breaks its state is left to the heal of its tick (nothing is
 # decided for its Work).

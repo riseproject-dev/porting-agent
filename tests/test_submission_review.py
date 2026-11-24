@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The trusted checks of the submission rewrite and review Results, the Work
-they answer, and the table rows they decide."""
+"""The trusted check of the submission rewrite Result (its review loop
+included), the Work it answers, and the table rows it decides."""
 
 import copy
 import hashlib
@@ -14,6 +14,7 @@ from pathlib import Path
 import commit_rules
 import fork_publish
 import lifecycle as lc
+import review_loop
 import submission
 import work
 from tests.helpers import commit_files, git, init_repo
@@ -45,6 +46,8 @@ class TestCheck(unittest.TestCase):
         git(self.work, "push", "-q", str(root / "riseproject-upstreaming/proj.git"),
             "HEAD:refs/heads/riscv64-dev")
         self.runs = 0
+        # The review loop has its own tests below and in test_review_loop.py.
+        self.loop = self.enterContext(unittest.mock.patch("review_loop.check", return_value={"rounds": 2}))
 
     def tearDown(self):
         fork_publish.URL_TEMPLATE, extra = self.saved
@@ -87,10 +90,10 @@ class TestCheck(unittest.TestCase):
         value.update(over)
         return value
 
-    def check(self, mbox, task=None, **over):
+    def check(self, mbox, task=None, report=None, **over):
         self.checks = getattr(self, "checks", 0) + 1
         return submission.check_rewrite(task or self.task(), self.review(mbox, **over), mbox,
-                                        workdir=self.root / f"check-{self.checks}")
+                                        workdir=self.root / f"check-{self.checks}", report=report)
 
     def test_a_passing_review(self):
         mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF,
@@ -358,113 +361,104 @@ class TestCheck(unittest.TestCase):
         self.assertEqual((out["verdict"], out["reasons"]), ("pass", []))
 
 
-class TestReviewCheck(unittest.TestCase):
-    """The review of exactly the rewritten series and text."""
+    def test_the_review_loop_of_the_report_decides_a_pass(self):
+        """A rewrite that passes every measurable check is a pass only when
+        the worker's own review loop left no P0 finding open; a loop that is
+        missing or contradicts itself is an unusable Result, never a verdict."""
+        mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF,
+                           "ci: Test riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF)
+        task = self.task(commit_rules=dict(RULES, max_commits=None), template_sections=SECTIONS)
+        self.loop.side_effect = review_loop.OpenP0(["The job is skipped", "No test step"])
+        out = self.check(mbox, task)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertEqual(len(out["reasons"]), 2)
+        self.assertTrue(all(r.startswith("review loop: P0 finding left open: ") for r in out["reasons"]))
+        self.loop.side_effect = review_loop.LoopError("the worker report records no review loop")
+        out = self.check(mbox, task)
+        self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
+        self.assertIn("no review loop", out["reason"])
+        self.loop.side_effect = None
+        self.assertEqual(self.check(mbox, task)["verdict"], "pass")
 
-    REWRITE = {"evidence_id": "submission-rewrite-x-r5-7001", "head": "c" * 40,
-               "series_digest": "5" * 64, "text_digest": submission.text_digest("T", "B"),
-               "run_id": "7001", "artifact_id": 77}
+    def test_the_loop_is_bound_to_the_series_and_stamps_a_pass(self):
+        mbox = self.series("ci: Build riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF,
+                           "ci: Test riscv64 wheels\n\nBody.\n\n" + APP_SIGNOFF)
+        task = self.task(commit_rules=dict(RULES, max_commits=None), template_sections=SECTIONS)
+        self.loop.return_value = {"rounds": 3}
+        out = self.check(mbox, task)
+        self.assertEqual((out["verdict"], out["review_loop_rounds"]), ("pass", 3))
+        self.assertEqual(self.loop.call_args.kwargs["series_digest"],
+                         hashlib.sha256(mbox).hexdigest())
+        self.assertEqual(self.loop.call_args.kwargs["text_digest"],
+                         submission.text_digest("Build riscv64 wheels", BODY))
+        # A loop whose last round read another series is not usable.
+        self.loop.side_effect = review_loop.LoopError(
+            "the last review round did not review the delivered series")
+        out = self.check(mbox, task)
+        self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
+        self.assertIn("did not review the delivered series", out["reason"])
 
-    def task(self, **over):
-        value = {"task": "submission_review", "contribution_id": "example--proj/12", "revision": 5,
-                 "expected_head": "a" * 40, "base_sha": "b" * 40,
-                 "context": {"rewrite": dict(self.REWRITE)}}
-        value.update(over)
-        return value
-
-    def review(self, **over):
-        value = {"schema_version": 1, "contribution_id": "example--proj/12", "expected_revision": 5,
-                 "expected_head": "a" * 40, "verdict": "pass", "reasons": [],
-                 "series_digest": "5" * 64, "text_digest": self.REWRITE["text_digest"],
-                 "expectations": [{"expectation": "The template's Testing section is filled",
-                                   "source": "pull_request_template", "met": True}]}
-        value.update(over)
-        return value
-
-    def test_a_pass_and_a_fail(self):
-        out = submission.check_review(self.task(), self.review())
-        self.assertEqual((out["status"], out["verdict"], out["reasons"], out["rewrite_evidence_id"]),
-                         ("submission_review", "pass", [], self.REWRITE["evidence_id"]))
-        out = submission.check_review(self.task(), self.review(
-            verdict="fail", reasons=["The CHANGELOG entry the contributing guide asks for is missing"]))
-        self.assertEqual((out["verdict"], out["reasons"]), (
-            "fail", ["review: The CHANGELOG entry the contributing guide asks for is missing"]))
-        # A pass that lists an unmet expectation blocks.
-        out = submission.check_review(self.task(), self.review(expectations=[
-            {"expectation": "Commits are signed off", "met": False}]))
+    def test_a_failed_rewrite_needs_no_loop(self):
+        mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
+        self.loop.side_effect = review_loop.LoopError("never read")
+        out = self.check(mbox, verdict="fail", reasons=["the series cannot meet the template"])
         self.assertEqual((out["verdict"], out["reasons"]),
-                         ("fail", ["review: expectation not met: Commits are signed off"]))
-
-    def test_an_unusable_review_is_not_a_verdict(self):
-        for task, review in (
-                (self.task(), self.review(series_digest="6" * 64)),
-                (self.task(), self.review(text_digest="6" * 64)),
-                (self.task(), self.review(expected_revision=4)),
-                (self.task(), self.review(expectations=[])),
-                (self.task(), self.review(title="a review may not write text")),
-                (self.task(), {"verdict": "pass"}),
-                (self.task(context={}), self.review()),
-                (self.task(task="submission_rewrite"), self.review())):
-            with self.subTest(review=review, task=task.get("task")):
-                out = submission.check_review(task, review)
-                self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
+                         ("fail", ["rewrite: the series cannot meet the template"]))
 
 
 class TestReviewWork(unittest.TestCase):
-    def test_the_submission_tasks_are_uncredentialed_and_write_nothing(self):
-        for task in (work.SUBMISSION_REWRITE, work.SUBMISSION_REVIEW):
-            self.assertNotIn(task, work.WRITE_TASKS)
-            self.assertEqual(work.ALLOWED_OPERATIONS[task], [])
-            self.assertEqual(work.profile_for(task), work.WORKER_PROFILE)
-            contract = work.effect_contract(task)
-            self.assertEqual([o["type"] for o in contract["outputs"] if o.get("min")],
-                             ["upload_artifact"])
+    def test_the_submission_task_is_uncredentialed_and_writes_nothing(self):
+        task = work.SUBMISSION_REWRITE
+        self.assertNotIn(task, work.WRITE_TASKS)
+        self.assertEqual(work.ALLOWED_OPERATIONS[task], [])
+        self.assertEqual(work.profile_for(task), work.WORKER_PROFILE)
+        contract = work.effect_contract(task)
+        self.assertEqual([o["type"] for o in contract["outputs"] if o.get("min")],
+                         ["upload_artifact"])
+        self.assertFalse(hasattr(work, "SUBMISSION_REVIEW"))
 
-    def test_the_review_carries_the_rules_and_the_sections(self):
+    def test_the_rewrite_carries_the_rules_and_the_sections(self):
         data = plan()
         self.assertEqual(commit_rules.sections_from_plan(data), SECTIONS)
         self.assertEqual(commit_rules.from_plan(data)["title_max_length"], 72)
 
-    def test_the_table_rows_of_the_rewrite_and_the_review(self):
+    def test_the_table_rows_of_the_rewrite(self):
         accept = lc.find_edge("handoff.agent_running", "accept_submission_rewrite")
         reject = lc.find_edge("handoff.agent_running", "reject_submission_rewrite")
         self.assertEqual((accept.target, reject.target),
-                         ("handoff.review_pending", "development.fix_needed"))
-        self.assertEqual(accept.transition.effects.revision, "bump")
-        accept = lc.find_edge("handoff.reviewing", "accept_submission_review")
-        reject = lc.find_edge("handoff.reviewing", "reject_submission_review")
-        self.assertEqual((accept.target, reject.target),
                          ("handoff.building_upstream_branch", "development.fix_needed"))
+        # The review is part of the Work: no revision bump on a pass.
+        self.assertEqual(accept.transition.effects.revision, "keep")
+        self.assertIn("submission_rewrite_id", accept.transition.effects.sets)
         self.assertIn("pending_feedback_evidence_ids", reject.transition.effects.sets)
         self.assertEqual(reject.transition.effects.revision, "bump")
-        self.assertEqual(accept.transition.effects.revision, "keep")
-        for state in ("handoff.agent_running", "handoff.reviewing"):
-            self.assertEqual(lc.find_edge(state, "allocate_work_retry").target, state)
-            self.assertEqual(lc.find_edge(state, "exhaust_recovery").target,
-                             "handoff.waiting_human")
+        state = "handoff.agent_running"
+        self.assertEqual(lc.find_edge(state, "allocate_work_retry").target, state)
+        self.assertEqual(lc.find_edge(state, "exhaust_recovery").target, "handoff.waiting_human")
         # An expired rewrite leads back to a fresh rewrite.
-        for state in ("handoff.review_pending", "handoff.building_upstream_branch"):
-            self.assertEqual(lc.find_edge(state, "expire_submission_rewrite").target,
-                             "handoff.review_due")
-        # No row of the review posts or builds anything; only the build of
+        self.assertEqual(lc.find_edge("handoff.building_upstream_branch",
+                                      "expire_submission_rewrite").target, "handoff.review_due")
+        self.assertNotIn("handoff.reviewing", lc.LIFECYCLE)
+        self.assertNotIn("handoff.review_pending", lc.LIFECYCLE)
+        # No row of the rewrite posts or builds anything; only the build of
         # `riscv64` writes the fork in handoff.
         self.assertEqual([k for k, s in lc.LIFECYCLE.items()
                           if lc.state_phase(k) == "handoff" and s.writes],
                          ["handoff.building_upstream_branch"])
 
-    def test_the_check_finds_a_review_that_skips_the_build(self):
+    def test_the_check_finds_a_rewrite_that_skips_the_build(self):
         from unittest import mock
-        broken = copy.deepcopy(lc.LIFECYCLE["handoff.reviewing"])
+        broken = copy.deepcopy(lc.LIFECYCLE["handoff.agent_running"])
         transitions = dict(broken.transitions)
-        accept = transitions.pop(("accept_submission_review", "handoff.building_upstream_branch"))
-        transitions[("accept_submission_review", "handoff.waiting_ci")] = accept
-        reject = transitions.pop(("reject_submission_review", "development.fix_needed"))
-        transitions[("reject_submission_review", "development.fix_needed")] = lc.Transition(
+        accept = transitions.pop(("accept_submission_rewrite", "handoff.building_upstream_branch"))
+        transitions[("accept_submission_rewrite", "handoff.waiting_ci")] = accept
+        reject = transitions.pop(("reject_submission_rewrite", "development.fix_needed"))
+        transitions[("reject_submission_rewrite", "development.fix_needed")] = lc.Transition(
             reject.trigger, None, reject.guard,
             lc.Effects(revision="bump", work="clear", clears=reject.effects.clears))
         broken = lc.State(broken.kind, broken.launches, broken.writes, broken.description,
                           transitions)
-        with mock.patch.dict(lc.LIFECYCLE, {"handoff.reviewing": broken}):
+        with mock.patch.dict(lc.LIFECYCLE, {"handoff.agent_running": broken}):
             problems = lc.check_table()
         self.assertTrue(any("reachable from handoff.awaiting_submission without "
                             "handoff.building_upstream_branch" in p for p in problems), problems)

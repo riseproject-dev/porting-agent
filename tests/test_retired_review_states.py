@@ -25,6 +25,13 @@ def live():
     return json.loads(LIVE.read_text())
 
 
+def old_handoff(activity, **over):
+    record = state.migrate_record_fields(live(), now=NOW)[0]
+    record.update(activity=activity, pending_human_action=None, submission_review_id="review-1",
+                  submission_rewrite_id="rewrite-1", **over)
+    return record
+
+
 class TestRetiredStates(unittest.TestCase):
     def migrate(self, record):
         self.assertTrue(state.needs_field_migration(record))
@@ -32,6 +39,28 @@ class TestRetiredStates(unittest.TestCase):
         self.assertIsNone(engine.state_problem(new))
         self.assertFalse(state.needs_field_migration(new))
         return new, event
+
+    def test_the_handoff_reviews_go_back_to_the_rewrite(self):
+        for activity in ("review_pending", "reviewing"):
+            with self.subTest(activity=activity):
+                work = dict(WORK) if activity == "reviewing" else None
+                new, event = self.migrate(old_handoff(activity, active_work=work))
+                self.assertEqual(engine.state_key(new), "handoff.review_due")
+                self.assertEqual((new["active_work"], new["submission_rewrite_id"]), (None, None))
+                self.assertNotIn("submission_review_id", new)
+                self.assertEqual((event["details"]["from_state"], event["details"]["to_state"]),
+                                 (f"handoff.{activity}", "handoff.review_due"))
+                self.assertIn("submission_review_id", event["details"]["removed"])
+
+    def test_a_later_handoff_record_only_drops_the_review_id(self):
+        """`submission_review_id` stays set from the accepted review until the
+        handoff ends: such a record must not stop the store."""
+        for activity in ("building_upstream_branch", "waiting_ci"):
+            with self.subTest(activity=activity):
+                new, event = self.migrate(old_handoff(activity))
+                self.assertEqual(engine.state_key(new), f"handoff.{activity}")
+                self.assertEqual(new["submission_rewrite_id"], "rewrite-1")
+                self.assertEqual(event["details"]["removed"], ["submission_review_id"])
 
     def test_held_patch_and_review_comments_are_dropped_whatever_they_hold(self):
         record = state.migrate_record_fields(live(), now=NOW)[0]

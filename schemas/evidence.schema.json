@@ -39,7 +39,6 @@
         "target_contract",
         "rehearsal",
         "submission_rewrite",
-        "submission_review",
         "benchmark",
         "merge",
         "human_relay",

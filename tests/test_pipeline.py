@@ -487,11 +487,10 @@ class TestDispatchRecovery(unittest.TestCase):
         self.assertIsNone(self.final(t)["active_work"])
 
     def test_submission_work_is_relaunched_in_an_observing_tick(self):
-        # The rewrite and the review Work of the handoff phase are relaunched
+        # The rewrite Work of the handoff phase is relaunched
         # like development Work, also when the tick observes CI, and wait for
         # a human once `dispatch_recovery` is spent.
-        for activity, task in (("agent_running", "submission_rewrite"),
-                               ("reviewing", "submission_review")):
+        for activity, task in (("agent_running", "submission_rewrite"),):
             with self.subTest(activity):
                 rec = awaiting_submission(revision=6, activity=activity, pending_human_action=None)
                 rec["active_work"] = dict(self.rec["active_work"], revision=6, task=task,

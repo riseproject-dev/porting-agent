@@ -36,8 +36,7 @@
         "development_patch",
         "development_repair",
         "upstream_revision",
-        "submission_rewrite",
-        "submission_review"
+        "submission_rewrite"
       ]
     },
     "history_digest": {
@@ -241,6 +240,11 @@
             "pattern": "^[0-9a-f]{64}$"
           },
           "description": "The SHA-256 of the series (the `git format-patch --stdout` bytes of the delivered `patches.mbox`) that the reviewers of each round read, one entry per round in order."
+        },
+        "text_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "For a submission rewrite: the SHA-256 of the title, two newlines and the description that the last round read, as the proposal delivers them. Trusted code requires it to match the delivered text."
         },
         "stopped_because": {
           "enum": [

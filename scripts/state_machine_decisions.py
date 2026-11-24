@@ -650,15 +650,14 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "request template and contributing instructions, which take precedence over the "
         "pipeline's instructions for content and style. Trusted code checks every commit, the "
         "same final tree, the attribution trailers, the measurable rules, and the template's "
-        "required sections: `accept_submission_rewrite` bumps the revision and leads to "
-        "`handoff.review_pending`, where `request_submission_review` allocates separate "
-        "uncredentialed review Work (`handoff.reviewing`) in a fresh context that reviews "
-        "exactly the rewritten series and text against the template, the contributing "
-        "instructions, the commit conventions, and the reviewers' expectations and can change "
-        "nothing. `accept_submission_review` leads to `handoff.building_upstream_branch`, which "
+        "required sections, and that the worker's review loop left no P0 finding open: "
+        "`accept_submission_rewrite` leads to `handoff.building_upstream_branch`, which "
         "creates `riscv64` from the rewritten series or replaces it under a lease, never while "
-        "an upstream PR is open from it (`require_branch_intervention`). A failed rewrite check "
-        "(`reject_submission_rewrite`) or a failed review (`reject_submission_review`) returns "
+        "an upstream PR is open from it (`require_branch_intervention`). The worker reviewed "
+        "the series and text in the same run with fresh reviewers (the review loop of "
+        "`pi-subagents`) against the template, the contributing instructions, the commit "
+        "conventions, and the reviewers' expectations. A failed rewrite check or a P0 finding "
+        "left open (`reject_submission_rewrite`) returns "
         "to development with the reasons as pending feedback and posts nothing; a Result that "
         "is not usable is a Work retry (`allocate_work_retry`, `exhaust_recovery`), not a "
         "verdict. A rewrite whose artifact expires before `riscv64` is built "
@@ -667,17 +666,14 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "description, and verification, reminders, and the retraction refer to `riscv64`. A "
         "retraction leaves `riscv64` as it is.",
         ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running",
-         "handoff.review_pending", "handoff.reviewing", "development.fix_needed"),
+         "handoff.building_upstream_branch", "development.fix_needed"),
         edges=(("handoff.awaiting_submission", "submit_upstream"),
                ("handoff.review_due", "request_submission_rewrite"),
                ("handoff.agent_running", "accept_submission_rewrite"),
-               ("handoff.agent_running", "reject_submission_rewrite"),
-               ("handoff.review_pending", "request_submission_review"),
-               ("handoff.reviewing", "reject_submission_review")),
+               ("handoff.agent_running", "reject_submission_rewrite")),
         highlighted=(("handoff.review_due", "request_submission_rewrite"),
                      ("handoff.agent_running", "accept_submission_rewrite"),
-                     ("handoff.agent_running", "reject_submission_rewrite"),
-                     ("handoff.reviewing", "reject_submission_review")),
+                     ("handoff.agent_running", "reject_submission_rewrite")),
     ),
     Item(
         "When `riscv64` may not be written",
@@ -792,15 +788,15 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "subsequent runs of the worker\", \"so that it remembers everything that was tried "
         "before, so it doesn't flip flop\", and decided: \"I want the report from a successful "
         "worker to be saved for future worker only. If a worker failed, you can just discard "
-        "the report\". Every patch, repair, revision, submission rewrite and submission review "
+        "the report\". Every patch, repair, revision and submission rewrite "
         "Work returns a report (`schemas/worker_report.schema.json`, at most 32 KiB, a limit "
         "the worker is told); a Work whose payload carries a history and returns an otherwise "
         "acceptable Result without a valid report is rejected by the trusted gate "
         "(`reject_patch_proposal`, or Work without a usable Result at submission), while a "
         "blocked Result stays `worker_blocked` whatever its report. The report "
-        "is stored as `worker_report` evidence only when one of six rows folds the Result: "
+        "is stored as `worker_report` evidence only when one of five rows folds the Result: "
         "`record_publish_success`, `record_revision_publish_success`, "
-        "`accept_submission_rewrite`, `accept_submission_review`, and the two accepted "
+        "`accept_submission_rewrite`, and the two accepted "
         "no-change rows `request_ci_rerun` and `require_reviewer_answer`. Such a row never "
         "drops the report of Work that carries a history: the reconciler checks the bytes "
         "the gate checked, and a report it cannot store pauses the contribution instead of "
@@ -837,15 +833,12 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "tick that records a late history or task file launches the dispatcher. No record "
         "field changes.",
         ("development.agent_running", "development.waiting_ci",
-         "handoff.agent_running", "handoff.review_pending", "handoff.reviewing",
-         "handoff.building_upstream_branch"),
+         "handoff.agent_running", "handoff.building_upstream_branch"),
         edges=(("development.agent_running", "record_publish_success"),
                ("development.agent_running", "request_ci_rerun"),
-               ("handoff.agent_running", "accept_submission_rewrite"),
-               ("handoff.reviewing", "accept_submission_review")),
+               ("handoff.agent_running", "accept_submission_rewrite")),
         highlighted=(("development.agent_running", "record_publish_success"),
-                     ("handoff.agent_running", "accept_submission_rewrite"),
-                     ("handoff.reviewing", "accept_submission_review")),
+                     ("handoff.agent_running", "accept_submission_rewrite")),
     ),
     Item(
         "Human steering",
@@ -900,7 +893,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "passes. Otherwise `main` must contain the checkout, and none of the files that "
         "authorize the operation may have changed between the two commits: the policy, the "
         "record, the operation (other than its launch count and `updated_at`, which a relaunch "
-        "changes), and the plan, CI, rewrite, and review evidence the record names. An "
+        "changes), and the plan, CI, and rewrite evidence the record names. An "
         "unrelated commit does not refuse, so other contributions do not spend the launches of "
         "a healthy run; a change to code or workflows does not refuse either, since pause and "
         "`read_only` are the operator's stops. An unreadable head, a `main` that no longer "
@@ -1685,24 +1678,23 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     ),
     Item(
         "What the submission rewrite may reshape, and its revision",
-        "Whether the rewrite may squash or split, and which revision its review runs at.",
-        "Whether a squash is required is the rewrite model's judgment, checked by the separate "
-        "review Work. Trusted code checks every commit, the unchanged final tree, the "
+        "Whether the rewrite may squash or split, and which revision it runs at.",
+        "Whether a squash is required is the rewrite model's judgment, checked by the review "
+        "loop of its own run. Trusted code checks every commit, the unchanged final tree, the "
         "measurable rules including `max_commits`, and that every reviewed tree is a tree of "
         "the approved series without its debug commits, later than the previous one: a squash "
         "and a reword pass; a reorder, a resurrection, and a split into trees the series never "
         "has fail. A split the project requires fails the rewrite "
         "(`reject_submission_rewrite` to `development.fix_needed` with the reasons as pending "
         "feedback), so the split commits are made and approved in development. "
-        "`accept_submission_rewrite` bumps the revision, since the review is new Work of the "
-        "next revision; `accept_submission_review` does not. The package marker, the "
-        "`upstream_branch` operation marker, and the headline name the approval's revision.",
-        ("handoff.review_due", "handoff.agent_running", "handoff.review_pending",
-         "handoff.reviewing", "development.fix_needed"),
+        "`accept_submission_rewrite` keeps the revision, since no review Work follows it. The "
+        "package marker, the `upstream_branch` operation marker, and the headline name the "
+        "approval's revision.",
+        ("handoff.review_due", "handoff.agent_running", "handoff.building_upstream_branch",
+         "development.fix_needed"),
         edges=(("handoff.review_due", "request_submission_rewrite"),
                ("handoff.agent_running", "accept_submission_rewrite"),
-               ("handoff.agent_running", "reject_submission_rewrite"),
-               ("handoff.review_pending", "request_submission_review")),
+               ("handoff.agent_running", "reject_submission_rewrite")),
         highlighted=(("handoff.agent_running", "accept_submission_rewrite"),
                      ("handoff.agent_running", "reject_submission_rewrite")),
     ),
@@ -1779,28 +1771,25 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "At the earliest of the expiry GitHub reported for its artifact, recorded as "
         "`artifact.expires_at` of the rewrite evidence when the controller collected it, and "
         "the retention (30 days or `GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS`) after it was "
-        "collected, a day before (half the retention for a retention of one day), as for a "
-        "held patch. A rewrite recorded without a reported expiry uses the retention only. "
+        "collected, a day before (half the retention for a retention of one day). A rewrite recorded without a reported expiry uses the retention only. "
         "The trusted workflow refuses an artifact GitHub reports expired, as an "
         "infrastructure failure of that attempt, and the next plan finds the rewrite "
         "expired, even under a repository or organization retention limit below the variable.",
-        ("handoff.review_pending", "handoff.building_upstream_branch", "handoff.review_due"),
-        edges=(("handoff.review_pending", "expire_submission_rewrite"),
-               ("handoff.building_upstream_branch", "expire_submission_rewrite")),
-        highlighted=(("handoff.review_pending", "expire_submission_rewrite"),
-                     ("handoff.building_upstream_branch", "expire_submission_rewrite")),
+        ("handoff.building_upstream_branch", "handoff.review_due"),
+        edges=(("handoff.building_upstream_branch", "expire_submission_rewrite"),),
+        highlighted=(("handoff.building_upstream_branch", "expire_submission_rewrite"),),
     ),
     Item(
         "The submission check of a plan without measurable rules, and template sections",
         "What does the submission check apply for a plan of schema version 1, and how is a "
         "template section matched?",
         "A plan of schema version 1 records no measurable rules and no template sections: the "
-        "check applies the rules and sections the review reports having found in the project. "
+        "check applies the rules and sections the rewrite reports having found in the project. "
         "They are untrusted, so they can only refuse a submission, never admit one. A required "
         "template section is present when the description has a Markdown heading with the same "
         "words, case and emphasis ignored. Checklists are not parsed: whether every checklist "
-        "item is answered honestly is the review's judgment.",
-        ("handoff.agent_running", "handoff.review_pending", "development.fix_needed"),
+        "item is answered honestly is the judgment of the worker's review loop.",
+        ("handoff.agent_running", "handoff.building_upstream_branch", "development.fix_needed"),
         edges=(("handoff.agent_running", "accept_submission_rewrite"),
                ("handoff.agent_running", "reject_submission_rewrite")),
         highlighted=(("handoff.agent_running", "accept_submission_rewrite"),
@@ -2103,8 +2092,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     ),
     Item(
         "Development and review run in one workflow",
-        "Whether a development patch is reviewed by separate Work and held unpublished, or by "
-        "the worker that wrote it.",
+        "Whether a development patch and a submission rewrite are reviewed by separate Work, or "
+        "by the worker that wrote them.",
         "The worker implements the patch and reviews it in its own run with a review loop "
         "on the `subagent` tool of `pi-subagents`: after it commits, fresh reviewers (read only, "
         "on the development model) review "
@@ -2131,17 +2120,31 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "nothing, and drops the held Result. A Result with a review loop "
         "must also say which series its last round reviewed: the SHA-256 of that series is "
         "the `patch_digest` of the proposal, so a patch changed after its last review is "
-        "rejected.",
+        "rejected. The submission rewrite reviews its own series and text the same way: its "
+        "trusted check also requires a review loop with no P0 finding open (an open one is a "
+        "`fail` verdict with one reason per finding, a missing or unusable loop is a Result "
+        "that is not usable), and `accept_submission_rewrite` leads straight to "
+        "`handoff.building_upstream_branch` without bumping the revision. The states "
+        "`handoff.review_pending` and `handoff.reviewing`, the Work kind `submission_review`, "
+        "the verbs `request_submission_review`, `accept_submission_review` and "
+        "`reject_submission_review`, and the record field `submission_review_id` are gone: the "
+        "accepted rewrite evidence is what the build of `riscv64` and the package read. A "
+        "record in a removed handoff state is moved to `handoff.review_due` by the record "
+        "migration.",
         ("development.fix_needed", "development.agent_running", "development.waiting_ci",
-         "development.waiting_human"),
+         "development.waiting_human", "handoff.agent_running",
+         "handoff.building_upstream_branch"),
         edges=(("development.fix_needed", "request_patch"),
                ("development.agent_running", "record_publish_success"),
                ("development.agent_running", "reject_patch_proposal"),
                ("development.agent_running", "launch_development_pr"),
                ("development.agent_running", "confirm_development_pr"),
-               ("development.agent_running", "exhaust_development_pr_launches")),
+               ("development.agent_running", "exhaust_development_pr_launches"),
+               ("handoff.agent_running", "accept_submission_rewrite"),
+               ("handoff.agent_running", "reject_submission_rewrite")),
         highlighted=(("development.agent_running", "record_publish_success"),
-                     ("development.agent_running", "reject_patch_proposal")),
+                     ("development.agent_running", "reject_patch_proposal"),
+                     ("handoff.agent_running", "accept_submission_rewrite")),
     ),
 )
 
@@ -2262,7 +2265,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`retries.max_attempts_per_contribution` stays 24, `retries.work_recovery` stays 2, and "
         "the verb names stay. The human waits of handoff are one "
         "`handoff.waiting_human`: four resume verbs leave it, each guarded by its "
-        "`pending_human_action`, so exactly one applies (the submission review, the branch "
+        "`pending_human_action`, so exactly one applies (the submission rewrite, the branch "
         "write, CI on the clean head, and the package).",
         ("handoff.review_due", "handoff.agent_running", "handoff.building_upstream_branch",
          "handoff.waiting_ci", "handoff.preparing_submission", "handoff.waiting_human"),
@@ -2422,7 +2425,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in "
         "both `development.waiting_human` and `handoff.waiting_human`. The pending actions of "
         "the handoff wait are `upstream_branch_failed`, `upstream_branch_blocked`, "
-        "`submission_comment_failed`, `ci_interrupted`, and those of the review Work "
+        "`submission_comment_failed`, `ci_interrupted`, and those of the rewrite Work "
         "(`work_budget_exhausted`, `dispatch_failed`, `work_failed`). An exhaustion names its "
         "counter in `pending_human_action.counter`.",
         ("handoff.building_upstream_branch", "handoff.waiting_ci",
@@ -2752,7 +2755,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "matching path while the fork head is the head the evidence names. No budget is "
         "charged by the row: the Work is bounded by `no_progress` and `work_total`, then the "
         "automatic refresh, park, or a human wait. Qualitative items stay with the submission "
-        "rewrite and its review (`reject_submission_rewrite`, `reject_submission_review`). A "
+        "rewrite and its review loop (`reject_submission_rewrite`). A "
         "plan of an earlier version records none. The check verifies that every state that "
         "blocks a nomination on the requirements has such a row.",
         ("development.waiting_ci", "development.fix_needed", "development.agent_running",
@@ -2786,7 +2789,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`record_late_effect`. The same reading applies in `planning.agent_running` and "
         "`upstream_review.agent_running`.",
         ("development.agent_running", "development.waiting_human", "handoff.agent_running",
-         "handoff.reviewing", "handoff.waiting_human"),
+         "handoff.waiting_human"),
         edges=(
             ("development.agent_running", "allocate_work_retry"),
             ("development.agent_running", "exhaust_recovery"),
@@ -2794,9 +2797,6 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
             ("handoff.agent_running", "allocate_work_retry"),
             ("handoff.agent_running", "exhaust_recovery"),
             ("handoff.agent_running", "record_late_effect"),
-            ("handoff.reviewing", "allocate_work_retry"),
-            ("handoff.reviewing", "exhaust_recovery"),
-            ("handoff.reviewing", "record_late_effect"),
         ),
         highlighted=(
             ("development.agent_running", "allocate_work_retry"),
@@ -2805,9 +2805,6 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
             ("handoff.agent_running", "allocate_work_retry"),
             ("handoff.agent_running", "exhaust_recovery"),
             ("handoff.agent_running", "record_late_effect"),
-            ("handoff.reviewing", "allocate_work_retry"),
-            ("handoff.reviewing", "exhaust_recovery"),
-            ("handoff.reviewing", "record_late_effect"),
         ),
     ),
     Item(
@@ -2946,18 +2943,17 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     Item(
         'A return to development keeps the approval',
         'Which handoff rows keep `handoff_approval` when the contribution returns to development?',
-        'All of them except `retract_submission`. `reject_submission_review` and `return_for_repair` (from `handoff.building_upstream_branch`, `handoff.waiting_ci`, and `handoff.preparing_submission`) clear the clean head, the review, `handoff_request`, and the pending action, and keep `handoff_approval`. A failed review, a failed check, or an unusable review Result never posts anything and never writes `riscv64`; the next `submit_upstream` replaces the approval.',
-        ('handoff.reviewing', 'handoff.building_upstream_branch', 'handoff.waiting_ci', 'development.fix_needed'),
-        edges=(('handoff.reviewing', 'reject_submission_review'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.waiting_ci', 'return_for_repair')),
-        highlighted=(('handoff.reviewing', 'reject_submission_review'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.waiting_ci', 'return_for_repair')),
+        'All of them except `retract_submission`. `reject_submission_rewrite` and `return_for_repair` (from `handoff.building_upstream_branch`, `handoff.waiting_ci`, and `handoff.preparing_submission`) clear the clean head, the rewrite, `handoff_request`, and the pending action, and keep `handoff_approval`. A failed rewrite, a failed check, a P0 finding left open by its review loop, or an unusable Result never posts anything and never writes `riscv64`; the next `submit_upstream` replaces the approval.',
+        ('handoff.agent_running', 'handoff.building_upstream_branch', 'handoff.waiting_ci', 'development.fix_needed'),
+        edges=(('handoff.agent_running', 'reject_submission_rewrite'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.waiting_ci', 'return_for_repair')),
+        highlighted=(('handoff.agent_running', 'reject_submission_rewrite'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.waiting_ci', 'return_for_repair')),
     ),
     Item(
         'Where the commit messages of a series are read',
         'From what does each check read the commit messages of a series?',
         'The worker gate reads the commit messages of a proposed series from its mbox as `git am` would: the subject without its `[PATCH]` prefix and the body up to the first `---` line. The submission check reads them from the rebuilt commits.',
-        ('handoff.agent_running', 'handoff.review_pending', 'handoff.reviewing',
-         'handoff.building_upstream_branch'),
-        edges=(('handoff.agent_running', 'accept_submission_rewrite'), ('handoff.reviewing', 'accept_submission_review')),
+        ('handoff.agent_running', 'handoff.building_upstream_branch'),
+        edges=(('handoff.agent_running', 'accept_submission_rewrite'),),
         highlighted=(('handoff.agent_running', 'accept_submission_rewrite'),),
     ),
     Item(

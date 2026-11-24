@@ -107,7 +107,6 @@
     "docs/content/*",
     "docs/content/reference/*"
   ],
-  "submission_review_id": null,
   "submission_rewrite_id": null,
   "target_contract_id": null,
   "terminal_reason": null,

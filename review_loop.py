@@ -15,7 +15,7 @@ findings, not that the reviews happened.
 
 * ``check`` is the trusted check of the loop of a delivered series: at least
   one round ran, the last round reviewed exactly the delivered series (its
-  digest), and no P0 finding is left open. A P0 finding is closed only
+  digest) and, for a rewrite, its title and description, and no P0 finding is left open. A P0 finding is closed only
   by a later round than the one that raised it (the fresh reviewers of that
   round confirmed it fixed or withdrew it), never by the worker itself; a
   P0 finding that is deferred is not closed. A loop that fails the check
@@ -45,18 +45,28 @@ _OPEN = ("open", "deferred")
 
 
 class LoopError(ValueError):
-    """The review loop of a delivered series is missing, inconsistent, or left a P0
-    finding open."""
+    """The review loop of a delivered series is missing or inconsistent."""
 
 
-def check(report: dict | None, *, series_digest: str | None,
+class OpenP0(LoopError):
+    """The review loop of a delivered series left P0 findings open
+    (``titles``)."""
+
+    def __init__(self, titles: list[str]):
+        super().__init__("the review loop ended with a P0 finding open: "
+                         + "; ".join(repr(title) for title in titles[:5]))
+        self.titles = titles
+
+
+def check(report: dict | None, *, series_digest: str | None, text_digest: str | None = None,
           delivers_series: bool = True) -> dict | None:
     """The review loop of ``report`` when it is usable, ``None`` when the
     Work delivers no series and records none. ``series_digest`` is the
     SHA-256 of the series the Result delivers (``None`` only when it delivers
     none). Raises ``LoopError`` when a delivered series has no loop, no round
-    ran, the last round did not review exactly the delivered series, the loop
-    contradicts itself, or a P0 finding is open."""
+    ran, the last round did not review exactly the delivered series (and, when
+    ``text_digest`` is given, the delivered text), or the
+    loop contradicts itself, and ``OpenP0`` when a P0 finding is open."""
     loop = (report or {}).get("review_loop")
     if loop is None:
         if delivers_series:
@@ -74,6 +84,8 @@ def check(report: dict | None, *, series_digest: str | None,
         raise LoopError(f"the review loop names {len(digests)} reviewed series for {rounds} rounds")
     if not series_digest or digests[-1] != series_digest:
         raise LoopError("the last review round did not review the delivered series")
+    if text_digest is not None and loop.get("text_digest") != text_digest:
+        raise LoopError("the last review round did not review the delivered title and description")
     open_p0 = []
     for finding in loop["findings"]:
         title = finding["title"]
@@ -97,8 +109,7 @@ def check(report: dict | None, *, series_digest: str | None,
             raise LoopError(f"the P0 finding {title!r} of round {finding['round']} is closed "
                             f"in round {closed}, not by a later round")
     if open_p0:
-        raise LoopError("the review loop ended with a P0 finding open: "
-                        + "; ".join(repr(title) for title in open_p0[:5]))
+        raise OpenP0(open_p0)
     return loop
 
 
