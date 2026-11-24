@@ -264,7 +264,7 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assert_isolated(output, a, baseline, "dispatch_recovery")
         self.assertEqual(output.report["dispatch_relaunch"], [])
         # The pause from `development.agent_running` leads to the state in
-        # which the Work is due again.
+        # which the task is due again.
         self.assertEqual(engine.state_key(record_of(output, A)), "development.fix_needed")
 
     def test_observation(self):
@@ -319,7 +319,7 @@ class TestOneContributionErrors(unittest.TestCase):
         self.assertEqual(output.report["requested_effects"], [])
 
     def test_a_gate_does_not_read_its_ci_evidence(self):
-        """A state that allocates no Work (here the gate of a submission) does
+        """A state that allocates no task (here the gate of a submission) does
         not read `last_ci_evidence_id`, so evidence the store does not hold
         pauses nothing there."""
         a = awaiting_submission(plan_evidence_id="plan-1", scope_paths=["a"],

@@ -154,13 +154,13 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
         rules = (task.get("context") or {}).get("commit_rules")
         if rules is not None:
             # The measurable commit conventions of the verified plan, from
-            # the trusted Work payload. ``{debug}`` commits are exempt; the
+            # the trusted task payload. ``{debug}`` commits are exempt; the
             # number of commits is checked at submission, where the review
             # may squash.
             try:
                 rules = commit_rules.normalize(rules)
             except commit_rules.RuleError as exc:
-                raise WorkerGateError(f"the Work carries invalid commit rules: {exc}") from None
+                raise WorkerGateError(f"the task carries invalid commit rules: {exc}") from None
             broken = commit_rules.series_problems(commit_rules.mbox_messages(mbox), rules,
                                                   count_commits=False)
             if broken:
@@ -168,14 +168,14 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
                                       + "; ".join(broken[:8]))
         required = (task.get("context") or {}).get("series_requirements")
         if required:
-            # The unmet series requirements of the plan this Work answers,
-            # from the trusted Work payload: a non-debug commit must change a
+            # The unmet series requirements of the plan this task answers,
+            # from the trusted task payload: a non-debug commit must change a
             # matching path, or the worker reports blocked.
             if not isinstance(required, list) or not all(
                     isinstance(r, dict) and isinstance(r.get("id"), str)
                     and isinstance(r.get("paths"), list)
                     and all(isinstance(p, str) for p in r["paths"]) for r in required):
-                raise WorkerGateError("the Work carries invalid series requirements")
+                raise WorkerGateError("the task carries invalid series requirements")
             _met, unmet = commit_rules.changed_paths_by_requirement(
                 required, commit_rules.mbox_non_debug_paths(mbox))
             if unmet:
@@ -216,7 +216,7 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
     # Plan 8.6: a valid exact-task no_change Result is preserved. It is
     # accepted here so trusted preflight records ``no_change`` without minting
     # a destination token; it is never a validation failure that would
-    # allocate repair Work at a new revision.
+    # allocate a repair task at a new revision.
     if proposal.get("outcome") not in ("patch", "no_change"):
         cluster = str(proposal.get("failure_cluster") or "")
         if cluster.startswith("reproduction-image-infrastructure") and not any(
@@ -229,8 +229,8 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
         failure_class = "infrastructure" if gate_status == "infrastructure_blocked" else "code"
     else:
         # The report of the run, checked once the Result is otherwise valid
-        # and classified: required when the Work carries a history or the
-        # Result delivers a patch, and stored for later Work only if this
+        # and classified: required when the task carries a history or the
+        # Result delivers a patch, and stored for a later task only if this
         # Result is accepted and published. A blocked Result is classified as blocked whatever its
         # report, which is discarded with it.
         try:
@@ -264,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proposal", type=Path, required=True)
     parser.add_argument("--mbox", type=Path, required=True)
     parser.add_argument("--report", type=Path,
-                        help="the worker's report.json (required when the Work carries a history)")
+                        help="the worker's report.json (required when the task carries a history)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:

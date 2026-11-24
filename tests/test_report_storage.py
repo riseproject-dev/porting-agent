@@ -3,7 +3,7 @@
 """The report of a worker is stored only when its Result is accepted.
 
 The six success rows (``reconcile.REPORT_VERBS``) store it as
-``worker_report`` evidence bound to the Work and name it in their event;
+``worker_report`` evidence bound to the task and name it in their event;
 every other fold discards it. A Result whose push may have landed (an
 ``uncertain`` Result held for a publish-only retry, a retry rejected as
 stale behind the operation of an earlier attempt) stores it with the
@@ -33,8 +33,8 @@ POLICY = policy()
 
 
 def with_report(rec: dict, outcome: dict, *, task: str | None = None, **report_fields) -> dict:
-    """``outcome`` as the Result of the record's Work, carrying a history
-    and a valid report of that Work."""
+    """``outcome`` as the Result of the record's task, carrying a history
+    and a valid report of that task."""
     work = rec.get("active_work") or {}
     name = task or work.get("task") or "development_repair"
     outcome = copy.deepcopy(outcome)
@@ -123,7 +123,7 @@ class TestDevelopment(unittest.TestCase):
                 _new, staged = fold(rec, with_report(rec, publication(rec, name)))
                 self.assertEqual(stored(staged), [])
                 self.assertNotIn("report_evidence_id", events(staged)[0]["details"])
-        # A no-change report counted as a rejection (the Work carries
+        # A no-change report counted as a rejection (the task carries
         # feedback) is discarded too.
         rec = dev.running(active_work=dict(dev.running()["active_work"],
                                            feedback_evidence_ids=["review-1"]),
@@ -278,7 +278,7 @@ class TestDevelopment(unittest.TestCase):
         self.assertEqual(events(staged)[0]["details"]["report"], "absent")
 
     def test_an_accepted_result_without_a_storable_report_fails_loudly(self):
-        """The gate accepts a Result of Work that carries a history only with
+        """The gate accepts a Result of a task that carries a history only with
         a valid report, so a success fold never drops it: the fold raises,
         and the tick pauses the contribution instead of folding the Result
         without its report."""
@@ -493,10 +493,10 @@ class TestFoldFromArtifact(unittest.TestCase):
 
 
 class TestUncertainPublicationHistory(unittest.TestCase):
-    """The owner's case after a lost push response: patch Work U pushes H2
+    """The owner's case after a lost push response: a patch task U pushes H2
     but its push is not read back (`uncertain`); the publish-only retry
-    confirms it, CI fails on H2, the repair Work R answers `no_change` and
-    its rerun fails again. The Work allocated next reads U's report as the
+    confirms it, CI fails on H2, the repair task R answers `no_change` and
+    its rerun fails again. The task allocated next reads U's report as the
     report of the head, whole or reduced, with the CI on H2 linked to it,
     even when the history is condensed and an older report P published the
     head before."""
@@ -597,7 +597,7 @@ class TestHeldReportOutlivesTheHold(unittest.TestCase):
     confirms H2, and the hold ends by anything but a retry Result (the
     retries are exhausted, the owner pauses or parks, or the controller
     stops on an error or an identity change). After the resume, CI fails on
-    H2 and the repair Work reads the report with that CI linked to it."""
+    H2 and the repair task reads the report with that CI linked to it."""
 
     def chain(self, end):
         from datetime import timedelta
@@ -880,7 +880,7 @@ class TestHeldRevisionReport(unittest.TestCase):
         self.assertEqual(up.kinds(out)[:1], ["reject_patch_proposal"])
         [evidence] = stored(out.staged)
         # The operation was read back on the branch: the commit is the head
-        # the Work left, not a candidate that may not be there.
+        # the task left, not a candidate that may not be there.
         self.assertEqual((evidence["data"]["verb"], evidence["data"]["head_after"],
                           evidence["data"].get("head_candidate")),
                          ("reject_patch_proposal", SHA_B, None))

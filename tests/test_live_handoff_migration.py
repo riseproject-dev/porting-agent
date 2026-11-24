@@ -350,7 +350,7 @@ class TestMigratedRecordUnderTheOrdinaryController(unittest.TestCase):
         self.assertEqual((receipt["verb"], receipt["result"], receipt["revision"]),
                          ("submit-upstream", "accepted", 6))
         after = self.final(output, record)
-        # The rewrite Work is allocated in the same tick; nothing is written to
+        # The rewrite task is allocated in the same tick; nothing is written to
         # the fork and no handoff operation is launched yet.
         self.assertEqual(engine.state_key(after), "handoff.agent_running")
         self.assertEqual(self.events(output), ["submit_upstream", "request_submission_rewrite"])

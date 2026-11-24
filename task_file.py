@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Resolve the task of a claimed Work from the task file its payload names.
+"""Resolve the task of a claimed task from the task file its payload names.
 
-The work queue carries a fixed-size reference to the task of a Work
+The work queue carries a fixed-size reference to the task file of a task
 (``task_file``: the control repository, the pinned commit, the path, the
 SHA-256 and the evidence id), and the controller commits the task itself as
 the ``task`` evidence file the reference names (``work_task``). Every reader
-of a claimed Work (the trusted pre-agent steps of the worker and the planner,
+of a claimed task (the trusted pre-agent steps of the worker and the planner,
 the trusted jobs after them, the queue result resolver and
-the controller) resolves the claim's Work with ``resolve``, and then sees the
-payload shape the Work always had: the task, with ``resource_scope`` and
+the controller) resolves the claim's task with ``resolve``, and then sees the
+payload shape the task always had: the task, with ``resource_scope`` and
 ``effect_contract`` from the queue and ``ref`` (and the plan ``url``) filled in
 the references the task file names without a commit.
 
@@ -48,7 +48,7 @@ _EVIDENCE_PATH = re.compile(r"^\.state/evidence/[A-Za-z0-9._-]+\.json$")
 # What the queue carries beside the reference, and what a task file never
 # holds (the queue's fields are the queue's).
 QUEUE_FIELDS = ("resource_scope", "effect_contract", "task_file")
-# The fields of the queue payload that name the Work the file must be of.
+# The fields of the queue payload that name the task the file must be of.
 IDENTITY = ("task", "contribution_id", "revision", "generation", "dedupe_key")
 
 
@@ -61,7 +61,7 @@ class Unavailable(OSError):
 
 
 def evidence_id(dedupe_key: str) -> str:
-    """The id of the task file of the Work ``dedupe_key``."""
+    """The id of the task file of the task ``dedupe_key``."""
     return "task-" + hashlib.sha256(dedupe_key.encode()).hexdigest()[:32]
 
 
@@ -124,7 +124,7 @@ def _fill(item: object, ref: str, *, url: bool) -> None:
 
 def resolve(work: object, fetch: Callable[[str, str, str], bytes] | None = None,
             validate: Callable[[dict], None] | None = None) -> dict:
-    """The Work payload of the claimed ``work`` (the ``work`` of a Claim of
+    """The task payload of the claimed ``work`` (the ``work`` of a Claim of
     the assignment): ``work`` itself when it carries the task inline, else
     the task file its ``task_file`` names, read with ``fetch(repository,
     ref, path)`` and checked against every field of the claim. Raises
@@ -136,15 +136,15 @@ def resolve(work: object, fetch: Callable[[str, str, str], bytes] | None = None,
     only the standard library, check the fields they use."""
     fetch = fetch or gh_fetch
     if not isinstance(work, dict):
-        raise Refused("the claimed Work is not an object")
+        raise Refused("the claimed task is not an object")
     if "task_file" not in work:
         if "instructions" in work:
             return work
-        raise Refused("the claimed Work carries neither a task file reference nor its task")
+        raise Refused("the claimed task carries neither a task file reference nor its task")
     ref = _check_reference(work["task_file"])
     key = work.get("dedupe_key")
     if not isinstance(key, str) or ref["evidence_id"] != evidence_id(key):
-        raise Refused("the task file id is not derived from the Work id")
+        raise Refused("the task file id is not derived from the task id")
     raw = fetch(ref["repository"], ref["ref"], ref["path"])
     if len(raw) > MAX_FILE_BYTES:
         raise Refused("the task file is over its bound")

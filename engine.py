@@ -20,7 +20,7 @@ table row states and nothing else:
 * it evaluates every guard of the row through the named predicate registered
   for it in ``PREDICATES``, and applies the mask of a set flag;
 * it applies the row's ``Effects`` (fields set and cleared, the requested
-  Work, the revision and generation), charges the row's budgets and starts
+  task, the revision and generation), charges the row's budgets and starts
   again the one counter a resume names;
 * it emits the event, whose kind is the verb.
 
@@ -56,7 +56,7 @@ from commands import Command
 from common import UPSTREAM_REF
 
 # The fields only this module assigns: the state, the flag, the revision and
-# the generation, the requested Work, and every field an effect of the table
+# the generation, the requested task, and every field an effect of the table
 # names (by its top-level name). Pipeline code changes them through
 # ``try_apply_transition``, or beside a row through ``record_beside``.
 STATE_FIELDS = ("phase", "activity", "paused", "revision", "generation")
@@ -87,7 +87,7 @@ class Refusal(StrEnum):
     NOT_APPLICABLE = "not_applicable"      # no row for this verb in this state
     PAUSED = "paused"                      # the mask of the paused flag, or "not paused"
     COMMAND_MISMATCH = "command_mismatch"  # wrong revision, head or operation, no reason
-    FENCED = "fenced"                      # an open operation, a pending publication, Work
+    FENCED = "fenced"                      # an open operation, a pending publication, a task
     BUDGET_EXHAUSTED = "budget_exhausted"  # a "remains" guard is false
     FACT_MISSING = "fact_missing"          # a fact the row needs was not asserted
     GUARD_UNMET = "guard_unmet"            # another record predicate of the row is false
@@ -401,11 +401,11 @@ def _quiescent(ctx: Context) -> str | None:
 
 
 def _no_work(ctx: Context) -> str | None:
-    return "Work is requested" if ctx.record.get("active_work") else None
+    return "A task is requested" if ctx.record.get("active_work") else None
 
 
 _record(lc.NO_WORK, "no_requested_work")(_no_work)
-_record("no Work requested", "no_work_requested")(_no_work)
+_record("no task requested", "no_work_requested")(_no_work)
 
 
 @_record("development PR and head recorded", "development_pr_recorded")
@@ -520,8 +520,8 @@ def _no_failing_job(ctx: Context) -> str | None:
 
 
 def carried_feedback(record: dict) -> list[str]:
-    """The pending feedback the requested Work carries: the ids present when
-    it was allocated. A Result held for publication carries those of its Work."""
+    """The pending feedback the requested task carries: the ids present when
+    it was allocated. A Result held for publication carries those of its task."""
     for holder in (record.get("active_work"), record.get("pending_publication")):
         if holder and holder.get("feedback_evidence_ids"):
             return list(holder["feedback_evidence_ids"])
@@ -543,7 +543,7 @@ def _feedback_or_unmet(ctx: Context) -> str | None:
 
 @_record(lc.WORK_WITHOUT_FEEDBACK, "work_without_feedback")
 def _work_without_feedback(ctx: Context) -> str | None:
-    return "the Work carries feedback" if carried_feedback(ctx.record) else None
+    return "the task carries feedback" if carried_feedback(ctx.record) else None
 
 
 @_record(lc.REFRESH_UNUSED, "automatic_refresh_unused")
@@ -894,7 +894,7 @@ def _rename_caused_wait(ctx: Context) -> str | None:
 def recovery_exhaustion(ctx: Context) -> tuple[str, str] | str:
     """The pending action and counter of ``exhaust_recovery`` for the failure
     the caller asserts, or why the row does not apply: exactly one failure is
-    asserted, the Work or the publication it concerns is held, and one of
+    asserted, the task or the publication it concerns is held, and one of
     the budgets that recover it is exhausted (``work_total`` is named before
     ``work_recovery``, so the resume starts the budget of the generation)."""
     failures = [fact for fact in lc.RECOVERY_FAILURES if _asserted(ctx, fact)]
@@ -905,7 +905,7 @@ def recovery_exhaustion(ctx: Context) -> tuple[str, str] | str:
         if not publication_pending(ctx.record):
             return "no publication is pending"
     elif not ctx.record.get("active_work"):
-        return "no Work is requested"
+        return "no task is requested"
     unknown = None
     for name in budgets:
         left = remains(name, ctx)
@@ -927,7 +927,7 @@ def _recovery_exhausted(ctx: Context) -> str | None:
 @_record(lc.NOT_PIPELINE_FAILURE, "not_pipeline_failure")
 def _not_pipeline_failure(ctx: Context) -> str | None:
     if _asserted(ctx, "pipeline_failure"):
-        return "the last Claim of the Work failed before its agent for a failure of the pipeline"
+        return "the last Claim of the task failed before its agent for a failure of the pipeline"
     return None
 
 
@@ -965,9 +965,9 @@ for _guard, _name in (
     ("the receipt matches the operation", "receipt_matches_operation"),
     ("exact fork and ref readback", "fork_and_ref_read_back"),
     ("the prerequisite is corrected", "prerequisite_corrected"),
-    ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_lost"),
+    ("a dispatcher run ended with the requested task absent or unclaimed", "dispatch_lost"),
     (lc.DISPATCH_CAUSE_CHANGED, "dispatch_cause_changed"),
-    ("the Work graph is terminal without a usable Result", "work_terminal_without_result"),
+    ("the task graph is terminal without a usable Result", "work_terminal_without_result"),
     (lc.PIPELINE_FAILURE, "pipeline_failure"),
     (lc.PIPELINE_FAILURE_CLEARED, "pipeline_failure_cleared"),
     (lc.PLAN_REJECTED, "plan_rejected"),
@@ -1032,7 +1032,7 @@ for _guard, _name in (
     ("release evidence does not yet satisfy the acceptance contract", "release_incomplete"),
     ("release evidence needs operator action", "release_needs_operator"),
     ("verified release coverage satisfies the acceptance contract", "release_verified"),
-    ("the Result does not match the current generation, revision, and requested Work",
+    ("the Result does not match the current generation, revision, and a requested task",
      "result_mismatch"),
     ("the observed upstream repository identity differs from the recorded one",
      "upstream_identity_changed"),
@@ -1107,7 +1107,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # operation within `interrupted_reruns`, and the wait once it is spent.
     "rerun_interrupted_ci": "observe_ci",
     "exhaust_interrupted_reruns": "observe_ci",
-    # The Result of patch Work: published, rejected, no longer applicable to
+    # The Result of a patch task: published, rejected, no longer applicable to
     # the fork head, or held for a publish-only retry within
     # `publish_recovery`, and the wait once that budget is exhausted.
     "record_publish_success": "reconcile",
@@ -1118,10 +1118,10 @@ PIPELINE_VERBS: dict[str, str] = {
     # trusted publication job reran the failed jobs on the exact head and
     # read the new attempt back (or found nothing to rerun).
     "request_ci_rerun": "reconcile",
-    # A dispatcher run that ended with the requested Work absent or
+    # A dispatcher run that ended with the requested task absent or
     # unclaimed, within `dispatch_recovery`.
     "retry_dispatch": "reconcile",
-    # The exhaustion of the recovery of a lost dispatch, of a terminal Work
+    # The exhaustion of the recovery of a lost dispatch, of a terminal task
     # graph (also taken by `controller.terminal_work`), or of a failed
     # publication: the wait for a human.
     "exhaust_recovery": "reconcile",
@@ -1130,8 +1130,8 @@ PIPELINE_VERBS: dict[str, str] = {
     "rearm_dispatch": "reconcile",
     # A worker Result that matches no request of the record, in any state.
     "record_late_effect": "reconcile",
-    # Work allocation, by the table's rows, and the exhaustion of its budgets
-    # where Work is due.
+    # Task allocation, by the table's rows, and the exhaustion of its budgets
+    # where a task is due.
     "begin_planning": "controller",
     "dispatch_planning": "controller",
     "request_patch": "controller",
@@ -1141,12 +1141,12 @@ PIPELINE_VERBS: dict[str, str] = {
     "exhaust_work_total": "controller",
     "refresh_on_exhaustion": "controller",
     "exhaust_repair_attempts": "controller",
-    # A terminal Work graph without a usable Result (taken by
+    # A terminal task graph without a usable Result (taken by
     # `controller.terminal_work` for the reconciler and for an allocation
     # that names a spent graph), and a planning run Result without a
     # usable plan.
     "allocate_work_retry": "controller",
-    # A fresh graph for Work whose last Claim failed before its agent for a
+    # A fresh graph for a task whose last Claim failed before its agent for a
     # failure of the pipeline, once the pipeline code changed (or a human
     # launched the controller): nothing is charged.
     "reallocate_after_pipeline_failure": "controller",
@@ -1187,7 +1187,7 @@ PIPELINE_VERBS: dict[str, str] = {
     "pause_on_processing_error": "reconcile",
     # The intake label removed from a request that has not started.
     "withdraw_request": "controller",
-    # The upstream base branch, read where Work or provisioning is due: a
+    # The upstream base branch, read where a task or provisioning is due: a
     # failed read within `source_reads`, and the human wait once the
     # upstream answers that the branch is missing or the budget is spent.
     "record_source_unavailable": "controller",
@@ -1217,9 +1217,9 @@ PIPELINE_VERBS: dict[str, str] = {
     "launch_development_pr": "controller",
     "exhaust_development_pr_launches": "controller",
     "confirm_development_pr": "recovery",
-    # The submission rewrite and review Work: their allocation and the
-    # exhaustion of `work_total` where they are due, their Results, which the
-    # trusted checks decide, and a rewrite whose artifact expired.
+    # The submission rewrite task: its allocation and the exhaustion of
+    # `work_total` where it is due, its Results, which the trusted checks
+    # decide, and a rewrite whose artifact expired.
     "request_submission_rewrite": "controller",
     "accept_submission_rewrite": "reconcile",
     "reject_submission_rewrite": "reconcile",
@@ -1244,7 +1244,7 @@ PIPELINE_VERBS: dict[str, str] = {
     # Upstream review, by observation of the upstream PR: a CI failure on its
     # head once per head and run, its merge, and its closure without merge
     # (its head change and review comments are the verbs above); the Result
-    # of revision Work.
+    # of a revision task.
     "record_upstream_ci_failure": "observe_ci",
     "record_merge": "observe_ci",
     "record_pr_closed_unmerged": "observe_ci",
@@ -1736,9 +1736,9 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
         rec["active_work"] = None
     elif e.work in ("allocate", "reallocate"):
         if not isinstance(values.get("active_work"), dict):
-            raise TransitionError(f"{verb} allocates Work; active_work is required")
+            raise TransitionError(f"{verb} allocates a task; active_work is required")
         rec["active_work"] = copy.deepcopy(values["active_work"])
-        # Work carries the feedback the row records for it (``WORK_FEEDBACK``)
+        # A task carries the feedback the row records for it (``WORK_FEEDBACK``)
         # and none otherwise; a fresh graph for the same task carries the
         # same feedback.
         rec["active_work"]["feedback_evidence_ids"] = carried if e.work == "reallocate" else []
@@ -1811,7 +1811,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
                                        "counter": counter}
         if pending_kind == "dispatch_failed":
             # What the re-arm needs: the version of the pipeline code the
-            # dispatch failed at, and what the lost allocation charged (a Work
+            # dispatch failed at, and what the lost allocation charged (a task
             # allocated before it was recorded gives back `work_total` alone).
             if isinstance(pipeline_version, str) and pipeline_version:
                 rec["pending_human_action"]["pipeline_version"] = pipeline_version
@@ -1823,7 +1823,7 @@ def _apply_effects(ctx: Context, verb: str, t: lc.Transition, target: str,
     if lc.RERUNS in e.sets:
         rec["budget"] = dict(rec["budget"], reruns=fresh_reruns(rec))
     if "pending_publication" in values and carried and rec.get("pending_publication"):
-        # A Result held for publication carries the feedback of its Work.
+        # A Result held for publication carries the feedback of its task.
         rec["pending_publication"] = dict(rec["pending_publication"],
                                           feedback_evidence_ids=carried)
 
@@ -1991,7 +1991,7 @@ def state_problem(record: dict) -> str | None:
     if state is None:
         return f"{key} is not a lifecycle state"
     if key.endswith(".fix_needed") and record.get("pending_publication"):
-        # Work is requested again from here, and a held publication is read
+        # A task is requested again from here, and a held publication is read
         # nowhere in it: the record would wait forever.
         return f"{key} holds the publication of a Result"
     if state.kind == "human_wait" and not (record.get("pending_human_action") or {}).get("kind"):
@@ -2075,7 +2075,7 @@ BUDGET_DEFAULTS: dict[str, Any] = {
     "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
     "spent_estimate_usd_cents": 0,
 }
-# The fields of requested Work a record may lack: Work recorded without a
+# The fields of a requested task a record may lack: a task recorded without a
 # generation is carried as generation 0 by the field migration, as its first
 # attempt, undispatched, and with no reason or feedback.
 WORK_DEFAULTS: dict[str, Any] = {
@@ -2086,13 +2086,13 @@ RETIRED_FIELDS = ("blocked_reason",)
 # Fields removed whatever their value: `next_poll_at` was written by CI
 # observation (nothing read it for CI) and by release observation (which now
 # reads PyPI on every run); `held_patch` was the unpublished patch of the
-# review Work that no longer exists, `review_comments` the comments due on
+# review task that no longer exists, `review_comments` the comments due on
 # development PRs for the same review, and `submission_review_id` the accepted
 # review of a submission rewrite, which the rewrite's own review loop replaced.
 RETIRED_ANY_FIELDS = ("next_poll_at", "held_patch", "review_comments", "submission_review_id")
 # The states of the separate reviews, which the review loop of the worker
 # retired, and the state each record in one goes to: the unpublished patch
-# (or the accepted rewrite) is dropped, and the Work is requested again.
+# (or the accepted rewrite) is dropped, and the task is requested again.
 RETIRED_STATES = {
     "development.review_pending": "development.fix_needed",
     "development.reviewing": "development.fix_needed",
@@ -2101,7 +2101,7 @@ RETIRED_STATES = {
     "handoff.reviewing": "handoff.review_due",
 }
 # The pending action of a review of a held patch that could not run, which
-# now is a failed Work.
+# now is a failed task.
 RETIRED_PENDING_KINDS = {"patch_review_unavailable": "work_failed"}
 # The count of failed reviews in succession, a field of `budget` removed
 # whatever its value.
@@ -2115,7 +2115,7 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     added at the value the pipeline reads for an absent one, the null
     retired fields, `next_poll_at`, and `budget.reruns.answered_ci_evidence_id` removed, with
     the names added and removed. A record in a retired state of the separate
-    reviews goes to the state that requests the Work again, and a pending
+    reviews goes to the state that requests the task again, and a pending
     action of a retired kind to its replacement; both are listed as
     ``state <name>`` and ``pending_human_action.kind <name>``. Raises
     ``TransitionError`` for a retired field that is set."""
@@ -2134,7 +2134,7 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
             removed.append("pending_publication")
         new["pending_publication"] = None
         if moved == "handoff.review_due":
-            # The accepted rewrite is made again with the Work.
+            # The accepted rewrite is made again with the task.
             new["submission_rewrite_id"] = None
     pending = new.get("pending_human_action")
     if isinstance(pending, dict) and pending.get("kind") in RETIRED_PENDING_KINDS:
@@ -2197,7 +2197,7 @@ def with_current_names(record: dict) -> tuple[dict, list[str]]:
     `budget.investigation_attempts`, and the historic values of `phase`,
     `previous_phase`, `pending_human_action.kind`, and
     `pending_human_action.counter`. Nothing else changes. Raises
-    ``TransitionError`` for requested Work of the historic task, whose queued
+    ``TransitionError`` for a requested task of the historic task, whose queued
     payload names a worker profile that no longer exists, and for a record
     that carries a field under both names."""
     historic = lc.HISTORIC_NAMES
@@ -2231,7 +2231,7 @@ def with_current_names(record: dict) -> tuple[dict, list[str]]:
     work = new.get("active_work")
     if isinstance(work, dict) and (work.get("task") == "investigation"
                                    or str(work.get("dedupe_key")).endswith(":investigation")):
-        raise TransitionError("requested Work of the historic task investigation has no "
+        raise TransitionError("A requested task of the historic task investigation has no "
                               "reviewed name migration")
     return new, renamed
 
@@ -2319,7 +2319,7 @@ def refund_contradicted(record: dict, events: list[dict], refunded_before: set[i
     (`automatic_refresh_used` is cleared, once: the sequence of that refresh
     is in ``refunded_before`` afterwards). A record parked
     for exhausted repair budgets after a development patch whose budgets all
-    remain after the refund returns to `development.fix_needed` with no Work
+    remain after the refund returns to `development.fix_needed` with no task
     (the next tick requests it), and keeps everything else; the invariants of
     that state are checked, and a record that would violate them stays
     parked."""
@@ -2389,7 +2389,7 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # consecutive ticks only.
     "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since",
                       "budget.source_unavailable_at", "budget.source_unavailable_repository"),
-    # Work held in a handoff state that requests none is dropped.
+    # A task held in a handoff state that requests none is dropped.
     "handoff_work_dropped": ("active_work",),
     # A published patch: its files join the admitted scope.
     "patch_published": ("scope_paths",),
@@ -2607,7 +2607,7 @@ handles("observe_ci", "_observe_release", "record_release_incomplete", _ALL_BUG)
 handles("observe_ci", "_observe_release", ("require_release_intervention", "verify_release"),
         _ALL_BUG, PAUSED=SKIP)
 
-# reconcile: Results, receipts and the recovery of Work.
+# reconcile: Results, receipts and the recovery of a task.
 handles("reconcile", "dispatch_failure_recovery", "rearm_dispatch", D_TICK)
 handles("reconcile", "_lost_dispatch", "retry_dispatch", D_TICK, FACT_MISSING=BUG,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
@@ -2680,7 +2680,7 @@ handles("controller", "tick",
          "request_submission_rewrite",
          "request_upstream_revision", "request_review_revision"), _ALL_BUG)
 # A record that breaks its state is left to the heal of its tick (nothing is
-# decided for its Work).
+# decided for its task).
 handles("controller", "terminal_work", "allocate_work_retry", D_TICK,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"), SOURCE_INVALID=SKIP)
 handles("controller", "terminal_work", "reallocate_after_pipeline_failure", D_TICK,

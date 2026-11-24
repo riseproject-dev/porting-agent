@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The history every Work carries, and how the tick records it."""
+"""The history every task carries, and how the tick records it."""
 
 from __future__ import annotations
 
@@ -554,9 +554,9 @@ class TestCondensationOrder(unittest.TestCase):
 
     def test_a_report_stored_late_never_passes_for_the_newest(self):
         """The report of a late Result whose push landed is stored when the
-        Result is seen, possibly after newer Work: it is placed at the time
-        its Work was requested, and the newest report is decided by the
-        Work each describes."""
+        Result is seen, possibly after a newer task: it is placed at the time
+        its task was requested, and the newest report is decided by the
+        task each describes."""
         older = report_evidence("report-old", at="2026-11-20T12:00:00+00:00",
                                 head_before=_sha(1), head_after=_sha(2))
         older["data"]["verb"] = "record_late_effect"
@@ -575,7 +575,7 @@ class TestCondensationOrder(unittest.TestCase):
         latest, head = work_history.protected_reports(rec, timeline)
         self.assertEqual((latest["evidence_id"], head["evidence_id"]),
                          ("report-new", "report-new"))
-        # Even without the time of its Work, the revision decides.
+        # Even without the time of its task, the revision decides.
         del older["data"]["work"]["requested_at"]
         latest, _head = work_history.protected_reports(
             rec, work_history._entries(rec, evidence)[1])
@@ -583,7 +583,7 @@ class TestCondensationOrder(unittest.TestCase):
 
     def test_the_newest_published_fallback_relies_on_monotonic_revisions(self):
         """When no report left the recorded head, the report of the head is
-        the newest report with a ``head_after``, by the Work it describes:
+        the newest report with a ``head_after``, by the task it describes:
         a report of an older revision stored later never passes for it.
         That order is the request order only because the revision and the
         generation of a contribution never decrease, which the engine
@@ -703,7 +703,7 @@ class TestCondensationOrder(unittest.TestCase):
 
     def test_multibyte_text_and_long_ids_never_raise(self):
         """Every bound is in bytes: a history of CJK text and long ids fits
-        once folded, and never holds the Work."""
+        once folded, and never holds the task."""
         evidence = {}
         for i in range(120):
             e = report_evidence("report-" + "q" * 100 + f"-{i:03d}",
@@ -761,7 +761,7 @@ def engine_state(record):
 
 
 class TestTick(unittest.TestCase):
-    """The tick records the history of the Work it allocates, in the same commit."""
+    """The tick records the history of the task it allocates, in the same commit."""
 
     def evidence(self):
         return {"report-1": report_evidence("report-1", at="2026-11-20T10:00:00+00:00",
@@ -777,7 +777,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(kinds, ["worker_report", "ci"])
         self.assertEqual(history["data"]["timeline"][1]["after_report"], "report-1")
         self.assertEqual(out.report["work_history"][0]["evidence_id"], eid)
-        # The Work of this tick is dispatched by the launch after the commit.
+        # The task of this tick is dispatched by the launch after the commit.
         self.assertNotIn("dispatch", out.report["work_history"][0])
         self.assertEqual(out.report["dispatch_relaunch"], [])
         # Recorded once: a tick that finds it committed records nothing.
@@ -880,7 +880,7 @@ class TestTick(unittest.TestCase):
                          and e["kind"] == "work_history"])
 
     def test_a_steering_list_that_keeps_failing_stops_holding_the_work(self):
-        """A list that fails from the tick that allocates the Work on: the
+        """A list that fails from the tick that allocates the task on: the
         allocation is committed at once, so the grace is measured from its
         durable ``requested_at``; the ticks within the grace build no
         history and charge no dispatch, and the first tick after it builds
@@ -901,7 +901,7 @@ class TestTick(unittest.TestCase):
         with mock.patch("collect.steering", side_effect=read):
             for minutes in (0, 10, 20, 30, 45, 61):
                 now = dev.T + timedelta(minutes=minutes)
-                # The dispatcher ran after every tick and deferred the Work.
+                # The dispatcher ran after every tick and deferred the task.
                 out = dev.tick(rec, verdict="failed", evidence=evidence, now=now,
                                runs=list(runs))
                 rec = dev.final(out, rec)
@@ -920,7 +920,7 @@ class TestTick(unittest.TestCase):
                     self.assertNotIn("retry_dispatch", dev.kinds(out))
                     if minutes:
                         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
-                                         "waiting for the history and the task file of the Work")
+                                         "waiting for the history and the task file of the task")
         self.assertEqual(calls, [False] * 5 + [True])
         history = evidence[eid]
         self.assertEqual(history["data"]["steering_unreadable"],
@@ -934,7 +934,7 @@ class TestTick(unittest.TestCase):
                       "upstream_pr_comment (no HTTP answer: GET y: timed out)", alert)
         self.assertNotIn("HTTP None", alert)
         # The tick that recorded the history launches the dispatcher, which
-        # deferred the Work until then.
+        # deferred the task until then.
         self.assertEqual(out.report["dispatch_relaunch"],
                          [{"type": "relaunch_dispatcher", "contribution_id": rec["contribution_id"]}])
         self.assertEqual((engine_state(rec), rec["pending_human_action"]),
@@ -966,7 +966,7 @@ class TestTick(unittest.TestCase):
         self.assertFalse([e for k, e in out.staged if k == "evidence"])
 
     def test_work_in_flight_gets_its_history(self):
-        """Work an earlier tick requested whose history this tick records
+        """A task an earlier tick requested whose history this tick records
         was deferred by the dispatcher: the tick asks for a dispatcher
         launch at once, not through dispatch recovery."""
         out = dev.tick(dev.running())
@@ -979,7 +979,7 @@ class TestTick(unittest.TestCase):
 
 
 class TestPayload(unittest.TestCase):
-    """The dispatcher gives every Work a reference to its task file, which
+    """The dispatcher gives every task a reference to its task file, which
     names its history."""
 
     def plan(self, evidence, record, root):
@@ -1005,7 +1005,7 @@ class TestPayload(unittest.TestCase):
         return rec
 
     def commit(self, root, record):
-        """The history and the task file of the Work of ``record`` as the
+        """The history and the task file of the task of ``record`` as the
         tick commits them under ``root``: the evidence by id."""
         key = record["active_work"]["dedupe_key"]
         history = work_history.evidence_id(key)
@@ -1040,7 +1040,7 @@ class TestPayload(unittest.TestCase):
                             work.MAX_QUEUE_PAYLOAD_BYTES)
             self.assertNotIn("context", payload)
             # The resolved task names the history, and steering never widens
-            # the Work.
+            # the task.
             task = task_file.resolve(
                 payload, lambda repository, ref, path: (Path(root) / path).read_bytes())
             self.assertEqual(task["context"]["history"]["evidence_id"],

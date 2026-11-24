@@ -15,7 +15,7 @@ from tests import helpers
 from tests.helpers import commit_files, contribution, git, init_repo, policy
 
 NOW = "2026-11-18T12:00:00+00:00"
-# The Work the publisher's task answers.
+# The task the publisher's task answers.
 KEY = work.work_key("example--proj/12", 0, 0, "development_repair")
 
 
@@ -51,7 +51,7 @@ class _ForkFixture:
                      "allowed_operations": ["append", "rewrite"],
                      "allowed_paths": [".github/workflows/*"], "reason_ids": ["ci-1"], "ref": "riscv64-dev",
                      "generation": 0, "dedupe_key": KEY}
-        # The Work the task answers is the Work the record holds.
+        # The task named by the `task` field is the task the record holds.
         self.record["active_work"] = {
             "dedupe_key": KEY, "task": "development_repair", "revision": 0, "generation": 0,
             "attempt": 1, "requested_at": NOW, "deadline_at": "2026-11-24T09:00:00+00:00",
@@ -403,7 +403,7 @@ class TestFailureClasses(_ForkFixture, unittest.TestCase):
                     policy=policy(read_only=False), now=NOW, save_operation=pushes.append,
                     workdir=self.root / f"pub-{self.invocations}")
                 self.assertEqual((out.status, out.reason, out.failure_class),
-                                 ("rejected", "publication check: the task names no Work identity",
+                                 ("rejected", "publication check: the task names no task identity",
                                   "stale"))
                 self.assertEqual((pushes, self.fork_head()), ([], self.base))
 

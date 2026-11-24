@@ -169,7 +169,7 @@ class TestTheLiveRecordAndItsHistory(unittest.TestCase):
         self.assertEqual(world.kinds(out), ["submit_upstream", "request_submission_rewrite"])
         [history] = [r for k, r in out.staged if k == "evidence" and r["kind"] == "work_history"]
         self.assertEqual(history["data"]["work"]["task"], "submission_rewrite")
-        # Earlier Work left no report: the timeline starts with the CI runs.
+        # An earlier task left no report: the timeline starts with the CI runs.
         self.assertEqual({t["kind"] for t in history["data"]["timeline"]}, {"ci"})
         self.assertGreaterEqual(len(history["data"]["timeline"]), 4)
         self.assertEqual(sorted(p.split("?")[0] for p in paths), sorted([

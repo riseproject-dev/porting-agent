@@ -772,7 +772,7 @@ def steering(api: Api, record: dict, authority: Iterable[int], *, issue: dict | 
     "failed": {...}}``; the text is untrusted and is bounded where it is
     stored. A list GitHub answers with a status of ``STEERING_GONE`` is
     named in ``unreadable``; any other failed read raises ``CollectError``,
-    unless ``degrade`` is true (the Work has waited for its history too
+    unless ``degrade`` is true (the task has waited for its history too
     long): then the list is named in ``unreadable`` too, and in ``failed``
     the HTTP status GitHub answered, or, for a read GitHub never answered,
     what failed (``no HTTP answer: ...``)."""

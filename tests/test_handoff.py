@@ -3,7 +3,7 @@
 """The submission of the live closeio--ciso8601/1 record.
 
 `/upstreaming submit-upstream` on the migrated live record runs the whole
-handoff by the table: the submission rewrite Work (review loop included) and its trusted check, the
+handoff by the table: the submission rewrite task (review loop included) and its trusted check, the
 build of the upstream branch `riscv64` from the reviewed series, CI on its
 clean head, the submission package, and the locked wait for the upstream PR
 with its three exits. Development stays on `riscv64-dev`, which nothing here
@@ -113,7 +113,7 @@ class FakeGitHub:
         raise collect.CollectError(f"GET {path}: HTTP 404")
 
     def paginate(self, path: str, *, key=None, max_pages=10, **_kwargs):
-        # The steering lists of Work the controller allocates: no human text.
+        # The steering lists of a task the controller allocates: no human text.
         found = steering_list(path)
         if found is not None:
             return found
@@ -261,7 +261,7 @@ class World:
         return self.operations[self.record["active_operation_id"]]
 
     def rewrite_outcome(self, verdict="pass", reasons=(), expires_at=None, **over):
-        """The trusted outcome of the requested rewrite Work, as the worker's
+        """The trusted outcome of the requested rewrite task, as the worker's
         publish job writes it and the controller collects it."""
         work = self.record["active_work"]
         self.publication += 1
@@ -350,7 +350,7 @@ def failed(world: World, failure=handoff.INFRASTRUCTURE) -> dict:
 
 
 def submitted(world: World | None = None) -> World:
-    """The live record once `submit-upstream` is accepted: the review Work is
+    """The live record once `submit-upstream` is accepted: the review task is
     requested in the same tick."""
     world = world or World()
     world.tick(at(0), comments=[comment(SUBMIT)])
@@ -367,7 +367,7 @@ def rewritten(world: World | None = None) -> World:
 
 
 def reviewed(world: World | None = None) -> World:
-    """The same as ``rewritten``: the review is part of the rewrite Work."""
+    """The same as ``rewritten``: the review is part of the rewrite task."""
     return rewritten(world)
 
 
@@ -409,7 +409,7 @@ class TestLivePath(unittest.TestCase):
         self.assertEqual((approval["head"], approval["revision"], approval["actor"]),
                          (HEAD, 6, {"id": OWNER["id"], "login": OWNER["login"]}))
         self.assertEqual(approval["evidence_ids"], [CI_EVIDENCE, PLAN])
-        # The rewrite Work is uncredentialed and writes nothing; no operation
+        # The rewrite task is uncredentialed and writes nothing; no operation
         # and nothing remote yet.
         [work] = out.report["requested_effects"]
         self.assertEqual((work["task"], work["expected_head"], work["effect_contract"]),
@@ -511,7 +511,7 @@ class TestLivePath(unittest.TestCase):
                 reasons = [f"{step}: CONTRIBUTING.md asks for a CHANGELOG entry the series lacks"]
                 outcome = world.rewrite_outcome("fail", reasons)
                 out = world.tick(at(2), publications=[outcome])
-                # The next development Work is requested in the same tick and
+                # The next development task is requested in the same tick and
                 # carries the reasons as its feedback.
                 self.assertEqual(world.kinds(out), [verb, "request_patch"])
                 rejected = next(r for k, r in out.staged if k == "events" and r["kind"] == verb)
@@ -536,7 +536,7 @@ class TestLivePath(unittest.TestCase):
 
     def test_a_pass_of_a_check_that_read_no_review_loop_is_relaunched_free(self):
         """A rewrite Result checked before the deploy was never reviewed: it
-        is not accepted, and Work without a usable Result of the earlier
+        is not accepted, and a task without a usable Result of the earlier
         pipeline is relaunched with nothing charged."""
         world = submitted()
         before = copy.deepcopy(world.record)

@@ -100,7 +100,7 @@ def wait_from_work_total() -> World:
 
 
 def wait_from_work_recovery() -> World:
-    """``exhaust_recovery`` after the Work graph ended without a Result
+    """``exhaust_recovery`` after the task graph ended without a Result
     on every attempt ``work_recovery`` allows."""
     record, evidence = failing_record()
     world = World(record, evidence)

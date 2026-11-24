@@ -28,9 +28,9 @@ class TestPlanningRecordRecovery(unittest.TestCase):
         and the project a plan must now record."""
         directory = Path(temporary) / RUN_ID
         shutil.copytree(FIXTURE, directory)
-        # The recorded payload predates the Work identity in the payload;
-        # the replay stands for the same Work under the current identity,
-        # that of the Work the canary record holds.
+        # The recorded payload predates the task identity in the payload;
+        # the replay stands for the same task under the current identity,
+        # that of the task the canary record holds.
         path = directory / "task.json"
         task = json.loads(path.read_text())
         task.update(generation=0, dedupe_key="closeio--ciso8601/1@0:planning")
@@ -113,7 +113,7 @@ class TestPlanningRecordRecovery(unittest.TestCase):
         self.assertEqual(plan["contribution_id"], "closeio--ciso8601/1")
         self.assertEqual(final["plan_evidence_id"], plan["evidence_id"])
         # The plan admits development: the fork is provisioned first
-        # (without capacity, no launch yet), and no patch Work is requested.
+        # (without capacity, no launch yet), and no patch task is requested.
         self.assertEqual((final["phase"], final["activity"]), ("provisioning", "idle"))
         self.assertIsNone(final["active_work"])
         self.assertEqual(output.report["controller"]["selected"], [])

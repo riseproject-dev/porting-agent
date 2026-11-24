@@ -140,7 +140,7 @@ class TestCommandsByTheTable(unittest.TestCase):
                                   out.record["paused_reason"], out.record["paused_by"]),
                                  (None, None, "later", "human"))
                 self.assertEqual(out.record["revision"], record["revision"])
-                # The resume bumps the revision; the state is the one where Work is due.
+                # The resume bumps the revision; the state is the one where a task is due.
                 resumed = apply_command(out.record, commands.parse(
                     f'/upstreaming resume revision={record["revision"]} reason="go"'))
                 self.assertEqual(resumed.event["kind"], "resume_pause")
@@ -290,11 +290,11 @@ class TestPauseMask(unittest.TestCase):
                 self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
                 self.assertEqual(dict(after, processed_publications=[]),
                                  dict(paused, processed_publications=[]))
-        # Not paused, the same state requests Work.
+        # Not paused, the same state requests a task.
         resumed = apply_command(paused, commands.parse(
             f"/upstreaming resume revision={paused['revision']} reason=go")).record
         output = tick(resumed, capacity_ok=True)
-        # No failing CI job and no feedback is recorded: the Work the pause
+        # No failing CI job and no feedback is recorded: the task the pause
         # stopped is requested again as the patch it was (`request_patch`).
         self.assertEqual([w["task"] for w in output.report["requested_effects"]],
                          ["development_patch"])
@@ -576,7 +576,7 @@ class TestControllerStops(unittest.TestCase):
     def test_an_identity_change_while_paused_by_a_human_waits_for_the_resume(self):
         """An identity change observed while the contribution is paused sets
         nothing: the human's pause keeps its reason. The tick that consumes
-        the resume selects no Work while the identity differs, and the next
+        the resume selects no task while the identity differs, and the next
         tick pauses it again for the identity change."""
         record = contribution(phase="development", activity="fix_needed", paused=True,
                               paused_at=NOW, paused_by="human", paused_reason="hold")

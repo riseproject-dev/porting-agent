@@ -106,7 +106,7 @@ class TestNativeQueueContracts(unittest.TestCase):
                 ),
             )
 
-        # Planning begins in a tick of its own; its Work is selected in the next.
+        # Planning begins in a tick of its own; its task is selected in the next.
         begun = tick(contribution)
         self.assertEqual(begun.requested_effects, [])
         contribution = [r for k, r in begun.staged if k == "contributions"][-1]

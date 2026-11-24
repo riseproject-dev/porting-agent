@@ -2,20 +2,20 @@
 # SPDX-License-Identifier: MIT
 """The report of one worker run, and how trusted code stores it.
 
-Every patch, repair, revision and submission rewrite Work
+Every patch, repair, revision and a submission rewrite task
 writes ``report.json`` (``schemas/worker_report.schema.json``) beside its
 Result: what was attempted and why, each approach and its outcome, what
 failed with its evidence, what remains open, and the verification done. The
 report is untrusted text.
 
-* ``check`` is the trusted check of the report against the Work it answers.
-  A Work whose payload carries a history (``context.history``) must return
+* ``check`` is the trusted check of the report against the task it answers.
+  A task whose payload carries a history (``context.history``) must return
   a valid report naming that history; a payload dispatched before reports
   existed may return none.
 * ``evidence`` builds the ``worker_report`` evidence of a Result that one of
   the success rows folds (``reconcile.REPORT_VERBS``). The report of a
   failed, rejected or blocked worker is never stored: it is discarded with
-  its artifact. The report of a successful Work that carries a history is
+  its artifact. The report of a successful task that carries a history is
   never dropped: the reconciler checks the very bytes the gate checked
   (``read``), and a report it cannot store raises ``ReportError``, which
   pauses the contribution before the Result is folded.
@@ -54,7 +54,7 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 class ReportError(ValueError, isolation.PauseRequest):
-    """The report is missing, malformed, or does not answer the Work. Raised
+    """The report is missing, malformed, or does not answer the task. Raised
     by a success fold, it pauses that one contribution and never stops the
     tick (``isolation.ContributionPause``)."""
 
@@ -162,17 +162,17 @@ def _load(raw: bytes | dict | None) -> dict | None:
 
 
 def check(task: dict, raw: bytes | dict | None) -> dict | None:
-    """The valid report of the Work ``task``, or ``None`` when a payload
+    """The valid report of the task ``task``, or ``None`` when a payload
     without a history returned no usable report. Raises ``ReportError`` when
     the payload carries a history and the report is missing, larger than
     32 KiB, not JSON, not valid against its schema, or does not answer the
-    Work (contribution, revision, task, and the digest of the history the
+    task (contribution, revision, task, and the digest of the history the
     worker read)."""
     history = _history(task)
     try:
         report = _load(raw)
         if report is None:
-            raise ReportError("the Work returned no report.json")
+            raise ReportError("the task returned no report.json")
         try:
             schemas.validate("worker_report", report)
         except schemas.SchemaError as error:
@@ -181,13 +181,13 @@ def check(task: dict, raw: bytes | dict | None) -> dict | None:
                               ("expected_revision", task.get("revision")),
                               ("task", task.get("task"))):
             if report.get(key) != expected:
-                raise ReportError(f"the report's {key} does not answer the Work")
+                raise ReportError(f"the report's {key} does not answer the task")
         if report.get("history_digest") != (history or {}).get("sha256"):
             raise ReportError("the report's history_digest is not the digest of the history "
-                              "the Work carries")
+                              "the task carries")
     except ReportError:
         if history is None:
-            # Work dispatched before reports existed may finish without one.
+            # A task dispatched before reports existed may finish without one.
             return None
         raise
     return report
@@ -234,11 +234,11 @@ def _sha(value: Any) -> str | None:
 
 
 def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str | None:
-    """The head the Work left on its branch: the confirmed commit of the
+    """The head the task left on its branch: the confirmed commit of the
     publication operation the row names (``operation``, by default the
     outcome's own), the head read back on `riscv64` for a revision
     (``reconcile.published_head``), or
-    ``None`` when the Work published nothing or its push was not read
+    ``None`` when the task published nothing or its push was not read
     back."""
     import reconcile
 
@@ -248,7 +248,7 @@ def head_after(outcome: dict, verb: str, operation: dict | None = None) -> str |
         if outcome.get("status") != "published":
             # The confirmed branch operation the row names (a retry rejected
             # as stale behind the operation of an earlier attempt) was read
-            # back on the branch: its commit is the head the Work left.
+            # back on the branch: its commit is the head the task left.
             if operation is not None and operation.get("status") == "confirmed" \
                     and operation.get("kind") in ("branch_update", "branch_rewrite"):
                 return _sha((operation.get("proposed") or {}).get("commit"))
@@ -272,10 +272,10 @@ def head_candidate(outcome: dict, verb: str, operation: dict | None = None) -> s
     """The commit a publication proposed that the row does not record as
     the head it left: the proposed commit of an open (``applying`` or
     ``uncertain``) branch operation (a ``confirmed`` one is the head the
-    Work left, ``head_after``, also for a revision retry rejected as stale
+    task left, ``head_after``, also for a revision retry rejected as stale
     behind the confirmed operation of an earlier attempt), or the candidate
     of an ``uncertain`` Result. It may be on the branch or not; the history
-    treats it as the head the Work left only when the recorded head (or the
+    treats it as the head the task left only when the recorded head (or the
     head a CI run ran on) is that very commit. ``None`` when ``head_after``
     names a head, or nothing was proposed."""
     if verb not in _PUBLISH_VERBS or head_after(outcome, verb, operation):
@@ -294,12 +294,12 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
              run: str, head_verb: str | None = None,
              revision: int | None = None, operation: dict | None = None) -> dict | None:
     """The ``worker_report`` evidence of a Result folded by ``verb``, or
-    ``None`` when the Work carries no history and its Result no usable
-    report. The report is checked again against the Work the Result
+    ``None`` when the task carries no history and its Result no usable
+    report. The report is checked again against the task the Result
     answers; every string is cleaned; the changed files come from the
     trusted operation, never from the worker.
 
-    The gate accepted only a Result whose Work carries a history together
+    The gate accepted only a Result whose task carries a history together
     with a valid report, so such a Result always has one to store: when it
     is missing, unreadable (``outcome["worker_report_error"]``) or invalid,
     or the evidence cannot be built, this raises ``ReportError`` instead of
@@ -309,7 +309,7 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
 
     ``head_verb`` names the success row whose published head the report
     records when ``verb`` is another one (``record_late_effect`` of a
-    Result whose push landed), and ``revision`` the revision of the Work
+    Result whose push landed), and ``revision`` the revision of the task
     when the record has left it. ``operation`` is the branch operation the
     row names when it is not the outcome's own (the operation of an earlier
     attempt that a publish-only retry confirmed); a report whose push was

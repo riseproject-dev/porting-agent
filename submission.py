@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """The trusted check of the submission rewrite.
 
-At `/upstreaming submit-upstream` one uncredentialed Work task runs:
+At `/upstreaming submit-upstream` one uncredentialed task runs:
 
 * ``submission_rewrite`` (``handoff.agent_running``) reshapes the non-debug
   commits of the approved `riscv64-dev` series after the project's commit
@@ -37,16 +37,16 @@ Trusted code decides, without a token, in a fresh repository
 A rewrite that fails a check, leaves a P0 finding of its review open, or
 reports that the series cannot be shaped without a code change, returns to
 development with the reasons as feedback (``reject_submission_rewrite``). A
-Result that is not usable (malformed, for another Work or series, without
+Result that is not usable (malformed, for another task or series, without
 its series, or with a review loop that is missing or contradicts itself) is
-a Work without a usable Result: ``allocate_work_retry`` within its budget,
+a task without a usable Result: ``allocate_work_retry`` within its budget,
 never a verdict.
 The trusted handoff workflow then builds `riscv64` from the same series,
 checks it again, and pushes exactly the head this check computed.
 
-A Work whose payload carries a history (``context.history``) must also
+A task whose payload carries a history (``context.history``) must also
 return a valid worker report (``worker_report.check``); one without it is a
-Work without a usable Result.
+task without a usable Result.
 
     python -m submission check-rewrite --task T --result R --mbox M --report P --out O
 """
@@ -101,7 +101,7 @@ def text_digest(title: str, body: str) -> str:
 
 def unusable(reason: str) -> dict:
     """The outcome of a Result that is not a usable rewrite or review: the
-    Work ended without a usable Result."""
+    task ended without a usable Result."""
     return {"status": "rejected", "failure_class": "validation", "stage": "submission_check",
             "reason": str(reason)[:2000]}
 
@@ -110,7 +110,7 @@ def rules_for(task: dict, review: dict) -> tuple[dict | None, list[str] | None, 
     """The measurable rules and template sections the check applies, and
     notes about where they come from.
 
-    The plan's, from the trusted Work payload, when it records them. A
+    The plan's, from the trusted task payload, when it records them. A
     plan of schema version 1 records none; then the rules and sections the
     rewrite reports having found in the project are applied: they only add
     checks, so an untrusted value can refuse a submission but never admit
@@ -261,7 +261,7 @@ def _identity_problem(task: dict, result: dict) -> str | None:
                                  ("expected_revision", "revision"),
                                  ("expected_head", "expected_head")):
         if result.get(result_key) != task.get(task_key):
-            return f"the Result's {result_key} does not answer the Work"
+            return f"the Result's {result_key} does not answer the task"
     return None
 
 
@@ -271,8 +271,8 @@ def _exact(task: dict, kind: str) -> bool:
 
 
 def _report(task: dict, report: bytes | dict | None) -> tuple[dict | None, str | None]:
-    """The worker report and why it does not answer the Work, or ``None``. A
-    Work that carries a history must return a valid report."""
+    """The worker report and why it does not answer the task, or ``None``. A
+    task that carries a history must return a valid report."""
     try:
         return worker_report.check(task, report), None
     except worker_report.ReportError as error:
@@ -293,7 +293,7 @@ def check_rewrite(task: dict, rewrite: dict, mbox: bytes | None, *,
                     **extra)
 
     if not _exact(task, REWRITE):
-        return unusable("the Work is not a submission rewrite of an exact head")
+        return unusable("the task is not a submission rewrite of an exact head")
     parsed, problem = _report(task, report)
     if problem:
         return unusable(problem)
@@ -370,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="the rewrite proposal.json")
     parser.add_argument("--mbox", type=Path, help="the rewritten series (check-rewrite)")
     parser.add_argument("--report", type=Path,
-                        help="the worker's report.json (required when the Work carries a history)")
+                        help="the worker's report.json (required when the task carries a history)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     task = json.loads(args.task.read_text())
@@ -380,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             report = worker_report.read(args.report)
         except worker_report.ReportError:
             # A link or a non-regular file is no report: refused below when
-            # the Work carries a history.
+            # the task carries a history.
             report = None
         mbox = args.mbox.read_bytes() if args.mbox and args.mbox.is_file() \
             and not args.mbox.is_symlink() else None

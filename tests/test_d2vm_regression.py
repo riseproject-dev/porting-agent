@@ -135,7 +135,7 @@ class TestThePauseHoldsTheHead(unittest.TestCase):
         self.assertEqual((moved.kind, moved.guard),
                          (engine.Refusal.GUARD_UNMET, lc.DEVELOPMENT_PR_RECORDED))
         # ... and the controller opens the PR of the observed head first,
-        # from the report of the Work that pushed it.
+        # from the report of the task that pushed it.
         self.assertEqual(controller.published_head_without_pr(resumed.record, {}, HEAD), HEAD)
         reasons, digest = controller.development_pr_reasons(
             resumed.record, HEAD, {report()["evidence_id"]: report()})
@@ -172,7 +172,7 @@ class TestTheLiveRecordHeals(unittest.TestCase):
                    if "invariant violation" in a.get("alert", "")]
         self.assertIn(f"healing: the controller opens the development PR of {HEAD}", alert["alert"])
         # The PR of the recorded head is planned from the stored report of
-        # the Work that pushed it, and launched in the same tick.
+        # the task that pushed it, and launched in the same tick.
         [request] = out.report["dev_pr_requests"]
         [op] = [r for k, r in out.staged if k == "operations"]
         self.assertEqual((op["kind"], op["target"]["expected_head"]), ("dev_pr_create", HEAD))
@@ -323,7 +323,7 @@ class TestTheAutomaticResume(unittest.TestCase):
 
 class TestTheSpentWorkTotal(unittest.TestCase):
     """`development.fix_needed` with `work_total` spent and a head without a
-    PR: the rows that open the PR need `work_total`, so the Work loop takes
+    PR: the rows that open the PR need `work_total`, so the task loop takes
     `exhaust_work_total` and nothing is paused."""
 
     def spent(self):

@@ -252,7 +252,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual((edge.target, t.trigger, t.command, t.charges),
                          ("development.fix_needed", lc.Trigger.OBSERVATION, None, ()))
         self.assertEqual(t.guard, ("every required CI job executed and passed on the exact head",
-                                   lc.FEEDBACK_OR_UNMET, "no requested Work", "no open operation"))
+                                   lc.FEEDBACK_OR_UNMET, "no requested task", "no open operation"))
         self.assertEqual((t.effects.sets, t.effects.clears, t.effects.revision, t.effects.work),
                          (("last_ci_evidence_id", "pending_feedback_evidence_ids"), (), "bump",
                           "keep"))
@@ -475,7 +475,7 @@ class TestLifecycleTable(unittest.TestCase):
                           "allocate_work_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
             if e.verb == "reallocate_after_pipeline_failure":
-                # The failure of the pipeline is not the Work's: nothing is charged.
+                # The failure of the pipeline is not the task's: nothing is charged.
                 self.assertEqual(e.transition.charges, (), (e.source, e.verb))
                 self.assertIn(lc.PIPELINE_FAILURE, e.transition.guard)
                 continue
@@ -531,7 +531,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual(patch.target, repair.target)
         self.assertIn("no failing CI job is recorded for the head", patch.transition.guard)
         self.assertIn("a failing CI job is recorded for the head", repair.transition.guard)
-        # Patch Work needs the fork: write admission only, and no proposal before it.
+        # A patch task needs the fork: write admission only, and no proposal before it.
         self.assertIn("write admission", patch.transition.guard)
         self.assertFalse(any("proposal" in g for g in patch.transition.guard))
         self.assertEqual([e.source for e in lc.table_edges() if e.verb == "exhaust_repair_attempts"],
@@ -618,7 +618,7 @@ class TestLifecycleTable(unittest.TestCase):
         for state, verb, resume, counters in cases:
             edge = lc.find_edge(state, verb)
             if verb == "exhaust_recovery":
-                # One row for the recovery of every failure of the Work and
+                # One row for the recovery of every failure of the task and
                 # its publication: it names the counter of the failure.
                 self.assertLessEqual(counters, lc.counters_named(edge), (state, verb))
                 self.assertLessEqual(counters, set(lc.find_edge(edge.target, resume)
@@ -693,7 +693,7 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual(edge.transition.effects.sets,
                          ("pending_human_action=work_budget_exhausted",
                           f"{lc.PENDING_COUNTER}=work_total"))
-        for text in ("number of Work allocations spent", "`/upstreaming resume`",
+        for text in ("number of task allocations spent", "`/upstreaming resume`",
                      "`/upstreaming park`"):
             self.assertIn(text, edge.transition.description)
         resume = lc.find_edge(edge.target, "resume_development")
@@ -948,7 +948,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
     def test_work_allocation_without_work_total(self):
         self.assertReports(
             self.with_row("development.fix_needed", "request_patch", charges=()),
-            "development.fix_needed --request_patch--> development.agent_running: allocates Work "
+            "development.fix_needed --request_patch--> development.agent_running: allocates a task "
             "without charging 'work_total'")
 
     def test_work_allocation_without_the_operation_guard(self):
@@ -958,7 +958,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertReports(
             self.with_row("upstream_review.fix_needed", "request_review_revision", guard=guard),
             "upstream_review.fix_needed --request_review_revision--> "
-            "upstream_review.agent_running: allocates Work without the guard "
+            "upstream_review.agent_running: allocates a task without the guard "
             "'no open operation'")
 
     def test_acting_on_passing_ci_without_the_operation_guard(self):
@@ -990,7 +990,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             "setting it")
 
     def test_no_head_row_while_work_runs(self):
-        # A fork head that moves while Work is requested is recorded from
+        # A fork head that moves while a task is requested is recorded from
         # `development.fix_needed` once the stale Result is replanned.
         for key, state in lc.LIFECYCLE.items():
             if state.kind == "work":
@@ -1095,7 +1095,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             self.with_row("development.fix_needed", "exhaust_work_total", "parked.idle",
                           effects=lc.Effects(sets=("parked_reason", "previous_phase"))),
             "development.fix_needed --exhaust_work_total--> parked.idle: exhaustion of "
-            "work_total where Work is due is exhaust_work_total, guarded by nothing else, and "
+            "work_total where a task is due is exhaust_work_total, guarded by nothing else, and "
             "leads to a human wait")
 
     def test_exhaustion_without_a_counter_or_a_restart(self):
@@ -1204,7 +1204,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertTrue(any(p.startswith(f"{where}: a stop whose reason the caller states")
                             for p in problems_with(effects=named)))
         kept = dataclasses.replace(stop.effects, clears=())
-        self.assertTrue(any(p.startswith(f"{where}: a stop that clears the requested Work")
+        self.assertTrue(any(p.startswith(f"{where}: a stop that clears the requested task")
                             for p in problems_with(effects=kept)))
         bumped = dataclasses.replace(stop.effects, revision="bump")
         self.assertIn(f"{where}: a stop must not bump the revision",

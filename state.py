@@ -503,7 +503,7 @@ def apply_pending_text_migration(root: Path, policy: dict, *, now: str,
 # - an evidence record: the kind `dossier` (now `plan`). Its id is kept: ids
 #   are opaque, and operations and events name it.
 #
-# Requested Work under the historic names (an `active_work` of the task
+# A requested task under the historic names (an `active_work` of the task
 # `investigation`) has no reviewed migration: its queued payload names a
 # worker profile that no longer exists. Committed events are not rewritten:
 # they are the history as it was written, the event schema accepts any kind,
@@ -583,7 +583,7 @@ def migrated_view(kind: str, record: Any) -> Any:
 # Record migration
 #
 # The strict record schema requires every field of the record, the counts of
-# `budget`, `pending_human_action.counter`, and the fields of the Work
+# `budget`, `pending_human_action.counter`, and the fields of the task
 # identity in `active_work`; the stop flag is `paused` alone. A record
 # written before it lacks fields the table added later and may still carry
 # `blocked_reason`, always null, or the retired `next_poll_at`.
@@ -646,7 +646,7 @@ def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
 # record migration reads the committed events of a contribution, returns the
 # charges of those rejections (``engine.refund_contradicted``) and, for a
 # record parked only because they exhausted the repair budgets, returns it to
-# `development.fix_needed` with no Work. The sequences it refunded are in the
+# `development.fix_needed` with no task. The sequences it refunded are in the
 # event it appends (`details.refunded`), so it never refunds one twice and the
 # record carries no marker.
 

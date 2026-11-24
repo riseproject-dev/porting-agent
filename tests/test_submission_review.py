@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """The trusted check of the submission rewrite Result (its review loop
-included), the Work it answers, and the table rows it decides."""
+included), the task it answers, and the table rows it decides."""
 
 import copy
 import hashlib
@@ -209,7 +209,7 @@ class TestCheck(unittest.TestCase):
     def other_series(self, approved, reviewed):
         """An approved series of ``approved`` steps on the base, pushed to
         the fork, and a reviewed series of ``reviewed`` steps on the base;
-        returns the rewrite Work of that approved head and the reviewed
+        returns the rewrite task of that approved head and the reviewed
         mbox."""
         self.runs += 1
         git(self.work, "checkout", "-q", "-B", f"alt-{self.runs}", self.base)
@@ -317,8 +317,8 @@ class TestCheck(unittest.TestCase):
         self.assertTrue(any("{debug}" in r for r in out["reasons"]), out["reasons"])
 
     def test_an_unusable_rewrite_is_not_a_verdict(self):
-        """A rewrite that does not answer the Work, has no series, or is
-        malformed is Work without a usable Result (a Work retry), never a
+        """A rewrite that does not answer the task, has no series, or is
+        malformed is a task without a usable Result (a task retry), never a
         failed submission."""
         mbox = self.series("Build riscv64 wheels", "Test riscv64 wheels")
         for over, problem in (({"expected_head": "e" * 40}, "expected_head"),
@@ -427,7 +427,7 @@ class TestReviewWork(unittest.TestCase):
         reject = lc.find_edge("handoff.agent_running", "reject_submission_rewrite")
         self.assertEqual((accept.target, reject.target),
                          ("handoff.building_upstream_branch", "development.fix_needed"))
-        # The review is part of the Work: no revision bump on a pass.
+        # The review is part of the task: no revision bump on a pass.
         self.assertEqual(accept.transition.effects.revision, "keep")
         self.assertIn("submission_rewrite_id", accept.transition.effects.sets)
         self.assertIn("pending_feedback_evidence_ids", reject.transition.effects.sets)

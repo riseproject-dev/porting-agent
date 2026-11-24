@@ -143,7 +143,7 @@ def scenario(state, verb, t):
     if "work_recovery and work_total remain" in guards:
         counts.update(work_recovery=1, work_total=0)
     if lc.RECOVERY_EXHAUSTED in guards:
-        # The first failure the row names: a lost dispatch, a terminal Work
+        # The first failure the row names: a lost dispatch, a terminal task
         # graph, or a failed publication.
         kinds = next(x.partition("=")[2] for x in t.effects.sets
                      if x.startswith("pending_human_action="))
@@ -181,7 +181,7 @@ def scenario(state, verb, t):
     # The invariants the state requires (``lifecycle.REQUIRES``).
     requires = lc.LIFECYCLE[state].requires
     if {"work", "work_or_publication"} & set(requires) \
-            and not {lc.NO_WORK, "no Work requested"} & set(t.guard):
+            and not {lc.NO_WORK, "no task requested"} & set(t.guard):
         rec["active_work"] = copy.deepcopy(SAMPLE["active_work"])
     if "publication" in requires:
         rec["pending_publication"] = copy.deepcopy(SAMPLE["pending_publication"])
@@ -290,7 +290,7 @@ class TestTableIsExercised(unittest.TestCase):
                     self.assertEqual(new["active_work"]["dedupe_key"],
                                      SAMPLE["active_work"]["dedupe_key"])
                 else:
-                    # A row that keeps the Work changes only the parts of it
+                    # A row that keeps the task changes only the parts of it
                     # the row sets.
                     parts = {name.split(".", 1)[1]: kwargs["values"][name]
                              for name in kwargs["values"] if name.startswith("active_work.")}
@@ -333,7 +333,7 @@ class TestTableIsExercised(unittest.TestCase):
 
     def test_the_rows_that_wait_for_an_open_operation_refuse_while_one_is_open(self):
         """The nomination, the return for feedback or series requirements and
-        the Work allocations of development and upstream review wait for an
+        the task allocations of development and upstream review wait for an
         open operation, through the record and through the store."""
         waiting = {"nominate_for_handoff", "return_for_feedback", "request_patch",
                    "request_repair", "request_upstream_revision", "request_review_revision"}
@@ -439,7 +439,7 @@ class TestProcessingErrorStop(unittest.TestCase):
                            active_work=dict(SAMPLE["active_work"]),
                            pending_publication=dict(SAMPLE["pending_publication"]))
         paused = self.take(rec).record
-        # Work cleared: the state in which it is due again; nothing held is kept.
+        # A task cleared: the state in which it is due again; nothing held is kept.
         self.assertEqual(engine.state_key(paused), "development.fix_needed")
         self.assertEqual((paused["active_work"], paused["pending_publication"],
                           paused["revision"]), (None, None, rec["revision"]))
@@ -482,7 +482,7 @@ class TestEnginePage(unittest.TestCase):
 
 class TestTableDecisions(unittest.TestCase):
     """Pending feedback, the review rows of the gate, rerun counts per head,
-    and the budgets a Work request charges."""
+    and the budgets a task request charges."""
 
     FACTS = {"worker_slot_free", "capacity_available"}
 
@@ -506,7 +506,7 @@ class TestTableDecisions(unittest.TestCase):
     def test_publish_success_clears_exactly_the_carried_feedback(self):
         rec = self.fix_needed(pending_feedback_evidence_ids=["review-1"])
         running = self.request(rec, "request_patch").record
-        # Feedback recorded while the Work runs is not answered by its Result.
+        # Feedback recorded while the task runs is not answered by its Result.
         running = dict(running, pending_feedback_evidence_ids=["review-1", "review-9"])
         published = take(
             running, "record_publish_success", policy=POLICY, now=NOW,
@@ -586,7 +586,7 @@ class TestTableDecisions(unittest.TestCase):
                                 "request_patch").record
         refused = take(carrying, "request_ci_rerun", policy=POLICY, now=NOW,
                                           facts=fact)
-        self.assertEqual((refused.accepted, refused.reason), (False, "the Work carries feedback"))
+        self.assertEqual((refused.accepted, refused.reason), (False, "the task carries feedback"))
         counted = take(carrying, "reject_patch_proposal", policy=POLICY,
                                           now=NOW, facts=fact)
         self.assertTrue(counted.accepted, counted.reason)
@@ -818,7 +818,7 @@ class TestTableDecisions(unittest.TestCase):
 
     def test_patch_work_needs_the_fork_and_admission_checks_the_scope(self):
         no_fork = self.fix_needed(fork=None)
-        # A record without its fork violates its state: no Work is requested.
+        # A record without its fork violates its state: no task is requested.
         refused = self.request(no_fork, "request_patch")
         self.assertEqual(refused.refused.kind, engine.Refusal.SOURCE_INVALID)
         self.assertEqual(refused.reason, "development.fix_needed requires fork: no fork is recorded")
@@ -901,7 +901,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                             "processed_review_comment_ids": [],
                                             "processed_pr_conversation_comment_ids": []})
         with self.assertRaises(lc.TransitionError):
-            # The engine derives what the Work carries; the caller cannot state it.
+            # The engine derives what the task carries; the caller cannot state it.
             fix = contribution(phase="development", activity="fix_needed")
             take(
                 fix, "request_patch", policy=POLICY, now=NOW,
@@ -1064,7 +1064,7 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
     def test_the_resumes_of_an_exhausted_publication_discard_it(self):
         """An exhausted held publication launches nothing and is not pending
         for the quiescence guard: the resumes and the refresh of its wait
-        apply and discard it, and fresh Work is requested. A publication
+        apply and discard it, and a fresh task is requested. A publication
         that is still pending refuses them."""
         pending = {"worker_run_id": "555", "attempts": 4, "last_reason": "x",
                    "next_attempt_at": NOW, "exhausted": True}
@@ -1277,8 +1277,8 @@ class TestSubmitUpstream(unittest.TestCase):
 
 FENCED = set(engine.FENCED_FIELDS)
 WRITERS = {"engine.py"}
-# Names that hold a tick report, a command receipt, a Work request, event
-# details, the values a row sets, a Work context, or the command grammar,
+# Names that hold a tick report, a command receipt, a task request, event
+# details, the values a row sets, a task context, or the command grammar,
 # never a contribution record.
 REPORT_NAMES = {"entry", "receipt", "aw", "request", "details", "values", "context", "OPTIONAL"}
 
@@ -1419,10 +1419,10 @@ class TestSingleWritePath(unittest.TestCase):
                     ref="riscv64-dev", repository="riseproject-upstreaming/proj")
         self.assertIsNone(lc.publication_check(rec, **args, **identity))
         self.assertEqual(lc.publication_check(rec, **args, **dict(identity, work_key="other")),
-                         "the requested Work is other Work")
+                         "the requested task is another task")
         self.assertEqual(lc.publication_check(dict(rec, active_work=None), **args, **identity),
-                         "no requested Work or pending publication")
-        # The Work identity is required: no call skips the Work id.
+                         "no requested task or pending publication")
+        # The task identity is required: no call skips the task id.
         for missing in ("work_key", "expected_generation"):
             with self.subTest(missing=missing), self.assertRaises(TypeError):
                 lc.publication_check(rec, **args, **{k: v for k, v in identity.items()

@@ -6,7 +6,7 @@ package.
 `/upstreaming submit-upstream` (``submit_upstream``) authorizes the review of
 the exact candidate head and a deterministic preparation. Development
 happens on ``riscv64-dev``; nothing here changes it, and the development PR
-is never closed. After the submission rewrite Work, which reviews its own
+is never closed. After the submission rewrite task, which reviews its own
 series, and its trusted check (``submission``,
 ``accept_submission_rewrite``), two states of the lifecycle
 table run one remote operation each, through the trusted workflow

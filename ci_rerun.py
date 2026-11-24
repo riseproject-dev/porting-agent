@@ -88,8 +88,8 @@ RUNNER_LOST = (
 STATUSES = ("rerun", "superseded", "nothing_to_rerun", "stale", "refused", "unconfirmed")
 # The statuses of a flaky receipt that let `request_ci_rerun` be taken.
 ANSWERED = ("rerun", "superseded", "nothing_to_rerun")
-# The Work of `development.agent_running` whose `no_change` Result may take
-# `request_ci_rerun` (the row refuses Work that carries feedback): the
+# The task of `development.agent_running` whose `no_change` Result may take
+# `request_ci_rerun` (the row refuses a task that carries feedback): the
 # reconciler requires the receipt for exactly the Results this admits.
 DEVELOPMENT_WRITE_TASKS = ("development_patch", "development_repair")
 _MARKER = re.compile(r"^ci-rerun:([0-9]{1,20}@[0-9]{1,6}(?:,[0-9]{1,20}@[0-9]{1,6}){0,4})$")
@@ -393,7 +393,7 @@ def preflight(*, record: dict, task: dict, proposal: dict, policy: dict, now: st
         return {"rerun": False, "fork_name": "", "reason": reason}
 
     if task.get("task") not in DEVELOPMENT_WRITE_TASKS or proposal.get("outcome") != "no_change":
-        return no("not a no_change Result of development Work")
+        return no("not a no_change Result of a development task")
     try:
         fork_publish.check_proposal(proposal, record, task, allow_no_change=True)
     except (fork_publish.PublishRejected, schemas.SchemaError) as error:
@@ -441,7 +441,7 @@ def publish(*, record: dict, task: dict, api: Api, policy: dict, now: str,
                         failure_class="infrastructure")
     generation, work_key = task_identity(task)
     if generation is None:
-        return _outcome("rejected", "publication check: the task names no Work identity",
+        return _outcome("rejected", "publication check: the task names no task identity",
                         failure_class="stale")
     why = lifecycle.publication_check(record, expected_revision=task["revision"],
                                       expected_head=head, observed_head=observed,

@@ -4,8 +4,8 @@
 
 ``upstream_review.waiting_ci`` is observed by its rows (merge, closure,
 head change, explanation, actionable review, CI failure once per head and
-run); the Result of revision Work is folded by the rows of
-``upstream_review.agent_running``; revision Work is allocated by the rows of
+run); the Result of a revision task is folded by the rows of
+``upstream_review.agent_running``; a revision task is allocated by the rows of
 ``upstream_review.fix_needed``; nothing parks from upstream review without a
 command; ``release_wait.idle`` is observed by its rows.
 """
@@ -164,7 +164,7 @@ def branch_operation(rec, head, *, confirmed=True):
 
 
 def published(rec, head, **fields):
-    """A published Result of revision Work whose push put ``head`` on `riscv64`."""
+    """A published Result of a revision task whose push put ``head`` on `riscv64`."""
     op = branch_operation(rec, head)
     return dict(publication(rec, "published"), candidate=head, operation=op, **fields)
 
@@ -426,7 +426,7 @@ class TestObservation(unittest.TestCase):
 
 
 class TestRevisionResults(unittest.TestCase):
-    """Every Result of revision Work takes a row of `upstream_review.agent_running`."""
+    """Every Result of a revision task takes a row of `upstream_review.agent_running`."""
 
     def running(self, **fields):
         fields.setdefault("active_work", dict(REVISION_WORK,
@@ -459,7 +459,7 @@ class TestRevisionResults(unittest.TestCase):
                 self.assertEqual(after["revision"], rec["revision"] + bumped)
                 self.assertIsNone(after["active_work"])
                 if verb == "record_revision_publish_success":
-                    # Exactly the feedback the Work carried is answered.
+                    # Exactly the feedback the task carried is answered.
                     self.assertEqual(after["pending_feedback_evidence_ids"], ["review-new"])
                 else:
                     self.assertEqual(after["pending_feedback_evidence_ids"],
@@ -637,7 +637,7 @@ class TestRevisionResults(unittest.TestCase):
 
     def test_the_resume_after_an_answered_reviewer_clears_the_feedback(self):
         """`resume_upstream_review` is the one resume that clears the
-        pending feedback: a human answered it, so no revision Work carries
+        pending feedback: a human answered it, so no revision task carries
         it again; the review stays fenced, so nothing is requested next."""
         rec = dict(self.waiting("answer_reviewer"), processed_review_ids=[77])
         out = self.resumed(rec)
@@ -647,7 +647,7 @@ class TestRevisionResults(unittest.TestCase):
                           after["pending_feedback_evidence_ids"], after["active_work"]),
                          ("upstream_review.waiting_ci", rec["revision"] + 1, [], None))
         # The review stays fenced, so the collector reads nothing new and no
-        # Work is requested for it.
+        # task is requested for it.
         self.assertEqual(after["processed_review_ids"], [77])
         again = tick(after, capacity_ok=True)
         self.assertEqual(kinds(again), [])
@@ -674,7 +674,7 @@ class TestRevisionResults(unittest.TestCase):
 
 
 class TestRevisionWork(unittest.TestCase):
-    """Revision Work is allocated and exhausted by the rows of
+    """A revision task is allocated and exhausted by the rows of
     `upstream_review.fix_needed`; nothing parks without a command."""
 
     def test_a_failing_job_charges_its_cluster_and_review_only_work_total(self):

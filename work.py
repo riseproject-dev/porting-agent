@@ -3,7 +3,7 @@
 """Native work-queue plans for upstreaming tasks (plan sections 5.1, 15.1).
 
 ``controller.tick`` produces ``submit_work`` requests and the task of each
-Work, which it commits as a task file (``work_task``). This module turns the
+task, which it commits as a task file (``work_task``). This module turns the
 requests into the immutable gh-aw Work payload, which names that task file
 by reference, and a staged plan for the dispatcher (``{"version": 1,
 "nodes": [...], "dispatch": {...}}``, the format accepted by gh-aw's
@@ -52,9 +52,9 @@ PROFILE_WORKFLOWS = {WORKER_PROFILE: ".github/workflows/worker.lock.yml",
 PROPOSAL_ARTIFACT = "porting-out"
 
 WRITE_TASKS = {"development_patch", "development_repair", "upstream_revision"}
-# The Work task at submission: the rewrite reshapes the series, writes the
+# The task at submission: the rewrite reshapes the series, writes the
 # pull request text, and reviews both with the review loop. It is
-# uncredentialed like every Work and writes nothing: the rewrite is checked by
+# uncredentialed like every task and writes nothing: the rewrite is checked by
 # trusted code in the worker's publish job without a token, and only the
 # trusted handoff workflow builds `riscv64` from it.
 SUBMISSION_REWRITE = "submission_rewrite"
@@ -131,7 +131,7 @@ def task_data(request: dict, record: dict, *, allowed_paths: list[str],
 
 def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths: list[str],
             context: dict | None = None) -> dict:
-    """The Work as the trusted jobs read it, once resolved
+    """The task as the trusted jobs read it, once resolved
     (``task_file.resolve``): the task (``task_data``) with the resource scope
     and the effect contract the queue's Claim scope reads. A Work queued
     before task files existed carried exactly this inline."""
@@ -143,9 +143,9 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
 
 
 def _identity(request: dict) -> dict:
-    """The Work identity a payload carries: a Result is folded only when the
-    generation, the revision, and the Work id it carries back match the
-    requested Work. The Work also carries the pending feedback ids recorded
+    """The task identity a payload carries: a Result is folded only when the
+    generation, the revision, and the task id it carries back match the
+    requested task. The task also carries the pending feedback ids recorded
     when it was allocated, which the published patch answers."""
     return {"generation": request["generation"], "dedupe_key": request["dedupe_key"],
             "feedback_evidence_ids": list(request.get("feedback_evidence_ids") or [])}
@@ -165,25 +165,25 @@ def graph_id(dedupe_key: str) -> str:
 
 def work_key(contribution_id: str, generation: int, revision: int, task: str,
              reruns: int = 0) -> str:
-    """The Work id of one allocation: the contribution, the generation, the
+    """The task id of one allocation: the contribution, the generation, the
     revision, the flaky CI reruns requested for the head so far
     (``budget.reruns.flaky``, from the first one on), and the task. The
-    queue graph is derived from it (``graph_id``), so Work of another
+    queue graph is derived from it (``graph_id``), so a task of another
     generation or revision is another graph, and a terminal graph is never
     submitted again. ``request_ci_rerun`` keeps the revision, so the rerun
-    count tells apart the repair Work requested after a rerun from the Work
+    count tells apart the repair task requested after a rerun from the task
     whose Result requested it."""
     rerun = f".rerun{reruns}" if reruns else ""
     return f"{contribution_id}@g{generation}.r{revision}{rerun}:{task}"
 
 
 def task_identity(task: dict) -> tuple[int | None, str | None]:
-    """The generation and Work id a Work payload (``task.json``) names.
+    """The generation and task id a task payload (``task.json``) names.
 
-    A payload names its Work identity only with an integer ``generation``
+    A payload names its task identity only with an integer ``generation``
     and a string ``dedupe_key``. Every other payload, including one that
     names neither, names no identity: ``(None, None)``, which matches no
-    requested Work."""
+    requested task."""
     generation, key = task.get("generation"), task.get("dedupe_key")
     if not isinstance(generation, int) or isinstance(generation, bool) \
             or not isinstance(key, str):
@@ -193,8 +193,8 @@ def task_identity(task: dict) -> tuple[int | None, str | None]:
 
 def request_from_active(rec: dict) -> dict | None:
     """The controller's committed request (``active_work``) as a work request,
-    or None if there is nothing to dispatch for this record: no Work, a
-    pause, or Work of another generation or revision."""
+    or None if there is nothing to dispatch for this record: no task, a
+    pause, or a task of another generation or revision."""
     aw = rec.get("active_work")
     if not aw or rec.get("paused") or aw.get("revision") != rec["revision"] \
             or aw.get("generation") != int(rec.get("generation", 0)):
@@ -209,9 +209,9 @@ def request_from_active(rec: dict) -> dict | None:
 
 
 def queue_payload(request: dict, *, control_repo_id: str, reference: dict) -> dict:
-    """The payload the queue carries for one requested Work: its identity (the
+    """The payload the queue carries for one requested task: its identity (the
     fields the reconciler keys a Result on: task, contribution, revision,
-    generation, and Work id), the reference to its task
+    generation, and task id), the reference to its task
     file, and the two fields gh-aw's Claim scope reads (fixed per task kind). Its size is bounded
     (``MAX_QUEUE_PAYLOAD_BYTES``), whatever the task."""
     pl = {"version": 1, "task": request["task"], "contribution_id": request["contribution_id"],
@@ -225,7 +225,7 @@ def queue_payload(request: dict, *, control_repo_id: str, reference: dict) -> di
 
 
 def queue_node(request: dict, pl: dict) -> dict:
-    """The queue node of a requested Work with its queue payload ``pl``."""
+    """The queue node of a requested task with its queue payload ``pl``."""
     return {
         "graph_id": graph_id(request["dedupe_key"]),
         "node_key": "task",
@@ -432,7 +432,7 @@ def payload_inputs(request: dict, record: dict, evidence: dict[str, dict], *,
         # The required sections of the pull request template, which the
         # submission check requires in the reviewed description.
         **({"template_sections": sections} if sections is not None else {}),
-        # The unmet series requirements of the plan this Work answers, which
+        # The unmet series requirements of the plan this task answers, which
         # the trusted worker gate checks.
         **({"series_requirements": requirements} if requirements is not None else {}),
     }
@@ -463,11 +463,11 @@ def _reason_item(evidence: dict) -> dict:
 
 
 def series_requirements_context(record: dict, evidence: dict[str, dict]) -> list[dict] | None:
-    """The series requirements a write Work carries for the trusted worker
+    """The series requirements a write task carries for the trusted worker
     gate: the unmet ones of the newest ``series_requirements`` evidence
-    among the Work's feedback, as ``{id, paths}``, and only while the fork
+    among the task's feedback, as ``{id, paths}``, and only while the fork
     head is the head that evidence names (a push since then may already
-    meet them). ``None`` when the Work carries none."""
+    meet them). ``None`` when the task carries none."""
     work = record.get("active_work") or {}
     head = (record.get("fork") or {}).get("head_sha")
     for evidence_id in reversed(list(work.get("feedback_evidence_ids") or [])):
@@ -482,11 +482,11 @@ def series_requirements_context(record: dict, evidence: dict[str, dict]) -> list
 
 
 def read_task_file(root: Path, request: dict, control_ref: str) -> dict:
-    """The reference to the committed task file of the requested Work, at the
+    """The reference to the committed task file of the requested task, at the
     commit ``control_ref``, from the file under ``root``: its SHA-256, after
-    checking that it is the task file of exactly this Work (its kind, its
-    evidence id and the Work identity it names). Raises ``ValueError`` when
-    the file is missing, unreadable or another Work's."""
+    checking that it is the task file of exactly this task (its kind, its
+    evidence id and the task identity it names). Raises ``ValueError`` when
+    the file is missing, unreadable or another task's."""
     if not re.fullmatch(r"[0-9a-f]{40}", control_ref):
         raise ValueError("invalid immutable control ref")
     reference = task_file.reference(request["dedupe_key"], control_ref, "0" * 64)
@@ -502,7 +502,7 @@ def read_task_file(root: Path, request: dict, control_ref: str) -> dict:
                 data.get("contribution_id"), data.get("revision")) != (
                 request["dedupe_key"], request["generation"], request["task"],
                 request["contribution_id"], request["revision"]):
-        raise ValueError("the task file is not the task file of the requested Work")
+        raise ValueError("the task file is not the task file of the requested task")
     return dict(reference, sha256=hashlib.sha256(raw).hexdigest())
 
 
@@ -534,8 +534,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             continue
         if len(nodes) >= policy["concurrency"]["coding_workers"]:
             break
-        # Every Work carries its history and its task file, which the
-        # controller tick records in the commit that allocates the Work. Work
+        # Every task carries its history and its task file, which the
+        # controller tick records in the commit that allocates the task. A task
         # whose history or task file is not committed yet is not dispatched in
         # this run; the next tick records it.
         recorded = [(work_history.evidence_id(request["dedupe_key"]), "history"),
@@ -545,9 +545,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
             deferred.append({"contribution": record["contribution_id"], "task": request["task"],
                              "reason": f"{' and '.join(missing)} not recorded yet"})
             continue
-        # A Work whose task file cannot be read at the pinned commit is
+        # A task whose task file cannot be read at the pinned commit is
         # reported and skipped: one such record never blocks the dispatch of
-        # every other contribution. Its Work stays unclaimed, so the
+        # every other contribution. Its task stays unclaimed, so the
         # controller's dispatch recovery decides it.
         try:
             reference = read_task_file(root, request, control_ref)

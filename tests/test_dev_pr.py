@@ -311,7 +311,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
         op = ops[current["active_operation_id"]]
         self.assertEqual((op["kind"], op["status"], recovery.launch_attempts(op)),
                          ("dev_pr_create", "planned", 1))
-        # No Work is requested while the PR of the head is being opened.
+        # No task is requested while the PR of the head is being opened.
         self.assertEqual(engine.state_key(current), "development.fix_needed")
         self.assertEqual(res.requested_effects, [])
         out = take(rec, "launch_development_pr", policy=policy(), now=NOW,
@@ -472,7 +472,7 @@ class TestDevelopmentPRRows(unittest.TestCase):
                 self.assertEqual(closed[oid]["status"], "failed")
                 self.assertNotEqual(current.get("active_operation_id"), oid)
                 self.assertEqual(res.report["development_pr_closures"][0]["operation_id"], oid)
-        # Work is due again once the operation is released and the PR is
+        # A task is due again once the operation is released and the PR is
         # recorded.
         _res, current, _ops, _events = run(changes["pr"], ops, 1)
         self.assertIsNone(current["active_operation_id"])

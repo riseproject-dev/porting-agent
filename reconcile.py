@@ -104,7 +104,7 @@ RETRY_BACKOFF_MINUTES = (15, 60, 240)
 PUBLISH_RESULT_WAIT_MINUTES = 60
 # A publication artifact of an ended worker run that no tick collected by
 # then (its download failed, the trusted recovery rejected it, or the run is
-# outside the run inventory) is no usable Result: the completed Work graph is
+# outside the run inventory) is no usable Result: the completed task graph is
 # then retried. It reuses the wait of a launched publish-only retry.
 RESULT_COLLECTION_GRACE_MINUTES = PUBLISH_RESULT_WAIT_MINUTES
 # A dispatcher run that has not completed is waited for this long after it was
@@ -169,23 +169,23 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
 
     ``runs`` are recent dispatcher workflow runs (GitHub API objects);
-    ``queue_works`` maps a Work's ``graph_id`` to its queue state, from the
+    ``queue_works`` maps a task's ``graph_id`` to its queue state, from the
     pinned gh-aw CLI's validating replay ({} when the queue does not exist
     yet). Either being None means "unknown": nothing is decided this tick.
 
-    For each ``active_work`` (oldest first) whose Work is absent from the
+    For each ``active_work`` (oldest first) whose task is absent from the
     queue, or admitted but still unclaimed:
 
     * a dispatcher run is still queued/running, whenever it was created: wait.
-      It claims the Work it finds available when it stages, and its
+      It claims the task it finds available when it stages, and its
       completion wakes the controller;
     * no dispatcher run after the request: launch again at once (the launch
       itself was lost; no run ended, so no row is taken). The launch step of
       the controller confirms that its run is listed before it ends, and
       launches are serialized, so a run launched by an earlier tick is listed;
-    * otherwise a dispatcher run ended without its Work being claimed. The
+    * otherwise a dispatcher run ended without its task being claimed. The
       table's ``retry_dispatch`` launches the dispatcher again within
-      ``dispatch_recovery`` (the dispatcher never submits Work the queue
+      ``dispatch_recovery`` (the dispatcher never submits a task the queue
       already holds again: it dispatches the queued Work as it was first
       submitted), and ``exhaust_recovery`` waits for a human once
       that budget is spent. Its count is the number of
@@ -214,30 +214,30 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     nothing is charged. A record in a state the table does not have is left
     unchanged and reported.
 
-    Work is dispatched only once its history and its task file are
+    A task is dispatched only once its history and its task file are
     committed (``evidence``, the committed evidence; ``None`` skips this
     check). While they are not, and for at most ``HISTORY_WAIT`` since the
     request, the dispatch is not decided: nothing is charged and nothing is
-    launched, since the dispatcher defers that Work by design. After that it
+    launched, since the dispatcher defers that task by design. After that it
     is decided as above, so a history or a task file that is never recorded
     ends in the human wait of ``exhaust_recovery``. Once both are
     committed, the dispatcher runs are counted from the later of the request
     and the time they were recorded.
 
-    Work the queue does not hold, whose task file is not committed and cannot
+    A task the queue does not hold, whose task file is not committed and cannot
     be built (``work_task.dry_run``: the controller allocated it before it
     checked) is held: nothing is launched, charged or waited for, an alert
     names the cause as a failure of the pipeline, and the check is made
     again in every tick.
 
     ``queue_retries`` (``queue_result.work_retries``) names the available
-    Work whose earlier Claim ended without a Result (a worker run that was
+    task whose earlier Claim ended without a Result (a worker run that was
     cancelled, timed out or lost its runner): the queue retries it, within
     the retry attempts of its Policy, once its backoff has passed. Such a
     retry is not a lost dispatch. The dispatcher runs are counted from the
     retry time, and when none was created since it, the dispatcher is
     launched without a row and nothing is charged. A retry the queue exhausts
-    cancels the Work, which ``allocate_work_retry`` or
+    cancels the task, which ``allocate_work_retry`` or
     ``exhaust_recovery`` then decides.
 
     ``pipeline_failures`` (``pipeline_failure_readings``, by graph id, and by
@@ -245,15 +245,15 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     of the last Claim, or the dispatcher run, failed with: ``pipeline`` true
     when it failed before its agent for a step of the pipeline, with the
     ``version`` of the pipeline code it ran. ``None`` reads none (nothing is
-    held). Such a failure is not the Work's:
+    held). Such a failure is not the task's:
 
-    * an available Work with a retry, a cancelled Work graph, or a dispatcher
+    * an available task with a retry, a cancelled task graph, or a dispatcher
       run that ended without claiming, whose failure ran the version of the
       code that runs now (``pipeline``), is held: nothing is staged,
       launched or charged, the entry says why and an alert is raised, until
       the code changes (a push wakes the controller);
     * once the code differs, or for a ``manual`` run (a human launched the
-      controller, which acts on everything due), an available Work and a
+      controller, which acts on everything due), an available task and a
       dispatcher run are launched again as above, and a cancelled graph takes
       ``reallocate_after_pipeline_failure``, which charges nothing;
     * a cancelled graph whose last Claim could not be read decides nothing
@@ -281,7 +281,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 contributions[key] = new
                 staged.append(("contributions", new))
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
-                               "decision": "cleared obsolete Work at handoff"})
+                               "decision": "cleared obsolete a task at handoff"})
                 continue
             state = queue_works.get(work.graph_id(aw["dedupe_key"]))
             if state not in (None, "available", "completed", "cancelled"):
@@ -289,8 +289,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             requested = datetime.fromisoformat(aw["requested_at"])
             if state is None and evidence is not None \
                     and work_task.evidence_id(aw["dedupe_key"]) not in evidence:
-                # Work the queue does not hold and whose task file is not
-                # committed: when the controller cannot build the task (Work
+                # A task the queue does not hold and whose task file is not
+                # committed: when the controller cannot build the task (a task
                 # allocated by code that did not check), no worker can ever
                 # receive it, and that is a failure of the pipeline, not of the
                 # contribution: nothing is launched, charged or waited for.
@@ -310,7 +310,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                     and now - requested < HISTORY_WAIT:
                 report.append({"contribution": c["contribution_id"], "task": aw["task"],
                                "queue_state": state,
-                               "decision": "waiting for the history and the task file of the Work"})
+                               "decision": "waiting for the history and the task file of the task"})
                 continue
             if isinstance(history, dict):
                 for record_ in (history, evidence[work_task.evidence_id(aw["dedupe_key"])]):
@@ -336,7 +336,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 state == "cancelled" or (state == "available" and retry is not None))
             if watched and reading is None:
                 # The run of the last Claim was not read: nothing is decided
-                # that could charge the Work for a failure of the pipeline.
+                # that could charge the task for a failure of the pipeline.
                 report.append(entry | _unread_claim(now))
                 continue
             gate = _pipeline_gate(reading, aw, pipeline, manual, now) if watched else None
@@ -344,7 +344,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 report.append(entry | gate["entry"])
                 continue
             if state in ("completed", "cancelled"):
-                # Work graphs are immutable and terminal. Reusing the same graph
+                # Task graphs are immutable and terminal. Reusing the same graph
                 # can only fail: once the graph is terminal without a usable
                 # Result, the table allocates a fresh graph at a new revision
                 # within `work_recovery` and `work_total`
@@ -383,8 +383,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 continue
             if gate and gate["action"] != "release":
                 # The last Claim failed before its agent for the pipeline:
-                # whatever dispatcher runs ran since (for other Work), nothing
-                # is launched or charged for this Work.
+                # whatever dispatcher runs ran since (for other tasks), nothing
+                # is launched or charged for this task.
                 report.append(entry | gate["entry"])
                 continue
             if gate:
@@ -400,11 +400,11 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
             if not after:
                 # With a retry, `requested` is the retry time: the worker run
                 # of the last Claim ended without a Result and the queue holds
-                # the Work for its next attempt, which only a dispatcher run
+                # the task for its next attempt, which only a dispatcher run
                 # claims. A launch of an earlier tick is listed by now: the
                 # launch step confirms its run before it ends.
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
-                report.append(entry | {"decision": "relaunch: the queue retries the Work after "
+                report.append(entry | {"decision": "relaunch: the queue retries the task after "
                                                    "its worker run ended without a Result"
                                        if retry is not None else "relaunch: no dispatcher run"})
                 continue
@@ -416,7 +416,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                  "contribution_id": c["contribution_id"]})
                 report.append(entry | {"decision": "relaunch: the requested run did not start"})
                 continue
-            # A dispatcher run ended since the request with the Work unclaimed.
+            # A dispatcher run ended since the request with the task unclaimed.
             if pipeline_failures is not None and latest.get("conclusion") == "failure" \
                     and str(latest["id"]) not in pipeline_failures:
                 report.append(entry | _unread_claim(now) | {
@@ -427,7 +427,7 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                    manual, now, kind="dispatcher")
             if ended:
                 # It failed before its agent for a step of the pipeline: not
-                # a lost dispatch of the Work, so no row and no charge.
+                # a lost dispatch of the task, so no row and no charge.
                 if ended["action"] != "release":
                     report.append(entry | ended["entry"])
                 else:
@@ -459,13 +459,13 @@ def _created(run: dict) -> datetime:
 
 def _dispatchers_in_flight(runs: list[dict], now: datetime) -> list[dict]:
     """The dispatcher runs that have not completed and were created within
-    ``DISPATCHER_RUN_WAIT``: they claim the Work they find available."""
+    ``DISPATCHER_RUN_WAIT``: they claim the task they find available."""
     return [r for r in runs if r.get("status") != "completed"
             and now - _created(r) < DISPATCHER_RUN_WAIT]
 
 
-# The free relaunches of Work that failed before its agent for the pipeline,
-# at one version of the pipeline code: the Work waits this long after the
+# The free relaunches of a task that failed before its agent for the pipeline,
+# at one version of the pipeline code: the task waits this long after the
 # failure ended for the first, the second and the third, and then stays held
 # until the code changes or a human launches the controller. A transient
 # failure of the pipeline (a registry that did not answer, a gateway that did
@@ -490,7 +490,7 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
                    now: datetime, kind: str = "worker") -> dict | None:
     """What to do with ``reading``, the failure of the run of the last Claim
     (or of a dispatcher run), or ``None`` when it is not a failure of the
-    pipeline (the Work's own failure is decided as ever). The result has an
+    pipeline (the task's own failure is decided as ever). The result has an
     ``action``:
 
     * ``hold``: nothing is launched, staged or charged; ``entry`` is the
@@ -499,7 +499,7 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
     * ``wait``: the version of the pipeline code is not known, so the failure
       is neither held nor released, and the controller looks again soon;
     * ``release``: launch again, or reallocate a cancelled graph, without
-      charging the Work. ``why`` is ``manual`` (a human launched the
+      charging the task. ``why`` is ``manual`` (a human launched the
       controller), ``changed`` (the code is not the version the run ran), or
       ``timed`` (the backoff of a free relaunch passed); ``free`` is the
       number of free relaunches made at this version with this one, and
@@ -511,7 +511,7 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
     text = (f"{kind} run {reading.get('run_id')} failed before its agent ({where}), a failure of "
             f"the pipeline at version {str(version)[:12]}")
     details = _pipeline_details(reading)
-    # The dispatcher runs that count against the Work after a release are the
+    # The dispatcher runs that count against the task after a release are the
     # ones created since the failed run ended: a fixed time, so the runs of
     # later ticks still count and a dispatcher that ends without claiming is
     # decided and charged as ever, instead of being launched again forever.
@@ -524,7 +524,7 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
             "decision": f"waiting: {text}, and the version of the pipeline code is not known, "
                         "so it is neither held nor released",
             "held": details,
-            "alert": f"{text}: the version of the pipeline code could not be read, so the Work "
+            "alert": f"{text}: the version of the pipeline code could not be read, so the task "
                      "is neither held nor released; it is looked at again by the next "
                      "controller run"}}
     if version != pipeline:
@@ -541,9 +541,9 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
     if due is not None and now >= due:
         return {"action": "release", "why": "timed", "free": used + 1, "floor": due,
                 "details": details | {"free_relaunch": used + 1}}
-    entry = {"held": details, "alert": f"{text}, which is not the fault of the Work: "}
+    entry = {"held": details, "alert": f"{text}, which is not the fault of the task: "}
     if due is not None:
-        entry["decision"] = (f"held: {text}; the Work is not charged and is launched again free "
+        entry["decision"] = (f"held: {text}; the task is not charged and is launched again free "
                              f"after {PIPELINE_RELEASE_BACKOFF[used]} (free relaunch {used + 1} "
                              f"of {len(PIPELINE_RELEASE_BACKOFF)}), or once the pipeline code "
                              "changes or a human launches the controller")
@@ -552,7 +552,7 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
                            "code changes or a human launches the controller")
     else:
         entry["decision"] = (f"held: {text}; the {len(PIPELINE_RELEASE_BACKOFF)} free relaunches "
-                             "at this version are spent, and the Work is launched again once the "
+                             "at this version are spent, and the task is launched again once the "
                              "pipeline code changes or a human launches the controller")
         entry["alert"] += (f"its {len(PIPELINE_RELEASE_BACKOFF)} free relaunches at this version "
                            "are spent; nothing is retried until the pipeline code changes or a "
@@ -561,27 +561,27 @@ def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual:
 
 
 def _unread_claim(now: datetime) -> dict:
-    """The report fields of Work whose last Claim could not be read."""
-    return {"decision": "waiting: the last Claim of the Work was not read, so a failure of the "
+    """The report fields of a task whose last Claim could not be read."""
+    return {"decision": "waiting: the last Claim of the task was not read, so a failure of the "
                         "pipeline is neither held nor released",
-            "alert": "the run of the last Claim of the Work could not be read (or the version "
+            "alert": "the run of the last Claim of the task could not be read (or the version "
                      "of the pipeline code it ran), so a failure of the pipeline is neither held "
                      "nor released; it is looked at again by the next controller run"}
 
 
 def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None,
                     collected: frozenset[str], now: datetime) -> tuple[bool, str, dict]:
-    """Whether the Work graph ``graph``, which the queue reports ``state``
+    """Whether the task graph ``graph``, which the queue reports ``state``
     (``completed`` or ``cancelled``), is terminal without a usable Result:
     (decided, the report decision while it is not, the event details once
     it is).
 
-    * ``cancelled``: at once. The queue cancels Work only after its last
+    * ``cancelled``: at once. The queue cancels a task only after its last
       Claim ended without a Result, and the publish job of a worker runs
       only for a completed outcome, so no Result can follow.
     * ``completed`` and a publication collected in this tick names the graph
       (``collected``): at once. Its Result was folded, recorded late or
-      already processed, and the Work still held has no usable Result.
+      already processed, and the task still held has no usable Result.
     * ``completed`` otherwise, from the reading of the worker run the queue
       bound to the graph (``work_results``): no reading, or a run that has
       not ended, decides nothing; a run that ended (or is gone) without an
@@ -596,7 +596,7 @@ def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None
         return True, "", {"result": "collected"}
     reading = (work_results or {}).get(graph)
     if not isinstance(reading, dict):
-        return False, "waiting: the worker run of the completed Work was not read", {}
+        return False, "waiting: the worker run of the completed task was not read", {}
     status = reading.get("status")
     if status == "unbound":
         return True, "", {"result": "unbound"}
@@ -662,7 +662,7 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
                          collection: tuple[dict[str, str], frozenset[str] | None,
                                            datetime | None] | None = None,
                          ) -> dict[str, dict]:
-    """``graph_id -> reading`` of the worker run of every completed Work
+    """``graph_id -> reading`` of the worker run of every completed task
     graph a record still holds (``dispatch_recovery`` decides from it):
     ``{"status": "unbound"}`` when the queue binds no run to the graph
     (``queue_runs``, ``queue_result.work_runs``), else
@@ -697,7 +697,7 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
                     # reach": the next tick lists it.
                     reading["never_collected"] = "outside the run inventory"
         except (collect.CollectError, OSError) as error:
-            print(f"worker run {run_id} of completed Work {graph} not read this tick: {error}",
+            print(f"worker run {run_id} of a completed task {graph} not read this tick: {error}",
                   file=sys.stderr)
     return readings
 
@@ -707,7 +707,7 @@ def pipeline_failure_readings(api: collect.Api, contributions: dict[str, dict],
                               queue_retries: dict[str, dict] | None,
                               claim_runs: dict[str, list[str]] | None,
                               dispatcher_runs: list[dict] | None) -> dict[str, dict]:
-    """What the runs behind the Work a record requests failed with
+    """What the runs behind the task a record requests failed with
     (``dispatch_recovery`` decides from it): for every graph that is
     cancelled, or available for a retry, the run of its newest Claim
     (``queue_result.work_claim_runs``), and the newest ended dispatcher run,
@@ -792,9 +792,9 @@ def _created_before(created: Any, moment: datetime) -> bool:
 
 
 def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
-    """The committed ``work_history`` evidence of the requested Work ``aw``,
+    """The committed ``work_history`` evidence of the requested task ``aw``,
     ``False`` when its history or its task file (``work_task``) is not
-    committed yet, ``None`` when it names no Work id or ``evidence`` is not
+    committed yet, ``None`` when it names no task id or ``evidence`` is not
     known."""
     if evidence is None or not aw.get("dedupe_key"):
         return None
@@ -822,7 +822,7 @@ def dispatch_failure_recovery(contributions: dict[str, dict], *, queue_policy: d
       a failure at the new version records that version. The row gives back
       what the lost allocation charged.
     * While the installed Policy drops a compiled worker profile and the
-      queue is quiescent, and a record holds or waits for dispatched Work,
+      queue is quiescent, and a record holds or waits for a dispatched task,
       the dispatcher is launched to reinstall it, at most once every
       ``POLICY_REINSTALL_LAUNCH_MINUTES`` and never while one runs.
 
@@ -896,14 +896,14 @@ def dispatch_failure_recovery(contributions: dict[str, dict], *, queue_policy: d
 def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
                    policy: dict, history_missing: bool = False, retry: dict | None = None,
                    pipeline: str | None = None) -> tuple[dict | None, dict | None, str]:
-    """The table's row for requested Work that a dispatcher run left absent
+    """The table's row for a requested task that a dispatcher run left absent
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
     relaunches spent) remains, ``exhaust_recovery`` once it is
     spent. ``count`` is the number of dispatcher runs since the request,
     all ended. The row records the decided run in ``dispatched_run_id``.
-    ``history_missing`` says that the history or the task file of the Work
+    ``history_missing`` says that the history or the task file of the task
     was never recorded (``HISTORY_WAIT`` has passed), which the event states
-    as the cause in plain words. ``retry`` is the queue's retry of the Work after a
+    as the cause in plain words. ``retry`` is the queue's retry of the task after a
     worker run that ended without a Result (``queue_result.work_retries``),
     which the event states too."""
     iso = now.isoformat()
@@ -917,16 +917,16 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
         details["history"] = "never recorded"
         hours = int(HISTORY_WAIT.total_seconds()) // 3600
         causes.insert(0, (
-            f"the history or the task file of this Work was never recorded in the {hours} hours "
-            "since it was requested, and the dispatcher dispatches no Work without them, so no "
+            f"the history or the task file of this task was never recorded in the {hours} hours "
+            "since it was requested, and the dispatcher dispatches no task without them, so no "
             "worker ever received it. The controller reports of those ticks say why they "
             "were not recorded"))
     if retry is not None:
         details["queue_retry"] = {"attempts": retry["attempts"],
                                   "max_attempts": retry.get("max_attempts")}
         causes.append(
-            f"the worker run of attempt {retry['attempts']} of this Work ended without a Result "
-            "(it was cancelled, timed out or lost its runner) and the queue holds the Work for "
+            f"the worker run of attempt {retry['attempts']} of this task ended without a Result "
+            "(it was cancelled, timed out or lost its runner) and the queue holds the task for "
             "its next attempt, but the dispatcher runs since then did not start a worker for it. "
             "The Dispatcher runs of the tracking issue entry show why")
     cause = "; ".join(text for text in causes if text)
@@ -959,13 +959,13 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
 def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                    policy: dict, details: dict | None = None
                    ) -> tuple[dict | None, dict | None, str]:
-    """The table's row for requested Work whose graph is terminal without a
+    """The table's row for a requested task whose graph is terminal without a
     usable Result (``controller.terminal_work``); ``details`` say why."""
     return controller.terminal_work(c, aw, queue_state, now=now, policy=policy, details=details)
 
 
 def _may_hold_work(rec: dict) -> bool:
-    """Whether the record is in a state that can request Work at all: a
+    """Whether the record is in a state that can request a task at all: a
     working phase, or the submission rewrite of the handoff phase, and not
     paused."""
     return (rec["phase"] in WORK_PHASES or engine.state_key(rec) in SUBMISSION_WORK_STATES) \
@@ -974,34 +974,34 @@ def _may_hold_work(rec: dict) -> bool:
 
 def _holds_dispatched_work(rec: dict) -> bool:
     """Whether a relaunch decided by dispatch recovery still applies once the
-    record is observed: it holds requested Work, in a working phase or in a
-    submission Work state of the handoff phase."""
+    record is observed: it holds a requested task, in a working phase or in a
+    submission task state of the handoff phase."""
     return rec.get("active_work") is not None and (
         rec["phase"] != "handoff" or engine.state_key(rec) in SUBMISSION_WORK_STATES)
 
 
-# The phase in which the table requests Work of each task.
+# The phase in which the table requests a task of each task.
 WORK_PHASE = {"planning": "planning", "development_patch": "development",
               "development_repair": "development",
               "upstream_revision": "upstream_review",
               work.SUBMISSION_REWRITE: "handoff"}
-# The states of the handoff phase that hold requested Work: the rewrite of
+# The states of the handoff phase that hold a requested task: the rewrite of
 # the submission.
 SUBMISSION_REWRITE_STATE = lifecycle.SUBMISSION_REWRITE
 SUBMISSION_WORK_STATES = (SUBMISSION_REWRITE_STATE,)
-# The phases whose states can request Work outside the handoff phase.
+# The phases whose states can request a task outside the handoff phase.
 WORK_PHASES = frozenset({"planning", "provisioning", "development", "upstream_review"})
 
 
 def result_mismatch(rec: dict, pub: dict) -> str | None:
     """Why a Result does not match what the record requests, or ``None``.
 
-    A Result is folded only when it matches the Work identity: the current
-    generation and revision of the record, and the requested Work, which is
-    the Work the record holds (its Work id), or the held Result of the same
+    A Result is folded only when it matches the task identity: the current
+    generation and revision of the record, and the requested task, which is
+    the task the record holds (its task id), or the held Result of the same
     worker run (a publish-only retry). Everything else takes
     ``record_late_effect``. Park, abandon, and
-    pause clear the Work and the pending publication, so a matching revision
+    pause clear the task and the pending publication, so a matching revision
     alone does not prove a match.
     """
     if rec["phase"] == "handoff" and engine.state_key(rec) not in SUBMISSION_WORK_STATES:
@@ -1015,13 +1015,13 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if state in lifecycle.LIFECYCLE and not any(
             edge.transition.trigger == lifecycle.Trigger.RESULT
             and edge.verb != "record_late_effect" for edge in lifecycle.state_edges(state)):
-        # Only the `agent_running` states fold a Result; Work that a record
+        # Only the `agent_running` states fold a Result; a task that a record
         # holds in another state has none of their rows.
         return f"late Result: {state} has no row that folds a Result"
     task = pub.get("task") or {}
     generation, key = work.task_identity(task)
     if generation is None:
-        return "late Result: its task names no Work identity"
+        return "late Result: its task names no task identity"
     current = int(rec.get("generation", 0))
     if generation != current:
         return f"late Result of generation {generation}, current is {current}"
@@ -1030,30 +1030,30 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     if revision != rec["revision"]:
         return f"late Result of revision {revision}, current is {rec['revision']}"
     if (pub.get("status") == "planning") != (rec["phase"] == "planning"):
-        # A plan answers planning Work only, and planning Work
+        # A plan answers a planning task only, and a planning task
         # is answered by a plan only.
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
     if pub.get("status") == submission.REWRITE and rec["phase"] != "handoff":
         return f"late Result: a submission rewrite has no row in the {rec['phase']} phase"
     requested = rec.get("active_work")
     if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
-        # Each phase requests its own Work only: a Result of Work of another
+        # Each phase requests its own task only: a Result of a task of another
         # phase has no row of this one.
-        return (f"late Result: {requested.get('task')} Work is not requested in the "
+        return (f"late Result: the {requested.get('task')} task is not requested in the "
                 f"{rec['phase']} phase")
     if requested and requested.get("generation") == current \
             and requested.get("revision") == revision \
             and requested.get("dedupe_key") == key \
             and task.get("task", requested.get("task")) == requested.get("task") \
             and (pub.get("status") == "planning") == (requested.get("task") == "planning"):
-        # The Work id names the task; a plan answers planning Work
-        # only, and planning Work is answered by a plan only.
+        # The task id names the task; a plan answers a planning task
+        # only, and a planning task is answered by a plan only.
         return None
     if (rec.get("pending_publication") or {}).get("worker_run_id") == run \
             and rec["phase"] in ("development", "upstream_review"):
-        # A Result is held for a publish retry only where patch Work runs.
+        # A Result is held for a publish retry only where a patch task runs.
         return None
-    return "late Result without matching requested Work"
+    return "late Result without matching a requested task"
 
 
 def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
@@ -1099,7 +1099,7 @@ def late_report_evidence(rec: dict, pub: dict, *, now: str, policy: dict,
     push landed or may have landed (a ``published`` Result whose head was
     read back, or an ``uncertain`` one that names the commit it pushed): the
     head may be on the branch and CI run on it, so the report is stored as
-    ``worker_report`` evidence of the Work it answers, with ``head_after``,
+    ``worker_report`` evidence of the task it answers, with ``head_after``,
     or with ``head_candidate`` when the push was not read back, and the
     next repair reads what was tried on that head. A Result that published
     nothing stores nothing. A report that cannot be stored is recorded as
@@ -1289,7 +1289,7 @@ def fold_plan(rec: dict, outcome: dict, *, now: str, policy: dict,
                        and fork.get("pr_number") == refresh.get("pr_number"))
         # The scope is a guard of both admissions: a refreshed plan whose
         # scope is incomplete is rejected as a plan for a fresh fork is, so
-        # no patch Work is requested without a checked scope. An override is
+        # no patch task is requested without a checked scope. An override is
         # checked whichever row admits it, since nothing else names its
         # class and paths; its paths are the human's scope, so the plan's
         # coverage is recorded for it but does not refuse it.
@@ -1383,7 +1383,7 @@ def _rewrite_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str
 
 def _unusable_submission_result(rec: dict, why: str, *, now: str,
                                 policy: dict) -> tuple[dict, list[tuple[str, dict]]]:
-    """A rewrite Result that is not usable: Work without a usable
+    """A rewrite Result that is not usable: a task without a usable
     Result (``allocate_work_retry``, then ``exhaust_recovery``)."""
     aw = rec.get("active_work") or {}
     new, event, decision = _terminal_work(rec, aw, "result_unusable",
@@ -1410,7 +1410,7 @@ def _submission_evidence(rec: dict, kind: str, outcome: dict, data: dict, summar
 
 def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
                             worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold the Result of the submission rewrite Work through the table's
+    """Fold the Result of the submission rewrite task through the table's
     rows of ``handoff.agent_running``.
 
     The worker's publish job ran the trusted deterministic check
@@ -1420,8 +1420,8 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
     title, and description recorded as rewrite evidence, which the build of
     `riscv64` writes. A fail takes
     ``reject_submission_rewrite``: the reasons are recorded and become the
-    pending feedback of the next development Work; nothing is posted. An
-    outcome that is not usable is Work without a usable Result."""
+    pending feedback of the next development task; nothing is posted. An
+    outcome that is not usable is a task without a usable Result."""
     why = (_rewrite_problem(rec, outcome, worker_run_id)
            if outcome.get("status") == submission.REWRITE
            else f"the rewrite Result is not usable: {outcome.get('status')}: "
@@ -1434,7 +1434,7 @@ def fold_submission_rewrite(rec: dict, outcome: dict, *, now: str, policy: dict,
             and outcome["review_loop_rounds"] >= 1):
         # A pass checked by a pipeline that had no review loop (the worker run
         # began before the deploy): the rewrite was never reviewed, and it is
-        # not accepted. It is Work without a usable Result of the pipeline
+        # not accepted. It is a task without a usable Result of the pipeline
         # that dispatched it, relaunched with nothing charged.
         new, event, decision = _terminal_work(
             rec, rec.get("active_work") or {}, "result_unusable",
@@ -1498,10 +1498,10 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
                       ) -> tuple[dict, list[tuple[str, dict]]]:
     """Fold one Result (from fork_publish / queue_result) into the record.
 
-    * planning Work: the plan decides, by the table (``fold_plan``);
-    * the submission rewrite Work: its trusted check decides
+    * A planning task: the plan decides, by the table (``fold_plan``);
+    * the submission rewrite task: its trusted check decides
       (``fold_submission_rewrite``);
-    * patch Work in development and revision Work in upstream review: the
+    * A patch task in development and a revision task in upstream review: the
       table's rows (``fold_patch_result``).
 
     ``pypi`` reads a PyPI document for the confirmation of a decision close
@@ -1524,7 +1524,7 @@ _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_i
 
 # The rows that fold the Result of a successful worker: its Result was
 # accepted and the pipeline acts on it. Only their reports are stored, as
-# `worker_report` evidence that every later Work of the contribution
+# `worker_report` evidence that every later task of the contribution
 # carries in its history. A Result whose push may have landed stores it too
 # (`pushed_report_evidence`); the report of any other fold is discarded
 # with the artifact.
@@ -1539,15 +1539,15 @@ def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: di
                     revision: int | None = None) -> list[tuple[str, dict]]:
     """The report of a Result folded by ``verb``, staged as ``worker_report``
     evidence when ``verb`` is a success row; its id is named in
-    ``details``, or that it is absent when the Work carries no history and
-    returned no usable report. A success row of Work that carries a history
+    ``details``, or that it is absent when the task carries no history and
+    returned no usable report. A success row of a task that carries a history
     never drops its report: ``worker_report.evidence`` raises when it cannot
     be stored, so the contribution pauses and the Result stays unfolded.
     Nothing is staged for any other row. ``operation`` is the branch
     operation the row names, whose commit the report records as the head
-    the Work left. ``head_verb`` names the success row whose head the
+    the task left. ``head_verb`` names the success row whose head the
     report records when ``verb`` holds a patch it did not publish, and
-    ``revision`` the revision of the Work when the record has left it."""
+    ``revision`` the revision of the task when the record has left it."""
     if verb not in REPORT_VERBS:
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
@@ -1564,7 +1564,7 @@ def pushed_report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, pol
                            run: str, details: dict,
                            operation: dict | None = None,
                            revision: int | None = None) -> list[tuple[str, dict]]:
-    """The report of a Result of patch or revision Work that a row other
+    """The report of a Result of patch or revision task that a row other
     than the success row folds although its push may have landed: an
     ``uncertain`` Result held for a publish-only retry, or a retry rejected
     as stale behind the operation of an earlier attempt (``operation``).
@@ -1791,8 +1791,8 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                       worker_run_id: str | None, operations: dict[str, dict] | None = None,
                       evidence: dict[str, dict] | None = None
                       ) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold the Result of patch Work through the rows of
-    ``development.agent_running``, or of revision Work through the rows of
+    """Fold the Result of a patch task through the rows of
+    ``development.agent_running``, or of a revision task through the rows of
     ``upstream_review.agent_running``.
 
     In both states the success row is taken only for a confirmed
@@ -1815,14 +1815,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     there. Upstream CI is never rerun.
 
     * published (confirmed, as above): ``record_publish_success`` (clears
-      exactly the feedback the Work carried); the published files that no
+      exactly the feedback the task carried); the published files that no
       admitted path matches join ``scope_paths`` (``extended_scope``) beside
       the row, and the row starts ``no_progress`` again;
     * rejected in trusted validation, blocked, or a ``proposal`` (no
       publisher produces one any more): ``reject_patch_proposal``; a blocked
       Result's rehearsal evidence is recorded and named in the event;
     * a ``no_change`` report (the repair worker found a failure not caused
-      by the patch): ``request_ci_rerun`` when the Work carries no feedback
+      by the patch): ``request_ci_rerun`` when the task carries no feedback
       and ``flaky_reruns`` remains and the outcome carries the receipt of
       the trusted rerun (``ci_rerun.receipt_problem``), a failed publication
       when it carries none, ``reject_patch_proposal`` otherwise;
@@ -1844,18 +1844,18 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     rows = WORK_RESULT_STATES.get(engine.state_key(rec))
     if rows is None:
         raise lifecycle.TransitionError(
-            f"the Result of patch or revision Work is folded in "
+            f"the Result of patch or revision task is folded in "
             f"{' or '.join(WORK_RESULT_STATES)} only, not in {engine.state_key(rec)}")
     status, fclass = outcome.get("status"), outcome.get("failure_class")
     if status in ("verified", "unreviewed"):
         # The Result of a worker run that began before the review loop: its
         # publication job held the patch for a review that no longer exists
         # and pushed nothing (``verified``), or the retry of its held Result
-        # found a report with no review loop (``unreviewed``). It is Work without a usable Result of the
+        # found a report with no review loop (``unreviewed``). It is a task without a usable Result of the
         # pipeline that dispatched it, relaunched with nothing charged.
         aw = rec.get("active_work")
         if aw is None and rec.get("pending_publication"):
-            # A Result held for a publish-only retry: its Work was cleared when
+            # A Result held for a publish-only retry: its task was cleared when
             # it was held, so the request that replaces it is rebuilt from the
             # record, like an allocation of the same task.
             task = (outcome.get("task") or {}).get("task") or "development_repair"
@@ -1877,7 +1877,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     run = str(worker_run_id or (held or {}).get("worker_run_id")
               or (outcome.get("artifact") or {}).get("run_id") or "0")
     cause = _result_cause(outcome, worker_run_id)
-    # The revision of the Work the Result answers.
+    # The revision of the task the Result answers.
     revision = (outcome.get("task") or {}).get("revision")
     if not isinstance(revision, int) or isinstance(revision, bool):
         revision = None
@@ -1977,7 +1977,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             verb, facts = rows["no_change"], {"no_change_needed"}
         elif status == "no_change":
             # The repair worker reports a failure not caused by the patch:
-            # `request_ci_rerun` when the Work carries no feedback and
+            # `request_ci_rerun` when the task carries no feedback and
             # `flaky_reruns` remains (the outcome then carries the receipt of
             # the rerun), else the outcome counts as `reject_patch_proposal`,
             # as both rows state.
@@ -2030,7 +2030,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             evidence = _rehearsal_evidence(rec, outcome, run, policy, now)
             staged.append(("evidence", evidence))
             details["evidence_id"] = evidence["evidence_id"]
-        # The report of a successful worker is kept for later Work; any
+        # The report of a successful worker is kept for a later task; any
         # other report is discarded.
         staged.extend(report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
                                       details=details, operation=op, revision=revision))
@@ -2288,9 +2288,9 @@ def pause_on_processing_error(record: dict, description: dict, *, policy: dict,
     """Take the table's ``pause_on_processing_error`` on the committed record.
 
     It sets ``paused`` with the error as ``paused_reason``, ``paused_by``
-    ``controller`` and ``paused_at``, and clears the requested Work and the
+    ``controller`` and ``paused_at``, and clears the requested task and the
     pending publication; from an ``agent_running`` state
-    it leads to the state in which the Work is due. ``paused_at_commit``
+    it leads to the state in which the task is due. ``paused_at_commit``
     records ``version``, the pipeline code that ran, so the controller
     resumes the stop once that code changed. The row is refused,
     and nothing changes, when the contribution is already paused or
@@ -2933,7 +2933,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     publications = [item[1] for item in latest.values()] + [
         dict(pub, superseded=True) for pub in superseded]
     pubs_report = []
-    # Contributions whose Result was deferred in this tick: its Work is not
+    # Contributions whose Result was deferred in this tick: its task is not
     # missing, the artifact is read again once the development PR is open,
     # so dispatch recovery leaves them alone.
     deferred_cids: set[str] = set()
@@ -2965,7 +2965,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                            else result_mismatch(rec, pub))
             if unrequested:
                 # The table's `record_late_effect`: a Result that does not match
-                # the current generation, revision, and requested Work is recorded
+                # the current generation, revision, and a requested task is recorded
                 # for audit and never folded, in every state. A branch effect it
                 # carried is seen by head observation.
                 extra: dict[str, Any] = {}
@@ -2998,7 +2998,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             pubs_report.append({"contribution": cid, "status": pub.get("status"), "reason": pub.get("reason")})
     out.report["publications"] = pubs_report
 
-    # 1b. Requested Work whose graph is terminal without a usable Result is
+    # 1b. A requested task whose graph is terminal without a usable Result is
     # recovered by the table's rows in dispatch recovery; no deadline applies.
     # A completed graph is terminal without a usable Result once a
     # publication of this tick names it, or once its worker run ended
@@ -3046,9 +3046,9 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         out.staged.extend(obs.staged)
         out.report["observation"] = obs.report
         # Recovery is evaluated before live CI. A record that no longer holds
-        # its Work once observed (CI accepted the head, or the head moved) is
-        # not launched again; the submission rewrite Work of the
-        # handoff phase is relaunched like development Work.
+        # its task once observed (CI accepted the head, or the head moved) is
+        # not launched again; the submission rewrite task of the
+        # handoff phase is relaunched like a development task.
         out.report["dispatch_relaunch"] = [
             item for item in out.report["dispatch_relaunch"]
             if "contribution_id" not in item
@@ -3068,7 +3068,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     observed_dev_heads = {item["contribution"]: item["observed_head"]
                           for item in out.report.get("observation") or []
                           if item.get("ref") == DEV_REF and isinstance(item.get("observed_head"), str)}
-    # Work that returned a Result in this tick, or whose graph the queue
+    # A task that returned a Result in this tick, or whose graph the queue
     # holds as terminal, is never allocated again under the same id.
     spent_graphs = frozenset(
         list(collected)
@@ -3148,13 +3148,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
                                 "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
-    # 5. The history of every requested Work that has none yet, normally
+    # 5. The history of every requested task that has none yet, normally
     # recorded in the tick that allocates it: the new human steering of the
     # contribution, then the history built from all its evidence. A failed
     # steering read defers only the history: the allocation is committed and
-    # the dispatcher defers the Work until a later tick records its history;
+    # the dispatcher defers the task until a later tick records its history;
     # a steering list that is gone for good is recorded as unreadable, and
-    # one that still fails once the Work has waited
+    # one that still fails once the task has waited
     # ``STEERING_FAILURE_GRACE`` is read without.
     if observe:
         out.report["work_history"] = work_histories(
@@ -3170,7 +3170,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
 # JSON, so that the state commit always fits ``storage.max_commit_bytes``
 # (2 MiB) with the rest of the tick: the new ``human_steering`` records of
 # one contribution, and the steering and histories of the whole tick. The
-# history of a Work that does not fit is built by a later tick; steering
+# history of a task that does not fit is built by a later tick; steering
 # beyond the bound of one contribution is recorded by later ticks and
 # counted as ``steering_deferred`` meanwhile.
 STEERING_BYTES_PER_CONTRIBUTION = 256 * 1024
@@ -3181,18 +3181,18 @@ HISTORY_RECORD_BYTES = work_history.HISTORY_MAX_BYTES + 8 * 1024
 # The bound of the ``human_steering`` records one contribution stages in one
 # tick (the byte bounds above are reached first).
 STEERING_RECORDS_PER_TICK = 64
-# How long a Work waits for its history while a steering list fails with an
+# How long a task waits for its history while a steering list fails with an
 # error that is not final (a 403, a 5xx, a rate limit): after that, the list
-# is recorded as unreadable and the Work proceeds without it.
+# is recorded as unreadable and the task proceeds without it.
 STEERING_FAILURE_GRACE = timedelta(hours=1)
-# How long dispatch recovery leaves requested Work alone while its history is
+# How long dispatch recovery leaves a requested task alone while its history is
 # not committed (the dispatcher defers it by design): the steering grace and
 # a margin for the ticks that build the history.
 HISTORY_WAIT = STEERING_FAILURE_GRACE + timedelta(hours=1)
 
 
 def _waited(record: dict, now: str) -> timedelta:
-    """How long the record's requested Work has waited since it was
+    """How long the record's requested task has waited since it was
     requested."""
     try:
         requested = datetime.fromisoformat(str(record["active_work"]["requested_at"]))
@@ -3204,19 +3204,19 @@ def _waited(record: dict, now: str) -> timedelta:
 def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOutput,
                    snap: Snapshot, *, policy: dict, now: str, tracking_issues: dict,
                    skip: frozenset[str]) -> list[dict]:
-    """Stage the ``work_history`` evidence of every requested Work that has
-    none yet (``work_history.evidence_id`` of its Work id), with the
+    """Stage the ``work_history`` evidence of every requested task that has
+    none yet (``work_history.evidence_id`` of its task id), with the
     ``human_steering`` evidence of the text collected for it first. The
-    record as this tick leaves it is used, so Work allocated in this tick is
+    record as this tick leaves it is used, so a task allocated in this tick is
     covered. What is staged is bounded in bytes per contribution and per
-    tick; a Work left out by the bound of the tick gets its history in a
+    tick; a task left out by the bound of the tick gets its history in a
     later tick. A steering list that fails with an error that is not final
     defers the history, never the allocation, which the tick commits; it is
-    read without, with an alert, once the Work has waited
+    read without, with an alert, once the task has waited
     ``STEERING_FAILURE_GRACE`` since its committed ``requested_at``, so one
-    failing list never holds the Work. The tick that records the history of
-    Work an earlier tick requested asks for a dispatcher launch
-    (``dispatch_relaunch``), since the dispatcher deferred that Work."""
+    failing list never holds the task. The tick that records the history of
+    a task an earlier tick requested asks for a dispatcher launch
+    (``dispatch_relaunch``), since the dispatcher deferred that task."""
     latest = {c["contribution_id"]: c for c in contributions.values()}
     for kind, record in out.staged:
         if kind == "contributions":
@@ -3224,8 +3224,8 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     evidence = dict(snap.evidence)
     evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
     authority = policy["command_authority"]["actor_ids"]
-    # The Work this tick submits is dispatched by the launch that follows
-    # the commit; any other Work whose history this tick records was
+    # The task this tick submits is dispatched by the launch that follows
+    # the commit; any other task whose history this tick records was
     # deferred by an earlier dispatcher run.
     submitted = {item.get("dedupe_key") for item in out.report.get("requested_effects") or []
                  if item.get("type") == "submit_work"}
@@ -3257,12 +3257,12 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
                 # A list that fails with an error that is not final defers
                 # only the history: the allocation is committed, so the
                 # grace is measured from its durable ``requested_at``, and
-                # the dispatcher defers the Work until a later tick builds
+                # the dispatcher defers the task until a later tick builds
                 # its history (without that list once the grace is over).
                 report.append({
                     "contribution": cid, "work": request["dedupe_key"],
                     "deferred": "a steering list could not be read: "
-                                f"{isolation.clean_text(error)}; the Work has waited "
+                                f"{isolation.clean_text(error)}; the task has waited "
                                 f"{int(waited.total_seconds()) // 60} minutes, and once it "
                                 f"has waited {STEERING_FAILURE_GRACE} its history is built "
                                 "without the lists that still fail"})
@@ -3304,7 +3304,7 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
             if deferred:
                 entry["steering_deferred"] = deferred
             if request["dedupe_key"] not in submitted:
-                # The Work was requested by an earlier tick and the
+                # The task was requested by an earlier tick and the
                 # dispatcher deferred it while its history was missing:
                 # the dispatcher is launched once this history is committed,
                 # without waiting for dispatch recovery.
@@ -3327,13 +3327,13 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
 
 def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snapshot, *,
                     policy: dict, now: str, skip: frozenset[str]) -> list[dict]:
-    """Stage the ``task`` evidence (``work_task``) of every requested Work
+    """Stage the ``task`` evidence (``work_task``) of every requested task
     whose history is recorded and that has no task file yet, in the commit
     that records the history: the record as this tick leaves it is used, so
-    Work allocated in this tick is covered. A Work whose history is not
+    a task allocated in this tick is covered. A task whose history is not
     recorded (a steering read failed) gets its task file with it in a later
     tick, and one whose task cannot be built raises an alert. The tick that
-    records the task file of Work an earlier tick requested asks for a
+    records the task file of a task an earlier tick requested asks for a
     dispatcher launch (``dispatch_relaunch``), like the tick that records its
     history."""
     latest = {c["contribution_id"]: c for c in contributions.values()}
@@ -3368,7 +3368,7 @@ def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snaps
                 continue
             if work_history.evidence_id(request["dedupe_key"]) not in evidence:
                 report.append({"contribution": cid, "work": request["dedupe_key"],
-                               "deferred": "the history of the Work is not recorded yet"})
+                               "deferred": "the history of the task is not recorded yet"})
                 continue
             if budget < work_task.TASK_FILE_MAX_BYTES + 4096:
                 report.append({"contribution": cid, "work": request["dedupe_key"],
@@ -3390,7 +3390,7 @@ def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snaps
             budget -= len(canonical_json(task_record).encode())
             entry = {"contribution": cid, "work": request["dedupe_key"], "evidence_id": eid}
             if request["dedupe_key"] not in submitted:
-                # The Work was requested by an earlier tick and the
+                # The task was requested by an earlier tick and the
                 # dispatcher deferred it while its task file was missing: the
                 # dispatcher is launched once it is committed, without
                 # waiting for dispatch recovery.
@@ -3476,7 +3476,7 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
         # The worker's report (untrusted): the bytes of the file, read as the
         # gate read them, checked again and stored only when a success row
         # folds the Result. A file that cannot be read is named, so that a
-        # success fold of Work that carries a history fails loudly.
+        # success fold of a task that carries a history fails loudly.
         outcome.pop("worker_report", None)
         try:
             report = worker_report.read(path.parent / "report.json")
@@ -3579,7 +3579,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         return 1
     if migrated:
         # Keep the reviewed legacy repair in its own state-only commit. In
-        # particular, do not disturb active Work while its worker is running.
+        # particular, do not disturb an active task while its worker is running.
         import state_commit
         try:
             changed = state_commit.records_from_checkout(root, "HEAD")

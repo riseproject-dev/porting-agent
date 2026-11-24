@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """The series requirements of a plan (schema version 4) are checked on the
-exact head before nomination; unmet ones are returned as development Work
+exact head before nomination; unmet ones are returned as a development task
 (``return_for_feedback``), and the worker gate enforces them on
-that Work."""
+that task."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ class FakeGitHub:
                 "files": [{"filename": f} for f in self.files]}
 
     def paginate(self, path, **_kwargs):
-        # The (empty) steering lists of the development Work a return
+        # The (empty) steering lists of the development task a return
         # allocates.
         found = helpers.steering_list(path)
         if found is None:
@@ -102,7 +102,7 @@ class TestObservation(unittest.TestCase):
         new = final(out, rec)
         self.assertIn(ev["evidence_id"], new["pending_feedback_evidence_ids"])
         self.assertEqual(new["revision"], rec["revision"] + 1)
-        # Work carrying the requirements is requested in the same tick.
+        # A task carrying the requirements is requested in the same tick.
         self.assertEqual(kinds(out)[1:], ["request_patch"])
         self.assertEqual(new["active_work"]["task"], "development_repair")
         self.assertIn(ev["evidence_id"], new["active_work"]["feedback_evidence_ids"])

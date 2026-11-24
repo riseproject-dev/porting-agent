@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The Work identity (generation, revision, Work id) and the budgets of Work.
+"""The task identity (generation, revision, task id) and the budgets of a task.
 
-A Result is folded only when the generation, the revision, and the Work id it
+A Result is folded only when the generation, the revision, and the task id it
 carries back match the record; every other Result takes
-``record_late_effect``. Work is allocated by the rows of the table, which
+``record_late_effect``. A task is allocated by the rows of the table, which
 charge its budgets once, and an exhausted budget takes the exhaustion row
 that names it, so the resume starts exactly that counter again.
 """
@@ -48,7 +48,7 @@ POLICY = policy()
 
 
 def requested(record, task="development_repair"):
-    """``record`` holding Work allocated at its generation and revision."""
+    """``record`` holding a task allocated at its generation and revision."""
     generation, revision = record["generation"], record["revision"]
     return dict(record, activity="agent_running", active_work={
         "dedupe_key": work.work_key(record["contribution_id"], generation, revision, task),
@@ -58,7 +58,7 @@ def requested(record, task="development_repair"):
 
 
 def result(record, name="published", **task):
-    """A Result of the Work ``record`` holds, with ``task`` overriding its payload."""
+    """A Result of the task ``record`` holds, with ``task`` overriding its payload."""
     pub = publication(record, name)
     pub["task"].update(task)
     return pub
@@ -79,7 +79,7 @@ def kinds(res):
 
 
 class TestLateResultMatrix(unittest.TestCase):
-    """Generation, revision, and Work id: all three must match."""
+    """Generation, revision, and task id: all three must match."""
 
     def record(self, generation=1, revision=5):
         return requested(contribution(generation=generation, revision=revision,
@@ -95,9 +95,9 @@ class TestLateResultMatrix(unittest.TestCase):
             "later generation": ({"generation": 2}, "late Result of generation 2, current is 1"),
             "older revision": ({"revision": 4}, "late Result of revision 4, current is 5"),
             "later revision": ({"revision": 6}, "late Result of revision 6, current is 5"),
-            "other Work": ({"dedupe_key": other_key},
-                           "late Result without matching requested Work"),
-            "no Work id": ({"dedupe_key": None}, "late Result: its task names no Work identity"),
+            "another task": ({"dedupe_key": other_key},
+                           "late Result without matching a requested task"),
+            "no task id": ({"dedupe_key": None}, "late Result: its task names no task identity"),
         }
         for name, (task, why) in cases.items():
             for status in ("published", "rejected_validation", "no_change", "worker_blocked"):
@@ -119,7 +119,7 @@ class TestLateResultMatrix(unittest.TestCase):
                                      dict(record, processed_publications=[]))
 
     def test_a_payload_without_the_identity_names_no_work(self):
-        """Only an integer generation and a string Work id name a Work
+        """Only an integer generation and a string task id name a task
         identity; every other payload, also one that names neither, names
         none, and its Result is late in every generation."""
         bare = {"contribution_id": "example--proj/12", "revision": 5}
@@ -136,7 +136,7 @@ class TestLateResultMatrix(unittest.TestCase):
                 record = self.record(generation=generation, revision=5)
                 pub = dict(publication(record, "published"), task=dict(bare))
                 self.assertEqual(reconcile.result_mismatch(record, pub),
-                                 "late Result: its task names no Work identity")
+                                 "late Result: its task names no task identity")
                 output = tick(record, [pub], capacity_ok=False)
                 self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
                 late = events(output)[0]["details"]
@@ -147,7 +147,7 @@ class TestLateResultMatrix(unittest.TestCase):
                 self.assertEqual(after["processed_publications"], [999])
 
     def test_every_payload_carries_the_identity(self):
-        """Every Work the dispatcher submits names its generation and Work
+        """Every task the dispatcher submits names its generation and a task
         id, and the pending feedback ids it answers."""
         tasks = sorted(work.WRITE_TASKS) + list(work.SUBMISSION_TASKS) + ["planning"]
         for task in tasks:
@@ -172,7 +172,7 @@ class TestLateResultMatrix(unittest.TestCase):
                 else:
                     other["active_work"]["generation"] = generation
                 self.assertIsNone(work.request_from_active(other))
-        # The field migration carries Work recorded without a generation as
+        # The field migration carries a task recorded without a generation as
         # generation 0: it is then dispatched in generation 0 only.
         for generation in (0, 1):
             with self.subTest(migrated=generation):
@@ -184,7 +184,7 @@ class TestLateResultMatrix(unittest.TestCase):
                                  generation == 0)
 
     def test_work_left_by_a_result_without_identity_is_retried_then_waits(self):
-        """The Work an identity-less Result leaves requested is terminal
+        """The task an identity-less Result leaves requested is terminal
         without a usable Result once its graph completed: it takes
         ``allocate_work_retry`` within ``work_recovery``, then
         ``exhaust_recovery`` to the human wait of the phase."""
@@ -202,7 +202,7 @@ class TestLateResultMatrix(unittest.TestCase):
         retried = [r for kind, r in staged if kind == "contributions"][-1]
         self.assertNotEqual(retried["active_work"]["dedupe_key"],
                             after["active_work"]["dedupe_key"])
-        # `work_recovery` counts the attempts of the Work, `work_total` the
+        # `work_recovery` counts the attempts of the task, `work_total` the
         # attempts of the contribution: each is charged once.
         self.assertEqual(retried["active_work"]["attempt"], after["active_work"]["attempt"] + 1)
         self.assertEqual(retried["budget"]["attempts_used"],
@@ -222,7 +222,7 @@ class TestLateResultMatrix(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         tracked = subprocess.run(["git", "ls-files", "*.py"], cwd=root, capture_output=True,
                                  text=True, check=True).stdout.split()
-        phrases = ("before the Work identity " + "carried", "before the identity " + "carried")
+        phrases = ("before the task identity " + "carried", "before the identity " + "carried")
         for name in tracked:
             text = (root / name).read_text(encoding="utf-8")
             for phrase in phrases:
@@ -250,10 +250,10 @@ class TestLateResultMatrix(unittest.TestCase):
         self.assertEqual(lc.publication_check(record, expected_generation=0, work_key=key, **check),
                          "work generation changed")
         self.assertEqual(lc.publication_check(record, expected_generation=1, work_key="other",
-                                              **check), "the requested Work is other Work")
+                                              **check), "the requested task is another task")
         self.assertEqual(lc.publication_check(dict(record, active_work=None), expected_generation=1,
                                               work_key=key, **check),
-                         "no requested Work or pending publication")
+                         "no requested task or pending publication")
         held = dict(record, active_work=None, pending_publication={
             "worker_run_id": "555", "attempts": 1, "last_reason": "x", "next_attempt_at": NOW})
         self.assertIsNone(lc.publication_check(held, expected_generation=1, work_key=key, **check))
@@ -268,7 +268,7 @@ class TestLateResultMatrix(unittest.TestCase):
         # `development.agent_running` has no observation row.
         self.assertEqual(output.report["observation"][0]["note"],
                          "development.agent_running has no observation row")
-        # The Result of that Work is then folded at its revision.
+        # The Result of that task is then folded at its revision.
         folded = final(tick(record, [result(record, "published")], capacity_ok=False), record)
         self.assertEqual(folded["activity"], "waiting_ci")
         observed = final(tick(folded, observe=True, head=SHA_B), folded)
@@ -276,7 +276,7 @@ class TestLateResultMatrix(unittest.TestCase):
 
 
 class TestAllocation(unittest.TestCase):
-    """Work is allocated by the table's rows; each allocation charges once."""
+    """A task is allocated by the table's rows; each allocation charges once."""
 
     def test_planning_begins_in_a_commit_of_its_own(self):
         record = contribution(phase="queued", activity="idle", fork=None)
@@ -286,7 +286,7 @@ class TestAllocation(unittest.TestCase):
         self.assertIsNone(begun["active_work"])
         self.assertEqual(begun["budget"]["attempts_used"], 0)
         self.assertEqual(res.requested_effects, [])
-        # The Work is allocated from `planning.idle` in a later tick.
+        # The task is allocated from `planning.idle` in a later tick.
         res, after = select(begun)
         self.assertEqual(kinds(res), ["dispatch_planning"])
         self.assertEqual(engine.state_key(after), "planning.agent_running")
@@ -369,7 +369,7 @@ class TestAllocation(unittest.TestCase):
         details = [e for k, e in res.staged if k == "events"][0]["details"]
         self.assertEqual((details["cluster"], details["charged"]),
                          ("build riscv64", ["repair_attempts_cluster", "work_total"]))
-        # The next tick holds the Work: nothing is charged again.
+        # The next tick holds the task: nothing is charged again.
         res, again = select(after, evidence=evidence)
         self.assertEqual((kinds(res), again["budget"]), ([], after["budget"]))
         # The rejected outcome charges `no_progress` only.
@@ -404,7 +404,7 @@ class TestAllocation(unittest.TestCase):
         res, after = select(record)
         self.assertEqual(after["active_work"]["feedback_evidence_ids"], ["r-1", "r-2"])
         self.assertEqual(res.requested_effects[0]["feedback_evidence_ids"], ["r-1", "r-2"])
-        # Feedback recorded while the Work runs is not carried.
+        # Feedback recorded while the task runs is not carried.
         later = dict(after, pending_feedback_evidence_ids=["r-1", "r-2", "r-3"])
         request = work.request_from_active(later)
         self.assertEqual(request["feedback_evidence_ids"], ["r-1", "r-2"])
@@ -412,12 +412,12 @@ class TestAllocation(unittest.TestCase):
         self.assertEqual((node["payload"]["feedback_evidence_ids"], node["payload"]["generation"],
                           node["payload"]["dedupe_key"]),
                          (["r-1", "r-2"], 0, after["active_work"]["dedupe_key"]))
-        # A fresh graph for the same Work carries the same ids.
+        # A fresh graph for the same task carries the same ids.
         out, event, _decision = reconcile._terminal_work(later, later["active_work"], "cancelled",
                                                          now=T, policy=POLICY)
         self.assertEqual(out["active_work"]["feedback_evidence_ids"], ["r-1", "r-2"])
         self.assertEqual(out["pending_feedback_evidence_ids"], ["r-1", "r-2", "r-3"])
-        # A pause clears the Work and keeps the pending feedback.
+        # A pause clears the task and keeps the pending feedback.
         paused = apply_command(later, commands.parse("/upstreaming pause")).record
         self.assertIsNone(paused["active_work"])
         self.assertEqual(paused["pending_feedback_evidence_ids"], ["r-1", "r-2", "r-3"])
@@ -486,7 +486,7 @@ class TestExhaustion(unittest.TestCase):
                           record["pending_human_action"]["counter"]), ("work_failed", "work_recovery"))
         self.assertEqual(record["budget"]["attempts_used"], 2)
         self.assertEqual(record["revision"], 4)
-        # A fresh graph each time: generation and revision in the Work id.
+        # A fresh graph each time: generation and revision in the task id.
         out = self.resume(record)
         self.assertTrue(out.accepted, out.reason)
         self.assertEqual(engine.state_key(out.record), "development.fix_needed")
@@ -512,7 +512,7 @@ class TestExhaustion(unittest.TestCase):
                 self.assertEqual(event["kind"], "exhaust_recovery")
                 self.assertEqual(new["pending_human_action"]["counter"], counter)
                 self.assertEqual(sorted(event["details"]["exhausted"]), sorted(exhausted))
-        # One resume from the wait with both spent makes Work possible again.
+        # One resume from the wait with both spent makes a task possible again.
         record = self.spent(requested(contribution(revision=2)), attempts_used=total)
         record["active_work"]["attempt"] = recovery
         waiting, _event, _decision = controller.terminal_work(
@@ -529,7 +529,7 @@ class TestExhaustion(unittest.TestCase):
         self.assertEqual(event["kind"], "allocate_work_retry")
 
     def test_terminal_work_retry_is_refused_without_the_bound_identity(self):
-        # A record holding Work always has the identity bound (see
+        # A record holding a task always has the identity bound (see
         # `controller.terminal_work`); were it unbound, the controller
         # neither allocates a fresh graph nor exhausts the recovery.
         record = requested(contribution(revision=2))
@@ -545,7 +545,7 @@ class TestExhaustion(unittest.TestCase):
                 new, event, decision = controller.terminal_work(
                     unbound, unbound["active_work"], "completed", now=T, policy=POLICY)
                 self.assertEqual((new, event), (None, None))
-                self.assertTrue(decision.startswith("terminal Work: "), decision)
+                self.assertTrue(decision.startswith("A terminal task: "), decision)
 
     def test_terminal_work_retry_is_a_new_graph(self):
         record = requested(contribution(generation=2, revision=7))
@@ -606,7 +606,7 @@ class TestExhaustion(unittest.TestCase):
         self.assertEqual(kinds(res), ["exhaust_repair_attempts"])
         self.assertEqual(engine.state_key(parked), "parked.idle")
         self.assertIn("repair_attempts_cluster", parked["parked_reason"])
-        # Another failing job has its own count: Work is requested.
+        # Another failing job has its own count: a task is requested.
         other = dict(record, last_ci_evidence_id="ci-10")
         res, after = select(other, evidence={"ci-10": ci_record("ci-10", SHA_A, failing="other job")})
         self.assertEqual(kinds(res), ["request_repair"])
@@ -714,7 +714,7 @@ class TestFailingJob(unittest.TestCase):
         self.assertEqual(after["budget"]["clusters"], {name: 1})
         details = [e for k, e in res.staged if k == "events"][0]["details"]
         self.assertEqual(details["cluster"], name)
-        # The name is a counter key and an event detail; the Work request
+        # The name is a counter key and an event detail; the task request
         # carries no job to run.
         self.assertNotIn(name, repr(res.requested_effects))
 

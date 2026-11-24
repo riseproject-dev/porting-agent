@@ -10,10 +10,10 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   reported and changes nothing; resolve uncertain branch operations by
   discovery;
 * in ``development.fix_needed``, take ``record_head_change`` for a fork head
-  that moved while Work is due (to ``development.waiting_ci``, which is then
+  that moved while a task is due (to ``development.waiting_ci``, which is then
   observed); on the recorded head, read only the review feedback of the
   development PR and take ``record_actionable_review`` for an actionable
-  review, so the Work requested next carries it;
+  review, so the task requested next carries it;
 * in ``development.waiting_ci``, take the table's rows for what is observed:
   ``record_head_change``, ``record_pr_mismatch``, ``record_explanation``,
   then for CI on the exact head ``record_ci_failure`` (followed by
@@ -621,7 +621,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     with jobs that lost their runner classified: ``record_ci_failure`` for
     an executed blocking failure, followed by ``record_actionable_review``
     in ``development.fix_needed`` for an actionable review observed with it,
-    so the repair Work carries the failing job and the review;
+    so the repair task carries the failing job and the review;
     ``record_actionable_review`` for an actionable review when CI did not
     fail (the observation then ends in ``development.fix_needed``, and
     nothing else is decided from CI); nothing while the snapshot is behind
@@ -635,18 +635,18 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     feedback is pending, or without pending feedback while a series
     requirement is unmet: the passing evidence is recorded, the unmet
     requirements are recorded as ``series_requirements`` evidence, which
-    joins the pending feedback, and Work carrying the feedback is due again
+    joins the pending feedback, and a task carrying the feedback is due again
     in ``development.fix_needed``. Passing CI behind
     an open operation keeps the contribution in ``development.waiting_ci``,
     and a CI run that waits for approval is collector health, not a state.
 
-    ``development.agent_running`` (requested Work, or a Result held for
-    publication) is not observed. ``development.fix_needed`` (Work is due)
+    ``development.agent_running`` (a requested task, or a Result held for
+    publication) is not observed. ``development.fix_needed`` (a task is due)
     has two observation rows: a fork head that moved there (a human push)
     takes ``record_head_change`` to ``development.waiting_ci``, which is
     then observed in the same tick; on the recorded head, an actionable
     review of the development PR takes ``record_actionable_review`` and
-    keeps the state, so the Work requested next carries it. There CI, the
+    keeps the state, so the task requested next carries it. There CI, the
     match of the development PR, and explanation-only comments are not read
     (the state has no row for them), and an inquiry is left unfenced."""
     operations = {} if operations is None else operations
@@ -661,7 +661,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             if review:
                 _record_review(obs, entry, rec, review, policy=policy, now=now,
                                facts=frozenset({"actionable_review"}))
-        entry.update(activity="fix_needed", note="development Work is due on the recorded head")
+        entry.update(activity="fix_needed", note="A development task is due on the recorded head")
         return
     cur = rec
     if head != recorded:
@@ -743,7 +743,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                 raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
         if review:
             # The review observed with the failure is recorded in
-            # development.fix_needed, so the repair Work carries the failing
+            # development.fix_needed, so the repair task carries the failing
             # job and the review: once the repair publishes, the review is
             # bound to an earlier head and would not be read again.
             cur = _record_review(obs, entry, cur, review, policy=policy, now=now,
@@ -755,7 +755,7 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
         if ops:
             entry["handoff_deferred"] = f"operation {ops[0]} is open"
         elif pending:
-            # Only a published Result clears pending feedback: Work that
+            # Only a published Result clears pending feedback: a task that
             # carries it is due again rather than the nomination waiting.
             match engine.dispatch(engine.try_apply_transition(
                     cur, "return_for_feedback", policy=policy, now=now,
@@ -836,7 +836,7 @@ def _series_requirements(api: collect.Api, record: dict, head: str, ci: dict,
     A plan that records none (every plan before schema version 4) needs no
     read. A series too large to read is not checked, and ``note`` says so.
     A plan the store does not hold records none, as for the commit rules
-    of the Work payload. A malformed requirement is an unexpected error of
+    of the task payload. A malformed requirement is an unexpected error of
     the contribution; a failed read raises ``collect.CollectError``, which
     skips the contribution this tick."""
     plan_id = record.get("plan_evidence_id")
@@ -952,7 +952,7 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
     The two guards are exclusive and the failure applies first; a review
     observed with the failure is recorded in the same observation by
     ``record_actionable_review`` in ``development.fix_needed``, so the repair
-    Work allocated next carries the failing evidence and the review.
+    task allocated next carries the failing evidence and the review.
     Passing CI keeps the gate and its recorded evidence."""
     cur = rec
     if head != rec["fork"].get("head_sha"):
@@ -1045,8 +1045,8 @@ def _observe_upstream_review(api: collect.Api, obs: Observation, entry: dict, re
     of the head (``ci_evidence.failure_recorded``). Passing CI keeps
     the state; upstream CI is never rerun.
 
-    ``upstream_review.fix_needed`` (revision Work is due) and
-    ``upstream_review.agent_running`` (Work requested, or a Result held for
+    ``upstream_review.fix_needed`` (a revision task is due) and
+    ``upstream_review.agent_running`` (a task requested, or a Result held for
     publication) have no observation row and are not read."""
     state = engine.state_key(rec)
     if state != "upstream_review.waiting_ci":

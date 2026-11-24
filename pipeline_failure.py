@@ -7,8 +7,8 @@ The worker, planner and dispatcher runs prepare their agent in
 steps that do not depend on the contribution (the gateway, the runner, the
 tools) and in a few that do (the checkout of the contribution's fork). A run
 that fails in the first kind before ``AGENT_STEP`` is a failure of the
-pipeline: it says nothing about the Work, so the controller does not charge
-the Work for it (``lifecycle.PIPELINE_FAILURE``).
+pipeline: it says nothing about the task, so the controller does not charge
+the task for it (``lifecycle.PIPELINE_FAILURE``).
 
 ``classify`` is pure: it reads the run and its jobs as the REST API returns
 them. ``tree_version`` is the version of the pipeline code, the one
@@ -75,7 +75,7 @@ def classify(run: dict, jobs: list[dict]) -> dict | None:
     contribution = CONTRIBUTION_STEPS.get(path)
     if contribution is None:
         # An unknown workflow: every known contribution step counts, so
-        # nothing is called a pipeline failure that might be the Work's.
+        # nothing is called a pipeline failure that might be the task's.
         contribution = frozenset().union(*CONTRIBUTION_STEPS.values())
     by_name = {j.get("name"): j for j in jobs if isinstance(j, dict)}
     for name in (ACTIVATION_JOB, AGENT_JOB):

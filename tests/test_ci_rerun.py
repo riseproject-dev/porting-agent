@@ -289,7 +289,7 @@ class TestPreflight(unittest.TestCase):
     def test_a_rerun_needs_every_check(self):
         schemas.validate("proposal", no_change_proposal(repair_record()))
         self.assertEqual(self.preflight(), {"rerun": True, "fork_name": "proj", "reason": None})
-        # `development_patch` Work carries no feedback: its `no_change` Result
+        # A `development_patch` task carries no feedback: its `no_change` Result
         # is published by the rerun as well, as the reconciler requires.
         patch = repair_record()
         patch["active_work"]["task"] = "development_patch"
@@ -341,7 +341,7 @@ class TestPublish(unittest.TestCase):
                 t = {k: v for k, v in task().items() if k not in drop}
                 out = self.publish(api, t=t)
                 self.assertEqual((out["status"], out["reason"], out["failure_class"]),
-                                 ("rejected", "publication check: the task names no Work identity",
+                                 ("rejected", "publication check: the task names no task identity",
                                   "stale"))
                 self.assertEqual(api.posts, [])
 

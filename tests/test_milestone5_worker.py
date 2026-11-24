@@ -193,7 +193,7 @@ class TestAutomaticProposalAdmission(unittest.TestCase):
     def test_no_patch_work_is_selected_before_the_fork_exists(self):
         """A record of an earlier controller that waits for its planned fork
         intent is migrated to `provisioning.idle`; the intent is launched by
-        the table and no patch Work is requested before the fork."""
+        the table and no patch task is requested before the fork."""
         record = json.loads(
             (ROOT / "tests/fixtures/canary-m5-provisioning-state.json").read_text()
         )

@@ -50,15 +50,15 @@ RULES_BEHIND: tuple[str, ...] = (
     "Park means \"the approach is not working\" or \"a human said stop\". Nothing parks from "
     "`upstream_review` automatically.",
     "A Result is reused only while the pipeline ran continuously. Any stop of unknown length "
-    "(pause, human wait, park) invalidates it; the next step is fresh Work.",
+    "(pause, human wait, park) invalidates it; the next step is a fresh task.",
     "The plan is refreshed after a park, and after a pause or human wait longer than 7 days "
     "in provisioning or development. It is never refreshed automatically from "
     "`handoff.awaiting_submission` or `handoff.waiting_upstream_pr`; there a human uses "
     "`/upstreaming refresh`.",
-    "Every row with a `Work: allocate` or `Work: reallocate` effect charges one per-generation "
+    "Every row with a `Task: allocate` or `Task: reallocate` effect charges one per-generation "
     "counter, `work_total`. `lifecycle check` verifies this.",
     "Prefer a guard or a derived status over a new state or flag.",
-    "Every stop that clears the requested Work also clears `pending_publication`: the flag "
+    "Every stop that clears the requested task also clears `pending_publication`: the flag "
     "set verbs, `park_contribution`, `abandon`, and every other transition that ends the "
     "generation. `lifecycle check` verifies this.",
 )
@@ -67,7 +67,7 @@ DECISIONS: tuple[Item, ...] = (
     Item(
         "Pause semantics",
         "What `pause` stops, and whether `resume_pause` changes the revision.",
-        "`pause` clears the requested Work and the pending publication, and records `paused_at`. "
+        "`pause` clears the requested task and the pending publication, and records `paused_at`. "
         "A Result held for publication is invalidated: it is not published, and no publish "
         "retry is launched while paused. `resume_pause` bumps the "
         "revision, so a Result that lands during the pause no longer matches and takes "
@@ -94,8 +94,8 @@ DECISIONS: tuple[Item, ...] = (
         "Park quiescence and the generation fence",
         "How `restart_generation` knows the ended generation is quiescent, and how a late Result "
         "of that generation is kept out of the new one.",
-        "The generation is part of the Work identity. A Result of another generation is never "
-        "folded and the publisher refuses it; it takes `record_late_effect`. Work and the "
+        "The generation is part of the task identity. A Result of another generation is never "
+        "folded and the publisher refuses it; it takes `record_late_effect`. A task and the "
         "pending publication are cleared at park and at abandon, so a publication that was "
         "pending when the generation ended never keeps `restart_generation` from applying; a "
         "branch its worker run already pushed is recorded by head observation in the phases "
@@ -113,8 +113,8 @@ DECISIONS: tuple[Item, ...] = (
         "Two verbs, each guarded by the pending action, so exactly one applies. "
         "`resume_upstream_review` leads to `upstream_review.waiting_ci` after a closed PR that "
         "is observed open again, after a reviewer was answered, and after a head change. "
-        "`resume_upstream_revision` leads to `upstream_review.fix_needed` only when revision "
-        "Work failed. Dispatch exhaustion does not park.",
+        "`resume_upstream_revision` leads to `upstream_review.fix_needed` only when a revision "
+        "task failed. Dispatch exhaustion does not park.",
         ("upstream_review.agent_running", "upstream_review.waiting_human",
          "upstream_review.waiting_ci", "upstream_review.fix_needed"),
         edges=(("upstream_review.agent_running", "exhaust_recovery"),
@@ -204,7 +204,7 @@ DECISIONS: tuple[Item, ...] = (
         "In development, the exhaustion of `publish_recovery` leaves only the states that hold "
         "a publication, `development.agent_running` and `development.publishing`. "
         "`resume_development` leads to `development.fix_needed`, clears `pending_publication`, "
-        "and requests fresh Work. Automatic publish retries still reuse the Result.",
+        "and requests a fresh task. Automatic publish retries still reuse the Result.",
         ("development.agent_running", "development.fix_needed", "development.waiting_human"),
         edges=(("development.agent_running", "schedule_publish_retry"),
                ("development.agent_running", "exhaust_recovery"),
@@ -213,8 +213,8 @@ DECISIONS: tuple[Item, ...] = (
                      ("development.waiting_human", "resume_development")),
     ),
     Item(
-        "Dispatch and Work recovery exhaustion targets",
-        "Whether dispatch exhaustion and Work exhaustion lead to the same place.",
+        "Dispatch and task recovery exhaustion targets",
+        "Whether dispatch exhaustion and task exhaustion lead to the same place.",
         "Both wait for a human: the exhaustion of `dispatch_recovery` leads to the phase's "
         "`waiting_human` in planning, development, and upstream review, like the exhaustion of "
         "`work_recovery` (one row, `exhaust_recovery`). An "
@@ -305,7 +305,7 @@ DECISIONS: tuple[Item, ...] = (
     ),
     Item(
         "Upstream revision outcomes",
-        "What happens when revision Work in upstream review is rejected or reports no change.",
+        "What happens when a revision task in upstream review is rejected or reports no change.",
         "A rejected proposal takes `reject_patch_proposal` to `upstream_review.fix_needed` and "
         "charges `no_progress`. When no change is needed, `require_reviewer_answer` leads to "
         "`upstream_review.waiting_human` with a pending action to answer the reviewer. "
@@ -361,7 +361,7 @@ DECISIONS: tuple[Item, ...] = (
         "Late Results during handoff",
         "What a late Result does in the handoff states.",
         "One rule for every state: a Result that does not match the current generation, "
-        "revision, and requested Work is recorded by `record_late_effect` and never changes "
+        "revision, and a requested task is recorded by `record_late_effect` and never changes "
         "state. `record_head_change` leads from `handoff.awaiting_submission` to "
         "`development.waiting_ci`, bumps the revision, and clears the CI evidence. "
         "`return_for_repair` from `handoff.waiting_ci` also fires when the head differs from the "
@@ -399,7 +399,7 @@ DECISIONS: tuple[Item, ...] = (
         "The repair worker classifies. A Result reporting a failure not caused by the patch takes "
         "`request_ci_rerun` from `development.agent_running` to `development.waiting_ci` and "
         "charges `flaky_reruns`; it replaces `record_no_change`. When `flaky_reruns` is "
-        "exhausted, or the Work carries feedback, the outcome counts as "
+        "exhausted, or the task carries feedback, the outcome counts as "
         "`reject_patch_proposal`. The collector reruns on its "
         "own only jobs that were cancelled or lost their runner, in `development.waiting_ci` and "
         "`handoff.waiting_ci`, within `interrupted_reruns` per head. Upstream CI is never rerun.",
@@ -466,9 +466,9 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "to `queued.idle` with the effects of `refresh_planning`; the clock is the older of "
         "`paused_at` and `pending_human_action.requested_at`, and the normal resume verbs carry "
         "the complementary guard, so exactly one applies. `resume_stale` also requires that no "
-        "Work is requested, no operation is open, and no publication is pending. A pause in "
+        "task is requested, no operation is open, and no publication is pending. A pause in "
         "planning needs no "
-        "rule because the Work was cleared. Handoff, upstream review, and release waits are "
+        "rule because the task was cleared. Handoff, upstream review, and release waits are "
         "never refreshed automatically; in `handoff.awaiting_submission` and "
         "`handoff.waiting_upstream_pr` a human uses `/upstreaming refresh`.",
         ("provisioning.waiting_human", "provisioning.idle", "development.waiting_ci+paused",
@@ -483,7 +483,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
         "Budgets",
         "What each budget counts and where its exhaustion leads.",
-        "Every row that allocates or reallocates Work charges the per-generation `work_total`. "
+        "Every row that allocates or reallocates a task charges the per-generation `work_total`. "
         "`provisioning_attempts` and `repair_attempts_total` are removed. Exhaustion of an "
         "infrastructure budget leads to a human wait of the same phase and never ends the "
         "generation. The budgets table of the lifecycle table page lists every budget with its "
@@ -515,7 +515,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("parked.idle", "restart_generation")),
     ),
     Item(
-        "Every Work allocation is charged",
+        "Every task allocation is charged",
         "`request_patch` and `record_no_change` charged nothing, so the first patch could "
         "loop without bound, and with CI evidence on the head it had no automatic exit.",
         "`request_patch` charges `work_total`, `request_ci_rerun` replaces `record_no_change`, "
@@ -613,7 +613,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "before the tick: a set verb of `paused` that applies in every non-terminal state and "
         "keeps the state. It records the error class, the message, and the run id in "
         "`paused_reason`, `paused_by=controller`, and `paused_at`, and follows the pause "
-        "semantics: the requested Work and the pending publication are cleared, and `resume_pause` bumps the revision. The error is posted on the tracking "
+        "semantics: the requested task and the pending publication are cleared, and `resume_pause` bumps the revision. The error is posted on the tracking "
         "issue and listed in the tick report under `alerts`. Errors in two or more "
         "contributions in one tick are a pipeline failure: the whole tick stops, nothing is "
         "committed, and no contribution is paused. An error outside any contribution (state "
@@ -639,11 +639,11 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "closed at submission, and how the upstream PR follows the project's pull request "
         "template, contributing instructions, commit conventions, and reviewers.",
         "Development happens on `riscv64-dev`: fork provisioning creates it from the base, and "
-        "worker Work, publication, the development PR, its CI, and head observation use it. It "
+        "a worker task, publication, the development PR, its CI, and head observation use it. It "
         "is never changed for upstreaming, and the development PR is never closed: the "
         "development PR closure, its operation, budget, state, and resume are removed. "
         "`submit_upstream` leads to `handoff.review_due`, where `request_submission_rewrite` "
-        "allocates uncredentialed rewrite Work (`handoff.agent_running`). The rewrite reshapes "
+        "allocates an uncredentialed rewrite task (`handoff.agent_running`). The rewrite reshapes "
         "the non-debug commits of the approved series after the plan's measured commit "
         "conventions (squashing only where the contributing instructions or "
         "reviewers require it) and writes the upstream PR title and description after the pull "
@@ -659,7 +659,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "conventions, and the reviewers' expectations. A failed rewrite check or a P0 finding "
         "left open (`reject_submission_rewrite`) returns "
         "to development with the reasons as pending feedback and posts nothing; a Result that "
-        "is not usable is a Work retry (`allocate_work_retry`, `exhaust_recovery`), not a "
+        "is not usable is a task retry (`allocate_work_retry`, `exhaust_recovery`), not a "
         "verdict. A rewrite whose artifact expires before `riscv64` is built "
         "(`expire_submission_rewrite`) leads back to `handoff.review_due`. CI runs on the clean head of "
         "`riscv64` as before, the package names `riscv64` and the reviewed title and "
@@ -710,13 +710,13 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("handoff.waiting_human", "resume_ci")),
     ),
     Item(
-        "Head change while development Work is due",
-        "`development.fix_needed` had no row for a fork head that moved while Work was due, so "
-        "no Work could be requested for the recorded head and nothing recorded the new one.",
+        "Head change while a development task is due",
+        "`development.fix_needed` had no row for a fork head that moved while a task was due, so "
+        "no task could be requested for the recorded head and nothing recorded the new one.",
         "A head change in `development.fix_needed` takes `record_head_change` to "
         "`development.waiting_ci`: the new head is recorded, the revision is bumped, the rerun "
         "counts start again, and CI is awaited for the new head. The pending feedback is kept, "
-        "and `return_for_feedback` makes Work due again once CI passes on the new head.",
+        "and `return_for_feedback` makes a task due again once CI passes on the new head.",
         ("development.fix_needed", "development.waiting_ci"),
         edges=(("development.fix_needed", "record_head_change"),),
         highlighted=(("development.fix_needed", "record_head_change"),),
@@ -782,23 +782,23 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("handoff.waiting_human", "resume_ci")),
     ),
     Item(
-        "Reports of successful Work and the history every Work carries",
+        "Reports of a successful task and the history every task carries",
         "What a worker remembers of the work before it.",
         "The owner asked that \"the report generated by a successful worker must be fed to "
         "subsequent runs of the worker\", \"so that it remembers everything that was tried "
         "before, so it doesn't flip flop\", and decided: \"I want the report from a successful "
         "worker to be saved for future worker only. If a worker failed, you can just discard "
         "the report\". Every patch, repair, revision and submission rewrite "
-        "Work returns a report (`schemas/worker_report.schema.json`, at most 32 KiB, a limit "
-        "the worker is told); a Work whose payload carries a history and returns an otherwise "
+        "task returns a report (`schemas/worker_report.schema.json`, at most 32 KiB, a limit "
+        "the worker is told); a task whose payload carries a history and returns an otherwise "
         "acceptable Result without a valid report is rejected by the trusted gate "
-        "(`reject_patch_proposal`, or Work without a usable Result at submission), while a "
+        "(`reject_patch_proposal`, or a task without a usable Result at submission), while a "
         "blocked Result stays `worker_blocked` whatever its report. The report "
         "is stored as `worker_report` evidence only when one of five rows folds the Result: "
         "`record_publish_success`, `record_revision_publish_success`, "
         "`accept_submission_rewrite`, and the two accepted "
         "no-change rows `request_ci_rerun` and `require_reviewer_answer`. Such a row never "
-        "drops the report of Work that carries a history: the reconciler checks the bytes "
+        "drops the report of a task that carries a history: the reconciler checks the bytes "
         "the gate checked, and a report it cannot store pauses the contribution instead of "
         "folding the Result without it. A worker counts as "
         "successful when its own Result is accepted, whatever CI says afterwards: \"if the CI "
@@ -811,23 +811,23 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Every other fold discards the report, and the rejection reasons of a failed worker are not fed forward "
         "either; a rewrite or review with a fail verdict is a rejection, while its verdict and "
         "reasons stay recorded as submission evidence. Planning writes no report: the verified "
-        "plan is its report. When Work is allocated, the tick records its history "
-        "(`work_history` evidence, derived from the Work id) in the same commit: the steering "
+        "plan is its report. When a task is allocated, the tick records its history "
+        "(`work_history` evidence, derived from the task id) in the same commit: the steering "
         "of the owner and one chronological timeline of every successful report, the CI runs "
         "and reviews that followed, and the submission verdicts, all generations included. It "
         "is capped at 64 KiB and condensed deterministically, never dropped uncounted: two "
-        "reports are kept longest, the newest by the Work it describes and the report of the "
+        "reports are kept longest, the newest by the task it describes and the report of the "
         "head CI ran on (so a CI rerun or a reviewer answer, which publish nothing, never "
         "displaces the report of the worker whose head failed), with the CI linked to it; "
         "the head a report left is the commit of the confirmed operation its row names, and a "
         "report whose push was not read back records the commit it proposed, which "
         "matches only a head that is that very commit; "
         "they take a reduced form, every section kept, before any of the owner's steering is "
-        "folded, and everything else gives way first, oldest first. The task file of the Work "
+        "folded, and everything else gives way first, oldest first. The task file of the task "
         "(`task` evidence, committed with it) names it by SHA-256, the queue payload names the "
         "task file by pinned commit and SHA-256, and a trusted pre-agent step fetches and "
         "verifies both; the "
-        "dispatcher defers Work whose history or task file is not committed yet, and dispatch "
+        "dispatcher defers a task whose history or task file is not committed yet, and dispatch "
         "recovery charges nothing for it for two hours, after which a history or task file "
         "never recorded ends in the human wait of `exhaust_recovery`, whose entry says so; the "
         "tick that records a late history or task file launches the dispatcher. No record "
@@ -848,9 +848,9 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "of the worker\" and that \"the tracking issue's description must of course be "
         "included in the planning prompt\". The tracking issue description (when edited) and "
         "comments, and the reviews, review comments and comments of the development PR and the "
-        "upstream PR, are collected when Work is allocated and recorded as `human_steering` "
+        "upstream PR, are collected when a task is allocated and recorded as `human_steering` "
         "evidence with author, time and link, the newest pages of each list first; a list "
-        "with more pages than were read is flagged, never silently cut; every Work, planning "
+        "with more pages than were read is flagged, never silently cut; every task, planning "
         "included, receives them in its history. Only accounts in the command authority "
         "steer. The REST API does not name the editor of a text. On the control repository and "
         "the fork, whose write access is part of the authority's trust, an edited description "
@@ -866,9 +866,9 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "credentials. The frozen intake description stays the request identity and the plan's "
         "digest. All of this text is untrusted: redacted, bounded, never rendered on the "
         "tracking issue or the status page, and given to agents as a data file separate from "
-        "their instructions. If GitHub cannot be read for it, the Work is allocated and its "
+        "their instructions. If GitHub cannot be read for it, the task is allocated and its "
         "history waits: the dispatcher defers it and later ticks read again, and once the "
-        "Work has waited an hour from its committed request the lists that still fail are "
+        "task has waited an hour from its committed request the lists that still fail are "
         "read without, with an alert. A list GitHub answers as gone or not accessible (404, "
         "410 or 451) is named as unreadable in the history at once, which no retry would "
         "change.",
@@ -935,20 +935,20 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("handoff.preparing_submission", "retry_submission_comment")),
     ),
     Item(
-        "The Work identity has no pre-identity reading",
-        "Whether a Work payload that names neither `generation` nor `dedupe_key`, or "
-        "requested Work recorded without a generation, is still read as generation 0.",
-        "No. A Work payload names its identity only with an integer `generation` and a string "
-        "`dedupe_key`; one that lacks either, also one that names neither, names no Work "
+        "The task identity has no pre-identity reading",
+        "Whether a task payload that names neither `generation` nor `dedupe_key`, or "
+        "a requested task recorded without a generation, is still read as generation 0.",
+        "No. A task payload names its identity only with an integer `generation` and a string "
+        "`dedupe_key`; one that lacks either, also one that names neither, names no task "
         "identity in any generation. Its Result is late and takes `record_late_effect`, and "
-        "the publisher refuses its write as stale. Requested Work whose recorded generation "
+        "the publisher refuses its write as stale. A requested task whose recorded generation "
         "is absent or not the record's is never dispatched and matches no Result; the field "
-        "migration carries Work recorded without a generation as generation 0. The Work such "
+        "migration carries a task recorded without a generation as generation 0. The task such "
         "a Result leaves requested is terminal without a usable Result and is answered by "
         "`allocate_work_retry` within `work_recovery` and `work_total`, then "
         "`exhaust_recovery` to the human wait of the phase. This completes decision 2 "
         "(the generation fence) and decision 19 (late Results): a Result that differs in the "
-        "generation, the revision, or the Work id is never folded and never published.",
+        "generation, the revision, or the task id is never folded and never published.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "record_late_effect"),
                ("development.agent_running", "allocate_work_retry"),
@@ -981,7 +981,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Whether a refreshed develop plan whose patch scope is incomplete (coverage the scope "
         "omits, no admission class, or no scope paths) returns to the recorded fork. "
         "`readmit_development` had no scope guard, so such a plan was readmitted with "
-        "`scope_coverage_complete` false, and the next repair Work could change paths outside "
+        "`scope_coverage_complete` false, and the next repair task could change paths outside "
         "the admitted scope.",
         "No. `readmit_development` has the guard of `admit_development`: \"the admitted scope "
         "names an admission class and 1 to 64 safe `scope_paths`, and a plan's own scope "
@@ -991,7 +991,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "attempts are spent `exhaust_planning_recovery` waits for a human, with reminders. "
         "The next complete plan returns to the recorded fork. An admission override keeps its "
         "reading on both rows. The check reports either admission without the guard. This "
-        "completes O24 and decision 12: no patch Work is requested without a checked scope, "
+        "completes O24 and decision 12: no patch task is requested without a checked scope, "
         "on a new fork or on the recorded one.",
         ("planning.agent_running", "development.fix_needed", "planning.idle"),
         edges=(("planning.agent_running", "readmit_development"),
@@ -1004,8 +1004,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "What an upstream identity change observed while the contribution is already paused "
         "does, given that `pause_on_identity_change` is guarded by `not paused`.",
         "Nothing is set: the pause keeps its reason and who set it, a human or the "
-        "controller. No Work is selected for the contribution while the identity differs, "
-        "also in the tick that consumes its resume, so a resume never lets Work run against "
+        "controller. No task is selected for the contribution while the identity differs, "
+        "also in the tick that consumes its resume, so a resume never lets a task run against "
         "another repository; the first tick after the resume takes `pause_on_identity_change`, "
         "with `paused_by` `controller` and `paused_reason` `upstream_identity_changed`. No "
         "row, state, or record field changes.",
@@ -1083,7 +1083,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`last_ci_evidence_id` (for the head, or the clean head built from it) that did not "
         "succeed, leaving out the publication jobs that run without credentials; else the "
         "first job a `limitations` entry of that evidence names as failing the runner-label "
-        "check; else none, and the Work charges no cluster. The job name is the key of "
+        "check; else none, and the task charges no cluster. The job name is the key of "
         "`budget.clusters`: a charge increments only that key, and the counts of other jobs "
         "are kept across heads until `refresh_on_exhaustion` or a new generation starts them "
         "again. A job named by a limitation is used as a key and in event details only. No "
@@ -1093,16 +1093,16 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.fix_needed", "request_repair"),),
     ),
     Item(
-        "A fork head that moves while Work runs",
-        "Whether a changed fork head is recorded while Work or a held Result is pending.",
-        "No head row is added to a state that requests Work or holds a Result for "
+        "A fork head that moves while a task runs",
+        "Whether a changed fork head is recorded while a task or a held Result is pending.",
+        "No head row is added to a state that requests a task or holds a Result for "
         "publication (`development.agent_running`, `development.review_pending`, "
         "`development.reviewing`, `development.publishing`): recording the head there would "
         "race the Result and need a second writer of `fork.head_sha`. The moved head heals "
         "without a human. The publisher's final check rejects a Result built on the old head "
         "as stale, which takes `replan_development` to `development.fix_needed` and charges "
         "nothing; the observation that follows, in the same tick, takes `record_head_change` "
-        "there before any Work is requested. A publish-only retry reads the branch first and never pushes over a push "
+        "there before any task is requested. A publish-only retry reads the branch first and never pushes over a push "
         "that landed; a confirmed earlier push takes `record_publish_success`, and a later "
         "head is recorded by `record_head_change`. Branch operation discovery runs in every "
         "state. No row, state, or record field changes.",
@@ -1113,15 +1113,15 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("development.fix_needed", "record_head_change")),
     ),
     Item(
-        "The counter a failed Work recovery names",
-        "Which counter `exhaust_recovery` names for a Work graph terminal without a usable "
+        "The counter a failed task recovery names",
+        "Which counter `exhaust_recovery` names for a task graph terminal without a usable "
         "Result when both of its budgets are spent.",
         "`pending_human_action.counter` names `work_total` when that budget is exhausted, also "
         "when `work_recovery` is exhausted too, and `work_recovery` otherwise. A resume starts "
         "exactly the counter the wait names. `work_recovery` is counted in "
-        "`active_work.attempt`, which the exhaustion clears with the Work, so the next Work "
+        "`active_work.attempt`, which the exhaustion clears with the task, so the next task "
         "starts at attempt 1 anyway; naming `work_total` is the only choice with which one "
-        "resume makes Work possible again. No row, state, or record field changes.",
+        "resume makes a task possible again. No row, state, or record field changes.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "exhaust_recovery"),),
         highlighted=(("development.agent_running", "exhaust_recovery"),),
@@ -1283,12 +1283,12 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
         "CI evidence the record names but the store does not hold",
         "What a record whose `last_ci_evidence_id` names evidence missing from the store does.",
-        "Evidence is never removed from the store. A record in a state where Work is "
+        "Evidence is never removed from the store. A record in a state where a task is "
         "allocated or its exhaustion decided, whose `last_ci_evidence_id` names missing "
         "evidence, is never deferred silently and never read as \"no failing job\": "
         "`controller.MissingEvidence` in step `work_selection` takes "
         "`pause_on_processing_error`, with the missing id in `paused_reason`. States that "
-        "allocate no Work (gates and waits, such as `handoff.awaiting_submission`) do not read "
+        "allocate no task (gates and waits, such as `handoff.awaiting_submission`) do not read "
         "it.",
         ("development.fix_needed", "development.fix_needed+paused"),
         edges=(("development.fix_needed", "pause_on_processing_error"),
@@ -1345,7 +1345,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "incomplete. Both admissions set `scope_coverage_complete` as an effect of the row, "
         "and `lifecycle check` reports an admission that does not. For an override the class "
         "and the paths are required and the coverage is recorded but does not refuse them. A "
-        "record with `scope_coverage_complete` false gives its repair and revision Work "
+        "record with `scope_coverage_complete` false gives its repair and revision task "
         "`legacy_scope_extension`, under which the trusted publisher admits only exact, safe, "
         "additional paths.",
         ("planning.agent_running", "provisioning.idle", "development.fix_needed",
@@ -1371,17 +1371,17 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.agent_running", "reject_patch_proposal"),),
     ),
     Item(
-        "A Result of Work of another phase",
-        "Which Results are late although the record holds Work, and which phase folds the "
+        "A Result of a task of another phase",
+        "Which Results are late although the record holds a task, and which phase folds the "
         "Result of a held publication?",
-        "Each phase requests its own Work only (`reconcile.WORK_PHASE`): planning Work in "
-        "`planning`, patch Work in `development`, revision Work in "
-        "`upstream_review`, and the submission rewrite and review in `handoff`. A Result of Work "
+        "Each phase requests its own task only (`reconcile.WORK_PHASE`): a planning task in "
+        "`planning`, a patch task in `development`, a revision task in "
+        "`upstream_review`, and the submission rewrite and review in `handoff`. A Result of a task "
         "the record holds whose task belongs to another phase takes `record_late_effect`, and so "
         "do a plan outside `planning`, any other Result in `planning`, a submission Result "
         "outside `handoff`, a review of a held patch outside `development.reviewing`, and the "
         "Result of a held publication outside `development` and `upstream_review`. The event "
-        "names why (`late Result: <task> Work is not requested in the <phase> phase`, and so "
+        "names why (`late Result: <task> a task is not requested in the <phase> phase`, and so "
         "on). This completes decision 2.",
         ("development.agent_running",),
         edges=(("development.agent_running", "record_late_effect"),),
@@ -1398,7 +1398,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`resume_stale`, and `refresh_planning` apply in the wait `exhaust_recovery` "
         "entered, and each clears it: the refresh rows list `pending_publication` among their "
         "clears like the resumes, and `lifecycle check` verifies the rows of "
-        "`development.waiting_human`. Fresh Work is requested; the held Result is never reused. "
+        "`development.waiting_human`. A fresh task is requested; the held Result is never reused. "
         "A publication that is still pending refuses `resume_stale` and `refresh_planning`. "
         "This completes decision 9.",
         ("development.agent_running", "development.waiting_human", "development.fix_needed",
@@ -1437,7 +1437,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "Which files of a published patch join `scope_paths`?",
         "Only the published files that no admitted path matches (matched as the trusted "
         "publisher matches them), once each and in order: the scope extension the publisher "
-        "admitted, as exact paths, for Work backed by a human review or with "
+        "admitted, as exact paths, for a task backed by a human review or with "
         "`legacy_scope_extension`. Files an admitted glob already matches are not added, so a "
         "normal publication never overflows the bound of 64 paths (`common.SCOPE_PATHS_MAX`, "
         "which the record schema states for `scope_paths` and `admission_override.paths`, and "
@@ -1456,17 +1456,17 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.agent_running", "record_publish_success"),),
     ),
     Item(
-        "A `no_change` report of development Work",
-        "How is the worker's `no_change` report of development Work folded?",
-        "As \"a failure not caused by the patch\": `request_ci_rerun` when the Work carries no "
-        "feedback (`active_work.feedback_evidence_ids` is empty; the Work's `reason_ids` are "
+        "A `no_change` report of a development task",
+        "How is the worker's `no_change` report of a development task folded?",
+        "As \"a failure not caused by the patch\": `request_ci_rerun` when the task carries no "
+        "feedback (`active_work.feedback_evidence_ids` is empty; the task's `reason_ids` are "
         "not feedback) and `flaky_reruns` remains for the head, and `reject_patch_proposal` "
-        "otherwise. The rerun row keeps the revision, so from the first rerun on the Work id "
-        "names the head's rerun count (`.rerun<n>`), and the repair Work requested after a "
-        "rerun is never the Work whose Result asked for it. A blocked Result's rehearsal "
+        "otherwise. The rerun row keeps the revision, so from the first rerun on the task id "
+        "names the head's rerun count (`.rerun<n>`), and the repair task requested after a "
+        "rerun is never the task whose Result asked for it. A blocked Result's rehearsal "
         "evidence is stored and named in the event and is never pending feedback. A rehearsal "
         "id that an older record still holds as pending feedback is answered like any "
-        "feedback (`return_for_feedback` when CI passes, then Work that carries it, cleared "
+        "feedback (`return_for_feedback` when CI passes, then a task that carries it, cleared "
         "when its Result is published), so it heals without a migration. This completes the "
         "CI rerun decision.",
         ("development.agent_running", "development.waiting_ci", "development.fix_needed"),
@@ -1509,10 +1509,10 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("development.agent_running", "record_late_effect")),
     ),
     Item(
-        "An allocation that names a spent Work graph",
-        "What happens when a row that keeps the revision allocates Work whose graph already "
+        "An allocation that names a spent task graph",
+        "What happens when a row that keeps the revision allocates a task whose graph already "
         "returned a Result or is terminal in the queue?",
-        "That Work is \"the Work graph is terminal without a usable Result\": the allocation "
+        "That task is \"the task graph is terminal without a usable Result\": the allocation "
         "row is taken, and then `allocate_work_retry` or `exhaust_recovery` in the same "
         "tick. The allocation charges `work_total` (and its own budgets), and the fresh graph "
         "charges `work_recovery` and `work_total` again; the spent graph is never submitted.",
@@ -1526,7 +1526,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "What `dispatch_recovery` counts and a launch that shows no run",
         "Which dispatcher runs does `dispatch_recovery` count, and what happens to a launch "
         "that never shows up as a run?",
-        "It counts the dispatcher runs created since the Work was requested, or since its "
+        "It counts the dispatcher runs created since the task was requested, or since its "
         "history was recorded or the queue's retry time (`retry_not_before`) when later; every "
         "counted run has ended. Each ended run is decided once: `retry_dispatch` records the "
         "run it decided in `active_work.dispatched_run_id` as an effect of the row, and "
@@ -1534,10 +1534,10 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "(`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never "
         "shows up as a run is launched again at once and then on every tick until a run shows "
         "up, without a row and without a charge, also for a queue retry once its backoff has "
-        "passed: such a launch is lost to the control plane, not to the Work. The launch step "
+        "passed: such a launch is lost to the control plane, not to the task. The launch step "
         "of the controller ends only once its run is listed, and the launches are serialized, "
         "so a run launched by an earlier tick is always listed, and a dispatcher run still in "
-        "flight, whenever it was created, is waited for. A Work whose `retry_not_before` is not representable "
+        "flight, whenever it was created, is waited for. A task whose `retry_not_before` is not representable "
         "is left out of the retries and reported.",
         ("development.agent_running", "development.waiting_human"),
         edges=(("development.agent_running", "retry_dispatch"),
@@ -1545,28 +1545,28 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.agent_running", "retry_dispatch"),),
     ),
     Item(
-        "A failure of the pipeline before the agent is not charged to the Work",
-        "What happens to Work whose last Claim failed before its agent ran, for a step that "
+        "A failure of the pipeline before the agent is not charged to the task",
+        "What happens to a task whose last Claim failed before its agent ran, for a step that "
         "does not depend on the contribution?",
-        "The failure is the pipeline's, not the Work's, so none of the budgets of the Work is "
+        "The failure is the pipeline's, not the task's, so none of the budgets of the task is "
         "charged. A run is such a failure when it concluded `failure` and its `activation` job "
         "failed, or its `agent` job failed in a step while the step `Execute Pi CLI` was "
         "skipped and the first failed step is not one that reads the contribution (the checkout "
-        "of its fork or of the upstream project, the Work and its history, the "
+        "of its fork or of the upstream project, the task and its history, the "
         "reproduction image). A cancelled or timed-out run, a lost runner, a failed agent and a "
-        "failed contribution step are the Work's. The failure carries the version of the "
+        "failed contribution step are the task's. The failure carries the version of the "
         "pipeline code the run ran, the one the controller resumes its own stop at. While that "
-        "is the version running now, an available Work with a retry, a cancelled graph and a "
+        "is the version running now, an available task with a retry, a cancelled graph and a "
         "dispatcher run that ended without claiming are held: nothing is launched, staged or "
         "charged, and an alert and a warning say why. A transient failure heals by itself: the "
-        "Work is launched again free by the first controller run after 30 minutes, 2 hours and "
+        "task is launched again free by the first controller run after 30 minutes, 2 hours and "
         "8 hours at one version of the code, and then stays held. Once the pipeline code changes, or a "
         "human launches the controller, a retry and a dispatcher are launched again, and a "
         "cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh "
         "graph at the next revision and charges nothing, so `work_recovery`, `work_total` and "
         "the attempts counted so far are unchanged. `allocate_work_retry` and "
         "`exhaust_recovery` are refused for such a failure. The record stays in its state "
-        "instead of pausing: a pause clears the Work while the queue still holds it available, "
+        "instead of pausing: a pause clears the task while the queue still holds it available, "
         "and its resume would charge the repair again.",
         ("development.agent_running",),
         edges=(("development.agent_running", "allocate_work_retry"),
@@ -1579,7 +1579,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "executed CI failure on the exact head are observed in the same tick?",
         "The failure first, as at the submission gate (O20): `record_ci_failure` is taken, and "
         "the review is recorded in the same observation by `record_actionable_review` in "
-        "`development.fix_needed`, so the repair Work carries the failing job and the review "
+        "`development.fix_needed`, so the repair task carries the failing job and the review "
         "(`request_repair` charges `repair_attempts_cluster` for the failing job). "
         "`record_actionable_review` in `development.waiting_ci` is guarded by \"no executed "
         "blocking failure on the exact head\", exclusive with the guard of `record_ci_failure`, "
@@ -1630,14 +1630,14 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     Item(
         "Open operations and the rows that wait for them",
         "Which rows wait while an operation of the contribution is open.",
-        "Every row that allocates Work carries the guard `no open operation` (or the quiescence "
+        "Every row that allocates a task carries the guard `no open operation` (or the quiescence "
         "guard), and so does every row of `development.waiting_ci` that acts on passing CI: "
         "`nominate_for_handoff`, `return_for_feedback` (also for unmet series requirements), and "
-        "the Work allocations `request_patch`, `request_repair`, `request_upstream_revision`, "
+        "the task allocations `request_patch`, `request_repair`, `request_upstream_revision`, "
         "and `request_review_revision`. The observation keeps the contribution in its state "
         "and reports `handoff_deferred` naming the operation, and the engine refuses the row "
         "while an operation is open. `lifecycle check` verifies both. Rows that reallocate "
-        "Work (Work recovery) do not wait.",
+        "a task (task recovery) do not wait.",
         ("development.waiting_ci", "development.fix_needed", "development.agent_running",
          "upstream_review.fix_needed", "upstream_review.agent_running",
          "handoff.awaiting_submission"),
@@ -1651,13 +1651,13 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("development.fix_needed", "request_patch")),
     ),
     Item(
-        "Work held where no row folds a Result",
-        "What happens to a Result of Work the record holds in a state without a row that "
+        "A task held where no row folds a Result",
+        "What happens to a Result of a task the record holds in a state without a row that "
         "folds a Result.",
-        "It is late. Only a state with a Result row folds a Result; Work a record holds in any "
+        "It is late. Only a state with a Result row folds a Result; a task a record holds in any "
         "other state (for example `development.fix_needed`) has no row for its Result, which "
         "takes `record_late_effect`: the artifact is marked processed once and the state, the "
-        "Work, and the budgets are kept. No row produces such a record. This completes the "
+        "task, and the budgets are kept. No row produces such a record. This completes the "
         "decision on late Results.",
         ("development.fix_needed",),
         edges=(("development.fix_needed", "record_late_effect"),),
@@ -1665,10 +1665,10 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     ),
     Item(
         "What `submit_upstream` records",
-        "What the approval of the submission records, and when the rewrite Work is allocated.",
+        "What the approval of the submission records, and when the rewrite task is allocated.",
         "`submit_upstream` records `handoff_approval` (command, actor, exact revision and head, "
         "and `evidence_ids`: the CI evidence, then the plan the approval saw), clears the "
-        "pending action, and plans no operation. The rewrite Work is allocated in "
+        "pending action, and plans no operation. The rewrite task is allocated in "
         "`handoff.review_due` by `request_submission_rewrite` in the same tick when a worker "
         "slot is free, and in a later tick otherwise.",
         ("handoff.awaiting_submission", "handoff.review_due", "handoff.agent_running"),
@@ -1687,7 +1687,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "has fail. A split the project requires fails the rewrite "
         "(`reject_submission_rewrite` to `development.fix_needed` with the reasons as pending "
         "feedback), so the split commits are made and approved in development. "
-        "`accept_submission_rewrite` keeps the revision, since no review Work follows it. The "
+        "`accept_submission_rewrite` keeps the revision, since no review task follows it. The "
         "package marker, the `upstream_branch` operation marker, and the headline name the "
         "approval's revision.",
         ("handoff.review_due", "handoff.agent_running", "handoff.building_upstream_branch",
@@ -1706,7 +1706,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "included, is not recorded: it reaches the pipeline only through an authorized human, "
         "normally the author of the upstream PR (a User in the command authority, whom GitHub "
         "notifies of every review), who restates it on the upstream PR. No untrusted "
-        "maintainer text drives Work.",
+        "maintainer text drives a task.",
         ("upstream_review.waiting_ci", "upstream_review.fix_needed"),
         edges=(("upstream_review.waiting_ci", "record_actionable_review"),),
         highlighted=(("upstream_review.waiting_ci", "record_actionable_review"),),
@@ -1730,12 +1730,12 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("upstream_review.waiting_ci", "record_upstream_ci_failure"),),
     ),
     Item(
-        "A no_change report of revision Work",
-        "What happens when revision Work in upstream review reports that no change is needed, "
+        "A no_change report of a revision task",
+        "What happens when a revision task in upstream review reports that no change is needed, "
         "or its proposal is stale?",
         "A stale proposal takes `reject_patch_proposal`, as every other rejection there, since "
         "no row replans in upstream review. A `no_change` report takes "
-        "`require_reviewer_answer` also when the Work answered an upstream CI failure: the "
+        "`require_reviewer_answer` also when the task answered an upstream CI failure: the "
         "pipeline never reruns upstream CI, so a human judges the failure and resumes. The "
         "failure stays recorded, so the resume requests no revision for it, and a rerun that "
         "fails again is recorded anew. The pending action stays `answer_reviewer`; the row "
@@ -1871,7 +1871,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "What a record in a state always holds, and how the table proves that no row breaks it.",
         "Each state names its invariants (`State.requires`, from `lifecycle.REQUIRES`): the "
         "bound upstream, the verified plan and scope and the fork from development on, the "
-        "development PR and the candidate head at the submission gate, the requested Work in "
+        "development PR and the candidate head at the submission gate, the requested task in "
         "the states that run it, the pending action of a wait and none elsewhere, and no stop in "
         "the states a stop leaves. `lifecycle check` "
         "proves for every row, the rules and the flag included, that each requirement of the "
@@ -1902,7 +1902,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "reconciler defers it and reads it again, and no publish-only retry is launched). In "
         "`development.fix_needed`, a head on the branch that no PR shows (a human push before "
         "the first PR, or a record that names a head without one) gets its PR first, and the "
-        "receipt takes `confirm_development_pr` to `development.waiting_ci`; Work and the "
+        "receipt takes `confirm_development_pr` to `development.waiting_ci`; a task and the "
         "exhaustion rows there wait while the operation is open. The rows that entered the CI "
         "wait without a PR (`record_publish_success`, `request_ci_rerun`, `record_head_change` "
         "of `development.fix_needed`, `resume_ci` of `development.waiting_human`) are guarded "
@@ -2000,7 +2000,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`confirm_development_pr`, with `record_pr_mismatch` as the fallback: a record that "
         "waits for CI on a head that is not the base takes no row at load, the report and the "
         "alert say that the development PR of the head is planned, and the same tick plans "
-        "`dev_pr_create` for it from the stored report of the Work that pushed the head and "
+        "`dev_pr_create` for it from the stored report of the task that pushed the head and "
         "launches it; the verified receipt records the PR in place. Launches spent without a "
         "receipt, or `MAX_REPLANS` re-plans all closed, take `record_pr_mismatch` (whose "
         "resume `resume_development` opens the PR again from `development.fix_needed`) and "
@@ -2038,7 +2038,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "the cause. `exhaust_dispatch_recovery`, `exhaust_work_recovery` and "
         "`exhaust_publish_recovery` are `exhaust_recovery`, one row per state for the "
         "recovery budgets of the failures that can occur there: the caller establishes the "
-        "failure (a lost dispatch, a Work graph terminal without a usable Result, a failed "
+        "failure (a lost dispatch, a task graph terminal without a usable Result, a failed "
         "publication), and the engine derives the pending action and the counter from it "
         "(`engine.recovery_exhaustion`); the set `pending_human_action=a|b` names the actions "
         "it may record, and `pending_publication.exhausted` is set only while a publication is "
@@ -2064,19 +2064,19 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                      ("development.waiting_human", "resume_upstream_read")),
     ),
     Item(
-        "The task of a Work is a file in the state, and the queue carries a reference",
-        "How does a Work whose task outgrows the payload of the work queue reach its agent, "
+        "The task of a task is a file in the state, and the queue carries a reference",
+        "How does a task whose task outgrows the payload of the work queue reach its agent, "
         "and who pays for a dispatch that never reached the queue (the owner's decision of "
         "2026-11-24)?",
         "The owner's decision: everything the agents need is committed by the controller into "
         "`.state` as one task file (addressed by the task id, pinned by commit and SHA-256), and the gh-aw queue payload keeps only "
         "a fixed-size reference to it (repository, commit, path, SHA-256, plus what gh-aw "
         "needs: the task kind, the dedupe key, the resource scope and the effect contract). "
-        "The controller commits the file (`task` evidence, derived from the Work id) in the "
-        "commit that records the Work and its history, so the dispatcher defers Work "
+        "The controller commits the file (`task` evidence, derived from the task id) in the "
+        "commit that records the task and its history, so the dispatcher defers a task "
         "without it and every reader resolves the reference (`task_file.resolve`) and gets "
         "the payload it always had. The controller builds the task and the payload before "
-        "it takes a row that requests Work, and takes none when it cannot: it is a failure of "
+        "it takes a row that requests a task, and takes none when it cannot: it is a failure of "
         "the pipeline, held with an alert, never charged to the contribution. A wait with "
         "`dispatch_failed` takes `rearm_dispatch` once the pipeline code is not the version "
         "it failed at (the version is recorded by `exhaust_recovery`, so it resumes once per "
@@ -2092,7 +2092,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
     ),
     Item(
         "Development and review run in one workflow",
-        "Whether a development patch and a submission rewrite are reviewed by separate Work, or "
+        "Whether a development patch and a submission rewrite are reviewed by a separate task, or "
         "by the worker that wrote them.",
         "The worker implements the patch and reviews it in its own run with a review loop "
         "on the `subagent` tool of `pi-subagents`: after it commits, fresh reviewers (read only, "
@@ -2105,7 +2105,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "publishes nothing. Otherwise the worker's publication job pushes the patch in the "
         "same run and posts the summary of the loop as a comment on the pushed commit. So "
         "the states `development.review_pending`, `development.reviewing` and "
-        "`development.publishing`, the Work kind `development_review`, the budget "
+        "`development.publishing`, the task kind `development_review`, the budget "
         "`dev_reviews` and the record fields `held_patch` and `review_comments` are gone, and "
         "`record_publish_success` of `development.agent_running` is the only row that "
         "publishes a development patch. It folds the Result once the development PR of the "
@@ -2113,7 +2113,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`confirm_development_pr`, `exhaust_development_pr_launches`) are rows of "
         "`development.agent_running` too, with no new verb. A record written in one of the "
         "removed states is not refused: the record migration drops its held patch and review "
-        "comments, moves it to `development.fix_needed` with no Work, and turns the pending "
+        "comments, moves it to `development.fix_needed` with no task, and turns the pending "
         "action `patch_review_unavailable` into `work_failed`. A Result held for a "
         "publish-only retry whose report records no review loop at all is of a worker run of "
         "the earlier pipeline: `reallocate_after_pipeline_failure` takes it, charging "
@@ -2125,7 +2125,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`fail` verdict with one reason per finding, a missing or unusable loop is a Result "
         "that is not usable), and `accept_submission_rewrite` leads straight to "
         "`handoff.building_upstream_branch` without bumping the revision. The states "
-        "`handoff.review_pending` and `handoff.reviewing`, the Work kind `submission_review`, "
+        "`handoff.review_pending` and `handoff.reviewing`, the task kind `submission_review`, "
         "the verbs `request_submission_review`, `accept_submission_review` and "
         "`reject_submission_review`, and the record field `submission_review_id` are gone: the "
         "accepted rewrite evidence is what the build of `riscv64` and the package read. A "
@@ -2151,8 +2151,8 @@ FURTHER_CHANGES: tuple[Item, ...] = (
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     Item(
         "Merge `development.idle` and `development.fix_needed`",
-        "Whether the two states in which development Work is due become one.",
-        "One state, `development.fix_needed`: development Work is due. `confirm_provisioning` "
+        "Whether the two states in which a development task is due become one.",
+        "One state, `development.fix_needed`: a development task is due. `confirm_provisioning` "
         "enters it. `request_repair` applies while a failing CI job is recorded for the head; "
         "`request_patch` applies otherwise. "
         "`development.idle` and its own exhaustion row are removed, also from the states that "
@@ -2168,9 +2168,9 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                      ("development.fix_needed", "request_repair")),
     ),
     Item(
-        "State after a pause that clears requested Work",
-        "Which state a contribution is in after `pause` cleared its requested Work.",
-        "`pause` in an `agent_running` state leads to the state in which the Work is due again: "
+        "State after a pause that clears a requested task",
+        "Which state a contribution is in after `pause` cleared its requested task.",
+        "`pause` in an `agent_running` state leads to the state in which the task is due again: "
         "`planning.idle`, `development.fix_needed`, or `upstream_review.fix_needed`. It is "
         "the one exception to a flag keeping phase and activity, and the description of the "
         "flag states it.",
@@ -2199,7 +2199,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     Item(
         "`resume_stale` with an open operation",
         "Whether `resume_stale` needs quiescence, as `refresh_planning` does.",
-        "It does: `resume_stale` requires that no Work is requested, no operation is open, and "
+        "It does: `resume_stale` requires that no task is requested, no operation is open, and "
         "no publication is pending. Until then no resume applies, and the rejection names the "
         "open operation.",
         ("provisioning.idle", "provisioning.idle+paused", "queued.idle"),
@@ -2323,11 +2323,11 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "Two verbs. `resume_upstream_review` leads to `upstream_review.waiting_ci` when the "
         "pending action is `pr_closed_unmerged` (the PR is observed open again), "
         "`answer_reviewer`, or `upstream_head_changed`, and clears the pending feedback: "
-        "every resume that requests Work again keeps the pending feedback; "
+        "every resume that requests a task again keeps the pending feedback; "
         "`resume_upstream_review` is the one resume that clears it, because a human answered "
         "it (the other two pending actions are entered from `upstream_review.waiting_ci`, "
         "which holds none). `resume_upstream_revision` leads to `upstream_review.fix_needed` "
-        "only when revision Work failed: dispatch, Work, publication, or budget exhaustion. "
+        "only when a revision task failed: dispatch, a task, publication, or budget exhaustion. "
         "`record_upstream_ci_failure` fires once per head and CI run, so the failure that was "
         "answered does not request a revision again.",
         ("upstream_review.waiting_ci", "upstream_review.fix_needed",
@@ -2343,10 +2343,10 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     Item(
         "The revision rule as checked",
         "Which rows count as invalidating requested or approved work.",
-        "The rule stays derived from the effects: a resume, a generation bump, a fresh Work "
+        "The rule stays derived from the effects: a resume, a generation bump, a fresh task "
         "graph, a change of scope, feedback, refresh, handoff request, approval, or clean head, "
         "a recorded head change (observed, or read back by a Result), and a rejected Result "
-        "after which the same Work is due again. "
+        "after which the same task is due again. "
         "Under it `replan_development` bumps and `park_planning` does not, because a park "
         "is a stop and the restart bumps.",
         ("planning.agent_running", "parked.idle", "development.agent_running",
@@ -2382,7 +2382,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "The first patch after a rejected proposal",
-        "Which verb requests Work when a proposal was rejected before the head had any CI "
+        "Which verb requests a task when a proposal was rejected before the head had any CI "
         "evidence.",
         "`request_patch`: a rejected proposal records no failing CI job for the head. "
         "`request_patch` charges `work_total` and requires that `no_progress` remains; it does "
@@ -2397,10 +2397,10 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                      ("development.agent_running", "reject_patch_proposal")),
     ),
     Item(
-        "Exhaustion of `work_total` found while Work is running",
+        "Exhaustion of `work_total` found while a task is running",
         "Whether the resume after `exhaust_recovery` starts `work_total` again when "
         "`work_total` was the exhausted budget.",
-        "It does. When a Work retry cannot be allocated because `work_total` is exhausted, "
+        "It does. When a task retry cannot be allocated because `work_total` is exhausted, "
         "`exhaust_recovery` records `pending_human_action.counter=work_total`, and one "
         "resume starts it again, in planning, development, and upstream review. When "
         "`work_recovery` itself is exhausted, it names `work_recovery`. The slice shows "
@@ -2425,7 +2425,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "exhaustion verb is `exhaust_interrupted_reruns`, and `resume_ci` is the resume verb in "
         "both `development.waiting_human` and `handoff.waiting_human`. The pending actions of "
         "the handoff wait are `upstream_branch_failed`, `upstream_branch_blocked`, "
-        "`submission_comment_failed`, `ci_interrupted`, and those of the rewrite Work "
+        "`submission_comment_failed`, `ci_interrupted`, and those of the rewrite task "
         "(`work_budget_exhausted`, `dispatch_failed`, `work_failed`). An exhaustion names its "
         "counter in `pending_human_action.counter`.",
         ("handoff.building_upstream_branch", "handoff.waiting_ci",
@@ -2440,14 +2440,14 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                      ("handoff.waiting_human", "resume_ci")),
     ),
     Item(
-        "Exhaustion of `work_total` found when development Work is due",
+        "Exhaustion of `work_total` found when a development task is due",
         "Where `work_total` exhaustion leads when it is found at `development.fix_needed`.",
         "To the human wait, as in the other phases. At `development.fix_needed`, exhaustion of "
         "`work_total` takes `exhaust_work_total` to `development.waiting_human` with "
         "`pending_human_action.counter=work_total`, and one resume starts it again. "
         "`exhaust_repair_attempts` parks only for `repair_attempts_cluster` and `no_progress`, "
         "after `refresh_on_exhaustion` is used. The reply at exhaustion states the number of "
-        "Work allocations spent and names both `/upstreaming resume` and `/upstreaming park`. "
+        "task allocations spent and names both `/upstreaming resume` and `/upstreaming park`. "
         "The guards of `request_patch`, `request_repair`, `refresh_on_exhaustion`, "
         "`exhaust_repair_attempts`, and `exhaust_work_total` are mutually exclusive, and the "
         "check verifies it: the first four require that `work_total` remains.",
@@ -2465,16 +2465,16 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                      ("development.waiting_human", "resume_development")),
     ),
     Item(
-        "Pending feedback and the Work that answers it",
+        "Pending feedback and the task that answers it",
         "Which row clears `pending_feedback_evidence_ids` in development and upstream review.",
-        "The Work request carries the pending feedback ids present at allocation, in "
+        "The task request carries the pending feedback ids present at allocation, in "
         "`active_work.feedback_evidence_ids`. `record_publish_success` clears exactly those "
         "ids, and `record_revision_publish_success` does the same in upstream review; feedback "
-        "recorded while the Work ran stays pending. `reject_patch_proposal`, "
+        "recorded while the task ran stays pending. `reject_patch_proposal`, "
         "`replan_development`, `record_head_change`, and both refresh verbs keep the pending "
-        "feedback, and every resume that requests Work again keeps the pending feedback; "
+        "feedback, and every resume that requests a task again keeps the pending feedback; "
         "`resume_upstream_review` is the one resume that clears it, because a human answered "
-        "it. A fresh Work graph and a publish retry carry the same ids. Work "
+        "it. A fresh task graph and a publish retry carry the same ids. A task "
         "that carries feedback cannot take `request_ci_rerun`: that outcome counts as "
         "`reject_patch_proposal`. The check verifies each of these.",
         ("development.fix_needed", "development.agent_running", "development.waiting_ci"),
@@ -2500,8 +2500,8 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "only and sets `last_ci_evidence_id`. The two guards are exclusive: a CI failure on "
         "the candidate head applies first, and a review observed with it is recorded in the "
         "same observation by `record_actionable_review` in `development.fix_needed`, so the "
-        "repair Work carries both. That row also records a review posted on the recorded "
-        "head while Work is due.",
+        "repair task carries both. That row also records a review posted on the recorded "
+        "head while a task is due.",
         ("handoff.awaiting_submission", "development.fix_needed", "development.agent_running"),
         edges=(("handoff.awaiting_submission", "return_for_repair"),
                ("handoff.awaiting_submission", "record_actionable_review"),
@@ -2517,7 +2517,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "What an explanation-only comment on the development PR does while the contribution "
         "waits for `submit-upstream`.",
         "`record_explanation` is a row of `handoff.awaiting_submission` that keeps the state: "
-        "the comment is recorded and linked from the event log of the website. No Work is requested and "
+        "the comment is recorded and linked from the event log of the website. No task is requested and "
         "nothing is answered automatically; the revision, the candidate head, and the CI "
         "evidence are kept, so the pending `submit-upstream` request stays valid.",
         ("handoff.awaiting_submission", "handoff.review_due"),
@@ -2571,8 +2571,8 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     ),
     Item(
         "A proposal before the fork exists",
-        "Whether patch Work can be requested before `confirm_provisioning`.",
-        "It cannot. Patch Work is requested only from `development.fix_needed`, which is "
+        "Whether a patch task can be requested before `confirm_provisioning`.",
+        "It cannot. A patch task is requested only from `development.fix_needed`, which is "
         "entered after `confirm_provisioning`. The guard of `request_patch` is write admission "
         "only. The checks on `scope_paths` and `scope_coverage_complete` are a guard of "
         "`admit_development`, so an incomplete patch scope is refused before a fork is "
@@ -2654,8 +2654,8 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
     Item(
         "Pending feedback when CI passes",
         "What happens in `development.waiting_ci` when CI passes on the exact head while "
-        "actionable feedback is still pending (after a push while Work was due for a review, or "
-        "feedback the published Work did not carry).",
+        "actionable feedback is still pending (after a push while a task was due for a review, or "
+        "feedback the published task did not carry).",
         "`return_for_feedback` leads to `development.fix_needed`: it records the passing CI "
         "evidence, keeps the revision and the pending feedback, and `request_patch` then "
         "requests a repair that carries the feedback. A head change never clears pending "
@@ -2677,7 +2677,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "`development.agent_running`.",
         "In development, an uncertain Result is a failed publication, exactly as in upstream "
         "review: it takes `schedule_publish_retry` (or `exhaust_recovery`), which clears "
-        "the Work and holds the Result, so no Work recovery takes its completed graph. "
+        "the task and holds the Result, so no task recovery takes its completed graph. "
         "`record_publish_success` is taken only when the publication is confirmed: by a "
         "`published` Result (its own operation confirmed), by the publish-only retry reading "
         "back the head the lost push left (it confirms the open operation of the earlier "
@@ -2739,9 +2739,9 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "Series requirements of the plan are met before nomination",
         "Whether a contribution-policy item of the plan that needs a change to the series (for "
         "example a changelog entry) blocks the nomination for handoff, or is requested as "
-        "development Work. Before, nothing checked it until the submission rewrite and its "
+        "a development task. Before, nothing checked it until the submission rewrite and its "
         "review, which sent the series back after a human had asked for `submit-upstream`.",
-        "It is requested as development Work. A plan of schema version 4 records its "
+        "It is requested as a development task. A plan of schema version 4 records its "
         "measurable items as `contribution_guidelines.series_requirements`, each a path the "
         "non-debug commits of the series must change, and each path is one of the plan's "
         "`allowed_paths`. When CI passes on the exact head without pending feedback, the "
@@ -2753,7 +2753,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "and bumps the revision; `request_patch` then requests a repair that carries it, and "
         "the trusted worker gate rejects a patch whose non-debug commits still do not change a "
         "matching path while the fork head is the head the evidence names. No budget is "
-        "charged by the row: the Work is bounded by `no_progress` and `work_total`, then the "
+        "charged by the row: the task is bounded by `no_progress` and `work_total`, then the "
         "automatic refresh, park, or a human wait. Qualitative items stay with the submission "
         "rewrite and its review loop (`reject_submission_rewrite`). A "
         "plan of an earlier version records none. The check verifies that every state that "
@@ -2769,15 +2769,15 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
                      ("development.waiting_ci", "return_for_feedback")),
     ),
     Item(
-        "Result of a completed Work graph",
-        "When a Work graph that the queue reports completed is terminal without a usable "
+        "Result of a completed task graph",
+        "When a task graph that the queue reports completed is terminal without a usable "
         "Result. The graph becomes completed in the `safe_outputs` job of the worker, before "
         "its `publish` job uploads the `porting-publication` artifact, and `work_recovery` "
-        "allows a single retry, so a tick between the two retried healthy Work and the Result "
+        "allows a single retry, so a tick between the two retried healthy tasks and the Result "
         "that arrived later was recorded as late.",
         "A cancelled graph is terminal without a usable Result at once: the publish job runs "
         "only for a completed outcome. A completed graph is when a publication collected in "
-        "the tick names the Work and left it requested, when the worker run the queue bound to "
+        "the tick names the task and left it requested, when the worker run the queue bound to "
         "it (`queue_result.work_runs`) ended or is gone without an unexpired "
         "`porting-publication` artifact, when the queue binds no run to it, or when the "
         "artifact of the ended run was not collected within 60 minutes of the end of the run. "
@@ -2883,11 +2883,11 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "When does a request in `queued.idle` take `begin_planning`, and can it still be "
         "withdrawn while it waits for a worker slot?",
         "In the first tick that processes it while it is not paused, whether or not a worker "
-        "slot is free, and never in the commit that allocates its Work: `dispatch_planning` or "
+        "slot is free, and never in the commit that allocates its task: `dispatch_planning` or "
         "`exhaust_work_total` is taken from `planning.idle` in a later tick, as decision 14 "
         "states (two transitions, written in two commits). A request that waits for a worker "
         "slot waits in `planning.idle`, where `withdraw_request` applies with the same guards "
-        "as in `queued.idle` (intake label removed, no Work requested, no plan, no fork), so "
+        "as in `queued.idle` (intake label removed, no task requested, no plan, no fork), so "
         "removing the intake label still withdraws it. This completes decision 14.",
         ("queued.idle", "planning.idle", "planning.agent_running", "closed.idle"),
         edges=(("queued.idle", "begin_planning"), ("planning.idle", "dispatch_planning"),
@@ -2917,7 +2917,7 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         "The task a development allocation asks for",
         "What does a worker run asked for by `request_patch` or `request_repair` do?",
         "`request_repair` always asks for a repair (`development_repair`). `request_patch` "
-        "asks for a repair when feedback is pending for the Work to answer, and for a patch "
+        "asks for a repair when feedback is pending for the task to answer, and for a patch "
         "(`development_patch`) otherwise: it covers the first patch, the patch after a rejected "
         "proposal, and a repair driven only by review feedback. A refreshed plan that returns "
         "to the fork (`readmit_development`) with no failing CI job and no pending feedback has "

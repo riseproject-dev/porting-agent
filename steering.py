@@ -6,7 +6,7 @@ The owner steers the work through the tracking issue (an edited description
 and its comments) and through reviews and comments on the development PR
 and the upstream PR. ``collect.steering`` reads that text; this module
 records what is new as ``human_steering`` evidence of the contribution,
-which every later Work carries in its history (``work_history``).
+which every later task carries in its history (``work_history``).
 
 Only accounts in the command authority steer (``authority`` true).
 Maintainers of the upstream repository who review the upstream PR are

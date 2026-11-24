@@ -3,8 +3,8 @@
 """luhenry--d2vm/3 stalled: worker run 45397386038 failed at "Start MCP
 Gateway", before its agent, and the controller neither relaunched nor woke.
 The record is the one committed at 9a2e00e (`development.agent_running`,
-Work `luhenry--d2vm/3@g1.r6:development_repair`, 4 attempts used); the queue
-holds the Work available for attempt 2 of 3 after the cancelled Claim of
+a task `luhenry--d2vm/3@g1.r6:development_repair`, 4 attempts used); the queue
+holds the task available for attempt 2 of 3 after the cancelled Claim of
 that run."""
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def dispatcher(run_id, created, conclusion="success", status="completed"):
             "updated_at": created}
 
 
-# The dispatcher run that submitted the Work, long before.
+# The dispatcher run that submitted the task, long before.
 RUNS = [dispatcher(45396818686, "2026-11-24T12:46:30Z")]
 
 
@@ -93,8 +93,8 @@ class TestTheStall(unittest.TestCase):
         self.assertIn(FIRST.isoformat(), entry["alert"])
 
     def test_another_contributions_dispatcher_run_does_not_charge_the_held_work(self):
-        # A dispatcher run for other Work, created after the retry time and
-        # ended: it neither relaunches this Work nor is a lost dispatch of it.
+        # A dispatcher run for other tasks, created after the retry time and
+        # ended: it neither relaunches this task nor is a lost dispatch of it.
         other = dispatcher(45398000000, "2026-11-24T12:56:00Z")
         relaunch, staged, report = recover("2026-11-24T13:01:00+00:00",
                                            failures={GRAPH: FAILED}, runs=RUNS + [other])
@@ -112,7 +112,7 @@ class TestTheStall(unittest.TestCase):
             GRAPH: {"run_id": "45397386038", "pipeline": False}})
         self.assertEqual(staged, [])
         self.assertEqual(len(relaunch), 1)
-        self.assertIn("the queue retries the Work", report[0]["decision"])
+        self.assertIn("the queue retries the task", report[0]["decision"])
 
     def test_a_read_that_failed_decides_nothing_and_looks_again_soon(self):
         now = at("2026-11-24T13:01:00+00:00")
@@ -138,7 +138,7 @@ class TestTheStall(unittest.TestCase):
                 self.assertIn("relaunch", report[0]["decision"])
 
     def test_a_dispatcher_that_ends_unclaimed_after_a_release_is_charged_not_looped(self):
-        # After a code change the Work is launched again; the dispatcher runs
+        # After a code change the task is launched again; the dispatcher runs
         # that end without claiming it are decided and charged by the normal
         # lost-dispatch path, bounded by `dispatch_recovery`, never launched
         # again for ever without a charge.
@@ -158,7 +158,7 @@ class TestTheStall(unittest.TestCase):
                     self.assertEqual(kinds[-1], [expected], (count, report))
                     self.assertEqual(len(report[0]["dispatcher_runs"]), count)
                 # Dispatcher runs that ended before the failed run did are
-                # not the Work's.
+                # not the task's.
                 older = dispatcher(45390000000, "2026-11-24T12:50:00Z")
                 relaunch, staged, _report = recover(
                     "2026-11-24T14:00:00+00:00", runs=RUNS + [older], **kwargs)
@@ -208,7 +208,7 @@ class TestTheStall(unittest.TestCase):
                 relaunch, staged, report = recover(due.isoformat(), failures=failures)
                 self.assertEqual((len(relaunch), staged), (1, []))
                 self.assertEqual(report[0]["pipeline_release"], "timed")
-        # After the third the Work stays held, with its alert, until the code
+        # After the third the task stays held, with its alert, until the code
         # changes or a human launches the controller.
         spent = {GRAPH: dict(FAILED, count=4)}
         relaunch, staged, report = recover("2026-12-30T00:00:00+00:00", failures=spent)
@@ -272,7 +272,7 @@ class TestTheStall(unittest.TestCase):
         self.assertEqual(event["details"]["pipeline_failure"]["release"], "timed")
         self.assertEqual(new["active_work"]["pipeline_free"], {"version": V1, "count": 1})
         self.assertEqual(new["budget"], RECORD["budget"])
-        # The fresh graph fails the same way: the count of the Work carries
+        # The fresh graph fails the same way: the count of the task carries
         # over, so the next backoff is the second (2 hours).
         again = dict(RECORD, **{k: new[k] for k in ("revision", "active_work", "budget")})
         graph = work.graph_id(new["active_work"]["dedupe_key"])
@@ -317,7 +317,7 @@ class TestTheStall(unittest.TestCase):
         reading = {"run_id": "45420000001", "pipeline": True, "job": "agent",
                    "step": "Start MCP Gateway", "version": V1, "count": 1,
                    "ended_at": "2026-11-24T13:12:00Z"}
-        # The Work's own last Claim did not fail for the pipeline.
+        # The task's own last Claim did not fail for the pipeline.
         failures = {GRAPH: {"run_id": "5", "pipeline": False}, "45420000001": reading}
         now = "2026-11-24T13:20:00+00:00"
         for state in ("available", None):

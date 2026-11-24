@@ -70,7 +70,7 @@ class TestCheck(unittest.TestCase):
             review_loop.check({"summary": "x"}, series_digest=SERIES)
         self.refused(loop(rounds=0, stopped="deadline"), "no review round ran")
         self.refused(loop(stopped="decision_needed"), "stopped for a decision")
-        # A Work that delivers no series needs none.
+        # A task that delivers no series needs none.
         self.assertIsNone(review_loop.check({}, series_digest=None, delivers_series=False))
 
     def test_a_p0_finding_that_is_open_or_deferred_blocks_publication(self):
@@ -164,11 +164,11 @@ class TestGate(unittest.TestCase):
                 self.validate(value)
 
     def test_a_work_without_a_history_needs_the_same_report(self):
-        """Every Work the controller queues carries its history (`work_task`
+        """Every task the controller queues carries its history (`work_task`
         refuses to build a task without it); only a Work queued inline before
         task files existed has none. Its patch is accepted with a valid
         report whose `history_digest` is null, like any other, and a missing
-        report is the same rejection as for Work with a history."""
+        report is the same rejection as for a task with a history."""
         import hashlib
 
         from tests import test_milestone5_worker as m5
@@ -437,7 +437,7 @@ class TestOldWork(unittest.TestCase):
         `verified`, and the held Result goes with it."""
         held = {"worker_run_id": "4242", "attempts": 1, "last_reason": "infra",
                 "next_attempt_at": NOW}
-        # The Work was cleared when the Result was held.
+        # The task was cleared when the Result was held.
         work_ = running()
         rec = dict(work_, pending_publication=held, active_work=None)
         result = dict(published(work_), status="unreviewed")

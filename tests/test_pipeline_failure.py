@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """A run that failed before its agent ran, for a step of the pipeline, is not
-a failure of the Work (worker run 45397386038 of luhenry--d2vm/3 failed at
+a failure of the task (worker run 45397386038 of luhenry--d2vm/3 failed at
 "Start MCP Gateway")."""
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ class TestClassify(unittest.TestCase):
                     dict(run, path=f".github/workflows/{workflow}"), failed)
                 # Only the dispatcher's custom steps are the pipeline's.
                 self.assertEqual(found is not None, workflow == "dispatcher.lock.yml")
-        # Another workflow's contribution step fails the Work, whichever
+        # Another workflow's contribution step fails the task, whichever
         # workflow it is read as: an unknown workflow keeps all of them.
         failed = copy.deepcopy(jobs)
         agent = next(j for j in failed if j["name"] == "agent")

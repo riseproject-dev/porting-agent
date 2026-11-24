@@ -46,7 +46,7 @@ RATIONALE = "The plan explains its decision from the sources it read."
 
 
 def planning(*, override=None, refresh="none", attempts=0):
-    """A record whose planning Work runs, as the table leaves it."""
+    """A record whose planning task runs, as the table leaves it."""
     refresh_value, fork = REFRESHES[refresh]
     record = contribution(phase="planning", activity="agent_running", revision=4,
                           fork=copy.deepcopy(fork), admission_class=None,
@@ -249,7 +249,7 @@ class TestPlanDecisionMatrix(unittest.TestCase):
     def test_a_refreshed_plan_with_an_incomplete_scope_is_rejected(self):
         """`readmit_development` has the scope guard of `admit_development`:
         a refreshed develop plan whose scope is incomplete takes
-        `reject_plan` and keeps the refresh and the fork, so no repair Work
+        `reject_plan` and keeps the refresh and the fork, so no repair task
         is requested with a scope the worker could widen; the next complete
         plan returns to the fork, and spent attempts wait for a human."""
         incomplete = {
@@ -300,7 +300,7 @@ class TestPlanDecisionMatrix(unittest.TestCase):
             body = status_ledger.render(event, new, "https://github.com/run")
             with self.subTest(decision=decision, override=bool(override)):
                 self.assertIn(status_ledger.table_message(event, new), body)
-                self.assertIn(f"`{event['kind']}` by the Result of requested Work", body)
+                self.assertIn(f"`{event['kind']}` by the Result of a requested task", body)
                 if decision == "park" and override:
                     self.assertIn("Admission override: class", body)
                 if decision == "close" and override:
@@ -354,7 +354,7 @@ class TestPlanDecisionReadings(unittest.TestCase):
     def test_an_override_that_does_not_cover_the_plan_lets_repair_extend_the_scope(self):
         """The override's paths are the human's scope: a plan coverage they
         miss does not refuse them, it is recorded false, and later repair
-        Work may add exact, safe paths the trusted publisher checks."""
+        task may add exact, safe paths the trusted publisher checks."""
         new, staged = fold(planning(override=dict(OVERRIDE, paths=["setup.py"])),
                            copy.deepcopy(DECISIONS["park"]))
         self.assertEqual(verb_of(staged), "admit_development")
@@ -541,7 +541,7 @@ class TestOverrideEndToEnd(unittest.TestCase):
 
     def provision(self, admitted, operation):
         """The trusted workflow's receipt, read back exactly, fires
-        `confirm_provisioning`; then patch Work on the fork is due."""
+        `confirm_provisioning`; then a patch task on the fork is due."""
         api = ProvisioningApi(exists=False)
         plan = provisioning.create_or_reuse(
             api, api, provisioning.preflight(api, admitted, operation, POLICY))

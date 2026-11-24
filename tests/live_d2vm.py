@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """Frozen copies of the live ``luhenry--d2vm/3`` record and evidence from the
-incident of the over-budget Work payload (``tests/fixtures/live-d2vm-payload``).
+incident of the over-budget task payload (``tests/fixtures/live-d2vm-payload``).
 
-``record-900e2b9.json`` is the record when its repair Work was requested
+``record-900e2b9.json`` is the record when its repair task was requested
 (`luhenry--d2vm/3@g1.r10:development_repair`, which no queue accepted),
 ``record-df439c0.json`` the record once the dispatch recovery waited for a
 human (`dispatch_failed`); the evidence is the plan it was repaired under,
-the relayed review, the history of the Work and the steering, as committed;
+the relayed review, the history of the task and the steering, as committed;
 ``events/`` holds events 37 to 41."""
 
 from __future__ import annotations

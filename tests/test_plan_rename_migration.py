@@ -242,7 +242,7 @@ class TestHistoricEvents(unittest.TestCase):
             ("planning.agent_running", "parked.idle")])
         record = state.migrate_names("contributions", fixture(PARKED))[0]
         text = status_ledger.table_message(events[3], record)
-        self.assertTrue(text.startswith("`park_planning` by the Result of requested Work"), text)
+        self.assertTrue(text.startswith("`park_planning` by the Result of a requested task"), text)
 
     def test_every_historic_name_maps_to_a_current_name(self):
         verbs = {e.verb for e in lifecycle.table_edges()}

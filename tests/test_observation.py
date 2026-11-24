@@ -269,8 +269,8 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
 
     def test_requested_work_is_not_observed_or_withdrawn(self):
         """`development.agent_running` has no observation row: green CI on
-        the published head neither withdraws the requested Work nor
-        nominates; the Work's Result is folded by the table's rows."""
+        the published head neither withdraws the requested task nor
+        nominates; the task's Result is folded by the table's rows."""
         for pending in (False, True):
             with self.subTest(pending=pending):
                 rec = self.undispatched_repair()
@@ -282,7 +282,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
                 self.assertNotIn("obsolete_repair_withdrawn", observation.report[0])
 
     def test_a_moved_head_is_not_recorded_while_work_is_requested(self):
-        """No state that requests Work or holds a Result for publication has
+        """No state that requests a task or holds a Result for publication has
         a head row: a moved fork head is recorded from
         `development.fix_needed` once the stale Result is replanned."""
         held = self.undispatched_repair()
@@ -290,7 +290,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         held["pending_publication"] = {"worker_run_id": "5", "attempts": 1, "last_reason": "x",
                                        "next_attempt_at": NOW, "exhausted": False}
         moved = "c" * 40
-        for label, rec in (("requested Work", self.undispatched_repair()),
+        for label, rec in (("A requested task", self.undispatched_repair()),
                            ("held publication", held)):
             with self.subTest(case=label):
                 self.assertNotEqual(rec["fork"]["head_sha"], moved)
@@ -313,7 +313,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
 
     def test_pending_feedback_with_green_ci_returns_to_due_work(self):
         """Nomination requires that no actionable feedback is pending; with
-        feedback pending, `return_for_feedback` makes Work due again."""
+        feedback pending, `return_for_feedback` makes a task due again."""
         rec = dict(self.record(), pending_feedback_evidence_ids=["review-1"])
         observation = self.observe(rec, self.snapshot(pending=False))
         final = self.final(observation, rec)
@@ -387,7 +387,7 @@ class TestExactHeadCiReconciliation(unittest.TestCase):
         self.assertFalse(events[0]["revision_bumped"])
         self.assertEqual(events[0]["details"]["head"], self.HEAD)
         self.assertEqual(events[0]["details"]["revision"], 5)
-        # The ordinary controller requests no Work for the handoff wait.
+        # The ordinary controller requests no task for the handoff wait.
         selected = controller.tick(
             contributions={"c": final}, operations={}, consumed={}, projects={}, policy=policy(),
             inputs=controller.Inputs(now=T, pressure=capacity.Pressure(ok=True)))
@@ -825,7 +825,7 @@ class TestTick(unittest.TestCase):
         self.assertFalse(any(kind == "contributions" and value["phase"] == "closed"
                              for kind, value in tick.staged))
         # A request with a plan is not withdrawn by the label: the table's
-        # guard requires no Work, no plan, and no fork.
+        # guard requires no task, no plan, and no fork.
         planned = dict(rec, plan_evidence_id="plan-1")
         tick = controller.tick(contributions={"c": planned}, operations={}, consumed={},
                                projects={}, policy=policy(), inputs=controller.Inputs(now=T,
@@ -944,7 +944,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(contribs["c"]["activity"], "agent_running")
         # No outcome past the recorded deadline: no row reads the deadline,
         # so nothing changes and nothing is dispatched again; a terminal
-        # graph is recovered by the table's Work recovery rows.
+        # graph is recovered by the table's task recovery rows.
         snap = reconcile.Snapshot(contributions=contribs, operations={}, consumed={}, projects={}, evidence={})
         out = reconcile.tick(None, snap, policy=policy(read_only=False), now=T + timedelta(hours=7),
                              publications=[], pressure=capacity.Pressure(ok=True), observe=False)
@@ -979,7 +979,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(ev[0]["data"], plan())
         final = [r for k, r in out.staged if k == "contributions"][-1]
         self.assertEqual(final["plan_evidence_id"], ev[0]["evidence_id"])
-        # `admit_development`: the fork is provisioned before any patch Work.
+        # `admit_development`: the fork is provisioned before any patch task.
         self.assertEqual(
             (final["phase"], final["activity"], final["revision"]),
             ("provisioning", "idle", 1),
@@ -1087,7 +1087,7 @@ class TestTick(unittest.TestCase):
         kinds = [k for k, _ in res.staged]
         self.assertIn("contributions", kinds)
         self.assertIn("projects", kinds)
-        # Planning begins in the tick that accepts the request, and its Work
+        # Planning begins in the tick that accepts the request, and its task
         # is requested in the next one; it needs no write admission.
         begun = [r for k, r in res.staged if k == "contributions"][-1]
         self.assertEqual((begun["phase"], begun["activity"]), ("planning", "idle"))
@@ -1100,9 +1100,9 @@ class TestTick(unittest.TestCase):
         self.assertEqual(later.requested_effects[0]["effect_contract"], {"kind": "none"})
 
     def test_work_waits_for_a_bound_upstream_identity(self):
-        # Every row that allocates Work is guarded by the bound upstream
+        # Every row that allocates a task is guarded by the bound upstream
         # identity and base: planning begins in the tick that accepts the
-        # request, whatever the upstream; without a snapshot no Work is
+        # request, whatever the upstream; without a snapshot no task is
         # requested and the record is deferred with that guard; a later tick
         # binds them and requests it.
         from tests.test_commands_intake import issue
@@ -1135,7 +1135,7 @@ class TestTick(unittest.TestCase):
 class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
     """A refresh from `parked.idle` clears the upstream identity and base;
     the tick that restarts the generation binds them again and requests the
-    planning Work, or keeps the record waiting when the upstream cannot be
+    planning task, or keeps the record waiting when the upstream cannot be
     read."""
 
     SNAPSHOT = {"repository_id": 1, "base_ref": "trunk", "base_sha": SHA_B}
@@ -1157,7 +1157,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
         return [r for k, r in res.staged if k == "contributions"][-1]
 
     def next_tick(self, rec, snapshots):
-        """The tick after the restart: planning has begun and its Work is
+        """The tick after the restart: planning has begun and its task is
         allocated."""
         return controller.tick(
             contributions={rec["contribution_id"]: rec}, operations={}, consumed={}, projects={},
@@ -1197,7 +1197,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
                 self.assertEqual(res.requested_effects, [])
                 self.assertTrue(any(d["contribution"] == final["contribution_id"]
                                     for d in res.report["deferred"]))
-                # A later tick with the snapshot binds them and requests the Work.
+                # A later tick with the snapshot binds them and requests the task.
                 later = controller.tick(
                     contributions={final["contribution_id"]: final}, operations={}, consumed={},
                     projects={}, policy=policy(), inputs=controller.Inputs(
@@ -1347,7 +1347,7 @@ class TestRefreshFromParkedBindsIdentity(unittest.TestCase):
 
 
 class TestBaseBranchUnavailable(unittest.TestCase):
-    """An upstream base branch that cannot be read where Work is due: a
+    """An upstream base branch that cannot be read where a task is due: a
     definitive answer (missing, renamed) leads to the human wait of the
     phase at once, any other failure only once `source_reads` is exhausted
     (a count of consecutive failed reads and a minimum time); the collector
@@ -1415,7 +1415,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
 
     def idle(self, **over):
         """A request whose planning began: it waits in `planning.idle` for its
-        Work, where the same base-branch rows apply as in `queued.idle`."""
+        task, where the same base-branch rows apply as in `queued.idle`."""
         return self.queued(phase="planning", **over)
 
     def reviewing(self, activity="fix_needed", **over):
@@ -1927,7 +1927,7 @@ class TestBaseBranchUnavailable(unittest.TestCase):
         final = self.final(res, rec)
         self.assertEqual(final["upstream"], {"repository_id": 1, "full_name": "example/proj",
                                              "base_ref": "trunk", "base_sha": SHA_B})
-        # Planning begins in that tick; its Work is requested in the next one.
+        # Planning begins in that tick; its task is requested in the next one.
         self.assertEqual(engine.state_key(final), "planning.idle")
         self.assertEqual(res.requested_effects, [])
         res = self.tick(final, dict(self.SNAPSHOT, base_ref="trunk"))

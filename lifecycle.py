@@ -91,8 +91,8 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
     passed this check may still finish after a later pause (best-effort
     pause, plan section 2); it is reconciled as a normal effect.
 
-    The Result must match the Work identity: the generation and revision of
-    the record, and the Work id of the requested Work (``work_key``), or a
+    The Result must match the task identity: the generation and revision of
+    the record, and the task id of the requested task (``work_key``), or a
     pending publication of a held Result."""
     if record["phase"] not in WRITE_PHASES:
         return f"phase {record['phase']} does not permit fork writes"
@@ -118,9 +118,9 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
         return "work revision changed"
     work = record.get("active_work")
     if work is not None and work.get("dedupe_key") != work_key:
-        return "the requested Work is other Work"
+        return "the requested task is another task"
     if work is None and not record.get("pending_publication"):
-        return "no requested Work or pending publication"
+        return "no requested task or pending publication"
     if observed_head != expected_head:
         return "fork head changed since the proposal was made"
     if record.get("active_operation_id"):
@@ -221,7 +221,7 @@ def write_admission(record: dict) -> str | None:
 # entry maps a name that is no longer written to the name that replaced it.
 
 HISTORIC_NAMES: dict[str, str] = {
-    # The phase, its states, and the Work task.
+    # The phase, its states, and the task.
     "investigation": "planning",
     "investigation.idle": "planning.idle",
     "investigation.agent_running": "planning.agent_running",
@@ -297,11 +297,11 @@ TRIGGER_DESCRIPTIONS = {
     Trigger.OBSERVATION: "A read-only observation by the collector: fork branch, CI runs, pull "
                          "requests, review comments, or releases.",
     Trigger.RESULT: "A verified native-queue Result folded by reconciliation. A Result is folded "
-                    "only when it matches the current generation, revision, and requested Work; "
+                    "only when it matches the current generation, revision, and a requested task; "
                     "any other Result takes `record_late_effect`. Each Result records its token "
                     "usage in the events.",
     Trigger.OPERATION: "A trusted remote operation receipt and its exact readback.",
-    Trigger.TICK: "A controller decision without new input: Work allocation, a budget charge "
+    Trigger.TICK: "A controller decision without new input: task allocation, a budget charge "
                   "or exhaustion, a deadline, or the stop after an unexpected error while one "
                   "contribution was processed.",
 }
@@ -310,11 +310,11 @@ KIND_DESCRIPTIONS = {
     "auto_wait": "Waits for an automatic trigger; the controller acts without a human. A guard "
                  "that does not hold yet (a worker slot, capacity) keeps the contribution here; "
                  "there is no separate capacity wait.",
-    "work": "Requested Work or a trusted operation is in progress.",
+    "work": "A requested task or a trusted operation is in progress.",
     "human_wait": "A recorded `pending_human_action` names what a human must do; "
                   "`/upstreaming resume` continues.",
     "gate": "Waits for a human command that starts the next step.",
-    "locked": "Write-fenced wait: only the listed exits leave it, and no Work, patch, "
+    "locked": "Write-fenced wait: only the listed exits leave it, and no task, patch, "
               "or branch write happens while here.",
     "generation_end": "The current generation has ended; the record is kept for audit and "
                       "late-effect reconciliation until a clean restart with "
@@ -322,9 +322,9 @@ KIND_DESCRIPTIONS = {
     "terminal": "No transition leaves this state.",
 }
 
-# The identity of requested Work. A Result names all three; a Result that
+# The identity of a requested task. A Result names all three; a Result that
 # differs in any of them is never folded and never published.
-WORK_IDENTITY = ("generation", "revision", "Work id")
+WORK_IDENTITY = ("generation", "revision", "task id")
 
 
 @dataclass(frozen=True)
@@ -333,15 +333,15 @@ class Effects:
 
     ``revision`` and ``generation`` are ``keep`` or ``bump``; a generation
     bump resets every mutable lifecycle field and keeps identity and replay
-    fences. ``work`` is what happens to the requested Work (``active_work``):
-    ``keep``, ``clear``, ``allocate`` (new Work for this state) or
-    ``reallocate`` (a fresh Work graph for the same task). ``sets`` and
+    fences. ``work`` is what happens to the requested task (``active_work``):
+    ``keep``, ``clear``, ``allocate`` (a new task for this state) or
+    ``reallocate`` (a fresh task graph for the same task). ``sets`` and
     ``clears`` name record fields; ``field=value`` names the value set. A
     clear in ``QUALIFIED_CLEARS`` clears only the part of a field it names.
     ``restarts`` names the budgets whose counter the transition may start
     again: it starts exactly the one named in ``pending_human_action.counter``,
     and none when no counter is named. ``credits`` names the budgets the
-    transition gives back: those the allocation of the lost Work charged
+    transition gives back: those the allocation of the lost task charged
     (``pending_human_action.credit``, else ``work_total`` alone).
     """
 
@@ -385,7 +385,7 @@ class Transition:
 class State:
     """One state and the transitions that leave it.
 
-    ``launches``: the controller may allocate Work or launch remote effects
+    ``launches``: the controller may allocate a task or launch remote effects
     from this state (subject to the flags). ``writes``: automated writers may
     write the contribution fork while the contribution is in this state.
     ``transitions`` maps ``(verb, target)`` to the transition, in order;
@@ -434,9 +434,9 @@ class Flag:
 
     ``set_by`` and ``cleared_by`` map a verb to its transition; they apply
     from every non-terminal state and keep phase and activity. The one
-    exception is ``set_moves``: setting the flag clears the requested Work,
-    so a state that holds requested Work is left for the state in which that
-    Work is due again. A setter that is not a command records its reason. ``mask`` says what each trigger may still do while
+    exception is ``set_moves``: setting the flag clears the requested task,
+    so a state that holds a requested task is left for the state in which that
+    task is due again. A setter that is not a command records its reason. ``mask`` says what each trigger may still do while
     the flag is set. ``variants`` maps a verb of ``cleared_by`` to the same
     clear under another trigger, with its own guards (the controller's
     resume after a processing error): the engine takes it when no command
@@ -516,10 +516,10 @@ EXACT_REVISION = "exact revision"
 ANY_REVISION = "any revision, current or stale"
 NOT_PAUSED = "not paused"
 QUIESCENT = "quiescent: no open operation and no pending publication"
-NO_WORK = "no requested Work"
-# Work names the verified upstream repository identity and base, bound from
+NO_WORK = "no requested task"
+# A task names the verified upstream repository identity and base, bound from
 # trusted API data (`upstream.repository_id`, `upstream.base_ref`,
-# `upstream.base_sha`). Every row that allocates Work requires them; a
+# `upstream.base_sha`). Every row that allocates a task requires them; a
 # restart clears them, and the tick that restarts binds them again.
 UPSTREAM_BOUND = "upstream identity and base bound"
 # The upstream repository and base branch, read by the collector in the
@@ -598,12 +598,12 @@ PENDING_GUARDS: dict[str, tuple[bool, tuple[str, ...]]] = {}
 # counter that the resume from that wait starts again.
 PENDING_COUNTER = "pending_human_action.counter"
 # The fields in which the exhaustion of a lost dispatch records the version of
-# the pipeline code it failed at, and the budgets its Work's allocation charged
+# the pipeline code it failed at, and the budgets its task's allocation charged
 # (`active_work.charged`), which the re-arm gives back.
 PENDING_PIPELINE = "pending_human_action.pipeline_version"
 PENDING_CREDIT = "pending_human_action.credit"
 # The budgets an allocation charges that a lost dispatch gives back: the
-# counter of the Work, and the repair counter of the failing CI job.
+# counter of the task, and the repair counter of the failing CI job.
 CREDITABLE = ("work_total", "repair_attempts_cluster")
 
 
@@ -630,7 +630,7 @@ def pending_is_not(*kinds: str) -> str:
 # A refresh, like the resume from the wait of an exhausted publication,
 # discards the held Result: the quiescence guard admits it only when no
 # publication is pending, so it discards one whose `publish_recovery` is
-# exhausted, and fresh Work is requested.
+# exhausted, and a fresh task is requested.
 _REFRESH_EFFECTS = _E(
     revision="bump", sets=("refresh",),
     clears=("plan_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
@@ -646,15 +646,15 @@ _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by", "paused_at_
 # retry pauses again at the new version; a human `pause` takes the stop over
 # and ends the automatic resume.
 PAUSED_FOR_ERROR = "paused by the controller after a processing error"
-# A Work graph whose last Claim failed before its agent ran, for a step of the
+# A task graph whose last Claim failed before its agent ran, for a step of the
 # pipeline that does not depend on the contribution (a gateway that did not
-# start, a failed activation), is the failure of the pipeline, not of the Work:
-# it spends none of the budgets of the Work. It is held until the pipeline code
+# start, a failed activation), is the failure of the pipeline, not of the task:
+# it spends none of the budgets of the task. It is held until the pipeline code
 # changes, a human launches the controller, or the backoff of a free relaunch
 # passes (30 minutes, 2 hours, 8 hours, at one version of the code), and then a
 # fresh graph is allocated without a charge.
-PIPELINE_FAILURE = "the last Claim of the Work failed before its agent for a failure of the pipeline"
-NOT_PIPELINE_FAILURE = ("the last Claim of the Work did not fail before its agent for a failure "
+PIPELINE_FAILURE = "the last Claim of the task failed before its agent for a failure of the pipeline"
+NOT_PIPELINE_FAILURE = ("the last Claim of the task did not fail before its agent for a failure "
                         "of the pipeline")
 PIPELINE_FAILURE_CLEARED = ("the pipeline code changed since that failure, a human launched "
                             "the controller, or the backoff of one of its 3 free relaunches "
@@ -668,26 +668,26 @@ PAUSE_ALLOWED = "not paused, or paused by the controller"
 PROCESSING_ERROR = ("an unexpected error while the controller processed this contribution in "
                     "the tick")
 CALLER_REASONS = ("pause_on_processing_error",)
-# A stop clears the pending publication together with the requested Work: the
+# A stop clears the pending publication together with the requested task: the
 # Result held for publication is invalidated, and a branch its worker run
 # already pushed is recorded by head observation. A stop is a transition that
 # sets a flag or ends the generation.
 HELD_RESULT = "pending_publication"
 STOP_KINDS = ("generation_end", "terminal")
 # Clears that take only a part of a field, as (field, the part cleared).
-# A published Result clears exactly the feedback its Work carried.
+# A published Result clears exactly the feedback its task carried.
 CARRIED_FEEDBACK = "carried pending_feedback_evidence_ids"
 QUALIFIED_CLEARS: dict[str, tuple[str, str]] = {
     CARRIED_FEEDBACK: (
         "pending_feedback_evidence_ids",
         "exactly the ids in `active_work.feedback_evidence_ids`, the pending feedback present "
-        "when the Work was allocated; feedback recorded later stays pending"),
+        "when the task was allocated; feedback recorded later stays pending"),
 }
-# What every stop clears beside the requested Work. `proposal_artifact` only
+# What every stop clears beside the requested task. `proposal_artifact` only
 # ever holds a published Result, which a stop keeps.
 _HELD = (HELD_RESULT,)
-# The pending feedback a Work request carries: the ids present at allocation.
-# A fresh Work graph for the same task and a publish retry of its Result carry
+# The pending feedback a task request carries: the ids present at allocation.
+# A fresh task graph for the same task and a publish retry of its Result carry
 # the same ids.
 WORK_FEEDBACK = "active_work.feedback_evidence_ids"
 # Rerun counts of the current head. They start again whenever the recorded
@@ -708,20 +708,20 @@ _REFRESH = Transition(
                 "Accepted while paused.")
 _RETRY_DISPATCH = Transition(
     _K, None,
-    ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_recovery remains"),
+    ("a dispatcher run ended with the requested task absent or unclaimed", "dispatch_recovery remains"),
     _E(sets=("active_work.dispatched_run_id",)),
     charges=("dispatch_recovery",),
-    description="Launches the dispatcher again for the same committed Work request. The row "
+    description="Launches the dispatcher again for the same committed task request. The row "
                 "records the dispatcher run it decided in `active_work.dispatched_run_id`, so "
                 "each ended run is decided once.")
-# The exhaustion of the recovery of one failure of the Work or of its
+# The exhaustion of the recovery of one failure of the task or of its
 # publication, whichever budget that failure spends: a lost dispatch
-# (`dispatch_recovery`), a Work graph terminal without a usable Result
+# (`dispatch_recovery`), a task graph terminal without a usable Result
 # (`work_recovery`, or `work_total` for its fresh graph), or a failed
 # publication of a held Result (`publish_recovery`). The engine derives the
 # pending action and its counter from the failure (``engine.recovery_exhaustion``).
 RECOVERY_EXHAUSTED = ("the recovery of the failure is exhausted: dispatch_recovery for a lost "
-                      "dispatch, work_recovery or work_total for a Work graph terminal without "
+                      "dispatch, work_recovery or work_total for a task graph terminal without "
                       "a usable Result, publish_recovery for a failed publication")
 # The failures whose recovery `exhaust_recovery` ends, by the fact the caller
 # asserts: the budgets that recover it (the first exhausted one is the
@@ -761,10 +761,10 @@ def _exhaust_recovery(*failures: str) -> Transition:
                                          "dispatch, which also records the version of the "
                                          "pipeline code it failed at "
                                          "(`pending_human_action.pipeline_version`) and the "
-                                         "budgets the allocation of the lost Work charged "
+                                         "budgets the allocation of the lost task charged "
                                          "(`pending_human_action.credit`)",
                         "work_terminal_without_result":
-                            "`work_failed` for a Work graph terminal without a usable Result, "
+                            "`work_failed` for a task graph terminal without a usable Result, "
                             "with `work_total` when that budget is exhausted (also when "
                             "`work_recovery` is exhausted too) and `work_recovery` otherwise",
                         "publication_infrastructure_error":
@@ -772,7 +772,7 @@ def _exhaust_recovery(*failures: str) -> Transition:
                             "failed publication, which keeps the held Result "
                             "(`pending_publication.exhausted`)"}[f] for f in failures)
                     + ". The resume starts that counter again; `work_recovery` starts again "
-                    "with the fresh Work.",
+                    "with the fresh task.",
         exhausts=budgets)
 
 
@@ -782,8 +782,8 @@ _EXHAUST_PUBLICATION_RECOVERY = _exhaust_recovery(
 _EXHAUST_PUBLISH_RECOVERY = _exhaust_recovery("publication_infrastructure_error")
 # A dispatch that failed for the dispatch path, never for the output of the
 # contribution (the installed work-queue Policy no longer matched the compiled
-# one, or the Work could not be queued at all), is not a failure of the Work:
-# once the cause can have changed, the controller requests the Work again and
+# one, or the task could not be queued at all), is not a failure of the task:
+# once the cause can have changed, the controller requests the task again and
 # gives back what the lost allocation charged.
 DISPATCH_CAUSE_CHANGED = ("the work-queue Policy was installed after the dispatch failed and the "
                           "compiled policy preserves it, or the pipeline code changed since the "
@@ -796,18 +796,18 @@ _REARM_DISPATCH = Transition(
     description="Re-arms a dispatch that failed, once its cause can have changed: the dispatcher "
                 "reinstalled the compiled policy that the installed one refused, or the pipeline "
                 "code changed since the failure (a resume once per version of the code, which "
-                "the next failure records). The Work the lost dispatch allocated is given back "
+                "the next failure records). The task the lost dispatch allocated is given back "
                 "its budgets: `work_total` (and the repair counter of its failing CI job) as "
                 "its allocation charged them (`pending_human_action.credit`), `work_total` "
                 "alone for a wait that records none. The same transition as the resume a "
                 "human would post, taken by the controller.")
-# Guards that decide which transition applies when Work is due. EXCLUSIVE_GUARDS
+# Guards that decide which transition applies when a task is due. EXCLUSIVE_GUARDS
 # lists the combinations that cannot hold together.
 WORK_TOTAL_REMAINS = "work_total remains"
 WORK_TOTAL_EXHAUSTED = "work_total exhausted"
 # ``repair_attempts_cluster`` counts repairs per failing CI job, so it is
 # charged, and its exhaustion applies, only while a failing CI job is recorded
-# for the head. Work that is due without one (the first patch, a rejected
+# for the head. A task that is due without one (the first patch, a rejected
 # proposal, a repair driven only by review feedback) charges ``work_total``
 # only.
 FAILING_JOB = "a failing CI job is recorded for the head"
@@ -838,10 +838,10 @@ CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
 # failure on the exact head takes ``record_ci_failure``, and a review
 # observed with it is recorded in the same observation by
 # ``record_actionable_review`` in ``development.fix_needed``, so the repair
-# Work carries the failing job and the review.
+# task carries the failing job and the review.
 HEAD_FAILED = "an executed blocking failure on the exact head"
 HEAD_NOT_FAILED = "no executed blocking failure on the exact head"
-# The outcomes of the submission rewrite Work: the trusted deterministic
+# The outcomes of the submission rewrite task: the trusted deterministic
 # check of the rewrite, and the review loop the worker ran on it.
 REWRITE_PASSED = ("the rewritten series has the tree of the approved series without its debug "
                   "commits, every commit passes the upstream-facing validation and the "
@@ -864,15 +864,15 @@ CLEAN_HEAD_CI_MISSING = ("CI on the clean head is not complete, and either no ru
 CLEAN_HEAD_MOVED = "`riscv64` of the fork does not resolve to the clean head"
 CLEAN_HEAD_CI_PASSED = ("every required CI job executed and passed on the clean head, or on the "
                         "candidate head when the clean head has its tree")
-# Work that carries feedback is never answered by a CI rerun.
-WORK_WITHOUT_FEEDBACK = "the Work carries no feedback"
+# A task that carries feedback is never answered by a CI rerun.
+WORK_WITHOUT_FEEDBACK = "the task carries no feedback"
 # Passing CI nominates a head only without pending feedback; with pending
-# feedback it makes Work due again, so the feedback is never stranded.
+# feedback it makes a task due again, so the feedback is never stranded.
 NO_PENDING_FEEDBACK = "no pending actionable feedback"
 # The series requirements of the verified plan (the measurable items of its
 # contribution guidelines: a path the non-debug commits of the series must
 # change) are checked on the exact head before a nomination; unmet ones make
-# development Work due with them as feedback, so a nomination is never
+# a development task due with them as feedback, so a nomination is never
 # blocked in a wait.
 SERIES_REQUIREMENTS_MET = ("every series requirement of the verified plan is met on the exact "
                            "head, the plan records none, or the series is too large to read")
@@ -893,8 +893,8 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((CANDIDATE_FAILED,), (CANDIDATE_NOT_FAILED,)),
     ((HEAD_FAILED,), (HEAD_NOT_FAILED,)),
     ((NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET), (FEEDBACK_OR_UNMET,)),
-    # Where development Work is due, the operation that opens the development
-    # PR of a published head comes first: Work waits for it.
+    # Where a development task is due, the operation that opens the development
+    # PR of a published head comes first: a task waits for it.
     (("no open operation",), ("a development PR operation is planned",)),
     (("operation_launch remains",), ("operation_launch exhausted",)),
 )
@@ -911,33 +911,33 @@ EXCLUSIVE_OBSERVATION_PAIRS = {
 
 _ALLOCATE_WORK_RETRY = Transition(
     _K, None,
-    ("the Work graph is terminal without a usable Result", NOT_PIPELINE_FAILURE,
+    ("the task graph is terminal without a usable Result", NOT_PIPELINE_FAILURE,
      "work_recovery and work_total remain", UPSTREAM_BOUND),
     _E(revision="bump", work="reallocate"), ("work_recovery", "work_total"),
-    description="A terminal Work graph is never submitted again; a fresh graph is allocated. It "
+    description="A terminal task graph is never submitted again; a fresh graph is allocated. It "
                 "carries the same feedback ids.")
 _REALLOCATE_AFTER_PIPELINE_FAILURE = Transition(
     _K, None,
-    ("the Work graph is terminal without a usable Result", PIPELINE_FAILURE,
+    ("the task graph is terminal without a usable Result", PIPELINE_FAILURE,
      PIPELINE_FAILURE_CLEARED, UPSTREAM_BOUND),
     _E(revision="bump", work="reallocate", clears=(HELD_RESULT,)),
-    description="A fresh graph is allocated for a Work graph whose last Claim failed before its "
+    description="A fresh graph is allocated for a task graph whose last Claim failed before its "
                 "agent for a failure of the pipeline, once the pipeline code changed since the "
                 "failure, a human launched the controller, or the backoff of one of its 3 free "
-                "relaunches passed (counted on the Work as `pipeline_free`, per version of the "
+                "relaunches passed (counted on the task as `pipeline_free`, per version of the "
                 "code). It charges nothing: the "
-                "failure was not caused by the Work, so `work_recovery`, `work_total` and the "
+                "failure was not caused by the task, so `work_recovery`, `work_total` and the "
                 "attempts counted so far are unchanged. Until then the record is held as it is: "
                 "no row is taken and the failure is reported as an alert. It carries the same "
                 "feedback ids. A Result held for a publish-only retry whose report records no "
                 "review loop (a worker run of the earlier pipeline) takes it too: the held "
-                "Result is dropped with the Work.")
+                "Result is dropped with the task.")
 _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
     ("publication failed with an infrastructure error", "publish_recovery remains"),
     _E(work="clear", sets=("pending_publication",)), ("publish_recovery",),
-    "The same verified Result is published again; no new Work is requested. The pending "
-    "publication carries the feedback ids of its Work. A publication whose push was not read "
+    "The same verified Result is published again; no new task is requested. The pending "
+    "publication carries the feedback ids of its task. A publication whose push was not read "
     "back (`uncertain`) is such a failure; the retry reads the branch first and never pushes "
     "over a push that landed. Its push may have landed, so the report of an `uncertain` "
     "Result is stored as `worker_report` evidence with the commit it proposed, whatever ends "
@@ -1016,7 +1016,7 @@ _LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_i
 # The effect of a return to development with no CI verdict: the recorded CI
 # evidence is kept. A return for a CI failure also records its evidence.
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
-_FEEDBACK_NOTE = (" The Work request carries the pending feedback ids present at allocation "
+_FEEDBACK_NOTE = (" The task request carries the pending feedback ids present at allocation "
                   "(`active_work.feedback_evidence_ids`).")
 _RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
 _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts again the one "
@@ -1026,7 +1026,7 @@ _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts ag
 
 _RESUME_CI = _E(revision="bump", clears=("pending_human_action",),
                 restarts=("interrupted_reruns", "operation_launch"))
-_RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh Work is requested. After "
+_RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh task is requested. After "
                    "`ci_interrupted` it starts `interrupted_reruns` (`budget.reruns.interrupted`) "
                    "again for the head, and the first observation after it reruns the "
                    "interrupted jobs on the exact head through `rerun_interrupted_ci`, charging "
@@ -1036,7 +1036,7 @@ _RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh Work is 
 
 
 def _guarded(t: Transition, *guards: str) -> Transition:
-    """``t`` with ``guards`` added: where Work is due, a spent `work_total`
+    """``t`` with ``guards`` added: where a task is due, a spent `work_total`
     is exhausted first (`exhaust_work_total`)."""
     from dataclasses import replace
 
@@ -1056,7 +1056,7 @@ def _resume_restarting(*budgets: str) -> Effects:
 DEVELOPMENT_PROPOSAL_REJECTED = (
     "the proposal is rejected for the current revision, the worker reports it is blocked, or the "
     "worker reports a failure not caused by the patch and either flaky_reruns is exhausted or "
-    "the Work carries feedback")
+    "the task carries feedback")
 _ADMISSION = ("verified plan decision develop, or verified plan decision park and a "
               "recorded admission_override")
 PATCH_SCOPE_COMPLETE = (f"the admitted scope names an admission class and 1 to {SCOPE_PATHS_MAX} safe "
@@ -1073,11 +1073,11 @@ PLAN_REJECTED = ("the Result has no plan, the plan is invalid, its decision is n
                     "develop, park, or close, or PyPI does not confirm a decision close")
 
 
-# Removing the intake label withdraws a request that has requested no Work,
+# Removing the intake label withdraws a request that has requested no task,
 # in `queued.idle` and in `planning.idle`, where it waits for a worker slot.
 _WITHDRAW_REQUEST = Transition(
     _O, None,
-    ("intake label removed", "no Work requested", "no plan", "no fork"),
+    ("intake label removed", "no task requested", "no plan", "no fork"),
     _E(sets=("terminal_reason=withdrawn",), clears=_FLAG_FIELDS))
 
 LIFECYCLE: dict[str, State] = {
@@ -1090,7 +1090,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "planning.idle": State(
         "auto_wait", True, False,
-        "Planning is due; the controller allocates planning Work when a worker slot is free.",
+        "Planning is due; the controller allocates a planning task when a worker slot is free.",
         transitions={
             ("dispatch_planning", "planning.agent_running"): Transition(
                 _K, None,
@@ -1105,7 +1105,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "planning.agent_running": State(
         "work", False, False,
-        "Planning Work is requested or running and will return a plan.",
+        "A planning task is requested or running and will return a plan.",
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "planning.waiting_human"): _EXHAUST_WORK_RECOVERY,
@@ -1131,7 +1131,7 @@ LIFECYCLE: dict[str, State] = {
                         "scope_coverage_complete"),
                   clears=("refresh", "admission_override")),
                 description="The scope of the patch is checked here, before a fork exists: "
-                            "no patch Work is requested before `confirm_provisioning`. "
+                            "no patch task is requested before `confirm_provisioning`. "
                             "`scope_coverage_complete` records whether the admitted scope "
                             "matches every path of the plan's `path_coverage`: always true "
                             "for a plan's own scope, and for an admission override whatever "
@@ -1223,7 +1223,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "development.agent_running": State(
         "work", False, True,
-        "Patch Work is requested or running, or its Result is being verified. The worker "
+        "A patch task is requested or running, or its Result is being verified. The worker "
         "implements the patch, reviews it in its own run with a review loop on the `subagent` tool of "
         "`pi-subagents` (at most 3 rounds of fresh reviewers), and publishes it there; a Result whose loop "
         "ended with a P0 finding open is rejected and publishes nothing.",
@@ -1238,8 +1238,8 @@ LIFECYCLE: dict[str, State] = {
                  DEVELOPMENT_PR_RECORDED),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
                   clears=(CARRIED_FEEDBACK, HELD_RESULT, *PUBLISHED_RESTARTS)),
-                description="The published patch answers exactly the feedback its Work "
-                            "carried; feedback recorded while the Work ran stays pending. The "
+                description="The published patch answers exactly the feedback its task "
+                            "carried; feedback recorded while the task ran stays pending. The "
                             "worker pushed it in its own run, after its review loop ended with "
                             "no P0 finding open. The first published patch has no development "
                             "PR yet: it is opened here (`launch_development_pr`) once the push "
@@ -1250,7 +1250,7 @@ LIFECYCLE: dict[str, State] = {
                             "the publication is confirmed, by the publish-only retry reading "
                             "back the head the lost push left (or publishing the same commit), "
                             "or by the confirmed branch operation of an earlier attempt."
-                            " The report of the Work, with its review loop, is stored as "
+                            " The report of the task, with its review loop, is stored as "
                             "`worker_report` evidence."),
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
@@ -1269,7 +1269,7 @@ LIFECYCLE: dict[str, State] = {
                             "unless this is a publish-only retry whose earlier attempt's "
                             "operation is still open: that push may have landed, so the report "
                             "is stored with the commit it proposed. A head that moved while the "
-                            "Work ran is not recorded in this state; `record_head_change` "
+                            "task ran is not recorded in this state; `record_head_change` "
                             "records it from `development.fix_needed`."),
             ("request_ci_rerun", "development.waiting_ci"): Transition(
                 _R, None,
@@ -1277,13 +1277,13 @@ LIFECYCLE: dict[str, State] = {
                  "flaky_reruns remains", DEVELOPMENT_PR_RECORDED),
                 _E(work="clear", clears=("last_ci_evidence_id", HELD_RESULT)), ("flaky_reruns",),
                 "The repair worker classifies the failure; the failed jobs are rerun on the exact "
-                "head, and the head and revision are kept. A rerun answers no feedback, so Work "
+                "head, and the head and revision are kept. A rerun answers no feedback, so a task "
                 "that carries feedback never takes this row: the same outcome counts as "
                 "`reject_patch_proposal`. The rerun is the publication of this Result: the "
                 "trusted publication job requests it on the exact head and reads back the new "
                 "attempt before the row is taken. A rerun that cannot be requested or read back "
                 "is a failed publication (`schedule_publish_retry`, `exhaust_recovery`). "
-                "The report of the Work is stored as `worker_report` evidence."),
+                "The report of the task is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             # The first published patch has no development PR yet: it is
             # opened here, once the push is confirmed, and the Result of the
@@ -1326,7 +1326,7 @@ LIFECYCLE: dict[str, State] = {
                             "on the exact head, `record_ci_failure` applies instead, and the "
                             "review is recorded in the same observation by "
                             "`record_actionable_review` in `development.fix_needed`, so the "
-                            "repair Work carries the failing job and the review."),
+                            "repair task carries the failing job and the review."),
             ("record_explanation", SELF): _RECORD_EXPLANATION,
             ("record_head_change", SELF): Transition(
                 _O, None,
@@ -1340,33 +1340,33 @@ LIFECYCLE: dict[str, State] = {
             ("nominate_for_handoff", "handoff.awaiting_submission"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
-                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET, "no requested Work",
+                 NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET, "no requested task",
                  "no open operation", "development PR and head recorded"),
                 _E(sets=("last_ci_evidence_id", "handoff_request",
                         "pending_human_action=submit_upstream"))),
             ("return_for_feedback", "development.fix_needed"): Transition(
                 _O, None,
                 ("every required CI job executed and passed on the exact head", FEEDBACK_OR_UNMET,
-                 "no requested Work", "no open operation"),
+                 "no requested task", "no open operation"),
                 _E(revision="bump", sets=("last_ci_evidence_id", "pending_feedback_evidence_ids")),
                 description="CI passed on the exact head while actionable feedback is still "
-                            "pending (a push while Work was due for a review, or feedback the "
-                            "published Work did not carry), or the series does not meet a "
+                            "pending (a push while a task was due for a review, or feedback the "
+                            "published task did not carry), or the series does not meet a "
                             "series requirement of the verified plan (a path its non-debug "
                             "commits must change, such as a changelog entry): the passing "
                             "evidence is recorded, the unmet requirements are recorded as "
                             "`series_requirements` evidence and join the pending feedback, and "
-                            "Work is due again, so `request_patch` requests a repair that "
+                            "a task is due again, so `request_patch` requests a repair that "
                             "carries the feedback. The pending feedback is kept; only a "
-                            "published Result clears it. Nothing is charged here: the Work is "
+                            "published Result clears it. Nothing is charged here: the task is "
                             "bounded by `no_progress` and `work_total`."),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
     "development.fix_needed": State(
         "auto_wait", True, True,
-        "Development Work is due: the fork is ready for a first patch, or a CI failure, "
+        "A development task is due: the fork is ready for a first patch, or a CI failure, "
         "actionable review, passing CI with feedback still pending, rejected proposal, "
-        "refreshed plan, or a resume needs a bounded repair. It is the only state in which patch Work is requested, so none is requested "
+        "refreshed plan, or a resume needs a bounded repair. It is the only state in which a patch task is requested, so none is requested "
         "before `confirm_provisioning`.",
         transitions={
             ("request_patch", "development.agent_running"): Transition(
@@ -1408,7 +1408,7 @@ LIFECYCLE: dict[str, State] = {
                 _K, None, (WORK_TOTAL_EXHAUSTED,),
                 _E(sets=("pending_human_action=work_budget_exhausted",
                         f"{PENDING_COUNTER}=work_total")), exhausts=("work_total",),
-                description="The reply states the number of Work allocations spent in this "
+                description="The reply states the number of task allocations spent in this "
                             "generation and names both `/upstreaming resume`, which starts "
                             "`work_total` again, and `/upstreaming park`."),
             ("record_head_change", "development.waiting_ci"): Transition(
@@ -1416,20 +1416,20 @@ LIFECYCLE: dict[str, State] = {
                 ("the observed fork head differs from the recorded head", DEVELOPMENT_PR_RECORDED),
                 _E(revision="bump", sets=("fork.head_sha", RERUNS),
                   clears=("last_ci_evidence_id",)),
-                description="A push to the development branch while Work is due (a human "
+                description="A push to the development branch while a task is due (a human "
                             "push): the new head is recorded and CI is awaited for it, so no "
-                            "Work is requested for the head the record names any more. The "
+                            "task is requested for the head the record names any more. The "
                             "pending feedback is kept; when CI passes on the new head "
-                            "`return_for_feedback` makes Work due again for it. A resume to "
-                            "this state requests no Work in a tick that observed another head "
+                            "`return_for_feedback` makes a task due again for it. A resume to "
+                            "this state requests no task in a tick that observed another head "
                             "than the recorded one, so this row records it first."),
             ("record_actionable_review", SELF): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
                 _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS),
-                description="A review on the recorded head while Work is due, including one "
+                description="A review on the recorded head while a task is due, including one "
                             "observed together with the CI failure that left the submission "
-                            "gate or `development.waiting_ci`: it is recorded as pending feedback, so the Work requested "
+                            "gate or `development.waiting_ci`: it is recorded as pending feedback, so the task requested "
                             "next carries it. The CI evidence is kept."),
             # A published head on the branch that no development PR shows (a
             # human push before the first PR, or a head the record names
@@ -1460,7 +1460,7 @@ LIFECYCLE: dict[str, State] = {
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
                             "source_reads", "operation_launch")),
-                description="Fresh Work is requested; a Result held for publication is not "
+                description="A fresh task is requested; a Result held for publication is not "
                             "reused. The pending feedback is kept. " + _RESTART_NOTE),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
@@ -1499,7 +1499,7 @@ LIFECYCLE: dict[str, State] = {
                 _O, None, ("authorized explanation-only inquiry",),
                 _E(sets=_PROCESSED_IDS),
                 description="The comment is recorded and linked from the event log of the "
-                            "website. No Work is requested and nothing is answered automatically; the "
+                            "website. No task is requested and nothing is answered automatically; the "
                             "revision, the candidate head, and the CI evidence are kept."),
             ("record_head_change", "development.waiting_ci"): Transition(
                 _O, None,
@@ -1510,7 +1510,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "handoff.review_due": State(
         "auto_wait", True, False,
-        "The submission rewrite is due; the controller allocates rewrite Work when a worker slot "
+        "The submission rewrite is due; the controller allocates a rewrite task when a worker slot "
         "is free.",
         transitions={
             ("request_submission_rewrite", "handoff.agent_running"): Transition(
@@ -1518,7 +1518,7 @@ LIFECYCLE: dict[str, State] = {
                 ("worker slot free", WORK_TOTAL_REMAINS, NOT_PAUSED, "no open operation",
                  UPSTREAM_BOUND),
                 _E(work="allocate"), ("work_total",),
-                "The uncredentialed rewrite Work reads the plan's contribution guidelines and "
+                "The uncredentialed rewrite task reads the plan's contribution guidelines and "
                 "the non-debug commits of the approved `riscv64-dev` series. It reshapes the "
                 "commit messages (squashing only where the project's contributing "
                 "instructions or reviewers require it, never splitting into trees the approved "
@@ -1534,7 +1534,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "handoff.agent_running": State(
         "work", False, False,
-        "Submission rewrite Work is requested or running; its Result is the rewritten series, "
+        "A submission rewrite task is requested or running; its Result is the rewritten series, "
         "title, and description, or the reasons the series cannot be shaped without a code "
         "change.",
         transitions={
@@ -1557,14 +1557,14 @@ LIFECYCLE: dict[str, State] = {
                             "P0 finding left open. Nothing is posted. The rewrite evidence "
                             "records the series, title, description and the artifact that "
                             "holds the series, which the build of `riscv64` writes. The report "
-                            "of the Work is stored as `worker_report` evidence."),
+                            "of the task is stored as `worker_report` evidence."),
             ("reject_submission_rewrite", "development.fix_needed"): Transition(
                 _R, None,
                 (REWRITE_FAILED,),
                 _E(revision="bump", work="clear", sets=("pending_feedback_evidence_ids",),
                   clears=_LEAVE_HANDOFF),
                 description="The reasons are recorded as rewrite evidence and are the pending "
-                            "feedback of the next development Work: a P0 finding its review "
+                            "feedback of the next development task: a P0 finding its review "
                             "loop left open is one reason. Nothing is posted and `riscv64` is "
                             "not written. The worker's report is discarded."),
         }),
@@ -1679,7 +1679,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "handoff.waiting_human": State(
         "human_wait", False, False,
-        "A handoff step failed repeatedly or needs a human: the submission rewrite Work, "
+        "A handoff step failed repeatedly or needs a human: the submission rewrite task, "
         "writing `riscv64` (also while an upstream PR is open from it), CI on the clean head, "
         "or posting the submission package. A human corrects it and resumes; the resume returns "
         "to the step named by `pending_human_action` and starts again the counter named in "
@@ -1693,7 +1693,7 @@ LIFECYCLE: dict[str, State] = {
                             BASE_BRANCH_UNAVAILABLE, UPSTREAM_UNAVAILABLE)),
                 _resume_restarting("work_total", "dispatch_recovery", "work_recovery",
                                    "source_reads"),
-                description="Fresh rewrite Work is requested; it reviews its own series in "
+                description="A fresh rewrite task is requested; it reviews its own series in "
                             "its run. " + _RESTART_NOTE),
             ("resume_upstream_branch", "handoff.building_upstream_branch"): Transition(
                 _C, RESUME,
@@ -1823,7 +1823,7 @@ LIFECYCLE: dict[str, State] = {
         }),
     "upstream_review.agent_running": State(
         "work", False, True,
-        "Revision Work for the upstream PR head is requested or running, or its verified Result "
+        "A revision task for the upstream PR head is requested or running, or its verified Result "
         "is being published.",
         transitions={
             ("record_revision_publish_success", "upstream_review.waiting_ci"): Transition(
@@ -1832,13 +1832,13 @@ LIFECYCLE: dict[str, State] = {
                 _E(revision="bump", work="clear",
                   sets=("proposal_artifact", "publication_operation_id", "upstream_pr.head_sha"),
                   clears=(CARRIED_FEEDBACK, HELD_RESULT, *PUBLISHED_RESTARTS)),
-                description="The published revision answers exactly the feedback its Work "
+                description="The published revision answers exactly the feedback its task "
                             "carried. `upstream_pr.head_sha` records the head the publisher read "
                             "back on `riscv64` after its push. A publication whose push was not "
                             "read back (`uncertain`) does not take this row: it is a failed "
                             "publication (`schedule_publish_retry`), and the publish-only retry "
                             "reads back the head a lost push left without pushing again. The "
-                            "report of the Work is stored as `worker_report` evidence."),
+                            "report of the task is stored as `worker_report` evidence."),
             ("reject_patch_proposal", "upstream_review.fix_needed"): Transition(
                 _R, None,
                 ("the proposal is rejected for the current revision, or the worker reports it is "
@@ -1855,12 +1855,12 @@ LIFECYCLE: dict[str, State] = {
                 _E(work="clear", sets=("pending_human_action=answer_reviewer",),
                    clears=(HELD_RESULT,)),
                 description="The worker found that no change is needed: a human answers the "
-                            "reviewer, or, when the Work answered an upstream CI failure, "
+                            "reviewer, or, when the task answered an upstream CI failure, "
                             "judges that failure (the pipeline never reruns upstream CI) and "
                             "resumes. The failure stays recorded, so the resume requests no "
                             "revision for it, and a rerun that fails again is recorded anew. "
                             "The pipeline posts nothing on the upstream PR. The report of the "
-                            "Work is stored as `worker_report` evidence."),
+                            "task is stored as `worker_report` evidence."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
@@ -1878,7 +1878,7 @@ LIFECYCLE: dict[str, State] = {
                  pending_is("pr_closed_unmerged", "answer_reviewer", "upstream_head_changed"),
                  "for pr_closed_unmerged, the upstream PR is observed open again or merged"),
                 _E(revision="bump", clears=("pending_human_action", "pending_feedback_evidence_ids")),
-                description="No revision Work is requested. The pending feedback is cleared: "
+                description="No revision task is requested. The pending feedback is cleared: "
                             "after `answer_reviewer` a human answered it, and this is the one "
                             "resume that clears feedback; the other two pending actions are "
                             "entered from `upstream_review.waiting_ci`, which holds none. A PR "
@@ -1895,7 +1895,7 @@ LIFECYCLE: dict[str, State] = {
                   restarts=("repair_attempts_cluster", "no_progress", "work_total",
                             "dispatch_recovery", "work_recovery", "publish_recovery",
                             "source_reads")),
-                description="Only when revision Work failed: dispatch, Work, publication, or a "
+                description="Only when a revision task failed: dispatch, a task, publication, or a "
                             "budget. The pending feedback is kept. " + _RESTART_NOTE),
         }),
     "release_wait.idle": State(
@@ -2055,7 +2055,7 @@ _dev_pr = dev_pr_problem
 def _work_or_publication(record: dict) -> str | None:
     if record.get("active_work") or record.get("pending_publication"):
         return None
-    return "neither Work nor a publication of its Result is held"
+    return "neither task nor a publication of its Result is held"
 
 
 def _candidate(record: dict) -> str | None:
@@ -2097,11 +2097,11 @@ INVARIANTS: dict[str, Invariant] = {
         or "fork" in _sets(t),
         heal=("launch_development_pr", "confirm_development_pr", "record_pr_mismatch")),
     "work": Invariant(
-        "Work is requested", _present("active_work", "no Work is requested"),
+        "A task is requested", _present("active_work", "no task is requested"),
         lambda t, verb: _row_sets_work(t),
         lambda t, verb: _row_clears_work(t)),
     "work_or_publication": Invariant(
-        "Work is requested, or the publication of its Result is held",
+        "A task is requested, or the publication of its Result is held",
         _work_or_publication,
         lambda t, verb: _row_sets_work(t) or HELD_RESULT in _sets(t),
         lambda t, verb: _row_clears_work(t) and HELD_RESULT not in _sets(t)),
@@ -2224,7 +2224,7 @@ RULES: dict[str, Rule] = {
         SELF,
         Transition(
             _R, None,
-            ("the Result does not match the current generation, revision, and requested Work",),
+            ("the Result does not match the current generation, revision, and a requested task",),
             description="Recorded in the events for audit. The Result is never folded, the "
                         "publisher refuses it, and the state never changes."),
         "every state"),
@@ -2257,7 +2257,7 @@ def expand_rules() -> None:
             transitions[(verb, SELF if rule.target == key else rule.target)] = rule.transition
 
 
-# The states in which the controller needs the upstream base branch (Work or
+# The states in which the controller needs the upstream base branch (a task or
 # the fork provisioning is due), each with the human wait it leads to when
 # the base branch is unavailable: the wait of its phase, and for a request
 # in `queued.idle`, which has none, the wait of planning, the phase it is
@@ -2394,7 +2394,7 @@ LIFECYCLE["upstream_review.waiting_human"].transitions[
     _E(revision="bump", sets=("upstream.base_ref", "upstream_pr.base_ref"),
        clears=("pending_human_action",), restarts=("source_reads",)),
     description="The wait a renamed base branch caused ends without a human: the record follows "
-                "the rename as `follow_renamed_base` does, and the revision Work that was due "
+                "the rename as `follow_renamed_base` does, and the revision task that was due "
                 "is due again. The tracking issue states the rename.")
 
 expand_rules()
@@ -2450,17 +2450,17 @@ def requirement_problems(state: str, record: dict) -> list[tuple[str, str]]:
 FLAGS: dict[str, Flag] = {
     "paused": Flag(
         "paused",
-        "A stop of new Work and writer admission, with its reason and who set it (a human or "
+        "A stop of a new task and writer admission, with its reason and who set it (a human or "
         "the controller) in `paused_reason` and `paused_by`. `pause` accepts an optional reason; "
         "a pause set by the controller always records one: `pause_on_identity_change` names "
         "it in the table, and `pause_on_processing_error` records the error. Setting it clears "
         "the requested "
-        "Work and the pending publication, and "
+        "task and the pending publication, and "
         "records `paused_at`; nothing held is published after the stop, and no publish retry "
         "is launched while paused. Phase, "
         "activity, evidence, and pending feedback are kept. "
         "The one exception: setting it in an `agent_running` state leads to the state in which the "
-        "Work is due again, `planning.idle`, `development.fix_needed`, "
+        "task is due again, `planning.idle`, `development.fix_needed`, "
         "`handoff.review_due`, or `upstream_review.fix_needed`; "
         "In `handoff.awaiting_submission` and `handoff.waiting_upstream_pr`, `resume_pause` "
         "keeps the plan, candidate head, clean head, `handoff_request`, and the posted "
@@ -2489,7 +2489,7 @@ FLAGS: dict[str, Flag] = {
                   clears=_HELD),
                 description="A contribution that is already paused is not paused again: the "
                             "change sets nothing, so the flag keeps its reason and who set it; "
-                            "no Work is selected while the identity differs, and the first "
+                            "no task is selected while the identity differs, and the first "
                             "tick after the resume takes this row."),
             "pause_on_processing_error": Transition(
                 _K, None,
@@ -2535,12 +2535,12 @@ FLAGS: dict[str, Flag] = {
                 "another state (but one that ends it), bump the revision, or charge a budget is "
                 "refused and read again after the resume, which takes the next step from what "
                 "was saved.",
-            _R: "The requested Work and the pending publication were cleared, so a Result takes "
+            _R: "The requested task and the pending publication were cleared, so a Result takes "
                 "`record_late_effect`; nothing is published.",
             _P: "Folded normally: a receipt finishes the operation in flight. The publisher's "
                 "final check reads `paused`; an effect that passed it before the pause may "
                 "finish.",
-            _K: "No launch, no Work allocation, no budget charge; reminders are suppressed. "
+            _K: "No launch, no task allocation, no budget charge; reminders are suppressed. "
                 "The one tick row is the controller's resume of its own stop after a processing "
                 "error, once the pipeline code changed.",
         },
@@ -2565,12 +2565,12 @@ FLAGS: dict[str, Flag] = {
 BUDGETS: dict[str, Budget] = {
     "work_total": Budget(
         "retries.max_attempts_per_contribution", 0,
-        "one Work allocation of any kind",
+        "one task allocation of any kind",
         "`budget.attempts_used`, counted per generation",
         ("exhaust_work_total", "exhaust_recovery", "exhaust_repair_attempts")),
     "work_recovery": Budget(
         "retries.work_recovery", 1,
-        "one fresh Work graph after terminal Work without a usable Result",
+        "one fresh task graph after a terminal task without a usable Result",
         "`active_work.attempt`", ("exhaust_recovery",), infrastructure=True),
     "planning_attempts": Budget(
         "retries.planning_attempts", 0,
@@ -2578,7 +2578,7 @@ BUDGETS: dict[str, Budget] = {
         "`budget.planning_attempts`", ("exhaust_planning_recovery",)),
     "repair_attempts_cluster": Budget(
         "retries.patch_attempts_per_cluster", 0,
-        "one repair or revision Work allocation for one failing CI job; Work that is due "
+        "one repair or revision task allocation for one failing CI job; a task that is due "
         "without a failing CI job charges none",
         "`budget.clusters[<job>]`, started again by `refresh_on_exhaustion`; the failing CI job "
         "is the first executed blocking job of the recorded CI evidence of the head that did "
@@ -2604,8 +2604,8 @@ BUDGETS: dict[str, Budget] = {
         ("exhaust_interrupted_reruns",), infrastructure=True),
     "dispatch_recovery": Budget(
         INFRASTRUCTURE_KEY, 1,
-        "one dispatcher run that ended with the requested Work absent or unclaimed",
-        "dispatcher runs created since the Work was requested, or since its history was "
+        "one dispatcher run that ended with the requested task absent or unclaimed",
+        "dispatcher runs created since the task was requested, or since its history was "
         "recorded or the queue's retry time (`retry_not_before`) when later; every counted run "
         "has ended", ("exhaust_recovery",),
         infrastructure=True),
@@ -2961,9 +2961,9 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("planning.waiting_human", "rearm_dispatch"),
                  ("planning.waiting_human", "park_contribution")),
                 start="planning.idle",
-                text="Dispatch and terminal-Work recovery are automatic within `dispatch_recovery` "
-                     "and `work_recovery`. A terminal Work graph is never submitted again under the "
-                     "same identity. Every Work allocation also charges `work_total`. While the "
+                text="Dispatch and terminal-task recovery are automatic within `dispatch_recovery` "
+                     "and `work_recovery`. A terminal task graph is never submitted again under the "
+                     "same identity. Every task allocation also charges `work_total`. While the "
                      "installed work-queue Policy refuses every dispatch, a dispatch is not "
                      "decided until the queue is quiescent, where the dispatcher reinstalls the "
                      "compiled policy; a dispatch that failed before the reinstall, or at an "
@@ -3003,7 +3003,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.agent_running", "record_publish_success"),
                  ("development.waiting_ci", "nominate_for_handoff")),
                 start="development.fix_needed",
-                text="Every Work carries its history: the reports of the earlier successful "
+                text="Every task carries its history: the reports of the earlier successful "
                      "workers, the CI runs that followed them, and the owner's steering from "
                      "the tracking issue and the pull requests. A repair after failing CI reads "
                      "the report of the worker whose head failed.\n\n"
@@ -3012,7 +3012,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "while a P0 or a P1 fix worth doing is found); its report records the "
                      "loop. Trusted code publishes the patch only when no P0 finding is left "
                      "open, and `record_publish_success` folds its Result.\n\n"
-                     "`development.fix_needed` is the one state in which development Work is due, "
+                     "`development.fix_needed` is the one state in which a development task is due, "
                      "and it is entered only after `confirm_provisioning`: no patch is proposed "
                      "before the fork exists. `request_repair` applies while a failing CI job is "
                      "recorded for the head and charges `repair_attempts_cluster` for that job; "
@@ -3021,7 +3021,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "need write admission. Every applicable build and test job must execute and "
                      "pass on the exact head."),
             Diagram(
-                "Failure case 1: patch proposal, dispatch, or Work failure",
+                "Failure case 1: patch proposal, dispatch, or task failure",
                 ("development.fix_needed", "development.agent_running",
                  "development.waiting_human"),
                 (("development.fix_needed", "request_patch"),
@@ -3035,7 +3035,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "rearm_dispatch")),
                 start="development.fix_needed",
-                text="Dispatch recovery and bounded repair are automatic. Dispatch and Work "
+                text="Dispatch recovery and bounded repair are automatic. Dispatch and a task "
                      "exhaustion wait for a human in development. A rejected proposal, a replan, "
                      "and a resume keep the pending feedback. A dispatch that failed while the "
                      "installed work-queue Policy refused every dispatch, or at an earlier "
@@ -3058,7 +3058,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "again for the same Result within `publish_recovery`, with no model call. "
                      "A fork head that moved replans, and a patch that no longer rebuilds, or "
                      "whose review loop left a P0 finding open, is rejected. After exhaustion "
-                     "and a resume, fresh Work is requested; the held Result is not reused."),
+                     "and a resume, a fresh task is requested; the held Result is not reused."),
             Diagram(
                 "The development PR operation",
                 ("development.agent_running", "development.fix_needed", "development.waiting_ci",
@@ -3136,19 +3136,19 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "jobs that were cancelled or lost their runner, within `interrupted_reruns` "
                      "per head; after that a human resumes with `resume_ci`, after which the "
                      "collector reruns the jobs again. Both rerun counts are kept for the current head in `budget.reruns` "
-                     "and start again whenever the recorded head changes. The Work request "
+                     "and start again whenever the recorded head changes. The task request "
                      "carries the pending feedback present at allocation, and "
-                     "`record_publish_success` clears exactly that feedback. Work that carries "
+                     "`record_publish_success` clears exactly that feedback. A task that carries "
                      "feedback never takes `request_ci_rerun`. Explanation-only comments do not "
                      "bump the revision, invalidate CI, or request repair. A push to the "
-                     "development branch while CI is awaited or Work is due records the new head "
+                     "development branch while CI is awaited or a task is due records the new head "
                      "and waits for its CI. Passing CI while feedback is pending returns to "
-                     "`development.fix_needed` (`return_for_feedback`), so a push while Work is "
+                     "`development.fix_needed` (`return_for_feedback`), so a push while a task is "
                      "due for a review never strands the review. Passing CI on a series that "
                      "does not meet a series requirement of the plan (a path it must change, "
                      "such as a changelog entry) returns there too "
                      "(`return_for_feedback`), with the unmet requirements as the "
-                     "feedback of the next Work."),
+                     "feedback of the next task."),
             Diagram(
                 "Failure case 5: a repair budget is exhausted",
                 ("development.fix_needed", "development.agent_running", "queued.idle",
@@ -3167,7 +3167,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "`work_total` remains. `repair_attempts_cluster` counts only while a failing "
                      "CI job is recorded for the head."),
             Diagram(
-                "Failure case 6: the Work budget is exhausted",
+                "Failure case 6: the task budget is exhausted",
                 ("development.fix_needed", "development.agent_running",
                  "development.waiting_human", "parked.idle"),
                 (("development.fix_needed", "request_repair"),
@@ -3178,7 +3178,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 text="When `work_total` is exhausted at `development.fix_needed`, "
                      "`exhaust_work_total` waits for a human and names `work_total` in "
                      "`pending_human_action.counter`, whatever the repair budgets hold. The reply states the "
-                     "number of Work allocations spent in this generation and names both "
+                     "number of task allocations spent in this generation and names both "
                      "`/upstreaming resume` and `/upstreaming park`. One resume starts "
                      "`work_total` again and returns to `development.fix_needed`; the repair "
                      "budgets are not started again."),
@@ -3201,8 +3201,8 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
         "when a specific failure or external prerequisite needs operator action. Park means the "
         "approach is not working or a human said stop; it ends the current generation, and refresh "
         "from parked performs a clean reset. A Result is reused only while the pipeline ran "
-        "continuously: after a pause, a human wait, or a park, the next step is fresh Work. A "
-        "stop therefore clears the requested Work and the pending publication, so nothing is "
+        "continuously: after a pause, a human wait, or a park, the next step is a fresh task. A "
+        "stop therefore clears the requested task and the pending publication, so nothing is "
         "published after it.",
         (
             Diagram(
@@ -3220,15 +3220,15 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "bumps the revision. An effect that passed its final "
                      "publication check before the pause may finish and is reconciled normally."),
             Diagram(
-                "Success case 2: pause while Work is requested",
+                "Success case 2: pause while a task is requested",
                 ("development.agent_running", "development.fix_needed+paused",
                  "development.fix_needed"),
                 (("development.agent_running", "pause"),
                  ("development.fix_needed+paused", "resume_pause")),
                 start="development.agent_running",
-                text="Pause clears the requested Work, so the state in which that Work is due "
+                text="Pause clears the requested task, so the state in which that task is due "
                      "again is entered. A Result that lands during the pause takes "
-                     "`record_late_effect`; after the resume, fresh Work is requested."),
+                     "`record_late_effect`; after the resume, a fresh task is requested."),
             Diagram(
                 "Success case 3: resume after a long stop refreshes the plan",
                 ("development.waiting_ci", "development.waiting_ci+paused",
@@ -3287,7 +3287,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.waiting_human", "resume_upstream_read"),
                  ("handoff.waiting_human", "resume_upstream_read"),
                  ("upstream_review.waiting_human", "resume_upstream_read")),
-                text="Where Work or the fork provisioning is due, the collector reads the "
+                text="Where a task or the fork provisioning is due, the collector reads the "
                      "upstream base branch. When GitHub answers that it does not exist, or "
                      "redirects it to the branch it was renamed to, the contribution waits for a "
                      "human in its phase at once; a read that fails otherwise (network, server "
@@ -3364,7 +3364,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 start="development.fix_needed", ends=("closed.idle",),
                 text="`restart_generation` is accepted only when no operation is open, no "
                      "publication is pending, and no upstream PR is open. It bumps the generation, "
-                     "clears mutable lifecycle state, and starts at `queued.idle`. Requested Work "
+                     "clears mutable lifecycle state, and starts at `queued.idle`. A requested task "
                      "carries its generation, so a Result of the ended generation is never folded "
                      "or published. Nothing here closes PRs, deletes branches, or deletes "
                      "repositories."),
@@ -3397,7 +3397,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.preparing_submission", "confirm_submission_package"),
                  ("handoff.waiting_upstream_pr", "record_reminder"),
                  ("handoff.waiting_upstream_pr", "verify_upstream_pr")),
-                text="`submit-upstream` is the only submission command. The rewrite Work reads "
+                text="`submit-upstream` is the only submission command. The rewrite task reads "
                      "the plan's contribution guidelines and the non-debug commits of the "
                      "approved `riscv64-dev` series; the project's contributing instructions "
                      "take precedence over the pipeline's for content and style. It returns the "
@@ -3448,7 +3448,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "be posted returns to development; blocking CI on the clean head records its failing evidence, "
                      "which names the candidate head it was built from, so the repair names the "
                      "failing job; a failed rewrite records its reasons as the pending feedback "
-                     "of the next development Work, and nothing is posted. At the gate, a CI "
+                     "of the next development task, and nothing is posted. At the gate, a CI "
                      "failure on the candidate head takes `return_for_repair` and records the "
                      "failing evidence; an actionable review takes `record_actionable_review` "
                      "and records the feedback; the guards are exclusive, and the failure applies "
@@ -3487,7 +3487,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.waiting_human", "resume_submission_preparation"),
                  ("handoff.preparing_submission", "confirm_submission_package")),
                 start="handoff.review_due",
-                text="The rewrite Work, the lease write of `riscv64`, the reruns of "
+                text="The rewrite task, the lease write of `riscv64`, the reruns of "
                      "interrupted CI, and the package each retry within their budget and then "
                      "wait for a human in the one `handoff.waiting_human`; a pull request that "
                      "is open from `riscv64`, or a missing `riscv64-dev`, waits there at once. "
@@ -3521,22 +3521,22 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("upstream_review.waiting_human", "resume_upstream_review"),
                  ("upstream_review.waiting_human", "resume_upstream_revision")),
                 start="upstream_review.waiting_ci",
-                text="Revision Work carries the same history as development Work, including "
+                text="A revision task carries the same history as a development task, including "
                      "the reviews of upstream maintainers. "
                      "Automated upstream revisions require that the upstream PR head is the "
                      "controlled fork ref. `request_upstream_revision` applies while a failing "
                      "CI job is recorded for the head and charges `repair_attempts_cluster`; "
                      "`request_review_revision` applies to a revision driven only by review "
                      "feedback and charges `work_total` only. A published revision clears "
-                     "exactly the feedback its Work carried. A rejected proposal is repaired within `no_progress`. "
+                     "exactly the feedback its task carried. A rejected proposal is repaired within `no_progress`. "
                      "When the worker reports that no change is needed, a human answers the "
                      "reviewer; `resume_upstream_review` then clears the pending feedback and "
-                     "returns to `upstream_review.waiting_ci` without requesting Work. After a "
+                     "returns to `upstream_review.waiting_ci` without a requesting task. After a "
                      "budget is exhausted, `resume_upstream_revision` starts again the one "
                      "counter named in `pending_human_action.counter`. A CI failure is recorded "
                      "once per head and set of failing jobs. Upstream CI is never rerun by the pipeline."),
             Diagram(
-                "Failure case 4: revision Work or its publication fails",
+                "Failure case 4: a revision task or its publication fails",
                 ("upstream_review.agent_running", "upstream_review.waiting_human",
                  "upstream_review.fix_needed"),
                 (("upstream_review.agent_running", "retry_dispatch"),
@@ -3561,7 +3561,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 text="The pipeline does not reopen the PR or create a replacement. "
                      "`resume_upstream_review` returns to `upstream_review.waiting_ci` after a "
                      "head change, and after a closed PR once it is observed open again or merged. "
-                     "`resume_upstream_revision` applies only when revision Work failed. Human "
+                     "`resume_upstream_revision` applies only when a revision task failed. Human "
                      "triage either resumes or parks."),
             Diagram(
                 "Failure case 6: the base branch is renamed while the upstream PR is open",
@@ -3636,9 +3636,9 @@ DIAGRAM_PHASE_IDS = {"upstream_review": "upstream"}
 # Consistency check of the tables, run in CI as ``python -m lifecycle check``.
 
 # The revision rule. A transition bumps the revision when it is a resume,
-# when it starts a generation or a fresh Work graph, when it changes a field
+# when it starts a generation or a fresh task graph, when it changes a field
 # that defines the requested or approved work, or when a Result is rejected
-# and the same kind of Work is due again. No other transition bumps it.
+# and the same kind of a task is due again. No other transition bumps it.
 # Setting a field in ``REVISION_SET_FIELDS`` or clearing one in
 # ``REVISION_CLEAR_FIELDS`` changes the requested or approved work; so does
 # a recorded head (``REVISION_OBSERVED_FIELDS`` set by an observation, or by
@@ -3655,7 +3655,7 @@ LOCKED_EXITS = {"handoff.waiting_upstream_pr": ("verify_upstream_pr", "retract_s
 # Phases from which only a command may end the generation.
 NO_AUTOMATIC_PARK = ("upstream_review",)
 # The steps every submission passes, in order, from the gate to the locked
-# upstream-PR wait: the rewrite Work is due and runs (it reviews its own
+# upstream-PR wait: the rewrite task is due and runs (it reviews its own
 # series), `riscv64` is built from its series, CI runs on its head, and the
 # package is posted. The one state that writes the fork in the handoff phase
 # writes `riscv64`; the rewrite's Result leaves for that state, or returns to
@@ -3664,7 +3664,7 @@ SUBMISSION_GATE = "handoff.awaiting_submission"
 SUBMISSION_STEPS = ("handoff.review_due", "handoff.agent_running",
                     "handoff.building_upstream_branch", "handoff.waiting_ci",
                     "handoff.preparing_submission", "handoff.waiting_upstream_pr")
-# The rewrite Work, and where a Result of it that passes leads.
+# The rewrite task, and where a Result of it that passes leads.
 SUBMISSION_REWRITE = "handoff.agent_running"
 SUBMISSION_WORK = {SUBMISSION_REWRITE: "handoff.building_upstream_branch"}
 UPSTREAM_BRANCH_WRITER = "handoff.building_upstream_branch"
@@ -3734,11 +3734,11 @@ def _check_transition(where: str, t: Transition, problems: list[str], *,
         problems.append(f"{where}: command {t.command!r} on a {t.trigger} trigger")
     e = t.effects
     if e.generation == "bump" and (e.revision != "bump" or e.work != "clear"):
-        problems.append(f"{where}: a generation bump must bump the revision and clear Work")
+        problems.append(f"{where}: a generation bump must bump the revision and clear a task")
     if e.work == "allocate" and NOT_PAUSED not in t.guard:
-        problems.append(f"{where}: allocates Work without the guard {NOT_PAUSED!r}")
+        problems.append(f"{where}: allocates a task without the guard {NOT_PAUSED!r}")
     if e.work == "allocate" and "no open operation" not in t.guard and QUIESCENT not in t.guard:
-        problems.append(f"{where}: allocates Work without the guard 'no open operation'")
+        problems.append(f"{where}: allocates a task without the guard 'no open operation'")
     guard_text = "; ".join(t.guard)
     for name in t.charges:
         if name not in BUDGETS:
@@ -3824,10 +3824,10 @@ def _check_states(problems: list[str]) -> None:
             _check_transition(where, e.transition, problems)
             effects = e.transition.effects
             if effects.work == "allocate" and not state.launches:
-                problems.append(f"{where}: allocates Work from a state that does not launch")
+                problems.append(f"{where}: allocates a task from a state that does not launch")
             if effects.work in ("allocate", "reallocate") and "work_total" not in e.transition.charges \
                     and PIPELINE_FAILURE not in e.transition.guard:
-                problems.append(f"{where}: allocates Work without charging 'work_total'")
+                problems.append(f"{where}: allocates a task without charging 'work_total'")
             if must_bump(e) and effects.revision != "bump":
                 problems.append(f"{where}: the revision rule requires a revision bump")
             if not must_bump(e) and effects.revision == "bump":
@@ -3925,25 +3925,25 @@ def stop_transitions():
 
 def _check_stops(problems: list[str]) -> None:
     """A stop invalidates what is held: every stop that clears the requested
-    Work, and every stop by command, also clears the pending publication."""
+    task, and every stop by command, also clears the pending publication."""
     for where, t in stop_transitions():
         if t.effects.work != "clear" and t.trigger != Trigger.COMMAND:
             continue
         for held in _HELD:
             if held not in t.effects.clears:
-                problems.append(f"{where}: a stop that clears the requested Work, or a stop by "
+                problems.append(f"{where}: a stop that clears the requested task, or a stop by "
                                 f"command, must also clear {held}")
 
 
 def _is_patch_work(edge: Edge) -> bool:
-    """Whether ``edge`` allocates Work that writes the fork."""
+    """Whether ``edge`` allocates a task that writes the fork."""
     return edge.transition.effects.work == "allocate" and LIFECYCLE[edge.source].writes
 
 
 def _check_feedback(problems: list[str]) -> None:
-    """Pending feedback: a Work request carries the ids present at
+    """Pending feedback: a task request carries the ids present at
     allocation, a published Result clears exactly those, and nothing else
-    clears pending feedback but the resume after a human answered it. Work
+    clears pending feedback but the resume after a human answered it. A task
     that carries feedback is never answered by a CI rerun."""
     field = QUALIFIED_CLEARS[CARRIED_FEEDBACK][0]
     for e in table_edges():
@@ -3951,7 +3951,7 @@ def _check_feedback(problems: list[str]) -> None:
         t, effects = e.transition, e.transition.effects
         carries = WORK_FEEDBACK in effects.sets
         if carries != _is_patch_work(e):
-            problems.append(f"{where}: exactly the rows that allocate patch or revision Work "
+            problems.append(f"{where}: exactly the rows that allocate patch or revision task "
                             f"set {WORK_FEEDBACK}")
         published = t.trigger == Trigger.RESULT and "proposal_artifact" in effects.sets
         if published != (CARRIED_FEEDBACK in effects.clears):
@@ -3959,15 +3959,15 @@ def _check_feedback(problems: list[str]) -> None:
                             f"the {CARRIED_FEEDBACK}")
         if field in effects.clears and e.verb not in FEEDBACK_ANSWERED_BY:
             problems.append(f"{where}: clears {field}; only a published Result clears the "
-                            f"feedback its Work carried, and {_one_of(FEEDBACK_ANSWERED_BY)} "
+                            f"feedback its task carried, and {_one_of(FEEDBACK_ANSWERED_BY)} "
                             "clears feedback a human answered")
         if "flaky_reruns" in t.charges:
             if WORK_WITHOUT_FEEDBACK not in t.guard:
                 problems.append(f"{where}: a CI rerun without the guard {WORK_WITHOUT_FEEDBACK!r}")
-            if not any("the Work carries feedback" in g for x in state_edges(e.source)
+            if not any("the task carries feedback" in g for x in state_edges(e.source)
                        if x.verb in BUDGETS["flaky_reruns"].exhaustion_verbs
                        for g in x.transition.guard):
-                problems.append(f"{where}: no row of {e.source} takes the same outcome of Work "
+                problems.append(f"{where}: no row of {e.source} takes the same outcome of a task "
                                 "that carries feedback")
     for entry, (name, meaning) in QUALIFIED_CLEARS.items():
         if not entry.endswith(f" {name}") or not meaning.strip():
@@ -3976,7 +3976,7 @@ def _check_feedback(problems: list[str]) -> None:
         if not any(entry in e.transition.effects.clears for e in table_edges()):
             problems.append(f"qualified clear {entry!r}: no transition uses it")
     # A nomination blocked by unmet series requirements always has an
-    # observation row that records them as pending feedback and makes Work
+    # observation row that records them as pending feedback and makes a task
     # carrying that feedback due, so passing CI never strands them.
     for state in sorted({e.source for e in table_edges()
                          if SERIES_REQUIREMENTS_MET in e.transition.guard}):
@@ -3990,9 +3990,9 @@ def _check_feedback(problems: list[str]) -> None:
             problems.append(f"{state}: blocks a nomination on {SERIES_REQUIREMENTS_MET!r} "
                             f"without an observation row guarded by "
                             f"{FEEDBACK_OR_UNMET!r} that records them as pending "
-                            "feedback and makes Work carrying it due")
+                            "feedback and makes a task carrying it due")
     # A nomination blocked by pending feedback always has a row that makes
-    # Work carrying that feedback due, so passing CI never strands it.
+    # a task carrying that feedback due, so passing CI never strands it.
     for state in sorted({e.source for e in table_edges()
                          if NO_PENDING_FEEDBACK in e.transition.guard}):
         if not any(FEEDBACK_OR_UNMET in x.transition.guard
@@ -4002,11 +4002,11 @@ def _check_feedback(problems: list[str]) -> None:
                            for w in state_edges(x.target))
                    for x in state_edges(state)):
             problems.append(f"{state}: blocks a nomination on {NO_PENDING_FEEDBACK!r} without an "
-                            f"observation row guarded by {FEEDBACK_OR_UNMET!r} that makes Work "
+                            f"observation row guarded by {FEEDBACK_OR_UNMET!r} that makes a task "
                             "carrying the feedback due")
 
 
-# The guards of `request_patch`: write admission and the guards every Work
+# The guards of `request_patch`: write admission and the guards every task
 # allocation of development shares; no proposal or scope admission.
 REQUEST_PATCH_GUARDS = frozenset({NO_FAILING_JOB, "write admission", "worker slot free",
                                   "capacity available", NO_PROGRESS_REMAINS, WORK_TOTAL_REMAINS,
@@ -4106,12 +4106,12 @@ def _check_settled_rows(problems: list[str]) -> None:
     t = row("development.fix_needed", "request_patch")
     if t is not None and set(t.guard) - REQUEST_PATCH_GUARDS:
         extra = ", ".join(sorted(set(t.guard) - REQUEST_PATCH_GUARDS))
-        problems.append(f"development.fix_needed --request_patch-->: patch Work is admitted by "
+        problems.append(f"development.fix_needed --request_patch-->: a patch task is admitted by "
                         f"write admission only, not by {extra}")
     for verb in ("resume_development", "refresh_planning", "resume_stale"):
         t = row("development.waiting_human", verb)
         if t is not None and HELD_RESULT not in t.effects.clears:
-            problems.append(f"development.waiting_human --{verb}-->: fresh Work is "
+            problems.append(f"development.waiting_human --{verb}-->: a fresh task is "
                             f"requested; the row clears {HELD_RESULT}")
 
 
@@ -4154,7 +4154,7 @@ def _check_reruns(problems: list[str]) -> None:
 
 
 def _check_patch_work(problems: list[str]) -> None:
-    """Patch and revision Work is requested only where Work is due on an
+    """Patch and a revision task is requested only where a task is due on an
     existing fork, under write admission; ``repair_attempts_cluster`` is
     charged only for a failing CI job; every such request requires that
     ``no_progress`` remains. The patch scope is checked at admission."""
@@ -4162,22 +4162,22 @@ def _check_patch_work(problems: list[str]) -> None:
         if not _is_patch_work(e):
             if "repair_attempts_cluster" in e.transition.charges:
                 problems.append(f"{e.source} --{e.verb}-->: charges repair_attempts_cluster "
-                                "without allocating patch Work")
+                                "without allocating a patch task")
             continue
         where = f"{e.source} --{e.verb}--> {e.target}"
         guard = e.transition.guard
         source = LIFECYCLE[e.source]
         if not (source.kind == "auto_wait" and source.launches and e.source.endswith(".fix_needed")):
-            problems.append(f"{where}: patch Work is requested only from a fix_needed state")
+            problems.append(f"{where}: a patch task is requested only from a fix_needed state")
         if state_phase(e.source) == "development" and "write admission" not in guard:
-            problems.append(f"{where}: patch Work without the guard 'write admission'")
+            problems.append(f"{where}: a patch task without the guard 'write admission'")
         charged = "repair_attempts_cluster" in e.transition.charges
         if charged != (FAILING_JOB in guard) or charged == (NO_FAILING_JOB in guard):
             problems.append(f"{where}: repair_attempts_cluster is charged exactly when the "
                             f"guard is {FAILING_JOB!r}; the other requests state "
                             f"{NO_FAILING_JOB!r}")
         if not any("no_progress" in g and "remain" in g for g in guard):
-            problems.append(f"{where}: requests Work without requiring that no_progress remains")
+            problems.append(f"{where}: requests a task without requiring that no_progress remains")
     for e in table_edges():
         if any("proposal" in g and "admission" in g for g in e.transition.guard):
             problems.append(f"{e.source} --{e.verb}-->: a proposal admission guard; no patch is "
@@ -4350,7 +4350,7 @@ def _check_flags(problems: list[str]) -> None:
             if name == "paused" and not set(allowed) & set(t.guard):
                 problems.append(f"{where}: sets the flag without the guard {NOT_PAUSED!r}")
             if t.effects.work != "clear":
-                problems.append(f"{where}: setting the flag must clear the requested Work")
+                problems.append(f"{where}: setting the flag must clear the requested task")
             if t.effects.revision == "bump":
                 problems.append(f"{where}: a stop must not bump the revision")
             reason = [s for s in t.effects.sets if _field_name(s) == f"{f.field}_reason"]
@@ -4393,13 +4393,13 @@ def _check_flags(problems: list[str]) -> None:
         holding = set(allocated)
         if set(f.set_moves) != holding:
             problems.append(f"flag {name}: set_moves {sorted(f.set_moves)} differ from the states "
-                            f"that hold requested Work {sorted(holding)}")
+                            f"that hold a requested task {sorted(holding)}")
         for source, target in f.set_moves.items():
             state = LIFECYCLE.get(target)
             if state is None or state_phase(source) != state_phase(target) or not state.launches \
                     or state.kind != "auto_wait":
                 problems.append(f"flag {name}: {source} moves to {target}, which is not a state "
-                                "of the same phase in which Work is due")
+                                "of the same phase in which a task is due")
         if set(f.mask) != set(Trigger):
             problems.append(f"flag {name}: mask does not cover every trigger")
 
@@ -4489,14 +4489,14 @@ def excluded(a: Transition, b: Transition) -> bool:
 
 
 def due_work_edges(state: str) -> list[Edge]:
-    """The controller transitions of a state in which Work is due: the rows
+    """The controller transitions of a state in which a task is due: the rows
     of the table, without the expansions of rules."""
     return [e for e in state_edges(state)
             if e.transition.trigger == Trigger.TICK and not is_rule_row(e)]
 
 
 def _check_due_work(problems: list[str]) -> None:
-    """In a state in which the controller allocates Work, at most one of its
+    """In a state in which the controller allocates a task, at most one of its
     controller transitions applies: every two of them carry guards that
     ``EXCLUSIVE_GUARDS`` lists as exclusive. Exhaustion of ``work_total``
     is one transition, guarded by nothing else, so that it applies whatever
@@ -4520,17 +4520,17 @@ def _check_due_work(problems: list[str]) -> None:
                     e.verb != "exhaust_work_total" or e.transition.guard != (WORK_TOTAL_EXHAUSTED,)
                     or LIFECYCLE[e.target].kind != "human_wait"):
                 problems.append(f"{key} --{e.verb}--> {e.target}: exhaustion of work_total where "
-                                "Work is due is exhaust_work_total, guarded by nothing else, and "
+                                "a task is due is exhaust_work_total, guarded by nothing else, and "
                                 "leads to a human wait")
 
 
 def _check_work_identity(problems: list[str]) -> None:
-    """Work names the verified upstream identity and base: every row that
-    allocates Work, or a fresh graph for it, requires them."""
+    """A task names the verified upstream identity and base: every row that
+    allocates a task, or a fresh graph for it, requires them."""
     for e in table_edges():
         if e.transition.effects.work in ("allocate", "reallocate") \
                 and UPSTREAM_BOUND not in e.transition.guard:
-            problems.append(f"{e.source} --{e.verb}--> {e.target}: allocates Work without the "
+            problems.append(f"{e.source} --{e.verb}--> {e.target}: allocates a task without the "
                             f"guard {UPSTREAM_BOUND!r}")
 
 
@@ -4805,7 +4805,7 @@ def _check_diagrams(problems: list[str]) -> None:
                 problems.append(f"flag {name} {verb}: appears in no diagram")
         if f.set_moves and not any((source, verb, target) in drawn_edges
                                    for source, target in f.set_moves.items() for verb in f.set_by):
-            problems.append(f"flag {name}: no move out of a state with requested Work is drawn")
+            problems.append(f"flag {name}: no move out of a state with a requested task is drawn")
 
     for d in (*DECISIONS, *FURTHER_CHANGES, *SETTLED_OPEN_ITEMS, *OPEN_ITEMS):
         title = f"decision {d.title!r}"
@@ -4959,7 +4959,7 @@ def _check_always_rows(problems: list[str]) -> None:
                 problems.append(f"{where}: an `always` row sets {entry}, a value the caller "
                                 "supplies")
         if t.effects.work in ("allocate", "reallocate"):
-            problems.append(f"{where}: an `always` row allocates Work the caller supplies")
+            problems.append(f"{where}: an `always` row allocates a task the caller supplies")
 
 
 # The transition engine's private names: a row is taken only by

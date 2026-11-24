@@ -132,7 +132,7 @@ class TestWorkflowContracts(unittest.TestCase):
         """The queue carries a reference to the task: the pre-agent step writes
         the claim and resolves it before any check reads the task, the
         trusted jobs after the agent read the task ``queue_result`` resolved,
-        and no step reads the Work of the Claim into task.json."""
+        and no step reads the task of the Claim into task.json."""
         for name in ("worker", "planner"):
             with self.subTest(workflow=name):
                 text = (WORKFLOWS / f"{name}.md").read_text()
@@ -447,7 +447,7 @@ class TestWorkflowContracts(unittest.TestCase):
         # The step's token reads the Result only; the checks run without it.
         self.assertIn("unset GH_TOKEN", run[start:run.index("python -m submission check")])
         self.assertIn("python -m submission check-rewrite", run[start:])
-        # An artifact that cannot be read is Work without a usable Result.
+        # An artifact that cannot be read is a task without a usable Result.
         self.assertIn('status:"rejected", failure_class:"validation"', run[start:])
         # The token step runs only for a publication, which a rewrite never is.
         token = next(s for s in publish["steps"] if s.get("id") == "fork-token")
@@ -1230,7 +1230,7 @@ class TestPiExtensions(unittest.TestCase):
 
 
 class TestHistoryAndReports(unittest.TestCase):
-    """Every Work reads its verified history first and returns its report."""
+    """Every task reads its verified history first and returns its report."""
 
     def pre_agent(self, name):
         return next(s for s in source(name)["pre-agent-steps"]

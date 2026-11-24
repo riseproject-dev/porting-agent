@@ -168,9 +168,9 @@ class TestPolicyRecovery(unittest.TestCase):
         self.assertIn("re-armed", report[0]["decision"])
 
     def test_the_re_armed_work_gets_a_new_history_with_the_steering_of_the_wait(self):
-        """The re-arm bumps the revision, so the Work allocated after it has
-        a new Work id and its own history, built with the steering written
-        while the dispatch waited; the history of the Work that failed is
+        """The re-arm bumps the revision, so the task allocated after it has
+        a new task id and its own history, built with the steering written
+        while the dispatch waited; the history of the task that failed is
         not reused."""
         record, _launch, _staged, _report = self.recover(
             reinstalled(self.failed + timedelta(hours=1)))
@@ -324,9 +324,9 @@ class TestDispatchWhilePolicyRefuses(unittest.TestCase):
 
 class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
     def test_a_task_file_that_is_not_the_works_never_blocks_another(self):
-        """The dispatcher reads the task file of each Work at the pinned
-        commit: a Work whose file is not its own is skipped and reported, and
-        every other Work is dispatched."""
+        """The dispatcher reads the task file of each task at the pinned
+        commit: a task whose file is not its own is skipped and reported, and
+        every other task is dispatched."""
         import task_file
 
         def requested(cid, issue):
@@ -358,7 +358,7 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
             for cid in ids:
                 key = f"{cid}@1:planning"
                 (evidence / f"{work_history.evidence_id(key)}.json").write_text("{}")
-                # The file of the first Work is another Work's task file.
+                # The file of the first task is another task's task file.
                 owner = ids[1] if cid == ids[0] else cid
                 (evidence / f"{task_file.evidence_id(key)}.json").write_text(json.dumps({
                     "kind": "task", "evidence_id": task_file.evidence_id(key),
@@ -374,7 +374,7 @@ class TestPlanSkipsAnUnboundRecord(unittest.TestCase):
         self.assertEqual([s["contribution"] for s in report["selected"]], ["example--b/2"])
         self.assertEqual(report["skipped"], [{
             "contribution": "example--a/1", "task": "planning",
-            "reason": "the task file is not the task file of the requested Work"}])
+            "reason": "the task file is not the task file of the requested task"}])
 
 
 if __name__ == "__main__":

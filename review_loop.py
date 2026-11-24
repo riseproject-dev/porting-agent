@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """The review loop of a worker run, and how trusted code reads it.
 
-Every Work that delivers a series (a development patch or repair, an upstream
+Every task that delivers a series (a development patch or repair, an upstream
 revision, a submission rewrite) reviews it in its own run with a review loop
 that its prompt describes and that runs on the ``subagent`` tool of
 ``pi-subagents``: at most 3 rounds of fresh read-only reviewers, each followed
@@ -61,7 +61,7 @@ class OpenP0(LoopError):
 def check(report: dict | None, *, series_digest: str | None, text_digest: str | None = None,
           delivers_series: bool = True) -> dict | None:
     """The review loop of ``report`` when it is usable, ``None`` when the
-    Work delivers no series and records none. ``series_digest`` is the
+    task delivers no series and records none. ``series_digest`` is the
     SHA-256 of the series the Result delivers (``None`` only when it delivers
     none). Raises ``LoopError`` when a delivered series has no loop, no round
     ran, the last round did not review exactly the delivered series (and, when

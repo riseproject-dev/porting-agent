@@ -123,7 +123,7 @@ class TestTheEngineEnforcesThem(unittest.TestCase):
         self.assertEqual(other.kind, engine.Refusal.SOURCE_INVALID)
 
     def test_a_row_that_would_break_its_target_is_refused(self):
-        # A head pushed while Work is due is awaited only with the
+        # A head pushed while a task is due is awaited only with the
         # development PR `development.waiting_ci` requires; without the guard
         # the record after the row would break it.
         state, verb = "development.fix_needed", "record_head_change"

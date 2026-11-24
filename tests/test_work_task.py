@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The task file of one Work: the content, the id, the bounds, and the tick
+"""The task file of one task: the content, the id, the bounds, and the tick
 that commits it beside the history."""
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ class TestBuild(unittest.TestCase):
         for change, why in (
                 (lambda r, e: r["upstream"].update(base_sha=None), "not bound"),
                 (lambda r, e: r["active_work"].pop("tracking_issue"), "frozen tracking-issue"),
-                (lambda r, e: e.pop(live.HISTORY), "history of the Work is not recorded")):
+                (lambda r, e: e.pop(live.HISTORY), "history of the task is not recorded")):
             record, evidence = live.fresh()
             change(record, evidence)
             with self.assertRaises(work_task.TaskFileError) as raised:
@@ -126,7 +126,7 @@ class TestBuild(unittest.TestCase):
 
 class TestAlwaysBuildable(unittest.TestCase):
     """A task of schema-valid input is always built: a hold that no change of
-    the code could release would hold the Work forever."""
+    the code could release would hold the task forever."""
 
     def test_an_oversized_plan_is_reduced_to_its_reference(self):
         record, evidence = live.fresh()
@@ -218,7 +218,7 @@ class TestTick(unittest.TestCase):
         self.assertEqual(again.report["work_task"], [])
 
     def test_a_task_file_recorded_after_the_request_launches_the_dispatcher(self):
-        """Work an earlier tick requested, whose history is recorded but not
+        """A task an earlier tick requested, whose history is recorded but not
         its task file (the dispatcher defers it), gets the file in the next
         tick and the dispatcher is launched at once."""
         out = self.allocate()
@@ -257,7 +257,7 @@ class TestTick(unittest.TestCase):
             out = self.allocate()
         self.assertFalse([e for k, e in out.staged if k == "evidence" and e["kind"] == "task"])
         [entry] = out.report["work_task"]
-        self.assertIn("history of the Work is not recorded", entry["deferred"])
+        self.assertIn("history of the task is not recorded", entry["deferred"])
 
     def test_a_task_that_cannot_be_built_holds_the_allocation_before_anything_is_charged(self):
         # A record that froze no description at intake.

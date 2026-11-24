@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Recover the exact Docker-blocked worker proposal into bounded fresh Work."""
+"""Recover the exact Docker-blocked worker proposal into a bounded fresh task."""
 
 import copy
 import json
@@ -53,7 +53,7 @@ class TestDispatcherAcceptedLaunchRecovery(unittest.TestCase):
 
 
 class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
-    """Run 45005299790 failed before the agent and returned its Work to available."""
+    """Run 45005299790 failed before the agent and returned its task to available."""
 
     def setUp(self):
         self.record = contribution(phase="development", activity="agent_running", revision=4)
@@ -136,7 +136,7 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
         self.assertEqual((event["kind"], event["cause"]["id"]),
                          ("retry_dispatch", "dispatcher-45005112315"))
         # The row records the decided run: only `active_work.dispatched_run_id`
-        # changes in the Work, and no write beside the row records it.
+        # changes in the task, and no write beside the row records it.
         self.assertEqual(decided["active_work"],
                          dict(self.record["active_work"], dispatched_run_id="45005112315"))
         with self.assertRaises(engine.TransitionError):
@@ -192,7 +192,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
         return record, operations, project
 
     def test_a_blocker_without_requested_work_is_a_late_result(self):
-        """The record names the blocked run as its proposal, but holds no Work
+        """The record names the blocked run as its proposal, but holds no task
         for it and is at a later revision: the Result matches nothing and
         takes `record_late_effect`, once."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -251,7 +251,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                     "run_id": str(100 + attempt),
                 },
             }
-            # Each blocked Result answers Work requested in agent_running.
+            # Each blocked Result answers a task requested in agent_running.
             record = dict(record, activity="agent_running",
                           active_work={"dedupe_key": f"example--proj/12@g0.r{record['revision']}"
                                                      ":development_patch",
@@ -269,7 +269,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                 worker_run_id=str(100 + attempt),
             )
         # Each blocked outcome charges `no_progress` only; `work_total` and
-        # the clusters are charged when Work is allocated.
+        # the clusters are charged when a task is allocated.
         self.assertEqual(record["budget"]["no_progress_streak"],
                          before["no_progress_streak"] + 2)
         self.assertEqual(record["budget"]["attempts_used"], before["attempts_used"])
@@ -284,7 +284,7 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                                       pressure=capacity.Pressure(ok=True)))
             return res, [item for kind, item in res.staged if kind == "contributions"][-1]
 
-        # `no_progress` is exhausted where the next Work is due: the one
+        # `no_progress` is exhausted where the next task is due: the one
         # automatic refresh of the generation runs complete planning.
         res, refreshed = select(record)
         self.assertEqual([e["kind"] for k, e in res.staged if k == "events"][:1],

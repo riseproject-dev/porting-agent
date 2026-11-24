@@ -3,9 +3,9 @@
 """A worker Result that matches no request of the record.
 
 The table's ``record_late_effect`` applies in every state: a Result that does
-not match the current generation, revision, and requested Work is recorded and
-never folded. ``park`` and ``pause`` clear the requested Work without a
-revision bump (``abandon`` then closes a parked contribution), so the Result of the Work they stopped
+not match the current generation, revision, and a requested task is recorded and
+never folded. ``park`` and ``pause`` clear the requested task without a
+revision bump (``abandon`` then closes a parked contribution), so the Result of the task they stopped
 carries the record's own revision. It must be recorded, change nothing, and
 never stop the tick.
 
@@ -84,8 +84,8 @@ FEEDBACK = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [
 
 
 def identity(record):
-    """The Work identity a Result of ``record`` carries back: that of the
-    Work it holds, else that of the Work ``running`` held before a stop
+    """The task identity a Result of ``record`` carries back: that of the
+    task it holds, else that of the task ``running`` held before a stop
     cleared it."""
     held_work = record.get("active_work") or {}
     generation = held_work.get("generation", record.get("generation", 0))
@@ -188,7 +188,7 @@ def stopped(phase, verb):
 class TestResultAfterTheWorkWasStopped(unittest.TestCase):
     def assert_recorded_only(self, record, name):
         pub = publication(record, name)
-        # Without capacity the tick requests no new Work, so the record shows
+        # Without capacity the tick requests no new task, so the record shows
         # exactly what the Result did to it.
         output = tick(record, [pub], capacity_ok=False)
         after = final(output, record)
@@ -219,7 +219,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
 
     def test_park_abandon_and_pause_during_running_work(self):
         # A pause from an `agent_running` state leads to the state in which
-        # the Work is due again.
+        # the task is due again.
         expected = {"park": "parked.idle", "abandon": "closed.idle",
                     "pause": {"planning": "planning.idle",
                               "development": "development.fix_needed",
@@ -254,7 +254,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         }
         for state, record in records.items():
             self.assertEqual(engine.state_key(record), state)
-            # Stale Work left on such a record does not make the Result match.
+            # A stale task left on such a record does not make the Result match.
             for work in (None, WORK):
                 rec = dict(record, active_work=copy.deepcopy(work))
                 for name in RESULTS:
@@ -283,7 +283,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
 
     def assert_recorded_before_planning_begins(self, record, name):
         """A request in `queued.idle` begins its planning in the tick that
-        records the Result, in a commit of its own, and requests no Work in
+        records the Result, in a commit of its own, and requests no task in
         it. Nothing of the Result reaches the record."""
         output = tick(record, [publication(record, name)])
         after = final(output, record)
@@ -331,7 +331,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         self.assertEqual(final(output, retry)["pending_publication"], pending)
 
     def test_a_result_of_work_of_another_phase_is_late(self):
-        """Each phase requests its own Work only (`reconcile.WORK_PHASE`)."""
+        """Each phase requests its own task only (`reconcile.WORK_PHASE`)."""
         import submission
         development = running("development")
         planning = running("planning")
@@ -339,12 +339,12 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
                 "next_attempt_at": NOW, "exhausted": False}
         planning_work = dict(planning["active_work"])
         cases = (
-            # Work the record holds whose task belongs to another phase.
-            ("planning Work in development", dict(development, active_work=planning_work),
-             "published", "late Result: planning Work is not requested in the development phase"),
-            ("patch Work in upstream review",
+            # A task the record holds whose task belongs to another phase.
+            ("A planning task in development", dict(development, active_work=planning_work),
+             "published", "late Result: the planning task is not requested in the development phase"),
+            ("A patch task in upstream review",
              dict(running("upstream_review"), active_work=dict(WORK)), "published",
-             "late Result: development_repair Work is not requested in the upstream_review "
+             "late Result: the development_repair task is not requested in the upstream_review "
              "phase"),
             # A plan outside planning, and any other Result in planning.
             ("a plan in development", development, "planning",
@@ -361,7 +361,7 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
              "late Result: a published Result has no row in the planning phase"),
             ("a held publication's plan in planning",
              dict(planning, active_work=None, pending_publication=dict(held)), "planning",
-             "late Result without matching requested Work"),
+             "late Result without matching a requested task"),
         )
         for name, record, status, why in cases:
             with self.subTest(case=name):
@@ -378,11 +378,11 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         output = tick(record, [pub], capacity_ok=False)
         [late] = events(output)
         self.assertEqual((late["kind"], late["details"]["why"]),
-                         ("record_late_effect", "late Result: planning Work is not requested in "
+                         ("record_late_effect", "late Result: the planning task is not requested in "
                                                 "the development phase"))
 
     def test_work_held_where_no_row_folds_a_result_is_late(self):
-        """Only a state with a Result row folds a Result: Work a record holds
+        """Only a state with a Result row folds a Result: a task a record holds
         in any other state has no row for its Result."""
         dev = running("development")
         review = running("upstream_review")
@@ -550,8 +550,8 @@ class TestStopWithAPendingPublication(unittest.TestCase):
                          ("development.fix_needed", 3, [999]))
 
     def test_work_state_without_recorded_work_folds_nothing(self):
-        """Without requested Work no Result matches, at any revision. The
-        record breaks its state (`agent_running` requires Work): the tick
+        """Without a requested task no Result matches, at any revision. The
+        record breaks its state (`agent_running` requires a task): the tick
         stops it first, as the heal of a broken record, and the Result is
         late."""
         for phase in ("development", "upstream_review"):
@@ -575,7 +575,7 @@ class TestStopWithAPendingPublication(unittest.TestCase):
 
 
 class TestNoReachableRecordStopsTheTick(unittest.TestCase):
-    """Every admitted state, with and without a stop flag and requested Work,
+    """Every admitted state, with and without a stop flag and a requested task,
     against every Result and every CI observation: the tick always returns
     and leaves the record in an admitted state."""
 
@@ -629,7 +629,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
         "publication": "reconcile.apply_publication",
         "late_result": "reconcile.engine.record_late_effect",
         # Not ``work.graph_id``: the tick also derives the graphs of the
-        # Work ids the publications name, outside any contribution's step.
+        # task ids the publications name, outside any contribution's step.
         "dispatch_recovery": "reconcile._committed_history",
         "observed_head": "observe_ci.collect.branch_head",
         "observed_ci": "observe_ci.collect.evaluate_snapshot",

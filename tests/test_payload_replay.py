@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""Replay of the live incident of ``luhenry--d2vm/3``: its repair Work
+"""Replay of the live incident of ``luhenry--d2vm/3``: its repair task
 (`luhenry--d2vm/3@g1.r10:development_repair`) was never queued, because the
 payload carrying its whole task was 15592 bytes against the queue's limit of
 16384 (with a safety margin of 15500); the dispatch recovery blamed the 244
@@ -9,8 +9,8 @@ a human, while the request had charged `work_total` for a task that never
 reached the queue.
 
 The fixtures (``tests/fixtures/live-d2vm-payload``) are the committed record
-when the Work was requested and when its dispatch recovery waited for a human,
-the evidence the Work was built from, and events 37 to 41, as the controller
+when the task was requested and when its dispatch recovery waited for a human,
+the evidence the task was built from, and events 37 to 41, as the controller
 committed them."""
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ FIXED = "f" * 64
 
 
 def old_payload() -> dict:
-    """The payload the dispatcher of the incident built for the Work: the
+    """The payload the dispatcher of the incident built for the task: the
     task with the references it named at the pinned control commit, and the
     resource scope and effect contract."""
     record, evidence = live.fresh()
@@ -76,7 +76,7 @@ def compact(value) -> bytes:
 
 class TestTheIncident(unittest.TestCase):
     def test_the_payload_of_the_incident_was_over_the_budget(self):
-        """The Work at r10 inlined the task: about 15600 bytes, of which the plan
+        """The task at r10 inlined the task: about 15600 bytes, of which the plan
         item of the reason evidence (the proposal and its coverage, copied
         from the plan the pre-agent step fetches in full anyway) took 11088,
         against a safety margin of 15500."""
@@ -118,7 +118,7 @@ class TestTheIncident(unittest.TestCase):
 
     def test_the_dispatcher_no_longer_skips_the_work_it_skipped(self):
         """With the task file committed beside the history, the dispatcher
-        of the incident's Work reads it at its own commit and stages the
+        of the incident's task reads it at its own commit and stages the
         reference, which the worker resolves to the task of the incident."""
         record, evidence = live.fresh()
         with tempfile.TemporaryDirectory() as directory:
@@ -212,7 +212,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         self.assertTrue(rearm["details"]["automatic"])
         self.assertIsNone(rearm["details"]["failed_at_version"])
         self.assertEqual(rearm["details"]["pipeline_version"], FIXED)
-        # The Work the lost allocation charged is credited, and the new
+        # The task the lost allocation charged is credited, and the new
         # request charges its own: the net charge is one task.
         self.assertEqual(rearm["details"]["credited"], ["work_total"])
         self.assertEqual(request["details"]["charged"], ["work_total"])
@@ -229,7 +229,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
         self.assertEqual(record["active_work"]["feedback_evidence_ids"], [live.REVIEW])
         self.assertEqual(record["plan_evidence_id"], live.PLAN)
         self.assertEqual(record["revision"], 11)
-        # The Work is requested again for dispatch.
+        # The task is requested again for dispatch.
         [requested] = out.report["controller"]["selected"]
         self.assertEqual(requested["task"], "development_repair")
         # Nothing waits for a human.
@@ -262,7 +262,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
             reference=task_file.reference(key, "a" * 40, "b" * 64))
         self.assertLess(len(compact(payload)), 1024)
         # The history and the task file are what the wait never had: the
-        # earlier ones are the Work of the incident's.
+        # earlier ones are the task of the incident's.
         self.assertIn(live.HISTORY, self.evidence)
         self.assertNotIn(work_history.evidence_id(key), self.evidence)
 
@@ -289,7 +289,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
             pipeline=FIXED)
         self.assertEqual(decision, "dispatch failed; waiting for a human")
         self.assertEqual(new["pending_human_action"]["pipeline_version"], FIXED)
-        # The Work of the incident predates `charged`: the wait records no
+        # The task of the incident predates `charged`: the wait records no
         # credit, and the re-arm gives back `work_total` alone.
         self.assertNotIn("credit", new["pending_human_action"])
         self.assertEqual(event["details"]["pipeline_version"], FIXED)
@@ -301,7 +301,7 @@ class TestTheFirstRunAfterTheFix(unittest.TestCase):
 
 
 class TestTheRequestWithoutATaskFile(unittest.TestCase):
-    """Work the controller could not queue is never allocated or charged: the
+    """A task the controller could not queue is never allocated or charged: the
     request that failed at r10 would have been held before it was charged."""
 
     def test_work_whose_task_cannot_be_built_is_held_before_it_is_charged(self):
@@ -322,7 +322,7 @@ class TestTheRequestWithoutATaskFile(unittest.TestCase):
 
 class TestAResultWhoseTaskCouldNotBeResolved(unittest.TestCase):
     """When `queue_result` fails before it resolves the task, the publication
-    holds the claim as `task.json`: it names the Work as the reconciler keys
+    holds the claim as `task.json`: it names the task as the reconciler keys
     it, so the Result folds exactly as before."""
 
     def fold(self, task):

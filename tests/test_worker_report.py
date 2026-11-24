@@ -85,7 +85,7 @@ class TestSchema(unittest.TestCase):
 class TestCheck(unittest.TestCase):
     def test_optional_without_a_history_required_with_one(self):
         self.assertIsNone(worker_report.check(task(history=False), None))
-        # A report of Work dispatched before reports existed is not checked
+        # A report of a task dispatched before reports existed is not checked
         # strictly: an unusable one is ignored.
         self.assertIsNone(worker_report.check(task(history=False), b"not json"))
         with self.assertRaisesRegex(worker_report.ReportError, "no report.json"):
@@ -126,7 +126,7 @@ class TestCheck(unittest.TestCase):
             (directory / "report.json").write_text("[" * (worker_report.MAX_REPORT_BYTES - 1))
             [outcome] = reconcile._publication_outcomes(root)
         # The fold checks the bytes the gate checked: invalid, and refused
-        # loudly when the Work carries a history.
+        # loudly when the task carries a history.
         self.assertEqual(outcome["worker_report"], b"[" * (worker_report.MAX_REPORT_BYTES - 1))
         self.assertIsNone(worker_report.check(task(history=False), outcome["worker_report"]))
         with self.assertRaisesRegex(worker_report.ReportError, "RecursionError|JSONDecodeError"):
@@ -182,7 +182,7 @@ class TestGates(unittest.TestCase):
             path.write_bytes(raw(valid))
             self.assertEqual(worker_gate.validate(own, m5.proposal(series), mbox, path)["status"],
                              "accepted")
-            # A patch needs its report whatever the Work carries: it holds
+            # A patch needs its report whatever the task carries: it holds
             # the review loop.
             with self.assertRaisesRegex(worker_gate.WorkerGateError, "review loop"):
                 worker_gate.validate(m5.task(), m5.proposal(series), mbox,
@@ -316,7 +316,7 @@ class TestEvidence(unittest.TestCase):
         self.assertEqual(state.check_blob(
             ".state/evidence/report-example--proj--12-r3-77.json",
             json.dumps(evidence).encode(), state_policy()), [])
-        # A Work without a history may return no report; one with a history
+        # A task without a history may return no report; one with a history
         # never loses it silently.
         self.assertIsNone(worker_report.evidence(
             rec, dict(outcome, worker_report=None, task=task(history=False)),

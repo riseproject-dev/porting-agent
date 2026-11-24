@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""A completed Work graph is terminal without a usable Result only once its
+"""A completed task graph is terminal without a usable Result only once its
 Result is known to be missing: the worker run the queue bound to it ended
 (or is gone) without a publication artifact, the queue binds no run to it,
 or its artifact was not collected within the collection wait. While the run
@@ -28,7 +28,7 @@ import work
 from tests.helpers import OWNER, SHA_A, contribution
 from tests.test_work_identity import POLICY, T, requested, result
 
-# One record in each state that holds Work, with its human wait.
+# One record in each state that holds a task, with its human wait.
 STATES = (
     ("planning", "agent_running", "planning", {"fork": None}),
     ("development", "agent_running", "development_repair", {"plan_evidence_id": "plan-1"}),
@@ -167,8 +167,8 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
                 for results, decision in (
                         ({graph(record): reading("in_progress")},
                          "waiting for worker run 4242 to publish its Result"),
-                        ({}, "waiting: the worker run of the completed Work was not read"),
-                        (None, "waiting: the worker run of the completed Work was not read")):
+                        ({}, "waiting: the worker run of the completed task was not read"),
+                        (None, "waiting: the worker run of the completed task was not read")):
                     relaunch, staged, report = recover(record, results=results)
                     self.assertEqual((relaunch, staged), ([], []))
                     self.assertEqual(report[0]["decision"], decision)
@@ -262,7 +262,7 @@ class TestCompletedWorkWaitsForItsResult(unittest.TestCase):
         self.assertNotIn("record_late_effect", found)
         after = [r for kind, r in out.staged if kind == "contributions"][-1]
         self.assertEqual(engine.state_key(after), "development.waiting_ci")
-        # `work_recovery` was never charged: the Work was never reallocated.
+        # `work_recovery` was never charged: the task was never reallocated.
         self.assertEqual(after["revision"], record["revision"])
         self.assertEqual(dict(after["budget"], reruns=None), dict(record["budget"], reruns=None))
 

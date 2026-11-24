@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""A worker run that ends without a Result leaves its Work to the queue's
+"""A worker run that ends without a Result leaves its task to the queue's
 retry, which dispatch recovery neither charges nor mistakes for a lost
 dispatch (luhenry--d2vm/3, worker run 45257915183 stopped by its timeout)."""
 
@@ -63,7 +63,7 @@ class TestWorkRetries(unittest.TestCase):
 
     def test_a_retry_time_out_of_range_skips_that_work_only(self):
         # datetime.fromtimestamp refuses a time past year 9999: that one
-        # Work is left out and reported, and the others are still read.
+        # task is left out and reported, and the others are still read.
         p = projection()
         p["works"]["far"] = dict(p["works"]["b7ec5153"], work_id="far", graph_id="porting:far",
                                  retry_not_before=10 ** 20)
@@ -87,7 +87,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
             "deadline_at": "2026-11-24T02:13:29.927419+00:00",
             "dispatched_run_id": None, "reason_ids": ["plan-luhenry--d2vm--3-r2"],
             "feedback_evidence_ids": []}
-        # The dispatcher run that submitted the Work and launched worker run
+        # The dispatcher run that submitted the task and launched worker run
         # 45257915183, which ran until its job timeout (then 120 minutes).
         self.runs = [run(45257187396, "2026-11-23T20:13:50Z")]
 
@@ -105,13 +105,13 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         self.assertEqual(staged, [])
         self.assertEqual(relaunch, [{"type": "relaunch_dispatcher",
                                      "contribution_id": "luhenry--d2vm/3"}])
-        self.assertIn("the queue retries the Work", report[0]["decision"])
+        self.assertIn("the queue retries the task", report[0]["decision"])
         self.assertEqual(report[0]["queue_retry"]["attempts"], 1)
         self.assertEqual(report[0]["dispatcher_runs"], [])
 
     def test_a_dispatcher_run_in_flight_before_the_retry_is_waited_for(self):
         # A run created before the retry time that has not ended claims the
-        # available Work when it stages: nothing is launched or charged.
+        # available task when it stages: nothing is launched or charged.
         runs = self.runs + [run(45278935001, (RETRY_AT - timedelta(minutes=2)).isoformat(),
                                 status="in_progress")]
         relaunch, staged, report = self.recover(
@@ -126,7 +126,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
         _relaunch, staged, report = self.recover(
             (created + timedelta(minutes=59)).isoformat(), runs=runs)
         self.assertEqual((staged, report[0]["decision"]), ([], "dispatcher running"))
-        # Past it, the run no longer holds the Work: it is launched again.
+        # Past it, the run no longer holds the task: it is launched again.
         relaunch, staged, report = self.recover(
             (created + reconcile.DISPATCHER_RUN_WAIT).isoformat(), runs=runs)
         self.assertEqual((len(relaunch), staged), (1, []))
@@ -147,7 +147,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
 
     def test_without_the_retry_the_live_tick_charged_a_lost_dispatch(self):
         # What controller run 45278754335 decided: `retry_dispatch`, attempt
-        # 2 of 3, for a Work the queue was about to retry anyway.
+        # 2 of 3, for a task the queue was about to retry anyway.
         _relaunch, staged, report = self.recover("2026-11-23T22:21:19+00:00", retries=False)
         self.assertEqual([r["kind"] for kind, r in staged if kind == "events"], ["retry_dispatch"])
         self.assertIn("dispatch attempt 2 of 3", report[0]["decision"])
@@ -207,7 +207,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
 
 class TestDispatcherStaging(unittest.TestCase):
     def test_the_dispatcher_stages_through_the_queue_check(self):
-        # gh-aw refuses a second payload for one Work id: the plan is staged
+        # gh-aw refuses a second payload for one task id: the plan is staged
         # by the step that leaves queued Work out (tested against gh-aw
         # v1.2.2 in scripts/gh-aw-compat/tests/work_queue_stage.test.cjs).
         root = Path(__file__).parents[1]

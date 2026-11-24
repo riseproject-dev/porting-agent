@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The task of a claimed Work, resolved from the task file its payload names."""
+"""The task of a claimed task, resolved from the task file its payload names."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ COMMIT = "c" * 40
 
 
 class Fixture:
-    """The live d2vm Work with its task file committed, and the claim of the
-    Work as the queue carries it."""
+    """The live d2vm task with its task file committed, and the claim of the
+    task as the queue carries it."""
 
     def __init__(self, control_repo_id="1234567890"):
         self.record, self.evidence = live.fresh()
@@ -135,7 +135,7 @@ class TestResolve(unittest.TestCase):
     def test_an_id_not_derived_from_the_work_id_is_refused(self):
         other = "task-" + "0" * 32
         claim = self.mutate(evidence_id=other, path=f".state/evidence/{other}.json")
-        self.refused(claim, "not derived from the Work id")
+        self.refused(claim, "not derived from the task id")
 
     def test_a_file_that_is_not_the_one_the_digest_names_is_refused(self):
         self.f.files[(task_file.CONTROL_REPO, COMMIT, self.f.path)] = self.f.raw + b" "
@@ -247,7 +247,7 @@ class TestCommandLine(unittest.TestCase):
 
 class TestBounds(unittest.TestCase):
     def test_the_queue_payload_is_fixed_in_size_whatever_the_task_holds(self):
-        """The payload of the live d2vm Work that no queue accepted (15592
+        """The payload of the live d2vm task that no queue accepted (15592
         bytes inline) is a reference of about a kilobyte."""
         fixture = Fixture()
         size = len(json.dumps(fixture.claim, separators=(",", ":"), ensure_ascii=False).encode())
@@ -256,7 +256,7 @@ class TestBounds(unittest.TestCase):
 
     def test_the_largest_queue_payload_fits_the_bound(self):
         """Every field of the payload at the longest the schemas admit: the
-        longest contribution id and Work id, the longest repository id, and
+        longest contribution id and task id, the longest repository id, and
         the largest effect contract."""
         longest = "a" * 128
         request = {"task": "development_patch", "contribution_id": longest, "generation": 10**9,
@@ -281,7 +281,7 @@ class TestBounds(unittest.TestCase):
 
 
 class TestQueueResult(unittest.TestCase):
-    """``queue_result`` writes the claimed Work as ``claim.json`` and the
+    """``queue_result`` writes the claimed task as ``claim.json`` and the
     task its payload names as ``task.json``."""
 
     def run_main(self, fixture, claim=None):

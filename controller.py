@@ -4,7 +4,7 @@
 
 ``tick`` is deterministic and side-effect free: it takes loaded state, the
 policy and an ``Inputs`` snapshot collected read-only by ``collect.py``, and
-returns staged state changes plus a list of *requested* effects (native Work
+returns staged state changes plus a list of *requested* effects (native queue Work
 submissions, notifications). Nothing is executed here.
 
 * In read-only mode (``policy.read_only``, the default) requested effects are
@@ -68,9 +68,9 @@ class Inputs:
     upstream_pr_observations: dict[str, dict] = field(default_factory=dict)
     acceptances: dict[int, int] = field(default_factory=dict)     # issue id -> accepting actor id
     requests_today: dict[int, int] = field(default_factory=dict)  # actor id -> count
-    # The queue graphs (``work.graph_id``) of Work that already returned a
+    # The queue graphs (``work.graph_id``) of a task that already returned a
     # Result or that the queue holds as terminal. A terminal graph is never
-    # submitted again: Work allocated under one takes `allocate_work_retry`
+    # submitted again: a task allocated under one takes `allocate_work_retry`
     # or `exhaust_recovery` in the same tick.
     spent_graphs: frozenset[str] = frozenset()
     # The handoff workflow runs that are not completed, by operation (run id);
@@ -84,7 +84,7 @@ class Inputs:
     provision_runs: dict[str, int] | None = None
     # The head of the development branch the observation of this tick read,
     # by contribution, in every state it reads the branch (a human wait
-    # too). Development Work is not requested on a recorded head this read
+    # too). A development task is not requested on a recorded head this read
     # contradicts (``_unrecorded_head``).
     observed_dev_heads: dict[str, str] = field(default_factory=dict)
 
@@ -133,11 +133,11 @@ def _actionable(c: dict) -> str | None:
     return None
 
 
-# The deadline recorded with requested Work (`active_work.deadline_at`): the
+# The deadline recorded with a requested task (`active_work.deadline_at`): the
 # queue's attempts at it (the `retry` attempts of the pool's Policy, 3), each
 # a worker run of up to 350 minutes (the agent job bound of `worker.md`), so
 # 18 hours covers the three with time to spare. No row reads
-# it: Work whose graph ends without a usable Result is recovered by
+# it: a task whose graph ends without a usable Result is recovered by
 # `allocate_work_retry` and `exhaust_recovery`.
 WORK_DEADLINE_HOURS = 18
 
@@ -146,7 +146,7 @@ PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0,
             "development_patch": 2, "planning": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
-# The rows of the table that allocate due Work, by the state it is due in, in
+# The rows of the table that allocate a due task, by the state it is due in, in
 # the order they are tried; their guards are exclusive. A request in
 # `queued.idle` takes `begin_planning` in a tick of its own, before any of
 # these rows is taken from `planning.idle` in a later tick.
@@ -156,7 +156,7 @@ ALLOCATIONS = {
     "handoff.review_due": ("request_submission_rewrite",),
     "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
 }
-# The rows taken instead when a budget of that Work is exhausted. They need no
+# The rows taken instead when a budget of that task is exhausted. They need no
 # worker slot and are taken as soon as their guard holds.
 EXHAUSTIONS = {
     "planning.idle": ("exhaust_work_total",),
@@ -224,9 +224,9 @@ def _bind_source(c: dict, inputs: Inputs, by_id: dict[str, dict], res: TickResul
     if current is not None and current != snapshot["repository_id"]:
         source_blocked[cid] = None
         # The table verb for a changed identity sets the paused flag
-        # with the controller's reason, clears the requested Work and
+        # with the controller's reason, clears the requested task and
         # what is held for publication, and keeps the state (from an
-        # `agent_running` state, the state in which the Work is due).
+        # `agent_running` state, the state in which the task is due).
         cause = f"upstream-identity-{snapshot['repository_id']}"
         match engine.dispatch(engine.try_apply_transition(
                 c, "pause_on_identity_change", policy=policy, now=now, cause_id=cause,
@@ -531,7 +531,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
          projects: dict[str, dict], policy: dict, inputs: Inputs,
          skip: frozenset[str] = frozenset(), evidence: dict[str, dict] | None = None) -> TickResult:
     """``evidence`` is the store's evidence by id, from which the failing CI
-    job of a head is decided when Work is due. ``skip`` names the
+    job of a head is decided when a task is due. ``skip`` names the
     contributions this tick does not process: nothing
     is staged or requested for them, and a command on their tracking issue
     is left unconsumed for the next tick. They still count as existing
@@ -605,9 +605,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
         res.stage("projects", proj)
 
     # Removing the intake label withdraws only an accepted request that has
-    # not requested any Work yet, in `queued.idle` or while it waits for a
-    # worker slot in `planning.idle` (`withdraw_request`, guarded by no Work,
-    # no plan, and no fork). Once Work exists, explicit lifecycle commands are
+    # not requested any task yet, in `queued.idle` or while it waits for a
+    # worker slot in `planning.idle` (`withdraw_request`, guarded by no task,
+    # no plan, and no fork). Once a task exists, explicit lifecycle commands are
     # required so an unlabeled event cannot silently stop work.
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -626,7 +626,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 case engine.Applied() as out:
                     changed = out.record
                 case engine.Skip():
-                    # Work, a plan or a fork exists: only commands stop it.
+                    # A task, a plan or a fork exists: only commands stop it.
                     continue
                 case engine.Bug(refused):
                     raise engine.TransitionRefused(refused, ("controller", "tick"))
@@ -640,7 +640,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 projects[c["project_id"]] = project
                 res.stage("projects", project)
             rep["intake"].append({"issue": c["tracking_issue"]["number"], "decision": "cancelled",
-                                  "detail": f"{INTAKE_LABEL} label removed before Work admission"})
+                                  "detail": f"{INTAKE_LABEL} label removed before task admission"})
 
     # Bind initially unspecified source identities/bases from trusted API data,
     # never from the model's plan. Already-bound bases remain immutable. A
@@ -688,9 +688,9 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                 "reason": receipt.get("reason")})
 
     # A restart from `parked` (`restart_generation`) cleared the upstream
-    # identity and base: they are bound in this tick, before any Work is
+    # identity and base: they are bound in this tick, before any task is
     # selected, from the snapshot read for the refresh. Every row that
-    # allocates Work requires them; without a snapshot the record waits and
+    # allocates a task requires them; without a snapshot the record waits and
     # a later tick binds them.
     for cid, c in list(by_id.items()):
         if cid in skip or cid in source_blocked or c["phase"] in lifecycle.TERMINAL | {"parked"} \
@@ -702,7 +702,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
     # An upstream base branch that could not be read. In upstream review, a
     # branch renamed while the upstream PR is open is followed
-    # (`follow_renamed_base`, `resume_renamed_base`). Where Work or the fork
+    # (`follow_renamed_base`, `resume_renamed_base`). Where a task or the fork
     # provisioning is due otherwise: `require_base_branch` once the upstream
     # answered that it is missing, `require_renamed_upstream` at once when
     # GitHub names the same repository otherwise, `exhaust_source_reads` (or
@@ -971,7 +971,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             if engine.state_key(c) == "development.fix_needed" \
                     and engine.work_total_spent(c, policy):
-                # The Work loop takes `exhaust_work_total`; the rows that
+                # The task loop takes `exhaust_work_total`; the rows that
                 # open the PR of this state need `work_total`.
                 rep["deferred"].append({
                     "contribution": cid,
@@ -1063,12 +1063,12 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     f"launch_development_pr refused for a new CI bootstrap intent of {cid}")
 
     # 8-10. Select bounded work, honouring capacity and one worker. In a
-    # state of the table, Work is allocated by the row the table names for
+    # state of the table, a task is allocated by the row the table names for
     # it, and an exhausted budget takes its exhaustion row instead.
     evidence = evidence or {}
     # Planning begins: a request in `queued.idle` that is not paused takes
     # `begin_planning` in a commit of its own, whatever the worker slot,
-    # capacity, upstream binding or source read. Its Work is allocated from
+    # capacity, upstream binding or source read. Its task is allocated from
     # `planning.idle` in a later tick.
     begun: set[str] = set()
     for cid, c in list(by_id.items()):
@@ -1097,14 +1097,14 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 continue
             if c["contribution_id"] in begun:
                 rep["deferred"].append({"contribution": c["contribution_id"],
-                                        "why": "planning began in this tick; its Work is "
+                                        "why": "planning began in this tick; its task is "
                                                "allocated in a later tick"})
                 continue
             if c["contribution_id"] in blocked_by_op:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": "uncertain operation"})
                 continue
             if engine.state_key(c) not in lifecycle.LIFECYCLE:
-                continue  # a state the table does not have requests no Work
+                continue  # a state the table does not have requests no task
             due = c
             moved = _unrecorded_head(due, inputs)
             if moved:
@@ -1128,23 +1128,23 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                         _exhaust(due, out, ci, by_id, res, policy, now)
                         continue
                     case engine.Skip():
-                        # Every budget remains: the Work is allocated below.
+                        # Every budget remains: the task is allocated below.
                         pass
                     case engine.Bug(refused):
                         raise engine.TransitionRefused(refused, ("controller", "tick"))
             allocations = ALLOCATIONS.get(state, ())
             if not allocations:
                 rep["deferred"].append({"contribution": c["contribution_id"],
-                                        "why": f"no Work is allocated in {state}"})
+                                        "why": f"no task is allocated in {state}"})
                 continue
             verb, why, allocated = _due_allocation(due, allocations, facts, ci, ops, inputs,
                                                    policy, now)
             if verb is None:
                 rep["deferred"].append({"contribution": c["contribution_id"], "why": why})
                 continue
-            # The Work is allocated only when its task can be committed and
+            # The task is allocated only when its task can be committed and
             # queued: the dry run builds the task file and the queue payload
-            # of the Work the row would request. When it cannot, nothing is
+            # of the task the row would request. When it cannot, nothing is
             # allocated or charged: it is a failure of the pipeline, not of
             # the contribution, and the check is made again in the next tick
             # (after a change of the code, or of what the task is built from).
@@ -1194,19 +1194,19 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 open_operations=_open_operations(claimed, operations),
                 details={"task": kind, "work": request["dedupe_key"],
                          **({"cluster": cluster} if cluster else {})}), ("controller", "tick")))
-            # Only the rows that request patch or revision Work carry the
-            # pending feedback (`active_work.feedback_evidence_ids`); an
-            # planning carries none and keeps it pending. The submission
-            # rewrite and review Work name what they answer in their context.
+            # Only the rows that request patch or revision task carry the
+            # pending feedback (`active_work.feedback_evidence_ids`); a
+            # planning task carries none and keeps it pending. The submission
+            # rewrite task names what it answers in its context.
             carried = claimed["active_work"].get("feedback_evidence_ids") or []
             expected = (list(c.get("pending_feedback_evidence_ids") or [])
                         if _carries_feedback(source, verb)
                         else [])
             if kind not in work_queue.SUBMISSION_TASKS and carried != expected:
                 raise lifecycle.TransitionError(
-                    f"{verb}: the Work carries {carried}, not {expected}")
-            # A row that keeps the revision can name Work whose graph already
-            # returned a Result or is terminal in the queue. That Work is
+                    f"{verb}: the task carries {carried}, not {expected}")
+            # A row that keeps the revision can name a task whose graph already
+            # returned a Result or is terminal in the queue. That task is
             # terminal without a usable Result: it is never submitted again,
             # and a fresh graph is allocated within `work_recovery`
             # (`allocate_work_retry`), or the contribution waits for a human
@@ -1248,14 +1248,14 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                   policy: dict, details: dict | None = None
                   ) -> tuple[dict | None, dict | None, str]:
-    """The table's row for requested Work whose graph is terminal without a
+    """The table's row for a requested task whose graph is terminal without a
     usable Result: the record, its event, and the decision for the report.
     ``details`` (why the graph has no usable Result: ``worker_run``,
     ``run_conclusion``, ``result``) are added to the event details. A state
     outside the table has no row: nothing is decided."""
     iso = now.isoformat()
     if engine.state_key(c) not in lifecycle.LIFECYCLE:
-        return None, None, f"terminal Work in {engine.state_key(c)}, a state the table does not have"
+        return None, None, f"A terminal task in {engine.state_key(c)}, a state the table does not have"
     facts = {"work_terminal_without_result"}
     details = {"queue_state": queue_state, "work": aw["dedupe_key"]} | (details or {})
     fresh = _fresh_work(c, aw, now)
@@ -1264,7 +1264,7 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
         # pipeline, which has since been corrected, or a human launched the
         # controller, or the backoff of a free relaunch passed: a fresh graph,
         # with nothing charged. A free relaunch at the same version is
-        # counted on the Work, so the free relaunches of one version are
+        # counted on the task, so the free relaunches of one version are
         # bounded across graphs.
         free = details["pipeline_failure"].get("free_count")
         if free:
@@ -1280,16 +1280,16 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
                 ("controller", "terminal_work")):
             case engine.Applied() as out:
                 return (out.record, out.event,
-                        "new revision for Work whose last Claim failed before its agent for a "
+                        "new revision for a task whose last Claim failed before its agent for a "
                         "failure of the pipeline; nothing is charged")
             case engine.Skip(refused):
-                return None, None, f"terminal Work: {refused.detail}"
+                return None, None, f"A terminal task: {refused.detail}"
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
     # `allocate_work_retry` is guarded by the bound upstream identity. A
-    # record without it never reaches this point: it holds Work only once a
+    # record without it never reaches this point: it holds a task only once a
     # row guarded by the same identity allocated it, the identity is cleared
-    # only by `restart_generation`, which clears the Work in the same row,
+    # only by `restart_generation`, which clears the task in the same row,
     # and binding fills unbound fields only. Were it unbound all the same,
     # nothing is decided for the record (``Skip``).
     match engine.dispatch(engine.try_apply_transition(
@@ -1300,22 +1300,22 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
             attempt = out.record["active_work"]["attempt"]
             limit = lifecycle.budget_limit("work_recovery", policy)
             return (out.record, out.event,
-                    f"new revision for terminal Work, attempt {attempt} of {limit}")
+                    f"new revision for a terminal task, attempt {attempt} of {limit}")
         case engine.Take(verb="exhaust_recovery"):
             spent = engine.exhausted(c, ("work_total", "work_recovery"), policy=policy, now=iso)
             out = engine.applied(engine.try_apply_transition(
                 c, "exhaust_recovery", policy=policy, now=iso, cause_id=f"queue-{queue_state}",
                 facts=facts, details=details | {"exhausted": spent}),
                 ("controller", "terminal_work"))
-            return out.record, out.event, "automatic Work recovery exhausted; waiting for a human"
+            return out.record, out.event, "automatic task recovery exhausted; waiting for a human"
         case engine.Skip(refused):
-            return None, None, f"terminal Work: {refused.detail}"
+            return None, None, f"A terminal task: {refused.detail}"
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
 
 
 def _fresh_work(c: dict, aw: dict, now: datetime) -> dict:
-    """The Work request that replaces the terminal Work ``aw`` of ``c``: a
+    """The task request that replaces the terminal task ``aw`` of ``c``: a
     fresh graph at the next revision."""
     generation, revision = int(c.get("generation", 0)), c["revision"] + 1
     # The free relaunches of a version belong to the graph that failed: only
@@ -1329,17 +1329,17 @@ def _fresh_work(c: dict, aw: dict, now: datetime) -> dict:
 
 
 def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:
-    """``record`` once the Work it was just allocated no longer names a graph
+    """``record`` once the task it was just allocated no longer names a graph
     in ``inputs.spent_graphs``: each spent graph takes ``allocate_work_retry``
     (a fresh graph at a new revision) or ``exhaust_recovery``, which
-    clears the Work."""
+    clears the task."""
     while record.get("active_work") and \
             work_queue.graph_id(record["active_work"]["dedupe_key"]) in inputs.spent_graphs:
         spent = record["active_work"]["dedupe_key"]
         new, event, decision = terminal_work(record, record["active_work"], "spent",
                                              now=inputs.now, policy=policy)
         if new is None:
-            raise lifecycle.TransitionError(f"Work {spent} is spent: {decision}")
+            raise lifecycle.TransitionError(f"A task {spent} is spent: {decision}")
         res.stage("contributions", new)
         res.stage("events", event)
         res.report.setdefault("spent_work", []).append(
@@ -1350,7 +1350,7 @@ def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dic
 
 def _carries_feedback(state: str, verb: str) -> bool:
     """Whether the allocation row ``verb`` of ``state`` sets the pending
-    feedback its Work carries (``active_work.feedback_evidence_ids``)."""
+    feedback its task carries (``active_work.feedback_evidence_ids``)."""
     return lifecycle.WORK_FEEDBACK in lifecycle.find_edge(state, verb).transition.effects.sets
 
 
@@ -1359,19 +1359,19 @@ class MissingEvidence(LookupError):
 
 
 def _unrecorded_head(record: dict, inputs: Inputs) -> str | None:
-    """Why development Work is not requested this tick: the observation of
+    """Why a development task is not requested this tick: the observation of
     this tick read the development branch at a head other than the recorded
     one, which a row of this tick (a resume from a human wait, which is not
-    observed) did not record. Work built on the recorded head would be
+    observed) did not record. A task built on the recorded head would be
     stale; the next observation takes ``record_head_change`` in
-    ``development.fix_needed``, and Work, when still due, is requested on the
+    ``development.fix_needed``, and a task, when still due, is requested on the
     observed head."""
     if engine.state_key(record) != "development.fix_needed":
         return None
     observed = inputs.observed_dev_heads.get(record["contribution_id"])
     if observed and observed != (record.get("fork") or {}).get("head_sha"):
         return (f"the development branch is at {observed[:12]}, not at the recorded head; "
-                "the head is recorded before Work is requested")
+                "the head is recorded before a task is requested")
     return None
 
 
@@ -1421,7 +1421,7 @@ def _exhaustion_values(record: dict, verb: str, ci: dict | None, policy: dict,
 def _due_allocation(due: dict, allocations: tuple[str, ...], facts: frozenset, ci: dict | None,
                     ops: tuple[str, ...], inputs: Inputs, policy: dict,
                     now: str) -> tuple[str | None, str | None, dict | None]:
-    """The row that allocates the Work due in this state once a worker slot
+    """The row that allocates the task due in this state once a worker slot
     and capacity are free, or why none applies, and the record after it:
     evaluated here (nothing is staged), and taken by the selection once the
     slot is assigned."""
@@ -1456,7 +1456,7 @@ def _exhaust(due: dict, out: engine.Applied, ci: dict | None, by_id: dict, res: 
 
 
 def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
-    """The requested Work (``active_work``) for ``kind`` at the record's
+    """The requested task (``active_work``) for ``kind`` at the record's
     generation and revision. Its reason ids are the pending feedback it
     carries, then the CI evidence and the plan."""
     from datetime import timedelta
@@ -1746,7 +1746,7 @@ def published_head_without_pr(record: dict, operations: dict,
 def development_pr_reasons(record: dict, head: str,
                            evidence: dict[str, dict]) -> tuple[list[str], str | None]:
     """The reason ids and content digest of the operation that opens the
-    development PR of ``head``: the verified plan, the report of the Work
+    development PR of ``head``: the verified plan, the report of the task
     of this generation that pushed the head (a `worker_report` whose
     `head_after` or `head_candidate` is the head) with its digest, else the
     head itself (a human push), and the published artifact when one is
@@ -1837,7 +1837,7 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
         case engine.Take(verb="exhaust_development_pr_launches", refused=refused) \
                 if _refused_by_work_total(refused):
             # The row of `development.fix_needed` also needs `work_total`:
-            # its exhaustion is the Work loop's (`exhaust_work_total`), not
+            # its exhaustion is the task loop's (`exhaust_work_total`), not
             # that of the launches of the operation.
             rep.setdefault("deferred", []).append(
                 {"contribution": cid, "operation": oid,

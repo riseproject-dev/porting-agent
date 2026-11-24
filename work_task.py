@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The task file of one Work: everything its agent and its trusted jobs need.
+"""The task file of one task: everything its agent and its trusted jobs need.
 
-The controller commits the whole task of a requested Work as one
+The controller commits the whole content of a requested task as one
 ``task`` evidence file (``.state/evidence/task-<hex>.json``,
-addressed by an id derived from the Work id, as the history of the Work is), in the same
-state commit that records the Work and its history. The work queue carries
+addressed by an id derived from the task id, as the history of the task is), in the same
+state commit that records the task and its history. The work queue carries
 only a fixed-size reference to it (``task_file``: the control repository,
 the pinned commit, the path, the SHA-256 and the evidence id), so the size of
 a task never meets a limit of the queue. Every reader resolves the reference
@@ -49,12 +49,12 @@ CONDENSED_SUMMARY = 300
 
 
 class TaskFileError(ValueError):
-    """The task of the Work cannot be built as a task file."""
+    """The content of the task cannot be built as a task file."""
 
 
 def evidence_id(dedupe_key: str) -> str:
-    """The id of the task file of the Work ``dedupe_key``: derived from the
-    Work id, like the id of its history."""
+    """The id of the task file of the task ``dedupe_key``: derived from the
+    task id, like the id of its history."""
     return task_file.evidence_id(dedupe_key)
 
 
@@ -158,19 +158,19 @@ def condensed(data: dict, limit: int = TASK_FILE_MAX_BYTES) -> dict:
 
 def build_data(record: dict, evidence: dict[str, dict], *,
                file_digest: Callable[[str], str]) -> dict:
-    """The task of the Work the record requests (``active_work``), from the
+    """The task of the task the record requests (``active_work``), from the
     committed ``evidence`` and the record: the content of its task file.
     Raises ``TaskFileError`` when it cannot be built."""
     request = work.request_from_active(record)
     if request is None:
-        raise TaskFileError("the record requests no Work to dispatch")
+        raise TaskFileError("the record requests no task to dispatch")
     if not record["upstream"].get("repository_id") or not record["upstream"].get("base_sha"):
         raise TaskFileError("the upstream identity or base is not bound")
     if not (record["active_work"].get("tracking_issue") or {}).get("url"):
-        raise TaskFileError("the Work carries no frozen tracking-issue description")
+        raise TaskFileError("the task carries no frozen tracking-issue description")
     history_id = work_history.evidence_id(request["dedupe_key"])
     if history_id not in evidence:
-        raise TaskFileError("the history of the Work is not recorded")
+        raise TaskFileError("the history of the task is not recorded")
     try:
         allowed_paths, context = work.payload_inputs(
             request, record, evidence,
@@ -189,7 +189,7 @@ def build_data(record: dict, evidence: dict[str, dict], *,
 
 def build(record: dict, evidence: dict[str, dict], *, policy: dict, now: str,
           file_digest: Callable[[str], str]) -> dict:
-    """The ``task`` evidence of the Work the record requests, as the state
+    """The ``task`` evidence of the task the record requests, as the state
     store stages it."""
     data = build_data(record, evidence, file_digest=file_digest)
     dedupe_key = data["dedupe_key"]
@@ -197,7 +197,7 @@ def build(record: dict, evidence: dict[str, dict], *, policy: dict, now: str,
         "schema_version": 1, "evidence_id": evidence_id(dedupe_key),
         "contribution_id": record["contribution_id"], "kind": KIND,
         "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
-        "summary": f"Task file of the {data['task']} Work {dedupe_key}",
+        "summary": f"Task file of the {data['task']} task {dedupe_key}",
         "data": data,
         "digests": {"task_id": hashlib.sha256(dedupe_key.encode()).hexdigest()},
     }
@@ -210,11 +210,11 @@ def build(record: dict, evidence: dict[str, dict], *, policy: dict, now: str,
 
 
 def dry_run(record: dict, evidence: dict[str, dict]) -> str | None:
-    """Why the task of the Work ``record`` requests cannot be built or queued,
-    or ``None`` when it can: the controller asks before it allocates the Work,
+    """Why the task of the task ``record`` requests cannot be built or queued,
+    or ``None`` when it can: the controller asks before it allocates the task,
     with the history it would record in the same commit (the history is
     bounded, so it stands in for itself), and the dispatch recovery asks for
-    Work that was allocated without. The digests are those of a task built
+    a task that was allocated without. The digests are those of a task built
     later, and have the same size, and the queue payload is measured with the
     longest control repository id."""
     request = work.request_from_active(record)

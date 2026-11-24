@@ -115,12 +115,12 @@ class TestPipeline(unittest.TestCase):
         """The worker reviews its patch in its own run and the trusted
         publication job publishes it there."""
         pol = policy(read_only=False)
-        # 1. Controller selects a development patch; work.py builds the Work node.
+        # 1. Controller selects a development patch; work.py builds the task node.
         res = controller.tick(contributions={"c": self.rec}, operations={}, consumed={}, projects={}, policy=pol,
                               inputs=controller.Inputs(now=self.now, pressure=capacity.Pressure(ok=True)))
         self.assertEqual(len(res.requested_effects), 1)
         # The committed request: the record the publish job and the
-        # reconciler read holds the requested Work.
+        # reconciler read holds the requested task.
         claimed = [r for k, r in res.staged if k == "contributions"][-1]
         self.assertEqual(claimed["active_work"]["dedupe_key"],
                          res.requested_effects[0]["dedupe_key"])
@@ -265,7 +265,7 @@ class TestPublicationRetry(unittest.TestCase):
         rec = self.final(t)
         self.assertEqual(rec["pending_publication"]["attempts"], 1)
         # `schedule_publish_retry` keeps `development.agent_running` and
-        # charges `publish_recovery`; the Work is cleared.
+        # charges `publish_recovery`; the task is cleared.
         self.assertEqual(rec["activity"], "agent_running")
         self.assertIsNone(rec["active_work"])
         self.assertEqual([e["kind"] for k, e in t.staged if k == "events"],
@@ -307,7 +307,7 @@ class TestPublicationRetry(unittest.TestCase):
         self.assertEqual(self.final(t)["budget"]["no_progress_streak"], 1)
         self.assertEqual(self.final(t)["revision"], self.rec["revision"] + 1)
         # Stale: `replan_development` returns to `development.fix_needed` at
-        # a new revision without charging `no_progress`; the next Work is
+        # a new revision without charging `no_progress`; the next task is
         # requested for the new revision.
         stale = dict(rej, failure_class="stale", publication_artifact_id=10)
         t = self.tick(self.rec, [stale])
@@ -487,8 +487,8 @@ class TestDispatchRecovery(unittest.TestCase):
         self.assertIsNone(self.final(t)["active_work"])
 
     def test_submission_work_is_relaunched_in_an_observing_tick(self):
-        # The rewrite Work of the handoff phase is relaunched
-        # like development Work, also when the tick observes CI, and wait for
+        # The rewrite task of the handoff phase is relaunched
+        # like a development task, also when the tick observes CI, and wait for
         # a human once `dispatch_recovery` is spent.
         for activity, task in (("agent_running", "submission_rewrite"),):
             with self.subTest(activity):

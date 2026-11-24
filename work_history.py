@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
-"""The history every Work carries: what was tried before, and what followed.
+"""The history every task carries: what was tried before, and what followed.
 
-When Work is allocated, the controller tick records, in the same commit, one
+When a task is allocated, the controller tick records, in the same commit, one
 ``work_history`` evidence record for it (``build``). It is a pure function
 of the evidence of the contribution, all generations included:
 
@@ -18,7 +18,7 @@ of the evidence of the contribution, all generations included:
 Every entry is untrusted recorded data, never instructions. The record is
 bounded to ``HISTORY_MAX_BYTES`` by condensing deterministically; nothing
 leaves it uncounted. Two things are protected: the reports
-(``protected_reports``: the newest report by the Work it describes, and the
+(``protected_reports``: the newest report by the task it describes, and the
 report of the head CI ran on, with the newest CI run of each workflow
 linked to it by ``after_report``), and the owner's steering, whose newest
 items keep ``STEERING_RESERVED`` bytes.
@@ -45,10 +45,10 @@ feedback, submission verdicts, maintainer feedback) gives way first:
 The size of the document is checked after every step. Every bound is in
 bytes of canonical JSON, so a fully folded history always fits; should it
 not, its lists of evidence ids are shortened (the number left out stated)
-rather than the Work held. A condensed entry names the evidence file that
+rather than the task held. A condensed entry names the evidence file that
 holds it in full (``evidence_path``).
 
-The Work payload names the record by pinned commit and SHA-256
+The task payload names the record by pinned commit and SHA-256
 (``work.cmd_plan``); a trusted pre-agent step fetches and verifies it.
 """
 
@@ -90,8 +90,8 @@ _PASSING = (None, "success", "skipped", "neutral")
 
 
 def evidence_id(dedupe_key: str) -> str:
-    """The id of the history of the Work ``dedupe_key``, derived from the
-    Work id so that the record needs no new field."""
+    """The id of the history of the task ``dedupe_key``, derived from the
+    task id so that the record needs no new field."""
     return "history-" + hashlib.sha256(dedupe_key.encode()).hexdigest()[:32]
 
 
@@ -131,9 +131,9 @@ def _text(value: Any, limit: int) -> str:
                                1 << 30)
 
 
-# The verbs that store the report of Work the record had left: it is
+# The verbs that store the report of a task the record had left: it is
 # collected when its Result is seen late, so it is placed at the time its
-# Work was requested, never as the newest report by the time it was stored.
+# task was requested, never as the newest report by the time it was stored.
 LATE_VERBS = ("record_late_effect",)
 
 
@@ -628,16 +628,16 @@ def document(record: dict, work: dict, evidence: dict[str, dict], *, deferred: i
 
 
 def _work_order(entry: dict) -> tuple:
-    """The order of the Work a report entry describes: its generation, its
+    """The order of the task a report entry describes: its generation, its
     revision, then the time it is placed at.
 
-    This order is the order the Work was requested in only because a
+    This order is the order the task was requested in only because a
     contribution's generation and revision never decrease: every row that
     bumps the revision adds one (``engine.try_apply_transition``) and a new
     generation (``restart_generation``) bumps the revision as well.
     The newest report and the newest-published fallback of
     ``protected_reports`` rely on it, so a report stored late (a late
-    Result, a held one stored at the hold) never passes for a newer Work's
+    Result, a held one stored at the hold) never passes for a newer task's
     one; ``tests.test_work_history`` pins both."""
     work = entry.get("work") or {}
     generation, revision = work.get("generation", 0), work.get("revision")
@@ -655,7 +655,7 @@ def report_head(entry: dict) -> str | None:
 
 def protected_reports(record: dict, timeline: list[dict]) -> tuple[dict | None, dict | None]:
     """The two reports the condensation protects: the newest report, by the
-    Work it describes (its generation and revision, then its time, so a
+    task it describes (its generation and revision, then its time, so a
     report stored late never passes for the newest), and the report of the
     head: the newest report whose ``head_after`` is the recorded head of the
     branch the record works on (the head CI ran on), or whose
@@ -725,12 +725,12 @@ def build(record: dict, work: dict, evidence: dict[str, dict], *, policy: dict,
         "schema_version": 1, "evidence_id": evidence_id(work["dedupe_key"]),
         "contribution_id": record["contribution_id"], "kind": KIND,
         "policy_version": policy.get("policy_version", "unknown"), "collected_at": now,
-        "summary": (f"History of {work['task']} Work: {len(doc['steering'])} steering items, "
+        "summary": (f"History of {work['task']} task: {len(doc['steering'])} steering items, "
                     f"{len(doc['timeline'])} timeline entries ({reports} worker reports, "
                     f"{ci} CI runs); condensed {doc['condensed']}"),
         "limitations": [NOTICE] + ([
             "Steering unreadable: these lists are gone, not accessible, or kept failing "
-            "while the Work waited, so their newer text is missing: "
+            "while the task waited, so their newer text is missing: "
             + ", ".join(doc["steering_unreadable"])] if doc.get("steering_unreadable") else [])
         + ([f"Steering deferred: {deferred} collected items are not recorded yet."]
            if deferred else []),

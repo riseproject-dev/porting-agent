@@ -51,7 +51,7 @@ TERMINAL_REASON_LABELS = {
 # yet, by the trigger of the rows that leave its state.
 WAIT_LABELS = {
     lifecycle.Trigger.OBSERVATION: "observation",
-    lifecycle.Trigger.RESULT: "the Result of requested Work",
+    lifecycle.Trigger.RESULT: "the Result of a requested task",
     lifecycle.Trigger.OPERATION: "a remote operation",
 }
 # The rows a human command or a rule takes in many states say nothing about

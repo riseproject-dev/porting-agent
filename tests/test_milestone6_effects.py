@@ -128,7 +128,7 @@ class TestDestinationTokenBoundaries(unittest.TestCase):
 
 class TestPublicationAndPRContracts(unittest.TestCase):
     def test_a_task_without_the_recorded_fork_is_never_published(self):
-        """Patch Work always names the provisioned fork and its head: a task
+        """A patch task always names the provisioned fork and its head: a task
         that names none is rejected before any token exists."""
         from tests.test_milestone5_worker import mbox, proposal, task
 
@@ -170,7 +170,7 @@ class TestPublicationAndPRContracts(unittest.TestCase):
         self.assertFalse(hasattr(fork_publish, "bind_provisioned_task"))
 
     def test_destination_writes_have_no_policy_switch(self):
-        """Patch Work always writes the provisioned fork: the policy has no
+        """A patch task always writes the provisioned fork: the policy has no
         switch that defers destination writes, and no module reads one."""
         import schemas
         from common import load_policy

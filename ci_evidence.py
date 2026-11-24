@@ -205,7 +205,7 @@ def for_clean_head(evidence: dict, *, candidate: str, ref: str, dev_ref: str) ->
     Evidence of ``candidate`` itself is returned unchanged. Otherwise a copy
     records ``ci.candidate_head_sha`` and a first limitation, written by the
     pipeline from commit ids and branch names only, that says where CI ran,
-    so the repair Work learns it; ``evidence`` is not changed."""
+    so the repair task learns it; ``evidence`` is not changed."""
     if evidence["ci"]["head_sha"] == candidate:
         return evidence
     out = copy.deepcopy(evidence)

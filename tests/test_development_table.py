@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Development on the table's rows.
 
-The Result of patch Work is folded by the rows of
+The Result of a patch task is folded by the rows of
 ``development.agent_running``; the published head is observed by the rows of
-``development.waiting_ci`` only; requested Work is recovered by the dispatch
-and Work recovery rows; a held publication waits for its retries in
+``development.waiting_ci`` only; a requested task is recovered by the dispatch
+and task recovery rows; a held publication waits for its retries in
 ``development.agent_running``. The development states the table does not
-have, and the wait the removed Work deadline wrote, are rewritten by the
+have, and the wait the removed task deadline wrote, are rewritten by the
 development record migration.
 """
 
@@ -128,7 +128,7 @@ def rerun_outcome(rec, status="rerun", runs=((777, 1, 2),)):
 
 
 class TestPatchResults(unittest.TestCase):
-    """Every Result of patch Work takes a row of `development.agent_running`."""
+    """Every Result of a patch task takes a row of `development.agent_running`."""
 
     def test_each_publisher_result_takes_its_row(self):
         expected = {
@@ -206,14 +206,14 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(engine.state_key(rejected), "development.fix_needed")
         self.assertEqual(rejected["budget"]["no_progress_streak"],
                          again["budget"]["no_progress_streak"] + 1)
-        # The reason ids of the Work are not feedback: it takes the rerun.
+        # The reason ids of the task are not feedback: it takes the rerun.
         reasons = running(last_ci_evidence_id="ci-0")
         reasons["active_work"]["reason_ids"] = ["ci-0", "review-0"]
         _new, staged = reconcile.apply_publication(
             reasons, rerun_outcome(reasons), now=NOW, policy=POLICY, worker_run_id="555")
         self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
                          ["request_ci_rerun"])
-        # Work that carries feedback never takes the rerun.
+        # A task that carries feedback never takes the rerun.
         carried = running(pending_feedback_evidence_ids=["review-1"])
         carried["active_work"]["feedback_evidence_ids"] = ["review-1"]
         rejected, staged = reconcile.apply_publication(
@@ -223,8 +223,8 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(rejected["pending_feedback_evidence_ids"], ["review-1"])
 
     def test_a_no_change_result_of_patch_work_is_published_by_the_rerun(self):
-        """`development_patch` Work (requested without pending feedback) may
-        take `request_ci_rerun` like repair Work: the trusted publication job
+        """A `development_patch` task (requested without pending feedback) may
+        take `request_ci_rerun` like a repair task: the trusted publication job
         admits its `no_change` Result (`ci_rerun.preflight`), and the
         reconciler folds the receipt by the row, never as a failed
         publication."""
@@ -263,7 +263,7 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(new["budget"]["reruns"],
                          {"head_sha": SHA_A, "flaky": 0, "interrupted": 0})
         # Feedback recorded after the allocation stays pending: no nomination,
-        # Work carrying it is due again and requested in the same tick.
+        # a task carrying it is due again and requested in the same tick.
         out = tick(new, verdict="passed")
         self.assertEqual(kinds(out), ["return_for_feedback", "request_patch"])
         after = final(out, new)
@@ -351,7 +351,7 @@ class TestPatchResults(unittest.TestCase):
         self.assertTrue(current["pending_publication"]["exhausted"])
         self.assertEqual(tick(current, observe=False, now=later).report["publication_retries"], [])
         # The exhausted publication launches nothing more and does not keep
-        # the resume from applying: fresh Work is due.
+        # the resume from applying: a fresh task is due.
         resumed = apply_command(current, commands.parse(
             f"/upstreaming resume revision={current['revision']} reason=fixed"))
         self.assertTrue(resumed.accepted, resumed.reason)
@@ -507,7 +507,7 @@ def branch_operation(rec, *, confirmed=False, attempt=1):
 
 
 def uncertain(rec, op):
-    """The Result of patch Work whose push was not read back."""
+    """The Result of a patch task whose push was not read back."""
     return dict(publication(rec, "uncertain"), candidate=SHA_B, operation=op,
                 artifact=dict(ARTIFACT), reason="push outcome not yet observable")
 
@@ -553,7 +553,7 @@ class TestUncertainPublication(unittest.TestCase):
                          ("development.agent_running", None, 1, rec["proposal_artifact"],
                           SHA_A, rec["revision"]))
         self.assertIsNone(engine.state_problem(held))
-        # No Work recovery takes the completed graph of the Work whose
+        # No task recovery takes the completed graph of the task whose
         # Result is held.
         out = tick(held, observe=False, operations=ops, queue={work.graph_id(key): "completed"})
         self.assertNotIn("allocate_work_retry", kinds(out))
@@ -657,7 +657,7 @@ class TestObservation(unittest.TestCase):
         stale = publication(rec, "rejected_stale")
         # The stale Result is folded first (`replan_development`, nothing
         # charged); the observation of the same tick then records the head in
-        # `development.fix_needed` before any Work is requested.
+        # `development.fix_needed` before any task is requested.
         out = tick(rec, [stale], head=SHA_B)
         self.assertEqual(kinds(out), ["replan_development", "record_head_change"])
         self.assertEqual(out.report["requested_effects"], [])
@@ -694,7 +694,7 @@ class TestObservation(unittest.TestCase):
 
     def test_a_review_on_a_paused_record_while_work_is_due_is_read_after_the_resume(self):
         """While paused nothing new starts: a review that would bump the
-        revision is not recorded (its ids stay unfenced) and no Work is
+        revision is not recorded (its ids stay unfenced) and no task is
         requested; the resume reads it again and records it."""
         paused = apply_command(record("fix_needed"),
                                commands.parse('/upstreaming pause reason="hold"'))
@@ -717,7 +717,7 @@ class TestObservation(unittest.TestCase):
         rec = record(last_ci_evidence_id=None)
         out = tick(rec, feedback=REVIEW, verdict="passed")
         after = final(out, rec)
-        # The review is answered by patch Work that carries it.
+        # The review is answered by a patch task that carries it.
         self.assertEqual(kinds(out), ["record_actionable_review", "request_patch"])
         self.assertEqual(final(out, rec)["active_work"]["feedback_evidence_ids"],
                          ["review-2-1-77"])
@@ -860,10 +860,10 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(observed.report[0]["ci"]["state"], "access_wait")
 
     def test_a_head_that_moved_while_work_is_due_waits_for_its_ci(self):
-        """A push while Work is due takes `record_head_change` from
+        """A push while a task is due takes `record_head_change` from
         `development.fix_needed` to `development.waiting_ci`: the new head
         is recorded at a new revision, the CI evidence of the old head is
-        cleared, the rerun counts start again, and no Work is requested in
+        cleared, the rerun counts start again, and no task is requested in
         the tick. The CI of the new head is then read."""
         rec = record("fix_needed", last_ci_evidence_id="ci-old",
                      budget=dict(record()["budget"],
@@ -885,13 +885,13 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(kinds(failed), ["record_head_change", "record_ci_failure", "request_repair"])
         self.assertEqual(final(failed, rec)["fork"]["head_sha"], SHA_B)
         self.assertEqual(failed.report["requested_effects"][0]["expected_head"], SHA_B)
-        # An unchanged head is not read: Work is requested for it.
+        # An unchanged head is not read: a task is requested for it.
         out = tick(dict(rec, last_ci_evidence_id=None), head=SHA_A)
         self.assertEqual(kinds(out), ["request_patch"])
 
     def test_a_push_while_work_is_due_for_a_review_is_answered_after_ci_passes(self):
-        """A push while Work is due for a review keeps the review pending;
-        once CI passes on the new head, `return_for_feedback` makes Work due
+        """A push while a task is due for a review keeps the review pending;
+        once CI passes on the new head, `return_for_feedback` makes a task due
         again and the repair that carries the review is requested."""
         rec = record("fix_needed", pending_feedback_evidence_ids=["review-1"])
         out = tick(rec, head=SHA_B, verdict="passed")
@@ -913,7 +913,7 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(effect["expected_head"], SHA_B)
         self.assertIn("review-1", effect["reason_ids"])
         self.assertIn(after["last_ci_evidence_id"], effect["reason_ids"])
-        # The Work is not the one that would have been requested for the old head.
+        # The task is not the one that would have been requested for the old head.
         before = tick(rec, head=SHA_A)
         self.assertEqual(kinds(before), ["request_patch"])
         self.assertNotEqual(final(before, rec)["active_work"]["dedupe_key"], work["dedupe_key"])
@@ -1010,7 +1010,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                          ("development.waiting_human", None, "dispatch_recovery"))
 
     def test_work_waiting_for_its_history_is_not_charged_for_a_while(self):
-        """The dispatcher defers Work whose history is not committed: the
+        """The dispatcher defers a task whose history is not committed: the
         runs that deferred it charge nothing until ``reconcile.HISTORY_WAIT``
         has passed since the request, and then the dispatch is decided as
         any other, so a history that is never recorded ends in a human
@@ -1024,19 +1024,19 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         out = tick(rec, observe=False, runs=runs)
         self.assertEqual((out.staged, out.report["dispatch_relaunch"]), ([], []))
         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
-                         "waiting for the history and the task file of the Work")
+                         "waiting for the history and the task file of the task")
         late = tick(rec, observe=False, runs=runs, now=T + reconcile.HISTORY_WAIT)
         self.assertEqual(kinds(late), ["exhaust_recovery"])
         # The event, and the tracking issue entry, say that the history was
         # never recorded.
         [event] = [e for kind, e in late.staged if kind == "events"]
         self.assertEqual(event["details"]["history"], "never recorded")
-        self.assertIn("the history or the task file of this Work was never recorded in the 2 hours",
+        self.assertIn("the history or the task file of this task was never recorded in the 2 hours",
                       event["details"]["why"])
         import status_ledger
         entry = status_ledger.render(event, final(late, rec), "https://example.invalid/run")
-        self.assertIn("The history or the task file of this Work was never recorded, and the "
-                      "dispatcher gives no worker Work without them", entry)
+        self.assertIn("The history or the task file of this task was never recorded, and the "
+                      "dispatcher gives no worker task without them", entry)
         # The history was recorded at 08:50: the runs before it are not
         # counted, and the dispatcher is launched again after the grace.
         history = helpers.committed_history(
@@ -1051,7 +1051,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
                          "relaunch: no dispatcher run")
 
     def test_work_whose_task_file_cannot_be_built_is_held_not_charged(self):
-        """Work the queue does not hold, allocated by code that did not check
+        """A task the queue does not hold, allocated by code that did not check
         that its task can be built, is a failure of the pipeline: nothing is
         launched, charged or waited for, and the alert says so, until the
         pipeline code changes."""
@@ -1067,7 +1067,7 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         self.assertIn("not of the contribution", entry["alert"])
         self.assertIn("no frozen tracking-issue description", entry["held"]["task_file"])
         self.assertIn(entry["alert"], [a["alert"] for a in out.report["controller"]["alerts"]])
-        # Once its task file is committed it is decided like any Work.
+        # Once its task file is committed it is decided like any task.
         rec["active_work"]["tracking_issue"] = FROZEN_ISSUE
         evidence = helpers.committed_history(rec, POLICY)
         out = tick(rec, observe=False, runs=runs[:1], evidence=evidence,
@@ -1177,7 +1177,7 @@ class TestFlakyRerun(unittest.TestCase):
                          operations=operations, now=T + timedelta(minutes=minutes))
             self.assertEqual((kinds(later), submitted(later)), ([], []))
             waiting = final(later, waiting)
-        # The new attempt fails: repair Work under an id other than the Work
+        # The new attempt fails: a repair task under an id other than the task
         # that returned the Result.
         out = attempt_tick(waiting, 2, "failed", evidence=self.evidence, queue=queue,
                            operations=operations, now=T + timedelta(minutes=70))
@@ -1242,8 +1242,8 @@ class TestFlakyRerun(unittest.TestCase):
                          ["schedule_publish_retry"])
 
     def test_work_that_returned_a_result_is_never_allocated_again(self):
-        """An allocation that would name a Work graph the queue holds as
-        terminal, or that returned a Result in this tick, is terminal Work
+        """An allocation that would name a task graph the queue holds as
+        terminal, or that returned a Result in this tick, is a terminal task
         without a usable Result: a fresh graph is allocated, never a
         resubmission."""
         import work
@@ -1535,8 +1535,8 @@ class TestInterruptedRerun(unittest.TestCase):
 
 
 class TestSpentWork(unittest.TestCase):
-    """A row that keeps the revision can name Work whose graph already
-    returned a Result or is terminal in the queue. That Work is terminal
+    """A row that keeps the revision can name a task whose graph already
+    returned a Result or is terminal in the queue. That task is terminal
     without a usable Result: a fresh graph is allocated in the same tick
     (`allocate_work_retry`), or the contribution waits for a human
     (`exhaust_recovery`), and the spent graph is never submitted."""
@@ -1552,8 +1552,8 @@ class TestSpentWork(unittest.TestCase):
         self.assertEqual(output.report.get("failures") or [], [])
 
     def spent_repair(self):
-        """A record waiting for CI at a revision whose repair Work already
-        ran: the graph of the repair Work failing CI requests at the kept
+        """A record waiting for CI at a revision whose repair task already
+        ran: the graph of the repair task failing CI requests at the kept
         revision is completed in the queue."""
         import work
         waiting = record(last_ci_evidence_id=None)
@@ -1565,7 +1565,7 @@ class TestSpentWork(unittest.TestCase):
 
     def test_spent_work_at_a_kept_revision_is_repaired_on_a_fresh_graph(self):
         waiting, key, queue = self.spent_repair()
-        # The same head fails again, and the repair Work at the kept
+        # The same head fails again, and the repair task at the kept
         # revision names the spent graph.
         out = tick(waiting, verdict="failed", evidence=self.evidence, queue=queue)
         self.check(out)
@@ -1603,7 +1603,7 @@ class TestSpentWork(unittest.TestCase):
     def test_a_stale_revision_result_in_upstream_review_is_revised_on_a_fresh_graph(self):
         # A revision Result that left the revision unchanged (`no_change` or
         # stale) is followed by failing CI at the same revision: the revision
-        # Work names the graph that already returned that Result.
+        # task names the graph that already returned that Result.
         import work
         rec = record("fix_needed", phase="upstream_review", revision=3,
                      last_ci_evidence_id=observed_ci_id())
@@ -1657,7 +1657,7 @@ class TestLateRetryResult(unittest.TestCase):
 
 class TestRefreshKeepsFeedback(unittest.TestCase):
     """Both refresh verbs keep the pending feedback; the planning that
-    follows carries none, and only patch and revision Work carry it."""
+    follows carries none, and only patch and revision task carry it."""
 
     def assert_planning_follows(self, refreshed):
         self.assertEqual(engine.state_key(refreshed), "queued.idle")

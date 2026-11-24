@@ -9,9 +9,9 @@ Fixtures are the exact live shapes:
   whose valid ``no_change`` proposal the worker gate misclassified as a
   validation rejection;
 * ``contribution-withdrawn-r5.json``: state at e96fae5, after the r5 repair
-  was withdrawn although its Work was claimed and its worker was running;
+  was withdrawn although its task was claimed and its worker was running;
 * ``contribution-r6.json``: state at 9a6c7d6, after the late r5 Result bumped
-  the revision and requested the r6 repair whose Work is claimed by worker run
+  the revision and requested the r6 repair whose task is claimed by worker run
   45013412209.
 """
 
@@ -80,10 +80,10 @@ def publication_dir(temporary, run_id, mutate=None):
 
 
 def as_r6_result(files):
-    """The same no_change answer, delivered for the claimed r6 Work."""
+    """The same no_change answer, delivered for the claimed r6 a task."""
     files["task.json"]["revision"] = 6
-    # The recorded payload predates the Work identity in the payload; the
-    # replay stands for the same Work under the current identity.
+    # The recorded payload predates the task identity in the payload; the
+    # replay stands for the same task under the current identity.
     files["task.json"].update(generation=0, dedupe_key=R6_KEY)
     files["proposal.json"]["expected_revision"] = 6
     files["result.json"]["run_id"] = R6_RUN
@@ -170,7 +170,7 @@ class TestNoChangeIsPreserved(unittest.TestCase):
 
 
 class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
-    """Run 45012008778 withdrew r5 although its Work was claimed (plan 12.3)."""
+    """Run 45012008778 withdrew r5 although its task was claimed (plan 12.3)."""
 
     def r5_requested(self):
         record = load("contribution-withdrawn-r5.json")
@@ -190,7 +190,7 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
         self.assertEqual((result["phase"], result["activity"]), ("development", "agent_running"))
         self.assertEqual(result["active_work"]["dedupe_key"], R5_KEY)
         # `development.agent_running` has no observation row: green CI on the
-        # head neither withdraws the Work nor nominates it.
+        # head neither withdraws the task nor nominates it.
         self.assertEqual(output.report["observation"][0]["note"],
                          "development.agent_running has no observation row")
         self.assertEqual(events(output), [])
@@ -207,8 +207,8 @@ class TestLiveWithdrawalNeedsQueueProof(unittest.TestCase):
                 self.assertEqual(events(output), [])
 
     def test_work_absent_from_queue_is_dispatched_again_by_the_table(self):
-        """A dispatcher run that ended with the Work absent from the queue
-        takes `retry_dispatch`: the same Work is dispatched again."""
+        """A dispatcher run that ended with the task absent from the queue
+        takes `retry_dispatch`: the same task is dispatched again."""
         record = self.r5_requested()
         output = tick(record, queue_works={}, runs=DISPATCHERS[:1],
                       now="2026-11-22T10:21:30+00:00")
@@ -250,7 +250,7 @@ class TestLateResultOfWithdrawnWork(unittest.TestCase):
         self.assertEqual(result["revision"], 6)
         # Green CI does not nominate while actionable feedback is pending: the
         # rehearsal evidence the code before the table recorded as pending
-        # feedback makes Work due again (`return_for_feedback`), and the
+        # feedback makes a task due again (`return_for_feedback`), and the
         # repair that carries it is requested. The late Result answers none.
         self.assertEqual([e["kind"] for k, e in output.staged if k == "events"],
                          ["record_late_effect", "return_for_feedback", "request_patch"])
@@ -292,7 +292,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
 
     def test_r6_no_change_result_reruns_ci_and_green_ci_nominates_without_new_work(self):
         """The repair worker reports a failure not caused by the patch, and
-        the r6 Work carries no feedback (`active_work.feedback_evidence_ids`
+        the r6 a task carries no feedback (`active_work.feedback_evidence_ids`
         is unset; its `reason_ids` are not feedback), so `request_ci_rerun`
         applies within `flaky_reruns`. The r6 worker ran trusted code from
         before the trusted rerun: its Result carries no rerun receipt, so it
@@ -301,8 +301,8 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         retry finds nothing to rerun: its Result takes `request_ci_rerun`,
         `development.waiting_ci` at the same revision, nothing charged but
         `publish_recovery` and `flaky_reruns`. CI on the head is read again
-        there: while actionable feedback is pending, Work that carries it is
-        due again; the contribution is nominated without new Work once no
+        there: while actionable feedback is pending, a task that carries it is
+        due again; the contribution is nominated without a new task once no
         actionable feedback is pending."""
         record = load("contribution-r6.json")
         with tempfile.TemporaryDirectory() as temporary:
@@ -343,8 +343,8 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         # Green CI on the head is read again in the same tick. The rehearsal
         # evidence that the code before the table recorded as pending
         # feedback holds the nomination, as for the late r5 Result, and makes
-        # Work that carries it due again: the rerun counted in the Work key
-        # makes it fresh Work at the same revision.
+        # a task that carries it due again: the rerun counted in the task key
+        # makes it a fresh task at the same revision.
         self.assertEqual(events(output), ["request_ci_rerun", "return_for_feedback",
                                           "request_patch"])
         self.assertEqual(output.report["observation"][0]["ci"]["state"], "passed")
@@ -359,7 +359,7 @@ class TestLiveR6SelfHeals(unittest.TestCase):
         self.assertNotEqual(result["active_work"]["dedupe_key"], R6_KEY)
         self.assertEqual(output.report["dispatch_relaunch"], [])
         # With no actionable feedback pending, green CI nominates the head:
-        # no new Work is requested.
+        # no new task is requested.
         clear = dict(held, pending_feedback_evidence_ids=[])
         launched, output = retried(clear)
         self.assertEqual(events(output), ["request_ci_rerun", "nominate_for_handoff"])
@@ -380,9 +380,9 @@ class TestLiveR6SelfHeals(unittest.TestCase):
             record, rejected, now="2026-11-22T11:20:00+00:00",
             policy=policy(read_only=False), worker_run_id=R6_RUN)
         self.assertEqual(new["revision"], 7)
-        # `work_total` was charged when the Work was allocated; the rejected
+        # `work_total` was charged when the task was allocated; the rejected
         # outcome charges `no_progress`, now exhausted. Its exhaustion is
-        # taken where the next Work is due.
+        # taken where the next task is due.
         self.assertEqual(new["budget"]["attempts_used"], 1)
         self.assertEqual(new["budget"]["no_progress_streak"], 2)
         self.assertEqual(new["budget"]["clusters"], record["budget"]["clusters"])

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """The plan's measurable contribution rules and the trusted checks that
-apply them: the worker gate and the Work payload that carries them."""
+apply them: the worker gate and the task payload that carries them."""
 
 import copy
 import subprocess

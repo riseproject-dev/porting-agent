@@ -161,7 +161,7 @@ def effects_text(e: lc.Effects) -> str:
     if e.generation == "bump":
         parts.append("generation +1")
     if e.work != "keep":
-        parts.append(f"Work: {e.work}")
+        parts.append(f"Task: {e.work}")
     if e.sets:
         parts.append(f"sets {code(e.sets)}")
     if e.clears:
@@ -225,10 +225,10 @@ def render_index() -> str:
         "state to one target only, and every transition names its trigger and its guard "
         "(`always` when unconditional), every command transition its command and the revision "
         "it accepts. It also checks the rules of the lifecycle:", "",
-        "- every transition that allocates Work charges `work_total`, and every charged budget "
+        "- every transition that allocates a task charges `work_total`, and every charged budget "
         "has a `policy.json` key and an exhaustion transition;",
-        "- every transition that allocates Work, or a fresh graph for it, is guarded by "
-        f"`{lc.UPSTREAM_BOUND}`: the Work names the verified upstream repository and base;",
+        "- every transition that allocates a task, or a fresh graph for it, is guarded by "
+        f"`{lc.UPSTREAM_BOUND}`: the task names the verified upstream repository and base;",
         "- exhaustion of an infrastructure budget leads to a human wait of the same phase, and "
         "nothing ends the generation from `upstream_review` without a command;",
         "- the revision is bumped by every resume and by every transition that invalidates "
@@ -246,12 +246,12 @@ def render_index() -> str:
         "- `handoff.waiting_upstream_pr` has exactly its three exits;",
         "- a stop set by the controller records its reason, and every stop clears the pending "
         "publication;",
-        "- every row that allocates patch or revision Work carries the pending feedback, only a "
-        "published Result clears the feedback its Work carried, Work that carries feedback "
-        "takes no CI rerun, and passing CI with pending feedback always makes Work due;",
-        "- patch Work is requested only from a `fix_needed` state under write admission, "
+        "- every row that allocates patch or revision task carries the pending feedback, only a "
+        "published Result clears the feedback its task carried, a task that carries feedback "
+        "takes no CI rerun, and passing CI with pending feedback always makes a task due;",
+        "- A patch task is requested only from a `fix_needed` state under write admission, "
         "`repair_attempts_cluster` is charged exactly when a failing CI job is recorded for the "
-        "head, and the rows that apply when Work is due exclude each other;",
+        "head, and the rows that apply when a task is due exclude each other;",
         "- exactly the rows that record a new head start the rerun counts of `budget.reruns` "
         "again, and a CI failure and a review at the submission gate exclude each other;",
         "- review feedback is recorded as pending feedback and never as CI evidence, a CI "
@@ -320,7 +320,7 @@ def render_table(policy: dict) -> str:
         f"and {len(lc.BUDGETS)} retry budgets, plus the operation table with "
         f"{len(lc.OPERATIONS)} states and {operation_rows} transitions. A contribution starts in "
         f"`{lc.INITIAL_STATE}` (`{lc.INITIAL_VERB}`).", "",
-        "Requested Work is identified by its " + ", ".join(lc.WORK_IDENTITY[:-1])
+        "A requested task is identified by its " + ", ".join(lc.WORK_IDENTITY[:-1])
         + f", and {lc.WORK_IDENTITY[-1]}. A Result that differs in any of them is never folded "
         "and never published.", "",
     ]
@@ -330,7 +330,7 @@ def render_table(policy: dict) -> str:
     lines += ["", "## State kinds", "", "| Kind | Meaning |", "|:-----|:--------|"]
     lines += [f"| `{k}` | {cell(v)} |" for k, v in lc.KIND_DESCRIPTIONS.items()]
     lines += ["", "## States", "",
-              "*Launches* means the controller may allocate Work or launch remote effects from the "
+              "*Launches* means the controller may allocate a task or launch remote effects from the "
               "state, subject to the flags. *Fork writes* means automated writers may write the "
               "contribution fork. *Exits* counts the state's own transitions and, after the plus "
               "sign, the rule transitions that apply in it.", "",
@@ -384,8 +384,8 @@ def render_table(policy: dict) -> str:
                 lines.append(f"| `{verb}` | {what} | {trigger_text(t)} | {cell(guard)} | "
                              f"{effects_text(t.effects)} |")
         if f.set_moves:
-            lines += ["", "Setting the flag clears the requested Work, so these states are left "
-                          "for the state in which that Work is due again:", "",
+            lines += ["", "Setting the flag clears the requested task, so these states are left "
+                          "for the state in which that task is due again:", "",
                       "| From | To |", "|:-----|:---|"]
             lines += [f"| `{source}` | `{target}` |" for source, target in f.set_moves.items()]
         lines += ["", "While set:", "", "| Trigger | Effect |", "|:--------|:-------|"]

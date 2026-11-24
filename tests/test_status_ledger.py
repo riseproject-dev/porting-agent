@@ -171,7 +171,7 @@ class TestStatusLedger(unittest.TestCase):
         event["details"] = {"verb": "close_planning", "from_state": "planning.agent_running",
                             "to_state": "closed.idle", "admission_override_not_applied": True}
         body = status_ledger.render(event, closed, "https://github.com/run")
-        self.assertIn("`close_planning` by the Result of requested Work: verified plan "
+        self.assertIn("`close_planning` by the Result of a requested task: verified plan "
                       "decision close; PyPI serves riscv64", body)
         self.assertIn("The recorded admission override was not applied", body)
 

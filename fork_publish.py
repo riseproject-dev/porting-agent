@@ -22,7 +22,7 @@ Steps, all in a fresh bare repository this module creates:
    ``--force-with-lease=refs/heads/<ref>:<expected>``, then discover the
    branch to confirm the effect. A lost response stays ``uncertain``.
 
-The branch is the Work's ``ref``: ``riscv64-dev`` in development, and in
+The branch is the task's ``ref``: ``riscv64-dev`` in development, and in
 upstream review ``riscv64``, the branch of the upstream PR
 (``lifecycle.work_ref``).
 
@@ -246,7 +246,7 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         return Outcome("infra_error", f"could not read the fork head: {e}", failure_class="infrastructure")
     generation, work_key = work_identity(task)
     if generation is None:
-        return Outcome("rejected", "publication check: the task names no Work identity",
+        return Outcome("rejected", "publication check: the task names no task identity",
                        failure_class="stale")
     why = lifecycle.publication_check(record, expected_revision=task["revision"], expected_head=expected,
                                       observed_head=observed_before, ref=task.get("ref"),

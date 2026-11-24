@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """Records written while patches and submission rewrites were reviewed by
-separate Work: the record migration moves them out of the removed states and
+a separate task: the record migration moves them out of the removed states and
 drops the retired fields, instead of refusing the whole store."""
 
 import json
@@ -124,7 +124,7 @@ class TestRetiredStates(unittest.TestCase):
         self.assertIsNone(engine.state_problem(record))
         self.assertIn("holds the publication",
                       engine.state_problem(dict(record, pending_publication={"worker_run_id": "7"})))
-        # Every row that leaves a running Work for a state that requests Work
+        # Every row that leaves a running task for a state that requests a task
         # again drops the held Result with it.
         for edge in lc.table_edges():
             if edge.source in ("development.agent_running", "upstream_review.agent_running") \

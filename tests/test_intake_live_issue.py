@@ -115,7 +115,7 @@ class TestCanonicalIssueBody(unittest.TestCase):
             record["tracking_issue"]["notes"],
             REQUEST_FIXTURE["fields"]["additional-notes"],
         )
-        # Planning begins in the tick that accepts the request; its Work is
+        # Planning begins in the tick that accepts the request; its task is
         # requested in the next tick, from the description frozen at intake.
         self.assertEqual((record["phase"], record["activity"]), ("planning", "idle"))
         self.assertIsNone(record["active_work"])

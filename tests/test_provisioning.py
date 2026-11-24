@@ -86,7 +86,7 @@ class Api:
         raise AssertionError(path)
 
     def paginate(self, path, **_kwargs):
-        # The steering lists read for the Work the controller allocates.
+        # The steering lists read for the task the controller allocates.
         found = steering_list(path)
         if found is None:
             raise AssertionError(path)

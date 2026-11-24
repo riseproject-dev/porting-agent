@@ -49,7 +49,7 @@ GENERIC_GUARDS = frozenset({
 TRIGGERS = {
     lifecycle.Trigger.COMMAND: "by the command {command}",
     lifecycle.Trigger.OBSERVATION: "by observation",
-    lifecycle.Trigger.RESULT: "by the Result of requested Work",
+    lifecycle.Trigger.RESULT: "by the Result of a requested task",
     lifecycle.Trigger.OPERATION: "by a remote operation",
     lifecycle.Trigger.TICK: "by the controller",
 }
@@ -58,7 +58,7 @@ TRIGGERS = {
 RECORDED_KINDS = {
     "intake:accepted": "Accepted the labeled request.",
     "intake:label_removed": ("Cancelled intake because the request label was removed before "
-                             "Work admission."),
+                             "task admission."),
     "command:authorize-followup": "Recorded the authorized follow-up of this merged contribution.",
     "development_pr_created": "Created and verified the same-fork development PR.",
     "ci_rerun_recorded": ("Read back the new attempt of the CI runs rerun on the exact head for the "
@@ -334,8 +334,8 @@ def _observed(event: dict) -> str:
         bound = details.get("bound_to") or details
         parts.append(f"Candidate head: {_head(bound.get('head'))}.")
     if details.get("history") == "never recorded":
-        parts.append("The history or the task file of this Work was never recorded, and the "
-                     "dispatcher gives no worker Work without them, so no worker ever "
+        parts.append("The history or the task file of this task was never recorded, and the "
+                     "dispatcher gives no worker task without them, so no worker ever "
                      "received it.")
     for key in ("mismatch", "incomplete", "why"):
         if details.get(key):

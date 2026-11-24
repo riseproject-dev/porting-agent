@@ -30,7 +30,7 @@ def steering_list(path: str) -> list | None:
 
 class NoReadApi:
     """An API for a tick that reads nothing from GitHub but the (empty)
-    steering lists of the Work it allocates."""
+    steering lists of the task it allocates."""
 
     def __init__(self):
         self.calls: list[str] = []
@@ -47,7 +47,7 @@ class NoReadApi:
 
 def committed_history(record: dict, policy_: dict | None = None) -> dict[str, dict]:
     """The committed ``work_history`` and ``task`` evidence of the record's
-    requested Work, by evidence id, recorded when the Work was requested:
+    requested task, by evidence id, recorded when the task was requested:
     what the tick that allocated it committed with it."""
     import task_file
     import work_history
@@ -73,8 +73,8 @@ SHA_C = "c" * 40
 
 
 def holding_work(record: dict, task: str = "development_repair") -> tuple[dict, dict]:
-    """``record`` holding requested Work of ``task`` at its generation and
-    revision, and the Work identity a publication of that Work names
+    """``record`` holding a requested task of ``task`` at its generation and
+    revision, and the task identity a publication of that task names
     (``lifecycle.publication_check``'s ``expected_generation`` and
     ``work_key``)."""
     import work
@@ -90,7 +90,7 @@ def holding_work(record: dict, task: str = "development_repair") -> tuple[dict, 
 
 def result_missing(*graphs: str) -> dict[str, dict]:
     """``work_results`` readings (``reconcile.work_result_readings``) of the
-    completed Work ``graphs``: each worker run ended without a publication
+    completed task ``graphs``: each worker run ended without a publication
     artifact, so the graph is terminal without a usable Result."""
     return {graph: {"run_id": "4242", "status": "completed", "conclusion": "success",
                     "ended_at": "2026-01-01T00:00:00Z", "publication": False}

@@ -268,7 +268,7 @@ class TestFreeformAndAcceptance(unittest.TestCase):
         self.p = policy()
 
     def test_freeform_package_request(self):
-        body = ("Work has already begun:\n\nhttps://github.com/example/proj/pull/31488\n"
+        body = ("A task has already begun:\n\nhttps://github.com/example/proj/pull/31488\n"
                 "https://github.com/example/proj/pull/31522\n")
         i = dict(issue(body=body), title="proj-core riscv64 support")
         r = intake.parse_request(i, self.p)

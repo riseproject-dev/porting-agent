@@ -50,7 +50,7 @@ def recover(directory: Path, run_id: str) -> dict:
         if not result.get(key):
             raise PlanningRecoveryError(f"verified Result missing {key}")
     if not re.fullmatch(r"[0-9a-f]{64}", str(result["work_id"])):
-        raise PlanningRecoveryError("verified Result Work ID is malformed")
+        raise PlanningRecoveryError("verified Result task ID is malformed")
     if not re.fullmatch(r"c_[0-9a-f]{64}_[1-9][0-9]*", str(result["claim_id"])):
         raise PlanningRecoveryError("verified Result Claim ID is malformed")
     if not re.fullmatch(r"q_[0-9a-f]{64}", str(result["result_commit"])):

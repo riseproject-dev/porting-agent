@@ -12,7 +12,7 @@ worker proposes, and the submission check to the reviewed series and the
 reviewed pull request description. The series requirements of a plan of
 schema version 4 (a path the series must change, such as a changelog entry)
 are checked by the development observation on the exact head before
-nomination, and by the worker gate on Work that carries one as feedback.
+nomination, and by the worker gate on a task that carries one as feedback.
 
 Only rules a machine can measure are here. Qualitative expectations (the
 imperative mood, the scope of a change, a reviewer's style asks) are checked
