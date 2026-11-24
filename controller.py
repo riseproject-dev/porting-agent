@@ -125,10 +125,12 @@ def _actionable(c: dict) -> str | None:
     return None
 
 
-# The deadline recorded with requested Work (`active_work.deadline_at`). No
-# row reads it: Work whose graph ends without a usable Result is recovered by
+# The deadline recorded with requested Work (`active_work.deadline_at`): the
+# queue's attempts at it (the `retry` attempts of the pool's Policy, 3), each
+# a worker run of up to 6 hours (the job bound of `worker.md`). No row reads
+# it: Work whose graph ends without a usable Result is recovered by
 # `allocate_work_retry` and `exhaust_work_recovery`.
-WORK_DEADLINE_HOURS = 6
+WORK_DEADLINE_HOURS = 18
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
             "development_review": 0, "development_repair": 1,

@@ -255,7 +255,10 @@ class TestWorkerContract(unittest.TestCase):
                 "actions": "read",
             },
         )
-        self.assertEqual(set(worker["jobs"]), {"safe_outputs", "publish", "continuation"})
+        self.assertEqual(set(worker["jobs"]),
+                         {"agent", "safe_outputs", "publish", "continuation"})
+        # The agent job is gh-aw's own; the source only bounds its length.
+        self.assertEqual(worker["jobs"]["agent"], {"timeout-minutes": 350})
         for boundary in (worker["pre-agent-steps"], worker["jobs"]["safe_outputs"]):
             text = str(boundary)
             self.assertNotIn("${{ secrets.RISEPROJECT_UPSTREAMING_APP_PRIVATE_KEY }}", text)

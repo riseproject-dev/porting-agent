@@ -114,6 +114,20 @@ describe("queue Policy reinstall", () => {
     expect(decide(lib, state, policy(["planner", "worker", "extra"], "2".repeat(40)))).toBe("current");
   });
 
+  it("keeps a busy queue dispatching when only worker refs and contracts move", () => {
+    // A worker workflow recompiled with new timeouts changes no pool or
+    // profile setting of the compiled policy; at most its ref and logical
+    // contract move. A worker run still holding its Claim keeps the queue
+    // busy, and neither the reinstall nor gh-aw's dispatch check acts on it.
+    const installed = policy(["planner", "reviewer", "worker"], "1".repeat(40));
+    const state = { ...replay.newState(), policy: installed };
+    state.works = new Map([["work", { state: "claimed" }]]);
+    const proposal = policy(["planner", "reviewer", "worker"], "2".repeat(40));
+    expect(replay.quiescent(state)).toBe(false);
+    expect(decide(lib, state, proposal)).toBe("current");
+    expect(() => lib.binding.assertPolicyProposal(state, { policyProposal: proposal })).not.toThrow();
+  });
+
   it("reinstalls a renamed worker profile on a quiescent queue", async () => {
     const queue = ledger(policy(["investigator", "worker"], "1".repeat(40)));
     const proposal = policy(["planner", "worker"], "2".repeat(40));

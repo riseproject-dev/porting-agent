@@ -88,7 +88,7 @@ class TestDispatchRecoveryOfAQueueRetry(unittest.TestCase):
             "dispatched_run_id": None, "reason_ids": ["plan-luhenry--d2vm--3-r2"],
             "feedback_evidence_ids": []}
         # The dispatcher run that submitted the Work and launched worker run
-        # 45257915183, which ran until its 120 minute timeout.
+        # 45257915183, which ran until its job timeout (then 120 minutes).
         self.runs = [run(45257187396, "2026-11-23T20:13:50Z")]
 
     def recover(self, now, runs=None, retries=True, record=None):

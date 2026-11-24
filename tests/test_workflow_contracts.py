@@ -1037,6 +1037,36 @@ class TestHistoryAndReports(unittest.TestCase):
             self.assertIn("history digest mismatch", lock)
 
 
+class TestWorkerRunBound(unittest.TestCase):
+    """The worker's agent may run for close to the 360 minutes GitHub-hosted
+    runners allow a job, and everything that assumes a worker run's length
+    follows its bound."""
+
+    def test_the_agent_step_and_its_job_fit_under_the_runner_cap(self):
+        jobs = workflow("worker.lock.yml")["jobs"]
+        job = int(jobs["agent"]["timeout-minutes"])
+        [step] = [s for s in jobs["agent"]["steps"] if s.get("id") == "agentic_execution"]
+        self.assertEqual(step["name"], "Execute Pi CLI")
+        agent = int(step["timeout-minutes"])
+        self.assertEqual((agent, job), (330, 350))
+        # Setup before the agent and the uploads after it take a few minutes.
+        self.assertGreaterEqual(job - agent, 15)
+        self.assertLessEqual(job, 360 - 10)
+        text = (WORKFLOWS / "worker.md").read_text()
+        finish = int(re.search(r"finish by (\d+) minutes", text).group(1))
+        stopped = int(re.search(r"stopped (\d+) minutes after you start", text).group(1))
+        self.assertEqual(stopped, agent)
+        self.assertLessEqual(finish, agent - 30)
+
+    def test_the_work_deadline_covers_every_queue_attempt(self):
+        import controller
+        import queue_policy
+
+        job = int(workflow("worker.lock.yml")["jobs"]["agent"]["timeout-minutes"])
+        attempts = queue_policy.load_compiled()["pools"]["default"]["retry"]["max_attempts"]
+        self.assertGreaterEqual(controller.WORK_DEADLINE_HOURS * 60, attempts * job)
+
+
 def _longest_chain(jobs: dict) -> int:
     """The longest `needs` chain of job timeouts of a workflow, in minutes."""
     memo: dict[str, int] = {}

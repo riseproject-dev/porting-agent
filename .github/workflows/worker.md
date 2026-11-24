@@ -338,6 +338,12 @@ post-steps:
         printf '::%s::\n' "$STOP_COMMANDS_TOKEN"
       fi
 jobs:
+  # GitHub-hosted runners stop a job at 360 minutes. The agent step stops at
+  # `timeout-minutes` (330) below; the job bound leaves about 20 minutes for
+  # the setup before it (about 3 minutes observed) and the steps after it
+  # (about 1 minute), which upload the Result, and 10 minutes under the cap.
+  agent:
+    timeout-minutes: 350
   safe_outputs:
     pre-steps:
       - name: Check out trusted native artifact compatibility patch
@@ -562,7 +568,8 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.control-token.outputs.token }}
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
-timeout-minutes: 120
+# The agent step's own bound (gh-aw's `timeout-minutes`); see jobs.agent.
+timeout-minutes: 330
 max-turns: 400
 # Operator-approved: worker reproduction needs the host Docker/QEMU daemon.
 # The custom engine wrapper above strips and verifies model credentials first.
@@ -876,9 +883,9 @@ Then call `work_queue_claim_finish` with `outcome: "completed"`. If you
 cannot produce a useful result, stage `report_incomplete` explaining why and
 finish with `outcome: "cancelled"`.
 
-Your run is stopped 120 minutes after the job starts, and a stopped run
+Your run is stopped 330 minutes after you start, and a stopped run
 returns nothing: no Result, no report, and the queue starts the same task
-again from the beginning. Write `porting-out/` and finish by 95 minutes into
+again from the beginning. Write `porting-out/` and finish by 270 minutes into
 the run at the latest, with the outcome your evidence supports and the
 validation you could not complete named in `validation_not_performed`. Never
 start a command or a wait (`sleep`, a polling loop, a long test suite) that
