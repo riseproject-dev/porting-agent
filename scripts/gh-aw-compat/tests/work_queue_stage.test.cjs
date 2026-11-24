@@ -296,4 +296,28 @@ describe("intents after the agent", () => {
     expect(log.messages.some(([kind]) => kind === "warning")).toBe(false);
     expect(enforce({ lib, core: core(), trusted: "", intentsPath: intentsFile() })).toEqual({ kept: 0, dropped: 0 });
   });
+
+  it("writes back only the trusted intents from the files set aside", async () => {
+    // The dispatcher moves the collected files out of the uploaded paths
+    // before the check, so a check that cannot run leaves none there.
+    const queue = ledger();
+    const held = intentsFile();
+    const trusted = await stageOutput({ lib, plan: plan(node(GRAPH, "c".repeat(40))), context, queue: queue.queue, intentsPath: held });
+    agentTools(queue, held).dispatch();
+    const heldFinish = path.join(path.dirname(held), "held.finish.jsonl");
+    fs.mkdirSync(heldFinish);
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "intents-out-"));
+    const file = path.join(out, "work-queue.intents.jsonl");
+    const finish = path.join(out, "work-queue.finish.jsonl");
+    const log = core();
+    expect(enforce({ lib, core: log, trusted, intentsPath: file, finishPath: finish,
+                     heldIntentsPath: held, heldFinishPath: heldFinish })).toEqual({ kept: 2, dropped: 2 });
+    expect(intents.readStagedIntents(file)).toEqual(JSON.parse(trusted));
+    expect(fs.existsSync(finish)).toBe(false);
+    expect(log.messages.some(([kind, text]) => kind === "warning" && /a non-file entry/.test(text))).toBe(true);
+    // Nothing set aside and no plan: no intent file is written.
+    const empty = path.join(out, "none.jsonl");
+    expect(enforce({ lib, core: core(), trusted: "", intentsPath: empty, heldIntentsPath: path.join(out, "missing.jsonl") })).toEqual({ kept: 0, dropped: 0 });
+    expect(fs.existsSync(empty)).toBe(false);
+  });
 });

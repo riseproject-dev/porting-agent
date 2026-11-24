@@ -81,6 +81,15 @@ steps:
       uv run --locked \
         python -m work plan --out /tmp/gh-aw/agent/porting-plan.json \
           --control-repo-id "$CONTROL_REPO_ID"
+  # The step after the agent loads the intent check from this copy: the
+  # agent can write the workspace but not ${RUNNER_TEMP}/gh-aw, which its
+  # sandbox mounts read-only, so no code or git runs from a path the agent
+  # could have changed.
+  - name: Copy the trusted intent check out of the agent's reach
+    run: |
+      set -euo pipefail
+      install -D -m 0444 scripts/work_queue_stage.cjs \
+        "${RUNNER_TEMP}/gh-aw/trusted-intent-check/work_queue_stage.cjs"
   # No `if: hashFiles(...)` here: hashFiles only sees the workspace, so a
   # plan under /tmp always looked absent and the step was skipped. The
   # script checks for the file itself.
@@ -97,7 +106,7 @@ steps:
         const path = require("node:path");
         const file = "/tmp/gh-aw/agent/porting-plan.json";
         if (!fs.existsSync(file)) { core.info("No actionable porting work"); return; }
-        const { main } = require(path.join(process.env.GITHUB_WORKSPACE, "scripts/work_queue_stage.cjs"));
+        const { main } = require(path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check/work_queue_stage.cjs"));
         await main({ github, context, core,
                      actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
                      planPath: file,
@@ -105,21 +114,24 @@ steps:
                      run: { id: String(context.runId), attempt: Number(process.env.GITHUB_RUN_ATTEMPT || 1) } });
 # The agent's work-queue tools append to the intent file the stage wrote,
 # and gh-aw rejects extra intents only in a batch with plan intents. After
-# the agent, the collected files keep exactly the intents of the stage's
-# output (none without a plan); every other intent is dropped and reported.
-# The check is read from a fresh checkout of the run's commit, and when it
-# cannot run no intent is kept.
+# the agent, the collected files are first set aside out of the uploaded
+# paths, then the check copied before the agent writes back exactly the
+# intents of the stage's output (none without a plan); every other intent
+# is dropped and reported. When the check cannot run or fails, no intent
+# is uploaded. Neither step runs git or loads code from the workspace.
 post-steps:
-  - name: Check out the trusted intent check
+  - name: Set the collected intents aside for the trusted check
     if: always()
-    continue-on-error: true
-    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-    with:
-      ref: ${{ github.sha }}
-      persist-credentials: false
-      path: trusted-intent-check
-      sparse-checkout: scripts/work_queue_stage.cjs
-      sparse-checkout-cone-mode: false
+    run: |
+      set -uo pipefail
+      held="${RUNNER_TEMP}/gh-aw/trusted-intent-check/collected"
+      rm -rf -- "$held" && mkdir -p -- "$held" || held=""
+      for name in work-queue.intents.jsonl work-queue.finish.jsonl; do
+        file="/tmp/gh-aw/$name"
+        if [ -e "$file" ] || [ -L "$file" ]; then
+          { [ -n "$held" ] && mv -T -- "$file" "$held/$name"; } || rm -rf -- "$file"
+        fi
+      done
   - name: Keep only the intents the trusted stage wrote
     if: always()
     uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
@@ -129,12 +141,15 @@ post-steps:
       script: |
         const fs = require("node:fs");
         const path = require("node:path");
+        const check = path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check");
         const intentsPath = "/tmp/gh-aw/work-queue.intents.jsonl";
         const finishPath = "/tmp/gh-aw/work-queue.finish.jsonl";
         try {
-          const { enforce } = require(path.join(process.env.GITHUB_WORKSPACE, "trusted-intent-check/scripts/work_queue_stage.cjs"));
+          const { enforce } = require(path.join(check, "work_queue_stage.cjs"));
           enforce({ core, actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
-                    trusted: process.env.TRUSTED_INTENTS, intentsPath, finishPath });
+                    trusted: process.env.TRUSTED_INTENTS, intentsPath, finishPath,
+                    heldIntentsPath: path.join(check, "collected/work-queue.intents.jsonl"),
+                    heldFinishPath: path.join(check, "collected/work-queue.finish.jsonl") });
         } catch (error) {
           for (const file of [intentsPath, finishPath]) fs.rmSync(file, { force: true, recursive: true });
           core.setFailed(`The collected work-queue intents could not be checked (${error && error.message ? error.message : error}); none are kept.`);

@@ -31,6 +31,8 @@
 // therefore its output, and a step after the agent (`enforce`) keeps only
 // those in the collected intent file, drops every other intent and reports
 // it. A dispatcher holds no Claim, so a staged finish intent is dropped too.
+// The dispatcher copies this file before the agent into a directory the
+// agent's sandbox mounts read-only and loads `enforce` from that copy.
 //
 // Every queue function comes from the gh-aw actions directory of the run
 // (`actionsDir`), so the checks are exactly those of the pinned gh-aw.
@@ -142,17 +144,20 @@ function describe(line) {
   return `intent ${field(intent && intent.intent_id)} (${field(intent && intent.kind)})`;
 }
 
-// Keep exactly the `expected` intents in one collected intent file.
-function enforceFile(lib, file, expected) {
+// Keep exactly the `expected` intents in one collected intent file
+// (`target`), reading what was collected from `source`: the target itself,
+// or the place a step before set it aside so that nothing unchecked stays
+// at the uploaded path when this check cannot run.
+function enforceFile(lib, source, target, expected) {
   const wanted = expected.map(intent => lib.codec.canonical(intent));
   const content = wanted.length ? `${wanted.join("\n")}\n` : undefined;
   let stat;
   try {
-    stat = fs.lstatSync(file);
+    stat = fs.lstatSync(source);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const current = stat && stat.isFile() ? fs.readFileSync(file, "utf8") : undefined;
+  const current = stat && stat.isFile() ? fs.readFileSync(source, "utf8") : undefined;
   const dropped = stat && !stat.isFile() ? ["a non-file entry"] : [];
   for (const line of (current || "").split("\n").filter(text => text.trim())) {
     let kept = false;
@@ -163,23 +168,27 @@ function enforceFile(lib, file, expected) {
     }
     if (!kept) dropped.push(describe(line));
   }
-  if (current === content && !dropped.length) return { dropped };
-  fs.rmSync(file, { force: true, recursive: true });
-  if (content !== undefined) fs.writeFileSync(file, content, { mode: 0o644, flag: "wx" });
+  if (source === target && current === content && !dropped.length) return { dropped };
+  fs.rmSync(target, { force: true, recursive: true });
+  if (content !== undefined) fs.writeFileSync(target, content, { mode: 0o644, flag: "wx" });
   return { dropped };
 }
 
 // The step after the agent: the collected intent file holds exactly the
 // intents the trusted stage wrote (`trusted`, its `intents` output; empty
-// when no plan was staged), and the finish file holds none. Every other
+// when no plan was staged), and the finish file holds none. The collected
+// files are read from `heldIntentsPath` and `heldFinishPath` when a step
+// before set them aside, and from the target paths otherwise. Every other
 // intent is dropped and reported.
 function enforce(options) {
   const lib = options.lib || library(options.actionsDir);
   const core = options.core;
   const trusted = options.trusted ? JSON.parse(options.trusted) : [];
   if (!Array.isArray(trusted)) throw new TypeError("the trusted intents are not a list");
-  const intents = enforceFile(lib, options.intentsPath, trusted);
-  const finish = options.finishPath ? enforceFile(lib, options.finishPath, []) : { dropped: [] };
+  const intents = enforceFile(lib, options.heldIntentsPath || options.intentsPath, options.intentsPath, trusted);
+  const finish = options.finishPath
+    ? enforceFile(lib, options.heldFinishPath || options.finishPath, options.finishPath, [])
+    : { dropped: [] };
   const dropped = [...intents.dropped, ...finish.dropped];
   if (dropped.length) {
     core.warning(

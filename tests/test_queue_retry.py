@@ -9,6 +9,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import yaml
+
 import queue_result
 import reconcile
 import work
@@ -189,21 +191,66 @@ class TestDispatcherStaging(unittest.TestCase):
 
     def test_the_dispatcher_keeps_only_the_staged_intents_after_the_agent(self):
         # The agent's work-queue tools append to the staged intents; the
-        # step after the agent keeps only those of the stage's output.
-        lock = (Path(__file__).parents[1] / ".github/workflows/dispatcher.lock.yml").read_text()
-        stage = lock.index("name: Stage the plan as trusted queue intents")
-        agent = lock.index("name: Execute Pi CLI")
-        collect = lock.index("name: Collect work queue intents")
-        finish = lock.index("name: Copy work queue claim finish intent")
-        checkout = lock.index("name: Check out the trusted intent check")
-        keep = lock.index("name: Keep only the intents the trusted stage wrote")
-        upload = lock.index("name: Upload agent artifacts")
-        self.assertLess(stage, agent)
-        self.assertLess(max(agent, collect, finish), checkout)
-        self.assertLess(checkout, keep)
-        self.assertLess(keep, upload)
-        self.assertIn("TRUSTED_INTENTS: ${{ steps.stage.outputs.intents }}", lock[checkout:upload])
-        self.assertIn("trusted-intent-check/scripts/work_queue_stage.cjs", lock[keep:upload])
+        # steps after the agent keep only those of the stage's output.
+        lock = yaml.safe_load(
+            (Path(__file__).parents[1] / ".github/workflows/dispatcher.lock.yml").read_text())
+        steps = lock["jobs"]["agent"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        at = names.index
+        copy_step = steps[at("Copy the trusted intent check out of the agent's reach")]
+        stage = steps[at("Stage the plan as trusted queue intents")]
+        agent = at("Execute Pi CLI")
+        aside = at("Set the collected intents aside for the trusted check")
+        keep = at("Keep only the intents the trusted stage wrote")
+        uploads = [i for i, step in enumerate(steps) if "upload-artifact" in step.get("uses", "")]
+        check = '"${RUNNER_TEMP}/gh-aw/trusted-intent-check/work_queue_stage.cjs"'
+        # The check is copied from the workspace before the agent runs, into
+        # the directory the agent's sandbox mounts read-only, and both the
+        # stage and the step after the agent load it from there.
+        self.assertLess(at("Checkout repository (gh-aw default)"), names.index(copy_step["name"]))
+        self.assertLess(names.index(copy_step["name"]), names.index(stage["name"]))
+        self.assertLess(names.index(stage["name"]), agent)
+        self.assertIn(f"install -D -m 0444 scripts/work_queue_stage.cjs \\\n  {check}\n", copy_step["run"])
+        awf = steps[agent]["run"]
+        self.assertIn('--mount "${RUNNER_TEMP}/gh-aw:${RUNNER_TEMP}/gh-aw:ro"', awf)
+        self.assertNotIn('${RUNNER_TEMP}/gh-aw:rw', awf)
+        self.assertNotRegex(awf, r"\$\{RUNNER_TEMP\}/gh-aw/[^:\s\"]*:[^:\s\"]*:rw")
+        loaded = 'require(path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check/work_queue_stage.cjs"))'
+        self.assertIn(loaded, stage["with"]["script"])
+        script = steps[keep]["with"]["script"]
+        self.assertIn('path.join(process.env.RUNNER_TEMP, "gh-aw/trusted-intent-check")', script)
+        self.assertIn('require(path.join(check, "work_queue_stage.cjs"))', script)
+        self.assertIn('collected/work-queue.intents.jsonl', script)
+        self.assertEqual(steps[keep]["env"]["TRUSTED_INTENTS"], "${{ steps.stage.outputs.intents }}")
+        # The collected files leave the uploaded paths before the check, so
+        # nothing unchecked is uploaded when the check cannot run; both steps
+        # run after every step that collects intents and before every upload.
+        held = '"${RUNNER_TEMP}/gh-aw/trusted-intent-check/collected"'
+        self.assertIn(held, steps[aside]["run"])
+        self.assertIn('mv -T -- "$file" "$held/$name"', steps[aside]["run"])
+        self.assertIn('|| rm -rf -- "$file"', steps[aside]["run"])
+        collected = [at("Collect work queue intents"), at("Copy work queue claim finish intent")]
+        self.assertLess(max([agent, *collected]), aside)
+        self.assertEqual(keep, aside + 1)
+        self.assertTrue(uploads)
+        self.assertLess(keep, min(uploads))
+        for i in (aside, keep):
+            with self.subTest(step=names[i]):
+                self.assertEqual(steps[i]["if"], "always()")
+                self.assertNotIn("continue-on-error", steps[i])
+        # After the agent nothing is checked out, and no step of ours runs
+        # git or loads code from the workspace the agent could write. The
+        # only git after the agent is gh-aw's own credential step, which
+        # reads no code from the workspace.
+        for step in steps[agent + 1:]:
+            with self.subTest(step=step.get("name")):
+                self.assertNotIn("actions/checkout", step.get("uses", ""))
+                body = step.get("run", "") + step.get("with", {}).get("script", "")
+                self.assertNotIn("GITHUB_WORKSPACE", body)
+                if step.get("name") != "Configure Git credentials":
+                    self.assertNotRegex(body, r"(^|[\s;&|(])git\s")
+                else:
+                    self.assertEqual(body, 'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"')
 
 
 if __name__ == "__main__":
