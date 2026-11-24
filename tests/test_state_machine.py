@@ -568,6 +568,7 @@ class TestLifecycleTable(unittest.TestCase):
             ("provisioning.waiting_human", "resume_provisioning"),
             ("development.waiting_human", "resume_ci"),
             ("development.waiting_human", "resume_development"),
+            ("development.waiting_human", "resume_development_pr"),
             ("handoff.waiting_human", "resume_submission_review"),
             ("handoff.waiting_human", "resume_upstream_branch"),
             ("handoff.waiting_human", "resume_ci"),
@@ -1217,7 +1218,7 @@ class TestDiagrams(unittest.TestCase):
         for d in (*DECISIONS, *FURTHER_CHANGES):
             self.assertTrue(d.text and not d.options and not d.candidates, d.title)
             self.assertTrue(d.operations or d.highlighted, d.title)
-        self.assertEqual(len(SETTLED_OPEN_ITEMS), 32)
+        self.assertEqual(len(SETTLED_OPEN_ITEMS), 33)
         self.assertEqual(OPEN_ITEMS, ())
         for d in SETTLED_OPEN_ITEMS:
             self.assertTrue(d.text and d.highlighted and not d.options and not d.candidates, d.title)

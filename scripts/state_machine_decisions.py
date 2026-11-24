@@ -1591,6 +1591,43 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
             ("handoff.reviewing", "record_late_effect"),
         ),
     ),
+    Item(
+        "Where the development PR operation sits",
+        "Which rows of the table take the operation that opens the development PR of a "
+        "published head (`dev_pr_create`) and the CI bootstrap (`dev_pr_update`), and what "
+        "happens when its launches never return a verified receipt.",
+        "Four rows in `development.waiting_ci` and its wait, with no new state, budget or "
+        "record field. The controller records the intent and takes `launch_development_pr` in "
+        "the same tick, and again for each launch after 300 seconds without a verified "
+        "receipt, charging `operation_launch` (counted on the operation, shared with fork "
+        "provisioning). A verified receipt with the exact readback takes "
+        "`confirm_development_pr`, which records `fork.pr_number` without a revision bump; it "
+        "is also taken while paused. Launches spent without one take "
+        "`exhaust_development_pr_launches` to `development.waiting_human` with "
+        "`development_pr_launch_exhausted`, and the operation is closed as failed and released "
+        "so that `park`, `refresh` and the stale resume apply; `resume_development_pr` returns "
+        "to `development.waiting_ci` with a new revision and starts `operation_launch` again, "
+        "and `resume_development` excludes this pending action. The workflow and the "
+        "reconciler accept an open `riscv64-dev` PR that carries this contribution's marker "
+        "of any revision or head, so a PR a lost launch left is adopted. A planned operation "
+        "of a paused contribution, or one that no longer matches the record, is closed as "
+        "failed and released without a row, and a receipt outside `development.waiting_ci` "
+        "closes it and keeps the state. While a `Development PR <operation id>` run is queued "
+        "or in progress, or the run list is unreadable, the operation is neither launched "
+        "again nor exhausted, for at most 1800 seconds after its last launch.",
+        ("development.agent_running", "development.waiting_ci", "development.waiting_human",
+         "development.fix_needed"),
+        edges=(("development.agent_running", "record_publish_success"),
+               ("development.waiting_ci", "launch_development_pr"),
+               ("development.waiting_ci", "confirm_development_pr"),
+               ("development.waiting_ci", "exhaust_development_pr_launches"),
+               ("development.waiting_human", "resume_development_pr"),
+               ("development.waiting_human", "resume_development")),
+        highlighted=(("development.waiting_ci", "launch_development_pr"),
+                     ("development.waiting_ci", "confirm_development_pr"),
+                     ("development.waiting_ci", "exhaust_development_pr_launches"),
+                     ("development.waiting_human", "resume_development_pr")),
+    ),
 )
 
 OPEN_ITEMS: tuple[Item, ...] = ()

@@ -34,6 +34,7 @@ SAMPLE = {
     "fork": {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64-dev",
              "head_sha": SHA_A, "pr_number": None},
     "fork.head_sha": SHA_B,
+    "fork.pr_number": 4,
     "upstream.repository_id": 1, "upstream.base_ref": "main", "upstream.base_sha": SHA_C,
     "upstream_pr.base_ref": "main",
     "upstream_pr": {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",

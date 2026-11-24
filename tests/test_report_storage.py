@@ -564,7 +564,8 @@ class TestUncertainPublicationHistory(unittest.TestCase):
             retry = dev.retried(rec)
         rec, verbs = step(rec, [with_report(start, retry, **_big_report("u", 0.7))],
                           minutes=10, head=SHA_B)
-        self.assertEqual(verbs, ["record_publish_success", "record_head_change"])
+        self.assertEqual(verbs, ["record_publish_success", "record_head_change",
+                                 "launch_development_pr"])
         [own] = [e for e in evidence.values()
                  if e["kind"] == "worker_report" and e["evidence_id"] != "report-p"]
         # The success fold stores the same evidence again, upgraded.
@@ -577,7 +578,7 @@ class TestUncertainPublicationHistory(unittest.TestCase):
         rerun = dict(with_report(repair, dev.rerun_outcome(repair), **_big_report("r", 0.7)),
                      publication_artifact_id=1001, worker_run_id="556")
         rec, verbs = step(rec, [rerun], minutes=40, head=SHA_B)
-        self.assertEqual(verbs, ["request_ci_rerun"])
+        self.assertEqual(verbs, ["request_ci_rerun", "launch_development_pr"])
 
         def attempt(verdict):
             snapshot = ci_snapshot(SHA_B, verdict)

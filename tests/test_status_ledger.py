@@ -449,6 +449,44 @@ class TestWordingIsTheTable(unittest.TestCase):
         self.assertNotIn("review-1", body)
         self.assertNotIn(chr(0x2014), body)
 
+    def test_the_development_pr_rows_render_trusted_values_only(self):
+        op = "op-" + "a" * 24
+        event = table_event("confirm_development_pr", "development.waiting_ci",
+                            "development.waiting_ci")
+        event["details"].update(operation=op, pr_number=4, kind="dev_pr_create")
+        body = status_ledger.render(event, contribution(), "https://github.com/run")
+        self.assertIn("`confirm_development_pr` by a remote operation", body)
+        self.assertIn("Development PR #4.", body)
+        waiting = contribution(activity="waiting_human", pending_human_action={
+            "kind": lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED, "requested_at": NOW,
+            "reminded_at": None, "escalated_at": None, "counter": "operation_launch"})
+        event = table_event("exhaust_development_pr_launches", "development.waiting_ci",
+                            "development.waiting_human")
+        event["details"].update(operation=op, launches=3, kind="dev_pr_create")
+        body = status_ledger.render(event, waiting, "https://github.com/run")
+        self.assertIn(f"Read the `Development PR {op}` runs", body)
+        self.assertIn("after 3 launches", body)
+        self.assertIn("`/upstreaming resume`", body)
+        # A value that is not an operation id is never rendered.
+        event["details"]["operation"] = "<b>`x`</b>"
+        body = status_ledger.render(event, waiting, "https://github.com/run")
+        self.assertNotIn("<b>", body.split("<details>")[0])
+        self.assertIn("the `Development PR` runs of the operation", body)
+        reminder = table_event("record_reminder", "development.waiting_human",
+                               "development.waiting_human")
+        reminder["details"].update(pending_human_action=lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
+                                   operation=op, launches=3)
+        body = status_ledger.render(reminder, waiting, "https://github.com/run")
+        self.assertIn(f"Read the `Development PR {op}` runs", body)
+
+    def test_the_historic_development_pr_event_keeps_its_wording(self):
+        record = contribution()
+        event = lifecycle._event(record, record, "development_pr_created", "observation",
+                                 "op-" + "a" * 24, NOW, False)
+        event["sequence"] = 4
+        body = status_ledger.render(event, record, "https://github.com/run")
+        self.assertIn(status_ledger.RECORDED_KINDS["development_pr_created"], body)
+
     def test_an_unknown_kind_is_named_quoted(self):
         record = contribution()
         event = table_event("some_kind`<b>", "x", "y")

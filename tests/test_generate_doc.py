@@ -114,7 +114,7 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
         self.assertIn("https://github.com/riseproject-dev/porting-agent/issues/42", rendered)
         self.assertIn("https://github.com/riseproject-upstreaming/bravo/pull/3", rendered)
         self.assertIn("https://github.com/example/bravo/pull/7", rendered)
-        self.assertIn("Development (waiting for observation)", rendered)
+        self.assertIn("Development (waiting for observation or a remote operation)", rendered)
         self.assertEqual(rendered.count("<tr class=\"event-log-row\">"), 2)
 
     def test_paused_state_is_primary_status_with_the_label_of_its_state(self):
@@ -123,7 +123,7 @@ class TestGenerateUpstreamingDoc(unittest.TestCase):
                          "Paused (Parked)")
         self.assertEqual(generate_doc.status_label({"phase": "development", "activity": "waiting_ci",
                                                     "paused": True}),
-                         "Paused (Development (waiting for observation))")
+                         "Paused (Development (waiting for observation or a remote operation))")
 
     def test_submission_gate_names_the_human_step(self):
         self.assertEqual(

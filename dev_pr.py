@@ -21,6 +21,12 @@ class DevPRError(ValueError):
     pass
 
 
+def marker_prefix(contribution_id: str) -> str:
+    """The start of the marker every development PR of a contribution
+    carries, whatever revision and head it was created at."""
+    return f"<!-- upstreaming-development:{contribution_id}:"
+
+
 def body(record: dict, operation: dict) -> str:
     return "\n".join([
         "## riscv64 development",
@@ -46,8 +52,10 @@ def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
     record = json.loads((root / ".state/contributions" / f"{cid}.json").read_text())
     schemas.validate("contribution", record)
     fork = record.get("fork") or {}
+    # `development.waiting_ci` is the only state whose rows launch it.
     if op["kind"] not in ("dev_pr_create", "dev_pr_update") or op["status"] != "planned" \
-            or record["phase"] != "development" or record.get("active_operation_id") != operation_id \
+            or (record["phase"], record["activity"]) != ("development", "waiting_ci") \
+            or record.get("active_operation_id") != operation_id \
             or record["revision"] != op["revision"] or record.get("paused"):
         raise DevPRError("operation is not the current authorized development PR intent")
     if op["target"].get("repository") != fork.get("name") or op["target"].get("repository_id") != fork.get("repository_id") \
@@ -93,22 +101,26 @@ def publish(root: Path, operation_id: str, token: str, run_id: str) -> dict:
     owner = repo["full_name"].split("/", 1)[0]
     query = urllib.parse.urlencode({"state": "open", "head": f"{owner}:{DEV_REF}", "base": base_ref, "per_page": 100})
     pulls = api.get(f"/repos/{repo['full_name']}/pulls?{query}")
-    marker = op["proposed"]["marker"]
+    # Every development PR of this contribution carries its marker, whatever
+    # revision and head it was created at.
+    prefix = marker_prefix(record["contribution_id"])
     if op["kind"] == "dev_pr_update":
         matching = [pr for pr in pulls if pr.get("number") == (record.get("fork") or {}).get("pr_number")
-                    and "<!-- upstreaming-development:" in (pr.get("body") or "")]
+                    and prefix in (pr.get("body") or "")]
         unrelated = [pr for pr in pulls if pr not in matching]
         if len(matching) != 1 or unrelated:
             raise DevPRError("recorded development PR is missing, ambiguous or unrelated")
         expected_body = matching[0]["body"]
     else:
-        matching = [pr for pr in pulls if marker in (pr.get("body") or "")]
-        unrelated = [pr for pr in pulls if marker not in (pr.get("body") or "")]
+        matching = [pr for pr in pulls if prefix in (pr.get("body") or "")]
+        unrelated = [pr for pr in pulls if pr not in matching]
         if len(matching) > 1 or unrelated:
             raise DevPRError("existing development-head PR is ambiguous or unrelated")
-        # A create that finds the PR its own marker names was started
-        # earlier: that PR's body is the one it wrote, whatever wording
-        # the code had then, so a retry stays idempotent.
+        # A create that finds a PR this contribution's marker names was
+        # started earlier, by this operation or by one a lost launch, a head
+        # change or a resume left: it is adopted, and its body is the one
+        # that launch wrote, whatever wording the code had then, so a retry
+        # stays idempotent.
         expected_body = matching[0]["body"] if matching else body(record, op)
     pr = matching[0] if matching else api.mutate("POST", f"/repos/{repo['full_name']}/pulls", {
         "title": "CI: develop riscv64 support",

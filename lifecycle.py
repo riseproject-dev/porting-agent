@@ -792,6 +792,11 @@ _RECORD_EXPLANATION = Transition(
     description="Answered on the development PR or recorded without requesting a change; "
                 "revision and CI evidence are kept.")
 _INTERRUPTED = "a required CI job on the exact head was cancelled or lost its runner"
+# The development PR operation of `development.waiting_ci`: a `dev_pr_create`
+# or `dev_pr_update` operation the controller planned, and the pending human
+# action once its launches are spent without a verified receipt.
+DEVELOPMENT_PR_PLANNED = "a development PR operation is planned"
+DEVELOPMENT_PR_LAUNCH_EXHAUSTED = "development_pr_launch_exhausted"
 _RERUN_INTERRUPTED_CI = Transition(
     _O, None, (_INTERRUPTED, "interrupted_reruns remains"),
     charges=("interrupted_reruns",),
@@ -1022,7 +1027,8 @@ LIFECYCLE: dict[str, State] = {
         "A patch is published to the development PR; CI and review evaluate the exact head. "
         "Passing CI nominates the head, or returns to `development.fix_needed` while actionable "
         "feedback is pending or a series requirement of the plan is unmet; passing CI behind an "
-        "open operation keeps the contribution here.",
+        "open operation keeps the contribution here. The controller opens the development PR of "
+        "the published head through a trusted operation.",
         transitions={
             ("record_ci_failure", "development.fix_needed"): Transition(
                 _O, None,
@@ -1030,6 +1036,34 @@ LIFECYCLE: dict[str, State] = {
                 _E(sets=("last_ci_evidence_id",))),
             ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
             ("exhaust_interrupted_reruns", "development.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
+            ("launch_development_pr", SELF): Transition(
+                _K, None,
+                (DEVELOPMENT_PR_PLANNED, "operation_launch remains", NOT_PAUSED),
+                charges=("operation_launch",),
+                description="The controller plans a `dev_pr_create` operation when the published "
+                            "head has no recorded development PR, and a `dev_pr_update` "
+                            "operation (the CI bootstrap) when the PR was created at this head "
+                            "and no CI evidence is recorded. It records the intent and takes "
+                            "this row in the same tick, and again for each launch after "
+                            "`LAUNCH_INTERVAL_SECONDS` without a verified receipt. The trusted "
+                            "workflow creates or adopts the same-fork PR `riscv64-dev` -> base; "
+                            "it never repeats a create without discovery."),
+            ("confirm_development_pr", SELF): Transition(
+                _P, None,
+                ("the receipt matches the operation", "exact development PR readback"),
+                _E(sets=("fork.pr_number",)),
+                description="The verified receipt of the operation, with the exact readback of "
+                            "the open same-fork PR carrying this contribution's marker, records "
+                            "the PR number and releases the operation; the revision is kept."),
+            ("exhaust_development_pr_launches", "development.waiting_human"): Transition(
+                _K, None,
+                (DEVELOPMENT_PR_PLANNED, "operation_launch exhausted"),
+                _E(sets=(f"pending_human_action={DEVELOPMENT_PR_LAUNCH_EXHAUSTED}",
+                         f"{PENDING_COUNTER}=operation_launch")),
+                description="The operation is closed as failed and released, so the wait is "
+                            "quiescent. A PR that a lost launch created is adopted by the "
+                            "operation planned after the resume.",
+                exhausts=("operation_launch",)),
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
@@ -1146,16 +1180,26 @@ LIFECYCLE: dict[str, State] = {
     "development.waiting_human": State(
         "human_wait", False, False,
         "Development recovery or `work_total` is exhausted, the development PR does not match, "
-        "or CI on the head was interrupted repeatedly; a human corrects the cause and resumes.",
+        "CI on the head was interrupted repeatedly, or the development PR operation could not be "
+        "completed; a human corrects the cause and resumes.",
         transitions={
             ("resume_ci", "development.waiting_ci"): Transition(
                 _C, RESUME,
                 (EXACT_REVISION, pending_is("ci_interrupted"), QUIESCENT, NOT_STALE),
                 _RESUME_CI, description=_RESUME_CI_NOTE),
+            ("resume_development_pr", "development.waiting_ci"): Transition(
+                _C, RESUME,
+                (EXACT_REVISION, pending_is(DEVELOPMENT_PR_LAUNCH_EXHAUSTED), QUIESCENT,
+                 NOT_STALE),
+                _resume_restarting("operation_launch"),
+                description="The head is already published, so no fresh Work is requested: the "
+                            "next tick plans a new development PR operation for it. "
+                            + _RESTART_NOTE),
             ("rearm_dispatch", "development.fix_needed"): _REARM_DISPATCH,
             ("resume_development", "development.fix_needed"): Transition(
                 _C, RESUME,
-                (EXACT_REVISION, pending_is_not("ci_interrupted"), QUIESCENT, NOT_STALE),
+                (EXACT_REVISION, pending_is_not("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
+                 QUIESCENT, NOT_STALE),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
                             "source_reads")),
@@ -2079,8 +2123,10 @@ BUDGETS: dict[str, Budget] = {
         ("exhaust_source_reads", "require_upstream_access")),
     "operation_launch": Budget(
         INFRASTRUCTURE_KEY, 1,
-        "one launch of a planned fork provisioning operation", "the operation's launch attempts",
-        ("require_provisioning_intervention",), infrastructure=True),
+        "one launch of a planned fork provisioning or development PR operation",
+        "the operation's launch attempts",
+        ("require_provisioning_intervention", "exhaust_development_pr_launches"),
+        infrastructure=True),
     "upstream_branch": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one lease write and readback of `riscv64`", "the handoff operation's attempts",
@@ -2495,6 +2541,24 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 text="An infrastructure failure publishes the same verified Result again within "
                      "`publish_recovery`. After exhaustion and a resume, fresh Work is requested; "
                      "the held Result is not reused."),
+            Diagram(
+                "The development PR operation",
+                ("development.agent_running", "development.waiting_ci",
+                 "development.waiting_human"),
+                (("development.agent_running", "record_publish_success"),
+                 ("development.waiting_ci", "launch_development_pr"),
+                 ("development.waiting_ci", "confirm_development_pr"),
+                 ("development.waiting_ci", "exhaust_development_pr_launches"),
+                 ("development.waiting_human", "resume_development_pr")),
+                start="development.agent_running",
+                text="A published head without a recorded development PR gets one through a "
+                     "trusted operation, planned and launched by the controller in "
+                     "`development.waiting_ci` within `operation_launch` (counted on the "
+                     "operation); a PR created at this head with no CI evidence gets the CI "
+                     "bootstrap the same way. A verified receipt with the exact readback takes "
+                     "`confirm_development_pr`. Launches spent without one close the operation "
+                     "as failed and wait for a human; the resume plans a new operation, which "
+                     "adopts a PR a lost launch created."),
             Diagram(
                 "Failure case 3: internal PR CI or review failure",
                 ("development.waiting_ci", "development.fix_needed", "development.agent_running",

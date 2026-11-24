@@ -762,6 +762,8 @@ for _guard, _name in (
     ("capacity available", "capacity_available"),
     ("intake label removed", "intake_label_removed"),
     ("fork_provision operation planned", "fork_provision_planned"),
+    (lc.DEVELOPMENT_PR_PLANNED, "development_pr_operation_planned"),
+    ("exact development PR readback", "development_pr_read_back"),
     ("the receipt matches the operation", "receipt_matches_operation"),
     ("exact fork and ref readback", "fork_and_ref_read_back"),
     ("the prerequisite is corrected", "prerequisite_corrected"),
@@ -1011,6 +1013,14 @@ PIPELINE_VERBS: dict[str, str] = {
     "start_operation": "controller",
     "require_provisioning_intervention": "controller",
     "confirm_provisioning": "recovery",
+    # The development PR operation of `development.waiting_ci` (the PR and
+    # the CI bootstrap): its launches within `operation_launch`, the wait once
+    # that budget is exhausted, and its confirmation by the receipt and
+    # readback (a row the operation fires through ``recovery.fire``).
+    "launch_development_pr": "controller",
+    "exhaust_development_pr_launches": "controller",
+    "resume_development_pr": "controller",
+    "confirm_development_pr": "recovery",
     # The submission rewrite and review Work: their allocation and the
     # exhaustion of `work_total` where they are due, their Results, which the
     # trusted checks decide, and a rewrite whose artifact expired.
@@ -1750,12 +1760,11 @@ def with_current_names(record: dict) -> tuple[dict, list[str]]:
 
 BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # The controller records the intent of a planned operation in the same
-    # write that plans it; a closed operation is released.
+    # tick that launches it; the launch itself is a row of the table (or, for
+    # a handoff attempt or a CI rerun, is counted on the operation). A closed
+    # operation is released.
     "operation_planned": ("active_operation_id",),
     "operation_released": ("active_operation_id",),
-    # A verified development PR receipt records the PR and releases its
-    # operation; no row is fired by it.
-    "development_pr_recorded": ("fork.pr_number", "active_operation_id"),
     # The upstream identity and base, bound from trusted API data once.
     "upstream_identity_bound": ("upstream.repository_id", "upstream.base_ref",
                                 "upstream.base_sha"),

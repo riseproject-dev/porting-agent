@@ -170,6 +170,24 @@ def _head(value) -> str:
     return f"`{_quotable(value, 40)}`"
 
 
+def _development_pr_guidance(details: dict) -> str:
+    """What a human does once the launches of a development PR operation are
+    spent without a verified receipt. Only trusted values are named: the
+    operation id, its kind, and the launch count; no PR body or workflow
+    log text."""
+    operation = details.get("operation")
+    named = isinstance(operation, str) and re.fullmatch(r"op-[0-9a-f]{24}", operation)
+    runs = (f"the `Development PR {operation}` runs" if named
+            else "the `Development PR` runs of the operation")
+    launches = details.get("launches")
+    spent = (f" after {launches} launches" if isinstance(launches, int)
+             and not isinstance(launches, bool) else "")
+    return (f"The development PR operation got no verified receipt{spent}. Read {runs} of the "
+            "control repository, correct the cause (for example, close a pull request open "
+            "from `riscv64-dev` that is not this contribution's), then post "
+            "`/upstreaming resume`.")
+
+
 def _observed(event: dict) -> str:
     """What the event observed, as bounded data: heads, links the pipeline
     recorded, the upstream pull request, a mismatch, release data."""
@@ -196,6 +214,12 @@ def _observed(event: dict) -> str:
         pr = f"[#{number}]({link})" if link else f"#{number}"
         parts.append(f"Upstream pull request {pr} by {_login(details.get('author'))} at "
                      f"{_head(details.get('head'))}.")
+    if kind == "confirm_development_pr" and details.get("pr_number") is not None:
+        parts.append(f"Development PR #{_quotable(details.get('pr_number'), 12)}.")
+    if kind == "exhaust_development_pr_launches" or (
+            kind == "record_reminder"
+            and details.get("pending_human_action") == lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED):
+        parts.append(_development_pr_guidance(details))
     if kind == "record_reminder" and state == "handoff.waiting_upstream_pr":
         bound = details.get("bound_to") or {}
         link = _link(details.get("package_url"))

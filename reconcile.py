@@ -37,6 +37,7 @@ import capacity
 import ci_rerun
 import collect
 import controller
+import dev_pr
 import engine
 import handoff
 import isolation
@@ -1960,6 +1961,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
          ci_reruns: list[dict] | None = None,
          handoff_runs: dict[str, int] | None = None,
+         development_pr_runs: dict[str, int] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
          queue_policy: dict | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
@@ -2010,9 +2012,9 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             except (ValueError, KeyError):
                 dev_pr_report.append({"contribution": cid, "status": "readback unavailable"})
                 continue
-            marker = op["proposed"].get("marker")
-            body_ok = (marker in (pr.get("body") or "") if op["kind"] == "dev_pr_create"
-                       else "<!-- upstreaming-development:" in (pr.get("body") or ""))
+            # The PR carries this contribution's marker, of any revision or
+            # head: a create adopts a PR that an earlier launch left.
+            body_ok = dev_pr.marker_prefix(cid) in (pr.get("body") or "")
             if pr.get("id") != receipt.get("pr_id") or pr.get("state") != "open" \
                     or not body_ok \
                     or (pr.get("head") or {}).get("sha") != op["target"]["expected_head"] \
@@ -2025,17 +2027,29 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 op, external_ids={"pr_id": int(pr["id"]), "pr_number": int(pr["number"]),
                                   "development_pr_run_id": str(receipt["development_pr_run_id"])},
                 detail=f"development PR {pr['number']} verified", now=iso)
-            # No row of the table is fired by the development PR operation:
-            # the PR number is recorded and the closed operation released,
-            # and the state is kept.
-            new = engine.record_beside(c, "development_pr_recorded", now=iso,
-                                       fork=dict(c["fork"], pr_number=int(pr["number"])),
-                                       active_operation_id=None)
-            contributions[key] = new
             snap.operations[op["operation_id"]] = new_op
-            out.staged.extend([("operations", new_op), ("contributions", new),
-                               ("events", lifecycle._event(c, new, "development_pr_created", "observation",
-                                                           op["operation_id"], iso, False))])
+            out.staged.append(("operations", new_op))
+            if engine.state_key(c) != "development.waiting_ci":
+                # A receipt that arrives in another development state closes
+                # the operation and keeps the state; the PR is not recorded,
+                # and the next create adopts it.
+                new = recovery.release(c, new_op, iso)
+                if new is not c:
+                    contributions[key] = new
+                    out.staged.append(("contributions", new))
+                dev_pr_report.append({"contribution": cid, "status": "closed outside the CI wait",
+                                      "pr_number": pr["number"]})
+                continue
+            fired = recovery.fire(c, new_op, policy=policy, now=iso,
+                                  facts={"receipt_matches_operation", "development_pr_read_back"},
+                                  values={"fork.pr_number": int(pr["number"])},
+                                  details={"pr_number": int(pr["number"]), "kind": op["kind"]})
+            if fired is None or not fired.accepted:
+                raise lifecycle.TransitionError(
+                    "confirm_development_pr refused: "
+                    + (fired.reason if fired is not None else "no row is bound"))
+            contributions[key] = fired.record
+            out.staged.extend([("contributions", fired.record), ("events", fired.event)])
             dev_pr_report.append({"contribution": cid, "status": "confirmed", "pr_number": pr["number"]})
     out.report["development_prs"] = dev_pr_report
 
@@ -2299,6 +2313,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    acceptances=acceptances or {},
                                                    spent_graphs=spent_graphs,
                                                    handoff_runs=handoff_runs,
+                                                   development_pr_runs=development_pr_runs,
                                                    resolution_evidence={
                                                        e["evidence_id"]: e for e in evidence.values()
                                                        if e.get("kind") == "resolution"}),
@@ -2622,15 +2637,19 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
     return publications
 
 
-# The run name `handoff.yml` gives a run: `Handoff <operation id>`.
-_HANDOFF_RUN_TITLE = re.compile(r"Handoff (op-[0-9a-f]{24})")
+# The run names `handoff.yml` and `dev-pr.yml` give a run:
+# `Handoff <operation id>` and `Development PR <operation id>`.
+HANDOFF_RUN_PREFIX = "Handoff "
+DEVELOPMENT_PR_RUN_PREFIX = "Development PR "
 
 
-def _handoff_runs(path: str | None) -> dict[str, int] | None:
-    """The handoff workflow runs that are not completed, by operation, from
-    the run list the controller workflow wrote (``id``, ``status``,
-    ``title``), or None when it was not read this tick. An entry of another
-    shape is ignored; the title is only matched, never rendered."""
+def _handoff_runs(path: str | None, prefix: str = HANDOFF_RUN_PREFIX) -> dict[str, int] | None:
+    """The workflow runs that are not completed, by operation, from the run
+    list the controller workflow wrote (``id``, ``status``, ``title``) for
+    the workflow whose run names start with ``prefix``, or None when it was
+    not read this tick. An entry of another shape is ignored; the title is
+    only matched, never rendered."""
+    title_pattern = re.compile(re.escape(prefix) + r"(op-[0-9a-f]{24})")
     if not path:
         return None
     try:
@@ -2648,7 +2667,7 @@ def _handoff_runs(path: str | None) -> dict[str, int] | None:
             continue
         if not isinstance(run_id, int) or isinstance(run_id, bool) or not isinstance(title, str):
             continue
-        match = _HANDOFF_RUN_TITLE.fullmatch(title)
+        match = title_pattern.fullmatch(title)
         if match:
             runs[match.group(1)] = run_id
     return runs
@@ -2746,6 +2765,8 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     provisions = _receipt_outcomes(args.provisions, kind="provision")
     handoffs = _receipt_outcomes(getattr(args, "handoffs", None), kind="handoff")
     handoff_runs = None if args.offline else _handoff_runs(getattr(args, "handoff_runs", None))
+    development_pr_runs = None if args.offline else _handoff_runs(
+        getattr(args, "development_pr_runs", None), DEVELOPMENT_PR_RUN_PREFIX)
     issues = [] if args.offline else collect.intake_issues(api)
     tracking = sorted(
         {record["tracking_issue"]["number"] for record in snapshot.contributions.values()}
@@ -2826,6 +2847,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             handoffs=handoffs,
             ci_reruns=ci_reruns,
             handoff_runs=handoff_runs,
+            development_pr_runs=development_pr_runs,
         )
     except isolation.TickFailure as failure:
         # A pipeline failure: nothing is written, so nothing is committed.
@@ -2884,6 +2906,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ci-reruns")
     parser.add_argument("--handoffs")
     parser.add_argument("--handoff-runs")
+    parser.add_argument("--development-pr-runs")
     parser.add_argument("--report")
     parser.add_argument("--since")
     parser.add_argument("--offline", action="store_true")

@@ -478,7 +478,8 @@ class TestUncertainPublication(unittest.TestCase):
         # head the push left is recorded by the observation of the same tick,
         # and the development PR is requested.
         out = tick(held, [retried(held)], head=SHA_B, operations=ops)
-        self.assertEqual(kinds(out), ["record_publish_success", "record_head_change"])
+        self.assertEqual(kinds(out), ["record_publish_success", "record_head_change",
+                                     "launch_development_pr"])
         after = final(out, held)
         self.assertEqual((engine.state_key(after), after["publication_operation_id"],
                           after["proposal_artifact"]["outcome"], after["pending_publication"],
@@ -501,7 +502,7 @@ class TestUncertainPublication(unittest.TestCase):
                         NOW, facts=__import__("fork_publish").PUSH_FACTS)
                     ops = {lost["operation_id"]: lost}
                 out = tick(held, [retried(held)], observe=False, operations=ops)
-                self.assertEqual(kinds(out), ["record_publish_success"])
+                self.assertEqual(kinds(out), ["record_publish_success", "launch_development_pr"])
                 self.assertEqual(out.failures, [])
                 [confirmed] = [o for o in self.staged_ops(out) if o["kind"] == "branch_update"]
                 self.assertEqual((confirmed["operation_id"], confirmed["status"]),
@@ -517,7 +518,7 @@ class TestUncertainPublication(unittest.TestCase):
         held, ops, op = self.hold()
         own = branch_operation(held, confirmed=True, attempt=2)
         out = tick(held, [retried(held, operation=own)], observe=False, operations=ops)
-        self.assertEqual(kinds(out), ["record_publish_success"])
+        self.assertEqual(kinds(out), ["record_publish_success", "launch_development_pr"])
         self.assertEqual(final(out, held)["publication_operation_id"], own["operation_id"])
         # The earlier operation is confirmed by the next branch observation.
         after = final(out, held)
@@ -533,8 +534,8 @@ class TestUncertainPublication(unittest.TestCase):
         self.assertEqual(kinds(out), ["replan_development"])
         confirmed = {op["operation_id"]: branch_operation(self.rec, confirmed=True)}
         out = tick(held, [stale], observe=False, operations=confirmed)
-        self.assertEqual(kinds(out), ["record_publish_success"])
-        [event] = [e for kind, e in out.staged if kind == "events"]
+        self.assertEqual(kinds(out), ["record_publish_success", "launch_development_pr"])
+        [event, _launch] = [e for kind, e in out.staged if kind == "events"]
         self.assertEqual(event["details"]["confirmed_by"], op["operation_id"])
         after = final(out, held)
         self.assertEqual((engine.state_key(after), after["publication_operation_id"],

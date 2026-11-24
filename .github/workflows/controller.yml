@@ -215,6 +215,22 @@ jobs:
             unzip -q -o -j "provisions/$run/a.zip" -d "provisions/$run" || continue
             printf '%s' "$id" > "provisions/$run/artifact-id"
           done
+      - name: Observe the development PR runs still in flight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Read before the receipts: a run that completes in between is seen
+          # in flight or as a receipt, never as neither. Without the list the
+          # controller holds a launched development PR operation as possibly
+          # in flight.
+          if gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/dev-pr.yml/runs?branch=main&event=workflow_dispatch&per_page=100" \
+            --jq '[.workflow_runs[] | select(.status != "completed") | {id, status, title: .display_title}]' > development-pr-runs.tmp; then
+            mv development-pr-runs.tmp development-pr-runs.json
+          else
+            rm -f development-pr-runs.tmp development-pr-runs.json
+            echo "development PR run inventory unavailable this tick" >&2
+          fi
       - name: Collect trusted development PR receipts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -299,7 +315,8 @@ jobs:
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
           uv run --locked python -m reconcile --publications publications \
             --provisions provisions --development-prs development-prs --handoffs handoffs \
-            --handoff-runs handoff-runs.json --ci-reruns ci-reruns \
+            --handoff-runs handoff-runs.json --development-pr-runs development-pr-runs.json \
+            --ci-reruns ci-reruns \
             --report report.json \
             ${gh_aw:+--gh-aw "$gh_aw"}
           {

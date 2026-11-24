@@ -342,6 +342,26 @@ flowchart TB
 
 An infrastructure failure publishes the same verified Result again within `publish_recovery`. After exhaustion and a resume, fresh Work is requested; the held Result is not reused.
 
+### The development PR operation
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    start_1(( )) --> development_agent_running
+    development_agent_running -->|record_publish_success| development_waiting_ci
+    development_waiting_ci -->|launch_development_pr| development_waiting_ci
+    development_waiting_ci -->|confirm_development_pr| development_waiting_ci
+    development_waiting_ci -->|exhaust_development_pr_launches| development_waiting_human
+    development_waiting_human -->|resume_development_pr<br/>/upstreaming resume| development_waiting_ci
+```
+
+A published head without a recorded development PR gets one through a trusted operation, planned and launched by the controller in `development.waiting_ci` within `operation_launch` (counted on the operation); a PR created at this head with no CI evidence gets the CI bootstrap the same way. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human; the resume plans a new operation, which adopts a PR a lost launch created.
+
 ### Failure case 3: internal PR CI or review failure
 
 ```mermaid
@@ -1076,6 +1096,7 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_clean_head_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
+| `/upstreaming resume` | `resume_development_pr` | `development.waiting_human` | `development.waiting_ci` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |
 | `/upstreaming resume` | `resume_planning` | `planning.waiting_human` | `planning.idle` |
 | `/upstreaming resume` | `resume_provisioning` | `provisioning.waiting_human` | `provisioning.idle` |

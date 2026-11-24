@@ -74,6 +74,9 @@ class Inputs:
     # The handoff workflow runs that are not completed, by operation (run id);
     # None when the run list was not read this tick.
     handoff_runs: dict[str, int] | None = None
+    # The development PR workflow runs that are not completed, by operation
+    # (run id); None when the run list was not read this tick.
+    development_pr_runs: dict[str, int] | None = None
 
 
 @dataclass
@@ -784,9 +787,13 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # A published development head gets a same-fork development PR before CI
     # observation. Persist intent first; the trusted workflow creates/discovers
     # exactly riscv64-dev -> the frozen upstream base ref and returns a receipt.
-    # No row of the table creates the development PR: the operation is
-    # planned in `development.waiting_ci`, which it leaves unchanged, and it
-    # fences nomination and Work until its receipt closes it.
+    # In `development.waiting_ci` the table's rows launch it:
+    # `launch_development_pr` within `operation_launch` (counted on the
+    # operation), and `exhaust_development_pr_launches` once that budget is
+    # exhausted. A planned operation that no longer matches the record, or of
+    # a paused contribution, is closed as failed and released without a row.
+    # The `ci_rerun` operation of `rerun_interrupted_ci` shares the loop: no
+    # row launches it, and its launches are counted like `operation_launch`.
     res.report["dev_pr_requests"] = []
     for cid, c in list(by_id.items()):
         if cid in skip:
@@ -796,33 +803,37 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             if not operation or operation.get("kind") not in DEVELOPMENT_PR_KINDS \
                     or operation.get("status") != "planned":
                 continue
-            # No row of the table launches a development PR or CI rerun
-            # operation; its launches are counted like `operation_launch`, on
-            # the operation.
             attempts = recovery.launch_attempts(operation)
             waited = (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds() \
                 >= LAUNCH_INTERVAL_SECONDS
-            if operation["kind"] == "ci_rerun":
-                why = _spent_rerun(c, operation, attempts, waited, policy, evidence or {})
+            if operation["kind"] in DEV_PR_KINDS:
+                why = _stale_development_pr(c, operation)
                 if why:
-                    # The rerun failed: it is closed and released, and no row
-                    # is fired. The next observation of interrupted CI takes
-                    # `rerun_interrupted_ci` again within `interrupted_reruns`,
-                    # or `exhaust_interrupted_reruns`.
-                    closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
-                    operations[closed["operation_id"]] = closed
-                    released = recovery.release(c, closed, now)
-                    by_id[cid] = released
-                    res.stage("operations", closed)
-                    res.stage("contributions", released)
-                    res.report.setdefault("ci_rerun_closures", []).append(
-                        {"operation_id": closed["operation_id"], "contribution_id": cid,
-                         "closed": why})
+                    _close_development_pr(c, operation, why, by_id, operations, res, now)
                     continue
+                if (attempts == 0 or waited) and _launch_development_pr(
+                        c, operation, by_id, operations, inputs, res, now, policy):
+                    break
+                continue
+            why = _spent_rerun(c, operation, attempts, waited, policy, evidence or {})
+            if why:
+                # The rerun failed: it is closed and released, and no row
+                # is fired. The next observation of interrupted CI takes
+                # `rerun_interrupted_ci` again within `interrupted_reruns`,
+                # or `exhaust_interrupted_reruns`.
+                closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
+                operations[closed["operation_id"]] = closed
+                released = recovery.release(c, closed, now)
+                by_id[cid] = released
+                res.stage("operations", closed)
+                res.stage("contributions", released)
+                res.report.setdefault("ci_rerun_closures", []).append(
+                    {"operation_id": closed["operation_id"], "contribution_id": cid,
+                     "closed": why})
+                continue
             due = attempts == 0 or (
                 waited and attempts < lifecycle.budget_limit("operation_launch", policy))
-            if due and operation["kind"] == "ci_rerun" \
-                    and engine.state_key(c) == "handoff.waiting_ci":
+            if due and engine.state_key(c) == "handoff.waiting_ci":
                 # CI on the clean head is rerun by the handoff workflow, the
                 # workflow that writes `riscv64`; `controller.yml`
                 # dispatches every handoff request.
@@ -845,8 +856,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     for cid, c in list(by_id.items()):
         if res.report["dev_pr_requests"]:
             break
-        if len(res.report["dev_pr_requests"]) >= 1:
-            break
         if cid in skip:
             continue
         with isolation.contribution(cid, "development_pr"):
@@ -862,24 +871,36 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     or not pubop or pubop.get("status") != "confirmed":
                 continue
             marker = f"<!-- upstreaming-development:{cid}:r{c['revision']}:{fork['head_sha']} -->"
-            op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_create",
-                               policy_version=policy["policy_version"],
-                               reason_ids=[c["plan_evidence_id"], str(artifact["result_commit"])],
-                               target={"repository": fork["name"], "repository_id": fork["repository_id"],
-                                       "ref": DEV_REF, "expected_head": fork["head_sha"],
-                                       "base_sha": c["upstream"]["base_sha"]},
-                               proposed={"marker": marker, "content_digest": artifact["digest"]}, now=now)
+            reasons = [c["plan_evidence_id"], str(artifact["result_commit"])]
+            op = None
+            for n in range(MAX_REPLANS + 1):
+                # A re-plan after a closed operation of the same intent is a
+                # new operation: an operation id is never reused once it
+                # closed.
+                op = recovery.plan(contribution_id=cid, revision=c["revision"], kind="dev_pr_create",
+                                   policy_version=policy["policy_version"],
+                                   reason_ids=reasons + ([f"replan:{n}"] if n else []),
+                                   target={"repository": fork["name"],
+                                           "repository_id": fork["repository_id"],
+                                           "ref": DEV_REF, "expected_head": fork["head_sha"],
+                                           "base_sha": c["upstream"]["base_sha"]},
+                                   proposed={"marker": marker, "content_digest": artifact["digest"]},
+                                   now=now)
+                prior = operations.get(op["operation_id"])
+                if prior is None or recovery.is_open(prior):
+                    break
             if op["operation_id"] in operations:
+                rep["deferred"].append({"contribution": cid,
+                                        "why": "existing development PR operation requires "
+                                               "reconciliation"})
                 continue
-            op = recovery.charge_launch(op, now)
-            res.stage("operations", op)
-            changed = engine.record_beside(c, "operation_planned", now=now,
+            # The intent is recorded and launched in the same tick.
+            planned = engine.record_beside(c, "operation_planned", now=now,
                                            active_operation_id=op["operation_id"])
-            by_id[cid] = changed
-            res.stage("contributions", changed)
-            res.report["dev_pr_requests"].append({
-                "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
-            })
+            if not _launch_development_pr(planned, op, by_id, operations, inputs, res, now,
+                                          policy):
+                raise lifecycle.TransitionError(
+                    f"launch_development_pr refused for a new development PR intent of {cid}")
 
     # Bootstrap CI once for an already recorded PR. This separate operation is
     # needed when GitHub registered no inherited workflows at PR creation time.
@@ -919,15 +940,13 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                                          "content_digest": artifact["digest"]}, now=now)
             if op["operation_id"] in operations:
                 continue
-            op = recovery.charge_launch(op, now)
-            res.stage("operations", op)
-            changed = engine.record_beside(c, "operation_planned", now=now,
+            # The intent is recorded and launched in the same tick.
+            planned = engine.record_beside(c, "operation_planned", now=now,
                                            active_operation_id=op["operation_id"])
-            by_id[cid] = changed
-            res.stage("contributions", changed)
-            res.report["dev_pr_requests"].append({
-                "operation_id": op["operation_id"], "contribution_id": cid, "attempt": 1,
-            })
+            if not _launch_development_pr(planned, op, by_id, operations, inputs, res, now,
+                                          policy):
+                raise lifecycle.TransitionError(
+                    f"launch_development_pr refused for a new CI bootstrap intent of {cid}")
 
     # 8-10. Select bounded work, honouring capacity and one worker. In a
     # state of the table, Work is allocated by the row the table names for
@@ -1293,6 +1312,17 @@ def reminder_details(record: dict, operations: dict | None = None,
                "previous_reminder_at": pending.get("reminded_at"),
                **({"bound_to": {"revision": record["revision"], "head": heads[state]}}
                   if state in heads else {})}
+    if pending["kind"] == DEVELOPMENT_PR_LAUNCH_EXHAUSTED:
+        # The operation whose launches were spent: the latest development PR
+        # operation closed as failed at this revision.
+        spent = [op for op in (operations or {}).values()
+                 if op["contribution_id"] == record["contribution_id"]
+                 and op["kind"] in DEV_PR_KINDS and op["status"] == "failed"
+                 and op["revision"] == record["revision"]]
+        if spent:
+            latest = max(spent, key=lambda op: op["updated_at"])
+            details["operation"] = latest["operation_id"]
+            details["launches"] = recovery.launch_attempts(latest)
     if state == "handoff.waiting_upstream_pr":
         package = (operations or {}).get((record.get("handoff_request") or {}).get("command_id"))
         details["package_url"] = ((package or {}).get("external_ids") or {}).get("comment_url")
@@ -1402,6 +1432,132 @@ LAUNCH_INTERVAL_SECONDS = 300
 # The operations the development PR workflow executes (a `ci_rerun` of
 # `handoff.waiting_ci` is executed by the handoff workflow).
 DEVELOPMENT_PR_KINDS = frozenset({"dev_pr_create", "dev_pr_update", "ci_rerun"})
+# The development PR operation of `development.waiting_ci`, launched by
+# `launch_development_pr`: the PR and the CI bootstrap.
+DEV_PR_KINDS = frozenset({"dev_pr_create", "dev_pr_update"})
+# The pending human action of `exhaust_development_pr_launches`.
+DEVELOPMENT_PR_LAUNCH_EXHAUSTED = lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED
+# A launched development PR operation whose run is still queued or in
+# progress (or whose run list was not read) is neither launched again nor
+# exhausted for at most this long after its last launch: `dev-pr.yml`
+# shares its concurrency group with the handoff workflow, whose run can
+# hold the group for most of this time.
+DEV_PR_RUN_SECONDS = 1800
+# The bound on re-plans of one development PR intent at one revision.
+MAX_REPLANS = 20
+
+
+def _stale_development_pr(record: dict, op: dict) -> str | None:
+    """Why a planned development PR operation is closed as failed without a
+    row: the contribution is paused (the workflow refuses a paused record,
+    so the operation would otherwise burn its launches and fence `park` and
+    a stale `resume`), or it no longer matches the record (another state,
+    revision, fork, head or base, or a PR already recorded for a create, or
+    none for the CI bootstrap). A new one is planned when
+    `development.waiting_ci` again holds a published head without the PR."""
+    if record.get("paused"):
+        return "the contribution is paused"
+    fork = record.get("fork") or {}
+    target = op.get("target") or {}
+    if engine.state_key(record) != "development.waiting_ci" \
+            or op["revision"] != record["revision"] \
+            or target.get("repository") != fork.get("name") \
+            or target.get("repository_id") != fork.get("repository_id") \
+            or target.get("expected_head") != fork.get("head_sha") \
+            or target.get("base_sha") != record["upstream"].get("base_sha") \
+            or (op["kind"] == "dev_pr_create") != (fork.get("pr_number") is None):
+        return "the operation no longer matches the record"
+    return None
+
+
+def _close_development_pr(c: dict, operation: dict, why: str, by_id: dict, operations: dict,
+                          res: TickResult, now: str) -> dict:
+    """Close a planned development PR operation as failed and release the
+    record's reference to it; no row is fired. Returns the record."""
+    closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
+    operations[closed["operation_id"]] = closed
+    released = recovery.release(c, closed, now)
+    by_id[c["contribution_id"]] = released
+    res.stage("operations", closed)
+    if released is not c:
+        res.stage("contributions", released)
+    res.report.setdefault("development_pr_closures", []).append(
+        {"operation_id": closed["operation_id"], "contribution_id": c["contribution_id"],
+         "closed": why})
+    return released
+
+
+def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: dict,
+                           inputs: Inputs, res: TickResult, now: str, policy: dict) -> bool:
+    """Launch the planned development PR operation of a record in
+    `development.waiting_ci` by the table: `launch_development_pr`, which
+    charges `operation_launch` (counted on the operation), or, once that
+    budget is exhausted, `exhaust_development_pr_launches`, which closes the
+    operation as failed and releases it. A launched operation whose run is
+    still listed in flight, or whose run list was not read, is held for at
+    most `DEV_PR_RUN_SECONDS` after its last launch. Returns whether a
+    launch was requested."""
+    cid, oid = c["contribution_id"], operation["operation_id"]
+    if engine.state_key(c) != "development.waiting_ci":
+        return False  # no other state has a row that launches it
+    counts = recovery.launch_count(operation)
+    attempts = recovery.launch_attempts(operation)
+    open_ops = recovery.open_operations(cid, {**operations, oid: operation}, oid)
+    facts = {"development_pr_operation_planned"}
+    rep = res.report
+    if attempts:
+        runs = inputs.development_pr_runs
+        run = None if runs is None else runs.get(oid)
+        age = (inputs.now - datetime.fromisoformat(operation["updated_at"])).total_seconds()
+        if (runs is None or run is not None) and age < DEV_PR_RUN_SECONDS:
+            why = ("development PR run status not observed" if runs is None
+                   else f"development PR run {run} is still in flight")
+            rep.setdefault("deferred", []).append(
+                {"contribution": cid, "operation": oid, "why": why})
+            return False
+    why = engine.refusal(c, "launch_development_pr", policy=policy, now=now, facts=facts,
+                         counts=counts, open_operations=open_ops)
+    if why is None:
+        out = engine.apply_transition(c, "launch_development_pr", policy=policy, now=now,
+                                      cause_id=oid, facts=facts, counts=counts,
+                                      open_operations=open_ops,
+                                      details={"operation": oid, "kind": operation["kind"],
+                                               "attempt": attempts + 1})
+        if out.charged != ("operation_launch",):
+            raise lifecycle.TransitionError(f"launch_development_pr charged {out.charged}")
+        launched = recovery.charge_launch(operation, now)
+        operations[oid] = launched
+        by_id[cid] = out.record
+        res.stage("operations", launched)
+        res.stage("contributions", out.record)
+        res.stage("events", out.event)
+        rep["dev_pr_requests"].append({
+            "operation_id": oid, "contribution_id": cid, "kind": operation["kind"],
+            "attempt": attempts + 1})
+        return True
+    if not c.get("paused") and attempts >= lifecycle.budget_limit("operation_launch", policy):
+        out = engine.apply_transition(
+            c, "exhaust_development_pr_launches", policy=policy, now=now, cause_id=oid,
+            facts=facts, counts=counts, open_operations=open_ops,
+            values={"pending_human_action": DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
+                    lifecycle.PENDING_COUNTER: "operation_launch"},
+            details={"operation": oid, "kind": operation["kind"], "launches": attempts})
+        if not out.accepted:
+            raise lifecycle.TransitionError(
+                f"exhaust_development_pr_launches refused: {out.reason}")
+        closed = recovery.fold_failure_receipt(operation, external_ids={}, now=now)
+        operations[oid] = closed
+        released = recovery.release(out.record, closed, now)
+        by_id[cid] = released
+        res.stage("operations", closed)
+        res.stage("contributions", released)
+        res.stage("events", out.event)
+        rep.setdefault("alerts", []).append(
+            {"contribution": cid, "operation": oid,
+             "alert": f"{operation['kind']} operation_launch is spent without a receipt"})
+        return False
+    rep.setdefault("deferred", []).append({"contribution": cid, "why": why})
+    return False
 
 
 def _spent_rerun(record: dict, op: dict, attempts: int, waited: bool, policy: dict,

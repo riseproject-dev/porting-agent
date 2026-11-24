@@ -735,6 +735,12 @@ class TestFiresBindings(unittest.TestCase):
                     self.assertEqual(edge.transition.trigger, lc.Trigger.OPERATION)
                     self.assertIn(verb, engine.PIPELINE_VERBS)
 
+    def test_the_development_pr_operation_fires_only_its_confirmation(self):
+        for kind in ("dev_pr_create", "dev_pr_update"):
+            self.assertEqual(recovery.FIRES[("development.waiting_ci", kind)],
+                             {"confirmed": ("confirm_development_pr",)})
+            self.assertNotIn(("dev_pr_create", "confirmed"), controller.RESOLUTION_FIRES)
+
 
 # --------------------------------------------------------------------------
 # The fence of an open operation and resolve-operation
@@ -824,6 +830,20 @@ class TestResolveOperation(unittest.TestCase):
         released = staged(result, "contributions")[0]
         self.assertEqual(engine.state_key(released), "provisioning.idle")
         self.assertIsNone(released["active_operation_id"])
+
+    def test_a_resolved_development_pr_operation_only_closes_and_releases(self):
+        for disposition, status in (("confirmed", "confirmed"), ("failed", "failed")):
+            with self.subTest(disposition=disposition):
+                op = operation("planned", kind="dev_pr_create")
+                rec = contribution(activity="waiting_ci", active_operation_id=op["operation_id"])
+                result, receipt = self.run_resolve(rec, op, disposition=disposition)
+                self.assertEqual(receipt["result"], "accepted", receipt)
+                self.assertEqual(staged(result, "events"), [])
+                self.assertEqual(staged(result, "operations")[0]["status"], status)
+                released = staged(result, "contributions")[0]
+                self.assertEqual((engine.state_key(released), released["active_operation_id"],
+                                  released["fork"]["pr_number"]),
+                                 ("development.waiting_ci", None, rec["fork"]["pr_number"]))
 
 
 if __name__ == "__main__":
