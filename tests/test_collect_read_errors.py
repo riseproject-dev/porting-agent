@@ -13,7 +13,8 @@ import http.client
 import json
 import ssl
 import unittest
-import urllib.error
+
+import requests
 
 import collect
 import isolation
@@ -22,15 +23,22 @@ URL = "/repos/riseproject-upstreaming/proj/branches/riscv64"
 
 
 class Response:
-    """A response whose ``read`` returns ``body`` or raises ``error``."""
+    """A response whose body is ``body``, or whose reading raises ``error``."""
 
-    def __init__(self, body=b"", error=None, headers=None):
+    def __init__(self, body=b"", error=None, headers=None, status=200):
         self.body, self.error, self.headers = body, error, headers or {}
+        self.status_code = status
 
-    def read(self, _limit=None):
+    @property
+    def content(self):
         if self.error is not None:
             raise self.error
         return self.body
+
+    def iter_content(self, size):
+        data = self.content
+        for start in range(0, len(data), size):
+            yield data[start:start + size]
 
     def __enter__(self):
         return self
@@ -39,16 +47,28 @@ class Response:
         return False
 
 
-def opener(*, at_open=None, at_read=None, body=b"{}"):
-    def open_(_req, timeout=None):
+class Session:
+    """The transport of ``collect.Api``: ``respond(url, **kwargs)`` returns the
+    response of a GET."""
+
+    def __init__(self, respond):
+        self.respond = respond
+
+    def get(self, url, **kwargs):
+        kwargs.pop("allow_redirects", None)
+        return self.respond(url, **kwargs)
+
+
+def opener(*, at_open=None, at_read=None, body=b"{}", status=200):
+    def respond(_url, **_kwargs):
         if at_open is not None:
             raise at_open
-        return Response(body=body, error=at_read)
-    return open_
+        return Response(body=body, error=at_read, status=status)
+    return Session(respond)
 
 
 def api(**kwargs):
-    return collect.Api(token="", opener=opener(**kwargs))
+    return collect.Api(token="", session=opener(**kwargs))
 
 
 # One instance of every error class a read can raise besides HTTPError.
@@ -64,8 +84,11 @@ AT_READ = {
     "OSError": OSError(5, "Input/output error"),
 }
 AT_OPEN = dict(AT_READ, **{
-    "URLError": urllib.error.URLError("[Errno -3] Temporary failure in name resolution"),
-    "URLError(ssl)": urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed")),
+    "ConnectionError": requests.ConnectionError("[Errno -3] Temporary failure in name resolution"),
+    "ConnectTimeout": requests.ConnectTimeout("connect timed out"),
+    "SSLError(requests)": requests.exceptions.SSLError(ssl.SSLCertVerificationError(1, "certificate verify failed")),
+    "ChunkedEncodingError": requests.exceptions.ChunkedEncodingError(http.client.IncompleteRead(b"{", 9)),
+    "TooManyRedirects": requests.exceptions.TooManyRedirects("Exceeded 30 redirects."),
     "ConnectionRefusedError": ConnectionRefusedError(111, "Connection refused"),
 })
 BODIES = {
@@ -110,9 +133,13 @@ class TestReadFailuresAreCollectErrors(unittest.TestCase):
                     self.assertNotIn("Unicorn", str(raised))
 
     def test_http_errors_keep_their_status(self):
-        error = urllib.error.HTTPError(URL, 502, "Bad Gateway", {}, None)
-        raised = self.assert_collect_error(lambda: api(at_open=error).get(URL))
-        self.assertIn("HTTP 502", str(raised))
+        for method in ("get", "get_bytes", "paginate"):
+            with self.subTest(method=method):
+                raised = self.assert_collect_error(lambda: getattr(api(status=502), method)(URL))
+                self.assertIn("HTTP 502", str(raised))
+                self.assertEqual(raised.status, 502)
+        # An answer that is not a success, such as a 304 nothing can reuse, is an error too.
+        self.assertEqual(self.assert_collect_error(lambda: api(status=304).get(URL)).status, 304)
 
     def test_a_long_message_is_bounded(self):
         error = OSError("x" * 5000 + "\nsecond line")

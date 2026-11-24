@@ -6,8 +6,9 @@ Every network call here is a GET. Nothing writes. Results are normalized
 for ``controller.tick`` and ``ci_evidence``.
 
 ``Api`` wraps the GitHub REST API with the token in ``GH_TOKEN``/
-``GITHUB_TOKEN`` (urllib, no third-party client), handles pagination and
-refuses anything but a GET.
+``GITHUB_TOKEN`` (``requests``), handles pagination and refuses anything but
+a GET. When ``PORTING_HTTP_CACHE`` names a file, reads go through an HTTP
+cache that is always revalidated (see ``http_cache_path``).
 """
 
 from __future__ import annotations
@@ -16,12 +17,16 @@ import http.client
 import json
 import os
 import re
-import urllib.error
+import sqlite3
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable
+
+import requests
+import requests_cache
 
 import ci_evidence
 import commands
@@ -70,50 +75,249 @@ def _transport_error(url: str, error: BaseException) -> CollectError:
                         else f"GET {url}: {type(error).__name__}")
 
 
-class _ArtifactRedirect(urllib.request.HTTPRedirectHandler):
-    """Follow GitHub's artifact redirect without leaking its bearer token."""
+# --------------------------------------------------------------------------
+# Transport
+
+# The environment variable that names the HTTP cache file of the reads. Unset,
+# nothing is cached and no file is created.
+HTTP_CACHE_ENV = "PORTING_HTTP_CACHE"
+# Entries older than this are dropped when the cache is opened, and a file
+# larger than the size bound is emptied: the cache is only an optimization.
+HTTP_CACHE_MAX_AGE = timedelta(days=7)
+HTTP_CACHE_MAX_BYTES = 64 * 1024 * 1024
+# Never part of a cache key and never stored in a cached request.
+_SECRET_PARAMETERS = ("Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
+                      "X-API-Key", "X-Auth-Token", "X-API-Token", "X-Access-Token",
+                      "access_token", "api_key", "apikey")
+
+
+def _checked_redirect(old_url: str, new_url: str, headers) -> None:
+    """The rule for a redirect: staying on the origin keeps the request; a
+    cross-origin redirect is followed only to blob storage over https, and
+    drops ``Authorization``."""
+    old = urllib.parse.urlsplit(old_url)
+    new = urllib.parse.urlsplit(new_url)
+    if (old.scheme, old.netloc) != (new.scheme, new.netloc):
+        host = (new.hostname or "").lower()
+        if new.scheme != "https" or not (host.endswith(".blob.core.windows.net") or
+                                           host.endswith(".githubusercontent.com")):
+            raise CollectError("refusing artifact redirect to an unexpected origin")
+        headers.pop("Authorization", None)
+
+
+class _ArtifactRedirect:
+    """Follow GitHub's artifact redirect without leaking its bearer token.
+    ``requests`` calls ``rebuild_auth`` for every redirect it follows; it also
+    would re-read ``~/.netrc`` there, which is never wanted."""
+
+    def rebuild_auth(self, prepared_request, response):
+        _checked_redirect(response.request.url, prepared_request.url, prepared_request.headers)
+
+
+class _Session(_ArtifactRedirect, requests.Session):
+    def __init__(self):
+        super().__init__()
+        # No ``~/.netrc`` credentials: the token is the only credential.
+        self.auth = lambda request: request
+
+
+class _CachedSession(_ArtifactRedirect, requests_cache.CachedSession):
+    pass
+
+
+def http_cache_path() -> str | None:
+    """The file of the HTTP cache of the reads, from ``PORTING_HTTP_CACHE``,
+    or ``None`` when reads are not cached."""
+    return os.environ.get(HTTP_CACHE_ENV) or None
+
+
+def _storable(response) -> bool:
+    """Only a response that came straight from its request is stored: one that
+    followed a redirect holds the request headers of every hop in its history,
+    where a credential is not redacted."""
+    return not response.history and not response.is_redirect
+
+
+def _usable_row(response, now: datetime) -> bool:
+    """A stored response is trusted only when it holds a validator and a
+    recorded expiry that is already past: such a row is revalidated, never
+    served as it is."""
+    return bool(response.headers.get("ETag") or response.headers.get("Last-Modified")) \
+        and response.expires is not None and response.expires <= now
+
+
+def _prune(session: requests.Session) -> None:
+    """Drop what is too old, what cannot be read or revalidated, and the
+    redirect aliases, so that nothing restored from a file is ever served
+    without the server being asked."""
+    cache = session.cache
+    now = datetime.now(timezone.utc)
+    for key in list(cache.responses.keys()):
+        try:
+            response = cache.responses[key]
+            keep = _usable_row(response, now) and now - response.created_at <= HTTP_CACHE_MAX_AGE
+        except Exception:  # an entry of any other shape is dropped
+            keep = False
+        if not keep:
+            del cache.responses[key]
+    cache.redirects.clear()
+    cache.responses.vacuum()
+
+
+def _cached_session(path: str) -> requests.Session:
+    """A session whose GETs are cached in the SQLite file ``path``.
+
+    Every request is revalidated: nothing is served without asking the
+    server. ``expire_after=0`` makes every stored response stale, so a
+    request is sent with ``If-None-Match``/``If-Modified-Since`` taken from
+    the stored ``ETag``/``Last-Modified`` and a 304 reuses the stored body;
+    a response without a validator is not stored and is simply fetched again.
+    ``always_revalidate`` states the same for the entries that are stored,
+    ``cache_control`` is off so that no ``max-age`` of a response ever keeps
+    one fresh, and ``stale_if_error`` is off so that a failed request is never
+    answered from the cache. Only successful GETs that followed no redirect
+    are stored; credentials are ignored in keys and redacted from what is
+    stored; entries are JSON, never pickles. The file comes from the previous
+    controller run, so it is checked when it is opened (``_prune``)."""
+    file = Path(path)
+
+    def open_session() -> requests.Session:
+        return _CachedSession(
+            str(file), backend="sqlite", serializer="json", use_cache_dir=False,
+            expire_after=0, always_revalidate=True, cache_control=False, stale_if_error=False,
+            allowable_methods=("GET",), allowable_codes=(200,), filter_fn=_storable,
+            ignored_parameters=_SECRET_PARAMETERS)
+    for attempt in (0, 1):
+        session = None
+        try:
+            if file.exists() and file.stat().st_size > HTTP_CACHE_MAX_BYTES:
+                file.unlink()
+            session = open_session()
+            session.auth = lambda request: request
+            _prune(session)
+            return session
+        except Exception:  # whatever is wrong with the file: it is dropped, once
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            if attempt:
+                raise
+            for name in (file, Path(f"{file}-journal")):
+                name.unlink(missing_ok=True)
+    raise AssertionError("unreachable")
+
+
+_CACHED_SESSIONS: dict[str, requests.Session] = {}
+_CACHE_DISABLED = False
+
+
+def _disable_cache() -> None:
+    """Stop caching for the rest of the process after the cache failed."""
+    global _CACHE_DISABLED
+    _CACHE_DISABLED = True
+    for session in _CACHED_SESSIONS.values():
+        try:
+            session.close()
+        except Exception:
+            pass
+    _CACHED_SESSIONS.clear()
+
+
+def _read_session(cache: bool | None = None) -> requests.Session:
+    """The session of a read: cached when ``PORTING_HTTP_CACHE`` is set,
+    unless ``cache`` is false (the clients that write never cache) or the
+    cache failed earlier in this process."""
+    path = http_cache_path() if cache is not False and not _CACHE_DISABLED else None
+    if not path:
+        return _Session()
+    if path not in _CACHED_SESSIONS:
+        try:
+            _CACHED_SESSIONS[path] = _cached_session(path)
+        except Exception:  # the cache never fails a run
+            _disable_cache()
+            return _Session()
+    return _CACHED_SESSIONS[path]
+
+
+def _guarded(session, call):
+    """``call(session)``, with the read session when ``session`` is None. A
+    failure of the cache itself (``sqlite3.Error``: locked, full, read-only)
+    disables it for the rest of the process and repeats the read uncached."""
+    used = session or _read_session()
+    try:
+        return call(used)
+    except sqlite3.Error:
+        if session is not None or not isinstance(used, _CachedSession):
+            raise
+        _disable_cache()
+        return call(_Session())
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The transport of the write clients follows no redirect."""
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        old = urllib.parse.urlsplit(req.full_url)
-        new = urllib.parse.urlsplit(newurl)
-        if (old.scheme, old.netloc) != (new.scheme, new.netloc):
-            host = (new.hostname or "").lower()
-            if new.scheme != "https" or not (host.endswith(".blob.core.windows.net") or
-                                               host.endswith(".githubusercontent.com")):
-                raise CollectError("refusing artifact redirect to an unexpected origin")
-            redirected.remove_header("Authorization")
-        return redirected
+        return None
 
 
 class Api:
-    def __init__(self, token: str | None = None, base: str = API, opener=None):
+    """The GitHub REST API. Reads (``get``, ``paginate``, ``get_bytes``) go
+    through ``requests``; ``session`` replaces its transport (tests). The
+    write clients that subclass it send their writes with ``opener`` (a
+    urllib transport that follows no redirect) and read without the HTTP
+    cache (``cache=False``)."""
+
+    def __init__(self, token: str | None = None, base: str = API, opener=None, *,
+                 session=None, cache: bool | None = None, follow_redirects: bool = True):
         self.token = token if token is not None else (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
         self.base = base
-        self._open = opener or urllib.request.build_opener(_ArtifactRedirect()).open
+        self._open = opener or urllib.request.build_opener(_NoRedirect).open
+        # A response of a cached read is a stored one; downloads are never cached.
+        self._session = session or _read_session(cache)
+        self._downloads = session or _Session()
+        self._follow = follow_redirects
+
+    def _redirected(self, url: str, status: int) -> Exception:
+        """What a redirect answer is when the client follows none."""
+        return CollectError(f"GET {url}: HTTP {status}", status=status)
+
+    def _headers(self, accept: str, *extra: tuple[str, str]) -> dict:
+        return {"Accept": accept, "User-Agent": "riseproject-porting-agent", **dict(extra),
+                **({"Authorization": f"Bearer {self.token}"} if self.token else {})}
 
     def _request(self, url: str) -> tuple[Any, dict]:
-        req = urllib.request.Request(url, method="GET", headers={
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "riseproject-porting-agent",
-            **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
-        })
+        headers = self._headers("application/vnd.github+json",
+                                ("X-GitHub-Api-Version", "2022-11-28"))
         # Every failure to read the response, including a body that is cut
         # off or is not JSON, is a ``CollectError``: the collector could not
         # read GitHub. Only the transport and the decoding of the body are
         # converted; what the caller does with a well-formed response is not.
+        def read(session):
+            with session.get(url, headers=headers, timeout=30, allow_redirects=self._follow) as r:
+                if 300 <= r.status_code < 400 and not self._follow:
+                    raise self._redirected(url, r.status_code)
+                if not 200 <= r.status_code < 300:
+                    raise CollectError(f"GET {url}: HTTP {r.status_code}", status=r.status_code)
+                return r.content, dict(r.headers)
         try:
-            with self._open(req, timeout=30) as r:
-                body = r.read()
-                headers = dict(r.headers)
-        except urllib.error.HTTPError as e:
-            raise CollectError(f"GET {url}: HTTP {e.code}", status=e.code) from None
+            try:
+                body, response_headers = read(self._session)
+            except sqlite3.Error:
+                if not isinstance(self._session, _CachedSession):
+                    raise
+                _disable_cache()
+                self._session = _Session()
+                body, response_headers = read(self._session)
+        except CollectError:
+            raise
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(url, e) from e
         if not body:
-            return None, headers
+            return None, response_headers
         try:
-            return json.loads(body), headers
+            return json.loads(body), response_headers
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             raise CollectError(f"GET {url}: response body is not JSON: {type(e).__name__}") from None
 
@@ -123,18 +327,24 @@ class Api:
         return self._request(self.base + path)[0]
 
     def get_bytes(self, path: str, *, max_bytes: int = 8 * 1024 * 1024) -> bytes:
-        """GET a binary resource (e.g. an artifact zip). The API redirects to
-        blob storage; urllib follows it and drops Authorization cross-host."""
+        """GET a binary resource (e.g. an artifact zip), never cached. The API
+        redirects to blob storage; the redirect is followed only to an
+        allowed origin and drops Authorization cross-origin."""
         if not _PATH_RE.match(path) or ".." in path:
             raise CollectError(f"refusing unexpected API path {path!r}")
-        req = urllib.request.Request(self.base + path, method="GET", headers={
-            "Accept": "application/vnd.github+json", "User-Agent": "riseproject-porting-agent",
-            **({"Authorization": f"Bearer {self.token}"} if self.token else {})})
+        headers = self._headers("application/vnd.github+json")
         try:
-            with self._open(req, timeout=60) as r:
-                data = r.read(max_bytes + 1)
-        except urllib.error.HTTPError as e:
-            raise CollectError(f"GET {path}: HTTP {e.code}", status=e.code) from None
+            with self._downloads.get(self.base + path, headers=headers, timeout=60,
+                                     stream=True) as r:
+                if not 200 <= r.status_code < 300:
+                    raise CollectError(f"GET {path}: HTTP {r.status_code}", status=r.status_code)
+                data = b""
+                for chunk in r.iter_content(64 * 1024):
+                    data += chunk
+                    if len(data) > max_bytes:
+                        break
+        except CollectError:
+            raise
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(path, e) from e
         if len(data) > max_bytes:
@@ -1207,29 +1417,45 @@ def evaluate_snapshot(snap: CiSnapshot, *, required_job_patterns: list[str], exp
 # Other sources
 
 
-def pypi_release(distribution: str, opener=None) -> dict:
+def pypi_release(distribution: str, session=None) -> dict:
+    """The PyPI JSON document of ``distribution``. A failed read is a
+    ``CollectError`` (with ``status`` for an HTTP error)."""
     if not re.fullmatch(r"[A-Za-z0-9._-]+", distribution):
         raise CollectError("invalid distribution name")
-    with (opener or urllib.request.urlopen)(f"https://pypi.org/pypi/{distribution}/json", timeout=30) as r:
-        return json.load(r)
+    url = f"https://pypi.org/pypi/{distribution}/json"
 
-
-def pypi_project(distribution: str, opener=None) -> dict | None:
-    """The PyPI JSON document of ``distribution``, or ``None`` when PyPI has
-    no such project. Any other failure is a collector failure."""
+    def read(used):
+        with used.get(url, timeout=30) as r:
+            if not 200 <= r.status_code < 300:
+                raise CollectError(f"PyPI {distribution}: HTTP {r.status_code}", status=r.status_code)
+            return json.loads(r.content)
     try:
-        return pypi_release(distribution, opener=opener)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise CollectError(f"PyPI {distribution}: HTTP {e.code}") from e
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        return _guarded(session, read)
+    except CollectError:
+        raise
+    except (*_TRANSPORT_ERRORS, ValueError) as e:
         raise CollectError(f"PyPI {distribution}: {e}") from e
 
 
-def usage(url: str, opener=None) -> tuple[Any, datetime]:
-    with (opener or urllib.request.urlopen)(url, timeout=30) as r:
-        return json.load(r), datetime.now(timezone.utc)
+def pypi_project(distribution: str, session=None) -> dict | None:
+    """The PyPI JSON document of ``distribution``, or ``None`` when PyPI has
+    no such project. Any other failure is a collector failure."""
+    try:
+        return pypi_release(distribution, session=session)
+    except CollectError as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def usage(url: str, session=None) -> tuple[Any, datetime]:
+    """A live reading, never cached."""
+    try:
+        with (session or _Session()).get(url, timeout=30) as r:
+            r.raise_for_status()
+            return json.loads(r.content), datetime.now(timezone.utc)
+    except requests.RequestException as e:
+        raise CollectError(f"usage {url}: {e}") from e
 
 
 def ecosystem_report(api: Api, project: str) -> str | None:

@@ -263,17 +263,18 @@ class TestTrustAndReading(unittest.TestCase):
             if n > 1:
                 parts.append(f'<{base}/x?per_page=100&page={n - 1}>; rel="prev"')
             return ", ".join(parts)
+        from tests.test_collect_read_errors import Session
         opened = []
 
-        def open_(req, timeout=None):
+        def open_(req, headers=None, timeout=None):
             import re
 
             from tests.test_collect_read_errors import Response
-            found = re.search(r"[?&]page=([0-9]+)", req.full_url)
+            found = re.search(r"[?&]page=([0-9]+)", req)
             n = int(found.group(1)) if found else 1
             opened.append(n)
             return Response(body=json.dumps(pages[n]).encode(), headers={"Link": link(n)})
-        api = collect.Api(token="", opener=open_)
+        api = collect.Api(token="", session=Session(open_))
         items = api.paginate("/x?per_page=100", max_pages=5, newest=True)
         self.assertEqual(opened, [1, 8, 7, 6, 5, 4])
         self.assertEqual([i["id"] for i in items], [i["id"] for n in range(4, 9) for i in pages[n]])
@@ -288,18 +289,18 @@ class TestTrustAndReading(unittest.TestCase):
         read forwards, keeping its newest pages and flagging the rest; one
         longer than ``NEWEST_SCAN_PAGES`` is a failed read, never its oldest
         pages."""
-        from tests.test_collect_read_errors import Response
+        from tests.test_collect_read_errors import Response, Session
         base = "https://api.github.com"
 
         def api_of(total):
-            def open_(req, timeout=None):
+            def open_(req, headers=None, timeout=None):
                 import re
-                found = re.search(r"[?&]page=([0-9]+)", req.full_url)
+                found = re.search(r"[?&]page=([0-9]+)", req)
                 n = int(found.group(1)) if found else 1
                 link = (f'<{base}/x?per_page=100&page={n + 1}>; rel="next"'
                         if n < total else "")
                 return Response(body=json.dumps([{"id": n}]).encode(), headers={"Link": link})
-            return collect.Api(token="", opener=open_)
+            return collect.Api(token="", session=Session(open_))
         report: dict = {}
         items = api_of(8).paginate("/x?per_page=100", max_pages=5, newest=True, report=report)
         self.assertEqual(([i["id"] for i in items], report["truncated"]), ([4, 5, 6, 7, 8], True))
@@ -317,15 +318,14 @@ class TestTrustAndReading(unittest.TestCase):
         ``CollectError``, which defers the history), never a crash that
         pauses the contribution; a well-formed body of another shape stays
         a processing error (``test_collect_read_errors``)."""
-        from tests.test_collect_read_errors import Response
+        from tests.test_collect_read_errors import Response, Session
         for key, newest in ((None, True), (None, False), ("check_runs", False)):
             with self.subTest(key=key, newest=newest):
-                api = collect.Api(token="", opener=lambda req, timeout=None:
-                                  Response(body=b"", headers={}))
+                api = collect.Api(token="", session=Session(lambda url, **_k:
+                                  Response(body=b"", headers={})))
                 with self.assertRaisesRegex(collect.CollectError, "body is empty"):
                     api.paginate("/x?per_page=100", key=key, newest=newest)
-        api = collect.Api(token="", opener=lambda req, timeout=None: Response(body=b"",
-                                                                              headers={}))
+        api = collect.Api(token="", session=Session(lambda *_a, **_k: Response(body=b"", headers={})))
         with self.assertRaises(collect.CollectError):
             collect.steering(api, record(), [OWNER["id"]], issue=None)
 
@@ -335,7 +335,7 @@ class TestTrustAndReading(unittest.TestCase):
         in full is not."""
         import re
 
-        from tests.test_collect_read_errors import Response
+        from tests.test_collect_read_errors import Response, Session
         rec = record()
         path = f"/repos/{CONTROL_REPO}/issues/{rec['tracking_issue']['number']}/comments"
         base = "https://api.github.com"
@@ -344,10 +344,10 @@ class TestTrustAndReading(unittest.TestCase):
             comments = [comment(i, OWNER, f"c{i}") for i in range(total)]
             pages = max(1, -(-total // 100))
 
-            def open_(req, timeout=None, comments=comments, pages=pages):
-                found = re.search(r"[?&]page=([0-9]+)", req.full_url)
+            def open_(req, headers=None, timeout=None, comments=comments, pages=pages):
+                found = re.search(r"[?&]page=([0-9]+)", req)
                 n = int(found.group(1)) if found else 1
-                url = re.sub(r"[?&]page=[0-9]+", "", req.full_url)
+                url = re.sub(r"[?&]page=[0-9]+", "", req)
                 if url.startswith(base + path):
                     body, links = comments[(n - 1) * 100:n * 100], []
                     if n < pages:
@@ -359,7 +359,7 @@ class TestTrustAndReading(unittest.TestCase):
                     body, links = [], []
                 return Response(body=json.dumps(body).encode(),
                                 headers={"Link": ", ".join(links)})
-            out = collect.steering(collect.Api(token="", opener=open_), rec, [OWNER["id"]],
+            out = collect.steering(collect.Api(token="", session=Session(open_)), rec, [OWNER["id"]],
                                    issue=None)
             ids = [i["id"] for i in out["items"]]
             self.assertEqual((len(ids), max(ids)), (read, total - 1), total)

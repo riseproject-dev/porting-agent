@@ -140,6 +140,12 @@ jobs:
       - name: Is the policy read-only?
         id: policy
         run: echo "read_only=$(jq -r .read_only policy.json)" >> "$GITHUB_OUTPUT"
+      # The HTTP cache of the reads (docs/state-machine/engine.md, "HTTP
+      # cache") comes from the artifact of the previous Controller run on main.
+      - name: Restore the HTTP cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --locked python scripts/restore_http_cache.py porting-http-cache "$RUNNER_TEMP/porting-http-cache"
       - name: Collect verified planner, worker, reviewer, and publish-only retry outcomes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -350,6 +356,7 @@ jobs:
       - name: Reconcile deterministic state locally
         env:
           GH_TOKEN: ${{ github.token }}
+          PORTING_HTTP_CACHE: ${{ runner.temp }}/porting-http-cache/http-cache.sqlite
           # The retention of the worker's publication artifact, as its
           # generated lock sets it, for the expiry of a submission rewrite.
           UPSTREAMING_ARTIFACT_RETENTION_DAYS: ${{ vars.GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS || '30' }}
@@ -370,6 +377,13 @@ jobs:
             cat report.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # Uploaded only when the step succeeded: a failed run hands on no file.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: porting-http-cache
+          path: ${{ runner.temp }}/porting-http-cache/http-cache.sqlite
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Mint a control-repository token for the state commit
         id: state-token
         if: steps.policy.outputs.read_only == 'false'

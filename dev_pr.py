@@ -105,6 +105,10 @@ def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
 
 
 class Api(collect.Api):
+    def __init__(self, *args, **kwargs):
+        # A client that writes never reads through the HTTP cache.
+        super().__init__(*args, **{**kwargs, "cache": False})
+
     def mutate(self, method: str, path: str, value: dict) -> dict:
         create = method == "POST" and path.endswith("/pulls")
         update = method == "PATCH" and re.search(r"/pulls/[0-9]+$", path)

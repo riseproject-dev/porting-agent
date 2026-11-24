@@ -2,32 +2,44 @@
 # SPDX-License-Identifier: MIT
 """Artifact redirects drop credentials and reject unexpected origins."""
 import unittest
-import urllib.request
-from email.message import Message
+
+import requests
 
 import collect
 
 
 class TestArtifactRedirect(unittest.TestCase):
-    def request(self):
-        return urllib.request.Request("https://api.github.com/repos/o/r/actions/artifacts/1/zip",
-                                      headers={"Authorization": "Bearer secret"})
+    """``requests`` calls ``rebuild_auth`` for each redirect it follows."""
+
+    def follow(self, location):
+        request = requests.Request("GET", "https://api.github.com/repos/o/r/actions/artifacts/1/zip",
+                                   headers={"Authorization": "Bearer secret"}).prepare()
+        response = requests.Response()
+        response.request = request
+        redirected = requests.Request("GET", location, headers=dict(request.headers)).prepare()
+        collect._Session().rebuild_auth(redirected, response)
+        return redirected
 
     def test_cross_origin_blob_redirect_drops_authorization(self):
-        redirected = collect._ArtifactRedirect().redirect_request(
-            self.request(), None, 302, "Found", Message(),
-            "https://productionresults.blob.core.windows.net/actions-results/file.zip?sig=x")
-        self.assertIsNone(redirected.get_header("Authorization"))
+        for location in ("https://productionresults.blob.core.windows.net/actions-results/file.zip?sig=x",
+                         "https://objects.githubusercontent.com/file.zip"):
+            with self.subTest(location=location):
+                self.assertNotIn("Authorization", self.follow(location).headers)
 
     def test_unexpected_cross_origin_is_rejected(self):
-        with self.assertRaises(collect.CollectError):
-            collect._ArtifactRedirect().redirect_request(
-                self.request(), None, 302, "Found", Message(), "https://example.com/file.zip")
+        for location in ("https://example.com/file.zip",
+                         "http://productionresults.blob.core.windows.net/file.zip",
+                         "https://blob.core.windows.net.evil.example/file.zip"):
+            with self.subTest(location=location), self.assertRaises(collect.CollectError):
+                self.follow(location)
 
     def test_same_origin_keeps_authorization(self):
-        redirected = collect._ArtifactRedirect().redirect_request(
-            self.request(), None, 302, "Found", Message(), "https://api.github.com/next")
-        self.assertEqual(redirected.get_header("Authorization"), "Bearer secret")
+        self.assertEqual(self.follow("https://api.github.com/next").headers["Authorization"],
+                         "Bearer secret")
+
+    def test_both_sessions_guard_their_redirects(self):
+        self.assertIs(collect._CachedSession.rebuild_auth, collect._ArtifactRedirect.rebuild_auth)
+        self.assertIs(collect._Session.rebuild_auth, collect._ArtifactRedirect.rebuild_auth)
 
 
 class TestRenamedBranch(unittest.TestCase):

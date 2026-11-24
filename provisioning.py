@@ -59,7 +59,11 @@ class WriteApi(collect.Api):
     def __init__(self, token: str):
         if not token:
             raise ProvisionError("explicit scoped provisioning token required")
-        super().__init__(token=token, opener=urllib.request.build_opener(NoRedirect).open)
+        super().__init__(token=token, opener=urllib.request.build_opener(NoRedirect).open,
+                         cache=False, follow_redirects=False)
+
+    def _redirected(self, url: str, status: int) -> Exception:
+        return ProvisionError("provisioning API redirect refused")
 
     def write(self, method: str, path: str, body: dict) -> dict:
         if method not in ("POST", "PUT") or not path.startswith("/repos/") or ".." in path:

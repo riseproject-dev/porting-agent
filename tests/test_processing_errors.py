@@ -53,7 +53,7 @@ from tests.helpers import (
     runner_loss,
     take,
 )
-from tests.test_collect_read_errors import Response
+from tests.test_collect_read_errors import Response, Session
 from tests.test_late_results import WORK, ci_snapshot, publication
 
 T = datetime.fromisoformat("2026-11-23T09:00:00+00:00")
@@ -684,8 +684,8 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
         read raises ``error`` or returns the raw ``body``."""
         head = self.HEAD
 
-        def open_(req, timeout=None):
-            url = req.full_url
+        def open_(req, headers=None, timeout=None):
+            url = req
             if failing and failing in url:
                 return Response(body=body or b"", error=error)
             if "/branches/" in url:
@@ -707,7 +707,7 @@ class TestTruncatedReadOnTheLiveHandoffRecord(unittest.TestCase):
 
     def run_tick(self, **failure):
         store, snapshot = reconcile.load_snapshot(self.root, POLICY)
-        api = collect.Api(token="", opener=self.opener(**failure))
+        api = collect.Api(token="", session=Session(self.opener(**failure)))
         with contextlib.redirect_stderr(io.StringIO()):
             output = reconcile.tick(api, snapshot, policy=POLICY, now=T, run_id="4242",
                                     publications=[], pressure=capacity.Pressure(ok=True),

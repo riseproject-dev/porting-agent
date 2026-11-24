@@ -172,7 +172,8 @@ class Api(collect.Api):
 
     def __init__(self, token: str | None = None, *, reader: collect.Api | None = None,
                  **kwargs: Any):
-        super().__init__(token=token, **kwargs)
+        # A client that writes never reads through the HTTP cache.
+        super().__init__(token=token, **{**kwargs, "cache": False})
         self.reader = reader
 
     def get(self, path: str) -> Any:
