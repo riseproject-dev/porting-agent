@@ -5,6 +5,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -803,6 +804,21 @@ def exec_or_write_entries(bash) -> list:
             if entry.replace(":*", "").split()[0] in EXEC_OR_WRITE_COMMANDS]
 
 
+def excluded_tools(args: list[str]) -> set[str]:
+    # Pi 1.5.0 (dist/cli/args.js) assigns, not appends, each --exclude-tools
+    # value: only the last flag counts.
+    value = ""
+    for i, arg in enumerate(args[:-1]):
+        if arg in ("--exclude-tools", "-xt"):
+            value = args[i + 1]
+    return {name.strip() for name in value.split(",") if name.strip()}
+
+
+def pi_command_args(run: str) -> list[str]:
+    command = re.search(r"\| pi (--print .*?) 2>&1", run).group(1)
+    return shlex.split(command.replace("'", "").replace('"', ""))
+
+
 class TestAgentToolPolicy(unittest.TestCase):
     """A sandboxed agent has no shell and no file writes."""
 
@@ -823,7 +839,14 @@ class TestAgentToolPolicy(unittest.TestCase):
                 # must be off, not narrowed.
                 self.assertIs(policy["bash"], False)
                 self.assertIs(policy["edit"], False)
-                self.assertIn("--exclude-tools bash --exclude-tools edit,write", run)
+                # Pi keeps only the last --exclude-tools: it must hold all
+                # three, for the agent and for its sub-agents, whose
+                # arguments the extension extends with no --exclude-tools.
+                self.assertLessEqual({"bash", "edit", "write"}, excluded_tools(pi_command_args(run)))
+                step = next(s for s in workflow(f"{name}.lock.yml")["jobs"]["agent"]["steps"]
+                            if s.get("name") == "Execute Pi CLI")
+                child = json.loads(step["env"]["GH_AW_PI_SUBAGENT_ARGS"])
+                self.assertLessEqual({"bash", "edit", "write"}, excluded_tools(child))
                 self.assertEqual(exec_or_write_entries(policy["bash"]), [])
         self.assertEqual(sandboxed, {"dispatcher"})
 
@@ -853,9 +876,56 @@ class TestAgentToolPolicy(unittest.TestCase):
             ".cache", ".config", ".local/bin", ".local/lib", ".local/lib64", ".local/share",
             ".local/pipx", ".azure", ".anthropic", ".claude", ".cargo", ".rustup", ".npm", ".nvm",
         ]))
-        for needle in ('sudo chown -R root:root -- "$HOME/$dir"', 'sudo chmod -R go-w -- "$HOME/$dir"',
-                       "! -user root -o -perm /022", "exit 1"):
+        for needle in ('sudo chown -RHh root:root -- "$HOME/$dir/"', 'sudo chmod -R go-w -- "$HOME/$dir/"',
+                       'find -H "$HOME/$dir/"', "! -user root -o -perm /022", "exit 1"):
             self.assertIn(needle, run)
+
+    def test_excluded_tools_reads_the_last_flag_as_pi_does(self):
+        self.assertEqual(excluded_tools(["--exclude-tools", "bash", "--exclude-tools", "edit,write"]),
+                         {"edit", "write"})
+        self.assertEqual(excluded_tools(["-xt", "edit", "--exclude-tools", "bash, edit,write"]),
+                         {"bash", "edit", "write"})
+        self.assertEqual(excluded_tools(["--print"]), set())
+
+    def harden(self, home: Path) -> subprocess.CompletedProcess:
+        step = next(s for s in workflow("dispatcher.lock.yml")["jobs"]["agent"]["steps"]
+                    if s.get("name") == "Make the home directories the sandbox mounts read-only to the agent")
+        shim = home.parent / "shim"
+        shim.mkdir()
+        (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
+        (shim / "sudo").chmod(0o755)
+        return subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True,
+                              env={**os.environ, "HOME": str(home), "PATH": f"{shim}:{os.environ['PATH']}"})
+
+    def test_a_listed_directory_that_is_a_link_fails_the_hardening(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # .cache comes first, so this fails before any chown, as root
+            # or not.
+            home, elsewhere = Path(tmp) / "home", Path(tmp) / "elsewhere"
+            home.mkdir()
+            elsewhere.mkdir()
+            (home / ".cache").symlink_to(elsewhere)
+            result = self.harden(home)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(".cache is a link", result.stderr)
+
+    @unittest.skipUnless(os.geteuid() == 0, "chown to root needs root")
+    def test_the_hardening_makes_the_listed_trees_root_owned_without_following_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, outside = Path(tmp) / "home", Path(tmp) / "outside"
+            (home / ".local/bin").mkdir(parents=True)
+            planted = home / ".local/bin/awf"
+            planted.write_text("#!/bin/sh\n")
+            os.chown(planted, 1001, 1001)
+            planted.chmod(0o777)
+            outside.write_text("")
+            os.chown(outside, 1001, 1001)
+            (home / ".cargo").mkdir()
+            (home / ".cargo/link").symlink_to(outside)
+            result = self.harden(home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((planted.stat().st_uid, planted.stat().st_mode & 0o777), (0, 0o755))
+            self.assertEqual(outside.stat().st_uid, 1001)
 
 class TestHistoryAndReports(unittest.TestCase):
     """Every Work reads its verified history first and returns its report."""

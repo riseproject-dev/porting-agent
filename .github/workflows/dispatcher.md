@@ -14,6 +14,13 @@ permissions:
 engine:
   id: pi
   version: "1.5.0"
+  # Pi 1.5.0 keeps only the last --exclude-tools value, and gh-aw passes
+  # `bash` and `edit,write` as two flags, so bash would stay registered.
+  # These args come last for the agent; the sub-agents' arguments, which
+  # gh-aw builds without engine.args, are set whole in the same way.
+  args: ["--exclude-tools", "bash,edit,write"]
+  env:
+    GH_AW_PI_SUBAGENT_ARGS: '["--print","--mode","json","--no-session","--no-approve","--exclude-tools","bash,edit,write"]'
 model: anthropic/claude-haiku-5-5
 network:
   allowed: []
@@ -118,21 +125,34 @@ steps:
 # ~/.local/bin first on PATH; ~/.cargo/bin and ~/.config/composer/vendor/bin
 # are on the runner's PATH too. A file planted there would run on the
 # runner after the agent: awf at its teardown and in "Print firewall logs",
-# and any command a later step finds on PATH. Owned by root, none of them
-# can be changed by the sandbox's user. The agent has no shell and no file
-# writes either (`bash: false`, `edit: false`); this keeps the host safe if
-# a tool that writes is ever given back. ~/.copilot is left as it is: the
-# MCP gateway writes it, nothing runs from it, and it is not on PATH.
+# and any command a later step finds on PATH. Owned by root, they cannot be
+# changed by the sandbox's user, with one exception: since the API proxy
+# holds ANTHROPIC_API_KEY, AWF's entrypoint makes ~/.claude mode 777 again
+# (and its settings.json 666) for Claude Code's key helper. That is benign:
+# ~/.claude is not on PATH and nothing on the runner runs from it. A listed
+# directory that is a link fails the step; inside the trees, chown changes
+# a link itself, not what it points to, and the final check follows none.
+# The agent has no shell and no file writes either (`bash: false`,
+# `edit: false`). This step covers only these home directories: if a tool
+# that writes were given back, the sandbox could still write /tmp/gh-aw
+# (checked after the agent below) and the workspace with its .git, where
+# gh-aw's "Configure Git credentials" step and the post step of the
+# checkout run git. ~/.copilot is left as it is: the MCP gateway writes it,
+# nothing runs from it, and it is not on PATH.
 pre-agent-steps:
   - name: Make the home directories the sandbox mounts read-only to the agent
     run: |
       set -euo pipefail
       for dir in .cache .config .local/bin .local/lib .local/lib64 .local/share \
         .local/pipx .azure .anthropic .claude .cargo .rustup .npm .nvm; do
+        if [ -L "$HOME/$dir" ]; then
+          echo "$HOME/$dir is a link" >&2
+          exit 1
+        fi
         mkdir -p -- "$HOME/$dir"
-        sudo chown -R root:root -- "$HOME/$dir"
-        sudo chmod -R go-w -- "$HOME/$dir"
-        if [ -n "$(find "$HOME/$dir" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
+        sudo chown -RHh root:root -- "$HOME/$dir/"
+        sudo chmod -R go-w -- "$HOME/$dir/"
+        if [ -L "$HOME/$dir" ] || [ -n "$(find -H "$HOME/$dir/" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
           echo "$HOME/$dir is still writable by the agent's user" >&2
           exit 1
         fi
@@ -143,9 +163,10 @@ pre-agent-steps:
 # back exactly the intents of the stage's output (none without a plan); it
 # drops and reports every other intent. It runs no command from PATH and
 # no git, loads no code from the workspace, and follows no link the agent
-# left. When it cannot run or fails, it plants a link out of /tmp/gh-aw,
-# which makes gh-aw's final recovery check fail, and that check gates
-# both agent artifact uploads, so nothing unchecked is uploaded.
+# left. When it cannot run or fails, it plants a link out of /tmp/gh-aw
+# under a random name, which makes gh-aw's final recovery check fail, and
+# that check gates both agent artifact uploads, so nothing unchecked is
+# uploaded; when no link can be planted, the step says so in its failure.
 post-steps:
   - name: Keep only the intents the trusted stage wrote
     if: always()
@@ -163,14 +184,28 @@ post-steps:
           enforce({ core, actionsDir: path.join(process.env.RUNNER_TEMP, "gh-aw/actions"),
                     trusted: process.env.TRUSTED_INTENTS, intentsPath, finishPath });
         } catch (error) {
-          const tripwire = "/tmp/gh-aw/work-queue.unchecked";
+          // gh-aw's final recovery check scans all of /tmp/gh-aw and fails on
+          // a link out of it. The name is random so the agent cannot have
+          // taken it first; the link is read back before it is relied on.
+          const { randomBytes } = require("node:crypto");
           try { fs.chmodSync("/tmp/gh-aw", 0o755); } catch {}
-          try { fs.rmSync(tripwire, { force: true, recursive: true }); } catch {}
-          try { fs.symlinkSync("/", tripwire); } catch {}
+          let tripwire = "";
+          for (let attempt = 0; attempt < 3 && !tripwire; attempt++) {
+            const name = `/tmp/gh-aw/work-queue.unchecked-${randomBytes(16).toString("hex")}`;
+            try {
+              fs.symlinkSync("/", name);
+              if (fs.readlinkSync(name) === "/") tripwire = name;
+            } catch {}
+          }
           for (const file of [intentsPath, finishPath]) {
             try { fs.rmSync(file, { force: true, recursive: true }); } catch {}
           }
-          core.setFailed(`The collected work-queue intents could not be checked (${error && error.message ? error.message : error}); none are uploaded.`);
+          const reason = error && error.message ? error.message : error;
+          if (tripwire) {
+            core.setFailed(`The collected work-queue intents could not be checked (${reason}); none are uploaded.`);
+          } else {
+            core.setFailed(`The collected work-queue intents could not be checked (${reason}), and no link could be planted under /tmp/gh-aw to stop their upload: the agent artifacts of this run may hold unchecked intents and must not be trusted.`);
+          }
         }
 jobs:
   continuation:

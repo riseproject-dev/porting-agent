@@ -357,15 +357,15 @@ describe("intents after the agent", () => {
 
   it("fails gh-aw's final recovery check once the dispatcher plants its tripwire", () => {
     // When the check cannot run or fails, the dispatcher links
-    // /tmp/gh-aw/work-queue.unchecked to /. gh-aw v1.2.2 then refuses the
-    // artifact roots in the step that gates both agent uploads.
+    // /tmp/gh-aw/work-queue.unchecked-<random hex> to /. gh-aw v1.2.2 then
+    // refuses the artifact roots in the step that gates both agent uploads.
     const recovery = require("./validate_recovery_envelopes.cjs");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gh-aw-root-"));
     const file = path.join(dir, "work-queue.intents.jsonl");
     fs.writeFileSync(file, "{}\n");
     const run = () => recovery.main({ roots: [dir], additionalRoots: [file], core: { info() {} } });
     expect(run()).toEqual({ removed: 0 });
-    fs.symlinkSync("/", path.join(dir, "work-queue.unchecked"));
+    fs.symlinkSync("/", path.join(dir, `work-queue.unchecked-${"0".repeat(32)}`));
     expect(run).toThrow(/escapes trusted roots/);
   });
 });

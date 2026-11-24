@@ -241,7 +241,9 @@ class TestDispatcherStaging(unittest.TestCase):
         for i in uploads:
             if steps[i]["with"]["name"] in ("agent", "agent-output-fallback"):
                 self.assertIn("steps.validate_final_recovery_envelopes.outcome == 'success'", steps[i]["if"])
-        self.assertIn('fs.symlinkSync("/", tripwire)', script)
+        self.assertIn('fs.symlinkSync("/", name)', script)
+        self.assertIn('fs.readlinkSync(name) === "/"', script)
+        self.assertIn("randomBytes(16)", script)
         # After the agent nothing is checked out, and no step of ours runs
         # git or loads code from the workspace the agent could write. The
         # only git after the agent is gh-aw's own credential step, which
@@ -256,31 +258,73 @@ class TestDispatcherStaging(unittest.TestCase):
                 else:
                     self.assertEqual(body, 'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"')
 
+    def run_failed_check(self, root: Path, prelude: str = "") -> subprocess.CompletedProcess:
+        # The check's module is missing, so the step takes its failure path.
+        step = next(s for s in dispatcher_agent_steps()
+                    if s.get("name") == "Keep only the intents the trusted stage wrote")
+        harness = (
+            "const core = { setFailed: m => { console.log('FAILED ' + m); process.exitCode = 1; } };\n"
+            + prelude
+            + step["with"]["script"].replace('"/tmp/gh-aw', json.dumps(str(root))[:-1])
+            .replace("`/tmp/gh-aw", "`" + str(root))
+        )
+        return subprocess.run(
+            ["node", "-e", harness], capture_output=True, text=True,
+            env={**os.environ, "RUNNER_TEMP": str(root.parent / "runner-temp"), "TRUSTED_INTENTS": ""},
+        )
+
+    @staticmethod
+    def tripwires(root: Path) -> list[Path]:
+        return [p for p in root.iterdir() if p.name.startswith("work-queue.unchecked-") and p.is_symlink()]
+
     def test_a_check_that_cannot_run_keeps_the_collected_intents_from_upload(self):
-        # The check's module is missing: the step removes the collected
-        # files, plants the tripwire that fails gh-aw's final recovery
-        # check (tested against gh-aw v1.2.2 in work_queue_stage.test.cjs),
-        # and fails.
-        steps = dispatcher_agent_steps()
-        step = next(s for s in steps if s.get("name") == "Keep only the intents the trusted stage wrote")
+        # The step removes the collected files, plants the tripwire that
+        # fails gh-aw's final recovery check (tested against gh-aw v1.2.2 in
+        # work_queue_stage.test.cjs), and fails. The agent cannot take the
+        # tripwire's name first: a locked directory at the former fixed name
+        # changes nothing.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "gh-aw"
             root.mkdir()
             (root / "work-queue.intents.jsonl").write_text('{"kind":"submit"}\n')
             (root / "work-queue.finish.jsonl").mkdir()
-            harness = (
-                "const core = { setFailed: m => { console.log('FAILED ' + m); process.exitCode = 1; } };\n"
-                + step["with"]["script"].replace('"/tmp/gh-aw', json.dumps(str(root))[:-1])
-            )
-            result = subprocess.run(
-                ["node", "-e", harness], capture_output=True, text=True,
-                env={**os.environ, "RUNNER_TEMP": str(Path(tmp) / "runner-temp"), "TRUSTED_INTENTS": ""},
-            )
+            squatted = root / "work-queue.unchecked"
+            squatted.mkdir()
+            (squatted / "keep").write_text("")
+            squatted.chmod(0o555)
+            try:
+                result = self.run_failed_check(root)
+            finally:
+                squatted.chmod(0o755)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("none are uploaded", result.stdout)
             self.assertFalse((root / "work-queue.intents.jsonl").exists())
             self.assertFalse((root / "work-queue.finish.jsonl").exists())
-            self.assertEqual(os.readlink(root / "work-queue.unchecked"), "/")
+            [tripwire] = self.tripwires(root)
+            self.assertRegex(tripwire.name, r"^work-queue\.unchecked-[0-9a-f]{32}$")
+            self.assertEqual(os.readlink(tripwire), "/")
+
+    def test_the_tripwire_falls_back_to_another_random_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "gh-aw"
+            root.mkdir()
+            prelude = ('const realSymlink = require("node:fs").symlinkSync; let calls = 0;\n'
+                       'require("node:fs").symlinkSync = (...a) => { if (calls++ === 0) '
+                       '{ throw Object.assign(new Error("EEXIST"), { code: "EEXIST" }); } return realSymlink(...a); };\n')
+            result = self.run_failed_check(root, prelude)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("none are uploaded", result.stdout)
+            self.assertEqual(len(self.tripwires(root)), 1)
+
+    def test_a_tripwire_that_cannot_be_planted_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "gh-aw"
+            root.write_text("not a directory")
+            result = self.run_failed_check(root)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertNotIn("none are uploaded", result.stdout)
+            self.assertIn("no link could be planted", result.stdout)
+            self.assertIn("must not be trusted", result.stdout)
 
 
 def dispatcher_agent_steps() -> list:
