@@ -945,6 +945,13 @@ def _recovery_exhausted(ctx: Context) -> str | None:
     return found if isinstance(found, str) else None
 
 
+@_record(lc.NOT_PIPELINE_FAILURE, "not_pipeline_failure")
+def _not_pipeline_failure(ctx: Context) -> str | None:
+    if _asserted(ctx, "pipeline_failure"):
+        return "the last Claim of the Work failed before its agent for a failure of the pipeline"
+    return None
+
+
 @_record(lc.PROVISIONING_NEEDS_INTERVENTION, "provisioning_needs_intervention")
 def _provisioning_needs_intervention(ctx: Context) -> str | None:
     if _asserted(ctx, "provisioning_blocked"):
@@ -982,6 +989,8 @@ for _guard, _name in (
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_lost"),
     (lc.QUEUE_POLICY_REINSTALLED, "queue_policy_reinstalled"),
     ("the Work graph is terminal without a usable Result", "work_terminal_without_result"),
+    (lc.PIPELINE_FAILURE, "pipeline_failure"),
+    (lc.PIPELINE_FAILURE_CLEARED, "pipeline_failure_cleared"),
     (lc.PLAN_REJECTED, "plan_rejected"),
     ("the Result has no usable plan", "no_usable_plan"),
     (lc._ADMISSION, "development_admitted"),
@@ -1173,6 +1182,10 @@ PIPELINE_VERBS: dict[str, str] = {
     # that names a spent graph), and a planning run Result without a
     # usable plan.
     "allocate_work_retry": "controller",
+    # A fresh graph for Work whose last Claim failed before its agent for a
+    # failure of the pipeline, once the pipeline code changed (or a human
+    # launched the controller): nothing is charged.
+    "reallocate_after_pipeline_failure": "controller",
     "reject_plan": "reconcile",
     "exhaust_planning_recovery": "reconcile",
     # The verified plan decides: development on a new fork or on the
@@ -2501,6 +2514,8 @@ handles("controller", "tick",
 # decided for its Work).
 handles("controller", "terminal_work", "allocate_work_retry", D_TICK,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"), SOURCE_INVALID=SKIP)
+handles("controller", "terminal_work", "reallocate_after_pipeline_failure", D_TICK,
+        SOURCE_INVALID=SKIP)
 handles("controller", "terminal_work", "exhaust_recovery", _ALL_BUG)
 handles("controller", "_launch_handoff", "expire_submission_rewrite", _ALL_BUG,
         PAUSED=SKIP, FENCED=SKIP)

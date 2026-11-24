@@ -1062,6 +1062,54 @@ def worker_run_result(api: Api, run_id: str) -> dict:
     return reading
 
 
+def agent_run_failure(api: Api, run_id: str) -> dict | None:
+    """Whether the agent workflow run ``run_id`` failed before its agent ran
+    for a step of the pipeline (``pipeline_failure.classify``): ``{"pipeline":
+    True, "job", "step", "head_sha"}``, else ``None``. A run that has not
+    failed, or that GitHub no longer has (HTTP 404), is ``None``; any other
+    failed read raises ``CollectError``."""
+    import pipeline_failure
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", str(run_id)):
+        raise CollectError(f"unexpected run id {str(run_id)[:40]!r}")
+    try:
+        run = api.get(f"/repos/{CONTROL_REPO}/actions/runs/{run_id}")
+    except CollectError as error:
+        if error.status == 404:
+            return None
+        raise
+    if not isinstance(run, dict):
+        raise CollectError(f"GET run {run_id}: the response is not a run")
+    if run.get("status") != "completed" or run.get("conclusion") != "failure":
+        return None
+    attempt = run.get("run_attempt")
+    attempt = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) \
+        and attempt >= 1 else 1
+    jobs = api.paginate(f"/repos/{CONTROL_REPO}/actions/runs/{run_id}/attempts/{attempt}/jobs"
+                        "?per_page=100", key="jobs", max_pages=2)
+    return pipeline_failure.classify(run, jobs)
+
+
+_TREE_VERSIONS: dict[str, str | None] = {}
+
+
+def pipeline_version_at(api: Api, sha: str) -> str | None:
+    """The version of the pipeline code at the commit ``sha`` of the control
+    repository, as ``reconcile.pipeline_version`` reads it from a checkout
+    (``pipeline_failure.tree_version`` of the top-level tree without
+    `.state`), cached per commit. ``None`` for a commit without a tree."""
+    import pipeline_failure
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise CollectError(f"unexpected commit {str(sha)[:60]!r}")
+    if sha not in _TREE_VERSIONS:
+        tree = api.get(f"/repos/{CONTROL_REPO}/git/trees/{sha}")
+        entries = tree.get("tree") if isinstance(tree, dict) else None
+        if not isinstance(entries, list) or tree.get("truncated"):
+            raise CollectError(f"GET tree {sha}: the response is not a complete tree")
+        _TREE_VERSIONS[sha] = pipeline_failure.tree_version(
+            f"{e['mode']} {e['type']} {e['sha']}\t{e['path']}" for e in entries)
+    return _TREE_VERSIONS[sha]
+
+
 def command_comments(api: Api, issue_numbers: Iterable[int], since: str | None) -> list[dict]:
     """Comments on tracking issues that look like commands, for controller.Inputs.comments."""
     out = []

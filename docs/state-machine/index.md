@@ -242,6 +242,7 @@ flowchart TB
     planning_idle -->|dispatch_planning| planning_agent_running
     planning_agent_running -->|retry_dispatch| planning_agent_running
     planning_agent_running -->|allocate_work_retry| planning_agent_running
+    planning_agent_running -->|reallocate_after_pipeline_failure| planning_agent_running
     planning_agent_running -->|exhaust_recovery| planning_waiting_human
     planning_idle -->|exhaust_work_total| planning_waiting_human
     planning_waiting_human -->|resume_planning<br/>/upstreaming resume| planning_idle
@@ -328,6 +329,7 @@ flowchart TB
     development_fix_needed -->|request_repair| development_agent_running
     development_agent_running -->|retry_dispatch| development_agent_running
     development_agent_running -->|allocate_work_retry| development_agent_running
+    development_agent_running -->|reallocate_after_pipeline_failure| development_agent_running
     development_agent_running -->|exhaust_recovery| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|rearm_dispatch| development_fix_needed
@@ -413,6 +415,7 @@ flowchart TB
     development_review_pending -->|exhaust_work_total| development_waiting_human
     development_reviewing -->|retry_dispatch| development_reviewing
     development_reviewing -->|allocate_work_retry| development_reviewing
+    development_reviewing -->|reallocate_after_pipeline_failure| development_reviewing
     development_reviewing -->|exhaust_recovery| development_waiting_human
     development_reviewing -->|reject_patch_review| development_fix_needed
     development_reviewing -->|publish_after_failed_reviews| development_publishing
@@ -890,6 +893,7 @@ flowchart TB
     handoff_agent_running -->|retry_dispatch| handoff_agent_running
     handoff_agent_running -->|exhaust_recovery| handoff_waiting_human
     handoff_agent_running -->|allocate_work_retry| handoff_agent_running
+    handoff_agent_running -->|reallocate_after_pipeline_failure| handoff_agent_running
     handoff_waiting_human -->|resume_submission_review<br/>/upstreaming resume| handoff_review_due
     handoff_waiting_human -->|rearm_dispatch| handoff_review_due
     handoff_review_due -->|request_submission_rewrite| handoff_agent_running
@@ -900,6 +904,7 @@ flowchart TB
     handoff_reviewing -->|retry_dispatch| handoff_reviewing
     handoff_reviewing -->|exhaust_recovery| handoff_waiting_human
     handoff_reviewing -->|allocate_work_retry| handoff_reviewing
+    handoff_reviewing -->|reallocate_after_pipeline_failure| handoff_reviewing
     handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
     handoff_building_upstream_branch -->|expire_submission_rewrite| handoff_review_due
     handoff_building_upstream_branch -->|retry_upstream_branch| handoff_building_upstream_branch
@@ -981,6 +986,7 @@ flowchart TB
     start_1(( )) --> upstream_agent_running
     upstream_agent_running -->|retry_dispatch| upstream_agent_running
     upstream_agent_running -->|allocate_work_retry| upstream_agent_running
+    upstream_agent_running -->|reallocate_after_pipeline_failure| upstream_agent_running
     upstream_agent_running -->|schedule_publish_retry| upstream_agent_running
     upstream_agent_running -->|exhaust_recovery| upstream_waiting_human
     upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed

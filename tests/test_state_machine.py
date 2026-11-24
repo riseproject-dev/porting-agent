@@ -205,7 +205,7 @@ class TestLifecycleTable(unittest.TestCase):
                           "request_submission_rewrite", "request_submission_review",
                           "request_patch_review",
                           "request_upstream_revision", "request_review_revision",
-                          "allocate_work_retry"})
+                          "allocate_work_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
             self.assertIn(lc.UPSTREAM_BOUND, e.transition.guard, f"{e.source} --{e.verb}-->")
         for state, verb in (("planning.idle", "dispatch_planning"),
@@ -476,8 +476,14 @@ class TestLifecycleTable(unittest.TestCase):
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
                           "request_submission_rewrite", "request_submission_review",
-                          "request_patch_review", "allocate_work_retry"})
+                          "request_patch_review", "allocate_work_retry",
+                          "reallocate_after_pipeline_failure"})
         for e in allocating:
+            if e.verb == "reallocate_after_pipeline_failure":
+                # The failure of the pipeline is not the Work's: nothing is charged.
+                self.assertEqual(e.transition.charges, (), (e.source, e.verb))
+                self.assertIn(lc.PIPELINE_FAILURE, e.transition.guard)
+                continue
             self.assertIn("work_total", e.transition.charges, (e.source, e.verb))
 
     def test_revision_bumps_follow_the_rule(self):

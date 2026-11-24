@@ -47,6 +47,7 @@ import isolation
 import lifecycle
 import observe_ci
 import patch_review
+import pipeline_failure
 import plan_gate
 import provisioning
 import queue_policy as queue_policy_facts
@@ -164,6 +165,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                       queue_retries: dict[str, dict] | None = None,
                       work_results: dict[str, dict] | None = None,
                       collected: frozenset[str] = frozenset(),
+                      pipeline_failures: dict[str, dict] | None = None,
+                      pipeline: str | None = None, manual: bool = False,
                       ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
 
@@ -233,6 +236,25 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     cancels the Work, which ``allocate_work_retry`` or
     ``exhaust_recovery`` then decides.
 
+    ``pipeline_failures`` (``pipeline_failure_readings``, by graph id, and by
+    run id for the dispatcher run the recovery decides) holds what the run
+    of the last Claim, or the dispatcher run, failed with: ``pipeline`` true
+    when it failed before its agent for a step of the pipeline, with the
+    ``version`` of the pipeline code it ran. ``None`` reads none (nothing is
+    held). Such a failure is not the Work's:
+
+    * an available Work with a retry, a cancelled Work graph, or a dispatcher
+      run that ended without claiming, whose failure ran the version of the
+      code that runs now (``pipeline``), is held: nothing is staged,
+      launched or charged, the entry says why and an alert is raised, until
+      the code changes (a push wakes the controller);
+    * once the code differs, or for a ``manual`` run (a human launched the
+      controller, which acts on everything due), an available Work and a
+      dispatcher run are launched again as above, and a cancelled graph takes
+      ``reallocate_after_pipeline_failure``, which charges nothing;
+    * a cancelled graph whose last Claim could not be read decides nothing
+      this tick.
+
     Returns (relaunch requests, staged records, report). No model is involved
     in deciding; a relaunch is an ordinary dispatcher run.
     """
@@ -286,6 +308,19 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 entry["queue_retry"] = {"attempts": retry["attempts"],
                                         "max_attempts": retry.get("max_attempts"),
                                         "retry_at": retry["retry_at"].isoformat()}
+            graph = work.graph_id(aw["dedupe_key"])
+            reading = (pipeline_failures or {}).get(graph)
+            watched = pipeline_failures is not None and (
+                state == "cancelled" or (state == "available" and retry is not None))
+            if watched and reading is None:
+                # The run of the last Claim was not read: nothing is decided
+                # that could charge the Work for a failure of the pipeline.
+                report.append(entry | _unread_claim(now))
+                continue
+            gate = _pipeline_gate(reading, aw, pipeline, manual, now) if watched else None
+            if gate and gate["action"] != "release" and state == "cancelled":
+                report.append(entry | gate["entry"])
+                continue
             if state in ("completed", "cancelled"):
                 # Work graphs are immutable and terminal. Reusing the same graph
                 # can only fail: once the graph is terminal without a usable
@@ -297,6 +332,9 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                     state, work.graph_id(aw["dedupe_key"]), work_results, collected, now)
                 if details.get("worker_run"):
                     entry["worker_run"] = details["worker_run"]
+                if decided and state == "cancelled" and gate:
+                    details = details | {"pipeline_failure": gate["details"] | {
+                        "release": gate["why"], "free_count": gate["free"]}}
                 if not decided:
                     report.append(entry | {"decision": waiting} | {
                         k: v for k, v in details.items() if k in ("wake_at", "wake_on")})
@@ -326,6 +364,19 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                                    "dispatcher reinstalls it",
                                        "wake_on": "dispatcher run completion"})
                 continue
+            if gate and gate["action"] != "release":
+                # The last Claim failed before its agent for the pipeline:
+                # whatever dispatcher runs ran since (for other Work), nothing
+                # is launched or charged for this Work.
+                report.append(entry | gate["entry"])
+                continue
+            if gate:
+                # Released: only the dispatcher runs created since the failed
+                # run ended (for a timed release, since it was due) count, so
+                # the runs that ran before it charge nothing.
+                after = [r for r in after if _created(r) >= gate["floor"]]
+                entry["dispatcher_runs"] = [r["id"] for r in after]
+                entry["pipeline_release"] = gate["why"]
             if not after and retry is not None and now < retry["retry_at"]:
                 report.append(entry | {"decision": "waiting for the queue's retry backoff",
                                        "wake_at": retry["retry_at"].isoformat()})
@@ -350,6 +401,27 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 report.append(entry | {"decision": "relaunch: the requested run did not start"})
                 continue
             # A dispatcher run ended since the request with the Work unclaimed.
+            if pipeline_failures is not None and latest.get("conclusion") == "failure" \
+                    and str(latest["id"]) not in pipeline_failures:
+                report.append(entry | _unread_claim(now) | {
+                    "decision": f"waiting: dispatcher run {latest['id']} was not read, so a "
+                                "failure of the pipeline is neither held nor released"})
+                continue
+            ended = _pipeline_gate((pipeline_failures or {}).get(str(latest["id"])), {}, pipeline,
+                                   manual, now, kind="dispatcher")
+            if ended:
+                # It failed before its agent for a step of the pipeline: not
+                # a lost dispatch of the Work, so no row and no charge.
+                if ended["action"] != "release":
+                    report.append(entry | ended["entry"])
+                else:
+                    relaunch.append({"type": "relaunch_dispatcher",
+                                     "contribution_id": c["contribution_id"]})
+                    report.append(entry | {
+                        "decision": f"relaunch: dispatcher run {latest['id']} failed before its "
+                                    f"agent for a failure of the pipeline ({ended['why']}), and "
+                                    "charges nothing"})
+                continue
             new, event, decision = _lost_dispatch(c, aw, latest, len(after), now=now,
                                                   policy=policy,
                                                   history_missing=history is False,
@@ -374,6 +446,106 @@ def _dispatchers_in_flight(runs: list[dict], now: datetime) -> list[dict]:
     ``DISPATCHER_RUN_WAIT``: they claim the Work they find available."""
     return [r for r in runs if r.get("status") != "completed"
             and now - _created(r) < DISPATCHER_RUN_WAIT]
+
+
+# The free relaunches of Work that failed before its agent for the pipeline,
+# at one version of the pipeline code: the Work waits this long after the
+# failure ended for the first, the second and the third, and then stays held
+# until the code changes or a human launches the controller. A transient
+# failure of the pipeline (a registry that did not answer, a gateway that did
+# not start) heals by itself; one that does not stops costing runs.
+PIPELINE_RELEASE_BACKOFF = (timedelta(minutes=30), timedelta(hours=2), timedelta(hours=8))
+
+
+def _pipeline_details(reading: dict) -> dict:
+    return {key: reading.get(key) for key in ("run_id", "job", "step", "version")}
+
+
+def _pipeline_gate(reading: dict | None, aw: dict, pipeline: str | None, manual: bool,
+                   now: datetime, kind: str = "worker") -> dict | None:
+    """What to do with ``reading``, the failure of the run of the last Claim
+    (or of a dispatcher run), or ``None`` when it is not a failure of the
+    pipeline (the Work's own failure is decided as ever). The result has an
+    ``action``:
+
+    * ``hold``: nothing is launched, staged or charged; ``entry`` is the
+      report entry (an alert, and a wake at the time of the next free
+      relaunch while one remains);
+    * ``wait``: the version of the pipeline code is not known, so the failure
+      is neither held nor released, and the controller looks again soon;
+    * ``release``: launch again, or reallocate a cancelled graph, without
+      charging the Work. ``why`` is ``manual`` (a human launched the
+      controller), ``changed`` (the code is not the version the run ran), or
+      ``timed`` (the backoff of a free relaunch passed); ``free`` is the
+      number of free relaunches made at this version with this one, and
+      ``floor`` the time from which the dispatcher runs count."""
+    if not (reading or {}).get("pipeline"):
+        return None
+    where = f"{reading.get('job')}/{reading.get('step')}"
+    version = reading.get("version")
+    text = (f"{kind} run {reading.get('run_id')} failed before its agent ({where}), a failure of "
+            f"the pipeline at version {str(version)[:12]}")
+    details = _pipeline_details(reading)
+    # The dispatcher runs that count against the Work after a release are the
+    # ones created since the failed run ended: a fixed time, so the runs of
+    # later ticks still count and a dispatcher that ends without claiming is
+    # decided and charged as ever, instead of being launched again forever.
+    since = wake.parse(reading.get("ended_at")) or datetime.min.replace(tzinfo=timezone.utc)
+    if manual:
+        return {"action": "release", "why": "manual", "free": None, "floor": since,
+                "details": details}
+    if pipeline is None or version is None:
+        return {"action": "wait", "entry": {
+            "decision": f"waiting: {text}, and the version of the pipeline code is not known, "
+                        "so it is neither held nor released",
+            "wake_at": (now + READ_RETRY).isoformat(), "held": details,
+            "alert": f"{text}: the version of the pipeline code could not be read, so the Work "
+                     "is neither held nor released; it is looked at again in "
+                     f"{int(READ_RETRY.total_seconds()) // 60} minutes"}}
+    if version != pipeline:
+        return {"action": "release", "why": "changed", "free": None, "floor": since,
+                "details": details}
+    stored = aw.get("pipeline_free") or {}
+    used = (int(stored.get("count") or 0) if stored.get("version") == version else 0) \
+        + max(int(reading.get("count") or 1) - 1, 0)
+    ended = wake.parse(reading.get("ended_at"))
+    left = len(PIPELINE_RELEASE_BACKOFF) - used
+    due = ended + PIPELINE_RELEASE_BACKOFF[used] if left > 0 and ended is not None else None
+    if left > 0 and ended is None:
+        due = now + READ_RETRY
+    if due is not None and now >= due:
+        return {"action": "release", "why": "timed", "free": used + 1, "floor": due,
+                "details": details | {"free_relaunch": used + 1}}
+    entry = {"held": details, "alert": f"{text}, which is not the fault of the Work: "}
+    if due is not None:
+        entry["decision"] = (f"held: {text}; the Work is not charged and is launched again free "
+                             f"after {PIPELINE_RELEASE_BACKOFF[used]} (free relaunch {used + 1} "
+                             f"of {len(PIPELINE_RELEASE_BACKOFF)}), or once the pipeline code "
+                             "changes or a human launches the controller")
+        entry["wake_at"] = due.isoformat()
+        entry["alert"] += (f"it is launched again free at {due.isoformat()} (free relaunch "
+                           f"{used + 1} of {len(PIPELINE_RELEASE_BACKOFF)}), or once the pipeline "
+                           "code changes or a human launches the controller")
+    else:
+        entry["decision"] = (f"held: {text}; the {len(PIPELINE_RELEASE_BACKOFF)} free relaunches "
+                             "at this version are spent, and the Work is launched again once the "
+                             "pipeline code changes or a human launches the controller")
+        entry["wake_on"] = "a change of the pipeline code, or a manual controller run"
+        entry["alert"] += (f"its {len(PIPELINE_RELEASE_BACKOFF)} free relaunches at this version "
+                           "are spent; nothing is retried until the pipeline code changes or a "
+                           "human launches the controller")
+    return {"action": "hold", "entry": entry}
+
+
+def _unread_claim(now: datetime) -> dict:
+    """The report fields of Work whose last Claim could not be read."""
+    return {"decision": "waiting: the last Claim of the Work was not read, so a failure of the "
+                        "pipeline is neither held nor released",
+            "wake_at": (now + READ_RETRY).isoformat(),
+            "alert": "the run of the last Claim of the Work could not be read (or the version "
+                     "of the pipeline code it ran), so a failure of the pipeline is neither held "
+                     "nor released; it is looked at again in "
+                     f"{int(READ_RETRY.total_seconds()) // 60} minutes"}
 
 
 def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None,
@@ -514,6 +686,87 @@ def work_result_readings(api: collect.Api, contributions: dict[str, dict],
             print(f"worker run {run_id} of completed Work {graph} not read this tick: {error}",
                   file=sys.stderr)
     return readings
+
+
+def pipeline_failure_readings(api: collect.Api, contributions: dict[str, dict],
+                              queue_works: dict[str, str] | None,
+                              queue_retries: dict[str, dict] | None,
+                              claim_runs: dict[str, list[str]] | None,
+                              dispatcher_runs: list[dict] | None) -> dict[str, dict]:
+    """What the runs behind the Work a record requests failed with
+    (``dispatch_recovery`` decides from it): for every graph that is
+    cancelled, or available for a retry, the run of its newest Claim
+    (``queue_result.work_claim_runs``), and the newest ended dispatcher run,
+    read by ``collect.agent_run_failure``. A reading is ``{"run_id",
+    "pipeline", "job", "step", "version", "ended_at", "count"}``, keyed by
+    graph id (the run of the last Claim) and by run id (the dispatcher run;
+    only when the newest one failed). ``pipeline`` is false for a run that
+    did not fail before its agent, or a graph with no Claim run. ``version``
+    is the pipeline code of the commit the run ran, ``ended_at`` when the
+    run ended, and ``count`` how many of the newest runs in a row failed that
+    way at that version (at most ``MAX_FAILURES_READ``): the free relaunches
+    made so far, plus one. A failed read is printed and leaves that graph
+    without a reading; the others are still read."""
+    readings: dict[str, dict] = {}
+    held = [c["active_work"] for c in contributions.values()
+            if isinstance(c.get("active_work"), dict)
+            and isinstance(c["active_work"].get("dedupe_key"), str)]
+
+    def read(run_id: str) -> dict | None:
+        found = collect.agent_run_failure(api, run_id)
+        if found is None:
+            return None
+        return {"run_id": str(run_id), "pipeline": True, "job": found["job"],
+                "step": found["step"], "ended_at": found.get("ended_at"),
+                "version": collect.pipeline_version_at(api, found["head_sha"]), "count": 1}
+
+    def counted(run_ids: list[str]) -> dict:
+        """The reading of the newest run, with the count of those in a row."""
+        newest = read(run_ids[0])
+        if newest is None:
+            return {"run_id": run_ids[0], "pipeline": False}
+        for older in run_ids[1:MAX_FAILURES_READ]:
+            again = read(older)
+            if again is None or again["version"] != newest["version"]:
+                break
+            newest["count"] += 1
+        return newest
+
+    for aw in held:
+        graph = work.graph_id(aw["dedupe_key"])
+        if graph in readings:
+            continue
+        state = (queue_works or {}).get(graph)
+        if state != "cancelled" and not (state == "available"
+                                         and graph in (queue_retries or {})):
+            continue
+        runs = (claim_runs or {}).get(graph) or []
+        if not runs:
+            readings[graph] = {"run_id": None, "pipeline": False}
+            continue
+        try:
+            readings[graph] = counted(runs)
+        except (collect.CollectError, OSError) as error:
+            print(f"run {runs[0]} of the last Claim of {graph} not read this tick: {error}",
+                  file=sys.stderr)
+    ended = sorted((r for r in dispatcher_runs or [] if r.get("status") == "completed"),
+                   key=lambda r: r["created_at"], reverse=True)
+    if held and ended and ended[0].get("conclusion") == "failure":
+        failed = []
+        for r in ended:
+            if r.get("conclusion") != "failure":
+                break
+            failed.append(str(r["id"]))
+        try:
+            readings[failed[0]] = counted(failed)
+        except (collect.CollectError, OSError) as error:
+            print(f"dispatcher run {failed[0]} not read this tick: {error}", file=sys.stderr)
+    return readings
+
+
+# The newest runs read to count the failures in a row at one version: one more
+# than the free relaunches, so the count shows when they are spent.
+MAX_FAILURES_READ = len(PIPELINE_RELEASE_BACKOFF) + 1
 
 
 def _created_before(created: Any, moment: datetime) -> bool:
@@ -2627,6 +2880,9 @@ def fold_provisioning_receipts(api: collect.Api, receipts: list[dict], contribut
 _FORK_PHASES = ("development", "handoff", "upstream_review", "release_wait")
 
 
+tree_version = pipeline_failure.tree_version
+
+
 def pipeline_version(code_root: Path | None = None) -> str | None:
     """The version of the pipeline code that runs: the SHA-256 of the
     top-level git tree of ``HEAD`` without `.state`, so the state commit of
@@ -2639,10 +2895,7 @@ def pipeline_version(code_root: Path | None = None) -> str | None:
                                  capture_output=True, check=True, text=True, timeout=60).stdout
     except (OSError, subprocess.SubprocessError):
         return None
-    lines = [line for line in listing.splitlines() if line.partition("\t")[2] != ".state"]
-    if not lines:
-        return None
-    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    return tree_version(listing.splitlines())
 
 
 def _resume_after_error(record: dict, *, policy: dict, now: str,
@@ -2759,6 +3012,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          queue_retries: dict[str, dict] | None = None,
          work_results: dict[str, dict] | None = None,
+         pipeline_failures: dict[str, dict] | None = None, manual: bool = False,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
          ci_reruns: list[dict] | None = None,
@@ -3038,9 +3292,13 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                               now=now, policy=policy, skip=skip,
                                               queue_policy=queue_policy, evidence=snap.evidence,
                                               queue_retries=queue_retries,
-                                              work_results=work_results, collected=collected)
+                                              work_results=work_results, collected=collected,
+                                              pipeline_failures=pipeline_failures,
+                                              pipeline=pipeline, manual=manual)
     out.staged.extend(staged)
     out.report["dispatch_recovery"] = rep
+    held_alerts = [{"contribution": entry["contribution"], "alert": entry["alert"]}
+                   for entry in rep if entry.get("alert")]
     # 1d. A dispatch refused by the installed work-queue Policy: re-arm it
     # once the dispatcher has reinstalled the compiled policy, and launch the
     # dispatcher to reinstall it when the queue is quiescent.
@@ -3115,6 +3373,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             contributions[by_cid[r["contribution_id"]]] = r
     out.report["controller"] = res.report
     res.report["alerts"][:0] = load_alerts
+    res.report["alerts"].extend(held_alerts)
     out.report["requested_effects"] = res.requested_effects
     out.report["provision_requests"] = res.report["provision_requests"]
     out.report["dev_pr_requests"] = res.report["dev_pr_requests"]
@@ -3892,7 +4151,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             api, issues, INTAKE_LABEL, policy["command_authority"]["actor_ids"]
         )
     )
-    runs = queue = queue_state = retries = results = None
+    runs = queue = queue_state = retries = results = failures = None
     if not args.offline and args.gh_aw:
         try:
             runs = collect.dispatcher_runs(api)
@@ -3907,8 +4166,11 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
                                            publication_collection(args.publications))
             queue_state = queue_policy_facts.status(
                 projection or {}, queue_policy_facts.load_compiled(repository=collect.CONTROL_REPO))
+            failures = pipeline_failure_readings(
+                api, snapshot.contributions, queue, retries,
+                queue_result.work_claim_runs(projection), runs)
         except (collect.CollectError, OSError, ValueError) as error:
-            runs = queue = queue_state = retries = results = None
+            runs = queue = queue_state = retries = results = failures = None
             print(f"dispatch recovery skipped this tick: {error}", file=sys.stderr)
     if args.offline:
         observed_pressure = capacity.Pressure(ok=False, reason="offline")
@@ -3939,6 +4201,8 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             queue_works=queue,
             queue_retries=retries,
             work_results=results,
+            pipeline_failures=failures,
+            manual=bool(getattr(args, "manual", False)),
             queue_policy=queue_state,
             acceptances=acceptances,
             tracking_issues=issue_snapshots,
@@ -4015,6 +4279,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report")
     parser.add_argument("--since")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument(
+        "--manual", action="store_true",
+        help="a human launched the controller: every hold for a failure of the pipeline is "
+             "released once")
     parser.add_argument(
         "--gh-aw", help="pinned gh-aw v1.2.2 binary used only to read queue state"
     )

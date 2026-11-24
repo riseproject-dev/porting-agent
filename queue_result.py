@@ -235,6 +235,32 @@ def work_runs(projection: dict | None) -> dict[str, dict]:
     return runs
 
 
+def work_claim_runs(projection: dict | None) -> dict[str, list[str]]:
+    """``graph_id -> run ids`` of the dispatches of every Claim of the Work
+    of a replayed queue, newest first (the largest run id). A Claim without
+    a dispatch run, or whose run id is not a plain decimal id, is left out."""
+    projection = projection or {}
+    dispatches = projection.get("dispatches") or {}
+    graphs = {work_id: item.get("graph_id")
+              for work_id, item in (projection.get("works") or {}).items()
+              if isinstance(item, dict) and isinstance(item.get("graph_id"), str)}
+    runs: dict[str, list[str]] = {}
+    for claim in (projection.get("claims") or {}).values():
+        if not isinstance(claim, dict):
+            continue
+        graph = graphs.get(claim.get("work_id"))
+        dispatch = dispatches.get(claim.get("dispatch_id")) \
+            if isinstance(claim.get("dispatch_id"), str) else None
+        run = (dispatch or {}).get("run") if isinstance(dispatch, dict) else None
+        run_id = str(run.get("run_id")) if isinstance(run, dict) and run.get("run_id") is not None \
+            else None
+        if graph and run_id and _RUN_ID.fullmatch(run_id) and run_id not in runs.get(graph, []):
+            runs.setdefault(graph, []).append(run_id)
+    for ids in runs.values():
+        ids.sort(key=int, reverse=True)
+    return runs
+
+
 def _result_run(descriptor) -> dict | None:
     """The run named by the single ``upload_artifact`` output of a Result
     descriptor, as ``resolve`` reads it, or ``None``."""

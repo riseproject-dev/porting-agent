@@ -1485,6 +1485,23 @@
                 "null"
               ]
             },
+            "pipeline_free": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "count"
+              ],
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "reason_ids": {
               "type": "array",
               "maxItems": 16,

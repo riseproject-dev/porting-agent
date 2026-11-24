@@ -112,6 +112,13 @@ The [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** a held publication ends by a retry Result, the exhaustion of `publish_recovery`, or a stop; no row reads a report from anywhere but a folded Result.
 - **Required:** the report uploaded before the push (for example in a separate artifact the reconciler reads when the branch observation confirms an operation whose Result never arrived).
 
+## A failure of the pipeline after the agent is charged to the Work
+
+- **Where:** `pipeline_failure.classify`, `reconcile.dispatch_recovery`, and the jobs after the agent of `worker.md`, `planner.md` and `reviewer.md` (`safe_outputs`, `publish`, `continuation`).
+- **Today:** only a run that failed before its agent ran (`Execute Pi CLI` skipped), in a step that does not depend on the contribution, or in its `activation` job, is held and later reallocated without a charge (`reallocate_after_pipeline_failure`). A run whose agent ran and whose later job failed for the pipeline (a failed `safe_outputs`, a gateway that stopped, an artifact that was not uploaded) is read like any run that ended without a usable Result: the Work is retried and charged to `work_recovery` and `work_total`, or waits for a human.
+- **Table:** `reallocate_after_pipeline_failure` is taken for Work whose last Claim failed before its agent for a failure of the pipeline; `allocate_work_retry` and `exhaust_recovery` are refused for it.
+- **Required:** classify the failures of the jobs after the agent that the contribution cannot cause, and hold and reallocate their Work the same way.
+
 ## A long request description makes its Work undispatchable
 
 - **Where:** `work.payload` and `work.cmd_plan`.

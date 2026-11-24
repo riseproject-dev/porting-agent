@@ -1667,6 +1667,35 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         highlighted=(("development.agent_running", "retry_dispatch"),),
     ),
     Item(
+        "A failure of the pipeline before the agent is not charged to the Work",
+        "What happens to Work whose last Claim failed before its agent ran, for a step that "
+        "does not depend on the contribution?",
+        "The failure is the pipeline's, not the Work's, so none of the budgets of the Work is "
+        "charged. A run is such a failure when it concluded `failure` and its `activation` job "
+        "failed, or its `agent` job failed in a step while the step `Execute Pi CLI` was "
+        "skipped and the first failed step is not one that reads the contribution (the checkout "
+        "of its fork or of the upstream project, the held patch, the Work and its history, the "
+        "reproduction image). A cancelled or timed-out run, a lost runner, a failed agent and a "
+        "failed contribution step are the Work's. The failure carries the version of the "
+        "pipeline code the run ran, the one the controller resumes its own stop at. While that "
+        "is the version running now, an available Work with a retry, a cancelled graph and a "
+        "dispatcher run that ended without claiming are held: nothing is launched, staged or "
+        "charged, and an alert and a warning say why. A transient failure heals by itself: the "
+        "Work is launched again free after 30 minutes, 2 hours and 8 hours at one version of "
+        "the code, and then stays held. Once the pipeline code changes, or a "
+        "human launches the controller, a retry and a dispatcher are launched again, and a "
+        "cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh "
+        "graph at the next revision and charges nothing, so `work_recovery`, `work_total` and "
+        "the attempts counted so far are unchanged. `allocate_work_retry` and "
+        "`exhaust_recovery` are refused for such a failure. The record stays in its state "
+        "instead of pausing: a pause clears the Work while the queue still holds it available, "
+        "and its resume would charge the repair again.",
+        ("development.agent_running",),
+        edges=(("development.agent_running", "allocate_work_retry"),
+               ("development.agent_running", "reallocate_after_pipeline_failure")),
+        highlighted=(("development.agent_running", "reallocate_after_pipeline_failure"),),
+    ),
+    Item(
         "Every decided wait is woken",
         "What ends a wait that a controller tick decided, and what keeps the pipeline from "
         "depending on the schedule of the controller?",

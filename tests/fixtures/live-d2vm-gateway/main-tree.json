@@ -1,0 +1,381 @@
+{
+ "commit": "8a40642cedf39c95d4642cab5003bdc20ca17dc4",
+ "api": {
+  "tree": [
+   {
+    "path": ".gitattributes",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "1f7549b5c661c1786050fae051c53833611dd012"
+   },
+   {
+    "path": ".github",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "475406ee563ab2736b75463e9e5f5ed71054098d"
+   },
+   {
+    "path": ".gitignore",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "2180468b87671770354a445fed125b68b2d4b2dd"
+   },
+   {
+    "path": ".state",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "99941ff2d3897bbb7fe87b1ce09db68104d68890"
+   },
+   {
+    "path": "AGENTS.md",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "b6f47a802c9d715ad75da107540a65085b3d423e"
+   },
+   {
+    "path": "LICENSE",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "e4c241b40fdad79dcd0ff258f7e7b53619e83d49"
+   },
+   {
+    "path": "README.md",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "4da62a9a581611b6bcb090ca1013eea3b47e0b6b"
+   },
+   {
+    "path": "SESSIONLOG.md",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "f791139ae3e021dd20ef4c9983cd892e15a86570"
+   },
+   {
+    "path": "artifact.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "8ad0a552e24bd7a60cf35e9579e6f14def177e0e"
+   },
+   {
+    "path": "canary.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "d8dea48fb1e45d86784a579d258ece49dce8c490"
+   },
+   {
+    "path": "capacity.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "28aa4b89573380fa9d2534ccae1d742651fc19b1"
+   },
+   {
+    "path": "ci_evidence.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "b5430c6a8fbbf602eda3f52fa31727034ae7f363"
+   },
+   {
+    "path": "ci_rerun.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "7c0dbac062f07424755ca458bc17ade110020d3f"
+   },
+   {
+    "path": "collect.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "c7c235f2f9674f20410a637125e6e35d57c67213"
+   },
+   {
+    "path": "command_feedback.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "9c757917e624f00966099bf4f64c03655945619c"
+   },
+   {
+    "path": "command_reactions.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "006080ebb7ec290bdf978dc64b7fcb7ac7a4d01f"
+   },
+   {
+    "path": "commands.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "7995fafc8cec74da0cc3e584e380b1bac4305321"
+   },
+   {
+    "path": "commit_rules.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "028421fbb0c54d4b6ee1a1970fbda8be834ffb39"
+   },
+   {
+    "path": "common.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "637922b654384e3056f32c9e0d135e55b7255c6d"
+   },
+   {
+    "path": "controller.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "8ee4427be1dc0dfca7c6dd6769c20178619818b5"
+   },
+   {
+    "path": "dev_pr.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "4757047cb25e9a696625b75aa21f6fad37a34f75"
+   },
+   {
+    "path": "docs",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "6d134bd805f4ae0c86296aabfa73562f07276016"
+   },
+   {
+    "path": "engine.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "e38fea18025a146f47efdeadd2f3297b3a7fe15e"
+   },
+   {
+    "path": "fork_publish.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "41728af4c2e8ab52e44742128e45286917e6d786"
+   },
+   {
+    "path": "handoff.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "b39b445b1c60532d2ad80d25bd50460e7c05cc2c"
+   },
+   {
+    "path": "image",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "c3640aa6e32a9b40fee10c60d26851221e644ad1"
+   },
+   {
+    "path": "intake.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "2522c52f694a7093efa0765cd25b0397e6014570"
+   },
+   {
+    "path": "isolation.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "c25b4aedce3e9d363860acb7c8fd1b10f73a2d6d"
+   },
+   {
+    "path": "lifecycle.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "d450cc7eec597375b82f814cfd3d8e3217ee1f44"
+   },
+   {
+    "path": "observe_ci.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "952237cf66c513f49d5bc4cdb102e00435f08c64"
+   },
+   {
+    "path": "patch_review.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "4f53bfc2b5681308b795df976cac3f689dd8fd91"
+   },
+   {
+    "path": "plan_comment.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "67ca1e8c189657e1219a738651c05feb06c21c43"
+   },
+   {
+    "path": "plan_gate.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "055bb41d8f82abf10ceb2f88f252df747d481fa0"
+   },
+   {
+    "path": "planning_recovery.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "f97df1f67320690fb4d0079bda666f4d8b60235d"
+   },
+   {
+    "path": "policy.json",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "12f1928af91e188cf95d6ae6f91c648375ddcb95"
+   },
+   {
+    "path": "probe.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "e5b3e586fc2d8ad8fdad96761fe6524588acc8c6"
+   },
+   {
+    "path": "provisioning.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "61cc3251abc11c5dba309aace4a446900a32f7ae"
+   },
+   {
+    "path": "publisher.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "da3200a92893b463b88cbcfa195c8389304ab159"
+   },
+   {
+    "path": "pyproject.toml",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "4492b013181e4184a97ff4d4ba85a7671c71232a"
+   },
+   {
+    "path": "queue_policy.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "624f44df4b40e3569afc5d563532ee9fc0f181d7"
+   },
+   {
+    "path": "queue_result.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "456a55f31042902ea9ec92c4861987468d34ec67"
+   },
+   {
+    "path": "reconcile.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "efa48e86c7e70c2af8b7efd016b8ba64bb4e5e0c"
+   },
+   {
+    "path": "recovery.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "5cb09f7875381cd579415a72cb5918bb86cdeccd"
+   },
+   {
+    "path": "release.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "0cd29ad27e43688f309382f7971b314fd18f94e4"
+   },
+   {
+    "path": "review_response.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "b7e0844ad398197cce143d1f3aca1eac6c88b85a"
+   },
+   {
+    "path": "schemas.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "79521eefcaf7ab87afe4143b8f283269d3bdee37"
+   },
+   {
+    "path": "schemas",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "98244ce4e0df95417ee315310ba95dd4af47e562"
+   },
+   {
+    "path": "scripts",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "43f89d3f83a62e5f5b9e90d5a25448d18217f4a3"
+   },
+   {
+    "path": "skills",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "1b6b1939b69c3f3bf9a9ea99c45fba90f9d4e473"
+   },
+   {
+    "path": "state.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "727c4fcc10faec7b44d15ecb8915cf41a6a51824"
+   },
+   {
+    "path": "state_commit.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "35bc4a7a59d0c35d595ff1bfd277b33bfa336191"
+   },
+   {
+    "path": "status_ledger.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "964b44a268c7e07362906f72fc780e14ce3806ba"
+   },
+   {
+    "path": "steering.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "6c9b34f041473abf6f3302d4e52e17772d26e1d8"
+   },
+   {
+    "path": "submission.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "d76ccb555bff4a72055cd980f61a2b18a7bee5eb"
+   },
+   {
+    "path": "tests",
+    "mode": "040000",
+    "type": "tree",
+    "sha": "4af96f622ac0b31b11fcff7b4b6206a01f2d4f04"
+   },
+   {
+    "path": "triggers.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "8e3e52dcebdf009566fc51e7a014cfac6299fdea"
+   },
+   {
+    "path": "uv.lock",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "b0edb84bda2fc22c77b3847202006ed6e790c036"
+   },
+   {
+    "path": "work.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "2b148ecc04f029f53eae3d9c2b3f218ffa603226"
+   },
+   {
+    "path": "work_history.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "2a1f2d6968a2c71f654a10fe0627874e89e89f2f"
+   },
+   {
+    "path": "worker_gate.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "72eddeadd3cea250fe28cb530ac5017ed3cbe1a5"
+   },
+   {
+    "path": "worker_recovery.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "69c42f383370eace09ba474df08a696e81c66af1"
+   },
+   {
+    "path": "worker_report.py",
+    "mode": "100644",
+    "type": "blob",
+    "sha": "72d6e4be4002ffbfb216b0bd9eddb1208a80d8de"
+   }
+  ],
+  "truncated": false
+ },
+ "ls_tree": "100644 blob 1f7549b5c661c1786050fae051c53833611dd012\t.gitattributes\n040000 tree 475406ee563ab2736b75463e9e5f5ed71054098d\t.github\n100644 blob 2180468b87671770354a445fed125b68b2d4b2dd\t.gitignore\n040000 tree 99941ff2d3897bbb7fe87b1ce09db68104d68890\t.state\n100644 blob b6f47a802c9d715ad75da107540a65085b3d423e\tAGENTS.md\n100644 blob e4c241b40fdad79dcd0ff258f7e7b53619e83d49\tLICENSE\n100644 blob 4da62a9a581611b6bcb090ca1013eea3b47e0b6b\tREADME.md\n100644 blob f791139ae3e021dd20ef4c9983cd892e15a86570\tSESSIONLOG.md\n100644 blob 8ad0a552e24bd7a60cf35e9579e6f14def177e0e\tartifact.py\n100644 blob d8dea48fb1e45d86784a579d258ece49dce8c490\tcanary.py\n100644 blob 28aa4b89573380fa9d2534ccae1d742651fc19b1\tcapacity.py\n100644 blob b5430c6a8fbbf602eda3f52fa31727034ae7f363\tci_evidence.py\n100644 blob 7c0dbac062f07424755ca458bc17ade110020d3f\tci_rerun.py\n100644 blob c7c235f2f9674f20410a637125e6e35d57c67213\tcollect.py\n100644 blob 9c757917e624f00966099bf4f64c03655945619c\tcommand_feedback.py\n100644 blob 006080ebb7ec290bdf978dc64b7fcb7ac7a4d01f\tcommand_reactions.py\n100644 blob 7995fafc8cec74da0cc3e584e380b1bac4305321\tcommands.py\n100644 blob 028421fbb0c54d4b6ee1a1970fbda8be834ffb39\tcommit_rules.py\n100644 blob 637922b654384e3056f32c9e0d135e55b7255c6d\tcommon.py\n100644 blob 8ee4427be1dc0dfca7c6dd6769c20178619818b5\tcontroller.py\n100644 blob 4757047cb25e9a696625b75aa21f6fad37a34f75\tdev_pr.py\n040000 tree 6d134bd805f4ae0c86296aabfa73562f07276016\tdocs\n100644 blob e38fea18025a146f47efdeadd2f3297b3a7fe15e\tengine.py\n100644 blob 41728af4c2e8ab52e44742128e45286917e6d786\tfork_publish.py\n100644 blob b39b445b1c60532d2ad80d25bd50460e7c05cc2c\thandoff.py\n040000 tree c3640aa6e32a9b40fee10c60d26851221e644ad1\timage\n100644 blob 2522c52f694a7093efa0765cd25b0397e6014570\tintake.py\n100644 blob c25b4aedce3e9d363860acb7c8fd1b10f73a2d6d\tisolation.py\n100644 blob d450cc7eec597375b82f814cfd3d8e3217ee1f44\tlifecycle.py\n100644 blob 952237cf66c513f49d5bc4cdb102e00435f08c64\tobserve_ci.py\n100644 blob 4f53bfc2b5681308b795df976cac3f689dd8fd91\tpatch_review.py\n100644 blob 67ca1e8c189657e1219a738651c05feb06c21c43\tplan_comment.py\n100644 blob 055bb41d8f82abf10ceb2f88f252df747d481fa0\tplan_gate.py\n100644 blob f97df1f67320690fb4d0079bda666f4d8b60235d\tplanning_recovery.py\n100644 blob 12f1928af91e188cf95d6ae6f91c648375ddcb95\tpolicy.json\n100644 blob e5b3e586fc2d8ad8fdad96761fe6524588acc8c6\tprobe.py\n100644 blob 61cc3251abc11c5dba309aace4a446900a32f7ae\tprovisioning.py\n100644 blob da3200a92893b463b88cbcfa195c8389304ab159\tpublisher.py\n100644 blob 4492b013181e4184a97ff4d4ba85a7671c71232a\tpyproject.toml\n100644 blob 624f44df4b40e3569afc5d563532ee9fc0f181d7\tqueue_policy.py\n100644 blob 456a55f31042902ea9ec92c4861987468d34ec67\tqueue_result.py\n100644 blob efa48e86c7e70c2af8b7efd016b8ba64bb4e5e0c\treconcile.py\n100644 blob 5cb09f7875381cd579415a72cb5918bb86cdeccd\trecovery.py\n100644 blob 0cd29ad27e43688f309382f7971b314fd18f94e4\trelease.py\n100644 blob b7e0844ad398197cce143d1f3aca1eac6c88b85a\treview_response.py\n100644 blob 79521eefcaf7ab87afe4143b8f283269d3bdee37\tschemas.py\n040000 tree 98244ce4e0df95417ee315310ba95dd4af47e562\tschemas\n040000 tree 43f89d3f83a62e5f5b9e90d5a25448d18217f4a3\tscripts\n040000 tree 1b6b1939b69c3f3bf9a9ea99c45fba90f9d4e473\tskills\n100644 blob 727c4fcc10faec7b44d15ecb8915cf41a6a51824\tstate.py\n100644 blob 35bc4a7a59d0c35d595ff1bfd277b33bfa336191\tstate_commit.py\n100644 blob 964b44a268c7e07362906f72fc780e14ce3806ba\tstatus_ledger.py\n100644 blob 6c9b34f041473abf6f3302d4e52e17772d26e1d8\tsteering.py\n100644 blob d76ccb555bff4a72055cd980f61a2b18a7bee5eb\tsubmission.py\n040000 tree 4af96f622ac0b31b11fcff7b4b6206a01f2d4f04\ttests\n100644 blob 8e3e52dcebdf009566fc51e7a014cfac6299fdea\ttriggers.py\n100644 blob b0edb84bda2fc22c77b3847202006ed6e790c036\tuv.lock\n100644 blob 2b148ecc04f029f53eae3d9c2b3f218ffa603226\twork.py\n100644 blob 2a1f2d6968a2c71f654a10fe0627874e89e89f2f\twork_history.py\n100644 blob 72eddeadd3cea250fe28cb530ac5017ed3cbe1a5\tworker_gate.py\n100644 blob 69c42f383370eace09ba474df08a696e81c66af1\tworker_recovery.py\n100644 blob 72d6e4be4002ffbfb216b0bd9eddb1208a80d8de\tworker_report.py\n"
+}

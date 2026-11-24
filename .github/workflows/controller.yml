@@ -128,6 +128,12 @@ jobs:
       contents: read
       actions: read
       issues: read
+    env:
+      # The actor of the dispatches this workflow and the wake make with the
+      # App token, which are not a human launching the controller. The App's
+      # token is minted only after the reconcile step, so its slug is not at
+      # hand there.
+      PORTING_APP_ACTOR: riseproject-dev[bot]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -381,6 +387,9 @@ jobs:
           # The retention of the worker's publication artifact, as its
           # generated lock sets it, for the expiry of a submission rewrite.
           UPSTREAMING_ARTIFACT_RETENTION_DAYS: ${{ vars.GH_AW_DEFAULT_ARTIFACT_RETENTION_DAYS || '30' }}
+          # A controller run a human launched acts on everything due at that
+          # moment, and releases every hold for a failure of the pipeline once.
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' && github.triggering_actor != env.PORTING_APP_ACTOR && 'true' || '' }}
         run: |
           set -euo pipefail
           gh_aw=$(scripts/install_gh_aw.sh "$RUNNER_TEMP/gh-aw-cli") || gh_aw=
@@ -391,6 +400,7 @@ jobs:
             --ci-reruns ci-reruns \
             --review-comments review-comments \
             --report report.json \
+            ${MANUAL:+--manual} \
             ${gh_aw:+--gh-aw "$gh_aw"}
           {
             echo '## Porting reconciliation'
@@ -405,6 +415,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/porting-http-cache
           key: porting-http-cache-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Report Work held for a failure of the pipeline
+        run: |
+          set -euo pipefail
+          jq -r '(.dispatch_recovery // [])[] | select(.held) | "::warning title=Held for a failure of the pipeline::\(.contribution): \(.alert)"' report.json
       - name: Mint a control-repository token for the state commit
         id: state-token
         if: steps.policy.outputs.read_only == 'false'

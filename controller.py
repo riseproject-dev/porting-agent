@@ -1335,12 +1335,34 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
         return None, None, f"terminal Work in {engine.state_key(c)}, a state the table does not have"
     facts = {"work_terminal_without_result"}
     details = {"queue_state": queue_state, "work": aw["dedupe_key"]} | (details or {})
-    generation, revision = int(c.get("generation", 0)), c["revision"] + 1
-    fresh = dict(aw, dedupe_key=work_queue.work_key(c["contribution_id"], generation, revision,
-                                                    aw["task"], engine.head_reruns(c)["flaky"]),
-                 generation=generation, revision=revision, requested_at=iso,
-                 deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
-                 dispatched_run_id=None)
+    fresh = _fresh_work(c, aw, now)
+    if details.get("pipeline_failure"):
+        # The last Claim failed before its agent for a failure of the
+        # pipeline, which has since been corrected, or a human launched the
+        # controller, or the backoff of a free relaunch passed: a fresh graph,
+        # with nothing charged. A free relaunch at the same version is
+        # counted on the Work, so the free relaunches of one version are
+        # bounded across graphs.
+        free = details["pipeline_failure"].get("free_count")
+        if free:
+            fresh["pipeline_free"] = {"version": details["pipeline_failure"]["version"],
+                                      "count": free}
+        else:
+            fresh.pop("pipeline_free", None)
+        match engine.dispatch(engine.try_apply_transition(
+                c, "reallocate_after_pipeline_failure", policy=policy, now=iso,
+                cause_id=f"queue-{queue_state}",
+                facts=facts | {"pipeline_failure", "pipeline_failure_cleared"},
+                values={"active_work": fresh}, details=details),
+                ("controller", "terminal_work")):
+            case engine.Applied() as out:
+                return (out.record, out.event,
+                        "new revision for Work whose last Claim failed before its agent for a "
+                        "failure of the pipeline; nothing is charged")
+            case engine.Skip(refused):
+                return None, None, f"terminal Work: {refused.detail}"
+            case engine.Bug(refused):
+                raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
     # `allocate_work_retry` is guarded by the bound upstream identity. A
     # record without it never reaches this point: it holds Work only once a
     # row guarded by the same identity allocated it, the identity is cleared
@@ -1367,6 +1389,20 @@ def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
             return None, None, f"terminal Work: {refused.detail}"
         case engine.Bug(refused):
             raise engine.TransitionRefused(refused, ("controller", "terminal_work"))
+
+
+def _fresh_work(c: dict, aw: dict, now: datetime) -> dict:
+    """The Work request that replaces the terminal Work ``aw`` of ``c``: a
+    fresh graph at the next revision."""
+    generation, revision = int(c.get("generation", 0)), c["revision"] + 1
+    # The free relaunches of a version belong to the graph that failed: only
+    # `reallocate_after_pipeline_failure` carries them on (`terminal_work`).
+    aw = {k: v for k, v in aw.items() if k != "pipeline_free"}
+    return dict(aw, dedupe_key=work_queue.work_key(c["contribution_id"], generation, revision,
+                                                   aw["task"], engine.head_reruns(c)["flaky"]),
+                generation=generation, revision=revision, requested_at=now.isoformat(),
+                deadline_at=(now + timedelta(hours=WORK_DEADLINE_HOURS)).isoformat(),
+                dispatched_run_id=None)
 
 
 def _retry_spent_work(record: dict, inputs: Inputs, res: TickResult, policy: dict) -> dict:

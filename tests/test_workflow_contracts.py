@@ -709,6 +709,23 @@ class TestWorkflowContracts(unittest.TestCase):
                          "porting-agent-controller")
         self.assertFalse(controller["jobs"]["reconcile"]["concurrency"]["cancel-in-progress"])
 
+    def test_a_manual_controller_run_releases_the_holds_for_pipeline_failures(self):
+        steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
+        step = next(s for s in steps if s.get("name") == "Reconcile deterministic state locally")
+        expression = step["env"]["MANUAL"]
+        # A run a human launched, not the dispatches of the App (the follow-up
+        # and the wake), which the actor `riseproject-dev[bot]` makes.
+        self.assertIn("github.event_name == 'workflow_dispatch'", expression)
+        self.assertIn("github.triggering_actor != env.PORTING_APP_ACTOR", expression)
+        reconcile_job = workflow("controller.yml")["jobs"]["reconcile"]
+        self.assertEqual(reconcile_job["env"]["PORTING_APP_ACTOR"], "riseproject-dev[bot]")
+        self.assertIn("${MANUAL:+--manual}", step["run"])
+        warn = next(s for s in steps if s.get("name") == "Report Work held for a failure of the "
+                                                         "pipeline")
+        self.assertIn("::warning", warn["run"])
+        self.assertLess(steps.index(step), steps.index(warn))
+        subprocess.run(["bash", "-n"], input=warn["run"].encode(), check=True)
+
     def test_the_dispatcher_launch_is_confirmed_to_be_listed(self):
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         launch = next(s for s in steps if s.get("name") == "Launch dispatcher for durable selected Work")

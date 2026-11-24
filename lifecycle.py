@@ -669,6 +669,19 @@ _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by", "paused_at_
 # retry pauses again at the new version; a human `pause` takes the stop over
 # and ends the automatic resume.
 PAUSED_FOR_ERROR = "paused by the controller after a processing error"
+# A Work graph whose last Claim failed before its agent ran, for a step of the
+# pipeline that does not depend on the contribution (a gateway that did not
+# start, a failed activation), is the failure of the pipeline, not of the Work:
+# it spends none of the budgets of the Work. It is held until the pipeline code
+# changes, a human launches the controller, or the backoff of a free relaunch
+# passes (30 minutes, 2 hours, 8 hours, at one version of the code), and then a
+# fresh graph is allocated without a charge.
+PIPELINE_FAILURE = "the last Claim of the Work failed before its agent for a failure of the pipeline"
+NOT_PIPELINE_FAILURE = ("the last Claim of the Work did not fail before its agent for a failure "
+                        "of the pipeline")
+PIPELINE_FAILURE_CLEARED = ("the pipeline code changed since that failure, a human launched "
+                            "the controller, or the backoff of one of its 3 free relaunches "
+                            "passed")
 PIPELINE_CHANGED = "the pipeline code changed since the pause"
 PAUSE_ALLOWED = "not paused, or paused by the controller"
 # The guard of the controller's stop after a processing error, and the stops
@@ -770,7 +783,9 @@ def _exhaust_recovery(*failures: str) -> Transition:
     budgets = tuple(b for f in failures for b in RECOVERY_FAILURES[f][0])
     held = "publication_infrastructure_error" in failures
     return Transition(
-        _K, None, (RECOVERY_EXHAUSTED,),
+        _K, None, (RECOVERY_EXHAUSTED,
+                   *((NOT_PIPELINE_FAILURE,) if "work_terminal_without_result" in failures
+                     else ())),
         _E(work="clear", sets=("pending_human_action=" + "|".join(kinds), PENDING_COUNTER,
                                *(("pending_publication.exhausted",) if held else ()))),
         description="The pending action names the failure, and `pending_human_action.counter` "
@@ -916,6 +931,7 @@ FEEDBACK_OR_UNMET = ("pending actionable feedback, or a series requirement of th
                      "is unmet on the exact head")
 EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((WORK_TOTAL_REMAINS,), (WORK_TOTAL_EXHAUSTED,)),
+    ((NOT_PIPELINE_FAILURE,), (PIPELINE_FAILURE,)),
     ((NO_FAILING_JOB,), (FAILING_JOB,)),
     ((NO_FAILING_JOB, NO_PROGRESS_REMAINS), (REPAIR_BUDGET_EXHAUSTED,)),
     ((REPAIR_BUDGETS_REMAIN,), (REPAIR_BUDGET_EXHAUSTED,)),
@@ -945,11 +961,25 @@ EXCLUSIVE_OBSERVATION_PAIRS = {
 
 _ALLOCATE_WORK_RETRY = Transition(
     _K, None,
-    ("the Work graph is terminal without a usable Result", "work_recovery and work_total remain",
-     UPSTREAM_BOUND),
+    ("the Work graph is terminal without a usable Result", NOT_PIPELINE_FAILURE,
+     "work_recovery and work_total remain", UPSTREAM_BOUND),
     _E(revision="bump", work="reallocate"), ("work_recovery", "work_total"),
     description="A terminal Work graph is never submitted again; a fresh graph is allocated. It "
                 "carries the same feedback ids.")
+_REALLOCATE_AFTER_PIPELINE_FAILURE = Transition(
+    _K, None,
+    ("the Work graph is terminal without a usable Result", PIPELINE_FAILURE,
+     PIPELINE_FAILURE_CLEARED, UPSTREAM_BOUND),
+    _E(revision="bump", work="reallocate"),
+    description="A fresh graph is allocated for a Work graph whose last Claim failed before its "
+                "agent for a failure of the pipeline, once the pipeline code changed since the "
+                "failure, a human launched the controller, or the backoff of one of its 3 free "
+                "relaunches passed (counted on the Work as `pipeline_free`, per version of the "
+                "code). It charges nothing: the "
+                "failure was not caused by the Work, so `work_recovery`, `work_total` and the "
+                "attempts counted so far are unchanged. Until then the record is held as it is: "
+                "no row is taken and the failure is reported as an alert. It carries the same "
+                "feedback ids.")
 _SCHEDULE_PUBLISH_RETRY = Transition(
     _R, None,
     ("publication failed with an infrastructure error", "publish_recovery remains"),
@@ -1164,6 +1194,7 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "planning.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("reject_plan", "planning.idle"): Transition(
                 _R, None,
                 (PLAN_REJECTED, "planning_attempts remains"),
@@ -1282,6 +1313,7 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "development.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("hold_patch_for_review", "development.review_pending"): Transition(
                 _R, None,
                 (PATCH_VERIFIED,),
@@ -1387,6 +1419,7 @@ LIFECYCLE: dict[str, State] = {
             ("exhaust_recovery", "development.waiting_human"):
                 _review_unavailable(_EXHAUST_WORK_RECOVERY),
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("accept_patch_review", PUBLISHING): Transition(
                 _R, None,
                 (PATCH_REVIEW_PASSED,),
@@ -1761,6 +1794,7 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("accept_submission_rewrite", "handoff.review_pending"): Transition(
                 _R, None,
                 (REWRITE_PASSED,),
@@ -1817,6 +1851,7 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "handoff.waiting_human"): _EXHAUST_WORK_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
             ("accept_submission_review", "handoff.building_upstream_branch"): Transition(
                 _R, None,
                 (REVIEW_PASSED,),
@@ -2133,6 +2168,7 @@ LIFECYCLE: dict[str, State] = {
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_recovery", "upstream_review.waiting_human"): _EXHAUST_PUBLICATION_RECOVERY,
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
+            ("reallocate_after_pipeline_failure", SELF): _REALLOCATE_AFTER_PIPELINE_FAILURE,
         }),
     "upstream_review.waiting_human": State(
         "human_wait", False, False,
@@ -3271,6 +3307,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                 (("planning.idle", "dispatch_planning"),
                  ("planning.agent_running", "retry_dispatch"),
                  ("planning.agent_running", "allocate_work_retry"),
+                 ("planning.agent_running", "reallocate_after_pipeline_failure"),
                  ("planning.agent_running", "exhaust_recovery"),
                  ("planning.idle", "exhaust_work_total"),
                  ("planning.waiting_human", "resume_planning"),
@@ -3351,6 +3388,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.fix_needed", "request_repair"),
                  ("development.agent_running", "retry_dispatch"),
                  ("development.agent_running", "allocate_work_retry"),
+                 ("development.agent_running", "reallocate_after_pipeline_failure"),
                  ("development.agent_running", "exhaust_recovery"),
                  ("development.waiting_human", "resume_development"),
                  ("development.waiting_human", "rearm_dispatch")),
@@ -3432,6 +3470,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.review_pending", "exhaust_work_total"),
                  ("development.reviewing", "retry_dispatch"),
                  ("development.reviewing", "allocate_work_retry"),
+                 ("development.reviewing", "reallocate_after_pipeline_failure"),
                  ("development.reviewing", "exhaust_recovery"),
                  ("development.reviewing", "reject_patch_review"),
                  ("development.reviewing", "publish_after_failed_reviews"),
@@ -3834,6 +3873,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.agent_running", "retry_dispatch"),
                  ("handoff.agent_running", "exhaust_recovery"),
                  ("handoff.agent_running", "allocate_work_retry"),
+                 ("handoff.agent_running", "reallocate_after_pipeline_failure"),
                  ("handoff.waiting_human", "resume_submission_review"),
                  ("handoff.waiting_human", "rearm_dispatch"),
                  ("handoff.review_due", "request_submission_rewrite"),
@@ -3844,6 +3884,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("handoff.reviewing", "retry_dispatch"),
                  ("handoff.reviewing", "exhaust_recovery"),
                  ("handoff.reviewing", "allocate_work_retry"),
+                 ("handoff.reviewing", "reallocate_after_pipeline_failure"),
                  ("handoff.reviewing", "accept_submission_review"),
                  ("handoff.building_upstream_branch", "expire_submission_rewrite"),
                  ("handoff.building_upstream_branch", "retry_upstream_branch"),
@@ -3914,6 +3955,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  "upstream_review.fix_needed"),
                 (("upstream_review.agent_running", "retry_dispatch"),
                  ("upstream_review.agent_running", "allocate_work_retry"),
+                 ("upstream_review.agent_running", "reallocate_after_pipeline_failure"),
                  ("upstream_review.agent_running", "schedule_publish_retry"),
                  ("upstream_review.agent_running", "exhaust_recovery"),
                  ("upstream_review.waiting_human", "resume_upstream_revision"),
@@ -4200,7 +4242,8 @@ def _check_states(problems: list[str]) -> None:
             effects = e.transition.effects
             if effects.work == "allocate" and not state.launches:
                 problems.append(f"{where}: allocates Work from a state that does not launch")
-            if effects.work in ("allocate", "reallocate") and "work_total" not in e.transition.charges:
+            if effects.work in ("allocate", "reallocate") and "work_total" not in e.transition.charges \
+                    and PIPELINE_FAILURE not in e.transition.guard:
                 problems.append(f"{where}: allocates Work without charging 'work_total'")
             if must_bump(e) and effects.revision != "bump":
                 problems.append(f"{where}: the revision rule requires a revision bump")
