@@ -22,10 +22,6 @@ engine:
   # pi-subagents' builtin `researcher` and `evidence-auditor` come from the
   # child-only default below.
   config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}}'
-  # The MCP gateway's session lifetime, stated rather than left to gh-aw's
-  # default: it must outlast the agent step (330 minutes) and its job (350).
-  mcp:
-    session-timeout: 6h
 model: anthropic/claude-opus-5-5
 concurrency:
   job-discriminator: ${{ github.run_id }}

@@ -1721,12 +1721,59 @@ class TestWorkerRunBound(unittest.TestCase):
         self.assertEqual(stopped, agent)
         self.assertLessEqual(finish, agent - 30)
 
-    def test_the_mcp_gateway_session_outlasts_the_agent_job(self):
-        jobs = workflow("worker.lock.yml")["jobs"]
-        job = int(jobs["agent"]["timeout-minutes"])
-        [step] = [s for s in jobs["agent"]["steps"] if s.get("id") == "start-mcp-gateway"]
-        hours = int(re.search(r'"sessionTimeout": "(\d+)h"', step["run"]).group(1))
-        self.assertGreater(hours * 60, job)
+    def test_the_mcp_gateway_session_default_outlasts_the_agent_job(self):
+        # gh-aw v1.2.2 renders `engine.mcp.session-timeout` as a
+        # `sessionTimeout` key that the gateway's schema rejects (see
+        # test_every_lock_renders_only_gateway_config_keys_the_schema_allows),
+        # so the worker states none and relies on the gateway's default
+        # (MCP_GATEWAY_SESSION_TIMEOUT, 6h in gh-aw-mcpg v0.5.6).
+        self.assertNotIn("mcp", source("worker")["engine"])
+        job = int(workflow("worker.lock.yml")["jobs"]["agent"]["timeout-minutes"])
+        self.assertGreater(6 * 60, job)
+
+    def test_every_lock_renders_only_gateway_config_keys_the_schema_allows(self):
+        import hashlib
+
+        import jsonschema
+
+        raw = (ROOT / "tests/fixtures/mcp-gateway-config.schema.json").read_bytes()
+        self.assertEqual(
+            hashlib.sha256(raw).hexdigest(),
+            "448918b857f27064f884639beb929abfd4bac0dac44ed5fd602c5bcb4e64c7c4",
+        )
+        validator = jsonschema.Draft202012Validator(json.loads(raw))
+        locks = sorted(WORKFLOWS.glob("*.lock.yml"))
+        self.assertTrue(locks)
+        for lock in locks:
+            text = lock.read_text()
+            match = re.search(
+                r'<< (GH_AW_MCP_CONFIG_\w+_EOF) \| "\$GH_AW_NODE" '
+                r'"\$\{RUNNER_TEMP\}/gh-aw/actions/start_mcp_gateway\.cjs"\n'
+                r"(.*?)\n\s*\1\n",
+                text,
+                re.S,
+            )
+            self.assertIsNotNone(match, lock.name)
+            body = match.group(2)
+            # The heredoc is shell-expanded: a backslash before `$` is dropped, and the port is bare.
+            config = json.loads(
+                body.replace("\\$", "$").replace("$MCP_GATEWAY_PORT", "8080")
+            )
+            with self.subTest(lock=lock.name):
+                allowed = validator.schema["definitions"]["gatewayConfig"]["properties"]
+                self.assertLessEqual(set(config["gateway"]), set(allowed))
+                self.assertLessEqual(set(config), set(validator.schema["properties"]))
+                # Whole-config validation, with the servers (which this
+                # test does not own) replaced by an empty map.
+                # `payloadDir` is a path the runner supplies at run time.
+                gateway = {**config["gateway"], "payloadDir": "/tmp/payloads"}
+                errors = [
+                    e.message
+                    for e in validator.iter_errors(
+                        {**config, "mcpServers": {}, "gateway": gateway}
+                    )
+                ]
+                self.assertEqual(errors, [])
 
     def test_the_work_deadline_covers_every_queue_attempt(self):
         import controller

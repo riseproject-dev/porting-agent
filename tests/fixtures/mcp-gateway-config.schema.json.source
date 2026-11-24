@@ -1,0 +1,10 @@
+mcp-gateway-config.schema.json is the JSON Schema that the MCP gateway validates its
+configuration against, vendored from the gateway image the locks pin
+(ghcr.io/github/gh-aw-mcpg:v0.5.6):
+https://raw.githubusercontent.com/github/gh-aw-mcpg/v0.5.6/internal/config/schema/mcp-gateway-config.schema.json
+SHA-256 of the upstream file 0b5a4ab3f39454684a86f4fe61ec5d05f58d987e6abd22d6f691d532c9675b12
+The one change: its single U+2014 character is written as the JSON escape \u2014 (the same
+string once parsed), because the repository forbids that character; the vendored file's SHA-256
+is 448918b857f27064f884639beb929abfd4bac0dac44ed5fd602c5bcb4e64c7c4, which the test checks.
+gh-aw v1.2.2 renders the configuration; its own copy of the schema (pkg/workflow/schemas)
+is looser than the gateway's, so the gateway's is the one that decides.
