@@ -2444,3 +2444,185 @@ flowchart TB
 
     development_agent_running ==>|reject_patch_proposal| development_fix_needed
 ```
+
+### A Result of Work of another phase
+
+Which Results are late although the record holds Work, and which phase folds the Result of a held publication?
+
+**Change.** Each phase requests its own Work only (`reconcile.WORK_PHASE`): planning Work in `planning`, patch and patch review Work in `development`, revision Work in `upstream_review`, and the submission rewrite and review in `handoff`. A Result of Work the record holds whose task belongs to another phase takes `record_late_effect`, and so do a plan outside `planning`, any other Result in `planning`, a submission Result outside `handoff`, a review of a held patch outside `development.reviewing`, and the Result of a held publication outside `development` and `upstream_review`. The event names why (`late Result: <task> Work is not requested in the <phase> phase`, and so on). This completes decision 2.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+    end
+
+    development_agent_running ==>|record_late_effect| development_agent_running
+```
+
+### An exhausted held publication and the resumes
+
+Does a held publication whose `publish_recovery` is exhausted keep the resumes of its wait from applying?
+
+**Change.** No. A held publication marked `pending_publication.exhausted` by `exhaust_publish_recovery` launches nothing more and is not a pending publication for the guard "quiescent: no open operation and no pending publication" (`engine.publication_pending`). So `resume_development`, `resume_upstream_revision`, `resume_stale`, and `refresh_planning` apply in the wait `exhaust_publish_recovery` entered, and each clears it: the refresh rows list `pending_publication` among their clears like the resumes, and `lifecycle check` verifies the rows of `development.waiting_human`. Fresh Work is requested; the held Result is never reused. A publication that is still pending refuses `resume_stale` and `refresh_planning`. This completes decision 9.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+        development_fix_needed["development.fix_needed"]
+    end
+    subgraph queued["queued"]
+        queued_idle["queued.idle"]
+    end
+
+    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_waiting_human ==>|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_waiting_human ==>|resume_stale<br/>/upstreaming resume| queued_idle
+```
+
+### A folded Result ends the held publication
+
+Which rows clear `pending_publication` when the Result of a publish-only retry is folded?
+
+**Change.** The rows themselves. In every state that has `schedule_publish_retry` (`development.agent_running`, `development.publishing`, `upstream_review.agent_running`), every row that folds a Result lists `pending_publication` among its clears: `hold_patch_for_review`, `record_publish_success`, `reject_patch_proposal`, `replan_development`, `request_ci_rerun`, `record_revision_publish_success`, and `require_reviewer_answer`. Only `schedule_publish_retry` (which holds the Result), `exhaust_publish_recovery` (which marks it exhausted), and `record_late_effect` keep it. `lifecycle check` verifies this, and no write beside the row clears it any more; the launch of a retry (`publish_retry_launched`) is still recorded beside the table.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_agent_running -->|schedule_publish_retry| development_agent_running
+    development_agent_running ==>|record_publish_success| development_waiting_ci
+    development_agent_running ==>|reject_patch_proposal| development_fix_needed
+    development_agent_running ==>|request_ci_rerun| development_waiting_ci
+```
+
+### What a published patch adds to the admitted scope
+
+Which files of a published patch join `scope_paths`?
+
+**Change.** Only the published files that no admitted path matches (matched as the trusted publisher matches them), once each and in order: the scope extension the publisher admitted, as exact paths, for Work backed by a human review or with `legacy_scope_extension`. Files an admitted glob already matches are not added, so a normal publication never overflows the bound of 32 paths. An extension that would leave the scope invalid (over 32 paths, or an unsafe path) is not recorded: the scope is kept, the event names it (`scope_extension_not_recorded`), and the Result is folded; a record without an admitted scope keeps none. The write stays beside `record_publish_success` and `record_revision_publish_success` (`patch_published`), since a row that sets `scope_paths` bumps the revision and these rows keep it (the head change that follows is recorded by `record_head_change`).
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+    end
+
+    development_agent_running ==>|record_publish_success| development_waiting_ci
+```
+
+### A `no_change` report of development Work
+
+How is the worker's `no_change` report of development Work folded?
+
+**Change.** As "a failure not caused by the patch": `request_ci_rerun` when the Work carries no feedback (`active_work.feedback_evidence_ids` is empty; the Work's `reason_ids` are not feedback) and `flaky_reruns` remains for the head, and `reject_patch_proposal` otherwise. The rerun row keeps the revision, so from the first rerun on the Work id names the head's rerun count (`.rerun<n>`), and the repair Work requested after a rerun is never the Work whose Result asked for it. A blocked Result's rehearsal evidence is stored and named in the event and is never pending feedback. A rehearsal id that an older record still holds as pending feedback is answered like any feedback (`return_for_feedback` when CI passes, then Work that carries it, cleared when its Result is published), so it heals without a migration. This completes the CI rerun decision.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_agent_running ==>|request_ci_rerun| development_waiting_ci
+    development_agent_running -->|reject_patch_proposal| development_fix_needed
+```
+
+### What `publish_recovery` counts
+
+Is `publish_recovery` charged per launch of a publish-only retry, or per failed publication?
+
+**Change.** Per failed publication of the held Result (`pending_publication.attempts`), the worker's own publication being the first, each charged by `schedule_publish_retry`. The launch of a retry charges nothing (`publish_retry_launched`, beside the table). A Result is therefore published at most `retries.infrastructure_per_head_failure` plus two times (4 with the policy) before `exhaust_publish_recovery`, and the retries are launched 15, 60, then 240 minutes after each failure.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_agent_running ==>|schedule_publish_retry| development_agent_running
+    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+```
+
+### A publish-only retry that returns no Result
+
+What happens to a launched publish-only retry whose Result never arrives, and to its Result when it arrives late?
+
+**Change.** A launched retry whose Result is not folded within `PUBLISH_RESULT_WAIT_MINUTES` (60) of `pending_publication.launched_at` is "publication failed with an infrastructure error": `schedule_publish_retry`, or `exhaust_publish_recovery` once the budget is spent. Its Result arriving later is folded by its row while the Result is still held and no human is waited for, and takes `record_late_effect` in the wait, which is kept. An `infra_error` it reports was already charged (`reconcile._charged_launch`: its attempt is not above `attempts`, or no retry is launched) and takes `record_late_effect` without a charge.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_agent_running ==>|schedule_publish_retry| development_agent_running
+    development_agent_running -->|exhaust_publish_recovery| development_waiting_human
+    development_agent_running ==>|record_late_effect| development_agent_running
+```
+
+### An allocation that names a spent Work graph
+
+What happens when a row that keeps the revision allocates Work whose graph already returned a Result or is terminal in the queue?
+
+**Change.** That Work is "the Work graph is terminal without a usable Result": the allocation row is taken, and then `allocate_work_retry` or `exhaust_work_recovery` in the same tick. The allocation charges `work_total` (and its own budgets), and the fresh graph charges `work_recovery` and `work_total` again; the spent graph is never submitted.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_fix_needed -->|request_repair| development_agent_running
+    development_agent_running ==>|allocate_work_retry| development_agent_running
+    development_agent_running -->|exhaust_work_recovery| development_waiting_human
+```
+
+### What `dispatch_recovery` counts and a launch that shows no run
+
+Which dispatcher runs does `dispatch_recovery` count, and what happens to a launch that never shows up as a run?
+
+**Change.** It counts the dispatcher runs created since the Work was requested, or since its history was recorded or the queue's retry time (`retry_not_before`) when later; every counted run has ended. Each ended run is decided once: `retry_dispatch` records the run it decided in `active_work.dispatched_run_id` as an effect of the row, and `exhaust_dispatch_recovery` is taken once the count reaches the limit (`retries.infrastructure_per_head_failure` plus one). A dispatcher launch that never shows up as a run is launched again after `DISPATCH_LAUNCH_GRACE_MINUTES` (15) and then on every tick until a run shows up, without a row and without a charge, also for a queue retry (15 minutes after the retry time): such a launch is lost to the control plane, not to the Work. A Work whose `retry_not_before` is not representable is left out of the retries and reported.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_agent_running ==>|retry_dispatch| development_agent_running
+    development_agent_running -->|exhaust_dispatch_recovery| development_waiting_human
+```
+
+### A review observed with a CI failure while CI is awaited
+
+In `development.waiting_ci`, which row applies when an actionable review and an executed CI failure on the exact head are observed in the same tick?
+
+**Change.** The failure first, as at the submission gate (O20): `record_ci_failure` is taken, and the review is recorded in the same observation by `record_actionable_review` in `development.fix_needed`, so the repair Work carries the failing job and the review (`request_repair` charges `repair_attempts_cluster` for the failing job). `record_actionable_review` in `development.waiting_ci` is guarded by "no executed blocking failure on the exact head", exclusive with the guard of `record_ci_failure`, which `lifecycle check` verifies; a review observed while CI is pending, passed, interrupted, or behind a confirmed rerun takes it alone, and nothing else is decided from CI in that observation. This completes O20.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+    end
+
+    development_waiting_ci ==>|record_ci_failure| development_fix_needed
+    development_waiting_ci -->|record_actionable_review| development_fix_needed
+    development_fix_needed ==>|record_actionable_review| development_fix_needed
+    development_fix_needed -->|request_repair| development_agent_running
+```

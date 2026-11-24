@@ -797,7 +797,8 @@ for _guard, _name in (
     ("the proposal no longer applies to the fork head", "proposal_stale"),
     ("the worker reports a failure not caused by the patch", "failure_not_caused_by_patch"),
     ("publication failed with an infrastructure error", "publication_infrastructure_error"),
-    ("an executed blocking failure on the exact head", "ci_failed_on_head"),
+    (lc.HEAD_FAILED, "ci_failed_on_head"),
+    (lc.HEAD_NOT_FAILED, "head_not_failed"),
     (lc._INTERRUPTED, "ci_interrupted_on_head"),
     ("authorized actionable review feedback", "actionable_review"),
     ("authorized explanation-only inquiry", "explanation_inquiry"),
@@ -884,6 +885,7 @@ FACT_NAMES = frozenset(p.name for p in PREDICATES.values() if p.kind == "fact") 
 # Facts that state the opposite of each other; a caller that asserts both has
 # established neither.
 CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
+                       ("ci_failed_on_head", "head_not_failed"),
                        ("submission_rewrite_passed", "submission_rewrite_failed"),
                        ("submission_rewrite_current", "submission_rewrite_expired"),
                        ("submission_review_passed", "submission_review_failed"),
@@ -1799,10 +1801,12 @@ def with_current_names(record: dict) -> tuple[dict, list[str]]:
 # Writes beside a row
 #
 # A few fields are recorded beside the row that a tick takes, or without a
-# row where the table has none (each listed on the known-gaps page). Each
-# such write is named here with the fields it may change, a dotted name
-# admitting only that part of a field; it never changes the state, the flag,
-# the revision, or the generation.
+# row where the table has none (each listed on the engine page). Each such
+# write is named here with the fields it may change, a dotted name admitting
+# only that part of a field; it never changes the state, the flag, the
+# revision, or the generation. The rows themselves record the decided
+# dispatcher run (`retry_dispatch`) and end a held publication (every row
+# that folds its Result).
 
 BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # The controller records the intent of a planned operation in the same
@@ -1818,8 +1822,6 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # consecutive ticks only.
     "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since",
                       "budget.source_unavailable_at", "budget.source_unavailable_repository"),
-    # The dispatcher run a dispatch recovery decided.
-    "dispatcher_run_decided": ("active_work.dispatched_run_id",),
     # Work held in a handoff state that requests none is dropped.
     "handoff_work_dropped": ("active_work",),
     # A published patch: its files join the admitted scope, and `no_progress`
@@ -1828,8 +1830,7 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # A verified receipt of a `ci_rerun` operation the collector planned
     # releases it; no row is fired by it.
     "ci_rerun_recorded": ("active_operation_id",),
-    # The held Result is answered, or its publish-only retry is launched.
-    "publication_answered": ("pending_publication",),
+    # The publish-only retry of the held Result is launched.
     "publish_retry_launched": ("pending_publication",),
     # The comment of a patch published after successive failed reviews, due
     # once `record_publish_success` published it: its posts launched and

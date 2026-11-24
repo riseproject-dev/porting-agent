@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 import capacity
+import engine
 import reconcile
 import work
 import worker_recovery
@@ -131,8 +132,16 @@ class TestLivePreAgentInfrastructureRecovery(unittest.TestCase):
         relaunch, staged, _report = self.recover(1)
         decided = [item for kind, item in staged if kind == "contributions"][-1]
         self.assertEqual(decided["active_work"]["dispatched_run_id"], "45005112315")
-        self.assertEqual([item["kind"] for kind, item in staged if kind == "events"],
-                         ["retry_dispatch"])
+        [event] = [item for kind, item in staged if kind == "events"]
+        self.assertEqual((event["kind"], event["cause"]["id"]),
+                         ("retry_dispatch", "dispatcher-45005112315"))
+        # The row records the decided run: only `active_work.dispatched_run_id`
+        # changes in the Work, and no write beside the row records it.
+        self.assertEqual(decided["active_work"],
+                         dict(self.record["active_work"], dispatched_run_id="45005112315"))
+        with self.assertRaises(engine.TransitionError):
+            engine.record_beside(self.record, "dispatcher_run_decided", now=decided["updated_at"],
+                                 active_work=decided["active_work"])
         # The relaunched run has not shown up yet: no row is taken again.
         self.record = decided
         relaunch, staged, report = self.recover(1)

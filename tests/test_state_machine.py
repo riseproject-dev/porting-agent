@@ -257,6 +257,57 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertTrue(any("nominate_for_handoff and return_for_feedback can apply together" in p
                             for p in problems), problems)
 
+    def test_a_ci_failure_observed_with_a_review_applies_first_while_ci_is_awaited(self):
+        state = "development.waiting_ci"
+        failure = lc.find_edge(state, "record_ci_failure").transition
+        review = lc.find_edge(state, "record_actionable_review").transition
+        self.assertEqual(failure.guard, (lc.HEAD_FAILED,))
+        self.assertEqual(review.guard, ("authorized actionable review feedback",
+                                        lc.HEAD_NOT_FAILED))
+        self.assertIn(((lc.HEAD_FAILED,), (lc.HEAD_NOT_FAILED,)), lc.EXCLUSIVE_GUARDS)
+        self.assertEqual(lc.EXCLUSIVE_OBSERVATION_PAIRS[state],
+                         (("record_ci_failure", "record_actionable_review"),))
+        # The review observed with the failure is recorded in fix_needed.
+        self.assertEqual(lc.find_edge("development.fix_needed", "record_actionable_review")
+                         .transition.guard, ("authorized actionable review feedback",))
+        problems = self.mutated(state, "record_actionable_review",
+                                guard=self.without(review.guard, lc.HEAD_NOT_FAILED))
+        self.assertTrue(any("record_ci_failure and record_actionable_review can apply together"
+                            in p for p in problems), problems)
+
+    def test_every_row_that_folds_a_held_result_clears_it(self):
+        rows = {
+            "development.agent_running": ("hold_patch_for_review", "record_publish_success",
+                                          "reject_patch_proposal", "replan_development",
+                                          "request_ci_rerun"),
+            lc.PUBLISHING: ("record_publish_success", "replan_development",
+                            "reject_patch_proposal", "expire_held_patch"),
+            "upstream_review.agent_running": ("record_revision_publish_success",
+                                              "reject_patch_proposal", "require_reviewer_answer"),
+        }
+        for state, verbs in rows.items():
+            for verb in verbs:
+                with self.subTest(state=state, verb=verb):
+                    t = lc.find_edge(state, verb).transition
+                    self.assertIn(lc.HELD_RESULT, t.effects.clears)
+        for state, verb in (("development.agent_running", "request_ci_rerun"),
+                            (lc.PUBLISHING, "record_publish_success"),
+                            ("upstream_review.agent_running", "require_reviewer_answer")):
+            with self.subTest(dropped=verb):
+                t = lc.find_edge(state, verb).transition
+                problems = self.mutated(state, verb,
+                                        clears=self.without(t.effects.clears, lc.HELD_RESULT))
+                self.assertIn(f"{state} --{verb}-->: folds a Result without clearing "
+                              f"{lc.HELD_RESULT}", problems)
+
+    def test_retry_dispatch_records_the_decided_run(self):
+        edges = [e for e in lc.table_edges() if e.verb == "retry_dispatch"]
+        self.assertGreaterEqual(len(edges), 5)
+        for e in edges:
+            with self.subTest(state=e.source):
+                self.assertEqual(e.transition.effects.sets, ("active_work.dispatched_run_id",))
+                self.assertEqual(e.transition.effects.revision, "keep")
+
     def test_passing_ci_with_unmet_series_requirements_makes_work_due(self):
         edge = lc.find_edge("development.waiting_ci", "return_for_series_requirements")
         t = edge.transition

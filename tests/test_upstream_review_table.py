@@ -428,6 +428,36 @@ class TestRevisionResults(unittest.TestCase):
         self.assertTrue(resumed.accepted, resumed.reason)
         self.assertEqual(engine.state_key(resumed.record), "upstream_review.fix_needed")
 
+    def test_a_published_revision_extends_the_scope_only_outside_it(self):
+        for files, expected in ((["a"], ["a"]), (["a", "b", "b"], ["a", "b"])):
+            with self.subTest(files=files):
+                rec = dict(self.running(), scope_paths=["a"])
+                result = dict(published(rec, SHA_B))
+                result["operation"] = dict(result["operation"],
+                                           proposed=dict(result["operation"]["proposed"],
+                                                         changed_files=files))
+                out = tick(rec, [result], pr=pull(head=SHA_B), branch=SHA_B)
+                self.assertEqual(kinds(out)[0], "record_revision_publish_success")
+                self.assertEqual(final(out, rec)["scope_paths"], expected)
+
+    def test_every_row_that_folds_a_held_result_clears_it(self):
+        rec = self.running()
+        held = final(tick(rec, [publication(rec, "infra_error")]), rec)
+        self.assertIsNotNone(held["pending_publication"])
+        for name, verb in (("published", "record_revision_publish_success"),
+                           ("rejected_validation", "reject_patch_proposal"),
+                           ("no_change", "require_reviewer_answer")):
+            with self.subTest(result=name):
+                result = (published(held, SHA_B) if name == "published"
+                          else publication(held, name))
+                at = SHA_B if name == "published" else SHA_A
+                out = tick(held, [dict(result, attempt=2, publication_artifact_id=1000)],
+                           pr=pull(head=at), branch=at)
+                self.assertEqual(out.failures, [])
+                self.assertEqual(kinds(out)[0], verb)
+                row = next(r for k, r in out.staged if k == "contributions")
+                self.assertIsNone(row["pending_publication"])
+
     def test_a_held_publication_is_retried_in_upstream_review(self):
         rec = record("agent_running", pending_publication=dict(PENDING))
         out = tick(rec)

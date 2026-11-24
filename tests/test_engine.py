@@ -36,6 +36,7 @@ SAMPLE = {
              "head_sha": SHA_A, "pr_number": None},
     "fork.head_sha": SHA_B,
     "fork.pr_number": 4,
+    "active_work.dispatched_run_id": "9001",
     "upstream.repository_id": 1, "upstream.base_ref": "main", "upstream.base_sha": SHA_C,
     "upstream_pr.base_ref": "main",
     "upstream_pr": {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
@@ -186,7 +187,12 @@ def scenario(state, verb, t):
         values["active_work"] = copy.deepcopy(SAMPLE["active_work"])
     if "pending_publication.exhausted" in e.sets or "publish_recovery" in t.charges:
         rec["pending_publication"] = copy.deepcopy(SAMPLE["pending_publication"])
-    if "work_recovery" in t.charges:
+    if lc.HELD_RESULT in e.clears:
+        # The row discards a held Result: one is held (an exhausted one for
+        # the rows guarded by quiescence, which admits no pending one).
+        rec["pending_publication"] = dict(copy.deepcopy(SAMPLE["pending_publication"]),
+                                          exhausted=lc.QUIESCENT in guards)
+    if "work_recovery" in t.charges or "dispatch_recovery" in t.charges:
         rec["active_work"] = copy.deepcopy(SAMPLE["active_work"])
     schemas.validate("contribution", rec)
     kwargs = dict(policy=POLICY, now=NOW, command=command, facts=facts, counts=counts,
@@ -271,7 +277,13 @@ class TestTableIsExercised(unittest.TestCase):
                     self.assertEqual(new["active_work"]["dedupe_key"],
                                      SAMPLE["active_work"]["dedupe_key"])
                 else:
-                    self.assertEqual(new["active_work"], rec["active_work"])
+                    # A row that keeps the Work changes only the parts of it
+                    # the row sets.
+                    parts = {name.split(".", 1)[1]: kwargs["values"][name]
+                             for name in kwargs["values"] if name.startswith("active_work.")}
+                    self.assertEqual(new["active_work"],
+                                     dict(rec["active_work"], **parts) if parts
+                                     else rec["active_work"])
                 sets = {lc._field_name(s) for s in e.sets}
                 for name in e.clears:
                     if name in lc.QUALIFIED_CLEARS:
@@ -876,8 +888,12 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                           facts={"dispatch_lost"})
         self.assertEqual(unknown.reason, "the count of dispatch_recovery is not known")
         retried = engine.apply_transition(running, "retry_dispatch", policy=POLICY, now=NOW,
-                                          facts={"dispatch_lost"}, counts={"dispatch_recovery": 1})
+                                          facts={"dispatch_lost"}, counts={"dispatch_recovery": 1},
+                                          values={"active_work.dispatched_run_id": "77"})
         self.assertEqual(retried.charged, ("dispatch_recovery",))
+        # The row records the dispatcher run it decided.
+        self.assertEqual(retried.record["active_work"]["dispatched_run_id"], "77")
+        self.assertEqual(retried.record["revision"], running["revision"])
 
     def test_resume_starts_only_the_counter_the_wait_names(self):
         rec = contribution(phase="planning", activity="waiting_human")
@@ -983,6 +999,69 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
                                          policy=POLICY, now=NOW, command_id="c")
         self.assertEqual((engine.state_key(abandoned.record),
                           abandoned.record["pending_publication"]), ("closed.idle", None))
+
+    def test_the_resumes_of_an_exhausted_publication_discard_it(self):
+        """An exhausted held publication launches nothing and is not pending
+        for the quiescence guard: the resumes and the refresh of its wait
+        apply and discard it, and fresh Work is requested. A publication
+        that is still pending refuses them."""
+        pending = {"worker_run_id": "555", "attempts": 4, "last_reason": "x",
+                   "next_attempt_at": NOW, "exhausted": True}
+        resume = commands.parse("/upstreaming resume revision=0 reason=r")
+        for phase, fresh_verb in (("development", "resume_development"),
+                                  ("upstream_review", "resume_upstream_revision")):
+            for stopped, verb in ((NOW, fresh_verb), (LONG_AGO, "resume_stale")):
+                if phase == "upstream_review" and verb == "resume_stale":
+                    continue  # upstream review is never refreshed by a resume
+                with self.subTest(phase=phase, verb=verb):
+                    waiting = contribution(phase=phase, activity="waiting_human",
+                                           pending_publication=dict(pending))
+                    waiting["pending_human_action"] = {
+                        "kind": "publication_infrastructure_failure", "requested_at": stopped,
+                        "reminded_at": None, "escalated_at": None,
+                        "counter": "publish_recovery"}
+                    values = {"refresh": dict(SAMPLE["refresh"])} if verb == "resume_stale" \
+                        else None
+                    out = engine.apply_command(waiting, resume, policy=POLICY, now=NOW,
+                                               command_id="c", open_operations=(),
+                                               values=values)
+                    self.assertTrue(out.accepted, out.reason)
+                    self.assertEqual(out.verb, verb)
+                    self.assertIsNone(out.record["pending_publication"])
+                    if verb == "resume_upstream_revision":
+                        continue  # guarded by the pending action alone
+                    held = dict(waiting, pending_publication=dict(pending, exhausted=False))
+                    refused = engine.apply_command(held, resume, policy=POLICY, now=NOW,
+                                                   command_id="c", open_operations=(),
+                                                   values=values)
+                    self.assertFalse(refused.accepted)
+                    self.assertIn("a publication is pending", refused.reason)
+
+    def test_removed_writes_beside_a_row_are_refused(self):
+        rec = contribution(phase="development", activity="agent_running")
+        for write, fields in (("publication_answered", {"pending_publication": None}),
+                              ("dispatcher_run_decided", {"active_work": None})):
+            with self.subTest(write=write):
+                with self.assertRaises(lc.TransitionError):
+                    engine.record_beside(rec, write, now=NOW, **fields)
+
+    def test_a_review_while_ci_is_awaited_needs_ci_not_failed(self):
+        rec = contribution(phase="development", activity="waiting_ci")
+        values = {"pending_feedback_evidence_ids": ["review-1"], "processed_review_ids": [1],
+                  "processed_review_comment_ids": [],
+                  "processed_pr_conversation_comment_ids": []}
+        refused = engine.apply_transition(rec, "record_actionable_review", policy=POLICY,
+                                          now=NOW, facts={"actionable_review"}, values=values)
+        self.assertFalse(refused.accepted)
+        with self.assertRaises(lc.TransitionError):
+            engine.apply_transition(rec, "record_actionable_review", policy=POLICY, now=NOW,
+                                    facts={"actionable_review", "head_not_failed",
+                                           "ci_failed_on_head"}, values=values)
+        out = engine.apply_transition(rec, "record_actionable_review", policy=POLICY, now=NOW,
+                                      facts={"actionable_review", "head_not_failed"},
+                                      values=values)
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(engine.state_key(out.record), "development.fix_needed")
 
     def test_every_stop_keeps_a_published_result(self):
         """`proposal_artifact` only ever holds a published Result: no stop

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fnmatch
 import hashlib
 import json
 import os
@@ -66,6 +67,7 @@ from common import (
     load_policy,
     repository_root,
     safe_id,
+    validate_scope_paths,
 )
 
 
@@ -509,7 +511,7 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     or unclaimed: ``retry_dispatch`` while ``dispatch_recovery`` (``count``
     relaunches spent) remains, ``exhaust_dispatch_recovery`` once it is
     spent. ``count`` is the number of dispatcher runs since the request,
-    all ended. The record names the decided run in ``dispatched_run_id``.
+    all ended. The row records the decided run in ``dispatched_run_id``.
     ``evidence`` is the committed evidence the payload is measured from
     (``payload_cause``). ``history_missing`` says that the history of the
     Work was never recorded (``HISTORY_WAIT`` has passed), which the event states as the
@@ -545,12 +547,11 @@ def _lost_dispatch(c: dict, aw: dict, run: dict, count: int, *, now: datetime,
     limit = lifecycle.budget_limit("dispatch_recovery", policy)
     out = engine.apply_transition(c, "retry_dispatch", policy=policy, now=iso,
                                   cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
-                                  counts=counts, details=details | {"attempt": count + 1,
-                                                                    "limit": limit})
+                                  counts=counts,
+                                  values={"active_work.dispatched_run_id": str(run["id"])},
+                                  details=details | {"attempt": count + 1, "limit": limit})
     if out.accepted:
-        new = engine.record_beside(out.record, "dispatcher_run_decided", now=iso,
-                                   active_work=dict(aw, dispatched_run_id=str(run["id"])))
-        return new, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
+        return out.record, out.event, f"relaunch: dispatch attempt {count + 1} of {limit}"
     out = engine.apply_transition(c, "exhaust_dispatch_recovery", policy=policy, now=iso,
                                   cause_id=f"dispatcher-{run['id']}", facts={"dispatch_lost"},
                                   counts=counts, details=details | {"count": count, "limit": limit})
@@ -1555,6 +1556,35 @@ def _landed_due(rec: dict, landed: list[tuple[str, str]], details: dict, *,
     return due
 
 
+def extended_scope(scope_paths: list[str] | None, changed_files: list[str] | None
+                   ) -> tuple[list[str] | None, list[str], str | None]:
+    """The admitted scope after a published patch that changed
+    ``changed_files``: (the scope, the paths that joined it, why an
+    extension was not recorded). Only the files that no admitted path
+    matches join it (the exact paths the trusted publisher admitted outside
+    the scope, matched as ``fork_publish`` matches them), once each and in
+    order. A record without an admitted scope keeps none: the payload then
+    falls back to the contract, which a scope made only of the published
+    files would narrow. An extension that would leave the scope invalid
+    (``common.validate_scope_paths``) is not recorded and the scope is kept;
+    the publisher validated it before it pushed, so this is defensive.
+    Never raises."""
+    if not scope_paths:
+        return scope_paths, [], None
+    added: list[str] = []
+    for path in changed_files or []:
+        if not isinstance(path, str) or path in added:
+            continue
+        if not any(fnmatch.fnmatchcase(path, allowed) for allowed in scope_paths):
+            added.append(path)
+    if not added:
+        return scope_paths, [], None
+    try:
+        return validate_scope_paths(list(scope_paths) + added), added, None
+    except ValueError as error:
+        return scope_paths, [], f"the published files {added} did not join the scope: {error}"
+
+
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                       worker_run_id: str | None, operations: dict[str, dict] | None = None,
                       evidence: dict[str, dict] | None = None
@@ -1583,8 +1613,9 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     there. Upstream CI is never rerun.
 
     * published (confirmed, as above): ``record_publish_success`` (clears
-      exactly the feedback the Work carried); the published files join
-      ``scope_paths`` and ``no_progress`` starts again beside the row;
+      exactly the feedback the Work carried); the published files that no
+      admitted path matches join ``scope_paths`` (``extended_scope``) and
+      ``no_progress`` starts again beside the row;
     * rejected in trusted validation, blocked, or a ``proposal`` (no
       publisher produces one any more): ``reject_patch_proposal``; a blocked
       Result's rehearsal evidence is recorded and named in the event;
@@ -1605,7 +1636,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
       stale retry behind the operation of an earlier attempt.
 
     The Result of a publish-only retry ends the held publication: every row
-    that folds it is taken with ``pending_publication`` cleared beside it.
+    that folds it clears ``pending_publication``.
     A refused row raises ``TransitionError``.
     """
     rows = WORK_RESULT_STATES.get(engine.state_key(rec))
@@ -1699,6 +1730,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                                           details=late)
         return rec, staged + [("contributions", rec), ("events", event)]
     landed_due = None
+    scope = rec.get("scope_paths")
     if failed:
         landed_due = _landed_due(rec, landed, details, now=now)
         if status == "uncertain":
@@ -1827,6 +1859,13 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             details.update(candidate=values["held_patch"]["candidate"],
                            patch_digest=values["held_patch"]["patch_digest"])
         landed_due = _landed_due(rec, landed, details, now=now)
+        if verb in ("record_publish_success", "record_revision_publish_success"):
+            scope, added, problem = extended_scope(
+                rec.get("scope_paths"), ((op or {}).get("proposed") or {}).get("changed_files"))
+            if added:
+                details["scope_extension"] = added
+            elif problem:
+                details["scope_extension_not_recorded"] = problem[:200]
         out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
                                       facts=facts, values=values, details=details)
     if not out.accepted:
@@ -1837,20 +1876,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         new = engine.record_beside(new, "review_comment_due", now=now,
                                    review_comments=landed_due)
     if out.verb in ("record_publish_success", "record_revision_publish_success"):
-        # Beside the row: the published files join the admitted scope (a
-        # repair backed by review feedback may change a path the plan
-        # missed), and a published patch starts `no_progress` and
-        # `dev_reviews` again.
-        changed_files = ((op or {}).get("proposed") or {}).get("changed_files") or []
-        scope = (list(dict.fromkeys((new.get("scope_paths") or []) + changed_files))
-                 if changed_files else new.get("scope_paths"))
+        # Beside the row: the published files that no admitted path matches
+        # join the admitted scope (the extension the trusted publisher
+        # admitted for a repair backed by review feedback, which may change
+        # a path the plan missed), and a published patch starts
+        # `no_progress` and `dev_reviews` again.
         new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope,
                                    budget=dict(new["budget"], no_progress_streak=0,
                                                review_rejections=0))
-    if held and out.verb not in ("schedule_publish_retry", "exhaust_publish_recovery"):
-        # The held Result is answered: the publication is no longer pending.
-        new = engine.record_beside(new, "publication_answered", now=now,
-                                   pending_publication=None)
     schemas.validate("contribution", new)
     staged.extend([("contributions", new), ("events", out.event)])
     return new, staged

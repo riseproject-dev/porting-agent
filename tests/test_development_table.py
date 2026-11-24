@@ -202,6 +202,13 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(engine.state_key(rejected), "development.fix_needed")
         self.assertEqual(rejected["budget"]["no_progress_streak"],
                          again["budget"]["no_progress_streak"] + 1)
+        # The reason ids of the Work are not feedback: it takes the rerun.
+        reasons = running(last_ci_evidence_id="ci-0")
+        reasons["active_work"]["reason_ids"] = ["ci-0", "review-0"]
+        _new, staged = reconcile.apply_publication(
+            reasons, rerun_outcome(reasons), now=NOW, policy=POLICY, worker_run_id="555")
+        self.assertEqual([e["kind"] for kind, e in staged if kind == "events"],
+                         ["request_ci_rerun"])
         # Work that carries feedback never takes the rerun.
         carried = running(pending_feedback_evidence_ids=["review-1"])
         carried["active_work"]["feedback_evidence_ids"] = ["review-1"]
@@ -264,6 +271,39 @@ class TestPatchResults(unittest.TestCase):
         out = tick(cleared, verdict="passed")
         self.assertEqual(kinds(out), ["nominate_for_handoff"])
 
+    def test_only_published_files_outside_the_scope_join_it(self):
+        """A published patch adds to `scope_paths` only the files no admitted
+        path matches; an extension that would leave the scope invalid is
+        named in the event and not recorded, and the Result is folded."""
+        scope = ["cmd/d2vm/*", "pkg/qemu/*", "Makefile", "go.mod"] + [
+            f"pkg/part{i}/*" for i in range(26)]
+        self.assertEqual(len(scope), 30)
+
+        def fold(rec, files, verb="record_publish_success"):
+            result = dict(publication(rec, "published"),
+                          operation={"operation_id": "op-1", "proposed": {"changed_files": files}})
+            new, staged = reconcile.apply_publication(rec, result, now=NOW, policy=POLICY,
+                                                      worker_run_id="555")
+            [event] = [e for kind, e in staged if kind == "events"]
+            self.assertEqual(event["kind"], verb)
+            schemas.validate("contribution", new)
+            return new, event
+
+        rec = dict(running(), scope_paths=list(scope))
+        new, event = fold(rec, ["cmd/d2vm/main.go", "pkg/qemu/run.go", "Makefile",
+                                "pkg/part3/x.go"])
+        self.assertEqual(new["scope_paths"], scope)
+        self.assertNotIn("scope_extension", event["details"])
+        new, event = fold(rec, ["cmd/d2vm/main.go", "docs/riscv64.md", "docs/riscv64.md"])
+        self.assertEqual(new["scope_paths"], scope + ["docs/riscv64.md"])
+        self.assertEqual(event["details"]["scope_extension"], ["docs/riscv64.md"])
+        new, event = fold(rec, ["a1", "a2", "a3"])
+        self.assertEqual(new["scope_paths"], scope)
+        self.assertIn("did not join the scope", event["details"]["scope_extension_not_recorded"])
+        self.assertEqual(engine.state_key(new), "development.waiting_ci")
+        new, event = fold(dict(running(), scope_paths=None), ["b"])
+        self.assertIsNone(new["scope_paths"])
+
     def test_publish_retries_then_the_human_wait_then_fresh_work(self):
         rec = running()
         out = tick(rec, [dict(publication(rec, "infra_error"), publication_artifact_id=1)],
@@ -286,13 +326,20 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(launched["pending_publication"]["launched_at"], later.isoformat())
         self.assertEqual(kinds(out), [])
         limit = lifecycle.budget_limit("publish_recovery", POLICY)
+        self.assertEqual(limit, POLICY["retries"]["infrastructure_per_head_failure"] + 1)
         current = launched
+        publications = 1  # the worker's own
         for artifact in range(2, limit + 2):
             # Each retry is dispatched with the attempt after the charged ones.
             attempt = current["pending_publication"]["attempts"] + 1
             out = tick(current, [dict(publication(current, "infra_error"), attempt=attempt,
                                       publication_artifact_id=artifact)], observe=False, now=later)
             current = final(out, current)
+            publications += 1
+        # A Result is published at most `infrastructure_per_head_failure` + 2
+        # times: each failed publication is charged, the launches are not.
+        self.assertEqual(publications, limit + 1)
+        self.assertEqual(current["pending_publication"]["attempts"], limit)
         self.assertEqual(kinds(out), ["exhaust_publish_recovery"])
         self.assertEqual((engine.state_key(current), current["pending_human_action"]["kind"],
                           current["pending_human_action"]["counter"]),
@@ -348,6 +395,17 @@ class TestPatchResults(unittest.TestCase):
         self.assertTrue(current["pending_publication"]["exhausted"])
         self.assertEqual(tick(current, observe=False, now=now + timedelta(days=1))
                          .report["publication_retries"], [])
+        # The Result of the last retry arrives in the wait: it is recorded
+        # late and the wait is kept.
+        late = tick(current, [dict(publication(rec, "published"), attempt=limit + 1,
+                                   publication_artifact_id=77)], observe=False,
+                    now=now + timedelta(minutes=5))
+        self.assertEqual(kinds(late), ["record_late_effect"])
+        self.assertEqual((engine.state_key(final(late, current)),
+                          final(late, current)["pending_human_action"],
+                          final(late, current)["pending_publication"]),
+                         ("development.waiting_human", current["pending_human_action"],
+                          current["pending_publication"]))
         resumed = apply_command(current, commands.parse(
             f"/upstreaming resume revision={current['revision']} reason=fixed"))
         self.assertTrue(resumed.accepted, resumed.reason)
@@ -375,6 +433,37 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual((engine.state_key(final(out, launched)),
                           final(out, launched)["pending_publication"]),
                          ("development.waiting_ci", None))
+
+    def test_every_row_that_folds_a_held_result_clears_it(self):
+        """The Result of a publish-only retry ends the held publication: the
+        row that folds it clears `pending_publication` itself."""
+        rec = running()
+        held = final(tick(rec, [dict(publication(rec, "infra_error"), publication_artifact_id=1)],
+                          observe=False), rec)
+        self.assertIsNotNone(held["pending_publication"])
+        cases = (("published", "record_publish_success"),
+                 ("rejected_validation", "reject_patch_proposal"),
+                 ("rejected_stale", "replan_development"),
+                 ("no_change", "request_ci_rerun"))
+        for name, verb in cases:
+            with self.subTest(result=name):
+                result = (rerun_outcome(held) if name == "no_change"
+                          else dict(publication(held, name), attempt=2))
+                new, staged = reconcile.apply_publication(
+                    held, result, now=NOW, policy=POLICY, worker_run_id="555")
+                events = [e for kind, e in staged if kind == "events"]
+                self.assertEqual([e["kind"] for e in events], [verb])
+                self.assertIsNone(new["pending_publication"])
+        # Taken through the engine alone, the row clears it.
+        for verb, facts in (("record_publish_success", {"result_published", "no_review_contract"}),
+                            ("replan_development", {"proposal_stale"})):
+            with self.subTest(row=verb):
+                out = engine.apply_transition(
+                    held, verb, policy=POLICY, now=NOW, facts=facts,
+                    values={"proposal_artifact": None, "publication_operation_id": None}
+                    if verb == "record_publish_success" else None)
+                self.assertTrue(out.accepted, out.reason)
+                self.assertIsNone(out.record["pending_publication"])
 
     def test_a_pause_clears_the_held_publication_and_no_retry_is_launched(self):
         held = record("agent_running", pending_publication=dict(HELD))
@@ -633,11 +722,43 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(after["processed_review_ids"], [77])
         self.assertEqual(after["revision"], rec["revision"] + 1)
 
-    def test_a_review_with_a_ci_failure_is_recorded_first(self):
+    def test_a_ci_failure_with_a_review_is_recorded_first_and_the_repair_carries_both(self):
         rec = record()
         out = tick(rec, feedback=REVIEW, verdict="failed")
-        self.assertEqual(kinds(out)[:1], ["record_actionable_review"])
-        self.assertNotIn("record_ci_failure", kinds(out))
+        self.assertEqual(kinds(out),
+                         ["record_ci_failure", "record_actionable_review", "request_repair"])
+        after = final(out, rec)
+        evidence = [e for kind, e in out.staged if kind == "evidence"
+                    and e["evidence_id"].startswith("ci-")]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(after["last_ci_evidence_id"], evidence[0]["evidence_id"])
+        review = [e for kind, e in out.staged if kind == "events"][1]
+        self.assertEqual((review["details"]["from_state"], review["details"]["to_state"]),
+                         ("development.fix_needed", "development.fix_needed"))
+        work = after["active_work"]
+        self.assertEqual((work["task"], work["feedback_evidence_ids"]),
+                         ("development_repair", ["review-2-1-77"]))
+        self.assertIn(evidence[0]["evidence_id"], work["reason_ids"])
+        self.assertEqual(after["processed_review_ids"], [77])
+        # The repair is charged to the failing job's cluster.
+        self.assertEqual(sum(after["budget"]["clusters"].values()),
+                         sum(rec["budget"]["clusters"].values()) + 1)
+
+    def test_a_review_without_a_ci_failure_is_recorded_alone(self):
+        for name, kw in (("pending", {"verdict": "pending"}), ("passed", {"verdict": "passed"}),
+                         ("interrupted", {"ci": interrupted_ci()})):
+            with self.subTest(ci=name):
+                rec = record(last_ci_evidence_id=None)
+                out = tick(rec, feedback=REVIEW, **kw)
+                self.assertEqual(kinds(out), ["record_actionable_review", "request_patch"])
+                after = final(out, rec)
+                self.assertIsNone(after["last_ci_evidence_id"])
+                self.assertEqual(after["active_work"]["feedback_evidence_ids"],
+                                 ["review-2-1-77"])
+                # No CI evidence is staged and no rerun is planned.
+                self.assertEqual([e for kind, e in out.staged if kind == "evidence"
+                                  and e["evidence_id"].startswith("ci-")], [])
+                self.assertEqual([o for kind, o in out.staged if kind == "operations"], [])
 
     def test_a_ci_failure_returns_to_development_without_a_revision_bump(self):
         rec = record()
@@ -887,6 +1008,22 @@ class TestDispatchAndWorkRecovery(unittest.TestCase):
         self.assertEqual(out.report["dispatch_recovery"][0]["decision"],
                          "relaunch: no dispatcher run")
 
+    def test_a_launch_that_shows_no_run_is_launched_again_without_a_row(self):
+        """No dispatcher run since the request: nothing before
+        `DISPATCH_LAUNCH_GRACE_MINUTES`, then the dispatcher is launched on
+        every tick until a run shows up, without a row and without a
+        charge."""
+        rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair",
+                                       requested_at=T.isoformat()))
+        history = helpers.committed_history(rec, POLICY)
+        relaunch = [{"type": "relaunch_dispatcher", "contribution_id": rec["contribution_id"]}]
+        grace = reconcile.DISPATCH_LAUNCH_GRACE_MINUTES
+        for minutes, expected in ((grace - 1, []), (grace, relaunch), (grace + 10, relaunch)):
+            with self.subTest(minutes=minutes):
+                out = tick(rec, observe=False, evidence=history,
+                           now=T + timedelta(minutes=minutes))
+                self.assertEqual((out.staged, out.report["dispatch_relaunch"]), ([], expected))
+
     def test_terminal_work_is_reallocated_within_its_budget(self):
         rec = running(active_work=dict(WORK, dedupe_key="example--proj/12@g0.r0:development_repair"))
         import work
@@ -941,6 +1078,20 @@ class TestFlakyRerun(unittest.TestCase):
         return dict(outcome, task={"contribution_id": self.running["contribution_id"],
                                    "revision": self.running["revision"], "generation": 0,
                                    "dedupe_key": self.work, "task": "development_repair"})
+
+    def test_a_review_behind_a_confirmed_rerun_is_recorded_alone(self):
+        out = tick(self.running, [self.result(rerun_outcome(self.running))], verdict="failed",
+                   evidence=self.evidence)
+        waiting = final(out, self.running)
+        operations = {o["operation_id"]: o for kind, o in out.staged if kind == "operations"}
+        later = tick(waiting, feedback=REVIEW, verdict="failed", evidence=self.evidence,
+                     operations=operations, now=T + timedelta(minutes=10))
+        self.assertEqual(kinds(later)[:1], ["record_actionable_review"])
+        self.assertNotIn("record_ci_failure", kinds(later))
+        after = final(later, waiting)
+        self.assertEqual(engine.state_key(after)[:len("development.")], "development.")
+        self.assertIsNone(after["last_ci_evidence_id"])
+        self.assertEqual(after["pending_feedback_evidence_ids"], ["review-2-1-77"])
 
     def test_a_confirmed_rerun_is_awaited_then_acted_on(self):
         import work
@@ -1351,6 +1502,13 @@ class TestSpentWork(unittest.TestCase):
         self.assertEqual((engine.state_key(rec), rec["paused"], rec["revision"]),
                          ("development.agent_running", False, waiting["revision"] + 1))
         self.assertEqual(rec["active_work"]["attempt"], 2)
+        # The allocation charges `work_total`, and the fresh graph charges
+        # `work_recovery` and `work_total` again.
+        self.assertEqual(rec["budget"]["attempts_used"], waiting["budget"]["attempts_used"] + 2)
+        charged = {e["kind"]: e["details"].get("charged") for kind, e in out.staged
+                   if kind == "events"}
+        self.assertIn("work_total", charged["request_repair"])
+        self.assertEqual(set(charged["allocate_work_retry"]), {"work_recovery", "work_total"})
         self.assertEqual(submitted(out), [rec["active_work"]["dedupe_key"]])
         self.assertNotIn(key, submitted(out))
         self.assertEqual(out.report["controller"]["spent_work"][0]["work"], key)

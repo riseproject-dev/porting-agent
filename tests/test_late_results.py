@@ -320,6 +320,61 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events(output)], ["record_late_effect"])
         self.assertEqual(final(output, retry)["pending_publication"], pending)
 
+    def test_a_result_of_work_of_another_phase_is_late(self):
+        """Each phase requests its own Work only (`reconcile.WORK_PHASE`)."""
+        import patch_review
+        import submission
+        development = running("development")
+        planning = running("planning")
+        held = {"worker_run_id": "555", "attempts": 1, "last_reason": "x",
+                "next_attempt_at": NOW, "exhausted": False}
+        planning_work = dict(planning["active_work"])
+        cases = (
+            # Work the record holds whose task belongs to another phase.
+            ("planning Work in development", dict(development, active_work=planning_work),
+             "published", "late Result: planning Work is not requested in the development phase"),
+            ("patch Work in upstream review",
+             dict(running("upstream_review"), active_work=dict(WORK)), "published",
+             "late Result: development_repair Work is not requested in the upstream_review "
+             "phase"),
+            # A plan outside planning, and any other Result in planning.
+            ("a plan in development", development, "planning",
+             "late Result: a planning Result has no row in the development phase"),
+            ("a patch in planning", planning, "published",
+             "late Result: a published Result has no row in the planning phase"),
+            # A submission Result outside handoff, a review of a held patch
+            # outside its review state.
+            ("a submission review in development", development, submission.STATUS,
+             "late Result: a submission review has no row in the development phase"),
+            ("a patch review while patch Work runs", development, patch_review.STATUS,
+             "late Result: a review of a held patch has no row in development.agent_running"),
+            # The Result of a held publication outside development and
+            # upstream review.
+            ("a held publication in planning",
+             dict(planning, active_work=None, pending_publication=dict(held)), "published",
+             "late Result: a published Result has no row in the planning phase"),
+            ("a held publication's plan in planning",
+             dict(planning, active_work=None, pending_publication=dict(held)), "planning",
+             "late Result without matching requested Work"),
+        )
+        for name, record, status, why in cases:
+            with self.subTest(case=name):
+                pub = dict(publication(record, "published"), status=status)
+                if record.get("active_work"):
+                    pub["task"] = dict(pub["task"], dedupe_key=record["active_work"]["dedupe_key"],
+                                       generation=record["active_work"]["generation"])
+                self.assertEqual(reconcile.result_mismatch(record, pub), why)
+        # The event names why.
+        record = dict(development, active_work=planning_work)
+        pub = dict(publication(record, "published"),
+                   task=dict(publication(record, "published")["task"],
+                             dedupe_key=planning_work["dedupe_key"]))
+        output = tick(record, [pub], capacity_ok=False)
+        [late] = events(output)
+        self.assertEqual((late["kind"], late["details"]["why"]),
+                         ("record_late_effect", "late Result: planning Work is not requested in "
+                                                "the development phase"))
+
     def test_the_event_keeps_the_state(self):
         details = {"result_status": "published", "task_revision": 0}
         for record in (contribution(phase="parked", activity="idle", parked_reason="x",

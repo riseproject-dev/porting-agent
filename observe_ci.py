@@ -16,8 +16,10 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   review, so the Work requested next carries it;
 * in ``development.waiting_ci``, take the table's rows for what is observed:
   ``record_head_change``, ``record_pr_mismatch``, ``record_explanation``,
-  ``record_actionable_review``, then for CI on the exact head
-  ``record_ci_failure``, ``rerun_interrupted_ci`` with a ``ci_rerun``
+  then for CI on the exact head ``record_ci_failure`` (followed by
+  ``record_actionable_review`` in ``development.fix_needed`` for an
+  actionable review observed with it), or else ``record_actionable_review``
+  for an actionable review, ``rerun_interrupted_ci`` with a ``ci_rerun``
   operation (``exhaust_interrupted_reruns`` once its budget is spent), or
   ``nominate_for_handoff`` when the series meets the series requirements
   of the verified plan, or ``return_for_feedback`` to
@@ -627,13 +629,16 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
     ``development.waiting_ci`` is observed by its rows, in order:
     ``record_head_change`` for a new fork head; ``record_pr_mismatch`` for a
     development PR that does not match the record; ``record_explanation``
-    for an explanation-only comment; ``record_actionable_review`` for an
-    actionable review (the observation then ends in
-    ``development.fix_needed``, which reads no CI); and, for CI
-    on the exact head, read with jobs that lost their runner classified:
-    nothing while the snapshot is behind a confirmed rerun
-    (``ci_rerun.awaited``), ``record_ci_failure`` for an executed blocking
-    failure, ``rerun_interrupted_ci`` (or ``exhaust_interrupted_reruns``)
+    for an explanation-only comment; and, for CI on the exact head, read
+    with jobs that lost their runner classified: ``record_ci_failure`` for
+    an executed blocking failure, followed by ``record_actionable_review``
+    in ``development.fix_needed`` for an actionable review observed with it,
+    so the repair Work carries the failing job and the review;
+    ``record_actionable_review`` for an actionable review when CI did not
+    fail (the observation then ends in ``development.fix_needed``, and
+    nothing else is decided from CI); nothing while the snapshot is behind
+    a confirmed rerun (``ci_rerun.awaited``), but the review alone;
+    ``rerun_interrupted_ci`` (or ``exhaust_interrupted_reruns``)
     when a required job was cancelled or lost its runner and no job failed
     on its own, ``nominate_for_handoff`` when every required job passed,
     no actionable feedback is pending, and the series meets the series
@@ -689,20 +694,23 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             return
         if inquiry:
             cur = _record_explanation(obs, entry, cur, inquiry, policy=policy, now=now)
-        if review:
-            # Recorded before CI is read: a CI failure observed with it has
-            # no row in development.fix_needed, and the review would be
-            # filtered out once the next head is published.
-            if _record_review(obs, entry, cur, review, policy=policy, now=now,
-                              facts=frozenset({"actionable_review"})) is not None:
-                entry["activity"] = "fix_needed"
-                return
+    else:
+        review = None
     verdict, ev, next_poll_at, snap = _ci_snapshot(
         api, cur, head, contracts=contracts, policy=policy, now=now,
         repository=cur["fork"]["name"], classify_interrupted=True)
     entry["ci"] = {"repository": cur["fork"]["name"], "state": verdict.state,
                    "problems": verdict.problems[:10]}
-    if ci_rerun.awaited(operations, cur["contribution_id"], head, verdict.attempts):
+    awaited = ci_rerun.awaited(operations, cur["contribution_id"], head, verdict.attempts)
+    if review and (awaited or verdict.state != "failed" or ev is None):
+        # CI did not fail on the exact head (or is behind a confirmed
+        # rerun): the review alone is recorded, and nothing is decided from
+        # CI in this observation.
+        if _record_review(obs, entry, cur, review, policy=policy, now=now,
+                          facts=frozenset({"actionable_review", "head_not_failed"})) is not None:
+            entry["activity"] = "fix_needed"
+            return
+    if awaited:
         # A confirmed rerun recorded a newer attempt than this snapshot
         # shows: CI is read again and nothing is decided from the older one.
         entry["note"] = "CI on the head is behind a confirmed rerun; CI is read again"
@@ -719,6 +727,13 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
                     cause_id=ev["evidence_id"], facts={"ci_failed_on_head"},
                     values={"last_ci_evidence_id": ev["evidence_id"]},
                     details={"evidence_id": ev["evidence_id"]})
+        if review:
+            # The review observed with the failure is recorded in
+            # development.fix_needed, so the repair Work carries the failing
+            # job and the review: once the repair publishes, the review is
+            # bound to an earlier head and would not be read again.
+            cur = _record_review(obs, entry, cur, review, policy=policy, now=now,
+                                 facts=frozenset({"actionable_review"})) or cur
         _poll(obs, cur, None)
         entry["activity"] = "fix_needed"
         return

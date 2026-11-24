@@ -626,12 +626,16 @@ def pending_is_not(*kinds: str) -> str:
 # unpublished ends the succession: the failed reviews it overrode no longer
 # count (a qualified clear, see ``QUALIFIED_CLEARS``).
 OVERRIDDEN_REVIEWS = "overridden budget.review_rejections"
+# A refresh, like the resume from the wait of an exhausted publication,
+# discards the held Result: the quiescence guard admits it only when no
+# publication is pending, so it discards one whose `publish_recovery` is
+# exhausted, and fresh Work is requested.
 _REFRESH_EFFECTS = _E(
     revision="bump", sets=("refresh",),
     clears=("plan_evidence_id", "scope_coverage_complete", "scope_paths", "proposal_artifact",
             "last_ci_evidence_id", "clean_head_sha", "handoff_request", "handoff_approval",
-            "pending_human_action", "publication_operation_id", "held_patch",
-            OVERRIDDEN_REVIEWS))
+            "pending_human_action", "publication_operation_id", "pending_publication",
+            "held_patch", OVERRIDDEN_REVIEWS))
 _FLAG_FIELDS = ("paused", "paused_at", "paused_reason", "paused_by")
 # The guard of the controller's stop after a processing error, and the stops
 # set by the controller whose reason the caller states: the engine refuses
@@ -690,8 +694,11 @@ _REFRESH = Transition(
 _RETRY_DISPATCH = Transition(
     _K, None,
     ("a dispatcher run ended with the requested Work absent or unclaimed", "dispatch_recovery remains"),
+    _E(sets=("active_work.dispatched_run_id",)),
     charges=("dispatch_recovery",),
-    description="Launches the dispatcher again for the same committed Work request.")
+    description="Launches the dispatcher again for the same committed Work request. The row "
+                "records the dispatcher run it decided in `active_work.dispatched_run_id`, so "
+                "each ended run is decided once.")
 _EXHAUST_DISPATCH_RECOVERY = Transition(
     _K, None, ("dispatch_recovery exhausted",),
     _E(work="clear", sets=("pending_human_action=dispatch_failed",
@@ -742,6 +749,13 @@ REVISION_BUDGET_EXHAUSTED = ("no_progress or work_total is exhausted, or repair_
 # ``record_actionable_review`` in ``development.fix_needed``.
 CANDIDATE_FAILED = "an executed blocking failure on the candidate head"
 CANDIDATE_NOT_FAILED = "no executed blocking failure on the candidate head"
+# The same order while CI is awaited in ``development.waiting_ci``: a CI
+# failure on the exact head takes ``record_ci_failure``, and a review
+# observed with it is recorded in the same observation by
+# ``record_actionable_review`` in ``development.fix_needed``, so the repair
+# Work carries the failing job and the review.
+HEAD_FAILED = "an executed blocking failure on the exact head"
+HEAD_NOT_FAILED = "no executed blocking failure on the exact head"
 # The outcomes of the submission rewrite Work and of the submission review
 # Work, each in a fresh context: the trusted deterministic check of the
 # rewrite, then the model review of the rewritten series and text.
@@ -816,6 +830,7 @@ EXCLUSIVE_GUARDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ((REVISION_BUDGETS_REMAIN,), (REVISION_BUDGET_EXHAUSTED,)),
     ((NO_FAILING_JOB, REVIEW_REVISION_BUDGETS_REMAIN), (REVISION_BUDGET_EXHAUSTED,)),
     ((CANDIDATE_FAILED,), (CANDIDATE_NOT_FAILED,)),
+    ((HEAD_FAILED,), (HEAD_NOT_FAILED,)),
     ((REWRITE_CURRENT,), (REWRITE_EXPIRED,)),
     ((HELD_PATCH_CURRENT,), (HELD_PATCH_EXPIRED,)),
     ((NO_PENDING_FEEDBACK,), (PENDING_FEEDBACK,)),
@@ -827,6 +842,10 @@ EXCLUSIVE_OBSERVATIONS = {
     "handoff.awaiting_submission": ("return_for_repair", "record_actionable_review"),
     "development.waiting_ci": ("nominate_for_handoff", "return_for_feedback",
                                "return_for_series_requirements"),
+}
+# Further pairs of observations of one state whose guards are exclusive.
+EXCLUSIVE_OBSERVATION_PAIRS = {
+    "development.waiting_ci": (("record_ci_failure", "record_actionable_review"),),
 }
 
 _ALLOCATE_WORK_RETRY = Transition(
@@ -1116,7 +1135,7 @@ LIFECYCLE: dict[str, State] = {
             ("hold_patch_for_review", "development.review_pending"): Transition(
                 _R, None,
                 (PATCH_VERIFIED,),
-                _E(revision="bump", work="clear", sets=(HELD_PATCH,)),
+                _E(revision="bump", work="clear", sets=(HELD_PATCH,), clears=(HELD_RESULT,)),
                 description="The worker's trusted publication job rebuilt the series on the "
                             "expected head and validated it without a token, and published "
                             "nothing. The patch is held, pinned to the worker run, the "
@@ -1133,7 +1152,7 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 ("the Result is published, or uncertain and later confirmed", NO_REVIEW_CONTRACT),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS),
-                  clears=(CARRIED_FEEDBACK,)),
+                  clears=(CARRIED_FEEDBACK, HELD_RESULT)),
                 description="Taken only for Work dispatched before development patches were "
                             "reviewed, whose worker still pushes in its own run; every other "
                             "patch is held for its review (`hold_patch_for_review`). "
@@ -1149,12 +1168,13 @@ LIFECYCLE: dict[str, State] = {
             ("reject_patch_proposal", "development.fix_needed"): Transition(
                 _R, None,
                 (DEVELOPMENT_PROPOSAL_REJECTED, "no_progress remains"),
-                _E(revision="bump", work="clear", clears=("clean_head_sha",)), ("no_progress",),
+                _E(revision="bump", work="clear", clears=("clean_head_sha", HELD_RESULT)),
+                ("no_progress",),
                 "The pending feedback is kept. The worker's report is discarded.", exhausts=("flaky_reruns",)),
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
-                _E(revision="bump", work="clear"),
+                _E(revision="bump", work="clear", clears=(HELD_RESULT,)),
                 description="The pending feedback is kept. The worker's report is discarded, "
                             "unless this is a publish-only retry whose earlier attempt's "
                             "operation is still open: that push may have landed, so the report "
@@ -1165,7 +1185,7 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 ("the worker reports a failure not caused by the patch", WORK_WITHOUT_FEEDBACK,
                  "flaky_reruns remains"),
-                _E(work="clear", clears=("last_ci_evidence_id",)), ("flaky_reruns",),
+                _E(work="clear", clears=("last_ci_evidence_id", HELD_RESULT)), ("flaky_reruns",),
                 "The repair worker classifies the failure; the failed jobs are rerun on the exact "
                 "head, and the head and revision are kept. A rerun answers no feedback, so Work "
                 "that carries feedback never takes this row: the same outcome counts as "
@@ -1272,7 +1292,7 @@ LIFECYCLE: dict[str, State] = {
                 ("the Result is published, or uncertain and later confirmed",),
                 _E(work="clear", sets=("proposal_artifact", "publication_operation_id", RERUNS,
                                        REVIEW_COMMENT),
-                   clears=(CARRIED_FEEDBACK, HELD_PATCH)),
+                   clears=(CARRIED_FEEDBACK, HELD_RESULT, HELD_PATCH)),
                 description="The published patch answers exactly the feedback its Work "
                             "carried. An `uncertain` publication is confirmed as in "
                             "`development.agent_running`. The report stored at the hold is "
@@ -1298,7 +1318,7 @@ LIFECYCLE: dict[str, State] = {
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
-                _E(revision="bump", work="clear", clears=(HELD_PATCH, OVERRIDDEN_REVIEWS)),
+                _E(revision="bump", work="clear", clears=(HELD_RESULT, HELD_PATCH, OVERRIDDEN_REVIEWS)),
                 description="The fork head moved while the patch was held: it is discarded, "
                             "and the pending feedback is kept. A patch to be published after "
                             "successive failed reviews starts `dev_reviews` again."),
@@ -1306,7 +1326,7 @@ LIFECYCLE: dict[str, State] = {
                 _R, None,
                 (HELD_PATCH_REJECTED, "no_progress remains"),
                 _E(revision="bump", work="clear",
-                   clears=("clean_head_sha", HELD_PATCH, OVERRIDDEN_REVIEWS)),
+                   clears=("clean_head_sha", HELD_RESULT, HELD_PATCH, OVERRIDDEN_REVIEWS)),
                 ("no_progress",),
                 "Nothing is pushed: only exactly the reviewed commit is ever published. The "
                 "pending feedback is kept. A patch to be published after successive failed "
@@ -1322,7 +1342,7 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("record_ci_failure", "development.fix_needed"): Transition(
                 _O, None,
-                ("an executed blocking failure on the exact head",),
+                (HEAD_FAILED,),
                 _E(sets=("last_ci_evidence_id",))),
             ("rerun_interrupted_ci", SELF): _RERUN_INTERRUPTED_CI,
             ("exhaust_interrupted_reruns", "development.waiting_human"): _EXHAUST_INTERRUPTED_RERUNS,
@@ -1356,8 +1376,13 @@ LIFECYCLE: dict[str, State] = {
                 exhausts=("operation_launch",)),
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
-                ("authorized actionable review feedback",),
-                _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS)),
+                ("authorized actionable review feedback", HEAD_NOT_FAILED),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS),
+                description="The review is recorded as pending feedback. When CI also failed "
+                            "on the exact head, `record_ci_failure` applies instead, and the "
+                            "review is recorded in the same observation by "
+                            "`record_actionable_review` in `development.fix_needed`, so the "
+                            "repair Work carries the failing job and the review."),
             ("record_explanation", SELF): _RECORD_EXPLANATION,
             ("record_head_change", SELF): Transition(
                 _O, None,
@@ -1472,7 +1497,7 @@ LIFECYCLE: dict[str, State] = {
                 _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS),
                 description="A review on the recorded head while Work is due, including one "
                             "observed together with the CI failure that left the submission "
-                            "gate: it is recorded as pending feedback, so the Work requested "
+                            "gate or `development.waiting_ci`: it is recorded as pending feedback, so the Work requested "
                             "next carries it. The CI evidence is kept."),
             ("refresh_planning", "queued.idle"): _REFRESH,
         }),
@@ -1932,7 +1957,7 @@ LIFECYCLE: dict[str, State] = {
                 ("the revision is published to the upstream PR head",),
                 _E(revision="bump", work="clear",
                   sets=("proposal_artifact", "publication_operation_id", "upstream_pr.head_sha"),
-                  clears=(CARRIED_FEEDBACK,)),
+                  clears=(CARRIED_FEEDBACK, HELD_RESULT)),
                 description="The published revision answers exactly the feedback its Work "
                             "carried. `upstream_pr.head_sha` records the head the publisher read "
                             "back on `riscv64` after its push. A publication whose push was not "
@@ -1945,7 +1970,7 @@ LIFECYCLE: dict[str, State] = {
                 ("the proposal is rejected for the current revision, or the worker reports it is "
                  "blocked",
                  "no_progress remains"),
-                _E(revision="bump", work="clear"), ("no_progress",),
+                _E(revision="bump", work="clear", clears=(HELD_RESULT,)), ("no_progress",),
                 "The pending feedback is kept. The worker's report is discarded, unless this is "
                 "a publish-only retry rejected as stale behind the operation of an earlier "
                 "attempt: that push landed or may have, so the report is stored with the commit "
@@ -1953,7 +1978,8 @@ LIFECYCLE: dict[str, State] = {
             ("require_reviewer_answer", "upstream_review.waiting_human"): Transition(
                 _R, None,
                 ("the worker reports that no change is needed",),
-                _E(work="clear", sets=("pending_human_action=answer_reviewer",)),
+                _E(work="clear", sets=("pending_human_action=answer_reviewer",),
+                   clears=(HELD_RESULT,)),
                 description="A human answers the reviewer; the pipeline posts nothing on the "
                             "upstream PR. The report of the Work is stored as `worker_report` "
                             "evidence."),
@@ -2462,11 +2488,14 @@ BUDGETS: dict[str, Budget] = {
     "dispatch_recovery": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one dispatcher run that ended with the requested Work absent or unclaimed",
-        "dispatcher runs since `active_work.requested_at`", ("exhaust_dispatch_recovery",),
+        "dispatcher runs created since the Work was requested, or since its history was "
+        "recorded or the queue's retry time (`retry_not_before`) when later; every counted run "
+        "has ended", ("exhaust_dispatch_recovery",),
         infrastructure=True),
     "publish_recovery": Budget(
         INFRASTRUCTURE_KEY, 1,
-        "one publish-only retry of the same verified Result",
+        "one failed publication of the same verified Result (the worker's own, or a "
+        "publish-only retry)",
         "`pending_publication.attempts`", ("exhaust_publish_recovery",), infrastructure=True),
     "source_reads": Budget(
         "retries.source_unavailable_reads", 0,
@@ -4012,10 +4041,11 @@ def _check_settled_rows(problems: list[str]) -> None:
         extra = ", ".join(sorted(set(t.guard) - REQUEST_PATCH_GUARDS))
         problems.append(f"development.fix_needed --request_patch-->: patch Work is admitted by "
                         f"write admission only, not by {extra}")
-    t = row("development.waiting_human", "resume_development")
-    if t is not None and HELD_RESULT not in t.effects.clears:
-        problems.append(f"development.waiting_human --resume_development-->: fresh Work is "
-                        f"requested; the row clears {HELD_RESULT}")
+    for verb in ("resume_development", "refresh_planning", "resume_stale"):
+        t = row("development.waiting_human", verb)
+        if t is not None and HELD_RESULT not in t.effects.clears:
+            problems.append(f"development.waiting_human --{verb}-->: fresh Work is "
+                            f"requested; the row clears {HELD_RESULT}")
 
 
 def _check_held_patch(problems: list[str]) -> None:
@@ -4061,6 +4091,27 @@ def _check_held_patch(problems: list[str]) -> None:
         if HELD_PATCH not in t.effects.clears:
             problems.append(f"development.waiting_human --{verb}-->: discards the {HELD_PATCH} "
                             "kept by the wait")
+
+
+def _check_held_result(problems: list[str]) -> None:
+    """The Result of a held publication ends the hold: in every state that
+    schedules a publish-only retry, every row that folds a Result clears
+    the pending publication, but the rows that hold it (the retry and its
+    exhaustion) and the late Result."""
+    for key, state in LIFECYCLE.items():
+        if not any(verb == "schedule_publish_retry" for verb, _ in state.transitions):
+            continue
+        for e in table_edges():
+            if e.source != key or e.transition.trigger != Trigger.RESULT:
+                continue
+            if e.verb in ("schedule_publish_retry", "exhaust_publish_recovery"):
+                continue
+            if is_rule_row(e) and e.verb == "record_late_effect":
+                continue
+            sets = {_field_name(f) for f in e.transition.effects.sets}
+            if HELD_RESULT not in e.transition.effects.clears or HELD_RESULT in sets:
+                problems.append(f"{key} --{e.verb}-->: folds a Result without clearing "
+                                f"{HELD_RESULT}")
 
 
 def _check_reruns(problems: list[str]) -> None:
@@ -4185,7 +4236,10 @@ def _check_submission(problems: list[str]) -> None:
 
 
 def _check_exclusive_observations(problems: list[str]) -> None:
-    for key, verbs in EXCLUSIVE_OBSERVATIONS.items():
+    groups = [(key, verbs) for key, verbs in EXCLUSIVE_OBSERVATIONS.items()]
+    groups += [(key, pair) for key, pairs in EXCLUSIVE_OBSERVATION_PAIRS.items()
+               for pair in pairs]
+    for key, verbs in groups:
         try:
             edges = [find_edge(key, verb) for verb in verbs]
         except KeyError as exc:
@@ -4743,6 +4797,7 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_feedback(problems)
     _check_reruns(problems)
     _check_held_patch(problems)
+    _check_held_result(problems)
     _check_settled_rows(problems)
     _check_patch_work(problems)
     _check_exclusive_observations(problems)
