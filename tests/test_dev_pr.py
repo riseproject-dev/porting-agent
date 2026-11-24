@@ -337,6 +337,9 @@ class TestDevelopmentPRRows(unittest.TestCase):
         self.assertEqual(closed[rec["active_operation_id"]]["status"], "planned")
         self.assertIn(rec["active_operation_id"],
                       [d.get("operation") for d in res.report["deferred"]])
+        # The hold is shown beside the open operation the report lists.
+        [listed] = [o for o in res.report["operations"] if o["id"] == rec["active_operation_id"]]
+        self.assertEqual(listed["held"], controller.PAUSED_HOLD)
         res, current, closed, events = run(paused, ops, controller.DEV_PR_RUN_SECONDS // 60 + 1)
         self.assertEqual((events, res.report["dev_pr_requests"]), ([], []))
         self.assertIsNone(current["active_operation_id"])

@@ -132,7 +132,8 @@ def ci(repository, head, verdict):
 
 
 def tick(records, *, publications=(), comments=(), issues=(), observe=True, verdict="pending",
-         head=None, queue_works=None, patches=(), policy=POLICY, run_id="4242", operations=None):
+         head=None, queue_works=None, patches=(), policy=POLICY, run_id="4242", operations=None,
+         pipeline=None):
     """One tick over ``records``; ``patches`` are (target, replacement)."""
     snapshot = reconcile.Snapshot({r["contribution_id"]: copy.deepcopy(r) for r in records},
                                   copy.deepcopy(operations or {}), {}, {}, {})
@@ -151,7 +152,8 @@ def tick(records, *, publications=(), comments=(), issues=(), observe=True, verd
         return reconcile.tick(helpers.NoReadApi(), snapshot, policy=policy, now=T, run_id=run_id,
                               publications=list(publications), comments=list(comments),
                               issues=list(issues), pressure=capacity.Pressure(ok=True),
-                              observe=observe, dispatcher_runs=[], queue_works=queue_works or {})
+                              observe=observe, dispatcher_runs=[], queue_works=queue_works or {},
+                              pipeline=pipeline)
 
 
 def staged_for(output, cid):
@@ -765,6 +767,40 @@ class TestRepeatedErrorAndResume(unittest.TestCase):
                 self.assertIn("not paused again: contribution is paused", alert)
                 self.assertEqual(again.report["processing_errors"][0]["decision"],
                                  "not paused again: contribution is paused")
+
+    def test_a_failing_automatic_resume_is_reported_and_attempted_once_per_version(self):
+        V1, V2, V3 = "1" * 64, "2" * 64, "3" * 64
+        a, b = waiting(), other_waiting()
+        stopped = take(a, VERB, policy=POLICY, now=ISO, cause_id="1", facts={"processing_error"},
+                       values={"paused_reason": "processing_error: Boom", "paused_at_commit": V1}
+                       ).record
+        failing = [("controller._actionable", only_for(A, REAL["_actionable"])),
+                   ("reconcile._restop_steps", Boom("the resume failed"))]
+        first = tick([stopped, b], patches=failing, pipeline=V2)
+        decision = first.report["processing_errors"][0]["decision"]
+        self.assertIn("the automatic resume of the earlier stop failed: Boom: the resume failed",
+                      decision)
+        self.assertIn("the automatic resume of the earlier stop failed",
+                      first.report["controller"]["alerts"][0]["alert"])
+        # No row: only the version that attempted the resume is recorded.
+        self.assertEqual(kinds(first, A), [])
+        attempted = record_of(first, A)
+        self.assertEqual(attempted, dict(stopped, paused_at_commit=V2,
+                                         updated_at=attempted["updated_at"]))
+        # At that version the resume is not attempted again, so nothing fails
+        # or alerts for it a second time; a new version attempts it again.
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(kwargs["version"])
+            return []
+        again = tick([attempted, b], pipeline=V2, patches=[
+            ("controller._actionable", only_for(A, REAL["_actionable"])),
+            ("reconcile._restop_steps", counted)])
+        self.assertEqual(staged_for(again, A), [])
+        self.assertNotIn("the automatic resume", again.report["processing_errors"][0]["decision"])
+        later = tick([attempted, b], pipeline=V3, patches=failing)
+        self.assertEqual(record_of(later, A)["paused_at_commit"], V3)
 
     def test_a_resume_waits_while_the_stopped_contribution_errors(self):
         a = waiting(paused=True, paused_at=NOW, paused_by="human", paused_reason="hold")

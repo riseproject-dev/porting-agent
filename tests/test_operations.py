@@ -399,6 +399,8 @@ class TestProvisioningLaunch(unittest.TestCase):
                               staged(held, "events")), ([], [], []))
             [deferred] = [d for d in held.report["deferred"] if d.get("operation") == oid]
             self.assertEqual(deferred["why"], why or "provisioning run status not observed")
+            [listed] = [o for o in held.report["operations"] if o["id"] == oid]
+            self.assertEqual(listed["held"], deferred["why"])
         # The hold also covers the exhaustion: the spent launches of a run
         # that is still queued are not a failure of the operation.
         spent = dict(op, external_ids={**op["external_ids"], "launch_attempts": limit})

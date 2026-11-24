@@ -328,11 +328,21 @@ class TestTheCallSites(unittest.TestCase):
                        "import engine\nvars(engine)['apply_transition']\n",
                        "import importlib\nimportlib.import_module('engine').preconditions\n",
                        "import sys\nsys.modules['engine'].preconditions\n",
-                       "__import__('engine').preconditions\n"):
+                       "__import__('engine').preconditions\n",
+                       "import sys as s\ns.modules['engine'].preconditions\n",
+                       "from sys import modules\nmodules['engine'].preconditions\n",
+                       "import sys\nm = sys.modules\nm['engine'].preconditions\n",
+                       "import sys\nsys.modules.get('engine').preconditions\n"):
             with self.subTest(source=source):
                 self.assertTrue(lc.private_engine_names_in(ast.parse(source)), source)
         self.assertEqual(lc.private_engine_names_in(ast.parse(
             "import engine as e\ne.try_apply_transition\n")), [])
+        # A `modules` that is not the module registry is not the engine.
+        for source in ("config.modules['engine']\n", "cfg.modules.get('engine')\n",
+                       "import sys\nplugins.modules['engine']\n",
+                       "import sys\nmodules['engine']\n"):
+            with self.subTest(source=source):
+                self.assertEqual(lc.private_engine_names_in(ast.parse(source)), [], source)
 
     def test_every_row_taken_is_dispatched_at_its_own_site(self):
         for (module, function), site in sites().items():

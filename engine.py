@@ -2182,6 +2182,9 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # comment of its review due all the same.
     "review_comment_due": ("review_comments",),
     "review_comment_answered": ("review_comments",),
+    # The automatic resume of a stop the controller set failed at this
+    # version of the pipeline code: it is attempted once per version.
+    "restop_attempted": ("paused_at_commit",),
 }
 
 

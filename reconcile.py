@@ -2088,12 +2088,22 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # stopped again at the version that ran.
                 # An automatic resume that itself fails is left out: the
                 # stop stays as it was and is not stopped again at this
-                # version.
+                # version. The failure is in the decision and the alert, and
+                # the version that attempted it is recorded on the stop
+                # (``restop_attempted``), so the resume is attempted once per
+                # version of the pipeline code, not on every tick.
+                resume_failure = None
                 try:
                     restops = _restop_steps(record, policy=policy, now=iso,
                                             version=inputs.get("pipeline"))
-                except Exception:
+                except Exception as resume_error:
                     restops = []
+                    resume_failure = (f"{type(resume_error).__name__}: "
+                                      f"{isolation.clean_text(resume_error)}")[:500]
+                    attempted = _restop_attempted(record, now=iso, version=inputs.get("pipeline"))
+                    if attempted is not None:
+                        out.staged.append(("contributions", attempted))
+                        record = attempted
                 for step in restops:
                     out.staged.extend([("contributions", step.record), ("events", step.event)])
                     record = step.record
@@ -2114,6 +2124,8 @@ def tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                     decision = "paused by the controller"
                 case engine.Skip(refused):
                     decision = f"not paused again: {refused.detail}"
+            if resume_failure:
+                decision += f"; the automatic resume of the earlier stop failed: {resume_failure}"
         errored.append(description | {"decision": decision})
         alerts.append({"contribution": cid,
                        "alert": (f"processing error in {description['step']}: "
@@ -2163,6 +2175,18 @@ def _restop_steps(record: dict, *, policy: dict, now: str,
         return []
     resumed = _resume_after_error(record, policy=policy, now=now, version=version)
     return [resumed] if resumed is not None else []
+
+
+def _restop_attempted(record: dict, *, now: str, version: str | None) -> dict | None:
+    """The record of a controller stop whose automatic resume failed at
+    ``version``, with that version as `paused_at_commit` (the write beside a
+    row ``restop_attempted``, no row of the table): the resume is attempted
+    again only at another version of the pipeline code. ``None`` when the
+    stop is not one the controller resumes or the version is unknown."""
+    if version is None or not engine.paused_for_error(record) \
+            or record.get("paused_at_commit") == version:
+        return None
+    return engine.record_beside(record, "restop_attempted", now=now, paused_at_commit=version)
 
 
 def pause_on_processing_error(record: dict, description: dict, *, policy: dict,

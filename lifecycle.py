@@ -5426,6 +5426,7 @@ def private_engine_names_in(tree) -> list[tuple[int, str]]:
     import ast
 
     modules, names = engine_bindings(tree)
+    registry = _sys_modules_bindings(tree)
     found: list[tuple[int, str]] = []
     for local, original in names.items():
         if original == "*" or original in PRIVATE_ENGINE_NAMES:
@@ -5455,12 +5456,58 @@ def private_engine_names_in(tree) -> list[tuple[int, str]]:
                 and node.func.id in ("vars", "dir") and node.args \
                 and isinstance(node.args[0], ast.Name) and node.args[0].id in modules:
             found.append((node.lineno, f"{node.func.id}(engine)"))
-        elif isinstance(node, ast.Call) and _is_engine_lookup(node):
+        elif isinstance(node, ast.Call) and _is_engine_lookup(node, registry):
             found.append((node.lineno, "the engine looked up by its name"))
         elif isinstance(node, ast.Subscript) and _mentions_engine(node.slice) \
-                and "modules" in ast.unparse(node.value):
+                and _is_sys_modules(node.value, registry):
             found.append((node.lineno, "sys.modules['engine']"))
     return found
+
+
+def _sys_modules_bindings(tree) -> tuple[set[str], set[str]]:
+    """The names a parsed module binds to the ``sys`` module (`import sys`,
+    `import sys as s`) and to ``sys.modules`` (`from sys import modules as
+    m`, `m = sys.modules`), so a lookup of the engine through the module
+    registry is found under any alias and a ``modules`` of anything else is
+    not."""
+    import ast
+
+    sys_names: set[str] = set()
+    registries: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            sys_names.update(a.asname or a.name for a in node.names if a.name == "sys")
+        elif isinstance(node, ast.ImportFrom) and node.module == "sys" and not node.level:
+            registries.update(a.asname or a.name for a in node.names if a.name == "modules")
+    grown = True
+    while grown:
+        grown = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                if isinstance(value, ast.Name) and value.id in sys_names:
+                    bound, target = sys_names, node.targets
+                elif _is_sys_modules(value, (sys_names, registries)):
+                    bound, target = registries, node.targets
+                else:
+                    continue
+                for t in target:
+                    if isinstance(t, ast.Name) and t.id not in bound:
+                        bound.add(t.id)
+                        grown = True
+    return sys_names, registries
+
+
+def _is_sys_modules(node, registry: tuple[set[str], set[str]]) -> bool:
+    """Whether ``node`` is ``sys.modules`` (the module bound under any
+    name) or a name bound to it."""
+    import ast
+
+    sys_names, registries = registry
+    if isinstance(node, ast.Name):
+        return node.id in registries
+    return isinstance(node, ast.Attribute) and node.attr == "modules" \
+        and isinstance(node.value, ast.Name) and node.value.id in sys_names
 
 
 def _mentions_engine(node) -> bool:
@@ -5469,15 +5516,17 @@ def _mentions_engine(node) -> bool:
     return isinstance(node, ast.Constant) and node.value == "engine"
 
 
-def _is_engine_lookup(call) -> bool:
+def _is_engine_lookup(call, registry: tuple[set[str], set[str]]) -> bool:
     """``importlib.import_module("engine")``, ``__import__("engine")``, or
-    ``sys.modules.get("engine")``."""
+    ``sys.modules.get("engine")`` (``sys.modules`` under any name,
+    ``_sys_modules_bindings``)."""
     import ast
 
     target = ast.unparse(call.func)
     return bool(call.args) and _mentions_engine(call.args[0]) and (
         target.endswith("import_module") or target == "__import__"
-        or target.endswith("modules.get"))
+        or (isinstance(call.func, ast.Attribute) and call.func.attr == "get"
+            and _is_sys_modules(call.func.value, registry)))
 
 
 def private_engine_uses(root) -> list[str]:

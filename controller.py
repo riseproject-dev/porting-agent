@@ -889,10 +889,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                     _close_development_pr(c, operation, why, by_id, operations, res, now)
                     continue
                 if held:
-                    rep["deferred"].append({
-                        "contribution": cid, "operation": operation["operation_id"],
-                        "why": "the contribution is paused: the receipt of the launched "
-                               "operation is still awaited"})
+                    _hold(res, cid, operation["operation_id"], PAUSED_HOLD)
                     continue
                 if (attempts == 0 or waited) and _launch_development_pr(
                         c, operation, by_id, operations, inputs, res, now, policy):
@@ -916,10 +913,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                      "closed": why})
                 continue
             if held:
-                rep["deferred"].append({
-                    "contribution": cid, "operation": operation["operation_id"],
-                    "why": "the contribution is paused: the receipt of the launched "
-                           "operation is still awaited"})
+                _hold(res, cid, operation["operation_id"], PAUSED_HOLD)
                 continue
             due = attempts == 0 or (
                 waited and attempts < lifecycle.budget_limit("operation_launch", policy))
@@ -1609,7 +1603,7 @@ def _launch_handoff(c: dict, by_id: dict, operations: dict, res: TickResult, inp
         if age < handoff.RUN_SECONDS:
             why = (f"{kind} run status not observed" if runs is None
                    else f"{kind} run {run} is still in flight")
-            rep["deferred"].append({"contribution": cid, "operation": op_id, "why": why})
+            _hold(res, cid, op_id, why)
             return
     late = (f" (run still listed after {handoff.RUN_SECONDS} s)"
             if launches and run is not None else "")
@@ -1673,6 +1667,21 @@ DEV_PR_RUN_SECONDS = 1800
 PROVISION_RUN_SECONDS = handoff.RUN_SECONDS + 900
 # The bound on re-plans of one development PR intent at one revision.
 MAX_REPLANS = 20
+
+
+# Why a launched operation of a paused contribution is held.
+PAUSED_HOLD = "the contribution is paused: the receipt of the launched operation is still awaited"
+
+
+def _hold(res: TickResult, cid: str, oid: str, why: str) -> None:
+    """Report a launched operation that is held (neither launched again nor
+    closed) for ``why``: under `deferred`, and as `held` on its entry of the
+    open operations the report lists."""
+    res.report.setdefault("deferred", []).append(
+        {"contribution": cid, "operation": oid, "why": why})
+    for entry in res.report.get("operations", []):
+        if entry.get("id") == oid:
+            entry["held"] = why
 
 
 def _held_for_run(op: dict, attempts: int, now: datetime, seconds: int) -> bool:
@@ -1805,8 +1814,7 @@ def _launch_development_pr(c: dict, operation: dict, by_id: dict, operations: di
         if (runs is None or run is not None) and age < DEV_PR_RUN_SECONDS:
             why = ("development PR run status not observed" if runs is None
                    else f"development PR run {run} is still in flight")
-            rep.setdefault("deferred", []).append(
-                {"contribution": cid, "operation": oid, "why": why})
+            _hold(res, cid, oid, why)
             return False
     match engine.dispatch(engine.try_apply_transition(
             c, "launch_development_pr", policy=policy, now=now, cause_id=oid, facts=facts,
@@ -1963,8 +1971,7 @@ def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict
         if (runs is None or run is not None) and age < PROVISION_RUN_SECONDS:
             why = ("provisioning run status not observed" if runs is None
                    else f"provisioning run {run} is still in flight")
-            res.report.setdefault("deferred", []).append(
-                {"contribution": cid, "operation": oid, "why": why})
+            _hold(res, cid, oid, why)
             return False
     open_ops = recovery.open_operations(cid, {**operations, oid: operation}, oid)
     facts = {"fork_provision_planned"}
