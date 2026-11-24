@@ -177,11 +177,34 @@ safe-outputs:
 # or others (gh-aw's scripts, the actions of this job, node's installation
 # and the directories on PATH, and empty ~/.npmrc, ~/.curlrc and ~/.wgetrc if
 # absent), so a write through a planted link fails with EACCES, which fails
-# that step and nothing else. gh-aw has no hook between the agent and its
-# copy steps (post-steps come after them), so the links themselves cannot be
-# removed first. The step order matters: the home directories, this step and
-# the sealing come last among the authored pre-agent steps, after the trusted
-# steps that still write those places (gh, git, node, apt).
+# that step and nothing else. It changes only the entries that are not
+# root-owned already (a system directory holds the setuid sudo), follows the
+# links directly in a PATH directory and hardens what they lead to and the
+# directories above it, or refuses (a missing target whose directory the
+# agent could write, a directory too wide to take over). gh-aw has no hook
+# between the agent and its copy steps (post-steps come after them), so the
+# links themselves cannot be removed first. The step order matters: the home
+# directories, this step and the sealing come last among the authored
+# pre-agent steps, after the trusted steps that still write those places
+# (gh, git, node, apt); the one gh-aw step that puts a directory on PATH
+# after them, "Mount MCP servers as CLIs" (${RUNNER_TEMP}/gh-aw/mcp-cli/bin,
+# runner-owned), is not hardened: AWF mounts ${RUNNER_TEMP}/gh-aw read-only,
+# so the agent cannot write there.
+#
+# The same step makes /tmp/gh-aw, /tmp/gh-aw/sandbox, the firewall directory
+# and its logs and audit directories root-owned with the sticky bit. Two
+# steps after the agent act as root on them: "Print firewall logs" runs
+# `sudo chown -R` and `sudo chmod -R a+rX` on the firewall directory, and
+# GNU chmod follows a link given on the command line, so a firewall
+# directory that the agent renamed and replaced by a link to /etc made root
+# open /etc to everyone; AWF's cleanup runs a root container with the audit
+# directory bind-mounted, and Docker resolves a link given as the source.
+# The runner's uid, which the agent shares, can create entries in a sticky
+# directory but cannot rename or remove what root owns. The safe-outputs
+# server's directory also lacks send_otlp_span.cjs, which otlp.cjs requires
+# lazily from there inside a try; the upload staging copy can create a file
+# there through a link in the staging directory, so the step puts a
+# root-owned file that throws in its place.
 pre-agent-steps:
   - name: Fetch and verify the held patch, its report, the plan and the history
     env:
@@ -346,29 +369,110 @@ pre-agent-steps:
   - name: Make the code that the steps after the agent run unwritable by the agent
     run: |
       set -euo pipefail
+      # Directories too wide to take over: a flagged entry in one of them is
+      # refused, not changed.
+      too_wide() {
+        case "$1" in
+          /|/tmp|/home|"$HOME"|"$GITHUB_WORKSPACE"|"$RUNNER_TEMP") return 0 ;;
+        esac
+        return 1
+      }
+      # The entries of a tree that root does not own or that group or others can
+      # write, NUL-separated; a link is never followed.
+      flagged() {
+        find -H "$1" \( ! -user root -o -perm /022 \) ! -type l -print0
+      }
+      # Makes a tree root-owned and not writable by group or others by changing
+      # only the entries that are not, so that a system directory keeps the setuid
+      # bit of sudo.
       harden() {
         local dir=$1
         if [ -L "$dir" ] || [ ! -d "$dir" ]; then
           echo "$dir is not a directory" >&2
           exit 1
         fi
-        sudo chown -RHh root:root -- "$dir/"
-        sudo chmod -R go-w -- "$dir/"
+        flagged "$dir/" | sudo xargs -0 -r chown -h root:root --
+        flagged "$dir/" | sudo xargs -0 -r chmod go-w --
         if [ -n "$(find -H "$dir/" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
           echo "$dir is still writable by the agent's user" >&2
           exit 1
         fi
       }
-      # gh-aw's scripts, which the steps after the agent run, and the
-      # actions of this job (the setup action's post step runs bash on a
-      # script in its directory).
+      # Whether one path is owned by someone but root or writable by group or
+      # others. The sticky bit excuses a directory above something that exists,
+      # since only the owner of an entry can replace it there.
+      weak() {
+        if [ "$2" = sticky ]; then
+          [ -n "$(find -H "$1" -maxdepth 0 \( ! -user root -o \( -perm /022 ! -perm -1000 \) \) -print)" ]
+        else
+          [ -n "$(find -H "$1" -maxdepth 0 \( ! -user root -o -perm /022 \) -print)" ]
+        fi
+      }
+      secure() {
+        if too_wide "$1"; then
+          echo "$1 is writable and too wide to make read-only" >&2
+          exit 1
+        fi
+        sudo chown -h root:root -- "$1"
+        sudo chmod go-w -- "$1"
+        if weak "$1" "$2"; then
+          echo "$1 is still writable by the agent's user" >&2
+          exit 1
+        fi
+      }
+      declare -A seen=()
+      # What a link leads to must be as safe as the link's directory: the file or
+      # tree, every directory above it and, when it is missing, the nearest
+      # directory that exists (the agent could create it there).
+      secure_target() {
+        local path=$1 near dir
+        near=$path
+        while [ ! -e "$near" ]; do
+          near=$(dirname -- "$near")
+        done
+        if [ "$near" != "$path" ] && weak "$near" strict; then
+          secure "$near" strict
+        fi
+        dir=$(dirname -- "$near")
+        while true; do
+          if [ -z "${seen[$dir]+x}" ]; then
+            if weak "$dir" sticky; then
+              secure "$dir" sticky
+            fi
+            seen[$dir]=1
+          fi
+          [ "$dir" = / ] && break
+          dir=$(dirname -- "$dir")
+        done
+        if [ -d "$path" ]; then
+          if [ -z "${seen[$path]+x}" ]; then
+            harden "$path"
+            seen[$path]=1
+          fi
+        elif [ -e "$path" ] && weak "$path" strict; then
+          secure "$path" strict
+        fi
+      }
+      follow_links() {
+        local links link
+        links=$(mktemp)
+        find -H "$1/" -maxdepth 1 -type l -print0 > "$links"
+        while IFS= read -r -d '' link; do
+          secure_target "$(readlink -m -- "$link")"
+        done < "$links"
+        rm -f -- "$links"
+      }
+      # gh-aw's scripts, which the steps after the agent run, and the actions of
+      # this job (the setup action's post step runs bash on a script in its
+      # directory).
       harden "$RUNNER_TEMP/gh-aw/actions"
       harden "$(dirname "$RUNNER_TEMP")/_actions"
-      # node and the commands on PATH, when writable by the runner's user.
+      # node and the commands on PATH, when writable by the runner's user, and
+      # what the links directly in them lead to.
       candidates=()
       if node=$(command -v node); then
         node=$(readlink -f -- "$node")
-        candidates+=("$(dirname "$(dirname "$node")")")
+        candidates+=("$(dirname "$(dirname "$node")")" "$(dirname "$node")")
       fi
       IFS=: read -ra entries <<< "$PATH"
       for entry in "${entries[@]}"; do
@@ -380,16 +484,21 @@ pre-agent-steps:
           candidates+=("$(readlink -f -- "$entry")")
         fi
       done
+      declare -A visited=()
       for dir in "${candidates[@]}"; do
-        if [ -n "$(find -H "$dir/" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
-          case "$dir" in
-            /|/tmp|"$HOME"|"$GITHUB_WORKSPACE"|"$RUNNER_TEMP")
-              echo "$dir is writable and too wide to make read-only" >&2
-              exit 1
-              ;;
-          esac
-          harden "$dir"
+        if [ -n "${visited[$dir]+x}" ]; then
+          continue
         fi
+        visited[$dir]=1
+        if [ -n "$(find -H "$dir/" \( ! -user root -o -perm /022 \) ! -type l -print -quit)" ]; then
+          if too_wide "$dir"; then
+            echo "$dir is writable and too wide to make read-only" >&2
+            exit 1
+          fi
+          harden "$dir"
+          seen[$dir]=1
+        fi
+        follow_links "$dir"
       done
       # Files that tools read as configuration and that the agent could
       # create through a link that dangles.
@@ -401,6 +510,39 @@ pre-agent-steps:
         if [ ! -e "$HOME/$file" ]; then
           sudo install -m 0644 -o root -g root /dev/null "$HOME/$file"
         fi
+      done
+      # The safe-outputs server loads send_otlp_span.cjs lazily from its own
+      # directory, where setup does not put it, and the upload staging copy can
+      # create a file there through a link in the staging directory: a root-owned
+      # file that throws when loaded keeps the name from being planted.
+      safeoutputs="$RUNNER_TEMP/gh-aw/safeoutputs"
+      if [ -L "$safeoutputs" ] || [ ! -d "$safeoutputs" ]; then
+        echo "$safeoutputs is not a directory" >&2
+        exit 1
+      fi
+      if [ -e "$safeoutputs/send_otlp_span.cjs" ] || [ -L "$safeoutputs/send_otlp_span.cjs" ]; then
+        echo "$safeoutputs/send_otlp_span.cjs exists" >&2
+        exit 1
+      fi
+      printf '%s\n' 'throw new Error("send_otlp_span.cjs is not provided to the safe-outputs server");' |
+        sudo install -m 0644 -o root -g root /dev/stdin "$safeoutputs/send_otlp_span.cjs"
+      # Steps after the agent run chown -R and chmod -R with sudo on the firewall
+      # directory ("Print firewall logs"), and AWF's cleanup mounts the audit
+      # directory into a container that may change any file; both follow a link
+      # given as the directory, which the agent (the runner's uid) could plant by
+      # renaming a directory it owns. Owned by root with the sticky bit, a
+      # directory is still writable by the runner's uid (AWF, Squid and the steps
+      # create files in it) but its entries cannot be renamed or removed by the
+      # agent, nor its own replaced.
+      for dir in /tmp/gh-aw /tmp/gh-aw/sandbox /tmp/gh-aw/sandbox/firewall \
+        /tmp/gh-aw/sandbox/firewall/logs /tmp/gh-aw/sandbox/firewall/audit; do
+        if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+          echo "$dir is not a directory" >&2
+          exit 1
+        fi
+        sudo chown -h root:root -- "$dir"
+        sudo chmod 1777 -- "$dir"
+        [ "$(stat -c '%U %a' -- "$dir")" = "root 1777" ] || { echo "$dir is not sealed" >&2; exit 1; }
       done
   - name: Seal the workspace's git checkout against the agent
     run: |

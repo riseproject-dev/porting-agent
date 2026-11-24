@@ -1267,6 +1267,10 @@ class TestReviewerSandbox(unittest.TestCase):
         names = [s.get("name") for s in steps]
         code = names.index(CODE_STEP)
         self.assertLess(names.index("Make the home directories the sandbox mounts read-only to the agent"), code)
+        # The directories it makes root-owned exist by then, and gh-aw's own
+        # steps that create entries in them come before it or only add to
+        # them (a sticky directory still takes the runner's new files).
+        self.assertLess(names.index("Create gh-aw temp directory"), code)
         self.assertLess(code, names.index("Seal the workspace's git checkout against the agent"))
         # Every step that writes or runs something in the directories it
         # makes root-owned is before it; the only gh-aw step that touches
@@ -1277,21 +1281,37 @@ class TestReviewerSandbox(unittest.TestCase):
         self.assertLess(code, names.index("Execute Pi CLI"))
         run = steps[code]["run"]
         for needle in ('harden "$RUNNER_TEMP/gh-aw/actions"', 'harden "$(dirname "$RUNNER_TEMP")/_actions"',
-                       'sudo chown -RHh root:root -- "$dir/"', 'sudo chmod -R go-w -- "$dir/"',
+                       "sudo xargs -0 -r chown -h root:root --", "sudo xargs -0 -r chmod go-w --",
                        "! -user root -o -perm /022", "exit 1"):
             self.assertIn(needle, run)
+        # Only the entries that are not root's are changed: never a
+        # recursive chown of a whole tree, which would clear the setuid bit
+        # of sudo in a system directory.
+        code_lines = [line for line in run.splitlines() if not line.lstrip().startswith("#")]
+        self.assertNotRegex("\n".join(code_lines), r"chown -[A-Za-z]*R")
         # Every action a step after the agent uses is under _actions.
         for step in steps[names.index("Execute Pi CLI") + 1:]:
             if "uses" in step:
                 self.assertRegex(step["uses"], r"^(actions|github/gh-aw-actions)/")
 
-    def code_hardening(self, temp: Path, home: Path, path: str) -> subprocess.CompletedProcess:
+    def code_hardening(self, temp: Path, home: Path, path: str, tmp_gh_aw: Path | None = None,
+                       prepare: bool = True) -> subprocess.CompletedProcess:
+        """Run the step with a stand-in for /tmp/gh-aw (a directory the test owns) and sudo."""
         step = next(s for s in self.lock()["jobs"]["agent"]["steps"] if s.get("name") == CODE_STEP)
         shim = temp.parent / "shim"
         shim.mkdir(exist_ok=True)
         (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
         (shim / "sudo").chmod(0o755)
-        return subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True,
+        tmp_gh_aw = tmp_gh_aw or temp.parent / "tmp-gh-aw"
+        if prepare:
+            (temp / "gh-aw/safeoutputs").mkdir(parents=True, exist_ok=True)
+            (tmp_gh_aw / "sandbox/firewall/logs").mkdir(parents=True, exist_ok=True)
+            (tmp_gh_aw / "sandbox/firewall/audit").mkdir(parents=True, exist_ok=True)
+            if os.geteuid() == 0:
+                for made in (tmp_gh_aw, *tmp_gh_aw.rglob("*")):
+                    os.chown(made, 1001, 1001)
+        run = step["run"].replace("/tmp/gh-aw", str(tmp_gh_aw))
+        return subprocess.run(["bash", "-c", run], capture_output=True, text=True,
                               env={"HOME": str(home), "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(temp.parent / "ws"),
                                    "PATH": f"{shim}:{path}"})
 
@@ -1301,12 +1321,12 @@ class TestReviewerSandbox(unittest.TestCase):
             temp, home = root / "work/_temp", root / "home"
             temp.mkdir(parents=True)
             home.mkdir()
-            result = self.code_hardening(temp, home, "/usr/bin:/bin")
+            result = self.code_hardening(temp, home, "/usr/bin:/bin", prepare=False)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("gh-aw/actions is not a directory", result.stderr)
             (temp / "gh-aw").mkdir()
             (temp / "gh-aw/actions").symlink_to(root)
-            self.assertIn("is not a directory", self.code_hardening(temp, home, "/usr/bin:/bin").stderr)
+            self.assertIn("is not a directory", self.code_hardening(temp, home, "/usr/bin:/bin", prepare=False).stderr)
 
     @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
                          "chown to root needs root, and the agent's writes run as another user")
@@ -1356,6 +1376,170 @@ class TestReviewerSandbox(unittest.TestCase):
             # The agent's own uid cannot replace the scripts either.
             self.assertNotEqual(subprocess.run([*runner, "sh", "-c", f'rm -f "{scripts[0]}" && echo x > "{scripts[0]}"'],
                                                capture_output=True).returncode, 0)
+
+    AGENT = ["setpriv", "--reuid=1001", "--regid=1001", "--clear-groups"]
+
+    def layout(self, root: Path) -> tuple[Path, Path, Path, Path]:
+        """The job's directories as the runner's user (uid 1001) owns them before the step."""
+        os.chmod(root, 0o755)
+        shared = root / "tmp"  # stands for /tmp
+        shared.mkdir()
+        os.chmod(shared, 0o1777)
+        temp, home = root / "work/_temp", root / "home"
+        for path in (temp / "gh-aw/actions", root / "work/_actions", home, root / "ws"):
+            path.mkdir(parents=True)
+        for path in (root / "work", home, root / "ws"):
+            os.chown(path, 1001, 1001)
+            for child in path.rglob("*"):
+                os.lchown(child, 1001, 1001)
+        return shared / "gh-aw", temp, home, root
+
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
+                         "chown to root needs root, and the agent's writes run as another user")
+    def test_the_agent_cannot_replace_a_directory_a_root_step_after_it_acts_on(self):
+        # "Print firewall logs" runs `sudo chmod -R a+rX` and `sudo chown -R`
+        # on the firewall directory, and AWF's cleanup mounts the audit
+        # directory into a root container: each follows a link given as the
+        # directory. The agent renames what it owns and puts a link there.
+        agent = self.AGENT
+        for hardened in (False, True):
+            with self.subTest(hardened=hardened), tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+                gh_aw, temp, home, root = self.layout(Path(tmp))
+                victim = root / "victim"
+                victim.mkdir()
+                secret = victim / "shadow"
+                secret.write_text("x")
+                secret.chmod(0o600)
+                (root / "ws").mkdir(exist_ok=True)
+                (root / "work/_actions").mkdir(exist_ok=True)
+                if hardened:
+                    result = self.code_hardening(temp, home, "/usr/bin:/bin", tmp_gh_aw=gh_aw)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    for sub in ("sandbox/firewall/logs", "sandbox/firewall/audit"):
+                        (gh_aw / sub).mkdir(parents=True)
+                    for made in (gh_aw, *gh_aw.rglob("*")):
+                        os.chown(made, 1001, 1001)
+                firewall = gh_aw / "sandbox/firewall"
+                attacks = []
+                for directory in (firewall, firewall / "audit", firewall / "logs", gh_aw / "sandbox", gh_aw):
+                    moved = directory.with_name(directory.name + ".moved")
+                    attempt = subprocess.run([*agent, "sh", "-c", f'mv "{directory}" "{moved}" && ln -s "{victim}" "{directory}"'],
+                                             capture_output=True, text=True)
+                    attacks.append(attempt.returncode == 0)
+                    if attempt.returncode == 0 and not hardened:
+                        break  # the rest moved with it
+                if not hardened:
+                    # Without the step the first rename succeeds, and root's
+                    # chmod -R follows the link given as the directory.
+                    self.assertEqual(attacks, [True])
+                    subprocess.run(["chmod", "-R", "a+rX", str(firewall)], check=True)
+                    self.assertEqual(secret.stat().st_mode & 0o777, 0o644)
+                    continue
+                self.assertEqual(attacks, [False] * 5)
+                for directory in (gh_aw, gh_aw / "sandbox", firewall, firewall / "logs", firewall / "audit"):
+                    status = directory.stat()
+                    self.assertEqual((status.st_uid, status.st_mode & 0o7777), (0, 0o1777), directory)
+                    self.assertFalse(directory.is_symlink())
+                    # The runner's uid still creates entries in each, and
+                    # removes its own, as AWF, Squid and the steps do.
+                    made = subprocess.run([*agent, "sh", "-c", f'touch "{directory}/f" && rm "{directory}/f"'])
+                    self.assertEqual(made.returncode, 0, directory)
+                    removed = subprocess.run([*agent, "sh", "-c", f'rmdir "{directory}" || rm -rf "{directory}"'],
+                                             capture_output=True)
+                    self.assertNotEqual(removed.returncode, 0, directory)
+                # What the steps do as root, with links the agent can still
+                # plant inside the directories: -R follows none of them.
+                for directory in (firewall, firewall / "audit"):
+                    subprocess.run([*agent, "ln", "-s", str(victim), str(directory / "planted")], check=True)
+                for command in (["chmod", "-R", "a+rX", str(firewall)],
+                                ["chown", "-R", "1001:1001", str(firewall)],
+                                ["chmod", "-R", "a+rX", str(os.path.dirname(firewall / "logs"))]):
+                    subprocess.run(command, check=True)
+                self.assertEqual((secret.stat().st_uid, secret.stat().st_mode & 0o777), (0, 0o600))
+                self.assertEqual(victim.stat().st_uid, 0)
+
+    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
+                         "chown to root needs root, and the agent's writes run as another user")
+    def test_the_staging_copy_cannot_plant_a_module_the_safe_outputs_server_loads(self):
+        # otlp.cjs requires send_otlp_span.cjs from its own directory, inside a
+        # try, and setup does not copy it into the safe-outputs directory; the
+        # staging copy writes through a link in the staging directory.
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            gh_aw, temp, home, root = self.layout(Path(tmp))
+            safeoutputs = temp / "gh-aw/safeoutputs"
+            staging = safeoutputs / "upload-artifacts"
+            staging.mkdir(parents=True)
+            for made in (safeoutputs, staging):
+                os.chown(made, 1001, 1001)
+            result = self.code_hardening(temp, home, "/usr/bin:/bin", tmp_gh_aw=gh_aw)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            stub = safeoutputs / "send_otlp_span.cjs"
+            self.assertEqual((stub.stat().st_uid, stub.stat().st_mode & 0o7777), (0, 0o644))
+            payload = root / "ws/payload.cjs"
+            payload.write_text("require('fs').writeFileSync('/tmp/pwned-by-send-otlp-span', 'x')\n")
+            os.chown(payload, 1001, 1001)
+            agent = self.AGENT
+            # The agent plants a link in the staging directory to the server's
+            # directory (the path is the same inside the sandbox).
+            subprocess.run([*agent, "ln", "-s", str(safeoutputs), str(staging / "L")], check=True)
+            # copyFileSync of the staging copy opens an existing file for
+            # writing; it never removes one.
+            for command in (f'cp "{payload}" "{staging}/L/send_otlp_span.cjs"', f'cp "{payload}" "{stub}"',
+                            f'cat "{payload}" > "{staging}/L/send_otlp_span.cjs"'):
+                attempt = subprocess.run([*agent, "sh", "-c", command], capture_output=True, text=True)
+                self.assertNotEqual(attempt.returncode, 0, command)
+            self.assertNotIn("pwned", stub.read_text())
+            if shutil.which("node"):
+                loaded = subprocess.run(["node", "-e", f'try {{ require("{stub}") }} catch (e) {{ process.exit(7) }}'])
+                self.assertEqual(loaded.returncode, 7)
+            # A file that is already there is refused: it is not ours.
+            stub.unlink()
+            stub.write_text("")
+            self.assertEqual(self.code_hardening(temp, home, "/usr/bin:/bin", tmp_gh_aw=gh_aw, prepare=False).returncode, 1)
+
+    @unittest.skipUnless(os.geteuid() == 0, "chown to root needs root")
+    def test_the_path_hardening_changes_only_what_is_not_root_s_and_follows_links(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            gh_aw, temp, home, root = self.layout(Path(tmp))
+            bindir, lib = root / "bin", root / "lib"
+            bindir.mkdir()
+            lib.mkdir()
+            # A system directory: root-owned, a setuid program, and one entry
+            # the runner's user left writable.
+            suid = bindir / "su"
+            suid.write_text("#!/bin/sh\n")
+            suid.chmod(0o4755)
+            loose = bindir / "loose"
+            loose.write_text("#!/bin/sh\n")
+            os.chown(loose, 1001, 1001)
+            # A link to a file of the runner's, in a directory of the runner's.
+            real = lib / "tool"
+            real.write_text("#!/bin/sh\n")
+            real.chmod(0o777)
+            os.chown(lib, 1001, 1001)
+            os.chown(real, 1001, 1001)
+            (bindir / "tool").symlink_to(real)
+            (bindir / "gone").symlink_to(lib / "not-yet")
+            result = self.code_hardening(temp, home, f"{bindir}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((suid.stat().st_uid, suid.stat().st_mode & 0o7777), (0, 0o4755))
+            for path in (loose, real, lib):
+                status = path.stat()
+                self.assertEqual((status.st_uid, status.st_mode & 0o022), (0, 0), path)
+            # A link whose target the agent could create in a directory that
+            # cannot be taken over (the home directory) is refused, and so is
+            # a link to a file there.
+            for name, target in (("home-new", home / "new-file"), ("home-file", home / "existing")):
+                with self.subTest(link=name):
+                    (home / "existing").write_text("x")
+                    os.chown(home / "existing", 1001, 1001)
+                    scratch = root / f"path-{name}"
+                    scratch.mkdir()
+                    (scratch / name).symlink_to(target)
+                    refused = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
+                    self.assertEqual(refused.returncode, 1, refused.stderr)
+                    self.assertIn("too wide", refused.stderr)
 
     def test_the_dispatcher_agent_has_no_way_to_plant_a_link(self):
         # No shell and no file writes: the audit of the post-agent steps that
