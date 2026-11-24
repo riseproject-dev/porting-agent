@@ -119,6 +119,15 @@ def contribution(phase="development", **over):
                      "base_sha": SHA_C},
         "fork": {"repository_id": 2, "name": "riseproject-upstreaming/proj", "head_ref": "riscv64-dev",
                  "head_sha": SHA_A, "pr_number": 1},
+        # A record past planning holds its verified plan and admitted scope
+        # (the invariant `plan` of its states).
+        **({"plan_evidence_id": "plan-1", "scope_paths": ["a"]}
+           if phase not in ("queued", "planning") else {}),
+        # A record of a merged contribution holds its merge (the invariant
+        # `merge` of its states).
+        **({"merge": {"merge_sha": SHA_C, "merged_at": NOW, "target_ref": "main",
+                      "evidence_id": "merge-1"}}
+           if phase in ("release_wait", "released") else {}),
     })
     rec.update(over)
     return rec

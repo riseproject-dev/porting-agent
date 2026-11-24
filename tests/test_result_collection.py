@@ -23,7 +23,7 @@ import lifecycle as lc
 import queue_result
 import reconcile
 import work
-from tests.helpers import contribution
+from tests.helpers import OWNER, SHA_A, contribution
 from tests.test_work_identity import POLICY, T, requested, result
 
 # One record in each state that holds Work, with its human wait.
@@ -32,7 +32,10 @@ STATES = (
     ("development", "agent_running", "development_repair", {"plan_evidence_id": "plan-1"}),
     ("handoff", "agent_running", work.SUBMISSION_REWRITE, {}),
     ("handoff", "reviewing", work.SUBMISSION_REVIEW, {}),
-    ("upstream_review", "agent_running", "upstream_revision", {}),
+    ("upstream_review", "agent_running", "upstream_revision",
+     {"upstream_pr": {"id": 9, "number": 9, "url": "https://github.com/example/proj/pull/9",
+                      "head_repository_id": 2, "head_ref": "riscv64", "head_sha": SHA_A,
+                      "base_ref": "main", "registered_by": OWNER}}),
 )
 
 

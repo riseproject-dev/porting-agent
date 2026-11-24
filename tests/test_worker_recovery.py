@@ -248,7 +248,15 @@ class TestWorkerBlockedRecovery(unittest.TestCase):
                 },
             }
             # Each blocked Result answers Work requested in agent_running.
-            record = dict(record, activity="agent_running")
+            record = dict(record, activity="agent_running",
+                          active_work={"dedupe_key": f"example--proj/12@g0.r{record['revision']}"
+                                                     ":development_patch",
+                                       "task": "development_patch",
+                                       "revision": record["revision"], "attempt": 1,
+                                       "requested_at": "2026-11-22T05:00:00+00:00",
+                                       "deadline_at": "2026-11-22T23:00:00+00:00",
+                                       "generation": 0, "dispatched_run_id": None,
+                                       "reason_ids": [], "feedback_evidence_ids": []})
             record, _staged = reconcile.apply_publication(
                 record,
                 outcome,

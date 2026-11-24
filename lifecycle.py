@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 import schemas
 from common import DEV_REF, SCOPE_PATHS_MAX, UPSTREAM_REF
@@ -426,6 +426,8 @@ class State:
     writes: bool
     description: str
     transitions: dict[tuple[str, str], Transition] = field(default_factory=dict)
+    # The invariants (``INVARIANTS``) every record in the state satisfies.
+    requires: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in KIND_DESCRIPTIONS:
@@ -974,7 +976,7 @@ _RESTART_NOTE = ("When an exhausted budget caused the wait, the resume starts ag
                  "records the actor, the counter, and its count at that point.")
 
 
-_RESUME_CI = _E(revision="bump", clears=("pending_human_action",),
+_RESUME_CI = _E(revision="bump", clears=("pending_human_action", HELD_PATCH),
                 restarts=("interrupted_reruns", "operation_launch"))
 _RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh Work is requested. After "
                    "`ci_interrupted` it starts `interrupted_reruns` (`budget.reruns.interrupted`) "
@@ -982,7 +984,8 @@ _RESUME_CI_NOTE = ("CI on the published head is awaited again; no fresh Work is 
                    "interrupted jobs on the exact head through `rerun_interrupted_ci`, charging "
                    "the restarted counter. After `development_pr_launch_exhausted` it starts "
                    "`operation_launch` again, and the next tick plans a new development PR "
-                   "operation for the head. " + _RESTART_NOTE)
+                   "operation for the head. A held patch, which this wait never keeps, is "
+                   "discarded. " + _RESTART_NOTE)
 
 
 def _discarding(t: Transition, why: str = "") -> Transition:
@@ -1460,7 +1463,7 @@ LIFECYCLE: dict[str, State] = {
                 _O, None,
                 ("every required CI job executed and passed on the exact head",
                  NO_PENDING_FEEDBACK, SERIES_REQUIREMENTS_MET, "no requested Work",
-                 "no open operation"),
+                 "no open operation", "development PR and head recorded"),
                 _E(sets=("last_ci_evidence_id", "handoff_request",
                         "pending_human_action=submit_upstream"))),
             ("return_for_feedback", "development.fix_needed"): Transition(
@@ -1569,10 +1572,12 @@ LIFECYCLE: dict[str, State] = {
                 (EXACT_REVISION, pending_is("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
                  QUIESCENT, NOT_STALE),
                 _RESUME_CI, description=_RESUME_CI_NOTE),
-            ("rearm_dispatch", "development.fix_needed"): _REARM_DISPATCH,
+            ("rearm_dispatch", "development.fix_needed"): _discarding(
+                _REARM_DISPATCH, "A held patch, which this wait never keeps, is discarded."),
             ("resume_patch_review", "development.review_pending"): Transition(
                 _C, RESUME,
-                (EXACT_REVISION, pending_is(PATCH_REVIEW_UNAVAILABLE), QUIESCENT, NOT_STALE),
+                (EXACT_REVISION, pending_is(PATCH_REVIEW_UNAVAILABLE), QUIESCENT, NOT_STALE,
+                 NOT_PAUSED),
                 _E(revision="bump", clears=("pending_human_action",),
                    restarts=("dispatch_recovery", "work_recovery", "work_total")),
                 description="The review of the held patch could not run (its dispatch or its "
@@ -2131,6 +2136,193 @@ LIFECYCLE: dict[str, State] = {
 }
 
 # Transitions that apply in many states, keyed by verb.
+# --------------------------------------------------------------------------
+# State invariants
+#
+# Each state names the invariants every record in it satisfies
+# (``State.requires``). An invariant is a pure predicate of the record, with
+# what makes it true and false: the guards that imply it (``IMPLIES``), the
+# effect entries that establish it, the effect entries that destroy it, and
+# the existing verb that heals a loaded record that violates it. ``lifecycle
+# check`` proves that no row enters a state without its requirements: for
+# every row and every requirement of its target, the requirement held in the
+# source and the effects keep it, a guard of the row implies it, or the
+# effects establish it (``_check_state_requirements``). The engine refuses a
+# row from a record that violates the requirements of its state
+# (``source_invalid``) and a row whose record after it violates those of its
+# target (``target_invalid``); a loaded record that violates one is healed
+# by the invariant's row, never edited by hand.
+
+
+@dataclass(frozen=True)
+class Invariant:
+    """``check(record)`` is ``None`` when the invariant holds and why not
+    otherwise. ``establish``/``destroy`` decide from a row's effects (and the
+    flag verb) whether the row makes it true or false; ``heal`` is the verb
+    that a loaded record violating it takes (``None``: the controller's
+    stop after a processing error)."""
+
+    description: str
+    check: Callable[[dict], str | None]
+    establish: Callable[[Transition, str], bool]
+    destroy: Callable[[Transition, str], bool]
+    heal: str | None = None
+
+
+def _sets(t: Transition) -> set[str]:
+    return {_field_name(entry) for entry in t.effects.sets}
+
+
+def _clears(t: Transition) -> set[str]:
+    return {_field_name(entry) for entry in t.effects.clears}
+
+
+def _bumps(t: Transition) -> bool:
+    return t.effects.generation == "bump"
+
+
+def _present(name: str, why: str) -> Callable[[dict], str | None]:
+    def check(record: dict) -> str | None:
+        node: Any = record
+        for part in name.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        return None if node else why
+    return check
+
+
+def _absent(name: str, why: str) -> Callable[[dict], str | None]:
+    present = _present(name, "")
+
+    def check(record: dict) -> str | None:
+        return why if present(record) is None else None
+    return check
+
+
+def _plan(record: dict) -> str | None:
+    if record.get("plan_evidence_id") and record.get("scope_paths"):
+        return None
+    return "no verified plan and admitted scope (`plan_evidence_id`, `scope_paths`) are recorded"
+
+
+def _bound(record: dict) -> str | None:
+    upstream = record.get("upstream") or {}
+    if all(upstream.get(k) is not None for k in ("repository_id", "base_ref", "base_sha")):
+        return None
+    return "the upstream identity and base are not bound"
+
+
+def _fork(record: dict) -> str | None:
+    fork = record.get("fork") or {}
+    return None if fork.get("repository_id") and fork.get("name") else "no fork is recorded"
+
+
+def _dev_pr(record: dict) -> str | None:
+    fork = record.get("fork") or {}
+    return None if fork.get("pr_number") and fork.get("head_sha") else \
+        "no development PR and head are recorded"
+
+
+def _work_or_publication(record: dict) -> str | None:
+    if record.get("active_work") or record.get("pending_publication"):
+        return None
+    return "neither Work nor a publication of its Result is held"
+
+
+def _candidate(record: dict) -> str | None:
+    head = (record.get("fork") or {}).get("head_sha")
+    if head and (record.get("handoff_request") or {}).get("head") == head:
+        return None
+    return "no candidate head is recorded for the recorded fork head"
+
+
+def _not_paused(record: dict) -> str | None:
+    return "the contribution is paused" if record.get("paused") else None
+
+
+def _row_sets_work(t: Transition) -> bool:
+    return t.effects.work in ("allocate", "reallocate")
+
+
+def _row_clears_work(t: Transition) -> bool:
+    return t.effects.work == "clear" or _bumps(t)
+
+
+INVARIANTS: dict[str, Invariant] = {
+    "bound": Invariant(
+        "the upstream identity and base are bound", _bound,
+        lambda t, verb: bool(_sets(t) & {"upstream.repository_id", "upstream.base_sha"}),
+        lambda t, verb: _bumps(t)),
+    "plan": Invariant(
+        "a verified plan and its admitted scope are recorded", _plan,
+        lambda t, verb: {"plan_evidence_id", "scope_paths"} <= _sets(t),
+        lambda t, verb: _bumps(t) or bool(_clears(t) & {"plan_evidence_id", "scope_paths"})),
+    "fork": Invariant(
+        "the fork is recorded", _fork,
+        lambda t, verb: "fork" in _sets(t),
+        lambda t, verb: _bumps(t) or "fork" in _clears(t)),
+    "dev_pr": Invariant(
+        "a development PR and its head are recorded", _dev_pr,
+        lambda t, verb: "fork.pr_number" in _sets(t),
+        lambda t, verb: _bumps(t) or bool(_clears(t) & {"fork", "fork.pr_number"})
+        or "fork" in _sets(t),
+        heal="record_pr_mismatch"),
+    "work": Invariant(
+        "Work is requested", _present("active_work", "no Work is requested"),
+        lambda t, verb: _row_sets_work(t),
+        lambda t, verb: _row_clears_work(t)),
+    "work_or_publication": Invariant(
+        "Work is requested, or the publication of its Result is held",
+        _work_or_publication,
+        lambda t, verb: _row_sets_work(t) or HELD_RESULT in _sets(t),
+        lambda t, verb: _row_clears_work(t) and HELD_RESULT not in _sets(t)),
+    "pending": Invariant(
+        "a pending human action is recorded",
+        _present("pending_human_action", "no pending human action is recorded"),
+        lambda t, verb: "pending_human_action" in _sets(t),
+        lambda t, verb: _bumps(t) or ("pending_human_action" in _clears(t)
+                                      and "pending_human_action" not in _sets(t))),
+    "no_pending": Invariant(
+        "no pending human action is recorded",
+        _absent("pending_human_action", "a pending human action is recorded"),
+        lambda t, verb: _bumps(t) or ("pending_human_action" in _clears(t)
+                                      and "pending_human_action" not in _sets(t)),
+        lambda t, verb: "pending_human_action" in _sets(t)),
+    "candidate": Invariant(
+        "the candidate head of the submission is the recorded fork head", _candidate,
+        lambda t, verb: "handoff_request" in _sets(t),
+        lambda t, verb: _bumps(t) or "handoff_request" in _clears(t)
+        or "fork.head_sha" in _sets(t)),
+    "upstream_pr": Invariant(
+        "the upstream PR is recorded", _present("upstream_pr", "no upstream PR is recorded"),
+        lambda t, verb: "upstream_pr" in _sets(t),
+        lambda t, verb: _bumps(t) or "upstream_pr" in _clears(t)),
+    "merge": Invariant(
+        "the merge of the upstream PR is recorded", _present("merge", "no merge is recorded"),
+        lambda t, verb: "merge" in _sets(t),
+        lambda t, verb: _bumps(t) or "merge" in _clears(t)),
+    "parked_reason": Invariant(
+        "the reason of the park is recorded",
+        _present("parked_reason", "no reason of the park is recorded"),
+        lambda t, verb: "parked_reason" in _sets(t),
+        lambda t, verb: _bumps(t) or "parked_reason" in _clears(t)),
+    "not_paused": Invariant(
+        "the contribution is not paused", _not_paused,
+        lambda t, verb: "paused" in _clears(t) or verb in FLAGS["paused"].cleared_by,
+        lambda t, verb: verb in FLAGS["paused"].set_by),
+}
+
+# The guards that imply an invariant: when the guard holds on the source
+# record, the invariant holds on it.
+IMPLIES: dict[str, tuple[str, ...]] = {
+    UPSTREAM_BOUND: ("bound",),
+    NOT_PAUSED: ("not_paused",),
+    "development PR and head recorded": ("dev_pr", "fork"),
+    # A refresh is recorded only from a state with the fork and its
+    # development PR, and a new generation clears it.
+    "refresh recorded": ("fork",),
+}
+
+
 RULES: dict[str, Rule] = {
     "park_contribution": Rule(
         "parked.idle",
@@ -2349,7 +2541,10 @@ for _wait, _to in UPSTREAM_READ_RESUMES.items():
     # names, which is `source_reads` whenever its guards hold.
     _restarts = (*(("operation_launch",) if _wait == "provisioning.waiting_human" else ()),
                  "source_reads")
-    LIFECYCLE[_wait].transitions[("resume_upstream_read", _to)] = _resume_upstream_read(*_restarts)
+    _row = _resume_upstream_read(*_restarts)
+    if _wait == "development.waiting_human":
+        _row = _discarding(_row, "A held patch, which this wait never keeps, is discarded.")
+    LIFECYCLE[_wait].transitions[("resume_upstream_read", _to)] = _row
 
 # The wait a renamed repository caused, once GitHub answers for the recorded
 # repository id under its recorded name again but the upstream says that the
@@ -2388,6 +2583,63 @@ LIFECYCLE["upstream_review.waiting_human"].transitions[
                 "is due again. The tracking issue states the rename.")
 
 expand_rules()
+
+# The invariants of each state (``INVARIANTS``).
+_DEV = ("bound", "plan", "fork")
+_HANDOFF = (*_DEV, "dev_pr", "no_held_patch")
+REQUIRES: dict[str, tuple[str, ...]] = {
+    "queued.idle": ("no_pending", "no_held_patch"),
+    "planning.idle": ("no_pending", "no_held_patch"),
+    "planning.agent_running": ("bound", "work", "no_pending", "no_held_patch", "not_paused"),
+    "planning.waiting_human": ("pending", "no_held_patch"),
+    "provisioning.idle": ("plan", "no_pending", "no_held_patch"),
+    "provisioning.waiting_human": ("plan", "pending", "no_held_patch"),
+    "development.fix_needed": (*_DEV, "no_held_patch", "no_pending"),
+    "development.agent_running": (*_DEV, "work_or_publication", "no_held_patch", "no_pending",
+                                  "not_paused"),
+    "development.review_pending": (*_DEV, "no_pending", "not_paused"),
+    "development.reviewing": (*_DEV, "work", "no_pending", "not_paused"),
+    "development.publishing": (*_DEV, "no_pending", "not_paused"),
+    "development.waiting_ci": (*_DEV, "no_held_patch", "no_pending"),
+    "development.waiting_human": (*_DEV, "pending"),
+    "handoff.awaiting_submission": (*_HANDOFF, "candidate", "pending"),
+    "handoff.review_due": (*_HANDOFF, "no_pending"),
+    "handoff.agent_running": (*_HANDOFF, "work", "no_pending", "not_paused"),
+    "handoff.review_pending": (*_HANDOFF, "no_pending"),
+    "handoff.reviewing": (*_HANDOFF, "work", "no_pending", "not_paused"),
+    "handoff.building_upstream_branch": (*_HANDOFF, "no_pending"),
+    "handoff.waiting_ci": (*_HANDOFF, "no_pending"),
+    "handoff.preparing_submission": (*_HANDOFF, "no_pending"),
+    "handoff.waiting_human": (*_HANDOFF, "pending"),
+    "handoff.waiting_upstream_pr": (*_HANDOFF, "pending"),
+    "upstream_review.waiting_ci": (*_DEV, "upstream_pr", "no_pending", "no_held_patch"),
+    "upstream_review.fix_needed": (*_DEV, "upstream_pr", "no_pending", "no_held_patch"),
+    "upstream_review.agent_running": (*_DEV, "upstream_pr", "work_or_publication", "no_pending",
+                                      "no_held_patch", "not_paused"),
+    "upstream_review.waiting_human": (*_DEV, "upstream_pr", "pending", "no_held_patch"),
+    "release_wait.idle": ("merge", "no_pending"),
+    "release_wait.waiting_human": ("merge", "pending"),
+    "released.idle": ("merge", "not_paused"),
+    "parked.idle": ("parked_reason",),
+    "closed.idle": ("not_paused",),
+}
+INVARIANTS["no_held_patch"] = Invariant(
+    "no patch is held", _absent(HELD_PATCH, "a patch is held"),
+    lambda t, verb: _bumps(t) or HELD_PATCH in _clears(t),
+    lambda t, verb: HELD_PATCH in _sets(t))
+for _key, _names in REQUIRES.items():
+    from dataclasses import replace as _replace
+    LIFECYCLE[_key] = _replace(LIFECYCLE[_key], requires=_names)
+
+
+def requirement_problems(state: str, record: dict) -> list[tuple[str, str]]:
+    """The invariants of ``state`` that ``record`` violates, with why."""
+    found = []
+    for name in LIFECYCLE[state].requires:
+        why = INVARIANTS[name].check(record)
+        if why:
+            found.append((name, why))
+    return found
 
 
 FLAGS: dict[str, Flag] = {
@@ -4852,6 +5104,107 @@ def _check_diagrams(problems: list[str]) -> None:
                     problems.append(f"{title}: candidate node {node!r} is not drawn")
 
 
+# The commands the mask of the ``paused`` flag still admits; every other
+# command, every tick row and every Result row but ``record_late_effect`` is
+# refused while paused.
+PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
+    "resume", "park", "refresh", "retract-pr", "abandon", "resolve-operation"))
+
+
+def masked_while_paused(verb: str, t: Transition) -> bool:
+    """Whether the mask of the ``paused`` flag refuses the row: then the
+    row is taken only from a record that is not paused."""
+    if t.trigger == Trigger.COMMAND:
+        return t.command not in PAUSED_COMMANDS
+    if t.trigger == Trigger.TICK:
+        return True
+    return t.trigger == Trigger.RESULT and verb != "record_late_effect"
+
+
+def requirement_edges():
+    """Every row of the table, the rules expanded, and the setters and
+    clearers of the flags from every state they apply in: (source, verb,
+    transition, target)."""
+    for e in table_edges():
+        yield e.source, e.verb, e.transition, e.target
+    for flag in FLAGS.values():
+        for state, entry in LIFECYCLE.items():
+            if entry.kind == "terminal":
+                continue
+            for verb, t in flag.set_by.items():
+                yield state, verb, t, flag.set_moves.get(state, state)
+            for verb, t in flag.cleared_by.items():
+                yield state, verb, t, state
+
+
+def requirement_reason(source: str, verb: str, t: Transition, target: str,
+                       name: str) -> str | None:
+    """Why the row keeps or makes the requirement ``name`` of its target
+    true, or ``None`` when nothing does: the source requires it and the
+    effects keep it, a guard implies it, the effects establish it, or (for
+    ``not_paused``) the mask of the flag refuses the row while paused."""
+    invariant = INVARIANTS[name]
+    if name in LIFECYCLE[source].requires and not invariant.destroy(t, verb):
+        return "kept"
+    if any(name in IMPLIES.get(guard, ()) for guard in t.guard) \
+            and not invariant.destroy(t, verb):
+        return "implied"
+    if invariant.establish(t, verb):
+        return "established"
+    if name == "not_paused" and masked_while_paused(verb, t) \
+            and not invariant.destroy(t, verb):
+        return "masked"
+    return None
+
+
+def _check_state_requirements(problems: list[str]) -> None:
+    """No row enters a state without the invariants the state requires
+    (``State.requires``): every requirement of the target is kept from the
+    source, implied by a guard of the row (``IMPLIES``), established by its
+    effects, or (``not_paused``) assured by the mask of the flag. Fact
+    guards never count. Every requirement names an invariant, and the verb
+    that heals one names a row."""
+    verbs = {e.verb for e in table_edges()}
+    for key, state in LIFECYCLE.items():
+        for name in state.requires:
+            if name not in INVARIANTS:
+                problems.append(f"{key}: requires {name!r}, which is not an invariant")
+    for name, invariant in INVARIANTS.items():
+        if invariant.heal is not None and invariant.heal not in verbs:
+            problems.append(f"invariant {name}: heals by {invariant.heal}, not a verb of the table")
+    for guard, names in IMPLIES.items():
+        for name in names:
+            if name not in INVARIANTS:
+                problems.append(f"IMPLIES[{guard!r}]: {name!r} is not an invariant")
+    for source, verb, t, target in requirement_edges():
+        for name in LIFECYCLE[target].requires:
+            if name in INVARIANTS and requirement_reason(source, verb, t, target, name) is None:
+                problems.append(f"{source} --{verb}--> {target}: nothing keeps, implies, or "
+                                f"establishes {name!r}, which {target} requires")
+
+
+def _check_always_rows(problems: list[str]) -> None:
+    """A row whose guard is ``always`` always applies, so none of the
+    refusals can occur: the mask of the flag does not refuse it, the
+    requirements of its source cover those of its target and its effects
+    keep them, and it sets no value the caller supplies."""
+    for source, verb, t, target in requirement_edges():
+        if t.guard != (ALWAYS,):
+            continue
+        where = f"{source} --{verb}--> {target}"
+        if masked_while_paused(verb, t):
+            problems.append(f"{where}: an `always` row is refused while paused")
+        for name in LIFECYCLE[target].requires:
+            if name not in LIFECYCLE[source].requires or INVARIANTS[name].destroy(t, verb):
+                problems.append(f"{where}: an `always` row does not keep {name!r}")
+        for entry in t.effects.sets:
+            if "=" not in entry and entry not in (RERUNS, WORK_FEEDBACK):
+                problems.append(f"{where}: an `always` row sets {entry}, a value the caller "
+                                "supplies")
+        if t.effects.work in ("allocate", "reallocate"):
+            problems.append(f"{where}: an `always` row allocates Work the caller supplies")
+
+
 # The transition engine's private names: a row is taken only by
 # ``engine.try_apply_transition`` (and ``try_apply_one_of``,
 # ``try_apply_command``), whose pure ``preconditions`` only the engine, the
@@ -4908,6 +5261,8 @@ def check_table(policy: dict | None = None) -> list[str]:
     _check_human_waits(problems)
     _check_counter_restarts(problems)
     _check_operations(problems)
+    _check_state_requirements(problems)
+    _check_always_rows(problems)
     for use in private_engine_uses(Path(__file__).resolve().parent):
         problems.append(f"{use}: a row is taken only through engine.try_apply_transition")
 

@@ -3134,6 +3134,28 @@ flowchart TB
     development_fix_needed -->|exhaust_work_total| development_waiting_human
 ```
 
+### Every state names the invariants of its records
+
+What a record in a state always holds, and how the table proves that no row breaks it.
+
+**Change.** Each state names its invariants (`State.requires`, from `lifecycle.REQUIRES`): the bound upstream, the verified plan and scope and the fork from development on, the development PR and the candidate head at the submission gate, the requested Work in the states that run it, the pending action of a wait and none elsewhere, no held patch where none can be held, and no stop in the states a stop leaves. `lifecycle check` proves for every row, the rules and the flag included, that each requirement of the target is kept from the source, implied by a guard (`lifecycle.IMPLIES`), established by the effects, or (`not_paused`) assured by the mask of the flag; fact guards never count. The proof found four rows to change: `nominate_for_handoff` requires the development PR and head it nominates, `resume_patch_review` is taken only once the contribution is not paused (the first resume of a paused wait clears the flag), and `resume_ci`, `rearm_dispatch` and `resume_upstream_read` of `development.waiting_human` discard a held patch, which those waits never keep. The engine refuses a row from a record that breaks its state (`source_invalid`), but for the stops, a late Result and the row that heals the invariant, and a row whose record after it breaks its target (`target_invalid`). A row whose guard is `always` is proved to refuse with no kind.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+        development_review_pending["development.review_pending"]
+    end
+    subgraph handoff["handoff"]
+        handoff_awaiting_submission["handoff.awaiting_submission"]
+    end
+
+    development_waiting_ci ==>|nominate_for_handoff| handoff_awaiting_submission
+    development_waiting_human ==>|resume_patch_review<br/>/upstreaming resume| development_review_pending
+    development_waiting_human ==>|resume_ci<br/>/upstreaming resume| development_waiting_ci
+```
+
 ### Seven verbs merged into three
 
 Which verbs of the table name the same transition under two names, and may be one row each (the owner's decision of 2026-11-24)?

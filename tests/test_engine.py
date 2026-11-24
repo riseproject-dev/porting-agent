@@ -190,6 +190,17 @@ def scenario(state, verb, t):
         facts.add("proposal_rejected_or_blocked")
     if state in lc.HELD_PATCH_STATES:
         rec["held_patch"] = copy.deepcopy(SAMPLE["held_patch"])
+    # The invariants the state requires (``lifecycle.REQUIRES``).
+    requires = lc.LIFECYCLE[state].requires
+    if {"work", "work_or_publication"} & set(requires) \
+            and not {lc.NO_WORK, "no Work requested"} & set(t.guard):
+        rec["active_work"] = copy.deepcopy(SAMPLE["active_work"])
+    if "publication" in requires:
+        rec["pending_publication"] = copy.deepcopy(SAMPLE["pending_publication"])
+    if "merge" in requires:
+        rec["merge"] = copy.deepcopy(SAMPLE["merge"])
+    if "parked_reason" in requires:
+        rec["parked_reason"] = SAMPLE["parked_reason"]
     e = t.effects
     values = {}
     for entry in e.sets:
@@ -810,12 +821,15 @@ class TestTableDecisions(unittest.TestCase):
 
     def test_patch_work_needs_the_fork_and_admission_checks_the_scope(self):
         no_fork = self.fix_needed(fork=None)
-        self.assertEqual(self.request(no_fork, "request_patch").reason,
-                         "fork not provisioned/verified")
+        # A record without its fork violates its state: no Work is requested.
+        refused = self.request(no_fork, "request_patch")
+        self.assertEqual(refused.refused.kind, engine.Refusal.SOURCE_INVALID)
+        self.assertEqual(refused.reason, "development.fix_needed requires fork: no fork is recorded")
         self.assertNotIn("proposal or write admission", engine.PREDICATES)
         admit = lc.find_edge("planning.agent_running", "admit_development").transition
         self.assertIn(lc.PATCH_SCOPE_COMPLETE, admit.guard)
-        running = contribution(phase="planning", activity="agent_running", fork=None)
+        running = contribution(phase="planning", activity="agent_running", fork=None,
+                               active_work=copy.deepcopy(SAMPLE["active_work"]))
         values = {"plan_evidence_id": "plan-1", "scope_paths": ["pyproject.toml"],
                   "admission_class": "configuration_integration",
                   "scope_coverage_complete": True}
@@ -842,6 +856,7 @@ class TestTableDecisions(unittest.TestCase):
         readmit = lc.find_edge("planning.agent_running", "readmit_development").transition
         self.assertIn(lc.PATCH_SCOPE_COMPLETE, readmit.guard)
         refreshed = contribution(phase="planning", activity="agent_running",
+                                 active_work=copy.deepcopy(SAMPLE["active_work"]),
                                  refresh={"command_id": "c", "reason": "r",
                                           "from_phase": "development", "head_sha": SHA_A,
                                           "pr_number": 1})
@@ -1235,7 +1250,8 @@ class TestSubmitUpstream(unittest.TestCase):
              "head is not the candidate head"),
             (dict(rec, fork=dict(rec["fork"], head_sha=SHA_B)),
              f"/upstreaming submit-upstream revision=6 head={SHA_A}",
-             "no candidate head is recorded for the current fork head"),
+             "handoff.awaiting_submission requires candidate: no candidate head is recorded "
+             "for the recorded fork head"),
             (dict(rec, paused=True, paused_at=NOW, paused_by="human"),
              f"/upstreaming submit-upstream revision=6 head={SHA_A}", "contribution is paused"),
             (contribution(phase="development", activity="waiting_ci", revision=6),

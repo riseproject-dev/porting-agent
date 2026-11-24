@@ -319,7 +319,7 @@ class TestAllocation(unittest.TestCase):
         # A refreshed plan that returns to the fork with no failing CI job and
         # no pending feedback is answered by a patch.
         base = contribution(phase="planning", activity="agent_running", plan_evidence_id="plan-1",
-                            refresh={"command_id": "c", "reason": "r", "from_phase": "development",
+                            scope_paths=["a"], refresh={"command_id": "c", "reason": "r", "from_phase": "development",
                                      "head_sha": SHA_A, "pr_number": 7})
         fix = dict(base, phase="development", activity="fix_needed", refresh=None)
         res, after = select(fix)
@@ -542,7 +542,7 @@ class TestExhaustion(unittest.TestCase):
                     facts={"work_terminal_without_result"},
                     values={"active_work": dict(unbound["active_work"])})
                 self.assertFalse(out.accepted)
-                self.assertIn("upstream identity and base not bound", out.reason)
+                self.assertIn("the upstream identity and base are not bound", out.reason)
                 new, event, decision = controller.terminal_work(
                     unbound, unbound["active_work"], "completed", now=T, policy=POLICY)
                 self.assertEqual((new, event), (None, None))

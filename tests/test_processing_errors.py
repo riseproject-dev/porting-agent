@@ -320,9 +320,8 @@ class TestOneContributionErrors(unittest.TestCase):
         """A state that allocates no Work (here the gate of a submission) does
         not read `last_ci_evidence_id`, so evidence the store does not hold
         pauses nothing there."""
-        a = contribution(phase="handoff", activity="awaiting_submission",
-                         plan_evidence_id="plan-1", scope_paths=["a"],
-                         scope_coverage_complete=True, last_ci_evidence_id="ci-gone")
+        a = awaiting_submission(plan_evidence_id="plan-1", scope_paths=["a"],
+                                scope_coverage_complete=True, last_ci_evidence_id="ci-gone")
         output = tick([a, other_waiting()], observe=False)
         self.assertEqual(output.report.get("processing_errors", []), [])
         self.assertEqual(kinds(output, A), [])

@@ -890,7 +890,8 @@ class TestTick(unittest.TestCase):
                               policy=policy(), inputs=controller.Inputs(
                                   now=T, pressure=capacity.Pressure(ok=True)),
                               evidence={"ci-3": ci_record("ci-3", SHA_A, failing="build")})
-        self.assertEqual(res.requested_effects[0]["reason_ids"], ["review-1", "review-2", "ci-3"])
+        self.assertEqual(res.requested_effects[0]["reason_ids"],
+                         ["review-1", "review-2", "ci-3", "plan-1"])
         self.assertEqual(res.requested_effects[0]["feedback_evidence_ids"],
                          ["review-1", "review-2"])
 

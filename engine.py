@@ -1054,8 +1054,7 @@ def table_guards() -> set[str]:
 # Verbs
 
 # Commands the mask of the ``paused`` flag still admits.
-PAUSED_COMMANDS = frozenset(f"/upstreaming {name}" for name in (
-    "resume", "park", "refresh", "retract-pr", "abandon", "resolve-operation"))
+PAUSED_COMMANDS = lc.PAUSED_COMMANDS
 
 # Verbs that pipeline code takes through ``try_apply_transition``, with the module
 # that takes them. ``return_for_repair`` is taken by observation at the gate
@@ -1333,6 +1332,29 @@ def _check_facts(facts) -> None:
             raise TransitionError(f"contradictory facts: {' and '.join(pair)}")
 
 
+def invariant_problems(record: dict) -> list[tuple[str, str]]:
+    """The invariants the state of ``record`` requires that it violates
+    (``lifecycle.REQUIREMENTS``), with why: empty for a record of a state
+    outside the table."""
+    state = state_key(record)
+    if state not in lc.LIFECYCLE:
+        return []
+    return lc.requirement_problems(state, record)
+
+
+# The rows a record that violates a requirement of its state may still take:
+# the stops (the flag, `park`, `abandon`, `refresh`, a resume, a resolution),
+# the audit of a late Result, and the row that heals the requirement.
+def exempt_from_requirements(verb: str, t: lc.Transition, name: str) -> bool:
+    """Whether ``verb`` is taken from a record that violates the invariant
+    ``name`` of its state."""
+    if verb == "record_late_effect" or verb == lc.INVARIANTS[name].heal:
+        return True
+    if any(verb in flag.set_by or verb in flag.cleared_by for flag in lc.FLAGS.values()):
+        return True
+    return t.trigger == lc.Trigger.COMMAND and t.command in lc.PAUSED_COMMANDS
+
+
 def _guards(record: dict, verb: str, *, policy: dict, now: str, command: Command | None,
             facts, counts, open_operations, ci_evidence
             ) -> tuple[Refused | None, Context | None, lc.Transition | None, str | None]:
@@ -1356,6 +1378,12 @@ def _guards(record: dict, verb: str, *, policy: dict, now: str, command: Command
     masked = _mask(ctx, verb, t)
     if masked:
         return Refused(Refusal.PAUSED, verb, None, masked), ctx, t, target
+    broken = [(name, why) for name, why in invariant_problems(record)
+              if not exempt_from_requirements(verb, t, name)]
+    if broken:
+        name, why = broken[0]
+        return (Refused(Refusal.SOURCE_INVALID, verb, None, f"{state} requires {name}: {why}"),
+                ctx, t, target)
     if not t.guard:
         raise TransitionError(f"{state} --{verb}-->: the row states no guard")
     for guard in t.guard:
@@ -1387,6 +1415,15 @@ def _evaluate(record: dict, verb: str, *, policy: dict, now: str, command: Comma
         schemas.validate("contribution", rec)
     except schemas.SchemaError as error:
         return _Evaluation(Refused(Refusal.TARGET_INVALID, verb, None, str(error)[:2000]))
+    # The record after the row satisfies the requirements of its target. A
+    # row that may leave a broken record (a stop, a heal) adds no breach of
+    # its own: the ones it carries from the source are kept.
+    carried = {name for name, _why in invariant_problems(record)}
+    for name, why in lc.requirement_problems(target, rec):
+        if name in carried and exempt_from_requirements(verb, t, name):
+            continue
+        return _Evaluation(Refused(Refusal.TARGET_INVALID, verb, None,
+                                   f"{target} requires {name}: {why}"))
     bumped = rec["revision"] != record["revision"]
     if bumped != (t.effects.revision == "bump"):
         raise TransitionError(f"{verb}: the revision rule is violated")
@@ -2368,8 +2405,10 @@ handles("controller", "tick",
         ("dispatch_planning", "request_repair", "request_patch",
          "request_patch_review", "request_submission_rewrite", "request_submission_review",
          "request_upstream_revision", "request_review_revision"), _ALL_BUG)
+# A record that breaks its state is left to the heal of its tick (nothing is
+# decided for its Work).
 handles("controller", "terminal_work", "allocate_work_retry", D_TICK,
-        BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
+        BUDGET_EXHAUSTED=TAKE("exhaust_recovery"), SOURCE_INVALID=SKIP)
 handles("controller", "terminal_work", "exhaust_recovery", _ALL_BUG)
 handles("controller", "_launch_handoff", "expire_submission_rewrite", _ALL_BUG,
         PAUSED=SKIP, FENCED=SKIP)

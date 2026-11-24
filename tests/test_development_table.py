@@ -304,8 +304,6 @@ class TestPatchResults(unittest.TestCase):
         self.assertEqual(new["scope_paths"], full)
         self.assertIn("did not join the scope", event["details"]["scope_extension_not_recorded"])
         self.assertEqual(engine.state_key(new), "development.waiting_ci")
-        new, event = fold(dict(running(), scope_paths=None), ["b"])
-        self.assertIsNone(new["scope_paths"])
 
     def test_publish_retries_then_the_human_wait_then_fresh_work(self):
         rec = running()

@@ -337,6 +337,22 @@ def render_table(policy: dict) -> str:
         lines.append(f"| `{key}` | `{s.kind}` | {'yes' if s.launches else 'no'} | "
                      f"{'yes' if s.writes else 'no'} | {len(s.transitions) - ruled} + {ruled} | "
                      f"{cell(s.description)} |")
+    lines += ["", "## State invariants", "",
+              "Every record in a state satisfies the invariants the state requires. `lifecycle "
+              "check` proves that no row enters a state without them: each requirement of the "
+              "target is kept from the source, implied by a guard of the row, established by its "
+              "effects, or (`not_paused`) assured by the mask of the flag. The engine refuses a "
+              "row from a record that breaks its state (`source_invalid`), but for the stops, a "
+              "late Result and the row that heals the invariant, and a row whose record after it "
+              "breaks its target (`target_invalid`).", "",
+              "| Invariant | Meaning | Implied by | Healed by |",
+              "|:----------|:--------|:-----------|:----------|"]
+    for name, inv in lc.INVARIANTS.items():
+        implied = "; ".join(g for g, names in lc.IMPLIES.items() if name in names)
+        lines.append(f"| `{name}` | {cell(inv.description)} | {cell(implied) or '-'} | "
+                     f"{f'`{inv.heal}`' if inv.heal else 'the stop after a processing error'} |")
+    lines += ["", "| State | Requires |", "|:------|:---------|"]
+    lines += [f"| `{key}` | {code(s.requires)} |" for key, s in lc.LIFECYCLE.items()]
     lines += ["", "## Partial clears", "",
               "An effect normally clears a whole field. These entries clear a part of one.", "",
               "| Entry | Field | What is cleared |", "|:------|:------|:----------------|"]
