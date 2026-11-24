@@ -92,11 +92,12 @@ def effect_contract(task: str) -> dict:
     raise ValueError(f"unknown task {task}")
 
 
-def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths: list[str],
-            context: dict | None = None) -> dict:
-    """Immutable Work payload for one controller request. Everything the
-    agent and the trusted publish job need is in here; nothing is looked up
-    from mutable state at execution time except re-checks."""
+def task_data(request: dict, record: dict, *, allowed_paths: list[str],
+              context: dict | None = None) -> dict:
+    """Everything the agent and the trusted jobs need to know about one
+    controller request: the content of the task file the controller commits
+    (``work_task``). Nothing is looked up from mutable state at execution
+    time except re-checks."""
     task = request["task"]
     context = dict(context or {})
     issue = (record.get("active_work") or {}).get("tracking_issue")
@@ -133,9 +134,6 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
         "admission_class": record.get("admission_class"),
         "reason_ids": request.get("reason_ids") or [],
         "context": context or {},
-        "resource_scope": {"version": 1, "resources": [
-            {"host": "github.com", "repository": CONTROL_REPO, "repository_id": str(control_repo_id)}]},
-        "effect_contract": effect_contract(task),
     }
     if task in REVIEWED_TASKS:
         # The review contract: the patch is held for its review and published
@@ -143,6 +141,18 @@ def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths:
         p["review"] = "required"
     p.update(_identity(request))
     return p
+
+
+def payload(request: dict, record: dict, *, control_repo_id: str, allowed_paths: list[str],
+            context: dict | None = None) -> dict:
+    """The Work payload as the trusted jobs read it: the task
+    (``task_data``) with the resource scope and the effect contract the
+    queue's Claim scope reads."""
+    return {**task_data(request, record, allowed_paths=allowed_paths, context=context),
+            "resource_scope": {"version": 1, "resources": [
+                {"host": "github.com", "repository": CONTROL_REPO,
+                 "repository_id": str(control_repo_id)}]},
+            "effect_contract": effect_contract(request["task"])}
 
 
 def _identity(request: dict) -> dict:

@@ -1,0 +1,384 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task of one Work (the content of its task file, and the Work payload resolved from it)",
+  "description": "The task file (`.state/evidence/task-<hex>.json`, evidence of kind `task`, in its `data`) holds everything the agent and the trusted jobs of one Work need. The queue carries only a reference to it (`task_file`); `task_file.resolve` returns this shape with `resource_scope`, `effect_contract` and `task_file` from the queue, and the commit (`ref`) and `url` of the nested references filled in from the reference that names the task file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "instructions",
+    "contribution_id",
+    "revision",
+    "tracking_issue",
+    "upstream",
+    "ref",
+    "allowed_operations",
+    "allowed_paths",
+    "reason_ids",
+    "context",
+    "generation",
+    "dedupe_key",
+    "feedback_evidence_ids"
+  ],
+  "properties": {
+    "task": {
+      "enum": [
+        "planning",
+        "development_patch",
+        "development_repair",
+        "upstream_revision",
+        "submission_rewrite",
+        "submission_review",
+        "development_review"
+      ]
+    },
+    "instructions": {
+      "type": "string",
+      "maxLength": 8000
+    },
+    "contribution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tracking_issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "upstream": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "upstream_repository_id": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "base_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 255
+    },
+    "base_sha": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "fork": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "fork_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "fork_repository_id": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ref": {
+      "type": "string",
+      "maxLength": 255
+    },
+    "expected_head": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "upstream_facing": {
+      "type": "boolean"
+    },
+    "allowed_operations": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "enum": [
+          "append",
+          "rewrite"
+        ]
+      }
+    },
+    "allowed_paths": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "maxLength": 200
+      }
+    },
+    "review_scope_extension": {
+      "type": "boolean"
+    },
+    "legacy_scope_extension": {
+      "type": "boolean"
+    },
+    "distributions": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "maxLength": 200
+      }
+    },
+    "admission_class": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 64
+    },
+    "reason_ids": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "review": {
+      "const": "required"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dedupe_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "feedback_evidence_ids": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_at",
+        "reason_evidence",
+        "history"
+      ],
+      "properties": {
+        "requested_at": {
+          "type": "string"
+        },
+        "reason_evidence": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "required": [
+              "evidence_id",
+              "kind"
+            ],
+            "properties": {
+              "evidence_id": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "kind": {
+                "type": "string"
+              },
+              "reference": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "sha256"
+                ],
+                "properties": {
+                  "repository": {
+                    "const": "riseproject-dev/porting-agent"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{40}$"
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^\\.state/evidence/[A-Za-z0-9._-]+\\.json$"
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "evidence_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                  },
+                  "url": {
+                    "type": "string",
+                    "maxLength": 512
+                  }
+                }
+              },
+              "condensed": {
+                "const": true
+              }
+            }
+          }
+        },
+        "reason_evidence_condensed": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "history": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "repository": {
+              "const": "riseproject-dev/porting-agent"
+            },
+            "ref": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^\\.state/evidence/[A-Za-z0-9._-]+\\.json$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "evidence_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "repository": {
+              "const": "riseproject-dev/porting-agent"
+            },
+            "ref": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^\\.state/evidence/[A-Za-z0-9._-]+\\.json$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "evidence_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        },
+        "commit_rules": {
+          "type": "object"
+        },
+        "template_sections": {
+          "type": "array"
+        },
+        "rewrite": {
+          "type": "object"
+        },
+        "series_requirements": {
+          "type": "array",
+          "maxItems": 6
+        },
+        "patch": {
+          "type": "object"
+        },
+        "previous_patch": {
+          "type": "object"
+        },
+        "tracking_issue": {
+          "type": "object"
+        },
+        "refresh": {
+          "type": "object"
+        },
+        "existing_fork": {
+          "type": "object"
+        }
+      }
+    },
+    "resource_scope": {
+      "type": "object"
+    },
+    "effect_contract": {
+      "type": "object"
+    },
+    "task_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "ref",
+        "path",
+        "sha256",
+        "evidence_id"
+      ],
+      "properties": {
+        "repository": {
+          "const": "riseproject-dev/porting-agent"
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^\\.state/evidence/task-[0-9a-f]{32}\\.json$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidence_id": {
+          "type": "string",
+          "pattern": "^task-[0-9a-f]{32}$"
+        }
+      }
+    }
+  }
+}

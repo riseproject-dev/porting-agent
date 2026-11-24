@@ -49,7 +49,8 @@
         "human_steering",
         "work_history",
         "series_requirements",
-        "patch_review"
+        "patch_review",
+        "task"
       ]
     },
     "policy_version": {

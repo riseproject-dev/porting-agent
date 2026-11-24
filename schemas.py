@@ -14,7 +14,7 @@ from common import SCHEMA_DIR
 
 KNOWN = ("contribution", "project", "operation", "command", "event",
          "evidence", "proposal", "policy", "plan", "submission_rewrite", "submission_review", "worker_report",
-         "patch_review")
+         "patch_review", "task")
 
 
 class SchemaError(ValueError):

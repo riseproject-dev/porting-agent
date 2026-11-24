@@ -58,6 +58,7 @@ import steering
 import submission
 import work
 import work_history
+import work_task
 import worker_report
 from common import (
     DEV_REF,
@@ -84,6 +85,9 @@ class Snapshot:
     # contribution: the observation keys of its `record_audit_observation`
     # events, so each observation is recorded once.
     audited: dict[str, set[str]] = field(default_factory=dict)
+    # The checkout the state was loaded from: the SHA-256 of a committed
+    # evidence file a task file names is that of the file itself.
+    root: Path | None = None
 
 
 @dataclass
@@ -3439,6 +3443,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         out.report["work_history"] = work_histories(
             api, contributions, out, snap, policy=policy, now=iso,
             tracking_issues=tracking_issues or {}, skip=skip)
+        out.report["work_task"] = work_task_files(
+            contributions, out, snap, policy=policy, now=iso, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
     return out
 
@@ -3784,6 +3790,69 @@ def work_histories(api: collect.Api, contributions: dict[str, dict], out: TickOu
     return report
 
 
+def work_task_files(contributions: dict[str, dict], out: TickOutput, snap: Snapshot, *,
+                    policy: dict, now: str, skip: frozenset[str]) -> list[dict]:
+    """Stage the ``task`` evidence (``work_task``) of every requested Work
+    whose history is recorded and that has no task file yet, in the commit
+    that records the history: the record as this tick leaves it is used, so
+    Work allocated in this tick is covered. A Work whose history is not
+    recorded (a steering read failed) gets its task file with it in a later
+    tick, and one whose task cannot be built raises an alert."""
+    latest = {c["contribution_id"]: c for c in contributions.values()}
+    for kind, record in out.staged:
+        if kind == "contributions":
+            latest[record["contribution_id"]] = record
+    evidence = dict(snap.evidence)
+    evidence.update({r["evidence_id"]: r for kind, r in out.staged if kind == "evidence"})
+    digest = work_task.file_digest_reader(
+        snap.root, evidence,
+        frozenset(r["evidence_id"] for kind, r in out.staged if kind == "evidence"))
+    report = []
+    # The task files share the byte bound of the steering and the histories
+    # of the tick (``HISTORY_BYTES_PER_TICK``): the state commit fits
+    # ``storage.max_commit_bytes`` with the rest of the tick. A task file
+    # that does not fit is recorded by a later tick.
+    budget = HISTORY_BYTES_PER_TICK - sum(
+        len(canonical_json(r).encode()) for kind, r in out.staged
+        if kind == "evidence" and r.get("kind") in ("human_steering", "work_history", "task"))
+    for cid in sorted(latest):
+        if cid in skip:
+            continue
+        record = latest[cid]
+        with isolation.contribution(cid, "work_task"):
+            request = work.request_from_active(record)
+            if request is None:
+                continue
+            eid = work_task.evidence_id(request["dedupe_key"])
+            if eid in evidence:
+                continue
+            if work_history.evidence_id(request["dedupe_key"]) not in evidence:
+                report.append({"contribution": cid, "work": request["dedupe_key"],
+                               "deferred": "the history of the Work is not recorded yet"})
+                continue
+            if budget < work_task.TASK_FILE_MAX_BYTES + 4096:
+                report.append({"contribution": cid, "work": request["dedupe_key"],
+                               "deferred": "the task files of this tick reached their byte bound"})
+                continue
+            try:
+                task_record = work_task.build(record, evidence, policy=policy, now=now,
+                                              file_digest=digest)
+            except work_task.TaskFileError as error:
+                message = (f"the task file of {request['dedupe_key']} could not be built: "
+                           f"{error}; a failure of the pipeline, not of the contribution")
+                report.append({"contribution": cid, "work": request["dedupe_key"],
+                               "error": str(error)})
+                out.report["controller"]["alerts"].append(
+                    {"contribution": cid, "alert": message})
+                continue
+            evidence[eid] = task_record
+            out.staged.append(("evidence", task_record))
+            budget -= len(canonical_json(task_record).encode())
+            report.append({"contribution": cid, "work": request["dedupe_key"],
+                           "evidence_id": eid})
+    return report
+
+
 def load_snapshot(root: Path, policy: dict, run: dict | None = None):
     """Load validated lifecycle state relative to an explicit repository root.
     ``run`` is the workflow run recorded on every event the store stages."""
@@ -3804,6 +3873,7 @@ def load_snapshot(root: Path, policy: dict, run: dict | None = None):
             value["evidence_id"]: value for value in store.load_all("evidence").values()
         },
         audited=audited_observations(store, contributions),
+        root=root,
     )
 
 
