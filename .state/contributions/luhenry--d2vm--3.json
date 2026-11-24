@@ -35,6 +35,7 @@
   "generation": 1,
   "handoff_approval": null,
   "handoff_request": null,
+  "held_patch": null,
   "last_ci_evidence_id": null,
   "merge": null,
   "next_poll_at": "2026-11-24T02:23:25.615973+00:00",
@@ -73,6 +74,7 @@
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
+  "review_comments": [],
   "revision": 4,
   "schema_version": 1,
   "scope_coverage_complete": true,
@@ -120,7 +122,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-24T01:39:38.105111+00:00",
+  "updated_at": "2026-11-24T02:36:41.537141+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
