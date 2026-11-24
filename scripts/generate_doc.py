@@ -176,33 +176,53 @@ def state_file_url(kind: str, item_id: str) -> str:
 
 
 _BOT = re.compile(r"[A-Za-z0-9._-]+\[bot\]")
+# GitHub's noreply address of a bot: `<id>+<name>[bot]@users.noreply.github.com`.
+_BOT_EMAIL = re.compile(r"(?:[0-9]+\+)?[A-Za-z0-9._-]+\[bot\]@users\.noreply\.github\.com")
 _STATE_SUBJECT = re.compile(r"porting-agent: .* \(run ([1-9][0-9]{0,19})\)")
+
+
+def _shallow_boundaries(root: Path) -> set[str]:
+    """The commits a shallow clone cuts the history at. Such a commit has no
+    parents, so the history attributes every file it holds to it."""
+    try:
+        path = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+            capture_output=True, text=True, timeout=60, check=False).stdout.strip()
+        return set(Path(path).read_text().split()) if path and Path(path).is_file() else set()
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return set()
 
 
 def state_commits(root: Path | None) -> dict[str, tuple[str, int | None]]:
     """For each event file under the state directory ``root``, as a path
     relative to it, the commit that added it and the controller run named by
     the subject `porting-agent: ... (run N)` of that commit, taken only when
-    a bot authored it. Anything the history does not give (no git, a missing
-    or shallow history, an unexpected output) yields fewer entries or none,
-    never an error."""
+    a bot authored it (by its name or its noreply address). A commit a
+    shallow clone cuts the history at is ignored, since it appears to have
+    added every file it holds. Anything the history does not give (no git, a
+    missing or shallow history, an unexpected output) yields fewer entries or
+    none, never an error."""
     if root is None or not Path(root).is_dir():
         return {}
     try:
-        out = subprocess.run(
+        done = subprocess.run(
             ["git", "-C", str(root), "log", "--relative", "--diff-filter=A", "--name-only",
-             "--no-renames", "--format=%x00%H%x09%an%x09%s", "--", "events"],
-            capture_output=True, text=True, timeout=300, check=False).stdout
+             "--no-renames", "--format=%x00%H%x09%an%x09%ae%x09%s", "--", "events"],
+            capture_output=True, text=True, timeout=300, check=False)
     except (OSError, subprocess.SubprocessError, UnicodeError):
         return {}
+    if done.returncode != 0:
+        return {}
+    boundaries = _shallow_boundaries(Path(root))
     found: dict[str, tuple[str, int | None]] = {}
-    for block in out.split("\0")[1:]:
+    for block in done.stdout.split("\0")[1:]:
         header, _, names = block.partition("\n")
-        parts = header.split("\t", 2)
-        if len(parts) != 3 or not _SHA.fullmatch(parts[0]):
+        parts = header.split("\t", 3)
+        if len(parts) != 4 or not _SHA.fullmatch(parts[0]) or parts[0] in boundaries:
             continue
-        sha, author, subject = parts
-        match = _STATE_SUBJECT.fullmatch(subject) if _BOT.fullmatch(author) else None
+        sha, author, email, subject = parts
+        is_bot = _BOT.fullmatch(author) or _BOT_EMAIL.fullmatch(email)
+        match = _STATE_SUBJECT.fullmatch(subject) if is_bot else None
         run = int(match[1]) if match else None
         for name in names.split("\n"):
             if re.fullmatch(r"events/[A-Za-z0-9._-]+/[0-9]{8}\.json", name):
@@ -223,6 +243,9 @@ class StateData:
         the state directory. ``None`` when the history does not say."""
         if self._commits is None:
             self._commits = state_commits(self.root)
+            if not self._commits and self.root is not None:
+                print("generate_doc: warning: no git history of the state directory; "
+                      "the controller run of older events is not shown", file=sys.stderr)
         cid = str(event.get("contribution_id") or "").replace("/", "--")
         sequence = event.get("sequence")
         return self._commits.get(f"events/{cid}/{sequence:08d}.json") \
@@ -442,7 +465,19 @@ KIND_LABELS = {
     "generation_end": "generation ended",
     "terminal": "ended",
 }
+# A short word shown in each badge, so kinds that share a grey (`auto_wait`
+# and `terminal`) differ without color.
+KIND_ABBREVIATIONS = {
+    "work": "work",
+    "auto_wait": "auto",
+    "human_wait": "human",
+    "gate": "gate",
+    "locked": "lock",
+    "generation_end": "gen end",
+    "terminal": "end",
+}
 UNKNOWN_KIND = "unknown"
+UNKNOWN_ABBREVIATION = "?"
 UNKNOWN_LABEL = "a state the lifecycle table does not have"
 
 # Who or what the cause of an event is.
@@ -569,7 +604,7 @@ def _run_cell(run, commit: str | None = None) -> str:
     if commit:
         link = html_link(f"state commit {commit[:7]}", commit_url(CONTROL_REPO, commit))
         if link != "-":
-            out = link if out == "-" else f"{out}<div>{link}</div>"
+            out = link if out == "-" else f"{out} {link}"
     return out
 
 
@@ -591,7 +626,11 @@ def state_badge(key: str | None, *, recorded_as: str | None = None, derived: boo
     notes = [label] + (["derived from earlier events"] if derived else [])
     title = (_first_sentence(spec.description) if spec else UNKNOWN_LABEL)
     hidden = escape_cell("; ".join(notes))
-    inner = f'{escape_cell(key)}<span class="sr-only"> ({hidden})</span>'
+    abbreviation = KIND_ABBREVIATIONS.get(kind, UNKNOWN_ABBREVIATION) if spec \
+        else UNKNOWN_ABBREVIATION
+    inner = (f'<span class="state__kind" aria-hidden="true">{escape_cell(abbreviation)}</span>'
+             + ('<span class="state__derived" aria-hidden="true">&asymp;</span>' if derived else "")
+             + f'{escape_cell(key)}<span class="sr-only"> ({hidden})</span>')
     attrs = f'class="{" ".join(classes)}" title="{escape_cell(title)}"'
     if spec and link:
         return f'<a {attrs} href="{TABLE_PAGE}#{state_anchor(key)}">{inner}</a>'
@@ -599,15 +638,20 @@ def state_badge(key: str | None, *, recorded_as: str | None = None, derived: boo
 
 
 def legend() -> str:
-    """One line that names every badge color."""
+    """The badge kinds as wrapped chips, one per kind, each with the word its
+    badge carries and what the kind means."""
     items = []
     for kind, label in KIND_LABELS.items():
-        items.append(f'<span class="state state--{kind}">{escape_cell(kind)}</span> '
-                     f'{escape_cell(label)}')
-    items.append(f'<span class="state state--{UNKNOWN_KIND}">other</span> {UNKNOWN_LABEL}')
-    return ('<p class="state-legend">State badges, colored by the kind of the state '
-            "(the kind is also written in the badge for screen readers): "
-            + "; ".join(items) + ".</p>")
+        items.append(f'<li><span class="state state--{kind}"><span class="state__kind" '
+                     f'aria-hidden="true">{escape_cell(KIND_ABBREVIATIONS[kind])}</span>'
+                     f'{escape_cell(kind)}</span> {escape_cell(label)}</li>')
+    items.append(f'<li><span class="state state--{UNKNOWN_KIND}"><span class="state__kind" '
+                 f'aria-hidden="true">{UNKNOWN_ABBREVIATION}</span>other</span> '
+                 f'{UNKNOWN_LABEL}</li>')
+    return ('<p class="state-legend__intro">Each state is a badge. Its color and the word at its '
+            "start give the kind of the state (screen readers hear the kind in words); an "
+            "italic badge marked &asymp; is a state derived from earlier events.</p>\n"
+            '<ul class="state-legend">' + "".join(items) + "</ul>")
 
 
 class Row:
@@ -616,6 +660,7 @@ class Row:
 
     def __init__(self, event, states, record, data):
         self.events = [event]
+        self.count = 1
         source, target, old_revision, revision, source_derived, target_derived = states
         self.raw_source, self.raw_target = source, target
         source, target = _current_state(source), _current_state(target)
@@ -642,6 +687,8 @@ class Row:
                             or self.kind.startswith("canary:"))
         self.minor = not changed and not self.bookkeeping
         self.state_change = changed and not self.bookkeeping
+        self.klass = ("bookkeeping" if self.bookkeeping
+                      else "state_change" if self.state_change else "minor")
         self.known_verb = find_verb(self.verb, source)[0] is not None
         self.at = event.get("at")
 
@@ -698,7 +745,7 @@ def _transition_cell(row: Row) -> str:
     if row.recorded_verb != row.verb:
         recorded.append(row.recorded_verb)
     for original, now in ((row.raw_source, row.source), (row.raw_target, row.target)):
-        if original and original != now:
+        if original and original != now and original not in recorded:
             recorded.append(original)
     out = body + chips + tags
     if summary:
@@ -709,38 +756,66 @@ def _transition_cell(row: Row) -> str:
     return out
 
 
-def _sequences(row: Row) -> str:
-    return ", ".join(f"#{int(e['sequence'])}" for e in reversed(row.events))
+def _sequences(row: Row) -> tuple[str, str]:
+    """The sequence numbers of a row as shown (``#24\u2013#26`` for three or
+    more contiguous ones) and as the full list, which is also what a screen
+    reader hears."""
+    numbers = sorted(int(e["sequence"]) for e in row.events)
+    full = ", ".join(f"#{n}" for n in numbers)
+    groups, start = [], 0
+    for n in range(1, len(numbers) + 1):
+        if n == len(numbers) or numbers[n] != numbers[n - 1] + 1:
+            groups.append(numbers[start:n])
+            start = n
+    shown = ", ".join(f"#{g[0]}\u2013#{g[-1]}" if len(g) > 2 else ", ".join(f"#{n}" for n in g)
+                      for g in groups)
+    return shown, full
 
 
 def _cause_cell(row: Row) -> str:
     out = f'<span class="cause__type">{escape_cell(CAUSE_LABELS.get(row.cause_type, row.cause_type or "-"))}</span>'
+    own = run_url(row.run[0]) if row.run else None
     for label, url in row.cause_links:
-        out += f"<div>{html_link(label, url)}</div>"
+        # The run that recorded the event has its own column.
+        if url != own:
+            out += f" {html_link(label, url)}"
     return out
 
 
-def render_row(row: Row, cid: str, same_run: bool) -> str:
+def render_row(row: Row, cid: str, *, same_run: bool = False, grouped: bool = False) -> str:
+    """One event as a card of two lines: the transition and what it did, then
+    the time, the sequence, the cause, the revision, the run and the links.
+    An empty run or links cell is left out."""
     stamp, shown = _time(row.events[-1].get("at"))
     classes = ["event-table__event"]
     if row.minor:
         classes.append("event-table__event--minor")
     if row.bookkeeping:
         classes.append("event-table__event--bookkeeping")
+    if grouped:
+        classes.append("event-table__event--grouped")
     if same_run:
         classes.append("event-table__event--same-run")
     time_html = f'<time datetime="{escape_html(stamp)}">{escape_cell(shown)}</time>' if stamp else "-"
-    links = "".join(f"<div>{html_link(label, url)}</div>" for label, url in row.links) or "-"
-    return (
-        f'<tr class="{" ".join(classes)}" id="ev-{escape_html(_anchor_id(cid))}-'
-        f'{int(row.events[0]["sequence"])}">'
-        f'<td data-label="When (UTC)">{time_html} <span class="event-table__seq">'
-        f'{escape_cell(_sequences(row))}</span></td>'
-        f'<td data-label="Transition">{_transition_cell(row)}</td>'
-        f'<td data-label="Cause">{_cause_cell(row)}</td>'
-        f'<td data-label="Rev">{_revision_cell(row)}</td>'
-        f'<td data-label="Controller run">{_run_cell(row.run, row.commit)}</td>'
-        f'<td data-label="Links">{links}</td></tr>')
+    sequences, full = _sequences(row)
+    seq = f'<span class="event-table__seq">{escape_cell(sequences)}'
+    if sequences != full:
+        seq = (f'<span class="event-table__seq" title="events {escape_cell(full)}">'
+               f'{escape_cell(sequences)}<span class="sr-only"> (events {escape_cell(full)})</span>')
+    seq += "</span>"
+    cells = [f'<td data-label="Transition">{_transition_cell(row)}</td>',
+             f'<td data-label="When (UTC)">{time_html}</td>',
+             f'<td data-label="Event">{seq}</td>',
+             f'<td data-label="Cause">{_cause_cell(row)}</td>',
+             f'<td data-label="Rev">{_revision_cell(row)}</td>']
+    run = _run_cell(row.run, row.commit)
+    if run != "-":
+        cells.append(f'<td data-label="Controller run">{run}</td>')
+    links = "".join(f"<span>{html_link(label, url)}</span> " for label, url in row.links).strip()
+    if links:
+        cells.append(f'<td data-label="Links" class="event-table__links">{links}</td>')
+    return (f'<tr class="{" ".join(classes)}" id="ev-{escape_html(_anchor_id(cid))}-'
+            f'{int(row.events[0]["sequence"])}">' + "".join(cells) + "</tr>")
 
 
 def fold_rows(events: list[dict], record: dict, data: StateData) -> list[Row]:
@@ -749,8 +824,8 @@ def fold_rows(events: list[dict], record: dict, data: StateData) -> list[Row]:
     rows: list[Row] = []
     for event, states in zip(events, event_states(events)):
         row = Row(event, states, record, data)
-        row.count = 1
-        if rows and rows[-1].fold_key() == row.fold_key() and not row.state_change:
+        if (rows and rows[-1].klass == row.klass and not row.state_change
+                and rows[-1].fold_key() == row.fold_key()):
             rows[-1].events.append(event)
             rows[-1].count += 1
         else:
@@ -790,7 +865,8 @@ def render_event_log(record: dict, data: StateData) -> str:
     body = []
     for n, row in enumerate(shown):
         same_run = bool(row.run) and n > 0 and shown[n - 1].run == row.run
-        body.append(render_row(row, cid, same_run))
+        next_same = bool(row.run) and n + 1 < len(shown) and shown[n + 1].run == row.run
+        body.append(render_row(row, cid, same_run=same_run, grouped=same_run or next_same))
     head = "".join(f'<th scope="col">{escape_cell(h)}</th>' for h in EVENT_HEADERS)
     return (
         f'<details class="event-log">{summary}'
@@ -802,7 +878,7 @@ def render_event_log(record: dict, data: StateData) -> str:
         f"<thead><tr>{head}</tr></thead><tbody>" + "".join(body) + "</tbody></table></details>")
 
 
-EVENT_HEADERS = ("When (UTC)", "Transition", "Cause", "Rev", "Controller run", "Links")
+EVENT_HEADERS = ("Transition", "When (UTC)", "Event", "Cause", "Rev", "Controller run", "Links")
 
 
 HEADERS = ("Project", "Tracking issue", "Status", "Development PR", "Upstream PR", "Updated (UTC)")
@@ -856,7 +932,8 @@ def render(states: list[dict], state_root: Path | None = None) -> str:
             escape_cell(updated),
         ]
         lines.append("<tbody>")
-        lines.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
+        lines.append("<tr>" + "".join(f'<td data-label="{escape_html(header)}">{cell}</td>'
+                                      for header, cell in zip(HEADERS, cells)) + "</tr>")
         lines.append(f'<tr class="event-log-row"><td colspan="{len(HEADERS)}">'
                      + render_event_log(state, data) + "</td></tr>")
         lines.append("</tbody>")

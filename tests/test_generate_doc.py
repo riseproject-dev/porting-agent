@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 
+import contextlib
+import io
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -177,7 +180,8 @@ class TestEventLog(unittest.TestCase):
         rec = rec or record()
         with tempfile.TemporaryDirectory() as directory:
             state = write_state(Path(directory), rec, events, evidence=[CI], operations=[OPERATION])
-            return generate_doc.render([rec], state)
+            with contextlib.redirect_stderr(io.StringIO()):
+                return generate_doc.render([rec], state)
 
     def log(self, page):
         return page[page.index('<details class="event-log">'):page.index("</details>")]
@@ -199,8 +203,10 @@ class TestEventLog(unittest.TestCase):
         for header in generate_doc.EVENT_HEADERS:
             self.assertIn(f'<th scope="col">{header}</th>', log)
         for row in self.rows(log):
-            self.assertEqual(row.count("<td "), 6)
-            self.assertEqual(len(re.findall(r'<td data-label="[^"]+">', row)), 6)
+            self.assertEqual(row.count("<td "), len(re.findall(r'<td data-label="[^"]+"', row)))
+            for label in ("Transition", "When (UTC)", "Event", "Cause", "Rev"):
+                self.assertIn(f'<td data-label="{label}">', row)
+        self.assertIn('<td data-label="Project">', self.render())
         self.assertIn("State changes only", log)
         self.assertIn('class="event-log__path"', log)
 
@@ -281,7 +287,7 @@ class TestEventLog(unittest.TestCase):
                            "to_state": "parked.idle"}),
         ]
         log = self.log(self.render(events=events))
-        rows = {int(re.search(r"#(\d+)<", row)[1]): row for row in self.rows(log)}
+        rows = {int(re.search(r"event-table__seq[^>]*>#(\d+)", row)[1]): row for row in self.rows(log)}
         self.assertIn("event-table__event--minor", rows[0])
         self.assertIn("&#8635;", rows[0])
         self.assertIn("stays in this state", rows[0])
@@ -299,7 +305,7 @@ class TestEventLog(unittest.TestCase):
         log = self.log(self.render(events=same))
         self.assertEqual(len(self.rows(log)), 1)
         self.assertIn("&times;3", log)
-        self.assertIn("#2, #1, #0", log)
+        self.assertIn("#0\u2013#2", log)
         # Another run, another cause or another state is not folded.
         other_run = [dict(e, run={"id": 78, "attempt": 1}) if e["sequence"] == 1 else e
                      for e in same]
@@ -317,16 +323,86 @@ class TestEventLog(unittest.TestCase):
     def test_rows_of_one_run_are_grouped(self):
         events = [event(n, kind, "tick", "dispatcher-1", run={"id": 5, "attempt": 1})
                   for n, kind in enumerate(("a_kind", "b_kind"))]
+        events.append(event(2, "c_kind", "tick", "dispatcher-2", run={"id": 6, "attempt": 1}))
         log = self.log(self.render(events=events))
         rows = self.rows(log)
-        self.assertNotIn("--same-run", rows[0])
-        self.assertIn("event-table__event--same-run", rows[1])
+        self.assertNotIn("--grouped", rows[0])
+        self.assertIn("event-table__event--grouped", rows[1])
+        self.assertNotIn("--same-run", rows[1])
+        self.assertIn("event-table__event--grouped event-table__event--same-run", rows[2])
+
+    def test_a_minor_row_does_not_fold_into_a_state_change_row(self):
+        run = {"id": 9, "attempt": 1}
+        same = dict(details={"verb": "record_late_effect", "from_state": "handoff.awaiting_submission",
+                             "to_state": "handoff.awaiting_submission"}, run=run,
+                    at="2026-11-23T13:28:18+00:00")
+        events = [event(0, "record_late_effect", "result", "4400", to={"generation": 1}, **same),
+                  event(1, "record_late_effect", "result", "4400", **same),
+                  event(2, "record_late_effect", "result", "4400", **same)]
+        log = self.log(self.render(events=events))
+        self.assertEqual(len(self.rows(log)), 2)
+        self.assertIn("(3 events, 1 state change)", log)
+        self.assertEqual(log.count("&times;2"), 1)
+
+    def test_contiguous_folded_sequences_are_a_range_with_the_full_list_for_readers(self):
+        late = dict(details={"verb": "record_late_effect", "from_state": "handoff.awaiting_submission",
+                             "to_state": "handoff.awaiting_submission"}, run={"id": 77, "attempt": 1})
+        numbers = (1, 2, 3, 5, 6)
+        events = [event(n, "record_late_effect", "result", "4400", at="2026-11-23T13:28:18+00:00",
+                        **late) for n in numbers]
+        row = self.rows(self.log(self.render(events=events)))
+        folded = next(r for r in row if "&times;" in r)
+        self.assertIn("#1\u2013#3, #5, #6", folded)
+        self.assertIn('title="events #1, #2, #3, #5, #6"', folded)
+        self.assertIn("(events #1, #2, #3, #5, #6)</span>", folded)
+
+    def test_the_cause_does_not_repeat_the_run_column_and_empty_cells_are_left_out(self):
+        events = [event(0, "a_kind", "tick", "4600", run={"id": 4600, "attempt": 1}),
+                  event(1, "b_kind", "tick", "4601", run={"id": 4600, "attempt": 1})]
+        rows = self.rows(self.log(self.render(events=events)))
+        self.assertEqual(sum("controller run" in row for row in rows), 1)
+        self.assertIn(">controller run 4601<", rows[0])
+        self.assertIn(">run 4600<", rows[0] + rows[1])
+        bare = self.rows(self.log(self.render(events=[event(0, "c_kind", "observation", None)])))[0]
+        self.assertNotIn('data-label="Links"', bare)
+        self.assertNotIn('data-label="Controller run"', bare)
+
+    def test_badges_carry_a_visible_kind_word_and_derived_is_not_unknown(self):
+        words = set()
+        for key, spec in lifecycle.LIFECYCLE.items():
+            badge = generate_doc.state_badge(key)
+            word = generate_doc.KIND_ABBREVIATIONS[spec.kind]
+            words.add((spec.kind, word))
+            self.assertIn(f'<span class="state__kind" aria-hidden="true">{word}</span>', badge)
+        self.assertEqual(len({word for _, word in words}), len(set(generate_doc.KIND_ABBREVIATIONS)))
+        unknown = generate_doc.state_badge("nowhere.idle")
+        derived = generate_doc.state_badge("queued.idle", derived=True)
+        self.assertIn('aria-hidden="true">?</span>', unknown)
+        self.assertNotIn("&asymp;", unknown)
+        self.assertIn('class="state__derived" aria-hidden="true">&asymp;</span>', derived)
+        self.assertNotIn("?</span>", derived)
+
+    def test_the_legend_is_a_list_of_chips_one_per_kind(self):
+        legend = generate_doc.legend()
+        self.assertEqual(legend.count("<li>"), len(generate_doc.KIND_LABELS) + 1)
+        self.assertIn('<ul class="state-legend">', legend)
+        self.assertNotIn("\n\n", legend)
+
+    def test_a_state_recorded_under_one_historic_name_is_named_once(self):
+        events = [event(0, "stay", "result", "9",
+                        details={"verb": "stay", "from_state": "investigation.agent_running",
+                                 "to_state": "investigation.agent_running"})]
+        log = self.log(self.render(events=events))
+        self.assertEqual(log.count("<code>investigation.agent_running</code>"), 1)
 
     def test_cause_labels_name_what_the_cause_is(self):
         log = self.log(self.render())
         self.assertIn(">worker run 44982902579<", log)
         self.assertIn(">comment 321<", log)
-        self.assertIn(">controller run 4600<", log)
+        # The run that recorded the event has its own column, not a second link.
+        self.assertNotIn(">controller run 4600<", log)
+        self.assertIn(">run 4600<", log)
+        self.assertIn('<td data-label="Controller run">', log)
         self.assertIn('<span class="cause__type">worker Result</span>', log)
         dispatcher = self.log(self.render(events=[
             event(0, "retry_dispatch", "tick", "dispatcher-4500")]))
@@ -339,10 +415,10 @@ class TestEventLog(unittest.TestCase):
         details = event(1, "b_kind", "tick", None, details={"run_id": "902"})
         none = event(2, "c_kind", "tick", None)
         log = self.log(self.render(events=[recorded, details, none]))
-        rows = {int(re.search(r"#(\d+)<", row)[1]): row for row in self.rows(log)}
+        rows = {int(re.search(r"event-table__seq[^>]*>#(\d+)", row)[1]): row for row in self.rows(log)}
         self.assertIn(f'<a href="{control}/900/attempts/3">run 900 (attempt 3)</a>', rows[0])
         self.assertIn(f'<a href="{control}/902">run 902</a>', rows[1])
-        self.assertIn('data-label="Controller run">-</td>', rows[2])
+        self.assertNotIn('data-label="Controller run"', rows[2])
 
     def test_the_controller_run_of_an_older_event_comes_from_its_state_commit(self):
         rec = record()
@@ -351,11 +427,11 @@ class TestEventLog(unittest.TestCase):
             state = write_state(root, rec, [], evidence=[CI], operations=[OPERATION])
             events_dir = state / "events" / "example--bravo--1"
 
-            def commit(subject, author, sequence):
+            def commit(subject, author, sequence, email="a@b.c"):
                 (events_dir / f"{sequence:08d}.json").write_text(json.dumps(
                     event(sequence, "a_kind", "tick", None)))
                 git(root, "add", "-A")
-                git(root, "-c", f"user.name={author}", "-c", "user.email=a@b.c",
+                git(root, "-c", f"user.name={author}", "-c", f"user.email={email}",
                     "commit", "-q", "-m", subject)
                 return git(root, "rev-parse", "HEAD").strip()
 
@@ -364,13 +440,16 @@ class TestEventLog(unittest.TestCase):
             commit("porting-agent: reconcile state (run 124)", "Someone", 1)
             commit("another subject (run 125)", "porting[bot]", 2)
             commit("porting-agent: confirm canary (run 126)", "porting[bot]", 3)
+            by_email = commit("porting-agent: reconcile state (run 127)", "porting-agent",
+                              4, email="12345+porting-agent[bot]@users.noreply.github.com")
             commits = generate_doc.state_commits(state)
             self.assertEqual(commits["events/example--bravo--1/00000000.json"], (ok, 123))
             self.assertEqual(commits["events/example--bravo--1/00000001.json"][1], None)
             self.assertEqual(commits["events/example--bravo--1/00000002.json"][1], None)
             self.assertEqual(commits["events/example--bravo--1/00000003.json"][1], 126)
+            self.assertEqual(commits["events/example--bravo--1/00000004.json"], (by_email, 127))
             log = self.log(generate_doc.render([rec], state))
-            rows = {int(re.search(r"#(\d+)<", row)[1]): row for row in self.rows(log)}
+            rows = {int(re.search(r"event-table__seq[^>]*>#(\d+)", row)[1]): row for row in self.rows(log)}
             self.assertIn("actions/runs/123\">run 123</a>", rows[0])
             self.assertIn(f"commit/{ok}\">state commit {ok[:7]}</a>", rows[0])
             self.assertIn('data-label="Controller run">', rows[1])
@@ -382,13 +461,73 @@ class TestEventLog(unittest.TestCase):
             log = self.log(generate_doc.render([rec], state))
             self.assertIn("actions/runs/5/attempts/1", log)
 
+    def test_unavailable_history_prints_one_warning_line(self):
+        rec = record()
+        with tempfile.TemporaryDirectory() as directory:
+            state = write_state(Path(directory), rec, EVENTS)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                generate_doc.render([rec], state)
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+        self.assertIn("no git history", err.getvalue())
+
+    def test_a_row_counts_itself_when_it_is_built(self):
+        data = generate_doc.StateData(None)
+        row = generate_doc.Row(event(0, "a_kind", "tick", None),
+                               generate_doc.event_states([event(0, "a_kind", "tick", None)])[0],
+                               record(), data)
+        self.assertEqual(row.count, 1)
+
     def test_missing_or_shallow_history_never_fails_the_page(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(generate_doc.state_commits(Path(directory) / "missing"), {})
             self.assertEqual(generate_doc.state_commits(Path(directory)), {})
             self.assertEqual(generate_doc.state_commits(None), {})
-        log = self.log(self.render())
-        self.assertIn('data-label="Controller run">-</td>', log)
+        log = self.log(self.render(events=[event(0, "a_kind", "tick", None)]))
+        self.assertNotIn('data-label="Controller run"', log)
+        self.assertNotIn('data-label="Links"', log)
+
+    def clone(self, root: Path, source: Path, *args: str) -> Path:
+        target = root / f"clone{len(args)}{args[-1] if args else ''}"
+        subprocess.run(["git", "clone", "-q", *args, f"file://{source}", str(target)],
+                       check=True, capture_output=True)
+        return target / ".state"
+
+    def test_a_shallow_boundary_is_not_credited_with_the_events_it_holds(self):
+        rec = record()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "origin"
+            root.mkdir()
+            state = write_state(root, rec, [], evidence=[CI], operations=[OPERATION])
+            events_dir = state / "events" / "example--bravo--1"
+            git(root, "init", "-q")
+            shas = {}
+            for sequence in range(5):
+                (events_dir / f"{sequence:08d}.json").write_text(json.dumps(
+                    event(sequence, "a_kind", "tick", None)))
+                git(root, "add", "-A")
+                git(root, "-c", "user.name=porting[bot]", "-c", "user.email=a@b.c", "commit", "-q",
+                    "-m", f"porting-agent: reconcile state (run {100 + sequence})")
+                shas[sequence] = git(root, "rev-parse", "HEAD").strip()
+            name = "events/example--bravo--1/{:08d}.json"
+            full = generate_doc.state_commits(state)
+            self.assertEqual([full[name.format(n)][1] for n in range(5)], [100, 101, 102, 103, 104])
+            # The boundary of a shallow clone holds every event added before it.
+            for depth, boundary in (("1", 4), ("3", 2)):
+                shallow = self.clone(Path(directory), root, "--depth", depth)
+                with self.subTest(depth=depth):
+                    commits = generate_doc.state_commits(shallow)
+                    self.assertEqual(sorted(n for n in range(5) if name.format(n) in commits),
+                                     list(range(boundary + 1, 5)))
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        log = self.log(generate_doc.render([rec], shallow))
+                    runs = {}
+                    for row in self.rows(log):
+                        number = int(re.search(r"event-table__seq[^>]*>#(\d+)", row)[1])
+                        found = re.search(r'actions/runs/(\d+)"', row)
+                        runs[number] = int(found[1]) if found else None
+                    for number in range(5):
+                        self.assertEqual(runs[number], 100 + number if number > boundary else None)
 
     def test_an_event_that_ends_a_paused_contribution_is_not_shown_as_a_resume(self):
         rec = record(phase="closed", activity="idle", terminal_reason="abandoned")

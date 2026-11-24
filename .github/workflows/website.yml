@@ -100,7 +100,7 @@ jobs:
             fi
             # Fetched as data only: never checked out, installed, or executed.
             ref="refs/previews/$number"
-            if ! git fetch --quiet --no-tags --depth=1 origin "+refs/pull/$number/head:$ref"; then
+            if ! git fetch --quiet --no-tags origin "+refs/pull/$number/head:$ref"; then
               echo "::warning::Could not fetch pull request #$number; skipping its preview"
               continue
             fi

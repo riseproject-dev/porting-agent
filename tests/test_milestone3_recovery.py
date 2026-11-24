@@ -168,7 +168,7 @@ class TestStatusSite(unittest.TestCase):
         state = contribution(updated_at=NOW)
         state["upstream"]["full_name"] = "example/proj|<i>escape{{x}}"
         rendered = generate_doc.render([state])
-        self.assertIn("<td>example/proj|&lt;i&gt;escape&#123;&#123;x&#125;&#125;</td>", rendered)
+        self.assertIn(">example/proj|&lt;i&gt;escape&#123;&#123;x&#125;&#125;</td>", rendered)
         self.assertNotIn("<i>", rendered)
         self.assertNotIn('href="https://github.com/example/proj|', rendered)
 

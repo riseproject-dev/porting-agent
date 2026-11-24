@@ -3,9 +3,18 @@
 //
 // The event log of the status page: a native <details> disclosure under each
 // project row, closed by default, holding one table. Each state is a badge colored by
-// the kind of the state (never by color alone: the kind is also written for screen
-// readers); every event is a card. Compiled once per
-// color scheme, so the scheme's variables give its light and dark colors.
+// the kind of the state (never by color alone: the kind is also written in the badge);
+// every event is a card of two lines. Compiled once per color scheme, so the scheme's
+// variables give its light and dark colors.
+//
+// Secondary text is a lighter text color, never opacity, so that every text and link
+// keeps a contrast of at least 4.5:1 against its background in both color schemes.
+$subtle-text: mix($body-text-color, $body-background-color, 90%);
+$muted-text: mix($body-text-color, $body-background-color, 86%);
+$muted-background: rgba($border-color, 0.35);
+// The link color of the theme is below 4.5:1 on a dark background, and below it on a
+// tinted one; the status page uses a stronger one of the same hue.
+$log-link-color: if($color-scheme == dark, #8ab8ff, $purple-100);
 
 // A state badge: a tinted background and a colored left border by the kind of the
 // state. The text keeps the body color, so it reads on both color schemes.
@@ -38,6 +47,25 @@
   border-radius: 4px;
 
   @include fs-2;
+
+  // The kind in words: the only mark that tells the grey kinds apart.
+  &__kind {
+    display: inline-block;
+    padding-right: $sp-1;
+    margin-right: $sp-1;
+    font-size: 0.72em;
+    font-style: normal;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-right: 1px solid rgba($body-text-color, 0.35);
+  }
+
+  &__derived {
+    margin-right: 2px;
+    font-style: normal;
+    font-weight: 700;
+  }
 
   &--work {
     @include state-kind($blue-100);
@@ -73,13 +101,24 @@
     @include state-kind($green-200);
   }
 
+  // Unknown: dotted all around, with a question mark. Derived: italic, with a
+  // dashed outline and a mark; it keeps the color of its kind.
   &--unknown {
     border-style: dotted;
+    border-left-width: 4px;
   }
 
   &--derived {
-    border-style: dotted;
+    font-style: italic;
+    border-top-style: dashed;
+    border-right-style: dashed;
+    border-bottom-style: dashed;
   }
+}
+
+.status-table a:not(.state),
+.event-log > summary {
+  color: $log-link-color;
 }
 
 a.state {
@@ -90,38 +129,134 @@ a.state {
   }
 }
 
+.state-legend__intro {
+  margin-bottom: $sp-1;
+
+  @include fs-2;
+}
+
 .state-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: $sp-1 $sp-4;
+  padding: 0;
+  margin: 0 0 $sp-4;
+  list-style: none;
+
   @include fs-2;
 
-  .state {
-    margin-right: $sp-1;
+  li {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: $sp-1;
+    align-items: baseline;
+    margin: 0;
   }
 }
 
+.main-content .state-legend > li::before {
+  content: none;
+}
+
+// The status table is a table from md up and a stack of cards below it, so that it
+// never scrolls sideways on a phone.
 .status-table {
-  .event-log-row td {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+
+  > thead {
+    @extend .sr-only;
+  }
+
+  > tbody {
+    display: block;
+    margin-bottom: $sp-3;
+    border: $border rgba($border-color, 0.8);
+    border-radius: 4px;
+  }
+
+  > tbody > tr {
+    display: block;
+  }
+
+  > tbody > tr > td {
+    display: flex;
+    gap: $sp-2;
+    padding: $sp-1 $sp-3;
+    border: 0;
+
+    &::before {
+      flex: 0 0 8.5rem;
+      font-size: 0.8em;
+      font-weight: 600;
+      color: $subtle-text;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      content: attr(data-label);
+    }
+  }
+
+  > tbody > .event-log-row > td {
+    display: block;
     min-width: 0;
     padding-top: $sp-1;
     padding-bottom: $sp-2;
+
+    &::before {
+      content: none;
+    }
+  }
+
+  @include mq(md) {
+    display: table;
+
+    > thead {
+      position: static;
+      display: table-header-group;
+      width: auto;
+      height: auto;
+      margin: 0;
+      overflow: visible;
+      clip: auto;
+      white-space: normal;
+    }
+
+    > tbody {
+      display: table-row-group;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+    }
+
+    > tbody > tr {
+      display: table-row;
+    }
+
+    > tbody > tr > td {
+      display: table-cell;
+      padding: $sp-2 $sp-3;
+      border-bottom: $border $border-color;
+
+      &::before {
+        content: none;
+      }
+    }
+
+    > tbody > .event-log-row > td {
+      display: table-cell;
+    }
   }
 }
 
 .event-log {
-  // On a narrow screen the table scrolls sideways; the log stays in view.
-  position: sticky;
-  left: 0;
-  max-width: calc(100vw - 4rem);
-
-  @include mq(md) {
-    max-width: none;
-  }
+  max-width: 100%;
 
   > summary {
     display: inline-flex;
     gap: $sp-1;
     align-items: center;
     padding: $sp-1 0;
-    color: $link-color;
     cursor: pointer;
     list-style: none;
 
@@ -132,7 +267,7 @@ a.state {
     }
 
     &:focus-visible {
-      outline: 2px solid $link-color;
+      outline: 2px solid $log-link-color;
       outline-offset: 2px;
     }
   }
@@ -151,8 +286,7 @@ a.state {
   }
 
   &__count {
-    color: $body-text-color;
-    opacity: 0.8;
+    color: $subtle-text;
   }
 
   &__path,
@@ -165,12 +299,13 @@ a.state {
   &__flag {
     margin-left: $sp-1;
     font-weight: 500;
-    color: $body-text-color;
-    opacity: 0.8;
+    color: $subtle-text;
   }
 
   code {
+    padding: 0;
     white-space: normal;
+    background: none;
   }
 
   // "State changes only" hides the muted rows where :has() is supported; without
@@ -190,65 +325,109 @@ a.state {
 
   @include fs-2;
 
-  thead {
+  > thead {
     @extend .sr-only;
   }
 
-  tbody {
+  > tbody {
     display: block;
   }
 
-  // Every event is a card: the transition across the top, the other facts
-  // in a grid below it. The content column of the theme is too narrow for six table columns.
-  tr {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-    gap: 2px $sp-3;
+  // Every event is a card of two lines: the transition and what it did, then the
+  // time, the sequence, the cause, the revision, the run and the links, inline and
+  // separated by dots. The labels of the cells are for screen readers.
+  > tbody > tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    padding: $sp-1 $sp-2;
+    margin: 0 0 $sp-2;
+    border: $border rgba($border-color, 0.8);
+    border-left: 3px solid rgba($border-color, 0.8);
+    border-radius: 4px;
   }
 
-  td {
-    display: block;
+  > tbody > tr > td {
+    display: inline;
     min-width: 0;
     max-width: 100%;
-    padding: 2px 0;
+    padding: 1px 0;
+    background: transparent;
     border: 0;
 
     &::before {
-      display: block;
-      font-size: 0.75em;
-      font-weight: 600;
-      color: $body-text-color;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      content: attr(data-label);
-      opacity: 0.7;
+      @extend .sr-only;
+
+      content: attr(data-label) ": ";
     }
   }
 
-  td:nth-child(2) {
-    grid-column: 1 / -1;
-    order: -1;
+  // Line 1: the transition, then what it did.
+  > tbody > tr > td:first-child {
+    flex: 1 1 100%;
+    padding-bottom: 2px;
+
+    &::before {
+      content: none;
+    }
+  }
+
+  // Line 2.
+  > tbody > tr > td:nth-child(n + 2) {
+    color: $subtle-text;
+    font-size: 0.92em;
+  }
+
+  > tbody > tr > td:nth-child(n + 3)::before {
+    // A dot between two facts, in front of every fact after the time.
+    position: static;
+    width: auto;
+    height: auto;
+    padding: 0 0.5em;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    content: "\00b7";
   }
 
   &__event {
-    padding: $sp-2;
-    margin: 0 0 $sp-2;
-    border: $border rgba($border-color, 0.8);
-    border-radius: 4px;
+    &--same-run {
+      margin-top: calc(-#{$sp-2} - 1px);
+      border-top-style: dashed;
+      border-top-left-radius: 0;
+      border-top-right-radius: 0;
+    }
+
+    &--grouped {
+      border-left: 4px solid $log-link-color;
+    }
 
     &--minor,
     &--bookkeeping {
-      opacity: 0.72;
+      color: $muted-text;
+      background: $muted-background;
+      border-style: dashed;
+
+      code,
+      td:nth-child(n + 2) {
+        color: inherit;
+      }
     }
 
-    &--same-run {
-      border-top-color: transparent;
+    &--minor.event-table__event--grouped,
+    &--bookkeeping.event-table__event--grouped {
+      border-left-style: solid;
+    }
+
+    &--grouped:has(+ .event-table__event--same-run) {
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
     }
   }
 
   &__seq {
-    color: $body-text-color;
-    opacity: 0.8;
+    font-weight: 600;
   }
 
   &__tag {
@@ -267,16 +446,20 @@ a.state {
     font-weight: 600;
   }
 
-  .transition__summary,
-  .transition__recorded {
+  .transition__summary {
     margin-top: 2px;
-    color: $body-text-color;
-    opacity: 0.85;
+    color: $subtle-text;
+
+    @include mq(md) {
+      display: inline;
+      margin: 0 0 0 $sp-2;
+    }
   }
 
   .transition__recorded {
+    margin-top: 2px;
     font-size: 0.85em;
-    opacity: 0.7;
+    color: $subtle-text;
   }
 
   .cause__type {
