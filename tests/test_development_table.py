@@ -27,6 +27,7 @@ import capacity
 import ci_rerun
 import collect
 import commands
+import common
 import controller
 import engine
 import lifecycle
@@ -297,8 +298,9 @@ class TestPatchResults(unittest.TestCase):
         new, event = fold(rec, ["cmd/d2vm/main.go", "docs/riscv64.md", "docs/riscv64.md"])
         self.assertEqual(new["scope_paths"], scope + ["docs/riscv64.md"])
         self.assertEqual(event["details"]["scope_extension"], ["docs/riscv64.md"])
-        new, event = fold(rec, ["a1", "a2", "a3"])
-        self.assertEqual(new["scope_paths"], scope)
+        full = scope + [f"pkg/more{i}/*" for i in range(common.SCOPE_PATHS_MAX - len(scope))]
+        new, event = fold(dict(rec, scope_paths=full), ["a1", "a2", "a3"])
+        self.assertEqual(new["scope_paths"], full)
         self.assertIn("did not join the scope", event["details"]["scope_extension_not_recorded"])
         self.assertEqual(engine.state_key(new), "development.waiting_ci")
         new, event = fold(dict(running(), scope_paths=None), ["b"])

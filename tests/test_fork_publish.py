@@ -502,3 +502,55 @@ class TestReviewedPublication(_ForkFixture, unittest.TestCase):
         self.record["held_patch"]["patch_digest"] = "0" * 64
         self.assertIn("not the held patch", self.run_publish().reason)
         self.assertEqual(self.fork_head(), self.base)
+
+
+class TestManyChangedFiles(_ForkFixture, unittest.TestCase):
+    """A patch the worker gate passes (up to ``common.SCOPE_PATHS_MAX``
+    changed files) is a patch the publisher records and pushes; a push
+    operation the schema refuses is a rejected publication, never an
+    uncaught error."""
+
+    def many(self, count):
+        files = {f"src/f{i:02d}.c": "int x;\n" for i in range(count)}
+        agent = self.root / f"agent-{count}"
+        git(self.root, "clone", "-q", "-b", "riscv64-dev", str(self.fork_bare), str(agent))
+        commit_files(agent, files, msg="BLD: many files")
+        self.mbox = git(agent, "format-patch", "--stdout", self.base).encode() + b"\n"
+        self.task["allowed_paths"] = ["src/*"]
+        return sorted(files)
+
+    def test_publishes_33_to_64_changed_files(self):
+        import common
+        for count in (33, common.SCOPE_PATHS_MAX):
+            with self.subTest(files=count):
+                self.ops = []
+                self.record["fork"]["head_sha"] = self.base
+                git(self.fork_bare, "update-ref", "refs/heads/riscv64-dev", self.base)
+                changed = self.many(count)
+                out = self.run_publish(proposal=self.proposal(changed_files=changed),
+                                       scope=publisher.Scope(allowed_globs=["src/*"]))
+                self.assertEqual(out.status, "published", out.reason)
+                self.assertEqual(sorted(out.operation["proposed"]["changed_files"]), changed)
+                self.assertEqual([o["status"] for o in self.ops], ["planned", "applying", "confirmed"])
+
+    def test_more_files_than_the_bound_are_rejected_before_any_push(self):
+        import common
+        changed = self.many(common.SCOPE_PATHS_MAX + 1)
+        out = self.run_publish(proposal=self.proposal(changed_files=changed),
+                               scope=publisher.Scope(allowed_globs=["src/*"]))
+        self.assertEqual(out.status, "rejected")
+        self.assertEqual(self.ops, [])
+        self.assertEqual(self.fork_head(), self.base)
+
+    def test_an_operation_the_schema_refuses_is_rejected_not_raised(self):
+        from unittest import mock
+
+        import schemas
+        with mock.patch.object(fork_publish.recovery, "plan",
+                               side_effect=schemas.SchemaError("invalid operation record: x")):
+            out = self.run_publish()
+        self.assertEqual(out.status, "rejected")
+        self.assertEqual(out.failure_class, "validation")
+        self.assertIn("the push operation is invalid", out.reason)
+        self.assertEqual(self.ops, [])
+        self.assertEqual(self.fork_head(), self.base)

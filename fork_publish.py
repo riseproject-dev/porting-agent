@@ -42,7 +42,6 @@ HTTP header for the push. It is never written to disk.
 from __future__ import annotations
 
 import base64
-import fnmatch
 import hashlib
 import json
 import os
@@ -57,7 +56,14 @@ import lifecycle
 import publisher
 import recovery
 import schemas
-from common import APP_COMMIT_EMAIL, APP_COMMIT_NAME, FORK_ORG, validate_scope_paths
+from common import (
+    APP_COMMIT_EMAIL,
+    APP_COMMIT_NAME,
+    FORK_ORG,
+    SCOPE_PATHS_MAX,
+    scope_covers,
+    validate_scope_paths,
+)
 from work import task_identity as work_identity
 
 MAX_MBOX_BYTES = 4 * 1024 * 1024
@@ -315,8 +321,8 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
                                failure_class="validation")
         claimed = set(proposal.get("changed_files") or [])
         effective_globs = list(scope.allowed_globs)
-        outside_scope = sorted(path for path in claimed if not any(
-            fnmatch.fnmatchcase(path, allowed) for allowed in scope.allowed_globs))
+        outside_scope = sorted(path for path in claimed
+                               if not scope_covers(path, scope.allowed_globs))
         if outside_scope:
             if not (task.get("review_scope_extension") or task.get("legacy_scope_extension")):
                 return Outcome("rejected", f"proposal changes files outside admitted scope: {outside_scope}",
@@ -371,18 +377,30 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         if head_now != expected:
             return Outcome("rejected", "fork head moved before push", candidate=cand, report=report,
                            failure_class="stale")
-        op = recovery.plan(contribution_id=record["contribution_id"], revision=task["revision"],
-                           kind="branch_update" if proposal["operation"] == "append" else "branch_rewrite",
-                           policy_version=policy["policy_version"], reason_ids=list(task.get("reason_ids") or []) +
-                           ([f"artifact:{artifact['artifact_id']}"] if artifact else []) +
-                           publish_attempt_reasons(attempt),
-                           target={"repository_id": record["fork"]["repository_id"], "repository": fork,
-                                   "ref": task["ref"], "expected_head": expected,
-                                   "base_sha": record["upstream"]["base_sha"]},
-                           proposed={"commit": cand, "tree": rep.final_tree, "parents": parents,
-                                     "marker": f"artifact:{artifact['artifact_id']}" if artifact else None,
-                                     "content_digest": hashlib.sha256(mbox).hexdigest(),
-                                     "changed_files": delta}, now=now)
+        if len(delta) > SCOPE_PATHS_MAX:
+            # The gate bounds the claimed files alike, and they must equal
+            # the delta; the operation record states the same bound.
+            return Outcome("rejected", f"the series changes {len(delta)} files, more than "
+                           f"{SCOPE_PATHS_MAX}", candidate=cand, report=report,
+                           failure_class="validation")
+        try:
+            op = recovery.plan(contribution_id=record["contribution_id"], revision=task["revision"],
+                               kind="branch_update" if proposal["operation"] == "append" else "branch_rewrite",
+                               policy_version=policy["policy_version"], reason_ids=list(task.get("reason_ids") or []) +
+                               ([f"artifact:{artifact['artifact_id']}"] if artifact else []) +
+                               publish_attempt_reasons(attempt),
+                               target={"repository_id": record["fork"]["repository_id"], "repository": fork,
+                                       "ref": task["ref"], "expected_head": expected,
+                                       "base_sha": record["upstream"]["base_sha"]},
+                               proposed={"commit": cand, "tree": rep.final_tree, "parents": parents,
+                                         "marker": f"artifact:{artifact['artifact_id']}" if artifact else None,
+                                         "content_digest": hashlib.sha256(mbox).hexdigest(),
+                                         "changed_files": delta}, now=now)
+        except schemas.SchemaError as e:
+            # Nothing is recorded or pushed: an operation the record schema
+            # refuses is a rejected publication, never an uncaught error.
+            return Outcome("rejected", f"the push operation is invalid: {e}"[:1000], candidate=cand,
+                           report=report, failure_class="validation")
         save_operation(op)                     # intent persisted before the effect
         # A push reserves no runner capacity; the publication check read the
         # contribution not paused, and the head re-read matched the lease.

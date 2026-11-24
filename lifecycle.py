@@ -23,7 +23,7 @@ from enum import StrEnum
 from typing import Any, NamedTuple
 
 import schemas
-from common import DEV_REF, UPSTREAM_REF
+from common import DEV_REF, SCOPE_PATHS_MAX, UPSTREAM_REF
 
 TERMINAL = frozenset({"released", "closed"})
 
@@ -969,7 +969,7 @@ DEVELOPMENT_PROPOSAL_REJECTED = (
     "the Work carries feedback")
 _ADMISSION = ("verified plan decision develop, or verified plan decision park and a "
               "recorded admission_override")
-PATCH_SCOPE_COMPLETE = ("the admitted scope names an admission class and 1 to 32 safe "
+PATCH_SCOPE_COMPLETE = (f"the admitted scope names an admission class and 1 to {SCOPE_PATHS_MAX} safe "
                         "`scope_paths`, and a plan's own scope matches every path of its "
                         "`path_coverage`")
 # The trusted confirmation of a decision close: the reconciler reads PyPI

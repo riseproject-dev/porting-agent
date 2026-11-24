@@ -74,7 +74,7 @@
     },
     "changed_files": {
       "type": "array",
-      "maxItems": 300,
+      "maxItems": 64,
       "items": {
         "type": "string",
         "maxLength": 500

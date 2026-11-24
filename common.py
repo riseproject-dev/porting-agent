@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import re
@@ -94,18 +95,52 @@ def canonical_json(data: Any) -> str:
     return json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
 
 
+# The bounds of a patch scope (``scope_paths`` of a contribution record, the
+# paths of an admission override, and the scope a review extension widens):
+# ``schemas/contribution.schema.json`` states the same numbers, and a test
+# keeps the two equal. The plan's own ``allowed_paths`` stay at 32
+# (``schemas/plan.schema.json``), so a scope has room for the exact paths
+# that published patches and review extensions add to it. The files one
+# patch changes are bounded alike (``changed_files`` of a proposal, of a
+# held patch and of a push operation), since they become scope paths when
+# the patch is published; the worker gate checks them with
+# ``validate_scope_paths``.
+SCOPE_PATHS_MAX = 64
+SCOPE_PATH_MAX_LENGTH = 200
+
+
 def validate_scope_paths(paths: list[str]) -> list[str]:
     """Validate exact relative paths or one final-component glob."""
-    if not paths or len(paths) > 32:
-        raise ValueError("scope needs 1..32 paths")
+    if not paths or len(paths) > SCOPE_PATHS_MAX:
+        raise ValueError(f"scope needs 1..{SCOPE_PATHS_MAX} paths")
     for allowed in paths:
         path = Path(allowed)
-        if len(allowed) > 200 or path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] == ".git":
+        if len(allowed) > SCOPE_PATH_MAX_LENGTH or path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] == ".git":
             raise ValueError(f"unsafe scope path: {allowed}")
         wildcard_parts = [part for part in path.parts if any(ch in part for ch in "*?[]")]
         if wildcard_parts and (len(path.parts) < 2 or wildcard_parts != [path.parts[-1]] or "**" in path.parts[-1]):
             raise ValueError(f"scope wildcard must be one final component: {allowed}")
     return paths
+
+
+def scope_covers(path: str, scope: list[str]) -> bool:
+    """Whether a scope path matches ``path``: the one matching rule of every
+    scope check (``fnmatch.fnmatchcase``, so ``dir/*`` matches below
+    ``dir``)."""
+    return any(fnmatch.fnmatchcase(path, allowed) for allowed in scope)
+
+
+def widen_scope(scope: list[str], changed: list[str]) -> list[str]:
+    """``scope`` with the changed files that no scope path matches appended
+    as exact paths, in order and without duplicates. A file the scope
+    already matches (``Makefile``, or ``pkg/qemu/qemu.go`` under
+    ``pkg/qemu/*``) adds nothing. Raises ``ValueError`` when the widened
+    scope is not a valid scope (``validate_scope_paths``)."""
+    added = [path for path in dict.fromkeys(changed) if not scope_covers(path, scope)]
+    widened = list(scope) + added
+    if added:
+        validate_scope_paths(widened)
+    return widened
 
 
 def normalize_distribution(name: str) -> str:

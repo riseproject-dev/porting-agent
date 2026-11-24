@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import fnmatch
 import hashlib
 import json
 import os
@@ -67,7 +66,8 @@ from common import (
     load_policy,
     repository_root,
     safe_id,
-    validate_scope_paths,
+    scope_covers,
+    widen_scope,
 )
 
 
@@ -1562,28 +1562,25 @@ def extended_scope(scope_paths: list[str] | None, changed_files: list[str] | Non
     """The admitted scope after a published patch that changed
     ``changed_files``: (the scope, the paths that joined it, why an
     extension was not recorded). Only the files that no admitted path
-    matches join it (the exact paths the trusted publisher admitted outside
-    the scope, matched as ``fork_publish`` matches them), once each and in
-    order. A record without an admitted scope keeps none: the payload then
-    falls back to the contract, which a scope made only of the published
-    files would narrow. An extension that would leave the scope invalid
-    (``common.validate_scope_paths``) is not recorded and the scope is kept;
-    the publisher validated it before it pushed, so this is defensive.
-    Never raises."""
+    matches join it, as exact paths, once each and in order
+    (``common.widen_scope``, with the matching rule of every scope check,
+    ``common.scope_covers``). A record without an admitted scope keeps none:
+    the payload then falls back to the contract, which a scope made only of
+    the published files would narrow. An extension that would leave the
+    scope invalid (more than ``common.SCOPE_PATHS_MAX`` paths, or an unsafe
+    one) is not recorded and the scope is kept, with the reason; the
+    publisher validated it before it pushed, so this is defensive, and the
+    fold never fails over a patch that is already published. Never
+    raises."""
     if not scope_paths:
         return scope_paths, [], None
-    added: list[str] = []
-    for path in changed_files or []:
-        if not isinstance(path, str) or path in added:
-            continue
-        if not any(fnmatch.fnmatchcase(path, allowed) for allowed in scope_paths):
-            added.append(path)
-    if not added:
-        return scope_paths, [], None
+    changed = [path for path in changed_files or [] if isinstance(path, str)]
     try:
-        return validate_scope_paths(list(scope_paths) + added), added, None
+        widened = widen_scope(scope_paths, changed)
     except ValueError as error:
+        added = [path for path in dict.fromkeys(changed) if not scope_covers(path, scope_paths)]
         return scope_paths, [], f"the published files {added} did not join the scope: {error}"
+    return widened, widened[len(scope_paths):], None
 
 
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,

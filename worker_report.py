@@ -41,7 +41,7 @@ from typing import Any
 import isolation
 import schemas
 import state
-from common import canonical_json, fitted_id
+from common import SCOPE_PATHS_MAX, canonical_json, fitted_id
 
 MAX_REPORT_BYTES = 32 * 1024
 # The longest text kept from one string of a report or one feedback item;
@@ -324,7 +324,7 @@ def evidence(rec: dict, outcome: dict, *, verb: str, now: str, policy: dict,
     cleaned = clean_tree(report)
     op = operation or outcome.get("operation") or {}
     changed = [clean(path, 300) for path in
-               ((op.get("proposed") or {}).get("changed_files") or [])[:200]
+               ((op.get("proposed") or {}).get("changed_files") or [])[:SCOPE_PATHS_MAX]
                if isinstance(path, str)]
     data = {
         "work": {"dedupe_key": task.get("dedupe_key"), "generation": task.get("generation", 0),

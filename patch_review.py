@@ -48,7 +48,14 @@ from typing import Any
 import lifecycle
 import schemas
 import worker_report
-from common import APP_COMMIT_NAME, STATE_ROOT, canonical_json, fitted_id, repository_root
+from common import (
+    APP_COMMIT_NAME,
+    SCOPE_PATHS_MAX,
+    STATE_ROOT,
+    canonical_json,
+    fitted_id,
+    repository_root,
+)
 
 TASK = "development_review"
 STATUS = "patch_review"
@@ -233,7 +240,7 @@ def held_patch(record: dict, outcome: dict, *, run: str, now: str,
         "revision": task.get("revision"), "patch_digest": outcome.get("patch_digest"),
         "candidate": outcome.get("candidate"), "tree": outcome.get("tree"),
         "expected_head": task.get("expected_head"), "operation": outcome.get("operation_kind"),
-        "changed_files": [str(path)[:300] for path in (outcome.get("changed_files") or [])][:200],
+        "changed_files": [str(path)[:300] for path in (outcome.get("changed_files") or [])][:SCOPE_PATHS_MAX],
         "reason_ids": list(work.get("reason_ids") or [])[:16],
         "feedback_evidence_ids": list(work.get("feedback_evidence_ids") or [])[:64],
         "report_evidence_id": report_evidence_id, "held_at": now,

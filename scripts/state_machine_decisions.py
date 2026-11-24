@@ -1098,7 +1098,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "`scope_coverage_complete` false, and the next repair Work could change paths outside "
         "the admitted scope.",
         "No. `readmit_development` has the guard of `admit_development`: \"the admitted scope "
-        "names an admission class and 1 to 32 safe `scope_paths`, and a plan's own scope "
+        "names an admission class and 1 to 64 safe `scope_paths`, and a plan's own scope "
         "matches every path of its `path_coverage`\". A refreshed plan whose "
         "scope is incomplete takes `reject_plan`, which charges `planning_attempts` and keeps "
         "the refresh, the fork, and any override, so a new planning run is due; once the "
@@ -1429,7 +1429,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "An admission override that names only a class or only paths",
         "What a recorded admission override that names a class without paths, or paths "
         "without a class, does against the plan's decision.",
-        "An override applies against a decision park only when it names a class and 1 to 32 "
+        "An override applies against a decision park only when it names a class and 1 to 64 "
         "safe paths. `/upstreaming refresh` refuses any other form (`controller."
         "PARTIAL_OVERRIDE`), so only a record written before that refusal can hold a partial "
         "one. Such a record is neither admitted nor parked (the guard of `park_planning` is "
@@ -1452,7 +1452,7 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "The scope an admission records",
         "How the scope guard of the admissions is established, and which row writes "
         "`scope_coverage_complete`, which the reconciler wrote beside the row.",
-        "The guard \"the admitted scope names an admission class and 1 to 32 safe "
+        "The guard \"the admitted scope names an admission class and 1 to 64 safe "
         "`scope_paths`, and a plan's own scope matches every path of its `path_coverage`\" "
         "is established by `plan_gate.scope_problem`; a plan without `path_coverage` is "
         "incomplete. Both admissions set `scope_coverage_complete` as an effect of the row, "
@@ -1552,8 +1552,13 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         "publisher matches them), once each and in order: the scope extension the publisher "
         "admitted, as exact paths, for Work backed by a human review or with "
         "`legacy_scope_extension`. Files an admitted glob already matches are not added, so a "
-        "normal publication never overflows the bound of 32 paths. An extension that would "
-        "leave the scope invalid (over 32 paths, or an unsafe path) is not recorded: the scope "
+        "normal publication never overflows the bound of 64 paths (`common.SCOPE_PATHS_MAX`, "
+        "which the record schema states for `scope_paths` and `admission_override.paths`, and "
+        "every schema for the `changed_files` of one patch, since they become scope paths once "
+        "it is published; a plan names at most 32). Every scope check matches with the same "
+        "rule (`common.scope_covers`), and the extension is `common.widen_scope`. An extension "
+        "that would leave the scope invalid (over 64 paths, or an unsafe path) is not "
+        "recorded: the scope "
         "is kept, the event names it (`scope_extension_not_recorded`), and the Result is "
         "folded; a record without an admitted scope keeps none. The write stays beside "
         "`record_publish_success` and `record_revision_publish_success` (`patch_published`), "

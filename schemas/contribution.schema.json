@@ -391,9 +391,10 @@
             },
             "paths": {
               "type": "array",
-              "maxItems": 32,
+              "maxItems": 64,
               "items": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 200
               }
             },
@@ -1265,7 +1266,7 @@
             },
             "changed_files": {
               "type": "array",
-              "maxItems": 200,
+              "maxItems": 64,
               "items": {
                 "type": "string",
                 "maxLength": 300
@@ -1558,9 +1559,10 @@
         },
         {
           "type": "array",
-          "maxItems": 32,
+          "maxItems": 64,
           "items": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 200
           }
         }
