@@ -268,13 +268,18 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         return Outcome("rejected", "publication check: the task names no Work identity",
                        failure_class="stale")
     reviewed = review_required(task) and not verify_only
+    # Every publication from `development.publishing` is the held patch,
+    # pinned whatever the payload says.
+    # (A reviewed patch in any other state is refused by the publication
+    # check.)
+    pinned = not verify_only and f"{record['phase']}.{record['activity']}" == lifecycle.PUBLISHING
     held = record.get("held_patch") or {}
     if verify_only and (not review_required(task)
                         or f"{record['phase']}.{record['activity']}" != "development.agent_running"):
         return Outcome("rejected", "verification: only a development patch held for its review "
                        "is verified, while its Work runs", failure_class="stale")
-    if reviewed and held and (hashlib.sha256(mbox).hexdigest() != held.get("patch_digest")
-                              or held.get("expected_head") != expected):
+    if pinned and (not held or hashlib.sha256(mbox).hexdigest() != held.get("patch_digest")
+                   or held.get("expected_head") != expected):
         # The pin of the held patch: exactly the series that was verified
         # and reviewed, on the head it was verified on.
         return Outcome("rejected", "the series is not the held patch that was reviewed",
@@ -342,7 +347,7 @@ def publish(*, record: dict, task: dict, proposal: dict, mbox: bytes, token: str
         if not rep.ok:
             return Outcome("rejected", "; ".join(rep.problems[:5]), candidate=cand, tree=rep.final_tree, report=report,
                            failure_class="validation")
-        if reviewed and cand != held.get("candidate"):
+        if pinned and cand != held.get("candidate"):
             return Outcome("rejected", f"the series rebuilds to {cand}, not to the reviewed commit "
                            f"{held.get('candidate')}", candidate=cand, tree=rep.final_tree,
                            report=report, failure_class="validation")

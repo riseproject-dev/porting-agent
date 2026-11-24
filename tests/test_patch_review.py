@@ -278,5 +278,39 @@ class TestComment(unittest.TestCase):
                 self.assertEqual(receipt["status"], "failed")
 
 
+class TestBounds(unittest.TestCase):
+    def test_the_schema_prompt_evidence_and_history_share_the_bounds(self):
+        import work_history
+        from common import repository_root
+
+        schema = json.loads((repository_root() / "schemas/patch_review.schema.json").read_text())
+        props = schema["properties"]
+        item = props["findings"]["items"]["properties"]
+        self.assertEqual(
+            (props["findings"]["maxItems"], props["previous_findings"]["maxItems"],
+             props["summary"]["maxLength"], item["title"]["maxLength"],
+             item["detail"]["maxLength"], item["suggestion"]["maxLength"]),
+            (patch_review.MAX_FINDINGS, patch_review.MAX_PREVIOUS_FINDINGS,
+             patch_review.MAX_SUMMARY, patch_review.MAX_TITLE, patch_review.MAX_DETAIL,
+             patch_review.MAX_SUGGESTION))
+        prompt = " ".join((repository_root() / ".github/workflows/reviewer.md").read_text().split())
+        for text in (f"`findings` (at most {patch_review.MAX_FINDINGS};",
+                     f"`detail` {patch_review.MAX_DETAIL}",
+                     f"`previous_findings` (at most {patch_review.MAX_PREVIOUS_FINDINGS})"):
+            self.assertIn(text, prompt)
+        # The full entry of the history keeps every finding of a review whole.
+        long = "x" * patch_review.MAX_DETAIL
+        ev = {"evidence_id": "patch-review-x", "collected_at": NOW, "data": {
+            "findings": [finding(id=f"f{n}", detail=long, suggestion="y" * 1000)
+                         for n in range(patch_review.MAX_FINDINGS)],
+            "previous_findings": [{"ref": f"r{n}", "status": "resolved"}
+                                  for n in range(patch_review.MAX_PREVIOUS_FINDINGS)]}}
+        entry = work_history._patch_review_entry(ev)
+        self.assertEqual(len(entry["findings"]), patch_review.MAX_FINDINGS)
+        self.assertEqual(len(entry["previous_findings"]), patch_review.MAX_PREVIOUS_FINDINGS)
+        self.assertEqual(len(entry["findings"][0]["detail"]), patch_review.MAX_DETAIL)
+        self.assertEqual(len(entry["findings"][0]["suggestion"]), 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

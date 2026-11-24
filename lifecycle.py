@@ -98,9 +98,10 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
     identity carried the Work id passes ``work_key=None`` and generation 0.
 
     A development patch whose Work carries the review contract
-    (``reviewed``) is written only from ``development.publishing``, where
-    the held patch (``held_patch``) pins it: the Result must be the Work the
-    held patch names, at the revision of that Work."""
+    (``reviewed``) is written only from ``development.publishing``, and
+    every write from ``development.publishing`` is pinned by the held patch
+    (``held_patch``), whatever the payload says: the Result must be the Work
+    the held patch names, at the revision of that Work."""
     if record["phase"] not in WRITE_PHASES:
         return f"phase {record['phase']} does not permit fork writes"
     state_name = f"{record['phase']}.{record['activity']}"
@@ -125,7 +126,9 @@ def publication_check(record: dict, *, expected_revision: int, expected_head: st
     if reviewed and state_name != PUBLISHING:
         return (f"a development patch is published only from {PUBLISHING}, after its review; "
                 f"the contribution is in {state_name}")
-    if reviewed and not held:
+    if state_name == PUBLISHING and not held:
+        # Whatever the Work's payload says: this state publishes only the
+        # held patch.
         return "no held patch is recorded for publication"
     if held:
         # The reviewed patch is pinned: it answers the Work the held patch

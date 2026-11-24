@@ -57,7 +57,12 @@ BLOCKING = ("blocker", "major")
 SEVERITIES = ("blocker", "major", "minor", "nit")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
-# The bounds of the stored texts, in characters.
+# The bounds of a review, the same in its schema
+# (`schemas/patch_review.schema.json`), the reviewer's prompt, the stored
+# evidence, and the full entry of the history: the findings and the answers
+# to earlier findings, and the stored texts, in characters.
+MAX_FINDINGS = 30
+MAX_PREVIOUS_FINDINGS = 60
 MAX_SUMMARY = 3000
 MAX_DETAIL = 1500
 MAX_SUGGESTION = 1000

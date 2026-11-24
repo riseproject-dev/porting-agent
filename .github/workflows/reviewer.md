@@ -59,10 +59,14 @@ mcp-servers:
       - actions_list
     required: true
 safe-outputs:
-  # Operator-approved: the read-only reviewer is unsandboxed like the planner.
-  # It reads and diffs a patch and runs no reproduction; the custom engine
-  # wrapper removes every credential before the model runs, and trusted
-  # post-processing keeps its separately scoped tokens.
+  # The same sandbox posture as the planner and the worker: gh-aw v1.2.2
+  # native threat detection requires the agent sandbox, which is disabled
+  # below. The reviewer reads and diffs a patch and runs no reproduction; the
+  # custom engine wrapper removes every credential before the model runs, and
+  # trusted post-processing keeps its separately scoped tokens. No operator
+  # decision for the reviewer itself is recorded yet.
+  # TODO: docs/state-machine/known-gaps.md, "The reviewer runs without the
+  # agent sandbox".
   threat-detection: false
   upload-artifact:
     max-uploads: 1
@@ -331,8 +335,9 @@ jobs:
         run: gh workflow run controller.yml --repo "$GITHUB_REPOSITORY" --ref main
 timeout-minutes: 45
 max-turns: 150
-# Operator-approved: the read-only reviewer is unsandboxed like the planner.
-# The custom engine wrapper above strips and verifies model credentials first.
+# The same sandbox posture as the planner and the worker (see the
+# safe-outputs comment above and its TODO). The custom engine wrapper above
+# strips and verifies model credentials first.
 strict: false
 features:
   dangerously-disable-sandbox-agent: true
@@ -431,8 +436,10 @@ in the control repository: `schema_version` 1, `contribution_id`,
 `expected_head`, `patch_digest` and `candidate` copied from
 `task.context.patch`;
 `verdict` (`fail` exactly when a finding is a blocker or major), a `summary`
-of the review, `findings` (at most 30), `previous_findings`, `checked` (what
-you checked) and `limitations` (what you could not check). Keep it under
+of the review (at most 3000 characters), `findings` (at most 30; each `title`
+at most 300 characters, `detail` 1500 and `suggestion` 1000),
+`previous_findings` (at most 60), `checked` (what you checked) and
+`limitations` (what you could not check). Keep it under
 256 KiB. Upload the directory with a single `upload_artifact` call:
 `{"path": "porting-out"}`. Then call `work_queue_claim_finish` with
 `outcome: "completed"`. If you cannot produce a review, stage

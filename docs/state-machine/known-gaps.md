@@ -22,6 +22,13 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** every development patch is published from `development.publishing` after `accept_patch_review` or `publish_after_failed_reviews`; the row in `development.agent_running` is kept only for the Work in flight across the change.
 - **Required:** remove the row, its guard, and the legacy publish path of the worker and the publish-only retry once no requested Work, held Result, or retained worker artifact without the review contract remains (the artifacts expire after 30 days).
 
+## The reviewer runs without the agent sandbox
+
+- **Where:** `.github/workflows/reviewer.md` (`sandbox.agent: false`, `features.dangerously-disable-sandbox-agent`, `strict: false`, `safe-outputs.threat-detection: false`).
+- **Today:** the review Work of a held development patch runs with the same posture as the planner and the worker: no agent sandbox, and so no gh-aw native threat detection, which requires it. The custom engine wrapper removes and checks every credential before the model runs, the job's GitHub token is read-only, and the Result is checked by trusted code without a token. The planner and the worker record an operator decision for that posture; no such decision is recorded for the reviewer, which reads and diffs only and needs neither unrestricted research nor Docker.
+- **Table:** `request_patch_review` states that the review Work is uncredentialed and can change nothing.
+- **Required:** an operator decision on the reviewer's posture, recorded in the workflow, or the agent sandbox and threat detection enabled for the reviewer.
+
 ## A repository renamed during upstream review is not followed
 
 - **Where:** `upstream_review.*`; `require_renamed_upstream`, and `resume_upstream_revision` and `resume_renamed_upstream` in `upstream_review.waiting_human`; the collector (`collect.upstream_snapshots`).

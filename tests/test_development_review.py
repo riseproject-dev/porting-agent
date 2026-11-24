@@ -16,6 +16,7 @@ the second publishes the patch anyway."""
 
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from datetime import datetime, timedelta
@@ -606,6 +607,17 @@ class TestHeldPatchEnds(unittest.TestCase):
         out = tick(publishing, [off])
         self.assertEqual(kinds(out)[:2], ["reject_patch_proposal", "request_patch"])
         self.assertIsNone(final(out)["held_patch"])
+        # A patch to be published anyway that is replanned or rejected
+        # starts `dev_reviews` again; a passing one keeps the count.
+        anyway = copy.deepcopy(publishing)
+        anyway["pending_publication"]["patch_review"]["published_anyway"] = True
+        anyway["budget"]["review_rejections"] = 1
+        for pub in (stale, off):
+            with self.subTest(status=pub["failure_class"]):
+                self.assertEqual(final(tick(anyway, [pub]))["budget"]["review_rejections"], 0)
+        kept = dict(copy.deepcopy(publishing), budget=dict(publishing["budget"],
+                                                           review_rejections=1))
+        self.assertEqual(final(tick(kept, [stale]))["budget"]["review_rejections"], 1)
 
     def test_the_publication_check_pins_the_held_patch(self):
         reviewing, _ = held(running())
@@ -624,6 +636,14 @@ class TestHeldPatchEnds(unittest.TestCase):
                       lc.publication_check(reviewing, **args))
         self.assertIn("no pending publication", lc.publication_check(
             dict(publishing, pending_publication=None), **args))
+        # In development.publishing the pin applies whatever the payload
+        # says: a write without the review contract is pinned too.
+        unreviewed = dict(args, reviewed=False)
+        self.assertIsNone(lc.publication_check(publishing, **unreviewed))
+        self.assertIn("Work id", lc.publication_check(publishing, **dict(unreviewed,
+                                                                        work_key="other")))
+        self.assertIn("no held patch", lc.publication_check(
+            dict(publishing, held_patch=None), **unreviewed))
 
     def test_fork_publish_refuses_a_series_other_than_the_held_patch(self):
         reviewing, _ = held(running())
@@ -636,6 +656,16 @@ class TestHeldPatchEnds(unittest.TestCase):
                     "operation": "append", "changed_files": CHANGED, "diagnosis": "d",
                     "progress": "requirement_fixed"}
         out = fork_publish.publish(record=publishing, task=task, proposal=proposal,
+                                   mbox=b"another series", token=None,
+                                   observe_head=lambda: SHA_A,
+                                   scope=fork_publish.publisher.Scope(allowed_globs=CHANGED),
+                                   policy=POLICY, now=NOW, save_operation=lambda op: None)
+        self.assertEqual((out.status, out.failure_class), ("rejected", "validation"))
+        self.assertIn("not the held patch", out.reason)
+        # The same series of a payload without the review contract is
+        # refused in development.publishing too.
+        unreviewed = {k: v for k, v in task.items() if k != "review"}
+        out = fork_publish.publish(record=publishing, task=unreviewed, proposal=proposal,
                                    mbox=b"another series", token=None,
                                    observe_head=lambda: SHA_A,
                                    scope=fork_publish.publisher.Scope(allowed_globs=CHANGED),
@@ -667,7 +697,12 @@ class TestLateResults(unittest.TestCase):
                 # Another worker run's publication of the same Work.
                 (publishing, published(publishing, run="9999", artifact=991)),
                 # A review where no review is requested.
-                (running(), review_result(reviewing, artifact=992))):
+                (running(), review_result(reviewing, artifact=992)),
+                # The verification of the held worker run, collected again
+                # in a later artifact, and a `no_change` report of it: no
+                # publication, never folded, never a pause.
+                (publishing, verified(running(), artifact=993)),
+                (publishing, dict(verified(running(), artifact=994), status="no_change"))):
             with self.subTest(state=engine.state_key(rec), status=pub["status"]):
                 out = tick(rec, [pub])
                 self.assertEqual(kinds(out), ["record_late_effect"])

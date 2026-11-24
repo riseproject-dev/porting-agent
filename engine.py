@@ -1807,6 +1807,9 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # A published patch: its files join the admitted scope, and `no_progress`
     # and `dev_reviews` start again.
     "patch_published": ("scope_paths", "budget.no_progress_streak", "budget.review_rejections"),
+    # A patch to be published anyway after successive failed reviews that is
+    # replanned or rejected instead: `dev_reviews` starts again.
+    "review_rejections_restarted": ("budget.review_rejections",),
     # A verified receipt of a `ci_rerun` operation the collector planned
     # releases it; no row is fired by it.
     "ci_rerun_recorded": ("active_operation_id",),

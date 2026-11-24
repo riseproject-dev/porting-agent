@@ -60,6 +60,7 @@ import hashlib
 import json
 from typing import Any
 
+import patch_review
 import schemas
 import steering
 import worker_report
@@ -219,27 +220,31 @@ def _patch_review_entry(ev: dict) -> dict:
     data = ev.get("data") or {}
     patch = data.get("patch") or {}
     findings = []
-    for item in (data.get("findings") or [])[:30]:
+    # The bounds of the review itself: the full entry keeps every finding
+    # whole; the short form and the condensation cut it.
+    for item in (data.get("findings") or [])[:patch_review.MAX_FINDINGS]:
         if not isinstance(item, dict):
             continue
         finding = {"id": _text(item.get("id") or "", 40), "severity": item.get("severity"),
                    "category": item.get("category"),
                    "file": _text(item["file"], 300) if item.get("file") else None,
                    "line": item.get("line") if isinstance(item.get("line"), int) else None,
-                   "title": _text(item.get("title") or "", 300),
-                   "detail": _text(item.get("detail") or "", 1000)}
+                   "title": _text(item.get("title") or "", patch_review.MAX_TITLE),
+                   "detail": _text(item.get("detail") or "", patch_review.MAX_DETAIL)}
         if item.get("suggestion"):
-            finding["suggestion"] = _text(item["suggestion"], 600)
+            finding["suggestion"] = _text(item["suggestion"], patch_review.MAX_SUGGESTION)
         findings.append(finding)
     return {"kind": "patch_review", "evidence_id": ev["evidence_id"], "at": ev.get("collected_at"),
             "verdict": data.get("verdict"), "disposition": data.get("disposition"),
             "failed_in_succession": data.get("failed_in_succession"),
             "candidate": patch.get("candidate"), "reviewed_work": patch.get("work"),
             "report_evidence_id": data.get("report_evidence_id"),
-            "summary": _text(data.get("summary") or "", 2000), "findings": findings,
+            "summary": _text(data.get("summary") or "", patch_review.MAX_SUMMARY),
+            "findings": findings,
             "previous_findings": [
                 {"ref": _text(p.get("ref") or "", 200), "status": p.get("status")}
-                for p in (data.get("previous_findings") or [])[:60] if isinstance(p, dict)]}
+                for p in (data.get("previous_findings") or [])[:patch_review.MAX_PREVIOUS_FINDINGS]
+                if isinstance(p, dict)]}
 
 
 def _upstream_entry(item: dict) -> dict:
