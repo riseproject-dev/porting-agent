@@ -108,7 +108,8 @@ def tick(record, *, publications=(), queue_works=None, runs=None, now="2026-11-2
             policy=policy(read_only=False),
             now=datetime.fromisoformat(now), publications=list(publications),
             pressure=capacity.Pressure(ok=True), issues=[], comments=[],
-            dispatcher_runs=runs, queue_works=queue_works)
+            dispatcher_runs=runs, queue_works=queue_works,
+            work_results=helpers.completed_results(queue_works))
 
 
 def final(output, original):

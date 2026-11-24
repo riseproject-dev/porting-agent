@@ -811,6 +811,45 @@ def dispatcher_runs(api: Api, workflow_file: str = "dispatcher.lock.yml") -> lis
                         key="workflow_runs", max_pages=1)
 
 
+# The artifact a worker run's publish job uploads.
+PUBLICATION_ARTIFACT = "porting-publication"
+
+
+def worker_run_result(api: Api, run_id: str) -> dict:
+    """Whether the worker run ``run_id`` of the control repository ended,
+    and with a publication: ``{"run_id", "status", "conclusion", "ended_at",
+    "publication"}``. ``ended_at`` is the run's ``updated_at``.
+    ``publication`` is whether an unexpired ``porting-publication`` artifact
+    exists on an ended run, ``None`` while the run has not ended. A run
+    GitHub no longer has (HTTP 404) is ``{"status": "gone", "publication":
+    False}``; any other failed read raises ``CollectError``."""
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", str(run_id)):
+        raise CollectError(f"unexpected worker run id {str(run_id)[:40]!r}")
+    try:
+        run = api.get(f"/repos/{CONTROL_REPO}/actions/runs/{run_id}")
+    except CollectError as error:
+        if error.status == 404:
+            return {"run_id": str(run_id), "status": "gone", "conclusion": None,
+                    "ended_at": None, "publication": False}
+        raise
+    if not isinstance(run, dict):
+        raise CollectError(f"GET worker run {run_id}: the response is not a run")
+    status = run.get("status")
+    reading = {"run_id": str(run_id), "status": status if isinstance(status, str) else None,
+               "conclusion": run.get("conclusion") if isinstance(run.get("conclusion"), str)
+               else None,
+               "ended_at": run.get("updated_at") if isinstance(run.get("updated_at"), str)
+               else None,
+               "publication": None}
+    if reading["status"] == "completed":
+        artifacts = api.paginate(f"/repos/{CONTROL_REPO}/actions/runs/{run_id}/artifacts?per_page=100",
+                                 key="artifacts", max_pages=2)
+        reading["publication"] = any(
+            isinstance(a, dict) and a.get("name") == PUBLICATION_ARTIFACT and not a.get("expired")
+            for a in artifacts)
+    return reading
+
+
 def command_comments(api: Api, issue_numbers: Iterable[int], since: str | None) -> list[dict]:
     """Comments on tracking issues that look like commands, for controller.Inputs.comments."""
     out = []

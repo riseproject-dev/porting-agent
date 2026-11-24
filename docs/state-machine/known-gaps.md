@@ -50,13 +50,6 @@ The [lifecycle table]({{ '/state-machine/table/' | relative_url }}) is the sourc
 - **Table:** `pause` stops new Work and writer admission; the operations run only while the policy permits the write and the operation is the record's current planned intent.
 - **Required:** the same checks as the handoff workflow (the checkout is the head of `main` before the token, and the state of the operation is unchanged at the head of `main` immediately before each write), or a decision that the window is acceptable.
 
-## A completed Work graph whose Result is not collected yet is retried
-
-- **Where:** `reconcile.dispatch_recovery`, `allocate_work_retry` and `exhaust_work_recovery`.
-- **Today:** the reconciler establishes the fact "the Work graph is terminal without a usable Result" for a graph the queue reports `completed` or `cancelled` while the record still holds its Work. A graph completed by a worker whose publication artifact the tick has not collected yet is therefore retried at a new revision, and the Result that arrives later takes `record_late_effect`.
-- **Table:** `allocate_work_retry` applies to terminal Work without a usable Result.
-- **Required:** establish the fact only once the Result of a completed graph is known to be missing (its worker run finished without a publication artifact).
-
 ## Development PR operations have no row
 
 - **Where:** the development PR and CI bootstrap plans in `controller.py` and the development PR receipt in `reconcile.py`.
@@ -142,6 +135,7 @@ These follow the literal reading of a decision and are kept until a decision say
 - A Work payload without `generation` and `dedupe_key` is generation 0, also when the record is in a later generation: its Result is then late. A payload that names only one of them matches no Work.
 - While the record holds requested Work, or a Result held for a publish retry that is not exhausted, a changed fork head is not recorded; the table has no head row in an `agent_running` state.
 - `exhaust_work_recovery` names `work_total` when both budgets are exhausted.
+- "The Work graph is terminal without a usable Result" holds for a cancelled graph at once; for a completed graph when a publication collected in the tick names the Work and left it requested, when its bound worker run ended (or is gone) without an unexpired `porting-publication` artifact, when the queue binds no run to it, or when the artifact exists but was not collected within 60 minutes of the end of the run; while the run is not ended or was not read, nothing is decided and nothing is charged.
 - In upstream review, `exhaust_repair_attempts` names the first exhausted counter of `no_progress`, `work_total`, and `repair_attempts_cluster`.
 - A wait for a human is a state of kind `gate` or `locked`, or of kind `human_wait` with a recorded pending action (`engine.waits_for_human`). Only the rows the table lists for it leave it: observation reads nothing in a wait that has no observation row, no write beside a row can change its phase or activity, and a Result that arrives there takes `record_late_effect`. No code writes a `waiting_human` activity without a pending action; no resume applies to it, and `park` leaves it.
 - A planned operation that a trusted workflow runs stays `planned` across its launches; `begin_effect`, `record_response`, and `confirm_by_discovery` are taken together when its verified receipt is folded with the exact readback. The receipt establishes the facts of `begin_effect` (capacity available, the contribution not paused, the final check passed): the workflow's own final check read them before the effect. A push establishes "capacity available" without a runner reservation.

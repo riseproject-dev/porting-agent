@@ -1327,6 +1327,35 @@ flowchart TB
     development_agent_running -->|record_publish_success| development_waiting_ci
 ```
 
+### O32. Result of a completed Work graph
+
+When a Work graph that the queue reports completed is terminal without a usable Result. The graph becomes completed in the `safe_outputs` job of the worker, before its `publish` job uploads the `porting-publication` artifact, and `work_recovery` allows a single retry, so a tick between the two retried healthy Work and the Result that arrived later was recorded as late.
+
+**Decision.** A cancelled graph is terminal without a usable Result at once: the publish job runs only for a completed outcome. A completed graph is when a publication collected in the tick names the Work and left it requested, when the worker run the queue bound to it (`queue_result.work_runs`) ended or is gone without an unexpired `porting-publication` artifact, when the queue binds no run to it, or when the artifact of the ended run was not collected within 60 minutes of the end of the run. While the run has not ended, or was not read in the tick, nothing is decided and nothing is charged: the wait is derived from the queue and the run each tick, with no new state, flag, record field or deadline, and GitHub's job timeouts bound it. The event of `allocate_work_retry` or `exhaust_work_recovery` names `worker_run`, `run_conclusion` and `result`. A Result collected after the retry still takes `record_late_effect`. The same reading applies in `planning.agent_running` and `upstream_review.agent_running`.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_agent_running["development.agent_running"]
+        development_waiting_human["development.waiting_human"]
+    end
+    subgraph handoff["handoff"]
+        handoff_agent_running["handoff.agent_running"]
+        handoff_reviewing["handoff.reviewing"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+
+    development_agent_running ==>|allocate_work_retry| development_agent_running
+    development_agent_running ==>|exhaust_work_recovery| development_waiting_human
+    development_agent_running ==>|record_late_effect| development_agent_running
+    handoff_agent_running ==>|allocate_work_retry| handoff_agent_running
+    handoff_agent_running ==>|exhaust_work_recovery| handoff_waiting_human
+    handoff_agent_running ==>|record_late_effect| handoff_agent_running
+    handoff_reviewing ==>|allocate_work_retry| handoff_reviewing
+    handoff_reviewing ==>|exhaust_work_recovery| handoff_waiting_human
+    handoff_reviewing ==>|record_late_effect| handoff_reviewing
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

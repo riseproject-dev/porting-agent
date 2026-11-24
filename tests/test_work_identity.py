@@ -25,6 +25,7 @@ import lifecycle as lc
 import reconcile
 import schemas
 import work
+from tests import helpers
 from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, apply_command, ci_record, contribution, policy
 from tests.test_late_results import UPSTREAM_PR, events, final, publication, tick
 
@@ -371,7 +372,9 @@ class TestExhaustion(unittest.TestCase):
                             work.graph_id(record["active_work"]["dedupe_key"]))
         relaunch, staged, report = reconcile.dispatch_recovery(
             {"c": record}, runs=[], queue_works={work.graph_id(record["active_work"]["dedupe_key"]):
-                                                 "completed"}, now=T, policy=POLICY)
+                                                 "completed"}, now=T, policy=POLICY,
+            work_results=helpers.result_missing(
+                work.graph_id(record["active_work"]["dedupe_key"])))
         self.assertEqual([e["kind"] for k, e in staged if k == "events"], ["allocate_work_retry"])
         self.assertEqual(len(relaunch), 1)
 

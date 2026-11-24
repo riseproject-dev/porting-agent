@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -196,6 +197,63 @@ def work_retries(projection: dict | None,
             "retry_at": retry_at,
         }
     return retries
+
+
+# A worker run id the reconciler reads: it is put in an API path.
+_RUN_ID = re.compile(r"^[1-9][0-9]{0,19}$")
+
+
+def work_runs(projection: dict | None) -> dict[str, dict]:
+    """``graph_id -> run`` for every completed Work of a replayed queue: the
+    worker run the queue bound to it, ``{"run_id", "run_attempt",
+    "workflow"}``. The run is the run of the dispatch of the Work's Claim,
+    else the run named by the single ``upload_artifact`` output of its
+    Result (``target_run_id``). A completed Work with neither, or whose run
+    id is not a plain decimal id, maps to ``{"run_id": None}``."""
+    projection = projection or {}
+    claims = projection.get("claims") or {}
+    dispatches = projection.get("dispatches") or {}
+    runs: dict[str, dict] = {}
+    for item in (projection.get("works") or {}).values():
+        if not isinstance(item, dict) or item.get("state") != "completed" \
+                or not isinstance(item.get("graph_id"), str) or not item["graph_id"]:
+            continue
+        claim = claims.get(item.get("claim_id")) if isinstance(item.get("claim_id"), str) else None
+        dispatch = dispatches.get((claim or {}).get("dispatch_id")) \
+            if isinstance((claim or {}).get("dispatch_id"), str) else None
+        run = (dispatch or {}).get("run") if isinstance(dispatch, dict) else None
+        found = None
+        if isinstance(run, dict) and run.get("run_id") is not None:
+            found = {"run_id": str(run.get("run_id")), "run_attempt": run.get("run_attempt"),
+                     "workflow": run.get("workflow")}
+        else:
+            found = _result_run(item.get("result"))
+        if found is None or not _RUN_ID.fullmatch(found["run_id"]):
+            found = {"run_id": None}
+        if runs.get(item["graph_id"], {}).get("run_id") is None:
+            runs[item["graph_id"]] = found
+    return runs
+
+
+def _result_run(descriptor) -> dict | None:
+    """The run named by the single ``upload_artifact`` output of a Result
+    descriptor, as ``resolve`` reads it, or ``None``."""
+    if isinstance(descriptor, str):
+        try:
+            descriptor = json.loads(descriptor)
+        except ValueError:
+            return None
+    if not isinstance(descriptor, dict) or not isinstance(descriptor.get("outputs"), list):
+        return None
+    arts = [o for o in descriptor["outputs"]
+            if isinstance(o, dict) and o.get("type") == "upload_artifact"]
+    if len(arts) != 1:
+        return None
+    res = arts[0].get("resource") or {}
+    if not isinstance(res, dict) or res.get("kind") != "artifact" \
+            or res.get("target_run_id") is None:
+        return None
+    return {"run_id": str(res["target_run_id"]), "run_attempt": None, "workflow": None}
 
 
 def queue_work_states(gh_aw: str, repo: str, timeout: int = 600) -> dict[str, str]:

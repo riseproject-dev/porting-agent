@@ -92,6 +92,7 @@ def tick(rec, publications=(), *, observe=True, verdict="pending", head=SHA_A, f
                               policy=POLICY, now=now, publications=list(publications),
                               pressure=capacity.Pressure(ok=True), observe=observe,
                               dispatcher_runs=list(runs), queue_works=queue or {},
+                              work_results=helpers.completed_results(queue),
                               ci_reruns=ci_reruns)
 
 

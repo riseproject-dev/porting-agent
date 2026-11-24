@@ -63,6 +63,20 @@ SHA_B = "b" * 40
 SHA_C = "c" * 40
 
 
+def result_missing(*graphs: str) -> dict[str, dict]:
+    """``work_results`` readings (``reconcile.work_result_readings``) of the
+    completed Work ``graphs``: each worker run ended without a publication
+    artifact, so the graph is terminal without a usable Result."""
+    return {graph: {"run_id": "4242", "status": "completed", "conclusion": "success",
+                    "ended_at": "2026-01-01T00:00:00Z", "publication": False}
+            for graph in graphs}
+
+
+def completed_results(queue_works: dict[str, str] | None) -> dict[str, dict]:
+    """``result_missing`` for every graph ``queue_works`` reports completed."""
+    return result_missing(*[g for g, s in (queue_works or {}).items() if s == "completed"])
+
+
 def policy(**over):
     p = load_policy()
     p = copy.deepcopy(p)

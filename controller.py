@@ -1072,15 +1072,18 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
 
 
 def terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
-                  policy: dict) -> tuple[dict | None, dict | None, str]:
+                  policy: dict, details: dict | None = None
+                  ) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work whose graph is terminal without a
     usable Result: the record, its event, and the decision for the report.
-    A state outside the table has no row: nothing is decided."""
+    ``details`` (why the graph has no usable Result: ``worker_run``,
+    ``run_conclusion``, ``result``) are added to the event details. A state
+    outside the table has no row: nothing is decided."""
     iso = now.isoformat()
     if engine.state_key(c) not in lifecycle.LIFECYCLE:
         return None, None, f"terminal Work in {engine.state_key(c)}, a state the table does not have"
     facts = {"work_terminal_without_result"}
-    details = {"queue_state": queue_state, "work": aw["dedupe_key"]}
+    details = {"queue_state": queue_state, "work": aw["dedupe_key"]} | (details or {})
     generation, revision = int(c.get("generation", 0)), c["revision"] + 1
     fresh = dict(aw, dedupe_key=work_queue.work_key(c["contribution_id"], generation, revision,
                                                     aw["task"], engine.head_reruns(c)["flaky"]),

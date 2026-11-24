@@ -414,7 +414,8 @@ class TestDispatchRecovery(unittest.TestCase):
                                   if rec.get("active_work") else {})
         return reconcile.tick(None, snap, policy=policy(read_only=False), now=now or self.now, publications=[],
                               pressure=capacity.Pressure(ok=True), observe=False,
-                              dispatcher_runs=runs, queue_works=queue)
+                              dispatcher_runs=runs, queue_works=queue,
+                              work_results=helpers.completed_results(queue))
 
     @staticmethod
     def drun(i, conclusion="failure", status="completed", at="2026-11-18T19:22:19Z"):

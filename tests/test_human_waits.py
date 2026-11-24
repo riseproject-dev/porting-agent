@@ -64,7 +64,8 @@ class World:
                                  publications=[], comments=list(comments), issues=[],
                                  pressure=capacity.Pressure(ok=True),
                                  dispatcher_runs=runs if runs is not None else [],
-                                 queue_works=queue_works if queue_works is not None else {})
+                                 queue_works=queue_works if queue_works is not None else {},
+                                 work_results=helpers.completed_results(queue_works))
         assert out.failures == [], out.failures
         events = []
         for kind, record in out.staged:

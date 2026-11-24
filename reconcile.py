@@ -91,6 +91,11 @@ RETRY_BACKOFF_MINUTES = (15, 60, 240)
 # A launched publish-only retry whose Result is not folded by then counts as a
 # failed publication. The retry workflow's jobs time out after 30 minutes.
 PUBLISH_RESULT_WAIT_MINUTES = 60
+# A publication artifact of an ended worker run that no tick collected by
+# then (its download failed, the trusted recovery rejected it, or the run is
+# outside the run inventory) is no usable Result: the completed Work graph is
+# then retried. It reuses the wait of a launched publish-only retry.
+RESULT_COLLECTION_GRACE_MINUTES = PUBLISH_RESULT_WAIT_MINUTES
 
 
 def publish_retry_delay(attempts: int) -> int:
@@ -141,6 +146,8 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                       skip: frozenset[str] = frozenset(), queue_policy: dict | None = None,
                       evidence: dict[str, dict] | None = None,
                       queue_retries: dict[str, dict] | None = None,
+                      work_results: dict[str, dict] | None = None,
+                      collected: frozenset[str] = frozenset(),
                       ) -> tuple[list[dict], list[tuple[str, dict]], list[dict]]:
     """Requested tasks whose dispatch never reached the queue (plan 15.3).
 
@@ -172,8 +179,17 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
     decided at all: nothing is charged and nothing is launched.
 
     A graph the queue reports completed or cancelled takes
-    ``allocate_work_retry`` or ``exhaust_work_recovery``. A record in a state
-    the table does not have is left unchanged and reported.
+    ``allocate_work_retry`` or ``exhaust_work_recovery`` once it is terminal
+    without a usable Result (``_result_missing``): a cancelled graph at
+    once; a completed graph when a publication collected in this tick
+    (``collected``, graph ids) names it, or once ``work_results``
+    (``work_result_readings``, by graph id) shows that its worker run ended
+    or is gone without an unexpired ``porting-publication`` artifact, that
+    the queue binds no run to it, or that the artifact of the ended run was
+    not collected within ``RESULT_COLLECTION_GRACE_MINUTES``. While the
+    worker run has not ended, or was not read, nothing is decided and
+    nothing is charged. A record in a state the table does not have is left
+    unchanged and reported.
 
     Work that carries a history is dispatched only once its history is
     committed (``evidence``, the committed evidence; ``None`` skips this
@@ -250,11 +266,20 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                                         "retry_at": retry["retry_at"].isoformat()}
             if state in ("completed", "cancelled"):
                 # Work graphs are immutable and terminal. Reusing the same graph
-                # can only fail: the table allocates a fresh graph at a new
-                # revision within `work_recovery` and `work_total`
+                # can only fail: once the graph is terminal without a usable
+                # Result, the table allocates a fresh graph at a new revision
+                # within `work_recovery` and `work_total`
                 # (`allocate_work_retry`), and waits for a human otherwise
                 # (`exhaust_work_recovery`).
-                new, event, decision = _terminal_work(c, aw, state, now=now, policy=policy)
+                decided, waiting, details = _result_missing(
+                    state, work.graph_id(aw["dedupe_key"]), work_results, collected, now)
+                if details.get("worker_run"):
+                    entry["worker_run"] = details["worker_run"]
+                if not decided:
+                    report.append(entry | {"decision": waiting})
+                    continue
+                new, event, decision = _terminal_work(c, aw, state, now=now, policy=policy,
+                                                      details=details)
                 if new is None:
                     report.append(entry | {"decision": decision})
                     continue
@@ -317,6 +342,82 @@ def dispatch_recovery(contributions: dict[str, dict], *, runs: list[dict] | None
                 relaunch.append({"type": "relaunch_dispatcher", "contribution_id": c["contribution_id"]})
             report.append(entry | {"decision": decision})
     return relaunch[: max(1, policy["concurrency"]["coding_workers"])], staged, report
+
+
+def _result_missing(state: str, graph: str, work_results: dict[str, dict] | None,
+                    collected: frozenset[str], now: datetime) -> tuple[bool, str, dict]:
+    """Whether the Work graph ``graph``, which the queue reports ``state``
+    (``completed`` or ``cancelled``), is terminal without a usable Result:
+    (decided, the report decision while it is not, the event details once
+    it is).
+
+    * ``cancelled``: at once. The queue cancels Work only after its last
+      Claim ended without a Result, and the publish job of a worker runs
+      only for a completed outcome, so no Result can follow.
+    * ``completed`` and a publication collected in this tick names the graph
+      (``collected``): at once. Its Result was folded, recorded late or
+      already processed, and the Work still held has no usable Result.
+    * ``completed`` otherwise, from the reading of the worker run the queue
+      bound to the graph (``work_results``): no reading, or a run that has
+      not ended, decides nothing; a run that ended (or is gone) without an
+      unexpired ``porting-publication`` artifact, or no bound run at all,
+      decides at once; an artifact on an ended run that no tick collected is
+      waited for ``RESULT_COLLECTION_GRACE_MINUTES`` after the run ended."""
+    if state == "cancelled":
+        return True, "", {"result": "cancelled"}
+    if graph in collected:
+        return True, "", {"result": "collected"}
+    reading = (work_results or {}).get(graph)
+    if not isinstance(reading, dict):
+        return False, "waiting: the worker run of the completed Work was not read", {}
+    status = reading.get("status")
+    if status == "unbound":
+        return True, "", {"result": "unbound"}
+    run_id = reading.get("run_id")
+    details = {"worker_run": run_id, "run_conclusion": reading.get("conclusion")}
+    if status == "gone" or (status == "completed" and reading.get("publication") is False):
+        return True, "", details | {"result": "missing"}
+    if status != "completed":
+        return False, f"waiting for worker run {run_id} to publish its Result", {}
+    try:
+        ended = datetime.fromisoformat(str(reading.get("ended_at")).replace("Z", "+00:00"))
+    except ValueError:
+        ended = None
+    if ended is not None and ended.tzinfo is not None \
+            and now - ended < timedelta(minutes=RESULT_COLLECTION_GRACE_MINUTES):
+        return False, (f"waiting for the Result of worker run {run_id} to be collected "
+                       f"(at most {RESULT_COLLECTION_GRACE_MINUTES} minutes after the run "
+                       "ended)"), {}
+    return True, "", details | {"result": "uncollected"}
+
+
+def work_result_readings(api: collect.Api, contributions: dict[str, dict],
+                         queue_works: dict[str, str] | None,
+                         queue_runs: dict[str, dict] | None) -> dict[str, dict]:
+    """``graph_id -> reading`` of the worker run of every completed Work
+    graph a record still holds (``dispatch_recovery`` decides from it):
+    ``{"status": "unbound"}`` when the queue binds no run to the graph
+    (``queue_runs``, ``queue_result.work_runs``), else
+    ``collect.worker_run_result``. A failed read of one graph is printed and
+    leaves that graph without a reading; the others are still read."""
+    readings: dict[str, dict] = {}
+    for c in contributions.values():
+        aw = c.get("active_work")
+        if not isinstance(aw, dict) or not isinstance(aw.get("dedupe_key"), str):
+            continue
+        graph = work.graph_id(aw["dedupe_key"])
+        if graph in readings or (queue_works or {}).get(graph) != "completed":
+            continue
+        run_id = ((queue_runs or {}).get(graph) or {}).get("run_id")
+        if run_id is None:
+            readings[graph] = {"status": "unbound"}
+            continue
+        try:
+            readings[graph] = collect.worker_run_result(api, run_id)
+        except (collect.CollectError, OSError) as error:
+            print(f"worker run {run_id} of completed Work {graph} not read this tick: {error}",
+                  file=sys.stderr)
+    return readings
 
 
 def _committed_history(aw: dict, evidence: dict[str, dict] | None) -> dict | bool | None:
@@ -475,10 +576,11 @@ def payload_cause(record: dict, evidence: dict[str, dict] | None = None) -> str 
 
 
 def _terminal_work(c: dict, aw: dict, queue_state: str, *, now: datetime,
-                   policy: dict) -> tuple[dict | None, dict | None, str]:
+                   policy: dict, details: dict | None = None
+                   ) -> tuple[dict | None, dict | None, str]:
     """The table's row for requested Work whose graph is terminal without a
-    usable Result (``controller.terminal_work``)."""
-    return controller.terminal_work(c, aw, queue_state, now=now, policy=policy)
+    usable Result (``controller.terminal_work``); ``details`` say why."""
+    return controller.terminal_work(c, aw, queue_state, now=now, policy=policy, details=details)
 
 
 def _may_hold_work(rec: dict) -> bool:
@@ -1853,6 +1955,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          observe: bool = True, dispatcher_runs: list[dict] | None = None,
          queue_works: dict[str, str] | None = None, tracking_issues: dict | None = None,
          queue_retries: dict[str, dict] | None = None,
+         work_results: dict[str, dict] | None = None,
          upstream_snapshots: dict | None = None, provisions: list[dict] | None = None,
          development_prs: list[dict] | None = None, handoffs: list[dict] | None = None,
          ci_reruns: list[dict] | None = None,
@@ -2122,12 +2225,19 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
 
     # 1b. Requested Work whose graph is terminal without a usable Result is
     # recovered by the table's rows in dispatch recovery; no deadline applies.
+    # A completed graph is terminal without a usable Result once a
+    # publication of this tick names it, or once its worker run ended
+    # without one (``work_results``).
     # 1c. Requested tasks whose dispatch never reached the queue: relaunch the
     # dispatcher (bounded), then wait for a human.
+    collected = frozenset(work.graph_id(key) for key in (
+        (pub.get("task") or {}).get("dedupe_key") for pub in publications)
+        if isinstance(key, str))
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
                                               now=now, policy=policy, skip=skip,
                                               queue_policy=queue_policy, evidence=snap.evidence,
-                                              queue_retries=queue_retries)
+                                              queue_retries=queue_retries,
+                                              work_results=work_results, collected=collected)
     out.staged.extend(staged)
     out.report["dispatch_recovery"] = rep
     # 1d. A dispatch refused by the installed work-queue Policy: re-arm it
@@ -2175,8 +2285,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     # Work that returned a Result in this tick, or whose graph the queue
     # holds as terminal, is never allocated again under the same id.
     spent_graphs = frozenset(
-        [work.graph_id(key) for key in ((pub.get("task") or {}).get("dedupe_key")
-                                        for pub in publications) if isinstance(key, str)]
+        list(collected)
         + [graph for graph, state in (queue_works or {}).items()
            if state in ("completed", "cancelled")])
     res = controller.tick(contributions=contributions, operations=snap.operations, consumed=snap.consumed,
@@ -2663,7 +2772,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             api, issues, INTAKE_LABEL, policy["command_authority"]["actor_ids"]
         )
     )
-    runs = queue = queue_state = retries = None
+    runs = queue = queue_state = retries = results = None
     if not args.offline and args.gh_aw:
         try:
             runs = collect.dispatcher_runs(api)
@@ -2673,10 +2782,12 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             retries = queue_result.work_retries(projection, skipped_retries)
             for line in skipped_retries:
                 print(line, file=sys.stderr)
+            results = work_result_readings(api, snapshot.contributions, queue,
+                                           queue_result.work_runs(projection))
             queue_state = queue_policy_facts.status(
                 projection or {}, queue_policy_facts.load_compiled(repository=collect.CONTROL_REPO))
         except (collect.CollectError, OSError, ValueError) as error:
-            runs = queue = queue_state = retries = None
+            runs = queue = queue_state = retries = results = None
             print(f"dispatch recovery skipped this tick: {error}", file=sys.stderr)
     if args.offline:
         observed_pressure = capacity.Pressure(ok=False, reason="offline")
@@ -2705,6 +2816,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             dispatcher_runs=runs,
             queue_works=queue,
             queue_retries=retries,
+            work_results=results,
             queue_policy=queue_state,
             acceptances=acceptances,
             tracking_issues=issue_snapshots,
