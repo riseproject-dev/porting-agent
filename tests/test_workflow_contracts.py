@@ -516,8 +516,13 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertNotIn("actions/workflows/$workflow/runs?status=completed", text)
         self.assertIn('name == "porting-publication"', text)
         # Exactly one publication artifact per run, never the first of several.
-        self.assertIn('if length == 1 then .[0].id elif length == 0 then empty else '
-                      'error("expected one publication artifact") end', text)
+        self.assertIn('if length == 1 then "\\(.[0].id) \\(.[0].expires_at // "")" elif '
+                      'length == 0 then empty else error("expected one publication artifact") '
+                      'end', text)
+        # The expiry GitHub reports is written after the artifact is
+        # unpacked, so the artifact cannot name its own.
+        self.assertLess(text.index('unzip -q -o -j "publications/$run/a.zip"'),
+                        text.index('> "publications/$run/artifact-expires-at"'))
         self.assertNotIn("\"porting-publication\" and (.expired | not))][0]", text)
 
     def test_controller_collects_the_result_of_a_publish_only_retry(self):

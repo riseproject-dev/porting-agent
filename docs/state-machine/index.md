@@ -413,6 +413,7 @@ flowchart TB
     development_reviewing -->|publish_after_failed_reviews| development_publishing
     development_reviewing -->|accept_patch_review| development_publishing
     development_publishing -->|record_publish_success| development_waiting_ci
+    development_publishing -->|expire_held_patch| development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
     development_waiting_human -->|resume_patch_review<br/>/upstreaming resume| development_review_pending
 ```

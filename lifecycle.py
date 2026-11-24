@@ -1255,6 +1255,16 @@ LIFECYCLE: dict[str, State] = {
                             "`no_progress` again."),
             ("schedule_publish_retry", SELF): _SCHEDULE_PUBLISH_RETRY,
             ("exhaust_publish_recovery", "development.waiting_human"): _EXHAUST_PUBLISH_RECOVERY,
+            ("expire_held_patch", "development.fix_needed"): Transition(
+                _K, None, (HELD_PATCH_EXPIRED,),
+                _E(work="clear", clears=(HELD_RESULT, HELD_PATCH, OVERRIDDEN_REVIEWS)),
+                description="An artifact the publication reads (the one that carries the "
+                            "series, or the worker run's own) expired or expires within a "
+                            "day before the patch was published, and no publish-only retry "
+                            "is in flight: nothing is pushed, the held patch is discarded, "
+                            "fresh development Work is due, and the pending feedback is kept. "
+                            "A patch to be published after successive failed reviews starts "
+                            "`dev_reviews` again."),
             ("replan_development", "development.fix_needed"): Transition(
                 _R, None,
                 ("the proposal no longer applies to the fork head",),
@@ -2893,6 +2903,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.reviewing", "publish_after_failed_reviews"),
                  ("development.reviewing", "accept_patch_review"),
                  ("development.publishing", "record_publish_success"),
+                 ("development.publishing", "expire_held_patch"),
                  ("development.fix_needed", "request_repair"),
                  ("development.waiting_human", "resume_patch_review")),
                 start="development.agent_running",

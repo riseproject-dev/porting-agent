@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -46,9 +47,13 @@ KEYS = ("patch", "previous_patch")
 _RUN = re.compile(r"^[1-9][0-9]{0,19}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-# The files of the artifact the agent reads.
-FILES = ("patches.mbox", "proposal.json")
+# The files of the artifact the agent reads, each with the most bytes it may
+# hold uncompressed: the series as `fork_publish.MAX_MBOX_BYTES` admits it,
+# the proposal as `artifact.ALLOWED` does.
+FILES = {"patches.mbox": 4 * 1024 * 1024, "proposal.json": 256 * 1024}
+# The most bytes of the archive that are downloaded, and of the metadata.
 MAX_ZIP_BYTES = 64 * 1024 * 1024
+MAX_META_BYTES = 1024 * 1024
 
 
 class HeldPatchError(ValueError):
@@ -59,15 +64,32 @@ class Gone(HeldPatchError):
     """The artifact no longer exists or expired."""
 
 
-def gh_get(path: str) -> bytes:
-    """``gh api PATH`` with the job's token; a 404 or 410 is ``Gone``."""
-    done = subprocess.run(["gh", "api", path], capture_output=True, timeout=300)
-    if done.returncode != 0:
-        error = done.stderr.decode(errors="replace")[-500:]
-        if "HTTP 404" in error or "HTTP 410" in error:
-            raise Gone(f"{path}: gone")
-        raise HeldPatchError(f"{path}: {error.strip()}")
-    return done.stdout
+def gh_get(path: str, limit: int) -> bytes:
+    """``gh api PATH`` with the job's token, read up to ``limit`` bytes: a
+    larger answer is refused as soon as it passes the bound, never
+    buffered whole. A 404 or 410 is ``Gone``."""
+    with tempfile.TemporaryFile() as err, subprocess.Popen(
+            ["gh", "api", path], stdout=subprocess.PIPE, stderr=err) as proc:
+        chunks, size = [], 0
+        assert proc.stdout is not None
+        while chunk := proc.stdout.read(1024 * 1024):
+            size += len(chunk)
+            if size > limit:
+                proc.kill()
+                raise HeldPatchError(f"{path}: the answer is larger than {limit} bytes")
+            chunks.append(chunk)
+        try:
+            code = proc.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise HeldPatchError(f"{path}: timed out") from None
+        if code != 0:
+            err.seek(0)
+            error = err.read()[-2000:].decode(errors="replace")[-500:]
+            if "HTTP 404" in error or "HTTP 410" in error:
+                raise Gone(f"{path}: gone")
+            raise HeldPatchError(f"{path}: {error.strip()}")
+    return b"".join(chunks)
 
 
 def reference(task: dict, key: str) -> dict | None:
@@ -90,7 +112,7 @@ def reference(task: dict, key: str) -> dict | None:
 
 
 def fetch(task: dict, key: str, out: Path, *, repository: str,
-          get: Callable[[str], bytes] = gh_get, required: bool = False) -> dict:
+          get: Callable[[str, int], bytes] = gh_get, required: bool = False) -> dict:
     """Write the series ``key`` names to ``out`` and return its status:
     ``verified``, or ``absent`` when no series can be read and none is
     ``required``. Raises ``HeldPatchError`` otherwise."""
@@ -101,14 +123,19 @@ def fetch(task: dict, key: str, out: Path, *, repository: str,
     try:
         if ref is None:
             raise Gone(f"the task names no {key}")
-        meta = json.loads(get(f"/repos/{repository}/actions/artifacts/{ref['artifact_id']}"))
+        meta = json.loads(get(f"/repos/{repository}/actions/artifacts/{ref['artifact_id']}",
+                              MAX_META_BYTES))
         if not isinstance(meta, dict) or meta.get("name") != ARTIFACT \
                 or str((meta.get("workflow_run") or {}).get("id")) != str(ref["artifact_run_id"]):
             raise HeldPatchError(f"the artifact is not the {key} series of run "
                                  f"{ref['artifact_run_id']}")
         if meta.get("expired"):
             raise Gone(f"the artifact of the {key} series expired")
-        raw = get(f"/repos/{repository}/actions/artifacts/{ref['artifact_id']}/zip")
+        size = meta.get("size_in_bytes")
+        if isinstance(size, int) and size > MAX_ZIP_BYTES:
+            raise HeldPatchError("the artifact is too large")
+        raw = get(f"/repos/{repository}/actions/artifacts/{ref['artifact_id']}/zip",
+                  MAX_ZIP_BYTES)
     except Gone as gone:
         if required:
             raise
@@ -122,11 +149,20 @@ def fetch(task: dict, key: str, out: Path, *, repository: str,
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             for info in archive.infolist():
                 # Only regular files at the top of the archive; a symbolic
-                # link (an external attribute of type 0o12) is refused.
+                # link (an external attribute of type 0o12) is refused, and
+                # so is a file larger than its bound, whatever its header
+                # declares: at most one byte beyond the bound is inflated.
                 if info.filename in FILES:
+                    bound = FILES[info.filename]
                     if info.is_dir() or (info.external_attr >> 16) & 0o170000 == 0o120000:
                         raise HeldPatchError(f"{info.filename} is not a regular file")
-                    files[info.filename] = archive.read(info)
+                    if info.file_size > bound:
+                        raise HeldPatchError(f"{info.filename} is larger than {bound} bytes")
+                    with archive.open(info) as member:
+                        data = member.read(bound + 1)
+                    if len(data) > bound:
+                        raise HeldPatchError(f"{info.filename} is larger than {bound} bytes")
+                    files[info.filename] = data
     except (zipfile.BadZipFile, EOFError) as error:
         raise HeldPatchError(f"the artifact is not a readable archive: {error}") from None
     missing = [name for name in FILES if name not in files]

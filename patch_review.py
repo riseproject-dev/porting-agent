@@ -166,20 +166,56 @@ def check(task: dict, review: Any) -> dict:
 # The held patch
 
 
-def held_patch_expired(record: dict, now: Any) -> bool:
-    """Whether the publication artifact of the held patch expired or
-    expires within a day, for the effective retention
-    (``handoff.artifact_retention_days``)."""
+def _retention() -> tuple[timedelta, timedelta]:
+    """The effective retention of an artifact
+    (``handoff.artifact_retention_days``) and the margin before its expiry
+    at which it is no longer relied on."""
     import handoff
 
-    held = record.get("held_patch") or {}
-    at = held.get("held_at")
-    if not at:
-        return False
-    now = now if isinstance(now, datetime) else datetime.fromisoformat(str(now))
     retention = timedelta(days=handoff.artifact_retention_days())
-    margin = min(timedelta(days=handoff.EXPIRY_MARGIN_DAYS), retention / 2)
-    return now - datetime.fromisoformat(at) >= retention - margin
+    return retention, min(timedelta(days=handoff.EXPIRY_MARGIN_DAYS), retention / 2)
+
+
+def _instant(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
+def held_patch_expires_at(outcome: dict, *, run: str, requested_at: str | None,
+                          now: str) -> str:
+    """When the artifacts the held patch depends on expire, at the earliest:
+    the artifact that carries its series, by the expiry GitHub reported for
+    it (else the retention after the Work was requested, before any of its
+    runs began), and, when another run owns that artifact (a publish-only
+    retry that verified the patch again), the worker run's own artifact,
+    which its publication reads, by the retention after the Work was
+    requested."""
+    retention, _margin = _retention()
+    since = _instant(requested_at) or _instant(now)
+    bound = since + retention
+    reported = _instant(outcome.get("publication_artifact_expires_at"))
+    series = reported if reported is not None else bound
+    if str(outcome.get("publication_run_id") or "") != str(run):
+        series = min(series, bound)
+    return series.isoformat()
+
+
+def held_patch_expired(record: dict, now: Any) -> bool:
+    """Whether an artifact the held patch depends on expired or expires
+    within a day (``held_patch.expires_at``; for a pin without it, the
+    effective retention after the hold)."""
+    held = record.get("held_patch") or {}
+    retention, margin = _retention()
+    expires = _instant(held.get("expires_at"))
+    if expires is None:
+        at = _instant(held.get("held_at"))
+        if at is None:
+            return False
+        expires = at + retention
+    now = now if isinstance(now, datetime) else datetime.fromisoformat(str(now))
+    return now >= expires - margin
 
 
 def held_patch(record: dict, outcome: dict, *, run: str, now: str,
@@ -202,6 +238,8 @@ def held_patch(record: dict, outcome: dict, *, run: str, now: str,
         "reason_ids": list(work.get("reason_ids") or [])[:16],
         "feedback_evidence_ids": list(work.get("feedback_evidence_ids") or [])[:64],
         "report_evidence_id": report_evidence_id, "held_at": now,
+        "expires_at": held_patch_expires_at(outcome, run=str(run),
+                                            requested_at=work.get("requested_at"), now=now),
     }
     problems = []
     if not isinstance(artifact, int) or isinstance(artifact, bool) or artifact <= 0:
@@ -253,7 +291,7 @@ def evidence(record: dict, outcome: dict, *, now: str, policy: dict, run: str,
         "patch": {key: held.get(key) for key in (
             "worker_run_id", "artifact_run_id", "artifact_id", "work", "revision",
             "patch_digest", "candidate", "tree", "expected_head", "operation", "changed_files",
-            "held_at")},
+            "held_at", "expires_at")},
         "report_evidence_id": held.get("report_evidence_id"),
         "review_work": (outcome.get("task") or {}).get("dedupe_key"),
         "review_artifact": {"run_id": str(run),

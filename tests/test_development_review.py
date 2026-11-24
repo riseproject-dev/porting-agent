@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta
 
 import capacity
@@ -139,7 +140,8 @@ def published(rec, *, run="4242", artifact=903):
     return {"status": "published", "candidate": CANDIDATE, "operation": op, "task": task,
             "worker_run_id": run, "publication_artifact_id": artifact,
             "artifact": {"work_id": "w", "claim_id": "c", "artifact_id": artifact, "name": "n",
-                         "digest": "sha256:" + "0" * 64, "run_id": run}, "attempt": 1}
+                         "digest": "sha256:" + "0" * 64, "run_id": run}, "attempt": 1,
+            "publication_stage": "publish"}
 
 
 class TestHold(unittest.TestCase):
@@ -266,7 +268,7 @@ class TestHold(unittest.TestCase):
             z.writestr("outcome.json", "{}")
         artifacts = {901: ("4242", worker_artifact.getvalue()), 905: ("7777", archive.getvalue())}
 
-        def get(path):
+        def get(path, limit):
             ident = int(path.split("/artifacts/")[1].split("/")[0])
             run, data = artifacts[ident]
             if path.endswith("/zip"):
@@ -296,6 +298,54 @@ class TestHold(unittest.TestCase):
             with self.assertRaises(held_patch.HeldPatchError):
                 held_patch.fetch(task, "patch", Path(tmp), repository="o/r", get=get,
                                  required=True)
+
+
+    def test_the_series_is_read_within_its_bounds(self):
+        import io
+        import os
+        import stat
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        import artifact
+        from scripts import held_patch
+
+        self.assertEqual(held_patch.FILES["patches.mbox"], fork_publish.MAX_MBOX_BYTES)
+        self.assertEqual(held_patch.FILES["proposal.json"], artifact.ALLOWED["proposal.json"])
+        task = {"context": {"patch": {"artifact_run_id": "4242", "artifact_id": 901,
+                                      "patch_digest": DIGEST}}}
+
+        def answer(zipped, **meta):
+            def get(path, limit):
+                if path.endswith("/zip"):
+                    return zipped
+                return json.dumps({"name": "porting-publication", "expired": False,
+                                   "workflow_run": {"id": 4242}, **meta}).encode()
+            return get
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+            # Compressed, the series is small; inflated, it passes its bound.
+            z.writestr("patches.mbox", b"0" * (held_patch.FILES["patches.mbox"] + 1))
+            z.writestr("proposal.json", b"{}")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(held_patch.HeldPatchError, "larger than"):
+                held_patch.fetch(task, "patch", Path(tmp), repository="o/r",
+                                 get=answer(buffer.getvalue()), required=True)
+            # An archive larger than its bound is not downloaded.
+            with self.assertRaisesRegex(held_patch.HeldPatchError, "too large"):
+                held_patch.fetch(task, "patch", Path(tmp), repository="o/r",
+                                 get=answer(b"", size_in_bytes=held_patch.MAX_ZIP_BYTES + 1),
+                                 required=True)
+            # The download is refused as soon as it passes its bound.
+            gh = Path(tmp) / "gh"
+            gh.write_text("#!/bin/sh\nhead -c 3000000 /dev/zero\n")
+            gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+            with unittest.mock.patch.dict(os.environ, {"PATH": f"{tmp}:{os.environ['PATH']}"}):
+                self.assertEqual(len(held_patch.gh_get("/x", 3000000)), 3000000)
+                with self.assertRaisesRegex(held_patch.HeldPatchError, "larger than"):
+                    held_patch.gh_get("/x", 2000000)
 
 
 class TestVerdicts(unittest.TestCase):
@@ -725,7 +775,7 @@ class TestHeldPatchEnds(unittest.TestCase):
         self.assertEqual(publishing["budget"]["review_rejections"], 0)
         off = dict(published(publishing, run="4300", artifact=912), status="rejected",
                    failure_class="validation", reason="the series rebuilds to X",
-                   operation=None, publication_stage="publish")
+                   operation=None)
         rejected, out = step(publishing, [off], 12)
         self.assertEqual(kinds(out)[0], "reject_patch_proposal")
         third, _ = step(rejected, [verified(rejected, run="4400", artifact=920)], 20)
@@ -765,6 +815,53 @@ class TestHeldPatchEnds(unittest.TestCase):
             values={"pending_publication": anyway["pending_publication"]})
         self.assertTrue(passed.accepted, passed.reason)
         self.assertEqual(passed.record["budget"]["review_rejections"], 0)
+
+    def test_a_late_verification_is_not_the_rejection_of_the_publication(self):
+        reviewing, _ = held(running())
+        publishing = final(tick(reviewing, [review_result(reviewing)]))
+        # A verification of the same Work, collected late (the worker's own
+        # run, or a retry of it made before the review), that was rejected.
+        for stage in (None, "other"):
+            late = dict(published(publishing), status="rejected", failure_class="stale",
+                        reason="fork head moved", operation=None, publication_stage=stage)
+            with self.subTest(stage=stage):
+                self.assertIn("did not publish",
+                              reconcile.result_mismatch(publishing, late))
+                out = tick(publishing, [late])
+                self.assertEqual(kinds(out), ["record_late_effect"])
+                self.assertEqual(engine.state_key(final(out)), lc.PUBLISHING)
+        self.assertIsNone(reconcile.result_mismatch(publishing, dict(
+            published(publishing), status="rejected", failure_class="stale", operation=None)))
+
+    def test_the_fence_covers_every_run_the_controller_collects(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        controller_text = (root / ".github/workflows/controller.yml").read_text()
+        self.assertIn("runs?per_page=20$filter", controller_text)
+        workflows, runs = 4, 20
+        self.assertGreaterEqual(reconcile.PROCESSED_PUBLICATIONS, 2 * workflows * runs)
+        schema = json.loads((root / "schemas/contribution.schema.json").read_text())
+        self.assertEqual(schema["properties"]["processed_publications"]["maxItems"],
+                         reconcile.PROCESSED_PUBLICATIONS)
+
+    def test_an_expired_artifact_is_never_published(self):
+        reviewing, _ = held(running())
+        publishing = final(tick(reviewing, [review_result(reviewing)]))
+        publishing["pending_publication"]["patch_review"]["published_anyway"] = True
+        publishing["budget"]["review_rejections"] = 1
+        expires = datetime.fromisoformat(publishing["held_patch"]["expires_at"])
+        out = tick(publishing, now=expires - timedelta(hours=2))
+        self.assertEqual(kinds(out)[0], "expire_held_patch")
+        new = final(out)
+        self.assertIsNone(new["held_patch"])
+        self.assertIsNone(new["pending_publication"])
+        self.assertEqual(new["budget"]["review_rejections"], 0)
+        self.assertEqual(out.report["publication_retries"], [])
+        # Within its retention, the publication is launched.
+        publishing["pending_publication"].pop("launched_at", None)
+        current = tick(publishing, now=expires - timedelta(days=2))
+        self.assertEqual(len(current.report["publication_retries"]), 1)
 
     def test_the_publication_check_pins_the_held_patch(self):
         reviewing, _ = held(running())
@@ -980,7 +1077,7 @@ class TestWorkflows(unittest.TestCase):
         task = {"context": {"previous_patch": {"artifact_run_id": "4242", "artifact_id": 901,
                                                "patch_digest": DIGEST}}}
 
-        def get(path):
+        def get(path, limit):
             if path.endswith("/zip"):
                 buffer = io.BytesIO()
                 with zipfile.ZipFile(buffer, "w") as z:

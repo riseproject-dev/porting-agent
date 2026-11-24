@@ -1213,7 +1213,8 @@
             "reason_ids",
             "feedback_evidence_ids",
             "report_evidence_id",
-            "held_at"
+            "held_at",
+            "expires_at"
           ],
           "properties": {
             "worker_run_id": {
@@ -1300,6 +1301,10 @@
             "held_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         }
@@ -1384,7 +1389,7 @@
     },
     "processed_publications": {
       "type": "array",
-      "maxItems": 64,
+      "maxItems": 256,
       "items": {
         "type": "integer",
         "minimum": 1

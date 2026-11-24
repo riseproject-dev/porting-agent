@@ -681,6 +681,13 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         if held and rec.get("pending_publication") and run == held.get("worker_run_id") \
                 and key == held.get("work") and revision == held.get("revision") \
                 and pub.get("status") in PUBLISHING_STATUSES:
+            if pub.get("status") in ("rejected", "worker_blocked") \
+                    and pub.get("publication_stage") != "publish":
+                # A rejection by a run that did not read the record in
+                # this state (the worker's verification, or a retry of it
+                # made before the review) is not the publication's.
+                return ("late Result: a rejection by a run that did not publish the held "
+                        "patch")
             return None
         # A verification or a `no_change` report of the same worker run (an
         # artifact collected again) is no publication: it is recorded, never
@@ -1423,6 +1430,11 @@ def _charged_launch(held: dict, outcome: dict) -> bool:
 # (`uncertain`) is a failed publication: the Result stays held, and the
 # publish-only retry reads back the head a lost push left.
 # The statuses of the publication of a held patch in `development.publishing`.
+# The publication artifacts a record remembers as folded: the controller
+# collects the 20 newest runs of each of four workflows (planner, worker,
+# reviewer, publish-only retry), so 80 artifacts can be collected again; the
+# fence keeps more than three times as many.
+PROCESSED_PUBLICATIONS = 256
 PUBLISHING_STATUSES = ("published", "rejected", "worker_blocked", "infra_error", "uncertain",
                        "proposal")
 WORK_RESULT_STATES = {
@@ -2450,7 +2462,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 pubs_report.append({"contribution": cid, "ignored": "superseded publication artifact"})
                 continue
             if pid:
-                rec = dict(rec, processed_publications=((rec.get("processed_publications") or []) + [pid])[-64:])
+                rec = dict(rec, processed_publications=(
+                    (rec.get("processed_publications") or []) + [pid])[-PROCESSED_PUBLICATIONS:])
                 contributions[key] = rec
             unrequested = ("superseded publication artifact" if pub.get("superseded")
                            else result_mismatch(rec, pub))
@@ -2589,6 +2602,26 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # a Result that reports one: `schedule_publish_retry` charges
                 # `publish_recovery` again, or `exhaust_publish_recovery`
                 # waits for a human once it is spent.
+                if engine.state_key(c) == lifecycle.PUBLISHING \
+                        and patch_review.held_patch_expired(c, now):
+                    # An artifact the publication reads expired or expires
+                    # within a day: nothing is launched again, whether or
+                    # not a retry was lost, the held patch is
+                    # discarded and fresh development Work is due.
+                    held = c.get("held_patch") or {}
+                    fired = engine.apply_transition(
+                        c, "expire_held_patch", policy=policy, now=now.isoformat(),
+                        cause_id=f"expired-{held.get('worker_run_id')}",
+                        facts={"held_patch_expired"},
+                        details={"expires_at": held.get("expires_at"),
+                                 "candidate": held.get("candidate")})
+                    if not fired.accepted:
+                        raise lifecycle.TransitionError(
+                            f"no row discards the expired held patch: {fired.reason}")
+                    schemas.validate("contribution", fired.record)
+                    contributions[key] = fired.record
+                    out.staged.extend([("contributions", fired.record), ("events", fired.event)])
+                    continue
                 if pp.get("launched_at"):
                     fired = _fail_publication(
                         c, pp["worker_run_id"],
@@ -2996,8 +3029,20 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
         )
         # The run that owns the artifact (the directory is named by it): the
         # worker run, or the publish-only retry that wrote it. A held patch
-        # is pinned to it, with the digest of the series it carries.
+        # is pinned to it, with the digest of the series it carries and the
+        # expiry GitHub reported for the artifact.
         outcome["publication_run_id"] = path.parent.name
+        # The stage of a publish-only retry: `publish` when it read the record
+        # in development.publishing (the controller keeps the file of a
+        # retry only).
+        stage = path.parent / "publication-stage"
+        outcome["publication_stage"] = (
+            "publish" if stage.is_file() and stage.read_text().strip() == "publish" else None)
+        expires = path.parent / "artifact-expires-at"
+        text = expires.read_text().strip() if expires.is_file() else ""
+        outcome["publication_artifact_expires_at"] = (
+            text if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}:[0-9]{2})",
+                                 text) else None)
         series = path.parent / "patches.mbox"
         outcome["publication_series_digest"] = (
             hashlib.sha256(series.read_bytes()).hexdigest()

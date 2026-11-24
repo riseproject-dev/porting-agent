@@ -157,16 +157,20 @@ jobs:
               || { echo "$workflow run inventory unavailable this tick" >&2; runs=; }
             printf '%s\n' "$runs" | while read -r run; do
               [ -n "$run" ] || continue
-              id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
-                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))] | if length == 1 then .[0].id elif length == 0 then empty else error("expected one publication artifact") end') \
+              found=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
+                --jq '[.artifacts[] | select(.name == "porting-publication" and (.expired | not))] | if length == 1 then "\(.[0].id) \(.[0].expires_at // "")" elif length == 0 then empty else error("expected one publication artifact") end') \
                 || { echo "publication artifact inventory unavailable or ambiguous for $run" >&2; continue; }
-              [ -n "$id" ] || continue
+              [ -n "$found" ] || continue
+              id=${found%% *}
+              expires=${found#* }
               mkdir -p "publications/$run"
               gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "publications/$run/a.zip" \
                 || { rm -rf "publications/$run"; continue; }
               unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
                 || { rm -rf "publications/$run"; continue; }
               printf '%s' "$id" > "publications/$run/artifact-id"
+              # When GitHub deletes the artifact: a held patch is pinned to it.
+              printf '%s' "$expires" > "publications/$run/artifact-expires-at"
               task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
               # A retry's Result is the Result of the worker run it publishes.
               # Only a publish-only retry names another run: a planner,
@@ -179,7 +183,7 @@ jobs:
                 [[ "$worker_run" =~ ^[1-9][0-9]{0,19}$ ]] \
                   || { echo "publish-only retry $run names no worker run" >&2; rm -rf "publications/$run"; continue; }
               else
-                rm -f "publications/$run/worker-run-id"
+                rm -f "publications/$run/worker-run-id" "publications/$run/publication-stage"
               fi
               if [ ! -f "publications/$run/outcome.json" ]; then
                 if [ "$task" = planning ] && [ -f "publications/$run/result.json" ] \

@@ -119,7 +119,8 @@ def held(**over):
              "patch_digest": DIGEST, "candidate": "c" * 40, "tree": "e" * 40,
              "expected_head": SHA_A, "operation": "append",
              "changed_files": [".github/workflows/wheels.yml"], "reason_ids": [],
-             "feedback_evidence_ids": [], "report_evidence_id": None, "held_at": NOW}
+             "feedback_evidence_ids": [], "report_evidence_id": None, "held_at": NOW,
+             "expires_at": "2026-12-18T12:00:00+00:00"}
     value.update(over)
     return value
 
@@ -131,6 +132,30 @@ class TestHeldPatch(unittest.TestCase):
         self.assertFalse(patch_review.held_patch_expired(rec, at + timedelta(days=28)))
         self.assertTrue(patch_review.held_patch_expired(rec, at + timedelta(days=29)))
         self.assertFalse(patch_review.held_patch_expired(contribution(), at))
+
+    def test_the_expiry_is_that_of_the_artifacts_the_publication_reads(self):
+        at = datetime.fromisoformat(NOW)
+        outcome = {"publication_run_id": "11",
+                   "publication_artifact_expires_at": "2026-11-25T12:00:00Z"}
+        # The expiry GitHub reported for the artifact, not the hold.
+        self.assertEqual(patch_review.held_patch_expires_at(
+            outcome, run="11", requested_at=NOW, now=NOW), "2026-11-25T12:00:00+00:00")
+        # Without it, the retention after the Work was requested, before
+        # any of its runs began.
+        early = (at - timedelta(days=10)).isoformat()
+        self.assertEqual(patch_review.held_patch_expires_at(
+            {"publication_run_id": "11"}, run="11", requested_at=early, now=NOW),
+            (at + timedelta(days=20)).isoformat())
+        # A retry's artifact: the worker run's own artifact, which the
+        # publication reads, may expire first.
+        late = dict(outcome, publication_run_id="12",
+                    publication_artifact_expires_at="2027-01-01T00:00:00+00:00")
+        self.assertEqual(patch_review.held_patch_expires_at(
+            late, run="11", requested_at=early, now=NOW), (at + timedelta(days=20)).isoformat())
+        rec = contribution(activity="publishing",
+                           held_patch=held(expires_at="2026-11-25T12:00:00+00:00"))
+        self.assertFalse(patch_review.held_patch_expired(rec, at + timedelta(days=5)))
+        self.assertTrue(patch_review.held_patch_expired(rec, at + timedelta(days=6)))
 
     def test_a_verified_patch_without_its_pin_cannot_be_held(self):
         rec = contribution(activity="agent_running")

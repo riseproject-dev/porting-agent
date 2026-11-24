@@ -199,7 +199,19 @@ jobs:
         if: always()
         env:
           RUN: ${{ inputs.worker-run-id }}
-        run: printf '%s' "$RUN" > in/worker-run-id
+        run: |
+          set -euo pipefail
+          printf '%s' "$RUN" > in/worker-run-id
+          # The stage of this run: `publish` when it read the record in
+          # development.publishing, where only the publication of the held
+          # patch is folded; a verification, or an attempt made before the
+          # review, collected late is never taken as its rejection.
+          state=$(jq -r '"\(.phase).\(.activity)"' in/record.json 2>/dev/null || true)
+          if [ "$state" = development.publishing ]; then
+            printf publish > in/publication-stage
+          else
+            printf other > in/publication-stage
+          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
@@ -217,6 +229,7 @@ jobs:
             in/plan.json
             in/report.json
             in/worker-run-id
+            in/publication-stage
           if-no-files-found: ignore
           retention-days: 30
 
