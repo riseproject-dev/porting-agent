@@ -266,16 +266,19 @@ class TestWorkPayload(unittest.TestCase):
 
 
 class TestLiveRecord(unittest.TestCase):
-    """The live contribution at the submission gate needs only the field
-    migration that adds the held patch of a development review, and records
-    no series requirement."""
+    """The live contribution at the submission gate needs at most the field
+    migration that adds the held patch of a development review (the
+    controller applies it on its first tick, so a migrated record needs
+    none), and records no series requirement."""
 
     def test_the_live_record_is_unchanged(self):
         path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
         if not path.exists():
             self.skipTest("no live record in this checkout")
         rec = json.loads(path.read_text())
-        self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[1:], (["held_patch", "review_comments"], []))
+        added, removed = engine.with_defaults(copy.deepcopy(rec))[1:]
+        self.assertLessEqual(set(added), {"held_patch", "review_comments"})
+        self.assertEqual(removed, [])
         self.assertEqual(engine.state_key(rec), "handoff.awaiting_submission")
         plan = json.loads((ROOT / ".state/evidence" / f"{rec['plan_evidence_id']}.json").read_text())
         self.assertEqual(commit_rules.series_requirements_from_plan(plan["data"]), [])
