@@ -1427,7 +1427,13 @@ LIFECYCLE: dict[str, State] = {
                             "push): the new head is recorded and CI is awaited for it, so no "
                             "Work is requested for the head the record names any more. The "
                             "pending feedback is kept; when CI passes on the new head "
-                            "`return_for_feedback` makes Work due again for it."),
+                            "`return_for_feedback` makes Work due again for it. A resume to "
+                            "this state requests no Work in a tick that observed another head "
+                            "than the recorded one, so this row records it first. A new head "
+                            "that is the commit a patch published anyway was pinned to makes "
+                            "the comment of that review due on the development PR, beside the "
+                            "row (`review_comments`), as does the discovery of a branch "
+                            "operation confirmed at that commit in any state."),
             ("record_actionable_review", SELF): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
@@ -2077,8 +2083,10 @@ RULES: dict[str, Rule] = {
             description="Recorded in the events for audit. The Result is never folded, the "
                         "publisher refuses it, and the state never changes. A late "
                         "`published` Result of a patch published after successive failed "
-                        "reviews still makes the comment of that review due on the "
-                        "development PR, beside the rule (`review_comments`)."),
+                        "reviews, or a late Result whose branch operation is confirmed at "
+                        "the commit such a patch was pinned to, still makes the comment of "
+                        "that review due on the development PR, beside the rule "
+                        "(`review_comments`)."),
         "every state"),
 }
 

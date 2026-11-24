@@ -16,7 +16,9 @@ the second publishes the patch anyway."""
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import unittest
 import unittest.mock
@@ -1077,17 +1079,269 @@ class TestCommentOfALatePublication(unittest.TestCase):
                           for r in out.report["review_comment_requests"]], [(eid, 1)])
         self.assertEqual(late["review_comments"][0]["head"], CANDIDATE)
 
+    def test_a_comment_due_beyond_the_record_drops_an_exhausted_one_with_an_alert(self):
+        rec, eid = self.publishing_anyway()
+        paused, _ = self.run_tick(rec, minutes=3, comments=['/upstreaming pause reason="x"'])
+        full = [{"evidence_id": f"patch-review-old-{n}", "head": "f" * 40,
+                 "repository": rec["fork"]["name"], "pr_number": rec["fork"]["pr_number"],
+                 "attempts": 5, "next_attempt_at": NOW, "launched_at": None,
+                 "last_reason": "HTTP 403", "exhausted": n == 0}
+                for n in range(patch_review.RECORDED_DUE_COMMENTS)]
+        late, out = self.run_tick(dict(paused, review_comments=full), [self.result(rec)],
+                                  minutes=6)
+        [event] = [e for k, e in out.staged if k == "events"]
+        self.assertEqual((event["details"]["review_comments_due"],
+                          event["details"]["review_comments_dropped"]),
+                         ([eid], ["patch-review-old-0"]))
+        self.assertIn(eid, [d["evidence_id"] for d in late["review_comments"]])
+        self.assertTrue(any("patch-review-old-0 is no longer posted" in a["alert"]
+                            for a in out.report["controller"]["alerts"]))
+
     def test_only_the_publication_of_the_reviewed_patch_makes_it_due(self):
         rec, eid = self.publishing_anyway()
         paused, _ = self.run_tick(rec, minutes=3, comments=['/upstreaming pause reason="x"'])
+        # Without a confirmed branch operation of the reviewed commit, only
+        # the pin of the review names the publication.
+        uncertain = dict(self.result(rec)["operation"], status="uncertain")
         for name, pub in (
-                ("another worker run", self.result(rec, worker_run_id="9999")),
+                ("another worker run", self.result(rec, worker_run_id="9999", operation=None)),
                 ("another commit", self.result(rec, candidate="f" * 40, operation=None)),
-                ("not published", self.result(rec, status="uncertain"))):
+                ("not published", self.result(rec, status="uncertain", operation=uncertain))):
             with self.subTest(name):
                 late, out = self.run_tick(paused, [pub], minutes=6)
                 self.assertEqual(kinds(out), ["record_late_effect"])
                 self.assertEqual(late["review_comments"], [], name)
+        # A confirmed branch operation of the reviewed commit is trusted
+        # branch evidence whatever Result carries it; of another commit it
+        # is not.
+        op = self.result(rec)["operation"]
+        for name, pub, due in (
+                ("confirmed at the reviewed commit",
+                 self.result(rec, worker_run_id="9999"), [eid]),
+                ("confirmed at another commit", self.result(
+                    rec, worker_run_id="9999", candidate="f" * 40,
+                    operation=dict(op, proposed=dict(op["proposed"], commit="f" * 40))), [])):
+            with self.subTest(name):
+                late, out = self.run_tick(paused, [pub], minutes=6)
+                self.assertEqual([d["evidence_id"] for d in late["review_comments"]], due)
+
+
+class TestCommentFromTheBranch(unittest.TestCase):
+    """A patch published anyway whose `published` Result never reaches the
+    reconciler (its push was not read back, or its run died before its
+    upload) is on the branch all the same: trusted branch evidence makes
+    the comment of its review due, a branch operation that discovery
+    confirms at the reviewed commit, or the fork head that
+    `record_head_change` records there, end to end through ticks that carry
+    the evidence and the operations as the committed state does. Work is
+    never requested on the head the branch has left."""
+
+    def setUp(self):
+        self.at = datetime.fromisoformat(NOW)
+        self.evidence: dict = {}
+        self.operations: dict = {}
+        self.minutes = 0
+
+    def run_tick(self, rec, pubs=(), *, head=None, comments=(), step=5):
+        """One tick, ``step`` minutes after the last; with ``head`` the
+        development branch is observed there."""
+        from tests import helpers
+        from tests.helpers import OWNER
+        from tests.test_late_results import ci_snapshot
+
+        self.minutes += step
+        snap = reconcile.Snapshot(contributions={"c": rec}, operations=dict(self.operations),
+                                  consumed={}, projects={}, evidence=dict(self.evidence))
+        with contextlib.ExitStack() as stack:
+            if head:
+                for name, value in (
+                        ("observe_ci.collect.branch_head", {"head": head}),
+                        ("observe_ci.collect.development_review_feedback", None),
+                        ("observe_ci.collect.ci_snapshot", ci_snapshot(head, "pending"))):
+                    stack.enter_context(unittest.mock.patch(name, return_value=value))
+                stack.enter_context(unittest.mock.patch(
+                    "observe_ci.collect.classify_runner_loss", return_value=None))
+                stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            out = reconcile.tick(
+                helpers.NoReadApi() if head else None, snap, policy=POLICY,
+                now=self.at + timedelta(minutes=self.minutes), publications=list(pubs),
+                pressure=capacity.Pressure(ok=True), observe=bool(head),
+                comments=[{"issue_number": 12,
+                           "comment": {"id": 900 + i + self.minutes, "body": body,
+                                       "user": dict(OWNER)}}
+                          for i, body in enumerate(comments)])
+        self.evidence.update({r["evidence_id"]: r for k, r in out.staged if k == "evidence"})
+        self.operations.update({r["operation_id"]: r for k, r in out.staged
+                                if k == "operations"})
+        records = [r for k, r in out.staged if k == "contributions"]
+        return (records[-1] if records else rec), out
+
+    def publishing_anyway(self):
+        rec = running(feedback=["review-1"])
+        for attempt in range(2):
+            reviewing, _ = self.run_tick(rec, [verified(rec, run=str(4242 + attempt),
+                                                         artifact=901 + attempt)])
+            rec, _ = self.run_tick(reviewing, [review_result(
+                reviewing, severity="major", run=str(5000 + attempt), artifact=950 + attempt)])
+        self.assertEqual(engine.state_key(rec), "development.publishing")
+        [review] = [e for e in self.evidence.values()
+                    if e["data"].get("disposition") == "publish_anyway"]
+        return rec, review["evidence_id"]
+
+    def uncertain(self, rec, artifact=903):
+        """The publish-only retry pushed the reviewed commit but did not read
+        it back: an `uncertain` Result whose operation is uncertain."""
+        import recovery
+
+        pub = published(rec, run=rec["held_patch"]["worker_run_id"], artifact=artifact)
+        op = recovery.plan(
+            contribution_id=rec["contribution_id"], revision=pub["task"]["revision"],
+            kind="branch_update", policy_version=POLICY["policy_version"],
+            reason_ids=["plan-1", f"artifact:{artifact}"] + fork_publish.publish_attempt_reasons(1),
+            target={"repository_id": rec["fork"]["repository_id"],
+                    "repository": rec["fork"]["name"], "ref": "riscv64-dev",
+                    "expected_head": SHA_A, "base_sha": rec["upstream"]["base_sha"]},
+            proposed={"commit": CANDIDATE, "tree": TREE, "parents": [SHA_A],
+                      "marker": f"artifact:{artifact}", "content_digest": DIGEST,
+                      "changed_files": CHANGED}, now=NOW)
+        op = recovery.mark_applying(op, NOW, facts=fork_publish.PUSH_FACTS)
+        op = recovery.mark_result(op, response_ok=True, external_ids={}, now=NOW)
+        op = recovery.record_discovery(op, recovery.discover_branch(op, None),
+                                       "riscv64-dev at None", NOW)
+        self.assertEqual(op["status"], "uncertain")
+        return dict(pub, status="uncertain", reason="push outcome not yet observable",
+                    operation=op)
+
+    def infra(self, rec, artifact, attempt):
+        pub = published(rec, run=rec["held_patch"]["worker_run_id"], artifact=artifact)
+        pub.update(status="infra_error", failure_class="infrastructure", attempt=attempt,
+                   reason="could not read the fork head: 503")
+        for key in ("operation", "candidate"):
+            pub.pop(key)
+        return pub
+
+    def resume(self, rec, *, head):
+        return self.run_tick(rec, head=head, comments=[
+            f'/upstreaming resume revision={rec["revision"]} reason="ok"'])
+
+    def assert_due(self, rec, eid):
+        self.assertEqual([(d["evidence_id"], d["head"]) for d in rec["review_comments"]],
+                         [(eid, CANDIDATE)])
+
+    def assert_no_work_on_the_left_head(self, out):
+        for effect in out.report["requested_effects"]:
+            self.assertEqual(effect["expected_head"], CANDIDATE, effect)
+
+    def test_an_uncertain_push_then_a_pause_makes_it_due_from_the_branch(self):
+        # Path A: the uncertain Result holds the publication, a pause lands
+        # before the retry; discovery confirms the operation at the reviewed
+        # commit while paused, and the resume records the head before Work.
+        rec, eid = self.publishing_anyway()
+        rec, out = self.run_tick(rec, [self.uncertain(rec)])
+        self.assertEqual(kinds(out), ["schedule_publish_retry"])
+        self.assertEqual(rec["review_comments"], [])
+        rec, out = self.run_tick(rec, comments=['/upstreaming pause reason="x"'])
+        self.assertEqual(kinds(out), ["pause"])
+        self.assertEqual(rec["review_comments"], [])
+        rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertEqual([op["status"] for op in self.operations.values()], ["confirmed"])
+        self.assert_due(rec, eid)
+        self.assertEqual(out.report["review_comment_requests"], [])  # held by the pause
+        rec, out = self.resume(rec, head=CANDIDATE)
+        self.assert_no_work_on_the_left_head(out)
+        rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertEqual(rec["fork"]["head_sha"], CANDIDATE)
+        self.assert_no_work_on_the_left_head(out)
+        self.assert_due(rec, eid)
+
+    def test_an_uncertain_push_then_a_pause_is_due_by_the_head_alone(self):
+        # Path A when discovery never confirms the operation (the branch was
+        # not read until after the resume, and the operation is gone): the
+        # head that `record_head_change` records is the reviewed commit.
+        rec, eid = self.publishing_anyway()
+        rec, _ = self.run_tick(rec, [self.uncertain(rec)])
+        rec, _ = self.run_tick(rec, comments=['/upstreaming pause reason="x"'])
+        self.operations.clear()
+        rec, out = self.resume(rec, head=CANDIDATE)
+        self.assert_no_work_on_the_left_head(out)
+        if rec["fork"]["head_sha"] != CANDIDATE:
+            rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertIn("record_head_change", kinds(out))
+        self.assertEqual(engine.state_key(rec), "development.waiting_ci")
+        self.assert_due(rec, eid)
+        self.assert_no_work_on_the_left_head(out)
+
+    def test_an_uncertain_push_then_exhausted_retries_makes_it_due(self):
+        # Path B: three infrastructure errors exhaust `publish_recovery`;
+        # discovery confirms the operation in the human wait, and the resume
+        # builds on the observed head.
+        rec, eid = self.publishing_anyway()
+        rec, _ = self.run_tick(rec, [self.uncertain(rec)])
+        attempt = 1
+        while engine.state_key(rec) == "development.publishing":
+            rec, _ = self.run_tick(rec, step=300)
+            attempt += 1
+            rec, _ = self.run_tick(rec, [self.infra(rec, 910 + attempt, attempt)])
+            self.assertLess(attempt, 10)
+        self.assertEqual(engine.state_key(rec), "development.waiting_human")
+        self.assertEqual(rec["review_comments"], [])
+        rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertEqual([op["status"] for op in self.operations.values()], ["confirmed"])
+        self.assert_due(rec, eid)
+        self.assertEqual([(r["evidence_id"], r["attempt"])
+                          for r in out.report["review_comment_requests"]], [(eid, 1)])
+        rec, out = self.resume(rec, head=CANDIDATE)
+        self.assertIn("resume_development", kinds(out))
+        self.assertEqual(out.report["requested_effects"], [])
+        self.assertIn("not at the recorded head",
+                      json.dumps(out.report["controller"]["deferred"]))
+        rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertIn("record_head_change", kinds(out))
+        self.assertEqual((engine.state_key(rec), rec["fork"]["head_sha"]),
+                         ("development.waiting_ci", CANDIDATE))
+        self.assertEqual([d["evidence_id"] for d in rec["review_comments"]], [eid])
+
+    def test_a_retry_that_dies_before_its_upload_is_due_by_the_head(self):
+        # No Result and no operation: every publish-only retry dies before
+        # its upload until `publish_recovery` is exhausted. The resume
+        # records the head the last one pushed, and that makes it due.
+        rec, eid = self.publishing_anyway()
+        while engine.state_key(rec) == "development.publishing":
+            rec, _ = self.run_tick(rec, step=61)
+            self.assertLess(self.minutes, 61 * 40)
+        self.assertEqual(self.operations, {})
+        rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertEqual(rec["review_comments"], [])
+        rec, out = self.resume(rec, head=CANDIDATE)
+        self.assertEqual(out.report["requested_effects"], [])
+        rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertIn("record_head_change", kinds(out))
+        self.assert_due(rec, eid)
+
+    def test_no_other_review_or_commit_makes_a_comment_due(self):
+        # A head that is not the reviewed commit makes nothing due.
+        rec, _eid = self.publishing_anyway()
+        rec, _ = self.run_tick(rec, comments=['/upstreaming pause reason="x"'])
+        rec, out = self.resume(rec, head="f" * 40)
+        if rec["fork"]["head_sha"] != "f" * 40:
+            rec, out = self.run_tick(rec, head="f" * 40)
+        self.assertEqual(rec["fork"]["head_sha"], "f" * 40)
+        self.assertEqual(rec["review_comments"], [])
+        # The reviewed commit of a review that returned the patch for
+        # repair makes nothing due either.
+        self.setUp()
+        rec = running(feedback=["review-1"])
+        reviewing, _ = self.run_tick(rec, [verified(rec)])
+        rec, _ = self.run_tick(reviewing, [review_result(reviewing, severity="major")])
+        [review] = [e for e in self.evidence.values() if e.get("kind") == "patch_review"]
+        self.assertEqual((review["data"]["disposition"], review["data"]["patch"]["candidate"]),
+                         ("return_for_repair", CANDIDATE))
+        rec, _ = self.run_tick(rec, comments=['/upstreaming pause reason="x"'])
+        rec, out = self.resume(rec, head=CANDIDATE)
+        if rec["fork"]["head_sha"] != CANDIDATE:
+            rec, out = self.run_tick(rec, head=CANDIDATE)
+        self.assertEqual(rec["fork"]["head_sha"], CANDIDATE)
+        self.assertEqual(rec["review_comments"], [])
 
 
 class TestCommentHolds(unittest.TestCase):

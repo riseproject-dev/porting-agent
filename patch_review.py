@@ -431,9 +431,15 @@ COMMENT_HELD_ALERT_HOURS = 24
 # marker (an earlier attempt posted it).
 COMMENT_DONE = ("posted", "found")
 # The comments a record keeps due. Beyond this bound the oldest exhausted
-# comments are dropped, each with an alert; the schema allows twice as many,
-# so the comments recorded between two ticks always fit.
+# comments are dropped by the tick, each with an alert; the schema allows
+# twice as many (``RECORDED_DUE_COMMENTS``), for the comments that become due
+# between two ticks.
 MAX_DUE_COMMENTS = 16
+# The comments the record can hold (`maxItems` of `review_comments`). A
+# comment that becomes due beyond it drops the oldest exhausted comment, and
+# only when none is left the oldest other one, never silently: every comment
+# dropped is returned, and the tick alerts on it.
+RECORDED_DUE_COMMENTS = 2 * MAX_DUE_COMMENTS
 # The author of the comment: the App whose token posts it. Only a comment of
 # that author carries the marker of a review.
 COMMENT_AUTHOR = APP_COMMIT_NAME
@@ -479,14 +485,56 @@ def pending_published_anyway(record: dict) -> list[tuple[str, str]]:
     return [(review["evidence_id"], (record.get("held_patch") or {}).get("candidate"))]
 
 
-def comment_due(record: dict, reviews: list[tuple[str, str]], *, now: str) -> list[dict]:
+def landed_anyway(record: dict, heads: set[str] | list[str],
+                  evidence: dict[str, dict]) -> list[tuple[str, str]]:
+    """The reviews whose comment trusted branch evidence makes due, as
+    ``(evidence id, head)``: every ``patch_review`` evidence of the
+    contribution that published its held patch anyway (``publish_anyway``)
+    and whose pinned commit (``patch.candidate``) is one of ``heads``, the
+    commits that evidence shows on the development branch: the proposed
+    commit of a branch operation of the contribution once it is
+    ``confirmed`` (by discovery or by the read-back of a publish-only
+    retry), or a fork head that ``record_head_change`` records. However the
+    Result of that publication ends (uncertain, lost, or folded after a
+    pause, a processing error or the exhaustion of ``publish_recovery``),
+    the reviewed commit on the branch is the patch published anyway."""
+    heads = {h for h in heads if isinstance(h, str) and _SHA.match(h)}
+    found = []
+    for eid, item in sorted(evidence.items()):
+        data = item.get("data") or {}
+        candidate = (data.get("patch") or {}).get("candidate")
+        if item.get("kind") == STATUS \
+                and item.get("contribution_id") == record["contribution_id"] \
+                and data.get("disposition") == "publish_anyway" and candidate in heads:
+            found.append((eid, candidate))
+    return found
+
+
+def confirmed_heads(record: dict, operations) -> set[str]:
+    """The commits that the confirmed branch operations among ``operations``
+    (``branch_update`` or ``branch_rewrite`` of the contribution) put on its
+    branch."""
+    return {str((op.get("proposed") or {}).get("commit"))
+            for op in operations
+            if op.get("contribution_id") == record["contribution_id"]
+            and op.get("kind") in ("branch_update", "branch_rewrite")
+            and op.get("status") == "confirmed"}
+
+
+def comment_due(record: dict, reviews: list[tuple[str, str]], *,
+                now: str) -> tuple[list[dict], list[dict]]:
     """The record's due comments (``review_comments``) once a patch
-    published anyway is published: every comment still due, kept, and the
-    comment of each review in ``reviews`` (``(evidence id, published
-    head)``) that is not due already: the review, the published head, the
-    development PR it is posted on when one is recorded (else the one
-    recorded when it is launched), and no attempt yet, due now. Idempotent
-    by evidence id."""
+    published anyway is published, and the comments dropped to fit them:
+    every comment still due, kept, and the comment of each review in
+    ``reviews`` (``(evidence id, published head)``) that is not due
+    already: the review, the published head, the development PR it is
+    posted on when one is recorded (else the one recorded when it is
+    launched), and no attempt yet, due now. Idempotent by evidence id.
+
+    The record holds ``RECORDED_DUE_COMMENTS``: beyond it the oldest
+    exhausted comments that are not launched are dropped first, then the
+    oldest that are not launched, then the oldest; each one dropped is
+    returned for the alert of the tick."""
     due = [dict(item) for item in record.get("review_comments") or []]
     fork = record.get("fork") or {}
     for eid, head in reviews:
@@ -497,7 +545,12 @@ def comment_due(record: dict, reviews: list[tuple[str, str]], *, now: str) -> li
                     "repository": fork.get("name") if number else None, "pr_number": number,
                     "attempts": 0, "next_attempt_at": now, "launched_at": None,
                     "last_reason": "", "exhausted": False})
-    return due
+    dropped = []
+    while len(due) > RECORDED_DUE_COMMENTS:
+        oldest = min(range(len(due)), key=lambda k: (not due[k].get("exhausted"),
+                                                     bool(due[k].get("launched_at")), k))
+        dropped.append(due.pop(oldest))
+    return due, dropped
 
 
 def held_by_pause(record: dict) -> bool:

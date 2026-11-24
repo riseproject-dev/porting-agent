@@ -1010,6 +1010,33 @@ FURTHER_CHANGES: tuple[Item, ...] = (
                ("development.publishing", "exhaust_publish_recovery")),
         highlighted=(("development.publishing", "record_publish_success"),),
     ),
+    Item(
+        "The comment of a patch published anyway, from the branch",
+        "When the comment of a patch published after successive failed reviews becomes due "
+        "if no `published` Result of its publication ever reaches the reconciler, and which "
+        "head Work is requested on after such a publication.",
+        "Trusted branch evidence makes the comment due too, in the same write, in any state, "
+        "once per review: a branch operation of the contribution that becomes `confirmed` "
+        "(by discovery, which reads the branch in a human wait and while paused too, by the "
+        "read-back of a publish-only retry, or in a Result folded or recorded late) at the "
+        "commit a `publish_anyway` review pinned, or a fork head at that commit that "
+        "`record_head_change` records. So an uncertain push, or a retry whose run died before "
+        "its upload, followed by a pause, a processing error, or the exhaustion of "
+        "`publish_recovery`, still leaves the comment due once the branch shows the commit. "
+        "An `uncertain` Result alone makes nothing due, since the comment says the patch was "
+        "published at that commit. A resume from a human wait requests no development Work "
+        "while this tick's observation read the branch at another head than the recorded "
+        "one: the next observation records it by `record_head_change` in "
+        "`development.fix_needed`, and Work is requested on it. A comment that becomes due "
+        "beyond the 32 the record holds drops the oldest exhausted comment, else the oldest "
+        "other one, each with an alert. No row, state, or budget changes.",
+        ("development.publishing", "development.waiting_human", "development.fix_needed",
+         "development.waiting_ci"),
+        edges=(("development.publishing", "exhaust_publish_recovery"),
+               ("development.waiting_human", "resume_development"),
+               ("development.fix_needed", "record_head_change")),
+        highlighted=(("development.fix_needed", "record_head_change"),),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (

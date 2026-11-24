@@ -78,6 +78,11 @@ class Inputs:
     # The development PR workflow runs that are not completed, by operation
     # (run id); None when the run list was not read this tick.
     development_pr_runs: dict[str, int] | None = None
+    # The head of the development branch the observation of this tick read,
+    # by contribution, in every state it reads the branch (a human wait
+    # too). Development Work is not requested on a recorded head this read
+    # contradicts (``_unrecorded_head``).
+    observed_dev_heads: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -977,6 +982,10 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
             due = _begun(c, policy, now)
             if due is None:
                 continue
+            moved = _unrecorded_head(due, inputs)
+            if moved:
+                rep["deferred"].append({"contribution": c["contribution_id"], "why": moved})
+                continue
             ci = _recorded_ci_evidence(due, evidence)
             ops = _open_operations(due, operations)
             facts = ALLOCATION_FACTS
@@ -1190,6 +1199,24 @@ def _carries_feedback(state: str, verb: str) -> bool:
 
 class MissingEvidence(LookupError):
     """The evidence a record names is not in the state store."""
+
+
+def _unrecorded_head(record: dict, inputs: Inputs) -> str | None:
+    """Why development Work is not requested this tick: the observation of
+    this tick read the development branch at a head other than the recorded
+    one, which a row of this tick (a resume from a human wait, which is not
+    observed) did not record. Work built on the recorded head would be
+    stale; the next observation takes ``record_head_change`` in
+    ``development.fix_needed``, and Work, when still due, is requested on the
+    observed head (which, when it is the commit of a patch published anyway,
+    also makes its comment due)."""
+    if engine.state_key(record) != "development.fix_needed":
+        return None
+    observed = inputs.observed_dev_heads.get(record["contribution_id"])
+    if observed and observed != (record.get("fork") or {}).get("head_sha"):
+        return (f"the development branch is at {observed[:12]}, not at the recorded head; "
+                "the head is recorded before Work is requested")
+    return None
 
 
 def _recorded_ci_evidence(record: dict, evidence: dict[str, dict]) -> dict | None:

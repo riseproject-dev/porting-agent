@@ -1535,6 +1535,30 @@ def _confirm_read_back(op: dict, candidate: str, attempt: Any, *, now: str) -> d
         f"{op['target']['ref']} at {candidate}, read back by publish attempt {attempt}", now)
 
 
+def _note_due(details: dict, rec: dict, due: list[dict], dropped: list[dict]) -> None:
+    """Name in the event the comments a write makes due and those it drops
+    to fit them (``patch_review.comment_due``); the tick alerts on each
+    comment dropped (``review_comments``)."""
+    before = {item["evidence_id"] for item in rec.get("review_comments") or []}
+    added = [item["evidence_id"] for item in due if item["evidence_id"] not in before]
+    if added:
+        details["review_comments_due"] = added
+    if dropped:
+        details["review_comments_dropped"] = [item["evidence_id"] for item in dropped]
+
+
+def _landed_due(rec: dict, landed: list[tuple[str, str]], details: dict, *,
+                now: str) -> list[dict] | None:
+    """The due comments once the reviews of ``landed`` are due, written
+    beside the row that folds the Result (whose rows never write
+    ``review_comments``), or ``None`` when nothing landed."""
+    if not landed:
+        return None
+    due, dropped = patch_review.comment_due(rec, landed, now=now)
+    _note_due(details, rec, due, dropped)
+    return due
+
+
 def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                       worker_run_id: str | None, operations: dict[str, dict] | None = None,
                       evidence: dict[str, dict] | None = None
@@ -1627,6 +1651,14 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     details: dict[str, Any] = {"result_status": status}
     if fclass:
         details["failure_class"] = fclass
+    # Trusted branch evidence of a patch published anyway: a branch
+    # operation this Result confirms (its own, or the one of an earlier
+    # attempt it read back) whose commit is the commit a `publish_anyway`
+    # review pinned. Its comment is due in this write, whichever row folds
+    # the Result (`patch_review.landed_anyway`).
+    landed = patch_review.landed_anyway(
+        rec, patch_review.confirmed_heads(rec, [r for k, r in staged if k == "operations"]),
+        evidence or {})
     if outcome.get("reason"):
         details["reason"] = str(outcome["reason"])[:500]
     failed = status in rows["failed"]
@@ -1658,16 +1690,21 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         # The failed publication of this launch is already charged, by the
         # wait for its Result: the late Result is recorded once, for audit,
         # and charges nothing again.
-        event = engine.record_late_effect(
-            rec, policy=policy, now=now, cause_id=cause,
-            details={"result_status": status, "task_revision": rec["revision"],
-                     "task_generation": int(rec.get("generation", 0)),
-                     "task_work": (outcome.get("task") or {}).get("dedupe_key"),
-                     "why": "the failed publication of this publish-only retry was already "
-                            "charged when its Result did not arrive within "
-                            f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"})
+        late = {"result_status": status, "task_revision": rec["revision"],
+                "task_generation": int(rec.get("generation", 0)),
+                "task_work": (outcome.get("task") or {}).get("dedupe_key"),
+                "why": "the failed publication of this publish-only retry was already "
+                       "charged when its Result did not arrive within "
+                       f"{PUBLISH_RESULT_WAIT_MINUTES} minutes"}
+        due = _landed_due(rec, landed, late, now=now)
+        if due is not None and due != (rec.get("review_comments") or []):
+            rec = engine.record_beside(rec, "review_comment_due", now=now, review_comments=due)
+        event = engine.record_late_effect(rec, policy=policy, now=now, cause_id=cause,
+                                          details=late)
         return rec, staged + [("contributions", rec), ("events", event)]
+    landed_due = None
     if failed:
+        landed_due = _landed_due(rec, landed, details, now=now)
         if status == "uncertain":
             # The push may have landed: the report is kept whatever ends
             # the hold (`pushed_report_evidence`).
@@ -1761,9 +1798,12 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             # until it is posted or found. The pending publication names the
             # review; the stored review that published this patch anyway
             # names it too (`patch_review.published_anyway`).
-            values["review_comments"] = patch_review.comment_due(
+            values["review_comments"], dropped = patch_review.comment_due(
                 rec, patch_review.pending_published_anyway(rec)
-                + patch_review.published_anyway(rec, outcome, evidence or {}), now=now)
+                + patch_review.published_anyway(rec, outcome, evidence or {}) + landed,
+                now=now)
+            _note_due(details, rec, values["review_comments"], dropped)
+            landed = []
         if verb == "record_revision_publish_success":
             head = published_head(outcome)
             values["upstream_pr.head_sha"] = head
@@ -1790,12 +1830,16 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 raise lifecycle.TransitionError(str(error)) from None
             details.update(candidate=values["held_patch"]["candidate"],
                            patch_digest=values["held_patch"]["patch_digest"])
+        landed_due = _landed_due(rec, landed, details, now=now)
         out = engine.apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
                                       facts=facts, values=values, details=details)
     if not out.accepted:
         raise lifecycle.TransitionError(f"no row folds the patch Result ({status}) in "
                                         f"{engine.state_key(rec)}: {out.reason}")
     new = out.record
+    if landed_due is not None and landed_due != (new.get("review_comments") or []):
+        new = engine.record_beside(new, "review_comment_due", now=now,
+                                   review_comments=landed_due)
     if out.verb in ("record_publish_success", "record_revision_publish_success"):
         # Beside the row: the published files join the admitted scope (a
         # repair backed by review feedback may change a path the plan
@@ -2484,12 +2528,15 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # record stopped, paused, or exhausted the publication before
                 # this Result was folded): the patch is on the fork, so the
                 # comment of the review is due all the same, in this write.
-                due = patch_review.comment_due(
-                    rec, patch_review.published_anyway(rec, pub, snap.evidence), now=iso)
+                # So does a branch operation the late Result confirms whose
+                # commit a `publish_anyway` review pinned.
+                due, dropped = patch_review.comment_due(
+                    rec, patch_review.published_anyway(rec, pub, snap.evidence)
+                    + patch_review.landed_anyway(
+                        rec, patch_review.confirmed_heads(rec, [pub.get("operation") or {}]),
+                        snap.evidence), now=iso)
                 if due != (rec.get("review_comments") or []):
-                    before = {item["evidence_id"] for item in rec.get("review_comments") or []}
-                    extra["review_comments_due"] = [item["evidence_id"] for item in due
-                                                    if item["evidence_id"] not in before]
+                    _note_due(extra, rec, due, dropped)
                     rec = engine.record_beside(rec, "review_comment_due", now=iso,
                                                review_comments=due)
                     contributions[key] = rec
@@ -2568,6 +2615,9 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     upstream_pr_observations = {item["contribution"]: item["upstream_pr"]
                                 for item in out.report.get("observation") or []
                                 if isinstance(item.get("upstream_pr"), dict)}
+    observed_dev_heads = {item["contribution"]: item["observed_head"]
+                          for item in out.report.get("observation") or []
+                          if item.get("ref") == DEV_REF and isinstance(item.get("observed_head"), str)}
     # Work that returned a Result in this tick, or whose graph the queue
     # holds as terminal, is never allocated again under the same id.
     spent_graphs = frozenset(
@@ -2580,6 +2630,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                                                    pressure=pressure,
                                                    handoff_observations=handoff_observations,
                                                    upstream_pr_observations=upstream_pr_observations,
+                                                   observed_dev_heads=observed_dev_heads,
                                                    tracking_issues=tracking_issues or {},
                                                    upstream_snapshots=upstream_snapshots or {},
                                                    acceptances=acceptances or {},
@@ -2709,11 +2760,26 @@ def review_comments(contributions: dict[str, dict], receipts: list[dict], out: T
     ``COMMENT_HELD_ALERT_HOURS``, or at once for a terminal record. Its
     attempt is recorded before the launch, so a post is never launched twice
     for one attempt. Beyond ``MAX_DUE_COMMENTS`` the oldest exhausted
-    comments are dropped, each with an alert."""
+    comments are dropped, each with an alert, and so is every comment this
+    tick dropped to fit the comments it made due within
+    ``RECORDED_DUE_COMMENTS`` (``patch_review.comment_due``), named in its
+    event or its observation."""
     report: list[dict] = []
     out.report.setdefault("review_comment_requests", [])
     alerts = out.report["controller"]["alerts"]
     iso = now.isoformat()
+    named = [(r.get("contribution_id"), (r.get("details") or {}).get("review_comments_dropped"))
+             for kind, r in out.staged if kind == "events"] + [
+        (item.get("contribution"), item.get("review_comments_dropped"))
+        for item in out.report.get("observation") or []]
+    for cid, dropped in named:
+        for eid in dropped or []:
+            alerts.append({"contribution": cid, "alert": (
+                f"the comment of the review {eid} is no longer posted: more than "
+                f"{patch_review.RECORDED_DUE_COMMENTS} comments were due on the development PR "
+                "when another became due, and it was dropped to fit it; the patch was "
+                "published although that review failed, and the PR does not say so")})
+            report.append({"contribution": cid, "evidence_id": eid, "status": "dropped"})
     folded: dict[tuple[str, str, int], dict] = {}
     for receipt in receipts:
         attempt = receipt.get("attempt")

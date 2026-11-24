@@ -310,8 +310,10 @@ class TestComment(unittest.TestCase):
                "attempts": 0, "next_attempt_at": NOW, "launched_at": None, "last_reason": "",
                "exhausted": False}
         def due(record):
-            return patch_review.comment_due(
+            due, dropped = patch_review.comment_due(
                 record, patch_review.pending_published_anyway(record), now=NOW)
+            self.assertEqual(dropped, [])
+            return due
 
         self.assertEqual(patch_review.pending_published_anyway(rec), [("patch-review-x", "c" * 40)])
         self.assertEqual(due(rec), [new])
@@ -348,6 +350,66 @@ class TestComment(unittest.TestCase):
                     stored["patch-review-x"], contribution_id="other/1")})):
             with self.subTest(name):
                 self.assertEqual(patch_review.published_anyway(rec, other, store), [])
+
+    def test_trusted_branch_evidence_names_the_review_published_anyway(self):
+        rec = contribution(activity="fix_needed")
+        pin = {"worker_run_id": "11", "work": "w", "candidate": "c" * 40}
+        stored = {"patch-review-x": {"kind": "patch_review", "contribution_id": rec["contribution_id"],
+                                     "data": {"disposition": "publish_anyway", "patch": pin}}}
+        self.assertEqual(patch_review.landed_anyway(rec, {"c" * 40}, stored),
+                         [("patch-review-x", "c" * 40)])
+        for name, heads, store in (
+                ("another commit", {"d" * 40}, stored),
+                ("no commit", {None, "not a sha"}, stored),
+                ("a review that passed", {"c" * 40}, {"patch-review-x": dict(
+                    stored["patch-review-x"], data={"disposition": "publish", "patch": pin})}),
+                ("a review returned for repair", {"c" * 40}, {"patch-review-x": dict(
+                    stored["patch-review-x"],
+                    data={"disposition": "return_for_repair", "patch": pin})}),
+                ("another contribution", {"c" * 40}, {"patch-review-x": dict(
+                    stored["patch-review-x"], contribution_id="other/1")})):
+            with self.subTest(name):
+                self.assertEqual(patch_review.landed_anyway(rec, heads, store), [])
+        op = {"contribution_id": rec["contribution_id"], "kind": "branch_update",
+              "status": "confirmed", "proposed": {"commit": "c" * 40}}
+        self.assertEqual(patch_review.confirmed_heads(rec, [op]), {"c" * 40})
+        for name, other in (("uncertain", dict(op, status="uncertain")),
+                            ("another kind", dict(op, kind="pr_update")),
+                            ("another contribution", dict(op, contribution_id="other/1"))):
+            with self.subTest(name):
+                self.assertEqual(patch_review.confirmed_heads(rec, [other]), set())
+
+    def test_a_comment_due_beyond_the_record_drops_the_oldest_exhausted_one(self):
+        rec = contribution(activity="fix_needed")
+        cap = patch_review.RECORDED_DUE_COMMENTS
+        def item(n, **kw):
+            return {"evidence_id": f"patch-review-{n}", "head": "c" * 40,
+                    "repository": rec["fork"]["name"], "pr_number": rec["fork"]["pr_number"],
+                    "attempts": 1, "next_attempt_at": NOW, "launched_at": None,
+                    "last_reason": "", "exhausted": False} | kw
+        full = [item(n) for n in range(cap)]
+        # The oldest exhausted comment that is not launched goes first.
+        mixed = [dict(x) for x in full]
+        mixed[3]["exhausted"] = True
+        mixed[5]["exhausted"] = True
+        mixed[1].update(exhausted=True, launched_at=NOW)
+        due, dropped = patch_review.comment_due(dict(rec, review_comments=mixed),
+                                                [("patch-review-new", "d" * 40)], now=NOW)
+        self.assertEqual(len(due), cap)
+        self.assertEqual([d["evidence_id"] for d in dropped], ["patch-review-3"])
+        self.assertEqual(due[-1]["evidence_id"], "patch-review-new")
+        # None exhausted: the oldest that is not launched, and it is returned.
+        launched = [dict(x) for x in full]
+        launched[0]["launched_at"] = NOW
+        due, dropped = patch_review.comment_due(dict(rec, review_comments=launched),
+                                                [("patch-review-new", "d" * 40)], now=NOW)
+        self.assertEqual([d["evidence_id"] for d in dropped], ["patch-review-1"])
+        self.assertEqual(len(due), cap)
+        # Within the bound nothing is dropped, and a review already due is
+        # not added again.
+        due, dropped = patch_review.comment_due(dict(rec, review_comments=full),
+                                                [("patch-review-0", "c" * 40)], now=NOW)
+        self.assertEqual((due, dropped), (full, []))
 
     def test_the_command_line_checks_without_a_token_and_writes_a_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
