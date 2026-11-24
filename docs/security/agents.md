@@ -37,6 +37,12 @@ The worker runs unsandboxed, so credentials are removed rather than fenced off.
 - Trusted MCP servers keep separately scoped read-only tokens, as separate processes.
 - Docker and QEMU, and the optional `gh-act`, receive no repository or destination credential.
 
+## The worker's review children
+
+The worker is set up to run `pi-subagents` children in its own Pi process, in the foreground. A foreground child inherits the registered provider and the credential-free environment of the parent, and anything its `bash` runs is a subprocess of the same process; a background child would be a detached runner without either, so the trusted install step turns background launches, workflow scripts and nested subagents off. The pi-subagents configuration, written by that step, also replaces the 30 minute backstop of a foreground child with 40 minutes.
+
+Two builtin agents are overridden in Pi's settings (`engine.config`). The `reviewer` child inherits the parent's model and has only `read`, `grep`, `find` and `ls`; the same step installs the pinned `ripgrep` and `fd-find` that `grep` and `find` run. The `worker` child keeps the parent's model and tools, without `contact_supervisor`, which has nobody to answer in a run with no user. The review-loop prompt template of `pi-subagents` is pinned by its SHA-256: a version with another template stops the install step.
+
 A separate trusted publish job, never the model, reconstructs and publishes a verified proposal with a token narrowed to one fork. For a development patch it mints none, since the patch is held for [review]({{ '/pipeline/patch-review/' | relative_url }}).
 
 ## What an agent is given

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 name: Worker
-description: Bounded riscv64 porting task (patch, repair or revise one contribution)
+description: Bounded riscv64 porting task with its review loop (patch, repair, revise or rewrite one contribution)
 on:
   workflow_dispatch:
 permissions:
@@ -20,9 +20,16 @@ engine:
   # exist yet. They land in the agent directory, where Pi finds them. A
   # foreground sub-agent loads no ambient extension, so the web tools of
   # pi-subagents' builtin `researcher` and `evidence-auditor` come from the
-  # child-only default below.
-  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}}'
+  # child-only default below. The review loop's `reviewer` children inherit
+  # the parent's model and read only (a committed series leaves `watchdog_diff`
+  # nothing to show); its `worker` child keeps the parent model and loses
+  # `contact_supervisor`, which has nobody to answer in a headless run. gh-aw
+  # merges this key into Pi's settings whole, so it repeats the child-only
+  # default.
+  config: '{"settings":{"subagents":{"defaultSubagentOnlyExtensions":["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"],"agentOverrides":{"reviewer":{"tools":"read, grep, find, ls"},"worker":{"tools":"read, grep, find, ls, bash, edit, write"}}}}}'
 model: anthropic/claude-opus-5-5
+# The Ubuntu release the pinned ripgrep and fd-find packages below are from.
+runs-on: ubuntu-24.04
 concurrency:
   job-discriminator: ${{ github.run_id }}
 network:
@@ -182,6 +189,33 @@ pre-agent-steps:
       done
       [ -d /tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access ] || { echo "pi-web-access missing"; exit 1; }
       [ -d /tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-subagents ] || { echo "pi-subagents missing"; exit 1; }
+      # Children run in this process, in the foreground: nothing may start a
+      # detached runner, which would have neither the provider nor the
+      # credential-free environment of this one. A run of a child may take as
+      # long as a fix pass does, so the 30 minute backstop is replaced.
+      mkdir -p /tmp/gh-aw/pi-agent-dir/extensions/subagent
+      cat > /tmp/gh-aw/pi-agent-dir/extensions/subagent/config.json <<'JSON'
+      {"asyncByDefault": false, "forceTopLevelAsync": false, "timeoutMs": 2400000,
+       "maxSubagentDepth": 1, "maxSubagentSpawnsPerSession": 32,
+       "parallel": {"maxTasks": 4, "concurrency": 3}, "scheduledRuns": {"enabled": false},
+       "disabledFeatures": ["workflow-scripts", "missions", "panes", "agent-management",
+                            "lane-management", "watchdog"]}
+      JSON
+  # Pi's grep and find tools, which the reviewers use, run rg and fd (Debian's
+  # fdfind), which it looks for in $PI_CODING_AGENT_DIR/bin and then on PATH;
+  # with PI_OFFLINE, which gh-aw sets, it never downloads them. They come from
+  # Ubuntu 24.04's archive, which apt verifies against its signed index, at
+  # pinned versions.
+  - name: Install ripgrep and fd for the agent's grep and find tools
+    run: |
+      set -euo pipefail
+      sudo apt-get update -q
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+        ripgrep=14.1.0-1 fd-find=9.0.0-1
+      [ "$(dpkg-query -W -f='${Version}' ripgrep)" = 14.1.0-1 ] || { echo "unexpected ripgrep"; exit 1; }
+      [ "$(dpkg-query -W -f='${Version}' fd-find)" = 9.0.0-1 ] || { echo "unexpected fd-find"; exit 1; }
+      /usr/bin/rg --version
+      /usr/bin/fdfind --version
   - name: Suspend workflow commands around untrusted agent output
     id: suspend_commands
     run: |

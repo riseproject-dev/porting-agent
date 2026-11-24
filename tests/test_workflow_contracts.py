@@ -1298,9 +1298,13 @@ class TestReviewerSandbox(unittest.TestCase):
                                      ["npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"])
                 # Child sessions load no ambient extension, so the web tools
                 # reach the builtin researcher through the child-only default.
-                self.assertEqual(json.loads(src["engine"]["config"]),
-                                 {"settings": {"subagents": {"defaultSubagentOnlyExtensions": [
-                                     "/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"]}}})
+                subagents = json.loads(src["engine"]["config"])["settings"]["subagents"]
+                self.assertEqual(subagents["defaultSubagentOnlyExtensions"],
+                                 ["/tmp/gh-aw/pi-agent-dir/npm/node_modules/pi-web-access"])
+                # Only the worker runs the review loop, so only it overrides
+                # the agents of pi-subagents.
+                self.assertEqual(set(subagents), {"defaultSubagentOnlyExtensions"}
+                                 | ({"agentOverrides"} if name == "worker" else set()))
                 server = src["mcp-servers"]["github-authenticated"]
                 self.assertEqual(server["container"], "ghcr.io/github/github-mcp-server:v2.1.0")
                 self.assertEqual(server["env"]["GITHUB_READ_ONLY"], "1")
@@ -1323,6 +1327,32 @@ class TestReviewerSandbox(unittest.TestCase):
                 else:
                     for extension in ("npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"):
                         self.assertIn(f"Install Pi extension {extension}", step_names)
+
+    def test_the_worker_configures_the_children_of_its_review_loop(self):
+        subagents = json.loads(source("worker")["engine"]["config"])["settings"]["subagents"]
+        overrides = subagents["agentOverrides"]
+        # Reviewers inherit the parent's model and read only: the series is committed,
+        # so the diff is a file, and nothing asks a supervisor who is absent.
+        self.assertEqual(overrides["reviewer"],
+                         {"tools": "read, grep, find, ls"})
+        self.assertEqual(overrides["worker"], {"tools": "read, grep, find, ls, bash, edit, write"})
+        self.assertEqual(set(overrides), {"reviewer", "worker"})
+        lock = workflow("worker.lock.yml")["jobs"]["agent"]
+        self.assertEqual(lock["runs-on"], "ubuntu-24.04")
+        steps = {s.get("name"): s for s in lock["steps"]}
+        install = steps["Install pinned Pi and create credential-free unsandboxed engine wrapper"]["run"]
+        # Children run in the foreground with the 30 minute backstop
+        # replaced, and the worker reads no prompt template of the package.
+        self.assertNotIn("review-loop.md", install)
+        for needle in ("/tmp/gh-aw/pi-agent-dir/extensions/subagent/config.json",
+                       '"asyncByDefault": false', '"maxSubagentDepth": 1'):
+            self.assertIn(needle, install)
+        names = list(steps)
+        grep_tools = steps["Install ripgrep and fd for the agent's grep and find tools"]["run"]
+        for needle in ("ripgrep=14.1.0-1 fd-find=9.0.0-1", "/usr/bin/rg --version"):
+            self.assertIn(needle, grep_tools)
+        self.assertLess(names.index("Install ripgrep and fd for the agent's grep and find tools"),
+                        names.index("Suspend workflow commands around untrusted agent output"))
 
     def test_the_extensions_install_where_the_child_default_points(self):
         # `pi install npm:<name>` puts a package at <agent dir>/npm/node_modules/<name>
