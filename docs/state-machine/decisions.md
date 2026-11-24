@@ -1944,3 +1944,20 @@ flowchart TB
     development_agent_running ==>|allocate_work_retry| development_agent_running
     development_agent_running -->|exhaust_work_recovery| development_waiting_human
 ```
+
+### The review fences are effects of the review row
+
+Whether the processed review and comment ids of a recorded review are written beside `record_actionable_review`, as a separate write of the collector, while `record_explanation` lists them among its effects.
+
+**Change.** The row sets them. Every `record_actionable_review` row (at the submission gate, in `development.waiting_ci`, `development.fix_needed`, and `upstream_review.waiting_ci`) sets `processed_review_ids`, `processed_review_comment_ids`, and `processed_pr_conversation_comment_ids` with the pending feedback, as every `record_explanation` row does, and the collector writes nothing beside it: the record is written once, by the engine, and a caller that does not give the fences is refused. A row the engine refuses leaves the comments unfenced, so they are read again by the next tick. The check reports a review or explanation row that does not set the three fences. No state, verb, budget, or record field changes.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_waiting_ci["development.waiting_ci"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    development_waiting_ci ==>|record_actionable_review| development_fix_needed
+    development_fix_needed ==>|record_actionable_review| development_fix_needed
+```

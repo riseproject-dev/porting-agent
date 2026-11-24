@@ -350,6 +350,25 @@ class TestLifecycleTable(unittest.TestCase):
                 problems = self.mutated(state, verb, **change)
                 self.assertTrue(any(p.startswith(f"{state} --{verb}-->") and expected in p
                                     for p in problems), problems)
+        # A recorded review or explanation fences its comments: every review
+        # and explanation row sets the processed ids, and the check reports
+        # one that drops any of them.
+        fenced = [(state, verb) for state in (gate, "development.waiting_ci",
+                                              "development.fix_needed",
+                                              "upstream_review.waiting_ci")
+                  for verb in ("record_actionable_review", "record_explanation")
+                  if (state, verb) != ("development.fix_needed", "record_explanation")]
+        for state, verb in fenced:
+            t = lc.find_edge(state, verb).transition
+            self.assertLessEqual(set(lc._PROCESSED_IDS),
+                                 {lc._field_name(x) for x in t.effects.sets}, (state, verb))
+            for fence in lc._PROCESSED_IDS:
+                with self.subTest(state=state, verb=verb, fence=fence):
+                    problems = self.mutated(state, verb,
+                                            sets=self.without(t.effects.sets, fence))
+                    self.assertTrue(any(p.startswith(f"{state} --{verb}-->")
+                                        and "fences its comments" in p for p in problems),
+                                    problems)
 
     def test_the_check_holds_the_rerun_counts_and_the_cluster_charge(self):
         head = lc.find_edge("development.waiting_ci", "record_head_change").transition

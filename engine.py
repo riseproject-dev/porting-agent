@@ -1805,9 +1805,6 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     # consecutive ticks only.
     "upstream_read": ("budget.source_unavailable", "budget.source_unavailable_since",
                       "budget.source_unavailable_at", "budget.source_unavailable_repository"),
-    # The replay fences of the review comments a review row recorded.
-    "review_fences": ("processed_review_ids", "processed_review_comment_ids",
-                      "processed_pr_conversation_comment_ids"),
     # The dispatcher run a dispatch recovery decided.
     "dispatcher_run_decided": ("active_work.dispatched_run_id",),
     # Work held in a handoff state that requests none is dropped.

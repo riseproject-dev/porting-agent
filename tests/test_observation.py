@@ -620,6 +620,12 @@ class TestDevelopmentReviewFeedback(unittest.TestCase):
         self.assertEqual(final["last_ci_evidence_id"], "ci-2-777-1")
         self.assertEqual((final["processed_review_ids"], final["processed_review_comment_ids"],
                           final["processed_pr_conversation_comment_ids"]), ([10], [20], [30]))
+        # The row records the fences: one write of the record, one event,
+        # and nothing written beside the row.
+        self.assertEqual(len([1 for kind, _ in observed.staged if kind == "contributions"]), 1)
+        self.assertNotIn("review_fences", engine.BESIDE_ROW)
+        self.assertFalse(any(set(lifecycle._PROCESSED_IDS) & set(fields)
+                             for fields in engine.BESIDE_ROW.values()))
         # The fences keep the same comments from being recorded again.
         with mock.patch("observe_ci.collect.branch_head", return_value={"head": SHA_A}):
             again = observe_ci.observe(self.Api(), contributions={"c": final}, operations={},

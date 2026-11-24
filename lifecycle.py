@@ -854,10 +854,13 @@ _EXHAUST_PUBLISH_RECOVERY = Transition(
     _E(sets=("pending_human_action=publication_infrastructure_failure",
             f"{PENDING_COUNTER}=publish_recovery", "pending_publication.exhausted")),
     exhausts=("publish_recovery",))
+# The replay fences of the review and comment ids a review row recorded, so
+# the same comments are not read again.
+_PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
+                  "processed_pr_conversation_comment_ids")
 _RECORD_EXPLANATION = Transition(
     _O, None, ("authorized explanation-only inquiry",),
-    _E(sets=("processed_review_ids", "processed_review_comment_ids",
-            "processed_pr_conversation_comment_ids")),
+    _E(sets=_PROCESSED_IDS),
     description="Answered on the development PR or recorded without requesting a change; "
                 "revision and CI evidence are kept.")
 _INTERRUPTED = "a required CI job on the exact head was cancelled or lost its runner"
@@ -886,8 +889,6 @@ _LEAVE_HANDOFF = ("clean_head_sha", "clean_head_ci_since", "submission_rewrite_i
 # The effect of a return to development with no CI verdict: the recorded CI
 # evidence is kept. A return for a CI failure also records its evidence.
 _RETURN_FOR_REPAIR = _E(revision="bump", clears=_LEAVE_HANDOFF)
-_PROCESSED_IDS = ("processed_review_ids", "processed_review_comment_ids",
-                  "processed_pr_conversation_comment_ids")
 _FEEDBACK_NOTE = (" The Work request carries the pending feedback ids present at allocation "
                   "(`active_work.feedback_evidence_ids`).")
 _RESUME_EFFECTS = _E(revision="bump", clears=("pending_human_action",))
@@ -1327,7 +1328,7 @@ LIFECYCLE: dict[str, State] = {
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
-                _E(revision="bump", sets=("pending_feedback_evidence_ids",))),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS)),
             ("record_explanation", SELF): _RECORD_EXPLANATION,
             ("record_head_change", SELF): Transition(
                 _O, None,
@@ -1439,7 +1440,7 @@ LIFECYCLE: dict[str, State] = {
             ("record_actionable_review", SELF): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
-                _E(revision="bump", sets=("pending_feedback_evidence_ids",)),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS),
                 description="A review on the recorded head while Work is due, including one "
                             "observed together with the CI failure that left the submission "
                             "gate: it is recorded as pending feedback, so the Work requested "
@@ -1514,7 +1515,7 @@ LIFECYCLE: dict[str, State] = {
             ("record_actionable_review", "development.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback", CANDIDATE_NOT_FAILED),
-                _E(revision="bump", sets=("pending_feedback_evidence_ids",),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS,
                   clears=_LEAVE_HANDOFF),
                 description="The review is recorded as pending feedback, and the CI evidence "
                             "of the candidate head is kept. When CI also failed on the candidate "
@@ -1840,11 +1841,10 @@ LIFECYCLE: dict[str, State] = {
             ("record_actionable_review", "upstream_review.fix_needed"): Transition(
                 _O, None,
                 ("authorized actionable review feedback",),
-                _E(revision="bump", sets=("pending_feedback_evidence_ids",))),
+                _E(revision="bump", sets=("pending_feedback_evidence_ids",) + _PROCESSED_IDS)),
             ("record_explanation", SELF): Transition(
                 _O, None, ("authorized explanation-only inquiry",),
-                _E(sets=("processed_review_ids", "processed_review_comment_ids",
-                        "processed_pr_conversation_comment_ids")),
+                _E(sets=_PROCESSED_IDS),
                 description="Recorded and linked from the event log of the website; "
                             "nothing is posted on the upstream PR. Revision and CI evidence are kept."),
             ("record_head_change", "upstream_review.waiting_human"): Transition(
@@ -3892,6 +3892,18 @@ def _check_settled_rows(problems: list[str]) -> None:
         return {_field_name(x) for x in t.effects.sets} | set(t.effects.clears)
 
     gate = "handoff.awaiting_submission"
+    # A recorded review or explanation fences its comments: the row sets the
+    # processed ids, so the same comments are not read again.
+    for state in (gate, "development.waiting_ci", "development.fix_needed",
+                  "upstream_review.waiting_ci"):
+        for verb in ("record_actionable_review", "record_explanation"):
+            if verb == "record_explanation" and state == "development.fix_needed":
+                continue
+            t = row(state, verb)
+            if t is not None and not set(_PROCESSED_IDS) <= {
+                    _field_name(x) for x in t.effects.sets}:
+                problems.append(f"{state} --{verb}-->: a recorded {verb.split('_')[-1]} "
+                                f"fences its comments; the row sets {', '.join(_PROCESSED_IDS)}")
     for state in (gate, "development.waiting_ci", "development.fix_needed"):
         t = row(state, "record_actionable_review")
         where = f"{state} --record_actionable_review-->"

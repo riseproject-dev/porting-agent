@@ -530,7 +530,8 @@ class TestTableDecisions(unittest.TestCase):
 
     def test_gate_review_and_ci_failure_are_exclusive_and_record_their_cause(self):
         gate = awaiting_submission()
-        values = {"pending_feedback_evidence_ids": ["review-2-1-5"]}
+        values = {"pending_feedback_evidence_ids": ["review-2-1-5"], "processed_review_ids": [5],
+                  "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": []}
         review = engine.apply_transition(
             gate, "record_actionable_review", policy=POLICY, now=NOW,
             facts={"actionable_review", "candidate_head_not_failed"}, values=values)
@@ -539,6 +540,15 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(engine.state_key(after), "development.fix_needed")
         self.assertEqual(after["revision"], gate["revision"] + 1)
         self.assertEqual(after["pending_feedback_evidence_ids"], ["review-2-1-5"])
+        # The row records the replay fences of the review's comments.
+        self.assertEqual(after["processed_review_ids"], [5])
+        # A caller that does not give the fences is refused.
+        with self.assertRaisesRegex(lc.TransitionError,
+                                    "sets processed_review_ids; a value is required"):
+            engine.apply_transition(
+                gate, "record_actionable_review", policy=POLICY, now=NOW,
+                facts={"actionable_review", "candidate_head_not_failed"},
+                values={"pending_feedback_evidence_ids": ["review-2-1-5"]})
         self.assertEqual((after["clean_head_sha"], after["handoff_request"],
                           after["pending_human_action"]), (None, None, None))
         self.assertEqual(after["last_ci_evidence_id"], gate["last_ci_evidence_id"])
@@ -783,7 +793,10 @@ class TestEngineRefusesWhatTheTableDoesNotState(unittest.TestCase):
             engine.apply_transition(rec, "record_actionable_review", policy=POLICY, now=NOW,
                                     facts={"actionable_review", "candidate_head_failed",
                                            "candidate_head_not_failed"},
-                                    values={"pending_feedback_evidence_ids": ["review-1"]})
+                                    values={"pending_feedback_evidence_ids": ["review-1"],
+                                            "processed_review_ids": [1],
+                                            "processed_review_comment_ids": [],
+                                            "processed_pr_conversation_comment_ids": []})
         with self.assertRaises(lc.TransitionError):
             # The engine derives what the Work carries; the caller cannot state it.
             fix = contribution(phase="development", activity="fix_needed")

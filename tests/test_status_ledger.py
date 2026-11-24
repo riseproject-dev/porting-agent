@@ -94,7 +94,9 @@ class TestStatusLedger(unittest.TestCase):
         reviewed = engine.apply_transition(
             gate, "record_actionable_review", policy=policy(), now=NOW, cause_id="review-1",
             facts={"actionable_review", "candidate_head_not_failed"},
-            values={"pending_feedback_evidence_ids": ["review-1"]})
+            values={"pending_feedback_evidence_ids": ["review-1"], "processed_review_ids": [1],
+                    "processed_review_comment_ids": [],
+                    "processed_pr_conversation_comment_ids": []})
         body = status_ledger.render(dict(reviewed.event, sequence=25), reviewed.record,
                                     "https://github.com/run")
         self.assertTrue(body.startswith("**Upstreaming r1 · development/fix_needed**"))

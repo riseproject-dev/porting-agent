@@ -110,7 +110,6 @@ These follow the literal reading of a decision and are kept until a decision say
 
 - `resume_upstream_review` still clears pending feedback after `answer_reviewer`, although the pending-feedback decision says every resume keeps it.
 - An explanation-only comment posted while development Work is due is not recorded: `development.fix_needed` has no `record_explanation` row.
-- `record_actionable_review` does not list the processed comment and review ids; the collector records them beside the row.
 - The admission scope guard is on `admit_development` only, not on `readmit_development`.
 - `resume_stale` from a `provisioning` state, which has no fork, records a refresh with the phase `provisioning` and no head or development PR. The refreshed plan returns to development on the recorded fork only when the refresh began with the fork and development PR the record still holds; otherwise development is admitted afresh.
 - `pause_on_identity_change` is guarded by `not paused`: an identity change observed while a contribution is paused sets nothing; the controller still selects no Work for it while the identity differs.

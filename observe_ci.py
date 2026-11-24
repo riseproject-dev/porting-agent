@@ -587,33 +587,34 @@ def _record_explanation(obs: Observation, entry: dict, record: dict,
 def _record_review(obs: Observation, entry: dict, record: dict, review: tuple[str, dict, dict],
                    *, policy: dict, now: str, facts: frozenset[str]) -> dict | None:
     """Take ``record_actionable_review`` from the state of ``record`` (the
-    gate, ``development.waiting_ci``, or ``development.fix_needed``): the
-    review is recorded as pending feedback; the CI evidence is kept. The ids
-    of the comments are added to the replay fences beside the row, so the
-    same comments are not read again. ``None`` when the row does not apply:
-    the ids are then left unfenced and read again on the next tick."""
+    gate, ``development.waiting_ci``, ``development.fix_needed``, or
+    ``upstream_review.waiting_ci``): the review is recorded as pending
+    feedback, and the row adds the ids of its comments to the replay fences,
+    so the same comments are not read again; the CI evidence is kept.
+    ``None`` when the row does not apply: the ids are then left unfenced and
+    read again on the next tick."""
     eid, ev, feedback = review
     recorded = engine.apply_transition(
         record, "record_actionable_review", policy=policy, now=now, cause_id=eid,
         facts=facts,
         values={"pending_feedback_evidence_ids": list(dict.fromkeys(
-            (record.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:]},
+                    (record.get("pending_feedback_evidence_ids") or []) + [eid]))[-64:],
+                "processed_review_ids": ((record.get("processed_review_ids") or [])
+                                         + feedback["review_ids"])[-256:],
+                "processed_review_comment_ids": (
+                    (record.get("processed_review_comment_ids") or [])
+                    + feedback["comment_ids"])[-512:],
+                "processed_pr_conversation_comment_ids": (
+                    (record.get("processed_pr_conversation_comment_ids") or [])
+                    + feedback["conversation_comment_ids"])[-512:]},
         details={"evidence_id": eid})
     if not recorded.accepted:
         entry["review_feedback_deferred"] = recorded.reason
         return None
-    new = engine.record_beside(
-        recorded.record, "review_fences", now=now,
-        processed_review_ids=((record.get("processed_review_ids") or [])
-                              + feedback["review_ids"])[-256:],
-        processed_review_comment_ids=((record.get("processed_review_comment_ids") or [])
-                                      + feedback["comment_ids"])[-512:],
-        processed_pr_conversation_comment_ids=(
-            (record.get("processed_pr_conversation_comment_ids") or [])
-            + feedback["conversation_comment_ids"])[-512:])
-    obs.staged.extend([("evidence", ev), ("contributions", new), ("events", recorded.event)])
+    obs.staged.extend([("evidence", ev), ("contributions", recorded.record),
+                       ("events", recorded.event)])
     entry.update(review_feedback=eid)
-    return new
+    return recorded.record
 
 
 def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: dict, head: str,
