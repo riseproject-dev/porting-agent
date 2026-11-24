@@ -491,6 +491,75 @@ class TestProvisioningReceipt(ReceiptWorld, unittest.TestCase):
 # Every wait of provisioning has a human exit
 
 
+class TestProvisioningFailureReceipts(ReceiptWorld, unittest.TestCase):
+    HOSTILE = "@everyone **pwned** [x](https://evil.example) " + "<!-- -->" * 80
+
+    def fold_all(self, rec, op, receipts, api):
+        snap = reconcile.Snapshot({"c": rec}, {op["operation_id"]: op}, {}, {}, {})
+        original = collect.repository
+        try:
+            collect.repository = lambda a, name: {"id": 2, "full_name": name, "parent_id": 1}
+            return reconcile.tick(api, snap, policy=POLICY, now=T, publications=[],
+                                  pressure=capacity.Pressure(ok=True), provisions=receipts,
+                                  observe=False)
+        finally:
+            collect.repository = original
+
+    def failure(self, receipt, run, **over):
+        return receipt | {"status": "failed", "failure": "branch_conflict", "stage": "initialize",
+                          "reason": "unexpected work", "provision_run_id": str(run)} | over
+
+    def test_a_refusal_or_an_unknown_status_is_not_folded(self):
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        for status in ("refused", "exploded"):
+            with self.subTest(status=status):
+                result = self.fold_all(rec, op, [dict(receipt, status=status, failure=None,
+                                                      reason="paused")], api)
+                self.assertEqual(staged(result, "operations"), [])
+                self.assertEqual(staged(result, "contributions"), [])
+                [entry] = result.report["provisions"]
+                self.assertEqual(entry["status"], f"not folded: {status}")
+
+    def test_an_unknown_code_is_other_and_the_reason_is_never_stored(self):
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        result = self.fold_all(rec, op, [self.failure(receipt, 77, failure="../../x",
+                                                       stage="evil", reason=self.HOSTILE)], api)
+        [failed] = staged(result, "operations")
+        self.assertEqual(failed["external_ids"]["provision_failure"], "other")
+        [event] = staged(result, "events")
+        self.assertEqual((event["details"]["failure"], event["details"]["stage"]), ("other", None))
+        stored = json.dumps(result.staged)
+        for fragment in ("@everyone", "pwned", "evil.example", "../../x"):
+            self.assertNotIn(fragment, stored)
+
+    def test_the_reminder_names_the_failed_operation_and_its_code(self):
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        result = self.fold_all(rec, op, [self.failure(receipt, 77)], api)
+        [failed] = staged(result, "operations")
+        waiting = staged(result, "contributions")[-1]
+        details = controller.reminder_details(waiting, {failed["operation_id"]: failed})
+        self.assertEqual((details["pending_human_action"], details["operation"],
+                          details["failure"]),
+                         (controller.PROVISIONING_FAILED, failed["operation_id"],
+                          "branch_conflict"))
+
+    def test_only_the_newest_run_is_folded(self):
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        result = self.fold_all(rec, op, [self.failure(receipt, 76),
+                                         dict(receipt, provision_run_id="77")], api)
+        self.assertEqual([o["status"] for o in staged(result, "operations")], ["confirmed"])
+        self.assertEqual(sorted(e["status"] for e in result.report["provisions"]),
+                         ["provisioned", "superseded"])
+        result = self.fold_all(rec, op, [dict(receipt, provision_run_id="76"),
+                                         self.failure(receipt, 77)], api)
+        self.assertEqual([o["status"] for o in staged(result, "operations")], ["failed"])
+        # A newer refusal does not hide an older foldable receipt.
+        result = self.fold_all(rec, op, [self.failure(receipt, 76),
+                                         dict(receipt, status="refused", provision_run_id="77")],
+                               api)
+        self.assertEqual([o["status"] for o in staged(result, "operations")], ["failed"])
+
+
 def exhausted_wait():
     """Launches without a receipt until `operation_launch` is exhausted: the
     record in `provisioning.waiting_human`, its planned operation open."""
@@ -572,12 +641,15 @@ class TestProvisioningWaitExits(ReceiptWorld, unittest.TestCase):
     def test_a_definite_failure_receipt_fails_the_operation_and_waits(self):
         rec, op, receipt, api = self.receipt_world(provisioning_record())
         result = self.fold(rec, op, dict(receipt, status="failed"), api)
+        # A receipt that names no closed failure code is stored as `other`.
         self.assertEqual(result.report["provisions"],
-                         [{"contribution": rec["contribution_id"], "status": "failed"}])
+                         [{"contribution": rec["contribution_id"], "status": "failed",
+                           "failure": "other", "detail": ""}])
         [failed] = [r for k, r in result.staged if k == "operations"]
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(failed["external_ids"], {"launch_attempts": 1, "provision_run_id": "77",
-                                                  "provision_artifact_id": 88})
+                                                  "provision_artifact_id": 88,
+                                                  "provision_failure": "other"})
         [event] = [r for k, r in result.staged if k == "events"]
         self.assertEqual((event["kind"], event["cause"]["type"]),
                          ("require_provisioning_intervention", "operation"))

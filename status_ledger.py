@@ -18,6 +18,9 @@ import lifecycle
 import schemas
 from common import CONTROL_REPO
 
+# The pending action of a provisioning operation that failed (`controller`).
+PROVISIONING_FAILED = "provisioning_operation_failed"
+
 
 class LedgerError(ValueError):
     pass
@@ -188,6 +191,39 @@ def _development_pr_guidance(details: dict) -> str:
             "`/upstreaming resume`.")
 
 
+# What a human corrects for each closed failure code a provisioning receipt
+# reports: fixed sentences, never text from the receipt.
+PROVISIONING_FAILURE_GUIDANCE = {
+    "source_changed": "The upstream repository or its base commit no longer has the identity "
+                      "the plan approved.",
+    "fork_mismatch": "The fork under `riseproject-upstreaming` is not the approved upstream's fork, "
+                     "changed identity, or disappeared after it was recorded.",
+    "branch_conflict": "The fork's `riscv64-dev` branch holds work the pipeline did not record, or "
+                       "is gone; the pipeline never resets it.",
+    "settings": "The fork's Actions settings could not be set to read-only CI, or its workflows "
+                "stay unregistered.",
+    "workflows": "The fork's inherited workflows could not be inventoried or read within the "
+                 "bounded setup scan.",
+    "write_refused": "GitHub refused a write of the provisioning App to the fork.",
+    "other": "The provisioning workflow failed definitely for another reason.",
+}
+
+
+def _provisioning_failure_guidance(details: dict) -> str:
+    """What a human does once the provisioning workflow reported a definite
+    failure. Only trusted values are named: the operation id and the closed
+    failure code; never the receipt's reason or workflow log text."""
+    operation = details.get("operation")
+    named = isinstance(operation, str) and re.fullmatch(r"op-[0-9a-f]{24}", operation)
+    run = (f"the `Fork Provisioning {operation}` run" if named
+           else "the `Fork Provisioning` run of the operation")
+    failure = details.get("failure")
+    cause = PROVISIONING_FAILURE_GUIDANCE.get(failure if isinstance(failure, str) else "",
+                                              PROVISIONING_FAILURE_GUIDANCE["other"])
+    return (f"{cause} Read {run} of the control repository, correct the cause, then post "
+            "`/upstreaming resume`, or `/upstreaming park`.")
+
+
 def _observed(event: dict) -> str:
     """What the event observed, as bounded data: heads, links the pipeline
     recorded, the upstream pull request, a mismatch, release data."""
@@ -220,6 +256,10 @@ def _observed(event: dict) -> str:
             kind == "record_reminder"
             and details.get("pending_human_action") == lifecycle.DEVELOPMENT_PR_LAUNCH_EXHAUSTED):
         parts.append(_development_pr_guidance(details))
+    if (kind == "require_provisioning_intervention" and details.get("failure")) or (
+            kind == "record_reminder"
+            and details.get("pending_human_action") == PROVISIONING_FAILED):
+        parts.append(_provisioning_failure_guidance(details))
     if kind == "record_reminder" and state == "handoff.waiting_upstream_pr":
         bound = details.get("bound_to") or {}
         link = _link(details.get("package_url"))

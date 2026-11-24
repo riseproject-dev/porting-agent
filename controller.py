@@ -1323,6 +1323,18 @@ def reminder_details(record: dict, operations: dict | None = None,
             latest = max(spent, key=lambda op: op["updated_at"])
             details["operation"] = latest["operation_id"]
             details["launches"] = recovery.launch_attempts(latest)
+    if pending["kind"] == PROVISIONING_FAILED:
+        # The provisioning operation that failed: the latest failed fork
+        # provisioning operation of the contribution, with the closed code
+        # its receipt reported.
+        failed = [op for op in (operations or {}).values()
+                  if op["contribution_id"] == record["contribution_id"]
+                  and op["kind"] == "fork_provision" and op["status"] == "failed"
+                  and op["revision"] <= record["revision"]]
+        if failed:
+            latest = max(failed, key=lambda op: op["updated_at"])
+            details["operation"] = latest["operation_id"]
+            details["failure"] = (latest.get("external_ids") or {}).get("provision_failure")
     if state == "handoff.waiting_upstream_pr":
         package = (operations or {}).get((record.get("handoff_request") or {}).get("command_id"))
         details["package_url"] = ((package or {}).get("external_ids") or {}).get("comment_url")

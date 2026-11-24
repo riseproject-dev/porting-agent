@@ -479,6 +479,39 @@ class TestWordingIsTheTable(unittest.TestCase):
         body = status_ledger.render(reminder, waiting, "https://github.com/run")
         self.assertIn(f"Read the `Development PR {op}` runs", body)
 
+    def test_a_provisioning_failure_renders_a_fixed_sentence_per_code(self):
+        import provisioning
+        self.assertEqual(set(status_ledger.PROVISIONING_FAILURE_GUIDANCE),
+                         set(provisioning.FAILURES))
+        op = "op-" + "b" * 24
+        waiting = contribution(phase="provisioning", activity="waiting_human", fork=None,
+                               pending_human_action={
+                                   "kind": status_ledger.PROVISIONING_FAILED, "requested_at": NOW,
+                                   "reminded_at": None, "escalated_at": None, "counter": None})
+        for code, sentence in status_ledger.PROVISIONING_FAILURE_GUIDANCE.items():
+            event = table_event("require_provisioning_intervention", "provisioning.idle",
+                                "provisioning.waiting_human")
+            event["details"].update(operation=op, receipt_status="failed", failure=code,
+                                    stage="initialize", reason="@everyone **x**")
+            reminder = table_event("record_reminder", "provisioning.waiting_human",
+                                   "provisioning.waiting_human")
+            reminder["details"].update(pending_human_action=status_ledger.PROVISIONING_FAILED,
+                                       operation=op, failure=code)
+            for entry in (event, reminder):
+                with self.subTest(code=code, kind=entry["kind"]):
+                    body = status_ledger.render(entry, waiting, "https://github.com/run")
+                    self.assertIn(sentence, body)
+                    self.assertIn(f"Read the `Fork Provisioning {op}` run", body)
+                    self.assertIn("`/upstreaming park`", body)
+                    self.assertNotIn("@everyone", body)
+        # An unknown code and a value that is not an operation id render
+        # nothing of their own.
+        reminder["details"].update(failure="<b>x</b>", operation="<b>`x`</b>")
+        body = status_ledger.render(reminder, waiting, "https://github.com/run")
+        self.assertNotIn("<b>", body.split("<details>")[0])
+        self.assertIn(status_ledger.PROVISIONING_FAILURE_GUIDANCE["other"], body)
+        self.assertIn("the `Fork Provisioning` run of the operation", body)
+
     def test_the_historic_development_pr_event_keeps_its_wording(self):
         record = contribution()
         event = lifecycle._event(record, record, "development_pr_created", "observation",

@@ -1,10 +1,19 @@
 # SPDX-FileCopyrightText: 2026 The RISE Project
 # SPDX-License-Identifier: MIT
 """Administrative fork provisioning is workflow-only, scoped and recoverable."""
+import ast
 import base64
+import contextlib
 import copy
+import io
+import json
+import os
+import tempfile
 import unittest
+import urllib.error
 from datetime import datetime
+from pathlib import Path
+from unittest import mock
 
 import capacity
 import collect
@@ -12,6 +21,7 @@ import controller
 import provisioning
 import reconcile
 import recovery
+from common import CONTROL_REPO, contribution_file_id
 from tests.helpers import NOW, SHA_A, SHA_B, SHA_C, contribution, policy, steering_list
 
 FORK = "riseproject-upstreaming/proj"
@@ -210,3 +220,180 @@ class TestProvisioning(unittest.TestCase):
         next_tick = controller.tick(**args)
         current = [r for k, r in next_tick.staged if k == "contributions"][-1]
         self.assertEqual(current["upstream"]["base_sha"], SHA_C)
+
+
+class StateApi(Api):
+    """The fake GitHub API with the trusted state the workflow reads at the
+    head of `main`."""
+
+    def __init__(self, rec, op, policy_, **kwargs):
+        super().__init__(**kwargs)
+        cid = contribution_file_id(rec["contribution_id"])
+        self.state = {f".state/operations/{op['operation_id']}.json": op,
+                      f".state/contributions/{cid}.json": rec, "policy.json": policy_}
+        self.fail_reads = False
+
+    def get(self, path):
+        prefix = f"/repos/{CONTROL_REPO}/contents/"
+        if path.startswith(prefix):
+            data = json.dumps(self.state[path[len(prefix):].removesuffix("?ref=main")]).encode()
+            return {"type": "file", "encoding": "base64", "content": base64.b64encode(data).decode()}
+        if self.fail_reads:
+            raise collect.CollectError("HTTP 502")
+        return super().get(path)
+
+
+class HttpError(urllib.error.HTTPError):
+    def __init__(self, code, headers=None):
+        super().__init__("https://api.github.com/x", code, "x", headers or {}, None)
+
+
+class TestFailureReceipts(unittest.TestCase):
+    META = {"operation_id": "op-" + "a" * 24, "contribution_id": "example--proj/12",
+            "revision": 3, "run_id": "77"}
+
+    def test_each_class_of_failure(self):
+        receipt = provisioning.failure_receipt(
+            self.META, "initialize",
+            provisioning.ProvisionError("x", failure="branch_conflict"))
+        self.assertEqual(receipt, self.META | {"status": "failed", "stage": "initialize",
+                                               "failure": "branch_conflict", "reason": "x"})
+        refused = provisioning.failure_receipt(self.META, "preflight",
+                                               provisioning.ProvisionRefused("paused"))
+        self.assertEqual((refused["status"], refused["failure"]), ("refused", None))
+        for error in (provisioning.ProvisionUnconfirmed("HTTP 502"),
+                      collect.CollectError("HTTP 502"), OSError("lost")):
+            with self.subTest(error=error):
+                self.assertIsNone(provisioning.failure_receipt(self.META, "create", error))
+        # An unknown code is reported as `other`; the reason is bounded.
+        receipt = provisioning.failure_receipt(
+            self.META, "create", provisioning.ProvisionError("y" * 900, failure="nope"))
+        self.assertEqual(receipt["failure"], "other")
+        self.assertLessEqual(len(receipt["reason"]), 300)
+
+    def test_only_a_definite_refusal_of_a_write_is_definite(self):
+        cases = {403: "write_refused", 404: "write_refused", 422: "write_refused",
+                 500: None, 502: None, 429: None}
+        for code, failure in cases.items():
+            for headers in ({}, {"retry-after": "60"}, {"x-ratelimit-remaining": "0"}):
+                if headers and code != 403:
+                    continue
+                api = provisioning.WriteApi("t")
+
+                def opener(req, timeout=None, code=code, headers=headers):
+                    raise HttpError(code, headers)
+                api._open = opener
+                with self.subTest(code=code, headers=headers), \
+                        self.assertRaises(provisioning.ProvisionError) as raised:
+                    api.write("PUT", f"/repos/{FORK}/actions/permissions", {})
+                limited = bool(headers)
+                if failure and not limited:
+                    self.assertNotIsInstance(raised.exception, provisioning.ProvisionUnconfirmed)
+                    self.assertEqual(raised.exception.failure, failure)
+                else:
+                    self.assertIsInstance(raised.exception, provisioning.ProvisionUnconfirmed)
+
+    def test_the_final_check_refuses(self):
+        rec, op = request()
+        open_policy = policy(read_only=False)
+        for changed, policy_, operation in (
+                (dict(rec, paused=True), open_policy, op),
+                (rec, policy(read_only=True), op),
+                (rec, open_policy, dict(op, status="applying")),
+                (dict(rec, active_operation_id=None), open_policy, op)):
+            with self.subTest(), self.assertRaises(provisioning.ProvisionRefused):
+                provisioning.validate_request(changed, operation, policy_)
+
+    def test_every_definite_failure_names_a_closed_code(self):
+        tree = ast.parse(Path(provisioning.__file__).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                    and node.func.id == "ProvisionError":
+                codes = [k.value.value for k in node.keywords if k.arg == "failure"]
+                for code in codes:
+                    self.assertIn(code, provisioning.FAILURES)
+
+    def run_main(self, api, directory, mode, *extra):
+        out = Path(directory) / ("fork.json" if mode != "initialize" else "outcome.json")
+        argv = [mode, "--operation-id", api.op_id, "--out", str(out),
+                "--receipt", str(Path(directory) / "outcome.json"), *extra]
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": CONTROL_REPO,
+               "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ID": "77",
+               "UPSTREAMING_FORK_TOKEN": "t"}
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(collect, "Api", lambda *a, **k: api), \
+                mock.patch.object(provisioning, "WriteApi", lambda token: api):
+            os.environ.pop("GITHUB_OUTPUT", None)
+            return provisioning.main(argv)
+
+    def world(self, rec=None, **kwargs):
+        default, op = request()
+        api = StateApi(rec or default, op, policy(read_only=False), **kwargs)
+        api.op_id = op["operation_id"]
+        return api, rec or default
+
+    def test_main_reports_a_definite_failure(self):
+        api, rec = self.world(head=SHA_B)
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.run_main(api, directory, "create"), 0)
+            self.assertFalse((Path(directory) / "outcome.json").exists())
+            fork = str(Path(directory) / "fork.json")
+            self.assertEqual(self.run_main(api, directory, "initialize", "--plan", fork), 1)
+            receipt = json.loads((Path(directory) / "outcome.json").read_text())
+        self.assertEqual({k: receipt[k] for k in ("status", "failure", "stage", "operation_id",
+                                                  "contribution_id", "revision", "run_id")},
+                         {"status": "failed", "failure": "branch_conflict", "stage": "initialize",
+                          "operation_id": api.op_id, "contribution_id": rec["contribution_id"],
+                          "revision": rec["revision"], "run_id": "77"})
+        self.assertEqual(api.writes, [])
+
+    def test_main_reports_a_refusal_and_nothing_for_a_failed_read(self):
+        default, _ = request()
+        api, _rec = self.world(rec=dict(default, paused=True))
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.run_main(api, directory, "preflight"), 1)
+            receipt = json.loads((Path(directory) / "outcome.json").read_text())
+        self.assertEqual((receipt["status"], receipt["failure"], receipt["stage"]),
+                         ("refused", None, "preflight"))
+        api, _rec = self.world()
+        api.fail_reads = True
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(collect.CollectError):
+                self.run_main(api, directory, "preflight")
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_main_success_writes_the_provisioned_receipt(self):
+        api, rec = self.world(head=SHA_C)
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.run_main(api, directory, "create"), 0)
+            fork = str(Path(directory) / "fork.json")
+            self.assertEqual(self.run_main(api, directory, "initialize", "--plan", fork), 0)
+            receipt = json.loads((Path(directory) / "outcome.json").read_text())
+        self.assertEqual((receipt["status"], receipt["head_sha"], receipt["operation_id"]),
+                         ("provisioned", SHA_C, api.op_id))
+
+    def test_the_failure_receipt_main_writes_is_folded(self):
+        api, rec = self.world(head=SHA_B)
+        op = next(v for k, v in api.state.items() if k.startswith(".state/operations/"))
+        with tempfile.TemporaryDirectory() as directory:
+            self.run_main(api, directory, "create")
+            self.run_main(api, directory, "initialize", "--plan", str(Path(directory) / "fork.json"))
+            receipt = json.loads((Path(directory) / "outcome.json").read_text())
+        receipt = dict(receipt, provision_run_id="77", provision_artifact_id=88)
+        snap = reconcile.Snapshot({"c": rec}, {op["operation_id"]: op}, {}, {}, {})
+        result = reconcile.tick(api, snap, policy=policy(read_only=False),
+                                now=datetime.fromisoformat(NOW), publications=[],
+                                pressure=capacity.Pressure(ok=True), provisions=[receipt],
+                                observe=False)
+        [failed] = [r for k, r in result.staged if k == "operations"]
+        self.assertEqual((failed["status"], failed["external_ids"]["provision_failure"]),
+                         ("failed", "branch_conflict"))
+        [event] = [r for k, r in result.staged if k == "events"]
+        self.assertEqual(event["kind"], "require_provisioning_intervention")
+        self.assertEqual({k: event["details"][k] for k in ("receipt_status", "failure", "stage")},
+                         {"receipt_status": "failed", "failure": "branch_conflict",
+                          "stage": "initialize"})
+        self.assertNotIn("never reset", json.dumps(event))
+        waiting = [r for k, r in result.staged if k == "contributions"][-1]
+        self.assertEqual(waiting["pending_human_action"]["kind"], controller.PROVISIONING_FAILED)
+        self.assertNotIn("never reset", json.dumps(waiting))

@@ -203,7 +203,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p provisions
-          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/provision.yml/runs?status=completed&per_page=20" \
+          # A failure receipt has nothing to read back: only runs of the
+          # workflow on main that the controller dispatched are collected.
+          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/provision.yml/runs?status=completed&branch=main&event=workflow_dispatch&per_page=20" \
             --jq '.workflow_runs[].id') || runs=
           printf '%s\n' "$runs" | while read -r run; do
             [ -n "$run" ] || continue

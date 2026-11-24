@@ -35,7 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           uv run --locked \
-            python -m provisioning preflight --operation-id "$OPERATION" --out provisioning/plan.json
+            python -m provisioning preflight --operation-id "$OPERATION" --receipt provisioning/outcome.json \
+              --out provisioning/plan.json
       - name: Mint a creation-only destination token if the fork is absent
         id: creator
         if: steps.preflight.outputs.create == 'true'
@@ -58,7 +59,8 @@ jobs:
         run: |
           set -euo pipefail
           uv run --locked \
-            python -m provisioning create --operation-id "$OPERATION" --out provisioning/fork.json
+            python -m provisioning create --operation-id "$OPERATION" --receipt provisioning/outcome.json \
+              --out provisioning/fork.json
       - name: Mint a separate token restricted to this verified fork
         id: fork-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
@@ -80,7 +82,15 @@ jobs:
           set -euo pipefail
           uv run --locked \
             python -m provisioning initialize --operation-id "$OPERATION" \
-              --plan provisioning/fork.json --out provisioning/outcome.json
+              --plan provisioning/fork.json --out provisioning/outcome.json \
+              --receipt provisioning/outcome.json
+      # outcome.json is the receipt: `provisioned` on success, `failed` with
+      # a closed failure code for a definite failure of the effect, `refused`
+      # when the final check before the effect did not pass. A failure that
+      # is not definite (a failed read, a write answered with anything but a
+      # definite refusal, a lost runner) uploads none, and the controller
+      # launches the operation again. A failing step fails the job, so no
+      # later token is minted after it.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:

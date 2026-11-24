@@ -44,6 +44,7 @@ import isolation
 import lifecycle
 import observe_ci
 import plan_gate
+import provisioning
 import queue_policy as queue_policy_facts
 import recovery
 import schemas
@@ -1933,6 +1934,149 @@ def fold_handoff_receipts(api: collect.Api, receipts: list[dict], contributions:
     return report
 
 
+# The statuses of a provisioning receipt the reconciler folds. A `refused`
+# receipt (the workflow's final check did not pass, nothing was attempted)
+# and any other status are reported and not folded.
+PROVISIONING_FOLDED = ("provisioned", "failed")
+
+
+def _provision_run(receipt: dict) -> int:
+    run = str(receipt.get("provision_run_id") or "")
+    return int(run) if run.isdecimal() else -1
+
+
+def fold_provisioning_receipts(api: collect.Api, receipts: list[dict], contributions: dict[str, dict],
+                               by_cid: dict[str, str], snap: Snapshot, out: TickOutput, *,
+                               policy: dict, now: str, skip: frozenset[str]) -> list[dict]:
+    """Fold the verified receipts of the fork provisioning operations.
+
+    A receipt is folded only for the open `fork_provision` operation the
+    record names at the record's revision, and of several foldable receipts
+    for one operation only the newest run's. `provisioned` is read back (the
+    fork's identity and network, `riscv64-dev` at the expected head) and
+    fires `confirm_provisioning`. `failed` is a definite failure reported by
+    the trusted workflow: the operation takes `record_failure` and, from
+    `provisioning.idle`, fires `require_provisioning_intervention` with
+    `provisioning_operation_failed`; in the provisioning wait the state is
+    kept. The closed failure code is stored on the operation; the receipt's
+    free-text reason reaches only this report."""
+    report = []
+    newest: dict[str, dict] = {}
+    for receipt in receipts:
+        if receipt.get("status") in PROVISIONING_FOLDED:
+            key = str(receipt.get("operation_id"))
+            if key not in newest or _provision_run(receipt) > _provision_run(newest[key]):
+                newest[key] = receipt
+    for receipt in receipts:
+        cid = receipt.get("contribution_id")
+        if cid not in by_cid or cid in skip:
+            continue
+        key = by_cid[cid]
+        with isolation.contribution(cid, "provisioning_receipt"):
+            c = contributions[key]
+            op = snap.operations.get(receipt.get("operation_id"))
+            if not op or op["kind"] != "fork_provision" or op["status"] not in recovery.OPEN \
+                    or c["phase"] != "provisioning" or c.get("active_operation_id") != op["operation_id"] \
+                    or c["revision"] != receipt.get("revision") or not isinstance(receipt.get("status"), str):
+                continue
+            status = receipt["status"]
+            if status not in PROVISIONING_FOLDED:
+                entry = {"contribution": cid, "status": f"not folded: {status[:40]}"}
+                if status == "refused":
+                    entry["detail"] = isolation.clean_text(receipt.get("reason") or "", 300)
+                report.append(entry)
+                continue
+            if newest.get(op["operation_id"]) is not receipt:
+                report.append({"contribution": cid, "status": "superseded"})
+                continue
+            external_ids = {}
+            if receipt.get("provision_run_id"):
+                external_ids["provision_run_id"] = str(receipt["provision_run_id"])
+            if receipt.get("provision_artifact_id"):
+                external_ids["provision_artifact_id"] = int(receipt["provision_artifact_id"])
+            if status == "failed":
+                # The trusted workflow reports a definite failure: the
+                # operation takes `record_failure` and, from
+                # `provisioning.idle`, fires `require_provisioning_intervention`;
+                # in the provisioning wait the state is kept.
+                fired = None
+                if op["status"] not in ("planned", "applying"):
+                    # Only a launched operation fails by a receipt.
+                    report.append({"contribution": cid, "status": "failure not folded"})
+                    continue
+                code = receipt.get("failure") if receipt.get("failure") in provisioning.FAILURES \
+                    else "other"
+                stage = receipt.get("stage") if receipt.get("stage") in provisioning.STAGES else None
+                external_ids["provision_failure"] = code
+                new_op = recovery.fold_failure_receipt(op, external_ids=external_ids, now=now)
+                if recovery.fired_verbs(c, new_op):
+                    facts, values = controller.RESOLUTION_FIRES[(new_op["kind"], new_op["status"])]
+                    fired = recovery.fire(c, new_op, policy=policy, now=now, facts=facts,
+                                          values=values,
+                                          details={"receipt_status": "failed", "failure": code,
+                                                   "stage": stage})
+                    if not fired.accepted:
+                        raise lifecycle.TransitionError(
+                            f"require_provisioning_intervention refused in {engine.state_key(c)}: "
+                            f"{fired.reason}")
+                    new = fired.record
+                else:
+                    new = recovery.release(c, new_op, now)
+                schemas.validate("contribution", new)
+                contributions[key] = new
+                snap.operations[op["operation_id"]] = new_op
+                out.staged.extend([("operations", new_op), ("contributions", new)])
+                if fired is not None:
+                    out.staged.append(("events", fired.event))
+                report.append({"contribution": cid, "status": "failed", "failure": code,
+                               "detail": isolation.clean_text(receipt.get("reason") or "", 300)})
+                continue
+            if receipt.get("fork") != op["target"]["repository"] \
+                    or receipt.get("upstream_id") != c["upstream"]["repository_id"] \
+                    or receipt.get("base_sha") != c["upstream"]["base_sha"] \
+                    or receipt.get("actions_read_only") is not True:
+                report.append({"contribution": cid, "status": "receipt mismatch"})
+                continue
+            repo = collect.repository(api, receipt["fork"])
+            head = collect.branch_head(api, receipt["fork"], DEV_REF)
+            expected = op["target"].get("expected_head") or op["target"]["base_sha"]
+            if not head or head["head"] != receipt.get("head_sha") or head["head"] != expected \
+                    or repo["id"] != receipt.get("fork_id") or repo.get("parent_id") != c["upstream"]["repository_id"]:
+                report.append({"contribution": cid, "status": "fork identity/ref mismatch"})
+                continue
+            new_op = recovery.fold_receipt(
+                op, external_ids=external_ids,
+                detail="fork/source identity, branch and trusted setup receipt verified", now=now)
+            fork = {"repository_id": repo["id"], "name": repo["full_name"], "head_ref": DEV_REF,
+                    "head_sha": head["head"], "pr_number": None}
+            if recovery.fired_verbs(c, new_op):
+                # The receipt matches the operation and the fork and ref were
+                # read back: the operation fires `confirm_provisioning`.
+                fired = recovery.fire(
+                    c, new_op, policy=policy, now=now,
+                    facts={"receipt_matches_operation", "fork_and_ref_read_back"},
+                    values={"fork": fork,
+                            "upstream.repository_id": c["upstream"]["repository_id"],
+                            "upstream.base_ref": c["upstream"]["base_ref"],
+                            "upstream.base_sha": c["upstream"]["base_sha"]})
+                if not fired.accepted:
+                    raise lifecycle.TransitionError(
+                        f"confirm_provisioning refused in {engine.state_key(c)}: {fired.reason}")
+                new, event = fired.record, fired.event
+            else:
+                # The provisioning wait has no row for the operation: the
+                # state is kept and the closed operation is released.
+                new, event = recovery.release(c, new_op, now), None
+            schemas.validate("contribution", new)
+            contributions[key] = new
+            snap.operations[op["operation_id"]] = new_op
+            out.staged.extend([("operations", new_op), ("contributions", new)])
+            if event is not None:
+                out.staged.append(("events", event))
+            report.append({"contribution": cid, "status": "provisioned"})
+    return report
+
+
 # The phases in which a record holds the fork it develops on.
 _FORK_PHASES = ("development", "handoff", "upstream_review", "release_wait")
 
@@ -2064,101 +2208,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
 
     # Verified administrative provisioning receipts are separate from model
     # artifact Results. Re-read the actual fork/ref before advancing state.
-    provision_report = []
-    for receipt in provisions or []:
-        cid = receipt.get("contribution_id")
-        if cid not in by_cid:
-            continue
-        key = by_cid[cid]
-        if cid in skip:
-            continue
-        with isolation.contribution(cid, "provisioning_receipt"):
-            c = contributions[key]
-            op = snap.operations.get(receipt.get("operation_id"))
-            if not op or op["kind"] != "fork_provision" or op["status"] not in recovery.OPEN \
-                    or c["phase"] != "provisioning" or c.get("active_operation_id") != op["operation_id"] \
-                    or c["revision"] != receipt.get("revision") or not isinstance(receipt.get("status"), str):
-                continue
-            external_ids = {}
-            if receipt.get("provision_run_id"):
-                external_ids["provision_run_id"] = str(receipt["provision_run_id"])
-            if receipt.get("provision_artifact_id"):
-                external_ids["provision_artifact_id"] = int(receipt["provision_artifact_id"])
-            if receipt["status"] != "provisioned":
-                # The trusted workflow reports a definite failure: the
-                # operation takes `record_failure` and, from
-                # `provisioning.idle`, fires `require_provisioning_intervention`;
-                # in the provisioning wait the state is kept.
-                fired = None
-                if op["status"] not in ("planned", "applying"):
-                    # Only a launched operation fails by a receipt.
-                    provision_report.append({"contribution": cid, "status": "failure not folded"})
-                    continue
-                new_op = recovery.fold_failure_receipt(op, external_ids=external_ids, now=iso)
-                if recovery.fired_verbs(c, new_op):
-                    facts, values = controller.RESOLUTION_FIRES[(new_op["kind"], new_op["status"])]
-                    fired = recovery.fire(c, new_op, policy=policy, now=iso, facts=facts,
-                                          values=values,
-                                          details={"receipt_status": receipt["status"][:200]})
-                    if not fired.accepted:
-                        raise lifecycle.TransitionError(
-                            f"require_provisioning_intervention refused in {engine.state_key(c)}: "
-                            f"{fired.reason}")
-                    new = fired.record
-                else:
-                    new = recovery.release(c, new_op, iso)
-                schemas.validate("contribution", new)
-                contributions[key] = new
-                snap.operations[op["operation_id"]] = new_op
-                out.staged.extend([("operations", new_op), ("contributions", new)])
-                if fired is not None:
-                    out.staged.append(("events", fired.event))
-                provision_report.append({"contribution": cid, "status": "failed"})
-                continue
-            if receipt.get("fork") != op["target"]["repository"] \
-                    or receipt.get("upstream_id") != c["upstream"]["repository_id"] \
-                    or receipt.get("base_sha") != c["upstream"]["base_sha"] \
-                    or receipt.get("actions_read_only") is not True:
-                provision_report.append({"contribution": cid, "status": "receipt mismatch"})
-                continue
-            repo = collect.repository(api, receipt["fork"])
-            head = collect.branch_head(api, receipt["fork"], DEV_REF)
-            expected = op["target"].get("expected_head") or op["target"]["base_sha"]
-            if not head or head["head"] != receipt.get("head_sha") or head["head"] != expected \
-                    or repo["id"] != receipt.get("fork_id") or repo.get("parent_id") != c["upstream"]["repository_id"]:
-                provision_report.append({"contribution": cid, "status": "fork identity/ref mismatch"})
-                continue
-            new_op = recovery.fold_receipt(
-                op, external_ids=external_ids,
-                detail="fork/source identity, branch and trusted setup receipt verified", now=iso)
-            fork = {"repository_id": repo["id"], "name": repo["full_name"], "head_ref": DEV_REF,
-                    "head_sha": head["head"], "pr_number": None}
-            if recovery.fired_verbs(c, new_op):
-                # The receipt matches the operation and the fork and ref were
-                # read back: the operation fires `confirm_provisioning`.
-                fired = recovery.fire(
-                    c, new_op, policy=policy, now=iso,
-                    facts={"receipt_matches_operation", "fork_and_ref_read_back"},
-                    values={"fork": fork,
-                            "upstream.repository_id": c["upstream"]["repository_id"],
-                            "upstream.base_ref": c["upstream"]["base_ref"],
-                            "upstream.base_sha": c["upstream"]["base_sha"]})
-                if not fired.accepted:
-                    raise lifecycle.TransitionError(
-                        f"confirm_provisioning refused in {engine.state_key(c)}: {fired.reason}")
-                new, event = fired.record, fired.event
-            else:
-                # The provisioning wait has no row for the operation: the
-                # state is kept and the closed operation is released.
-                new, event = recovery.release(c, new_op, iso), None
-            schemas.validate("contribution", new)
-            contributions[key] = new
-            snap.operations[op["operation_id"]] = new_op
-            out.staged.extend([("operations", new_op), ("contributions", new)])
-            if event is not None:
-                out.staged.append(("events", event))
-            provision_report.append({"contribution": cid, "status": "provisioned"})
-    out.report["provisions"] = provision_report
+    out.report["provisions"] = fold_provisioning_receipts(
+        api, provisions or [], contributions, by_cid, snap, out, policy=policy, now=iso, skip=skip)
 
     # 1. Publication outcomes from finished workers. A development reset or an
     # infrastructure retry can leave multiple artifacts for the same immutable

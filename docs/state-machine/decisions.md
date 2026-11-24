@@ -357,7 +357,7 @@ flowchart TB
 
 How provisioning failures are recovered, and whether the `approve-scope` and `provision` commands stay.
 
-**Decision.** `approve-scope` and `provision` are retired. The `provisioning_attempts` budget and `exhaust_provisioning_attempts` are removed; a human parks explicitly. `close_planning` no longer leaves `provisioning.idle`. Exhausting `operation_launch` waits for a human and does not park.
+**Decision.** `approve-scope` and `provision` are retired. The `provisioning_attempts` budget and `exhaust_provisioning_attempts` are removed; a human parks explicitly. `close_planning` no longer leaves `provisioning.idle`. Exhausting `operation_launch` waits for a human and does not park. A definite failure reported by the provisioning workflow waits for a human at once; a failure that is not definite is launched again within `operation_launch`; a refusal before any effect is neither.
 
 ```mermaid
 flowchart TB

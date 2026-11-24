@@ -20,12 +20,34 @@ from pathlib import Path
 import yaml
 
 import collect
+import isolation
 import schemas
 from common import CONTROL_REPO, DEV_REF, FORK_ORG, contribution_file_id
 
+# Why a provisioning run failed definitely, as a closed code: the receipt
+# names one of these, never free text the reconciler would act on.
+FAILURES = ("source_changed", "fork_mismatch", "branch_conflict", "settings", "workflows",
+            "write_refused", "other")
+# The step of the workflow a receipt comes from.
+STAGES = ("preflight", "create", "initialize")
+
 
 class ProvisionError(ValueError):
-    pass
+    """A definite failure of the provisioning effect, with its closed code."""
+
+    def __init__(self, message: str = "", failure: str = "other"):
+        super().__init__(message)
+        self.failure = failure
+
+
+class ProvisionRefused(ProvisionError):
+    """The workflow's own final check did not pass: nothing was attempted,
+    so this is no failure of the effect."""
+
+
+class ProvisionUnconfirmed(ProvisionError):
+    """A write whose answer is not a definite refusal: its effect is
+    unknown, so the run is launched again rather than reported."""
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -52,39 +74,48 @@ class WriteApi(collect.Api):
                     raise ProvisionError("oversized provisioning response")
                 return json.loads(data) if data else {}
         except urllib.error.HTTPError as e:
-            raise ProvisionError(f"provisioning API {method} {path}: HTTP {e.code}") from None
+            # 403, 404 and 422 refuse the write definitely, unless a 403 is
+            # rate limiting; any other answer leaves the effect unknown.
+            headers = e.headers or {}
+            limited = e.code == 429 or (e.code == 403 and bool(
+                headers.get("retry-after") or headers.get("x-ratelimit-remaining") == "0"))
+            message = f"provisioning API {method} {path}: HTTP {e.code}"
+            if e.code in (403, 404, 422) and not limited:
+                raise ProvisionError(message, failure="write_refused") from None
+            raise ProvisionUnconfirmed(message) from None
 
 
 def validate_request(record: dict, operation: dict, policy: dict) -> None:
     schemas.validate("contribution", record)
     schemas.validate("operation", operation)
     if policy.get("read_only", True):
-        raise ProvisionError("the policy is read-only")
+        raise ProvisionRefused("the policy is read-only")
     if record["phase"] != "provisioning" or record.get("paused"):
-        raise ProvisionError("contribution is not authorized for provisioning")
+        raise ProvisionRefused("contribution is not authorized for provisioning")
     if not record.get("plan_evidence_id") or not record.get("admission_class"):
-        raise ProvisionError("reviewed plan and approved scope required")
+        raise ProvisionRefused("reviewed plan and approved scope required")
     if not record["upstream"].get("repository_id") or not record["upstream"].get("base_sha"):
-        raise ProvisionError("upstream identity and immutable base must be verified first")
+        raise ProvisionRefused("upstream identity and immutable base must be verified first")
     # The record names the operation it authorizes. A resume of the wait for
     # exhausted launches bumps the record's revision and keeps the planned
     # operation, so the operation may be of an earlier revision.
     if operation["kind"] != "fork_provision" or operation["status"] != "planned" \
             or operation["contribution_id"] != record["contribution_id"] or operation["revision"] > record["revision"] \
             or record.get("active_operation_id") != operation["operation_id"]:
-        raise ProvisionError("operation is not the current authorized provisioning intent")
+        raise ProvisionRefused("operation is not the current authorized provisioning intent")
     expected = f"{FORK_ORG}/{record['upstream']['full_name'].split('/', 1)[1]}"
     if operation["target"]["repository"] != expected or operation["target"].get("ref") != DEV_REF \
             or operation["target"].get("base_sha") != record["upstream"]["base_sha"]:
-        raise ProvisionError("operation target does not match approved source/base")
+        raise ProvisionRefused("operation target does not match approved source/base")
 
 
 def check_fork(fork: dict, plan: dict) -> None:
     if (fork.get("full_name") or "").lower() != plan["fork"].lower() or not fork.get("fork") \
             or (fork.get("parent") or {}).get("id") != plan["upstream_id"] or fork.get("archived"):
-        raise ProvisionError("fork identity/network is not the approved upstream")
+        raise ProvisionError("fork identity/network is not the approved upstream",
+                             failure="fork_mismatch")
     if plan.get("fork_id") not in (None, fork["id"]):
-        raise ProvisionError("fork repository ID changed")
+        raise ProvisionError("fork repository ID changed", failure="fork_mismatch")
 
 
 def preflight(api, record: dict, operation: dict, policy: dict) -> dict:
@@ -92,10 +123,10 @@ def preflight(api, record: dict, operation: dict, policy: dict) -> dict:
     up = record["upstream"]
     source = api.get(f"/repos/{up['full_name']}")
     if source["id"] != up["repository_id"] or source["full_name"].lower() != up["full_name"].lower():
-        raise ProvisionError("upstream repository identity changed")
+        raise ProvisionError("upstream repository identity changed", failure="source_changed")
     commit = api.get(f"/repos/{up['full_name']}/git/commits/{up['base_sha']}")
     if commit["sha"] != up["base_sha"]:
-        raise ProvisionError("upstream base commit identity changed")
+        raise ProvisionError("upstream base commit identity changed", failure="source_changed")
     plan = {"operation_id": operation["operation_id"], "contribution_id": record["contribution_id"],
             "revision": record["revision"], "upstream": up["full_name"], "upstream_id": up["repository_id"],
             "fork": operation["target"]["repository"], "fork_name": operation["target"]["repository"].split('/', 1)[1],
@@ -123,7 +154,8 @@ def create_or_reuse(reader, creator, plan: dict) -> dict:
         check_fork(existing, plan)
         return dict(plan, fork_id=existing["id"], created=False)
     if not plan["create"] or creator is None:
-        raise ProvisionError("fork disappeared; not authorized to recreate it")
+        raise ProvisionError("fork disappeared; not authorized to recreate it",
+                             failure="fork_mismatch")
     result = creator.write("POST", f"/repos/{plan['upstream']}/forks",
                            {"organization": FORK_ORG, "name": plan["fork_name"], "default_branch_only": True})
     check_fork(result, plan)
@@ -164,10 +196,12 @@ def configure_inherited_workflows(api, fork: str, content_ref: str) -> dict[str,
     report zero Actions workflows until one is explicitly enabled."""
     entries = api.get(f"/repos/{fork}/contents/.github/workflows?ref={urllib.parse.quote(content_ref)}")
     if not isinstance(entries, list) or len(entries) > 100:
-        raise ProvisionError("workflow contents inventory is missing or exceeds bounded setup scan")
+        raise ProvisionError("workflow contents inventory is missing or exceeds bounded setup scan",
+                             failure="workflows")
     inventory = api.get(f"/repos/{fork}/actions/workflows?per_page=100")
     if inventory.get("total_count", 0) > 100:
-        raise ProvisionError("Actions workflow inventory exceeds bounded setup scan")
+        raise ProvisionError("Actions workflow inventory exceeds bounded setup scan",
+                             failure="workflows")
     registered_now = False
     if not inventory.get("workflows") and entries:
         # GitHub can leave inherited workflows unregistered on a fresh public
@@ -178,29 +212,30 @@ def configure_inherited_workflows(api, fork: str, content_ref: str) -> dict[str,
         api.write("PUT", f"/repos/{fork}/actions/permissions", {"enabled": True, "allowed_actions": "all"})
         inventory = api.get(f"/repos/{fork}/actions/workflows?per_page=100")
         if not inventory.get("workflows"):
-            raise ProvisionError("fork workflows remain unregistered after Actions re-enable")
+            raise ProvisionError("fork workflows remain unregistered after Actions re-enable",
+                                 failure="settings")
         registered_now = True
     states = {wf.get("path"): wf.get("state") for wf in inventory.get("workflows", [])}
     names = [entry.get("name") for entry in entries if entry.get("type") == "file"]
     if len(names) != len(set(names)):
-        raise ProvisionError("workflow filenames must be unique")
+        raise ProvisionError("workflow filenames must be unique", failure="workflows")
     changed = {"enabled": [], "disabled": []}
     for entry in entries:
         path = entry.get("path")
         if entry.get("type") != "file" or not isinstance(path, str) \
                 or not path.startswith(".github/workflows/") or ".." in path.split("/") \
                 or not path.endswith((".yml", ".yaml")):
-            raise ProvisionError("unexpected inherited workflow path")
+            raise ProvisionError("unexpected inherited workflow path", failure="workflows")
         data = api.get(f"/repos/{fork}/contents/{urllib.parse.quote(path, safe='/')}?ref={urllib.parse.quote(content_ref)}")
         if data.get("type") != "file" or data.get("encoding") != "base64":
-            raise ProvisionError("workflow must be a regular data file")
+            raise ProvisionError("workflow must be a regular data file", failure="workflows")
         raw = base64.b64decode(data["content"])
         if len(raw) > 1024 * 1024:
-            raise ProvisionError("oversized inherited workflow")
+            raise ProvisionError("oversized inherited workflow", failure="workflows")
         text = raw.decode()
         workflow = yaml.safe_load(text)
         if not isinstance(workflow, dict):
-            raise ProvisionError("invalid inherited workflow")
+            raise ProvisionError("invalid inherited workflow", failure="workflows")
         unsafe = _workflow_unsafe(workflow, text)
         state = states.get(path)
         identifier = urllib.parse.quote(entry["name"], safe="")
@@ -224,9 +259,11 @@ def initialize(api, plan: dict) -> dict:
     check_fork(fork, plan)
     head = collect.branch_head(api, plan["fork"], DEV_REF)
     if head and head["head"] not in (plan["base_sha"], plan.get("expected_head")):
-        raise ProvisionError(f"unexpected existing {DEV_REF} work; never reset it")
+        raise ProvisionError(f"unexpected existing {DEV_REF} work; never reset it",
+                             failure="branch_conflict")
     if not head and plan.get("expected_head"):
-        raise ProvisionError("recorded branch disappeared; recreation is not authorized")
+        raise ProvisionError("recorded branch disappeared; recreation is not authorized",
+                             failure="branch_conflict")
     # Avoid requiring repository-administration permission when the organization
     # and newly created fork already have the fail-closed desired settings. If a
     # setting differs, attempt the narrow write and require exact readback.
@@ -243,63 +280,107 @@ def initialize(api, plan: dict) -> dict:
     if permissions.get("default_workflow_permissions") != "read" \
             or permissions.get("can_approve_pull_request_reviews") \
             or actions.get("enabled") is not True or actions.get("allowed_actions") != "all":
-        raise ProvisionError("fork Actions settings readback failed")
+        raise ProvisionError("fork Actions settings readback failed", failure="settings")
     configured = configure_inherited_workflows(api, plan["fork"], fork["default_branch"])
     if head is None:
         api.write("POST", f"/repos/{plan['fork']}/git/refs", {"ref": f"refs/heads/{DEV_REF}", "sha": plan["base_sha"]})
     observed = collect.branch_head(api, plan["fork"], DEV_REF)
     if not observed or observed["head"] != (head["head"] if head else plan["base_sha"]):
-        raise ProvisionError("fork provisioning branch readback failed")
+        raise ProvisionError("fork provisioning branch readback failed", failure="branch_conflict")
     return dict(plan, status="provisioned", head_sha=observed["head"], actions_read_only=True,
                 enabled_workflows=configured["enabled"], disabled_workflows=configured["disabled"])
 
 
-def current_request(api, operation_id: str) -> tuple[dict, dict, dict]:
+def read_request(api, operation_id: str) -> tuple[dict, dict, dict]:
+    """The record, the operation and the policy at the head of `main`, not
+    yet validated."""
     if not re.fullmatch(r"op-[0-9a-f]{24}", operation_id):
-        raise ProvisionError("invalid operation ID")
+        raise ProvisionRefused("invalid operation ID")
     def read(path):
         data = api.get(f"/repos/{CONTROL_REPO}/contents/{path}?ref=main")
         if data.get("encoding") != "base64" or data.get("type") != "file":
-            raise ProvisionError("trusted state input is not a regular file")
+            raise ProvisionRefused("trusted state input is not a regular file")
         raw = base64.b64decode(data["content"])
         if len(raw) > 256 * 1024:
-            raise ProvisionError("oversized state input")
+            raise ProvisionRefused("oversized state input")
         return json.loads(raw)
     op = read(f".state/operations/{operation_id}.json")
     cid = contribution_file_id(op["contribution_id"])
     record = read(f".state/contributions/{cid}.json")
     policy = read("policy.json")
+    return record, op, policy
+
+
+def current_request(api, operation_id: str) -> tuple[dict, dict, dict]:
+    record, op, policy = read_request(api, operation_id)
     validate_request(record, op, policy)
     return record, op, policy
 
 
-if __name__ == "__main__":
+def failure_receipt(meta: dict, stage: str, error: BaseException) -> dict | None:
+    """The receipt of a run that did not provision: ``failed`` for a definite
+    failure of the effect, with its closed code; ``refused`` when the final
+    check before the effect did not pass. ``None`` when the failure is not
+    definite: no receipt, and the controller launches the run again."""
+    if isinstance(error, ProvisionUnconfirmed) or not isinstance(error, ProvisionError):
+        return None
+    refused = isinstance(error, ProvisionRefused)
+    failure = error.failure if error.failure in FAILURES else "other"
+    return meta | {"status": "refused" if refused else "failed", "stage": stage,
+                   "failure": None if refused else failure,
+                   "reason": isolation.clean_text(str(error), 300)}
+
+
+def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("preflight", "create", "initialize"))
+    parser.add_argument("mode", choices=STAGES)
     parser.add_argument("--operation-id", required=True)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
+    parser.add_argument("--receipt", type=Path,
+                        help="where a definite failure or a refusal is reported "
+                             "(default: outcome.json beside --out)")
+    args = parser.parse_args(argv)
+    receipt_path = args.receipt or args.out.parent / "outcome.json"
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != CONTROL_REPO \
             or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise ProvisionError("fork mutations are allowed only in trusted control-repository workflows on main")
     reader = collect.Api()
-    record, operation, policy = current_request(reader, args.operation_id)
-    plan = preflight(reader, record, operation, policy)
-    if args.mode == "create":
-        creator = WriteApi(token=os.environ.get("UPSTREAMING_CREATION_TOKEN")) if plan["create"] else None
-        plan = create_or_reuse(reader, creator, plan)
-    elif args.mode == "initialize":
-        previous = json.loads(args.plan.read_text())
-        if any(previous[k] != plan[k] for k in ("operation_id", "contribution_id", "revision", "upstream_id", "base_sha", "fork")):
-            raise ProvisionError("provisioning preconditions changed")
-        plan["fork_id"] = previous["fork_id"]
-        plan["created"] = previous["created"]
-        plan = initialize(WriteApi(token=os.environ["UPSTREAMING_FORK_TOKEN"]), plan)
+    record, operation, policy = read_request(reader, args.operation_id)
+    meta = {"operation_id": args.operation_id, "contribution_id": record.get("contribution_id"),
+            "revision": record.get("revision"), "run_id": os.environ.get("GITHUB_RUN_ID")}
+    try:
+        validate_request(record, operation, policy)
+        plan = preflight(reader, record, operation, policy)
+        if args.mode == "create":
+            creator = WriteApi(token=os.environ.get("UPSTREAMING_CREATION_TOKEN")) if plan["create"] else None
+            plan = create_or_reuse(reader, creator, plan)
+        elif args.mode == "initialize":
+            previous = json.loads(args.plan.read_text())
+            if any(previous[k] != plan[k] for k in ("operation_id", "contribution_id", "revision", "upstream_id",
+                                                     "base_sha", "fork")):
+                raise ProvisionRefused("provisioning preconditions changed")
+            plan["fork_id"] = previous["fork_id"]
+            plan["created"] = previous["created"]
+            plan = initialize(WriteApi(token=os.environ["UPSTREAMING_FORK_TOKEN"]), plan)
+    except ProvisionError as error:
+        receipt = failure_receipt(meta, args.mode, error)
+        if receipt is not None:
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            receipt_path.write_text(json.dumps(receipt, indent=2))
+        print(json.dumps({"operation_id": args.operation_id,
+                          "status": receipt["status"] if receipt else "unconfirmed",
+                          "stage": args.mode, "failure": receipt["failure"] if receipt else None}))
+        return 1
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(plan, indent=2))
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a") as f:
             f.write(f"create={str(plan['create']).lower()}\nfork_name={plan['fork_name']}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

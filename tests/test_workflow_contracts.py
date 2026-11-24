@@ -453,6 +453,23 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertEqual(token["with"]["repositories"], "${{ steps.create.outputs.fork_name }}")
         self.assertEqual(token["with"]["owner"], "riseproject-upstreaming")
 
+    def test_a_failed_provisioning_run_uploads_its_receipt_and_mints_no_later_token(self):
+        steps = workflow("provision.yml")["jobs"]["provision"]["steps"]
+        runs = [step for step in steps if "python -m provisioning" in step.get("run", "")]
+        self.assertEqual(len(runs), 3)
+        for step in runs:
+            self.assertIn("--receipt provisioning/outcome.json", step["run"])
+        [upload] = [step for step in steps if "upload-artifact" in step.get("uses", "")]
+        self.assertEqual(upload["if"], "always()")
+        self.assertEqual(upload["with"]["path"], "provisioning/*.json")
+        for name in ("creator", "fork-token"):
+            step = next(step for step in steps if step.get("id") == name)
+            self.assertNotIn("always()", str(step.get("if", "")))
+            self.assertNotIn("failure()", str(step.get("if", "")))
+        text = (WORKFLOWS / "controller.yml").read_text()
+        self.assertIn("provision.yml/runs?status=completed&branch=main&event=workflow_dispatch",
+                      text)
+
     def test_native_workers_explicitly_dispatch_controller_after_terminal_jobs(self):
         expectations = {
             "worker": {"safe_outputs", "publish"},
