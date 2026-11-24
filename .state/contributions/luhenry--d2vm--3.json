@@ -1,5 +1,5 @@
 {
-  "active_operation_id": "op-196103627c420a3cfc338a6d",
+  "active_operation_id": "op-d1b14b8f7fd480c88bb52352",
   "active_work": null,
   "activity": "waiting_ci",
   "admission_class": "architecture_correctness",
@@ -29,7 +29,7 @@
     "head_ref": "riscv64-dev",
     "head_sha": "6578833f81dda98923270270c97321516d1b2243",
     "name": "riseproject-upstreaming/d2vm",
-    "pr_number": null,
+    "pr_number": 1,
     "repository_id": 1469259163
   },
   "generation": 1,
@@ -38,7 +38,7 @@
   "held_patch": null,
   "last_ci_evidence_id": null,
   "merge": null,
-  "next_poll_at": "2026-11-24T12:14:05.040020+00:00",
+  "next_poll_at": "2026-11-24T12:15:31.777563+00:00",
   "owners": {
     "backup": null,
     "handoff_reviewer": null,
@@ -123,7 +123,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-24T12:13:05.040020+00:00",
+  "updated_at": "2026-11-24T12:14:31.777563+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",

@@ -1,0 +1,26 @@
+{
+  "at": "2026-11-24T12:14:31.777563+00:00",
+  "cause": {
+    "id": "op-196103627c420a3cfc338a6d",
+    "type": "operation"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "from_state": "development.waiting_ci",
+    "kind": "dev_pr_create",
+    "operation": "op-196103627c420a3cfc338a6d",
+    "pr_number": 1,
+    "to_state": "development.waiting_ci",
+    "verb": "confirm_development_pr"
+  },
+  "from": {},
+  "kind": "confirm_development_pr",
+  "revision_bumped": false,
+  "run": {
+    "attempt": 1,
+    "id": 45391469512
+  },
+  "schema_version": 1,
+  "sequence": 24,
+  "to": {}
+}
