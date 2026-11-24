@@ -728,6 +728,11 @@ REFRESH_UNUSED = "the automatic refresh is unused in this generation"
 REFRESH_USED = "the automatic refresh is used in this generation"
 REVISION_BUDGETS_REMAIN = "repair_attempts_cluster, no_progress, and work_total remain"
 REVIEW_REVISION_BUDGETS_REMAIN = "no_progress and work_total remain"
+# The guard of `require_provisioning_intervention`: the exhaustion form is not
+# taken while the contribution is paused; the failure and blocked forms are.
+PROVISIONING_NEEDS_INTERVENTION = ("a prerequisite cannot be satisfied, an uncertain operation "
+                                   "has no discovery, or operation_launch is exhausted while the "
+                                   "contribution is not paused")
 REVISION_BUDGET_EXHAUSTED = ("no_progress or work_total is exhausted, or repair_attempts_cluster "
                              "is exhausted and a failing CI job is recorded for the head")
 # What leaves the submission gate for repair: a CI failure on the candidate
@@ -1053,14 +1058,22 @@ LIFECYCLE: dict[str, State] = {
                  NOT_PAUSED),
                 charges=("operation_launch",),
                 description="Launches the planned operation; an uncertain launch is never repeated "
-                            "without discovery."),
+                            "without discovery. A launch is repeated only 300 seconds "
+                            "(`LAUNCH_INTERVAL_SECONDS`) after the last one without a verified "
+                            "receipt, and each launch needs available capacity."),
             ("require_provisioning_intervention", "provisioning.waiting_human"): Transition(
                 _P, None,
-                ("a prerequisite cannot be satisfied, an uncertain operation has no discovery, "
-                 "or operation_launch is exhausted",),
+                (PROVISIONING_NEEDS_INTERVENTION,),
                 _E(sets=("pending_human_action", PENDING_COUNTER)),
                 description="`pending_human_action.counter` names `operation_launch` when that "
-                            "budget is exhausted, and no counter otherwise.",
+                            "budget is exhausted, and no counter otherwise. The controller finds "
+                            "the exhaustion once the last allowed launch is "
+                            "`LAUNCH_INTERVAL_SECONDS` old without a verified receipt, and "
+                            "records `provisioning_launch_exhausted` with the counter "
+                            "`operation_launch`. A failed operation (resolved `failed`, or a "
+                            "verified receipt that reports a definite failure) takes the row at "
+                            "once, also while paused, with `provisioning_operation_failed` and "
+                            "no counter.",
                 exhausts=("operation_launch",)),
             ("confirm_provisioning", "development.fix_needed"): Transition(
                 _P, None,
@@ -1079,7 +1092,10 @@ LIFECYCLE: dict[str, State] = {
                 _C, RESUME,
                 (EXACT_REVISION, "the prerequisite is corrected", NOT_STALE),
                 _resume_restarting("operation_launch", "source_reads"),
-                description=_RESTART_NOTE),
+                description=_RESTART_NOTE + " The authorized `/upstreaming resume` is the "
+                            "statement that the prerequisite is corrected: the controller "
+                            "establishes it for every pending action the pipeline writes in this "
+                            "wait, and for no other, which only `park` leaves."),
         }),
     "development.agent_running": State(
         "work", False, True,
@@ -1892,7 +1908,11 @@ LIFECYCLE: dict[str, State] = {
                 _K, None,
                 (REVISION_BUDGET_EXHAUSTED,),
                 _E(sets=("pending_human_action=repair_budget_exhausted", PENDING_COUNTER)),
-                description="`pending_human_action.counter` names the counter that is exhausted.",
+                description="`pending_human_action.counter` names the first exhausted counter "
+                            "in the order `no_progress`, `work_total`, "
+                            "`repair_attempts_cluster`, and the event lists every exhausted "
+                            "counter. The resume starts only the named counter again, so with "
+                            "several exhausted the next tick waits again on the next one.",
                 exhausts=("work_total", "repair_attempts_cluster", "no_progress")),
         }),
     "upstream_review.agent_running": State(
@@ -2457,7 +2477,8 @@ BUDGETS: dict[str, Budget] = {
     "operation_launch": Budget(
         INFRASTRUCTURE_KEY, 1,
         "one launch of a planned fork provisioning or development PR operation",
-        "the operation's launch attempts",
+        "`external_ids.launch_attempts` of the planned operation, started again by the resume "
+        "that names `operation_launch`",
         ("require_provisioning_intervention", "exhaust_development_pr_launches"),
         infrastructure=True),
     "upstream_branch": Budget(
@@ -4307,14 +4328,22 @@ def _admits(t: Transition, kind: str) -> bool:
 
 
 def _check_human_waits(problems: list[str]) -> None:
-    """The resumes of one human wait are mutually exclusive: when a wait has
-    several, each is guarded by the pending action, no action satisfies two
-    of them, and every action with which the wait is entered satisfies one."""
+    """A human wait always names its pending action: no row into one clears
+    it without setting it. The resumes of one human wait are mutually
+    exclusive: when a wait has several, each is guarded by the pending
+    action, no action satisfies two of them, and every action with which the
+    wait is entered satisfies one."""
     for e in table_edges():
         if any(g in PENDING_GUARDS for g in e.transition.guard) and (
                 LIFECYCLE[e.source].kind != "human_wait" or not resumes_wait(e)):
             problems.append(f"{e.source} --{e.verb}--> {e.target}: a pending-action guard on a "
                             "transition that is not the resume of a human wait")
+        if LIFECYCLE[e.target].kind == "human_wait":
+            sets = {_field_name(f) for f in e.transition.effects.sets}
+            if "pending_human_action" in {_field_name(f) for f in e.transition.effects.clears} \
+                    and "pending_human_action" not in sets:
+                problems.append(f"{e.source} --{e.verb}--> {e.target}: clears "
+                                "pending_human_action in a human wait without setting it")
     for key, state in LIFECYCLE.items():
         if state.kind != "human_wait":
             continue

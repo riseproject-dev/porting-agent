@@ -896,6 +896,16 @@ class TestConsistencyCheckViolations(unittest.TestCase):
             "parked.idle --abandon--> closed.idle: ends the contribution without clearing "
             "paused_by")
 
+    def test_a_row_that_clears_the_pending_action_of_a_human_wait(self):
+        edge = lc.find_edge("provisioning.idle", "require_provisioning_intervention")
+        self.assertReports(
+            self.with_row("provisioning.idle", "require_provisioning_intervention",
+                          effects=dataclasses.replace(edge.transition.effects, sets=(),
+                                                      clears=("pending_human_action",))),
+            "provisioning.idle --require_provisioning_intervention--> "
+            "provisioning.waiting_human: clears pending_human_action in a human wait without "
+            "setting it")
+
     def test_no_head_row_while_work_runs(self):
         # A fork head that moves while Work is requested is recorded from
         # `development.fix_needed` once the stale Result is replanned.

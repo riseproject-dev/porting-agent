@@ -747,10 +747,13 @@ def _rename_caused_wait(ctx: Context) -> str | None:
     return None
 
 
-@_record("a prerequisite cannot be satisfied, an uncertain operation has no discovery, or "
-         "operation_launch is exhausted", "provisioning_needs_intervention")
+@_record(lc.PROVISIONING_NEEDS_INTERVENTION, "provisioning_needs_intervention")
 def _provisioning_needs_intervention(ctx: Context) -> str | None:
-    if _asserted(ctx, "provisioning_blocked") or remains("operation_launch", ctx) is False:
+    if _asserted(ctx, "provisioning_blocked"):
+        return None
+    if remains("operation_launch", ctx) is False:
+        if ctx.record.get("paused"):
+            return "operation_launch is exhausted but the contribution is paused"
         return None
     return "provisioning is not blocked and operation_launch remains"
 
@@ -1602,13 +1605,18 @@ def apply_command(record: dict, command: Command, *, policy: dict, now: str, com
 def state_problem(record: dict) -> str | None:
     """Why a record's state is not one the lifecycle admits, or ``None``.
 
-    A record is in a state of the table; a human wait of the handoff phase
-    carries a pending action the table enters it with.
+    A record is in a state of the table; a state of kind ``human_wait``
+    names its pending action, and a human wait of the handoff phase carries a
+    pending action the table enters it with.
     """
     key = state_key(record)
     state = lc.LIFECYCLE.get(key)
     if state is None:
         return f"{key} is not a lifecycle state"
+    if state.kind == "human_wait" and not (record.get("pending_human_action") or {}).get("kind"):
+        # Every row into a human wait sets the pending action, and no row in
+        # it clears the action without setting it (`lifecycle check`).
+        return f"{key} is a human wait without a pending action"
     if record["phase"] == "handoff" and state.kind in ("gate", "locked", "human_wait"):
         # Every handoff wait is entered through the table, which names its
         # pending action.
@@ -1626,13 +1634,10 @@ HUMAN_WAITS = frozenset(key for key, spec in lc.LIFECYCLE.items()
 
 def waits_for_human(record: dict) -> bool:
     """Whether ``record`` is in a wait of the table for a human: a state of
-    kind ``gate`` or ``locked``, or of kind ``human_wait`` with a recorded
-    ``pending_human_action``. Only the rows the table lists for the state
-    leave it."""
-    state = state_key(record)
-    if state not in HUMAN_WAITS:
-        return False
-    return lc.LIFECYCLE[state].kind != "human_wait" or bool(record.get("pending_human_action"))
+    kind ``gate``, ``locked``, or ``human_wait`` (which always names its
+    ``pending_human_action``, see `state_problem`). Only the rows the table
+    lists for the state leave it."""
+    return state_key(record) in HUMAN_WAITS
 
 
 def stopped(record: dict) -> bool:

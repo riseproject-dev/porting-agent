@@ -2116,3 +2116,149 @@ flowchart TB
 
     development_agent_running ==>|exhaust_work_recovery| development_waiting_human
 ```
+
+### The counter an exhausted upstream revision names
+
+Which counter `exhaust_repair_attempts` names in upstream review when several revision budgets are spent at once.
+
+**Change.** It names the first spent counter in the order `no_progress`, `work_total`, `repair_attempts_cluster` (the order of its guard), and its event lists every spent counter. The resume (`resume_upstream_revision`) starts only the named counter again, so with several spent the next tick waits again on the next one: one bounded human decision per budget.
+
+```mermaid
+flowchart TB
+    subgraph upstream_review["upstream_review"]
+        upstream_fix_needed["upstream_review.fix_needed"]
+        upstream_waiting_human["upstream_review.waiting_human"]
+    end
+
+    upstream_fix_needed ==>|exhaust_repair_attempts| upstream_waiting_human
+    upstream_waiting_human -->|resume_upstream_revision<br/>/upstreaming resume| upstream_fix_needed
+```
+
+### A human wait always names its pending action
+
+Whether a record in a state of kind `human_wait` may lack its pending action.
+
+**Change.** It may not. Every row into a human wait sets `pending_human_action`, no row clears it there without setting it (`lifecycle check`), and `state validate` refuses a record in a human wait whose pending action is missing or has no kind. A wait for a human (`engine.waits_for_human`) is therefore any state of kind `gate`, `locked`, or `human_wait`: only the rows the table lists for it leave it, observation reads nothing where it has no observation row, and a Result that arrives there takes `record_late_effect`.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_fix_needed ==>|exhaust_work_total| development_waiting_human
+    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+```
+
+### The operation rows a receipt and a push take
+
+How a planned operation run by a trusted workflow, a branch operation stored as `applying`, and a publisher final check that fails go through the operation table.
+
+**Change.** A planned operation that a trusted workflow runs stays `planned` across its launches. Its verified receipt, with the exact readback, takes `begin_effect`, `record_response`, and `confirm_by_discovery` together: the receipt establishes the facts of `begin_effect`, because the workflow's own final check read the record not paused and the operation current, and capacity was admitted when the controller launched it. A push establishes "capacity available" without a runner reservation. A branch operation that the store holds as `applying` lost the response of its push (the publisher hands an operation over only after recording the response): the observation takes `record_response` ("its response was lost") and discovers it, and never pushes again. When the publisher's final re-read of the head before a push fails or finds it moved, no intent is recorded and the outcome carries no operation, because `planned` has no row to `failed` other than a resolution.
+
+```mermaid
+flowchart TB
+    subgraph open_operations["open"]
+        op_planned["planned"]
+        op_applying["applying"]
+        op_uncertain["uncertain"]
+    end
+    subgraph closed_operations["closed"]
+        op_confirmed["confirmed"]
+        op_failed["failed"]
+        op_not_launched["not_launched"]
+    end
+
+    start_1(( )) -->|record_intent| op_planned
+    op_planned -->|begin_effect| op_applying
+    op_planned -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_planned -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_planned -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_applying -->|record_response| op_uncertain
+    op_applying -->|record_failure| op_failed
+    op_applying -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_applying -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_applying -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_uncertain -->|confirm_by_discovery| op_confirmed
+    op_uncertain -->|record_discovery| op_uncertain
+    op_uncertain -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_uncertain -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_uncertain -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_confirmed --> end_2(( ))
+    op_failed --> end_3(( ))
+    op_not_launched --> end_4(( ))
+```
+
+### The record's reference to its operation
+
+Which write clears `active_operation_id`, given that no operation row lists it.
+
+**Change.** The reference is not lifecycle state: it is kept by the writes beside a row `operation_planned` and `operation_released`, and released in the same write that closes the operation (a receipt, a failure receipt, `resolve-operation`, a closed development PR or `ci_rerun` operation, or `exhaust_development_pr_launches`). `record_merge` is the one row that clears it by an effect, because the merge ends fork work even while an operation is open; that operation still fences through the store and is reported as orphaned.
+
+```mermaid
+flowchart TB
+    subgraph open_operations["open"]
+        op_planned["planned"]
+        op_applying["applying"]
+        op_uncertain["uncertain"]
+    end
+    subgraph closed_operations["closed"]
+        op_confirmed["confirmed"]
+        op_failed["failed"]
+        op_not_launched["not_launched"]
+    end
+
+    start_1(( )) -->|record_intent| op_planned
+    op_planned -->|begin_effect| op_applying
+    op_planned -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_planned -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_planned -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_applying -->|record_response| op_uncertain
+    op_applying -->|record_failure| op_failed
+    op_applying -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_applying -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_applying -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_uncertain -->|confirm_by_discovery| op_confirmed
+    op_uncertain -->|record_discovery| op_uncertain
+    op_uncertain -->|resolve_confirmed<br/>/upstreaming resolve-operation| op_confirmed
+    op_uncertain -->|resolve_failed<br/>/upstreaming resolve-operation| op_failed
+    op_uncertain -->|resolve_not_launched<br/>/upstreaming resolve-operation| op_not_launched
+    op_confirmed --> end_2(( ))
+    op_failed --> end_3(( ))
+    op_not_launched --> end_4(( ))
+```
+
+### Launches of a planned operation and their exhaustion
+
+Where `operation_launch` is counted, how often a launch is repeated, and when its exhaustion is taken.
+
+**Change.** `operation_launch` is counted in `external_ids.launch_attempts` of the planned operation and started again by the resume that names it. A launch is repeated only 300 seconds (`LAUNCH_INTERVAL_SECONDS`) after the last one without a verified receipt; each provisioning launch needs available capacity, and a development PR launch (`launch_development_pr`) has no capacity guard. `require_provisioning_intervention` for exhausted launches is found once the last allowed launch is that old without a receipt, and its guard holds only while the contribution is not paused, so the first tick after the pause ends takes it (pending action `provisioning_launch_exhausted`, counter `operation_launch`). A failed provisioning operation (resolved `failed`, or a verified receipt that reports a definite failure) takes the row at once, also while paused, with `provisioning_operation_failed` and no counter.
+
+```mermaid
+flowchart TB
+    subgraph provisioning["provisioning"]
+        provisioning_idle["provisioning.idle"]
+        provisioning_waiting_human["provisioning.waiting_human"]
+    end
+
+    provisioning_idle -->|start_operation| provisioning_idle
+    provisioning_idle ==>|require_provisioning_intervention| provisioning_waiting_human
+```
+
+### The resume of a provisioning wait
+
+What establishes "the prerequisite is corrected", and what the resume of exhausted launches relaunches.
+
+**Change.** The authorized human's `/upstreaming resume` is the statement that the prerequisite is corrected. The controller establishes it for every pending action the pipeline writes in `provisioning.waiting_human` (`provisioning_launch_exhausted` with `operation_launch`, `provisioning_operation_failed`, and `base_branch_unavailable` and `upstream_unavailable` with `source_reads` or no counter); any other pending action establishes nothing, so the resume is refused and `park` remains. After the resume of exhausted launches the same open planned operation is launched again from a count of zero at the new revision: the provisioning workflow accepts an operation of an earlier revision when the record names it as active, and its receipt carries the record's revision. A receipt of a launch before the resume carries the earlier revision and is not folded; the receipt of the relaunch, which adopts the fork, is.
+
+```mermaid
+flowchart TB
+    subgraph provisioning["provisioning"]
+        provisioning_waiting_human["provisioning.waiting_human"]
+        provisioning_idle["provisioning.idle"]
+    end
+
+    provisioning_waiting_human ==>|resume_provisioning<br/>/upstreaming resume| provisioning_idle
+    provisioning_idle -->|start_operation| provisioning_idle
+```

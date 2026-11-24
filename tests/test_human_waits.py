@@ -23,6 +23,7 @@ import lifecycle
 import observe_ci
 import reconcile
 import schemas
+import state
 import work
 from tests import helpers
 from tests.helpers import NOW, OWNER, SHA_A, ci_record, contribution, policy
@@ -194,8 +195,37 @@ class TestLegacyWritersKeepTheWait(unittest.TestCase):
             with self.subTest(state=key):
                 self.assertTrue(engine.waits_for_human(record))
                 self.assertEqual(observe_ci.human_wait_without_observation(record), not observed)
-        # The legacy shape without a pending action is not a wait of the table.
-        self.assertFalse(engine.waits_for_human(self.record(pending_human_action=None)))
+
+    def test_a_human_wait_always_names_its_pending_action(self):
+        # Every row into a human wait sets the pending action and none clears
+        # it there (`lifecycle check`); `state validate` refuses the shape.
+        waits = [k for k, s in lifecycle.LIFECYCLE.items() if s.kind == "human_wait"]
+        self.assertTrue(waits)
+        for key in waits:
+            phase, activity = key.split(".")
+            with self.subTest(state=key):
+                named = self.record(phase=phase, activity=activity)
+                if phase != "handoff":
+                    self.assertIsNone(engine.state_problem(named))
+                for pending in (None, {}, {**named["pending_human_action"], "kind": ""}):
+                    bare = self.record(phase=phase, activity=activity,
+                                       pending_human_action=pending)
+                    self.assertEqual(engine.state_problem(bare),
+                                     f"{key} is a human wait without a pending action")
+        bare = self.record(pending_human_action=None)
+        problems = state.check_blob(state.record_path("contributions", bare),
+                                    state.canonical_json(bare).encode(), P)
+        self.assertTrue(any("human wait without a pending action" in p for p in problems),
+                        problems)
+        named = self.record()
+        self.assertEqual(state.check_blob(state.record_path("contributions", named),
+                                          state.canonical_json(named).encode(), P), [])
+        for key, spec in lifecycle.LIFECYCLE.items():
+            phase, activity = key.split(".")
+            with self.subTest(wait=key):
+                self.assertEqual(engine.waits_for_human(self.record(phase=phase,
+                                                                    activity=activity)),
+                                 spec.kind in lifecycle.REMINDER_KINDS)
 
     def test_review_feedback_and_a_new_head_are_not_folded_in_the_wait(self):
         from tests.test_late_results import FEEDBACK

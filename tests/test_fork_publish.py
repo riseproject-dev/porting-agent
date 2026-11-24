@@ -163,6 +163,28 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
         self.assertIsNone(out.operation)
         self.assertEqual(self.fork_head(), self.base)
 
+    def test_a_failed_final_check_records_no_intent(self):
+        """The final re-read of the head before the push fails or finds it
+        moved: no intent is recorded, so no operation is left `planned`
+        (which has no row to `failed` other than a resolution)."""
+        def failing():
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError("read failed")
+            return self.base
+
+        cases = {"infra_error": failing,
+                 "rejected": lambda heads=iter([self.base, "f" * 40]): next(heads)}
+        for status, observe in cases.items():
+            calls = []
+            with self.subTest(status=status):
+                self.ops.clear()
+                out = self.run_publish(observe=observe)
+                self.assertEqual(out.status, status, out.reason)
+                self.assertIsNone(out.operation)
+                self.assertEqual(self.ops, [])
+                self.assertEqual(self.fork_head(), self.base)
+
     def test_lease_rejects_concurrent_push(self):
         # Fork moves *after* our last read: the lease, not the read, stops us.
         real = self.fork_head

@@ -354,8 +354,8 @@ def record_discovery(op: dict, result: str, detail: str, now: str) -> dict:
 
 # The facts a verified receipt of a trusted workflow establishes: the
 # workflow's final check (the operation planned and current, the
-# contribution not paused, its capacity reserved) passed, and the remote call
-# it made returned.
+# contribution not paused, capacity admitted when the controller launched
+# it) passed, and the remote call it made returned.
 RECEIPT_FACTS = frozenset({"capacity_available", "contribution_not_paused", "final_check_passed"})
 
 

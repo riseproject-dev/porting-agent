@@ -828,6 +828,19 @@ class TestBranchDiscovery(unittest.TestCase):
                                  ("uncertain", "absent"))
         self.assertEqual(self.observe(operation("planned"), "b" * 40)["status"], "planned")
 
+    def test_a_stored_applying_operation_lost_its_response_and_is_not_pushed_again(self):
+        # The publisher hands an operation over only after it recorded the
+        # response, so `applying` in the store is a lost response: the
+        # observation takes `record_response` and discovers, and never pushes.
+        from unittest import mock
+        before = operation("applying")
+        with mock.patch("fork_publish.publish", side_effect=AssertionError("pushed")) as push:
+            found = self.observe(copy.deepcopy(before), "b" * 40)
+        push.assert_not_called()
+        self.assertEqual(found["status"], "confirmed")
+        self.assertIsNone(recovery.transition_problem(before, found))
+        self.assertEqual((found["proposed"], found["target"]), (before["proposed"], before["target"]))
+
 
 class TestFiresBindings(unittest.TestCase):
     def test_each_binding_names_operation_rows_of_its_state(self):
@@ -1294,3 +1307,168 @@ class TestStaleProvisioningWait(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# Decided readings of the operation rows
+
+
+class TestDecidedOperationRows(ReceiptWorld, unittest.TestCase):
+    def test_a_receipt_takes_the_three_rows_together(self):
+        """A planned operation stays `planned` across its launches; its
+        verified receipt takes `begin_effect`, `record_response`, and
+        `confirm_by_discovery` together. The receipt and a push establish
+        exactly the facts of `begin_effect`."""
+        op = operation("planned", kind="fork_provision")
+        for n in (1, 2):
+            op = recovery.charge_launch(op, NOW)
+            self.assertEqual((op["status"], recovery.launch_attempts(op)), ("planned", n))
+        folded = recovery.fold_receipt(op, external_ids={"provision_run_id": "77"},
+                                       detail="read back", now=NOW)
+        self.assertEqual(folded["status"], "confirmed")
+        self.assertEqual([d["result"] for d in folded["discovery"]], ["confirmed"])
+        self.assertEqual(recovery.launch_attempts(folded), 2)
+        self.assertIsNone(recovery.transition_problem(op, folded))
+        import fork_publish
+        begin = lc.find_edge("planned", "begin_effect", lc.OPERATIONS)
+        names = {recovery.PREDICATES[guard].name for guard in begin.transition.guard}
+        self.assertEqual(recovery.RECEIPT_FACTS, names)
+        self.assertEqual(fork_publish.PUSH_FACTS, names)
+
+    def closes(self):
+        """Every write that closes an operation, with the records before and
+        the tick result: each stages the closed operation and the record
+        with the reference released."""
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        yield "receipt in provisioning.idle", op, self.fold(rec, op, receipt, api)
+        waiting, op, receipt, api = self.receipt_world(provisioning_record(
+            activity="waiting_human", pending_human_action={
+                "kind": controller.LAUNCH_EXHAUSTED, "requested_at": NOW, "reminded_at": None,
+                "escalated_at": None, "counter": "operation_launch"}))
+        yield "receipt in provisioning.waiting_human", op, self.fold(waiting, op, receipt, api)
+        rec, op, receipt, api = self.receipt_world(provisioning_record())
+        yield "failure receipt", op, self.fold(rec, op, dict(receipt, status="failed"), api)
+        for disposition in ("confirmed", "failed", "not-launched"):
+            rec = contribution(activity="waiting_ci")
+            op = operation("uncertain")
+            rec["active_operation_id"] = op["operation_id"]
+            yield f"resolve-operation {disposition}", op, tick(
+                rec, {op["operation_id"]: op},
+                comments=[human(f"/upstreaming resolve-operation operation={op['operation_id']} "
+                                f'disposition={disposition} reason="checked"', cid=70)])
+        from tests import test_dev_pr
+        rec, ops = test_dev_pr.published()
+        _res, rec, ops, _events = test_dev_pr.run(rec, ops)
+        op = ops[rec["active_operation_id"]]
+        res, *_rest = test_dev_pr.run(dict(rec, paused=True), ops, 1)
+        yield "a stale development PR operation", op, res
+        rec, ops = test_dev_pr.published()
+        _res, rec, ops, _events = test_dev_pr.run(rec, ops)
+        op = ops[rec["active_operation_id"]]
+        spent = dict(op, external_ids={recovery.LAUNCH_COUNTER: 3})
+        ops[op["operation_id"]] = spent
+        res, *_rest = test_dev_pr.run(rec, ops, 6)
+        yield "exhaust_development_pr_launches", op, res
+        rerun = operation("planned", kind="ci_rerun", cid=rec["contribution_id"])
+        rec = dict(rec, active_operation_id=rerun["operation_id"])
+        res, *_rest = test_dev_pr.run(rec, {rerun["operation_id"]: rerun}, 6)
+        yield "a spent ci_rerun", rerun, res
+
+    def test_the_reference_is_released_in_the_write_that_closes(self):
+        for name, op, result in self.closes():
+            with self.subTest(close=name):
+                [closed] = [o for o in staged(result, "operations")
+                            if o["operation_id"] == op["operation_id"]]
+                self.assertIn(closed["status"], ("confirmed", "failed", "not_launched"))
+                self.assertIsNone(staged(result, "contributions")[-1]["active_operation_id"])
+        # No row clears the reference by an effect, other than the merge.
+        naming = {e.verb for e in lc.table_edges()
+                  if "active_operation_id" in {f.split("=", 1)[0] for f in
+                                               e.transition.effects.sets
+                                               + e.transition.effects.clears}}
+        self.assertEqual(naming, {"record_merge"})
+
+    def test_a_relaunch_without_capacity_charges_nothing(self):
+        result = tick(provisioning_record(), {})
+        [op] = staged(result, "operations")
+        rec = staged(result, "contributions")[-1]
+        at = T + timedelta(seconds=controller.LAUNCH_INTERVAL_SECONDS)
+        later = tick(rec, {op["operation_id"]: op}, at, ok=False)
+        self.assertEqual((later.report["provision_requests"], staged(later, "operations"),
+                          staged(later, "events")), ([], [], []))
+
+    def test_exhaustion_waits_for_the_interval_and_the_end_of_a_pause(self):
+        result = tick(provisioning_record(), {})
+        [op] = staged(result, "operations")
+        rec = staged(result, "contributions")[-1]
+        limit = lc.budget_limit("operation_launch", POLICY)
+        spent = dict(op, external_ids={recovery.LAUNCH_COUNTER: limit})
+        ops = {op["operation_id"]: spent}
+        # Not before the interval after the last allowed launch.
+        early = tick(rec, ops, T + timedelta(seconds=60))
+        self.assertEqual(early.staged, [])
+        # Not while paused, by the row's guard; the failure form is.
+        at = T + timedelta(seconds=controller.LAUNCH_INTERVAL_SECONDS)
+        paused = dict(rec, paused=True, paused_at=NOW, paused_by="human", paused_reason="x")
+        self.assertEqual(tick(paused, ops, at).staged, [])
+        counts = recovery.launch_count(spent)
+        self.assertIn("paused", engine.refusal(paused, "require_provisioning_intervention",
+                                               policy=POLICY, now=NOW, counts=counts))
+        self.assertIsNone(engine.refusal(paused, "require_provisioning_intervention",
+                                         policy=POLICY, now=NOW, counts=counts,
+                                         facts={"provisioning_blocked"}))
+        # The first tick after the pause ends takes the row.
+        out = apply_command(paused, commands.parse(
+            f'/upstreaming resume revision={paused["revision"]} reason="x"'),
+            operations=ops, policy_=POLICY)
+        self.assertEqual((out.accepted, out.verb), (True, "resume_pause"))
+        result = tick(out.record, ops, at)
+        [event] = staged(result, "events")
+        self.assertEqual(event["kind"], "require_provisioning_intervention")
+        waiting = staged(result, "contributions")[-1]
+        self.assertEqual((waiting["pending_human_action"]["kind"],
+                          waiting["pending_human_action"]["counter"]),
+                         (controller.LAUNCH_EXHAUSTED, "operation_launch"))
+
+    def test_every_pending_action_of_the_provisioning_wait_is_resumable(self):
+        written = {kind for kind, _counter in controller.PROVISIONING_WAITS}
+        self.assertEqual(written, (lc.pending_kinds("provisioning.waiting_human") - {""})
+                         | {controller.LAUNCH_EXHAUSTED, controller.PROVISIONING_FAILED})
+
+        def waiting(kind, counter):
+            return provisioning_record(activity="waiting_human", pending_human_action={
+                "kind": kind, "requested_at": NOW, "reminded_at": None, "escalated_at": None,
+                "counter": counter})
+
+        for kind, counter in sorted(controller.PROVISIONING_WAITS, key=str):
+            rec = waiting(kind, counter)
+            with self.subTest(kind=kind, counter=counter):
+                out = apply_command(rec, commands.parse(
+                    f'/upstreaming resume revision={rec["revision"]} reason="fixed"'),
+                    policy_=POLICY)
+                self.assertEqual((out.accepted, out.verb), (True, "resume_provisioning"),
+                                 out.reason)
+        rec = waiting("something_else", None)
+        out = apply_command(rec, commands.parse(
+            f'/upstreaming resume revision={rec["revision"]} reason="fixed"'), policy_=POLICY)
+        self.assertFalse(out.accepted)
+        self.assertIn("not established: the prerequisite is corrected", out.reason)
+        self.assertTrue(apply_command(rec, commands.parse('/upstreaming park reason="x"'),
+                                      policy_=POLICY).accepted)
+
+    def test_a_receipt_of_a_launch_before_the_resume_is_not_folded(self):
+        rec, op, at = exhausted_wait()
+        receipt, resumed, ops, _result = command_tick(
+            rec, {op["operation_id"]: op}, at + timedelta(days=1),
+            f'/upstreaming resume revision={rec["revision"]} reason="fixed"')
+        self.assertEqual(receipt["result"], "accepted", receipt)
+        relaunched = ops[op["operation_id"]]
+        _rec, _op, old, api = self.receipt_world(rec)
+        old = dict(old, operation_id=op["operation_id"], revision=rec["revision"])
+        folded = self.fold(resumed, relaunched, old, api)
+        self.assertEqual(folded.staged, [])
+        self.assertEqual(relaunched["status"], "planned")
+        new = dict(old, revision=resumed["revision"])
+        folded = self.fold(resumed, relaunched, new, api)
+        [confirmed] = staged(folded, "operations")
+        self.assertEqual(confirmed["status"], "confirmed")

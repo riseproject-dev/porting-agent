@@ -55,8 +55,9 @@ Deterministic, no model. For each contribution in a phase that watches CI:
   or whose refresh from ``parked.idle``, depends on whether it is open
   (``reads_upstream_pr_state``).
 
-A contribution that waits for a human in a state of the table without an
-observation row (``engine.waits_for_human``) is not observed: only the rows
+A contribution that waits for a human (a state of kind ``gate``, ``locked``,
+or ``human_wait``, ``engine.waits_for_human``) in a state without an
+observation row is not observed: only the rows
 the table lists for the wait leave it.
 
 Returns staged records for the state publisher. Never writes remotely.

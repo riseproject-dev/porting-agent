@@ -529,6 +529,56 @@ class TestRevisionWork(unittest.TestCase):
         self.assertEqual(engine.state_key(after), "upstream_review.waiting_human")
         self.assertEqual(after["pending_human_action"]["counter"], "no_progress")
 
+    def test_exhaustion_names_the_first_spent_counter_in_order(self):
+        """`exhaust_repair_attempts` names the first spent counter of
+        `no_progress`, `work_total`, `repair_attempts_cluster`; the event
+        lists every spent one, and each resume restarts only the named one."""
+        rec = record("waiting_ci")
+        failed = tick(rec, verdict="failed")
+        observed = final(failed, rec)
+        evidence = {e["evidence_id"]: e for e in staged(failed, "evidence")}
+        cluster = next(iter(final(tick(observed, evidence=evidence, capacity_ok=True),
+                                  observed)["budget"]["clusters"]))
+        limits = {name: lifecycle.budget_limit(name, POLICY)
+                  for name in ("no_progress", "work_total", "repair_attempts_cluster")}
+        fields = {"no_progress": {"no_progress_streak": limits["no_progress"]},
+                  "work_total": {"attempts_used": limits["work_total"]},
+                  "repair_attempts_cluster": {
+                      "clusters": {cluster: limits["repair_attempts_cluster"]}}}
+
+        def spent(*names):
+            out = copy.deepcopy(observed)
+            for name in names:
+                out["budget"].update(copy.deepcopy(fields[name]))
+            return out
+
+        def exhaust(rec):
+            out = tick(rec, evidence=evidence)
+            self.assertEqual(kinds(out), ["exhaust_repair_attempts"])
+            event = staged(out, "events")[0]
+            return final(out, rec), event
+
+        for names, first in ((tuple(fields), "no_progress"),
+                             (("work_total", "repair_attempts_cluster"), "work_total"),
+                             (("repair_attempts_cluster",), "repair_attempts_cluster")):
+            with self.subTest(spent=names):
+                after, event = exhaust(spent(*names))
+                self.assertEqual(engine.state_key(after), "upstream_review.waiting_human")
+                self.assertEqual(after["pending_human_action"]["counter"], first)
+                self.assertEqual(event["details"]["exhausted"], list(names))
+
+        after, _event = exhaust(spent("work_total", "repair_attempts_cluster"))
+        out = apply_command(after, commands.parse(
+            f'/upstreaming resume revision={after["revision"]} reason="go"'))
+        self.assertTrue(out.accepted, out.reason)
+        self.assertEqual(engine.state_key(out.record), "upstream_review.fix_needed")
+        self.assertEqual(out.record["budget"]["attempts_used"], 0)
+        self.assertEqual(out.record["budget"]["clusters"][cluster],
+                         limits["repair_attempts_cluster"])
+        again, event = exhaust(out.record)
+        self.assertEqual(again["pending_human_action"]["counter"], "repair_attempts_cluster")
+        self.assertEqual(event["details"]["exhausted"], ["repair_attempts_cluster"])
+
     def test_no_park_from_upstream_review_without_a_command(self):
         for edge in lifecycle.table_edges():
             if lifecycle.state_phase(edge.source) == "upstream_review" \

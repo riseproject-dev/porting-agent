@@ -1726,7 +1726,9 @@ def _launch_provisioning(c: dict, operation: dict, by_id: dict, operations: dict
         res.report["provision_requests"].append({
             "operation_id": oid, "contribution_id": cid, "attempt": attempts + 1})
         return True
-    if not c.get("paused") and attempts >= lifecycle.budget_limit("operation_launch", policy):
+    if engine.refusal(c, "require_provisioning_intervention", policy=policy, now=now,
+                      counts=counts, open_operations=open_ops) is None:
+        # The exhausted launches, not while paused, by the row's guard.
         out = engine.apply_transition(
             c, "require_provisioning_intervention", policy=policy, now=now, cause_id=oid,
             counts=counts, open_operations=open_ops,

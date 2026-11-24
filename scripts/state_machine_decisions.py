@@ -1238,6 +1238,106 @@ FURTHER_CHANGES: tuple[Item, ...] = (
         edges=(("development.agent_running", "exhaust_work_recovery"),),
         highlighted=(("development.agent_running", "exhaust_work_recovery"),),
     ),
+    Item(
+        "The counter an exhausted upstream revision names",
+        "Which counter `exhaust_repair_attempts` names in upstream review when several revision "
+        "budgets are spent at once.",
+        "It names the first spent counter in the order `no_progress`, `work_total`, "
+        "`repair_attempts_cluster` (the order of its guard), and its event lists every spent "
+        "counter. The resume (`resume_upstream_revision`) starts only the named counter again, "
+        "so with several spent the next tick waits again on the next one: one bounded human "
+        "decision per budget.",
+        ("upstream_review.fix_needed", "upstream_review.waiting_human"),
+        edges=(("upstream_review.fix_needed", "exhaust_repair_attempts"),
+               ("upstream_review.waiting_human", "resume_upstream_revision")),
+        highlighted=(("upstream_review.fix_needed", "exhaust_repair_attempts"),),
+    ),
+    Item(
+        "A human wait always names its pending action",
+        "Whether a record in a state of kind `human_wait` may lack its pending action.",
+        "It may not. Every row into a human wait sets `pending_human_action`, no row clears it "
+        "there without setting it (`lifecycle check`), and `state validate` refuses a record "
+        "in a human wait whose pending action is missing or has no kind. A wait for a human "
+        "(`engine.waits_for_human`) is therefore any state of kind `gate`, `locked`, or "
+        "`human_wait`: only the rows the table lists for it leave it, observation reads "
+        "nothing where it has no observation row, and a Result that arrives there takes "
+        "`record_late_effect`.",
+        ("development.fix_needed", "development.waiting_human"),
+        edges=(("development.fix_needed", "exhaust_work_total"),
+               ("development.waiting_human", "resume_development")),
+        highlighted=(("development.fix_needed", "exhaust_work_total"),),
+    ),
+    Item(
+        "The operation rows a receipt and a push take",
+        "How a planned operation run by a trusted workflow, a branch operation stored as "
+        "`applying`, and a publisher final check that fails go through the operation table.",
+        "A planned operation that a trusted workflow runs stays `planned` across its launches. "
+        "Its verified receipt, with the exact readback, takes `begin_effect`, "
+        "`record_response`, and `confirm_by_discovery` together: the receipt establishes the "
+        "facts of `begin_effect`, because the workflow's own final check read the record not "
+        "paused and the operation current, and capacity was admitted when the controller "
+        "launched it. A push establishes \"capacity available\" without a runner reservation. "
+        "A branch operation that the store holds as `applying` lost the response of its push "
+        "(the publisher hands an operation over only after recording the response): the "
+        "observation takes `record_response` (\"its response was lost\") and discovers it, "
+        "and never pushes again. When the publisher's final re-read of the head before a push "
+        "fails or finds it moved, no intent is recorded and the outcome carries no operation, "
+        "because `planned` has no row to `failed` other than a resolution.",
+        operations=True,
+    ),
+    Item(
+        "The record's reference to its operation",
+        "Which write clears `active_operation_id`, given that no operation row lists it.",
+        "The reference is not lifecycle state: it is kept by the writes beside a row "
+        "`operation_planned` and `operation_released`, and released in the same write that "
+        "closes the operation (a receipt, a failure receipt, `resolve-operation`, a closed "
+        "development PR or `ci_rerun` operation, or `exhaust_development_pr_launches`). "
+        "`record_merge` is the one row that clears it by an effect, because the merge ends fork "
+        "work even while an operation is open; that operation still fences through the store "
+        "and is reported as orphaned.",
+        operations=True,
+    ),
+    Item(
+        "Launches of a planned operation and their exhaustion",
+        "Where `operation_launch` is counted, how often a launch is repeated, and when its "
+        "exhaustion is taken.",
+        "`operation_launch` is counted in `external_ids.launch_attempts` of the planned "
+        "operation and started again by the resume that names it. A launch is repeated only "
+        "300 seconds (`LAUNCH_INTERVAL_SECONDS`) after the last one without a verified "
+        "receipt; each provisioning launch needs available capacity, and a development PR "
+        "launch (`launch_development_pr`) has no capacity guard. `require_provisioning_"
+        "intervention` for exhausted launches is found once the last allowed launch is that "
+        "old without a receipt, and its guard holds only while the contribution is not "
+        "paused, so the first tick after the pause ends takes it (pending action "
+        "`provisioning_launch_exhausted`, counter `operation_launch`). A failed provisioning "
+        "operation (resolved `failed`, or a verified receipt that reports a definite failure) "
+        "takes the row at once, also while paused, with `provisioning_operation_failed` and no "
+        "counter.",
+        ("provisioning.idle", "provisioning.waiting_human"),
+        edges=(("provisioning.idle", "start_operation"),
+               ("provisioning.idle", "require_provisioning_intervention")),
+        highlighted=(("provisioning.idle", "require_provisioning_intervention"),),
+    ),
+    Item(
+        "The resume of a provisioning wait",
+        "What establishes \"the prerequisite is corrected\", and what the resume of exhausted "
+        "launches relaunches.",
+        "The authorized human's `/upstreaming resume` is the statement that the prerequisite "
+        "is corrected. The controller establishes it for every pending action the pipeline "
+        "writes in `provisioning.waiting_human` (`provisioning_launch_exhausted` with "
+        "`operation_launch`, `provisioning_operation_failed`, and `base_branch_unavailable` "
+        "and `upstream_unavailable` with `source_reads` or no counter); any other pending "
+        "action establishes nothing, so the resume is refused and `park` remains. After the "
+        "resume of exhausted launches the same open planned operation is launched again from "
+        "a count of zero at the new revision: the provisioning workflow accepts an operation "
+        "of an earlier revision when the record names it as active, and its receipt carries "
+        "the record's revision. A receipt of a launch before the resume carries the earlier "
+        "revision and is not folded; the receipt of the relaunch, which adopts the fork, is.",
+        ("provisioning.waiting_human", "provisioning.idle"),
+        edges=(("provisioning.waiting_human", "resume_provisioning"),
+               ("provisioning.idle", "start_operation")),
+        highlighted=(("provisioning.waiting_human", "resume_provisioning"),),
+    ),
 )
 
 SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
