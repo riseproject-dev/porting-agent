@@ -996,10 +996,12 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 else:
                     facts = ALLOCATION_FACTS | {"submission_rewrite_current"}
             if engine.state_key(due) == "development.review_pending":
-                # The review reads the held series from the worker run's
-                # artifact: an expired one is never reviewed or published,
-                # fresh development Work is due.
-                if patch_review.held_patch_expired(due, inputs.now):
+                # The review reads the held series from the artifact the
+                # held patch pins: an expired one is never reviewed or
+                # published, and neither is a held patch a stop discarded
+                # during a wait the review's recovery caused; fresh
+                # development Work is due.
+                if not due.get("held_patch") or patch_review.held_patch_expired(due, inputs.now):
                     out = engine.apply_transition(
                         due, "expire_held_patch", policy=policy, now=now,
                         facts={"held_patch_expired"}, open_operations=ops,

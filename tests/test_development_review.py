@@ -425,6 +425,68 @@ class TestHeldPatchEnds(unittest.TestCase):
         self.assertIsNone(new["held_patch"])
         self.assertEqual(engine.state_key(new), "development.fix_needed")
 
+    def test_a_review_that_cannot_run_keeps_the_held_patch_for_a_resume(self):
+        import commands
+
+        from tests.helpers import apply_command
+
+        reviewing, _ = held(running())
+        for verb, facts in (("exhaust_dispatch_recovery", set()),
+                            ("exhaust_work_recovery",
+                             {"work_terminal_without_result"})):
+            with self.subTest(verb=verb):
+                rec = dict(reviewing, active_work=dict(reviewing["active_work"], attempt=9))
+                out = engine.apply_transition(rec, verb, policy=POLICY, now=NOW, facts=facts,
+                                              counts={"dispatch_recovery": 99})
+                self.assertTrue(out.accepted, out.reason)
+                waiting = out.record
+                self.assertEqual(engine.state_key(waiting), "development.waiting_human")
+                self.assertEqual(waiting["held_patch"], reviewing["held_patch"])
+                self.assertEqual(waiting["pending_human_action"]["kind"],
+                                 lc.PATCH_REVIEW_UNAVAILABLE)
+                # The entry says, in plain words, that the review could not run.
+                entry = status_ledger.render(out.event, waiting, "https://run")
+                self.assertIn("the review of the development patch could not run", entry)
+                self.assertNotIn("patch_review_unavailable", entry.split("<details>")[0])
+                # A resume asks for the review of the same patch again.
+                resume = commands.Command("resume", {"revision": str(waiting["revision"]),
+                                                     "reason": "infra fixed"})
+                resumed = apply_command(waiting, resume, policy_=POLICY)
+                self.assertTrue(resumed.accepted, resumed.reason)
+                self.assertEqual(resumed.verb, "resume_patch_review")
+                self.assertEqual(engine.state_key(resumed.record), "development.review_pending")
+                self.assertEqual(resumed.record["held_patch"], reviewing["held_patch"])
+                res = controller.tick(contributions={"c": resumed.record}, operations={},
+                                      consumed={}, projects={}, policy=POLICY,
+                                      inputs=controller.Inputs(
+                                          now=datetime.fromisoformat(NOW),
+                                          pressure=capacity.Pressure(ok=True)))
+                again = [r for k, r in res.staged if k == "contributions"][-1]
+                self.assertEqual(engine.state_key(again), "development.reviewing")
+                self.assertEqual(again["active_work"]["task"], "development_review")
+                # An expired artifact is discarded instead: fresh development
+                # Work is due.
+                res = controller.tick(contributions={"c": resumed.record}, operations={},
+                                      consumed={}, projects={}, policy=POLICY,
+                                      inputs=controller.Inputs(
+                                          now=datetime.fromisoformat(NOW) + timedelta(days=30),
+                                          pressure=capacity.Pressure(ok=True)))
+                self.assertEqual([e["kind"] for k, e in res.staged if k == "events"][0],
+                                 "expire_held_patch")
+                # A stop during the wait discards the patch; the resume then
+                # leads to fresh development Work too.
+                paused = engine.apply_transition(
+                    waiting, "pause", policy=POLICY, now=NOW,
+                    command=commands.Command("pause", {"revision": str(waiting["revision"])}),
+                    open_operations=()).record
+                self.assertIsNone(paused["held_patch"])
+                res = controller.tick(contributions={"c": dict(
+                    resumed.record, held_patch=None)}, operations={}, consumed={}, projects={},
+                    policy=POLICY, inputs=controller.Inputs(
+                        now=datetime.fromisoformat(NOW), pressure=capacity.Pressure(ok=True)))
+                self.assertEqual([e["kind"] for k, e in res.staged if k == "events"][0],
+                                 "expire_held_patch")
+
     def test_a_stop_in_a_review_state_discards_the_held_patch(self):
         reviewing, _ = held(running())
         publishing = final(tick(reviewing, [review_result(reviewing)]))

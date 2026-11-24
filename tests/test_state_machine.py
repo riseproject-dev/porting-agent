@@ -570,6 +570,7 @@ class TestLifecycleTable(unittest.TestCase):
             ("development.waiting_human", "resume_ci"),
             ("development.waiting_human", "resume_development"),
             ("development.waiting_human", "resume_development_pr"),
+            ("development.waiting_human", "resume_patch_review"),
             ("handoff.waiting_human", "resume_submission_review"),
             ("handoff.waiting_human", "resume_upstream_branch"),
             ("handoff.waiting_human", "resume_ci"),

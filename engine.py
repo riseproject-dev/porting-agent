@@ -988,6 +988,7 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_provisioning": "controller",
     "resume_ci": "controller",
     "resume_development": "controller",
+    "resume_patch_review": "controller",
     "resume_submission_review": "controller",
     "resume_upstream_branch": "controller",
     "resume_clean_head_ci": "controller",

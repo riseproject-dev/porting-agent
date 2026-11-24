@@ -414,10 +414,10 @@ flowchart TB
     development_reviewing -->|accept_patch_review| development_publishing
     development_publishing -->|record_publish_success| development_waiting_ci
     development_fix_needed -->|request_repair| development_agent_running
-    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
+    development_waiting_human -->|resume_patch_review<br/>/upstreaming resume| development_review_pending
 ```
 
-A review fails on a blocker or a major finding, whatever it declares. `reject_patch_review` discards the held patch and makes the review pending feedback of the next development Work, which amends the patch, and charges `dev_reviews` (1: one failed review in succession). Once `dev_reviews` is exhausted, the next failed review, the second in succession, takes `publish_after_failed_reviews`: the held patch is published anyway, and trusted code posts on the development PR the latest review and why it failed. A published patch starts `dev_reviews` again. Every review, passed or failed, is stored as evidence that the history of every later Work and review carries; nothing about a review is posted on the tracking issue. A review Work that fails to dispatch or returns no usable Result is recovered like any Work, and its exhaustion waits for a human, discarding the held patch: the resume requests fresh development Work. A held patch whose artifact expires is never reviewed or published.
+A review fails on a blocker or a major finding, whatever it declares. `reject_patch_review` discards the held patch and makes the review pending feedback of the next development Work, which amends the patch, and charges `dev_reviews` (1: one failed review in succession). Once `dev_reviews` is exhausted, the next failed review, the second in succession, takes `publish_after_failed_reviews`: the held patch is published anyway, and trusted code posts on the development PR the latest review and why it failed. A published patch starts `dev_reviews` again. Every review, passed or failed, is stored as evidence that the history of every later Work and review carries; nothing about a review is posted on the tracking issue. A review Work that fails to dispatch or returns no usable Result is recovered like any Work; its exhaustion waits for a human and keeps the held patch, and the resume asks for the review of the same patch again (`resume_patch_review`). A held patch whose artifact expires is never reviewed or published.
 
 ### Failure case 4: internal PR CI or review failure
 
@@ -1166,6 +1166,7 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming resume` | `resume_clean_head_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
 | `/upstreaming resume` | `resume_development_pr` | `development.waiting_human` | `development.waiting_ci` |
+| `/upstreaming resume` | `resume_patch_review` | `development.waiting_human` | `development.review_pending` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |
 | `/upstreaming resume` | `resume_planning` | `planning.waiting_human` | `planning.idle` |
 | `/upstreaming resume` | `resume_provisioning` | `provisioning.waiting_human` | `provisioning.idle` |

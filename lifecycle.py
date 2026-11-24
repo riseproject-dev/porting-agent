@@ -754,7 +754,8 @@ PATCH_REVIEW_FAILED = "the review of exactly the held patch names a blocker or m
 # The held patch lives in the publication artifact that carries the verified
 # series (of the worker run, or of the publish-only retry that verified it
 # again), which GitHub keeps 30 days.
-HELD_PATCH_EXPIRED = "the publication artifact of the held patch expired or expires within a day"
+HELD_PATCH_EXPIRED = ("no held patch is kept, or the publication artifact of the held patch "
+                      "expired or expires within a day")
 HELD_PATCH_CURRENT = "the publication artifact of the held patch is current"
 HELD_PATCH_REJECTED = ("the held patch no longer rebuilds to the reviewed commit, or the trusted "
                        "validation rejects it")
@@ -890,6 +891,28 @@ def _discarding(t: Transition, why: str = "") -> Transition:
                    "requested.")
     return replace(t, effects=replace(t.effects, clears=(*t.effects.clears, HELD_PATCH)),
                    description=(t.description + " " + note).strip())
+
+
+# The pending action of a review of a held patch that could not run: its
+# dispatch or its Work recovery is exhausted. The held patch is kept, and the
+# resume requests its review again.
+PATCH_REVIEW_UNAVAILABLE = "patch_review_unavailable"
+
+
+def _review_unavailable(t: Transition, counter: str | None) -> Transition:
+    """``t``, the exhaustion of the recovery of the review Work, as it is
+    taken from ``development.reviewing``: the held patch is kept and the
+    wait names ``PATCH_REVIEW_UNAVAILABLE``, so the resume asks for the
+    review of the same patch again (``resume_patch_review``)."""
+    from dataclasses import replace
+
+    sets = ("pending_human_action=" + PATCH_REVIEW_UNAVAILABLE,
+            f"{PENDING_COUNTER}={counter}" if counter else PENDING_COUNTER)
+    return replace(t, effects=replace(t.effects, sets=sets), description=(
+        (t.description + " ").lstrip() + "The review of the held patch could not run; the held "
+        "patch is kept, unpublished, and `/upstreaming resume` asks for its review again "
+        "(`resume_patch_review`). A patch whose artifact expired by then is discarded "
+        "(`expire_held_patch`) and fresh development Work follows."))
 
 
 def _resume_restarting(*budgets: str) -> Effects:
@@ -1145,10 +1168,10 @@ LIFECYCLE: dict[str, State] = {
         transitions={
             ("retry_dispatch", SELF): _RETRY_DISPATCH,
             ("exhaust_dispatch_recovery", "development.waiting_human"):
-                _discarding(_EXHAUST_DISPATCH_RECOVERY),
+                _review_unavailable(_EXHAUST_DISPATCH_RECOVERY, "dispatch_recovery"),
             ("allocate_work_retry", SELF): _ALLOCATE_WORK_RETRY,
             ("exhaust_work_recovery", "development.waiting_human"):
-                _discarding(_EXHAUST_WORK_RECOVERY),
+                _review_unavailable(_EXHAUST_WORK_RECOVERY, None),
             ("accept_patch_review", PUBLISHING): Transition(
                 _R, None,
                 (PATCH_REVIEW_PASSED,),
@@ -1396,9 +1419,21 @@ LIFECYCLE: dict[str, State] = {
                             "next tick plans a new development PR operation for it. "
                             + _RESTART_NOTE),
             ("rearm_dispatch", "development.fix_needed"): _REARM_DISPATCH,
+            ("resume_patch_review", "development.review_pending"): Transition(
+                _C, RESUME,
+                (EXACT_REVISION, pending_is(PATCH_REVIEW_UNAVAILABLE), QUIESCENT, NOT_STALE),
+                _E(revision="bump", clears=("pending_human_action",),
+                   restarts=("dispatch_recovery", "work_recovery", "work_total")),
+                description="The review of the held patch could not run (its dispatch or its "
+                            "Work recovery is exhausted): the same held patch is due for its "
+                            "review again, never a fresh patch. When its publication artifact "
+                            "expired meanwhile, or a stop discarded it, `expire_held_patch` "
+                            "discards it at once and fresh development Work is due. "
+                            + _RESTART_NOTE),
             ("resume_development", "development.fix_needed"): Transition(
                 _C, RESUME,
-                (EXACT_REVISION, pending_is_not("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED),
+                (EXACT_REVISION, pending_is_not("ci_interrupted", DEVELOPMENT_PR_LAUNCH_EXHAUSTED,
+                                                PATCH_REVIEW_UNAVAILABLE),
                  QUIESCENT, NOT_STALE),
                 _E(revision="bump", clears=("pending_human_action", *_HELD),
                   restarts=("dispatch_recovery", "work_recovery", "work_total", "publish_recovery",
@@ -2829,7 +2864,7 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                  ("development.reviewing", "accept_patch_review"),
                  ("development.publishing", "record_publish_success"),
                  ("development.fix_needed", "request_repair"),
-                 ("development.waiting_human", "resume_development")),
+                 ("development.waiting_human", "resume_patch_review")),
                 start="development.agent_running",
                 text="A review fails on a blocker or a major finding, whatever it declares. "
                      "`reject_patch_review` discards the held patch and makes the review "
@@ -2842,10 +2877,10 @@ DIAGRAM_SECTIONS: tuple[DiagramSection, ...] = (
                      "Every review, passed or failed, is stored as evidence that the history of "
                      "every later Work and review carries; nothing about a review is posted on "
                      "the tracking issue. A review Work that fails to dispatch or returns no "
-                     "usable Result is recovered like any Work, and its exhaustion waits for a "
-                     "human, discarding the held patch: the resume requests fresh development "
-                     "Work. A held patch whose artifact expires is never reviewed or "
-                     "published."),
+                     "usable Result is recovered like any Work; its exhaustion waits for a "
+                     "human and keeps the held patch, and the resume asks for the review of "
+                     "the same patch again (`resume_patch_review`). A held patch whose "
+                     "artifact expires is never reviewed or published."),
             Diagram(
                 "Failure case 4: internal PR CI or review failure",
                 ("development.waiting_ci", "development.fix_needed", "development.agent_running",
@@ -3888,6 +3923,11 @@ def _check_held_patch(problems: list[str]) -> None:
         if is_rule_row(e) and e.verb == "record_late_effect":
             continue
         if e.verb == "exhaust_publish_recovery" and e.source == PUBLISHING:
+            continue
+        if e.source == "development.reviewing" and e.target == "development.waiting_human" \
+                and f"pending_human_action={PATCH_REVIEW_UNAVAILABLE}" in e.transition.effects.sets:
+            # The review could not run: the wait keeps the held patch for
+            # `resume_patch_review`.
             continue
         if HELD_PATCH not in e.transition.effects.clears:
             problems.append(f"{e.source} --{e.verb}--> {e.target}: leaves the states that hold "
