@@ -1485,6 +1485,106 @@ flowchart TB
     parked_idle ==>|restart_generation<br/>/upstreaming refresh| queued_idle
 ```
 
+### O39. A return to development keeps the approval
+
+Which handoff rows keep `handoff_approval` when the contribution returns to development?
+
+**Decision.** All of them except `retract_submission`. `reject_submission_review` and `return_for_repair` (from `handoff.building_upstream_branch`, `handoff.waiting_ci`, and `handoff.preparing_submission`) clear the clean head, the review, `handoff_request`, and the pending action, and keep `handoff_approval`. A failed review, a failed check, or an unusable review Result never posts anything and never writes `riscv64`; the next `submit_upstream` replaces the approval.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_reviewing["handoff.reviewing"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_reviewing ==>|reject_submission_review| development_fix_needed
+    handoff_building_upstream_branch ==>|return_for_repair| development_fix_needed
+    handoff_waiting_ci ==>|return_for_repair| development_fix_needed
+```
+
+### O40. Where the commit messages of a series are read
+
+From what does each check read the commit messages of a series?
+
+**Decision.** The worker gate reads the commit messages of a proposed series from its mbox as `git am` would: the subject without its `[PATCH]` prefix and the body up to the first `---` line. The submission check reads them from the rebuilt commits.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_agent_running["handoff.agent_running"]
+        handoff_review_pending["handoff.review_pending"]
+        handoff_reviewing["handoff.reviewing"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+    end
+
+    handoff_agent_running ==>|accept_submission_rewrite| handoff_review_pending
+    handoff_reviewing -->|accept_submission_review| handoff_building_upstream_branch
+```
+
+### O41. The attempts of a handoff operation
+
+How are the launches, the count, and the failures of an `upstream_branch` or `submission_comment` attempt read?
+
+**Decision.** The operations are launched without a row, like a `ci_rerun` operation: within `operation_launch`, not while the contribution is paused, and never again within 300 seconds of the last launch. An attempt is held while a `handoff.yml` run of it is not completed, or while the run list could not be read, for at most `handoff.RUN_SECONDS` after the last launch; launches spent without a receipt close it as a definite infrastructure failure that fires the retry or exhaustion row. A receipt that arrives later, or one the workflow refused, is not folded. The counter (`count:<k>` on each attempt) is the number of attempts in the current round: a failed attempt below `retries.infrastructure_per_head_failure` plus one takes the retry row, at that count the exhaustion row; after the resume the next attempt counts from one, and a pause does not start the count again. A reviewed series that does not rebuild, or a lease conflict on `riscv64`, is not charged to `upstream_branch`: it takes `return_for_repair`, whatever the count, and an upstream PR open from `riscv64` takes `require_branch_intervention`.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_human["handoff.waiting_human"]
+    end
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+    end
+
+    handoff_building_upstream_branch ==>|retry_upstream_branch| handoff_building_upstream_branch
+    handoff_building_upstream_branch -->|exhaust_upstream_branch_retries| handoff_waiting_human
+    handoff_building_upstream_branch ==>|return_for_repair| development_fix_needed
+    handoff_building_upstream_branch -->|require_branch_intervention| handoff_waiting_human
+```
+
+### O42. CI of the clean head when the tree is the candidate's
+
+When is `accept_clean_head_ci` taken for a clean head that has the tree of the candidate head?
+
+**Decision.** CI is a function of the tree: when the reviewed series has the tree of the candidate head, the CI evidence of the candidate head is CI on the clean head, so `accept_clean_head_ci` can be taken in the tick that confirms the clean head, from the evidence already recorded.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_building_upstream_branch["handoff.building_upstream_branch"]
+        handoff_waiting_ci["handoff.waiting_ci"]
+        handoff_preparing_submission["handoff.preparing_submission"]
+    end
+
+    handoff_building_upstream_branch -->|confirm_clean_head| handoff_waiting_ci
+    handoff_waiting_ci ==>|accept_clean_head_ci| handoff_preparing_submission
+```
+
+### O43. The locked wait: the package, the author and the observations
+
+How are the package operation, the author of the upstream PR, and an observation that verifies nothing read in `handoff.waiting_upstream_pr`?
+
+**Decision.** `handoff_request.command_id` names the submission package operation, and the reminder links the comment that operation read back. A compatible human author is a `User` account whose id is in `command_authority.actor_ids`; it need not be the human who requested the submission, and a draft pull request is open. An observation that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.
+
+```mermaid
+flowchart TB
+    subgraph handoff["handoff"]
+        handoff_waiting_upstream_pr["handoff.waiting_upstream_pr"]
+    end
+    subgraph upstream_review["upstream_review"]
+        upstream_waiting_ci["upstream_review.waiting_ci"]
+    end
+
+    handoff_waiting_upstream_pr ==>|record_audit_observation| handoff_waiting_upstream_pr
+    handoff_waiting_upstream_pr ==>|verify_upstream_pr| upstream_waiting_ci
+```
+
 ## Further settled changes
 
 ### Plan refresh after a stop

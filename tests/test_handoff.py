@@ -1607,6 +1607,50 @@ class TestPullRequestDiscovery(unittest.TestCase):
         self.assertEqual(world.state, "handoff.waiting_upstream_pr")
         self.assertIn("2 pull requests match", world.events[-1]["details"]["mismatch"])
 
+    def test_a_draft_or_another_authorized_human_is_a_compatible_author(self):
+        other = {"id": 4242, "login": "co-maintainer", "type": "User"}
+        authority = list(self.authority) + [other["id"]]
+        for name, pr in (("draft", upstream_pr(draft=True)),
+                         ("not the requester", upstream_pr(user=other))):
+            with self.subTest(name):
+                matching, rejected = handoff.matching_upstream_prs(
+                    self.record, [handoff.normalize_pull(pr)], authority)
+                self.assertEqual((len(matching), rejected), (1, []))
+        matching, rejected = handoff.matching_upstream_prs(
+            self.record, [handoff.normalize_pull(upstream_pr(user=other))], self.authority)
+        self.assertEqual((matching, len(rejected)), ([], 1))
+
+
+class TestApprovalKept(unittest.TestCase):
+    """A return to development and a failed review keep `handoff_approval`:
+    their rows clear the clean head, the review, the request and the pending
+    action only, and the next `submit_upstream` replaces the approval."""
+
+    def test_the_rows_do_not_clear_the_approval(self):
+        for state, verb in (("handoff.reviewing", "reject_submission_review"),
+                            ("handoff.building_upstream_branch", "return_for_repair"),
+                            ("handoff.waiting_ci", "return_for_repair"),
+                            ("handoff.preparing_submission", "return_for_repair")):
+            with self.subTest(state=state, verb=verb):
+                [row] = [t for (v, _), t in lifecycle.LIFECYCLE[state].transitions.items()
+                         if v == verb]
+                self.assertNotIn("handoff_approval", row.effects.clears)
+                self.assertIn("handoff_request", row.effects.clears)
+
+    def test_a_failed_review_and_a_moved_clean_head_keep_it(self):
+        world = rewritten()
+        approval = copy.deepcopy(world.record["handoff_approval"])
+        world.tick(at(2), publications=[world.review_outcome("fail", ["no"])])
+        self.assertEqual(world.state, "development.agent_running")
+        self.assertEqual(world.record["handoff_approval"], approval)
+        world = reviewed()
+        approval = copy.deepcopy(world.record["handoff_approval"])
+        world.gh.ci_state = "failure"
+        world.gh.ci_attempt = 2
+        world.tick(at(2), receipts=[world.run_workflow()])
+        self.assertEqual(world.state, "development.agent_running")
+        self.assertEqual(world.record["handoff_approval"], approval)
+
 
 def package_args(record, review_data=None, commits=None, **over):
     """The inputs of the package for the live record: the reviewed series is

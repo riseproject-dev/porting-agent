@@ -2726,6 +2726,47 @@ SETTLED_OPEN_ITEMS: tuple[Item, ...] = (
         edges=(("parked.idle", "restart_generation"),),
         highlighted=(("parked.idle", "restart_generation"),),
     ),
+    Item(
+        'A return to development keeps the approval',
+        'Which handoff rows keep `handoff_approval` when the contribution returns to development?',
+        'All of them except `retract_submission`. `reject_submission_review` and `return_for_repair` (from `handoff.building_upstream_branch`, `handoff.waiting_ci`, and `handoff.preparing_submission`) clear the clean head, the review, `handoff_request`, and the pending action, and keep `handoff_approval`. A failed review, a failed check, or an unusable review Result never posts anything and never writes `riscv64`; the next `submit_upstream` replaces the approval.',
+        ('handoff.reviewing', 'handoff.building_upstream_branch', 'handoff.waiting_ci', 'development.fix_needed'),
+        edges=(('handoff.reviewing', 'reject_submission_review'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.waiting_ci', 'return_for_repair')),
+        highlighted=(('handoff.reviewing', 'reject_submission_review'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.waiting_ci', 'return_for_repair')),
+    ),
+    Item(
+        'Where the commit messages of a series are read',
+        'From what does each check read the commit messages of a series?',
+        'The worker gate reads the commit messages of a proposed series from its mbox as `git am` would: the subject without its `[PATCH]` prefix and the body up to the first `---` line. The submission check reads them from the rebuilt commits.',
+        ('handoff.agent_running', 'handoff.review_pending', 'handoff.reviewing',
+         'handoff.building_upstream_branch'),
+        edges=(('handoff.agent_running', 'accept_submission_rewrite'), ('handoff.reviewing', 'accept_submission_review')),
+        highlighted=(('handoff.agent_running', 'accept_submission_rewrite'),),
+    ),
+    Item(
+        'The attempts of a handoff operation',
+        'How are the launches, the count, and the failures of an `upstream_branch` or `submission_comment` attempt read?',
+        'The operations are launched without a row, like a `ci_rerun` operation: within `operation_launch`, not while the contribution is paused, and never again within 300 seconds of the last launch. An attempt is held while a `handoff.yml` run of it is not completed, or while the run list could not be read, for at most `handoff.RUN_SECONDS` after the last launch; launches spent without a receipt close it as a definite infrastructure failure that fires the retry or exhaustion row. A receipt that arrives later, or one the workflow refused, is not folded. The counter (`count:<k>` on each attempt) is the number of attempts in the current round: a failed attempt below `retries.infrastructure_per_head_failure` plus one takes the retry row, at that count the exhaustion row; after the resume the next attempt counts from one, and a pause does not start the count again. A reviewed series that does not rebuild, or a lease conflict on `riscv64`, is not charged to `upstream_branch`: it takes `return_for_repair`, whatever the count, and an upstream PR open from `riscv64` takes `require_branch_intervention`.',
+        ('handoff.building_upstream_branch', 'handoff.waiting_human', 'development.fix_needed'),
+        edges=(('handoff.building_upstream_branch', 'retry_upstream_branch'), ('handoff.building_upstream_branch', 'exhaust_upstream_branch_retries'), ('handoff.building_upstream_branch', 'return_for_repair'), ('handoff.building_upstream_branch', 'require_branch_intervention')),
+        highlighted=(('handoff.building_upstream_branch', 'retry_upstream_branch'), ('handoff.building_upstream_branch', 'return_for_repair')),
+    ),
+    Item(
+        "CI of the clean head when the tree is the candidate's",
+        'When is `accept_clean_head_ci` taken for a clean head that has the tree of the candidate head?',
+        'CI is a function of the tree: when the reviewed series has the tree of the candidate head, the CI evidence of the candidate head is CI on the clean head, so `accept_clean_head_ci` can be taken in the tick that confirms the clean head, from the evidence already recorded.',
+        ('handoff.building_upstream_branch', 'handoff.waiting_ci', 'handoff.preparing_submission'),
+        edges=(('handoff.building_upstream_branch', 'confirm_clean_head'), ('handoff.waiting_ci', 'accept_clean_head_ci')),
+        highlighted=(('handoff.waiting_ci', 'accept_clean_head_ci'),),
+    ),
+    Item(
+        'The locked wait: the package, the author and the observations',
+        'How are the package operation, the author of the upstream PR, and an observation that verifies nothing read in `handoff.waiting_upstream_pr`?',
+        '`handoff_request.command_id` names the submission package operation, and the reminder links the comment that operation read back. A compatible human author is a `User` account whose id is in `command_authority.actor_ids`; it need not be the human who requested the submission, and a draft pull request is open. An observation that does not verify the upstream PR is recorded by `record_audit_observation` once per distinct observation (fork head, failing candidates, several matching candidates); every reminder after it states the mismatch the observation of that tick finds.',
+        ('handoff.waiting_upstream_pr', 'upstream_review.waiting_ci'),
+        edges=(('handoff.waiting_upstream_pr', 'record_audit_observation'), ('handoff.waiting_upstream_pr', 'verify_upstream_pr')),
+        highlighted=(('handoff.waiting_upstream_pr', 'record_audit_observation'), ('handoff.waiting_upstream_pr', 'verify_upstream_pr')),
+    ),
 )
 
 OPEN_ITEMS: tuple[Item, ...] = ()
