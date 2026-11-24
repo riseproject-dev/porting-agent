@@ -112,9 +112,7 @@
         "written": [],
         "handoff_requests": [],
         "handoffs": [],
-        "ci_reruns": [],
-        "review_comment_requests": [],
-        "review_comment_posts": []
+        "ci_reruns": []
       },
       "stderr": "",
       "files": []

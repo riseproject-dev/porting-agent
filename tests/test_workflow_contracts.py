@@ -65,12 +65,10 @@ class TestWorkflowContracts(unittest.TestCase):
         graph = planner["mcp-servers"]["project-graph"]
         self.assertTrue(graph["required"])
         self.assertEqual(graph["allowed"], ["project_graph_query"])
-        for name in ("dispatcher", "reviewer"):
-            with self.subTest(workflow=name):
-                sandboxed = source(name)
-                self.assertTrue(sandboxed["strict"])
-                self.assertNotIn("sandbox", sandboxed)
-                self.assertNotIn("features", sandboxed)
+        sandboxed = source("dispatcher")
+        self.assertTrue(sandboxed["strict"])
+        self.assertNotIn("sandbox", sandboxed)
+        self.assertNotIn("features", sandboxed)
 
     def test_completeness_gate_precedes_durable_completion(self):
         lock = workflow("planner.lock.yml")
@@ -135,7 +133,7 @@ class TestWorkflowContracts(unittest.TestCase):
         the claim and resolves it before any check reads the task, the
         trusted jobs after the agent read the task ``queue_result`` resolved,
         and no step reads the Work of the Claim into task.json."""
-        for name in ("worker", "planner", "reviewer"):
+        for name in ("worker", "planner"):
             with self.subTest(workflow=name):
                 text = (WORKFLOWS / f"{name}.md").read_text()
                 self.assertIn('fs.writeFileSync("/tmp/gh-aw/agent/claim.json"', text)
@@ -523,7 +521,6 @@ class TestWorkflowContracts(unittest.TestCase):
             WORKFLOWS / "provision.yml",
             WORKFLOWS / "dev-pr.yml",
             WORKFLOWS / "publish-retry.yml",
-            WORKFLOWS / "review-comment.yml",
             WORKFLOWS / "worker.md",
             WORKFLOWS / "handoff.yml",
         ]
@@ -561,7 +558,7 @@ class TestWorkflowContracts(unittest.TestCase):
         dispatched, and its trusted recovery reads the worker run."""
         text = (WORKFLOWS / "controller.yml").read_text()
         self.assertIn(
-            "for workflow in planner.lock.yml worker.lock.yml reviewer.lock.yml publish-retry.yml",
+            "for workflow in planner.lock.yml worker.lock.yml publish-retry.yml",
             text)
         self.assertIn("filter='&status=completed&branch=main&event=workflow_dispatch'", text)
         self.assertIn('runs?per_page=20$filter"', text)
@@ -615,7 +612,7 @@ class TestWorkflowContracts(unittest.TestCase):
         deleted, so the Result is the Result of the run that uploaded it."""
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         script = next(step["run"] for step in steps if str(step.get("name", "")).startswith(
-            "Collect verified planner, worker, reviewer, and publish-only retry outcomes"))
+            "Collect verified planner, worker, and publish-only retry outcomes"))
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             bundle = tmp / "artifact.zip"
@@ -660,18 +657,15 @@ class TestWorkflowContracts(unittest.TestCase):
                 "Dispatcher",
                 "Planner",
                 "Worker",
-                "Reviewer",
                 "Reproduction Image",
                 "Fork Provisioning",
                 "Development PR",
                 "Publish Retry",
-                "Review Comment",
                 "Handoff",
             },
         )
         self.assertIn("workflow_run", controller["jobs"]["filter"]["if"])
-        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml", "review-comment.yml",
-                     "handoff.yml"):
+        for name in ("provision.yml", "dev-pr.yml", "publish-retry.yml", "handoff.yml"):
             continuation = workflow(name)["jobs"]["continuation"]
             self.assertEqual(continuation["if"], "always()")
             self.assertIn("gh workflow run controller.yml", str(continuation))
@@ -679,8 +673,7 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_development_writers_do_not_wait_for_environment_review(self):
         worker = source("worker")
         self.assertNotIn("environment", worker["jobs"]["publish"])
-        for name in ("provision.yml", "publish-retry.yml", "review-comment.yml", "dev-pr.yml",
-                     "handoff.yml"):
+        for name in ("provision.yml", "publish-retry.yml", "dev-pr.yml", "handoff.yml"):
             data = workflow(name)
             for job in data["jobs"].values():
                 self.assertNotIn("environment", job, name)
@@ -704,11 +697,10 @@ class TestWorkflowContracts(unittest.TestCase):
                                           joined):
                     # Only the standard-library pre-agent scripts of the agent
                     # workflows run on the runner's python3.
-                    self.assertIn(path.name, ("worker.md", "reviewer.md", "planner.md"))
+                    self.assertIn(path.name, ("worker.md", "planner.md"))
                     self.assertRegex(
                         direct.group(1).strip(),
-                        r'^python3 (scripts/(pi_provider_credential\.py "\$RUNNER_TEMP/gh-aw/actions"'
-                        r'|held_patch\.py --task "\$task" --key (patch|previous_patch) )'
+                        r'^python3 (scripts/pi_provider_credential\.py "\$RUNNER_TEMP/gh-aw/actions"'
                         r'|task_file\.py resolve --claim /tmp/gh-aw/agent/claim\.json)',
                     )
 
@@ -776,7 +768,7 @@ class TestWorkflowContracts(unittest.TestCase):
     def test_the_collector_tells_the_reconciler_what_it_cannot_collect(self):
         steps = workflow("controller.yml")["jobs"]["reconcile"]["steps"]
         collect = next(s for s in steps if s.get("name", "").startswith(
-            "Collect verified planner, worker, reviewer"))
+            "Collect verified planner, worker, and publish-only retry"))
         script = collect["run"]
         for reason in ("ambiguous", "download_failed", "rejected"):
             self.assertIn(f'uncollected "$run" {reason}', script)
@@ -908,13 +900,10 @@ class TestWorkflowContracts(unittest.TestCase):
                 "planner.lock.yml",
                 "worker.md",
                 "worker.lock.yml",
-                "reviewer.md",
-                "reviewer.lock.yml",
                 "image.yml",
                 "provision.yml",
                 "dev-pr.yml",
                 "publish-retry.yml",
-                "review-comment.yml",
                 "handoff.yml",
             },
         )
@@ -934,7 +923,7 @@ class TestWorkflowContracts(unittest.TestCase):
             launches,
             {
                 "controller.yml", "dispatcher.lock.yml",
-                "provision.yml", "dev-pr.yml", "publish-retry.yml", "review-comment.yml",
+                "provision.yml", "dev-pr.yml", "publish-retry.yml",
                 "handoff.yml",
             },
         )
@@ -1013,14 +1002,13 @@ class TestAgentToolPolicy(unittest.TestCase):
 
     def test_only_the_dispatcher_has_no_shell_or_file_writes(self):
         sandboxed = set()
-        for name in ("dispatcher", "planner", "reviewer", "worker"):
+        for name in ("dispatcher", "planner", "worker"):
             with self.subTest(workflow=name):
                 policy, run = pi_tool_policy(workflow(f"{name}.lock.yml"))
                 if name != "dispatcher":
-                    # The owner's decision: the planner, worker and reviewer
-                    # have Pi's read, bash, edit and write. The planner and
-                    # worker run unsandboxed (known-gaps.md), the reviewer in
-                    # the sandbox.
+                    # The owner's decision: the planner and worker have Pi's
+                    # read, bash, edit and write, and run unsandboxed
+                    # (known-gaps.md).
                     self.assertIn("*", policy["bash"])
                     self.assertIn("edit", policy)
                     self.assertNotIn("--exclude-tools", run)
@@ -1048,7 +1036,7 @@ class TestAgentToolPolicy(unittest.TestCase):
                 self.assertEqual(exec_or_write_entries(policy["bash"]), [])
                 self.assertEqual(source(name)["tools"]["bash"], False)
                 self.assertEqual(source(name)["tools"]["edit"], False)
-        self.assertEqual(sandboxed, {"dispatcher", "reviewer"})
+        self.assertEqual(sandboxed, {"dispatcher"})
 
     def test_the_dispatcher_has_no_extension_no_web_and_no_extra_network(self):
         engine = source("dispatcher")["engine"]
@@ -1072,8 +1060,7 @@ class TestAgentToolPolicy(unittest.TestCase):
         # AWF v0.29.11 bind-mounts these home directories into the sandbox
         # read-write (sandbox-mount-policy.json, without .copilot and
         # .gemini); revisit the list with any other AWF version.
-        runs = {}
-        for name in ("dispatcher", "reviewer"):
+        for name in ("dispatcher",):
             with self.subTest(workflow=name):
                 steps = workflow(f"{name}.lock.yml")["jobs"]["agent"]["steps"]
                 names = [step.get("name", "") for step in steps]
@@ -1083,7 +1070,7 @@ class TestAgentToolPolicy(unittest.TestCase):
                 self.assertLess(names.index("Install AWF binary"), harden)
                 self.assertLess(names.index("Install Pi CLI"), harden)
                 self.assertLess(harden, names.index("Execute Pi CLI"))
-                run = runs[name] = steps[harden]["run"]
+                run = steps[harden]["run"]
                 listed = re.search(r"for dir in (.*?); do", run, re.S).group(1).replace("\\\n", " ").split()
                 self.assertEqual(sorted(listed), sorted([
                     ".cache", ".config", ".local/bin", ".local/lib", ".local/lib64", ".local/share",
@@ -1092,14 +1079,6 @@ class TestAgentToolPolicy(unittest.TestCase):
                 for needle in ('sudo chown -RHh root:root -- "$HOME/$dir/"', 'sudo chmod -R go-w -- "$HOME/$dir/"',
                                'find -H "$HOME/$dir/"', "! -user root -o -perm /022", "exit 1"):
                     self.assertIn(needle, run)
-        # The same step, so the behavior tests below cover both. The
-        # reviewer's comes after its trusted steps that still use the home
-        # directories (gh, git, node).
-        self.assertEqual(runs["dispatcher"].rstrip("\n"), runs["reviewer"].rstrip("\n"))
-        authored = [step["name"] for step in source("reviewer")["pre-agent-steps"]]
-        self.assertEqual(authored[-3:], ["Make the home directories the sandbox mounts read-only to the agent",
-                                         CODE_STEP,
-                                         "Seal the workspace's git checkout against the agent"])
 
     def test_excluded_tools_reads_the_last_flag_as_pi_does(self):
         self.assertEqual(excluded_tools(["--exclude-tools", "bash", "--exclude-tools", "edit,write"]),
@@ -1148,149 +1127,12 @@ class TestAgentToolPolicy(unittest.TestCase):
             self.assertEqual((planted.stat().st_uid, planted.stat().st_mode & 0o777), (0, 0o755))
             self.assertEqual(outside.stat().st_uid, 1001)
 
-CODE_STEP = "Make the code that the steps after the agent run unwritable by the agent"
 
-
-class TestReviewerSandbox(unittest.TestCase):
-    """The reviewer has a shell, file writes and web search inside the sandbox."""
-
-    def lock(self) -> dict:
-        return workflow("reviewer.lock.yml")
-
-    def test_the_reviewer_reaches_only_the_hosts_its_tools_need(self):
-        steps = self.lock()["jobs"]["agent"]["steps"]
-        run = next(s for s in steps if s.get("name") == "Execute Pi CLI")["run"]
-        self.assertIn("awf --config", run)
-        # api.github.com (the container MCP server's host, which strict mode
-        # wants listed) and the three keyless search providers of
-        # pi-web-access 0.48.0; no ecosystem and no wildcard.
-        hosts = ["api.github.com", "mcp.exa.ai", "api.keenable.ai", "html.duckduckgo.com"]
-        allowed = re.findall(r'\\"allowDomains\\":(\[[^\]]*\])', run)
-        self.assertEqual([sorted(json.loads(a.replace('\\"', '"'))) for a in allowed], [sorted(hosts)])
-        self.assertEqual(source("reviewer")["network"], {"allowed": hosts})
-        # Its own server: the GitHub read server; no review-writing tool (the
-        # agent writes porting-out/proposal.json itself), no browser and no
-        # Docker.
-        self.assertEqual(set(source("reviewer")["mcp-servers"]), {"github-authenticated"})
-        self.assertNotIn("mcp-scripts", source("reviewer"))
-        self.assertNotIn("mcp-scripts", json.dumps(self.lock()))
-        for absent in ("playwright", "--enable-dind", "docker-sudo"):
-            self.assertNotIn(absent, json.dumps(source("reviewer")))
-
-    def test_no_threat_detection_job_reads_the_agent_output(self):
-        # Detection would be a second, unhardened model sandbox and never
-        # sees the review, which the publish job checks.
-        jobs = self.lock()["jobs"]
-        self.assertIs(source("reviewer")["safe-outputs"]["threat-detection"], False)
-        self.assertNotIn("detection", jobs)
-        self.assertNotIn("detection-gate", source("reviewer")["jobs"]["continuation"])
-        for name in ("safe_outputs", "publish", "continuation", "conclusion"):
-            with self.subTest(job=name):
-                self.assertNotIn("detection", json.dumps(jobs[name].get("needs", [])))
-                self.assertNotIn("detection", jobs[name].get("if", ""))
-        self.assertEqual(jobs["publish"]["if"], "needs.safe_outputs.outputs.work_queue_outcome == 'completed'")
-        self.assertEqual(jobs["continuation"]["if"], "always()")
-
-    def test_the_agent_has_the_basic_file_and_shell_tools(self):
-        step = next(s for s in self.lock()["jobs"]["agent"]["steps"] if s.get("name") == "Execute Pi CLI")
-        expected = {"read", "bash", "edit", "write", "ls", "grep", "find", "codemode", "tool_search"}
-        self.assertEqual(enabled_tools(pi_command_args(step["run"])), expected)
-        # Pi finds rg and fd on PATH and never downloads them.
-        self.assertEqual(str(step["env"]["PI_OFFLINE"]), "1")
-        self.assertEqual(self.lock()["jobs"]["agent"]["runs-on"], "ubuntu-24.04")
-        steps = self.lock()["jobs"]["agent"]["steps"]
-        names = [s.get("name") for s in steps]
-        install = names.index("Install ripgrep and fd for the agent's grep and find tools")
-        self.assertLess(install, names.index("Make the home directories the sandbox mounts read-only to the agent"))
-        for needle in ("ripgrep=14.1.0-1 fd-find=9.0.0-1", "dpkg-query -W -f='${Version}' ripgrep",
-                       "/usr/bin/rg --version", "/usr/bin/fdfind --version"):
-            self.assertIn(needle, steps[install]["run"])
-        prompt = (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2]
-        self.assertIn("Pi's `read`, `bash`, `edit`, `write`,\n`ls`, `grep` and `find`", prompt)
-
-    def seal(self, workspace: Path, home: Path) -> subprocess.CompletedProcess:
-        step = next(s for s in workflow("reviewer.lock.yml")["jobs"]["agent"]["steps"]
-                    if s.get("name") == "Seal the workspace's git checkout against the agent")
-        shim = workspace.parent / "shim"
-        shim.mkdir(exist_ok=True)
-        (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
-        (shim / "sudo").chmod(0o755)
-        return subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True, cwd=workspace,
-                              env={**os.environ, "HOME": str(home), "GITHUB_WORKSPACE": str(workspace),
-                                   "PATH": f"{shim}:{os.environ['PATH']}",
-                                   # The test builds the checkout as another user than the one that runs the step.
-                                   "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
-                                   "GIT_CONFIG_VALUE_0": "*"})
-
-    def test_the_seal_comes_after_the_trusted_steps_and_before_the_agent(self):
-        steps = self.lock()["jobs"]["agent"]["steps"]
-        names = [s.get("name") for s in steps]
-        seal = names.index("Seal the workspace's git checkout against the agent")
-        self.assertLess(names.index("Check out the fork and rebuild the held patch (read-only)"), seal)
-        self.assertLess(names.index("Checkout repository (gh-aw default)"), seal)
-        self.assertLess(seal, names.index("Execute Pi CLI"))
-        run = steps[seal]["run"]
-        for needle in ("git remote remove origin", 'sudo chown -RHh root:root -- .git/',
-                       'sudo chown root:root -- "$GITHUB_WORKSPACE"', 'sudo chmod 1777 -- "$GITHUB_WORKSPACE"',
-                       "! -user root -o -perm /022", "exit 1"):
-            self.assertIn(needle, run)
-
-    def test_the_seal_refuses_a_git_directory_that_is_a_link_or_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            home.mkdir()
-            for make in (lambda ws: None, lambda ws: (ws / ".git").symlink_to(Path(tmp))):
-                workspace = Path(tmp) / f"ws{id(make)}"
-                workspace.mkdir()
-                make(workspace)
-                result = self.seal(workspace, home)
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn(".git is not a directory", result.stderr)
-
-    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("git") and shutil.which("setpriv"),
-                         "chown to root needs root, and the check runs git as another user")
-    def test_the_seal_leaves_the_agent_no_way_to_plant_a_git_configuration(self):
-        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
-            os.chmod(tmp, 0o755)
-            workspace, home = Path(tmp) / "ws", Path(tmp) / "home"
-            workspace.mkdir()
-            home.mkdir()
-            os.chown(home, 1001, 1001)
-            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
-            subprocess.run([*git, "init", "-q"], cwd=workspace, check=True)
-            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "i"], cwd=workspace, check=True)
-            subprocess.run([*git, "remote", "add", "origin", "https://github.com/x/y.git"], cwd=workspace, check=True)
-            os.chown(workspace, 1001, 1001)
-            for path in (workspace, *workspace.rglob("*")):
-                os.lchown(path, 1001, 1001)
-            result = self.seal(workspace, home)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((workspace.stat().st_uid, workspace.stat().st_mode & 0o7777), (0, 0o1777))
-            self.assertEqual((workspace / ".git").stat().st_uid, 0)
-            # The agent, as the sandbox's user, can neither change the
-            # checkout nor replace it, and git still reads it for the
-            # steps after the agent (no origin, so credentials are skipped).
-            agent = ["setpriv", "--reuid=1001", "--regid=1001", "--clear-groups"]
-            env = {**os.environ, "HOME": str(home)}
-            subprocess.run([*agent, "git", "config", "--global", "--add", "safe.directory", str(workspace)],
-                           env=env, check=True)
-            for command in ("echo '[core]\nfsmonitor=x' >> .git/config", "mv .git .git.orig",
-                            "rm -rf .git", "touch .git/commondir", "echo x > .git/index"):
-                with self.subTest(command=command):
-                    attempt = subprocess.run([*agent, "sh", "-c", command], cwd=workspace, env=env,
-                                             capture_output=True, text=True)
-                    self.assertNotEqual(attempt.returncode, 0)
-            self.assertEqual(subprocess.run([*agent, "sh", "-c", "mkdir porting-out && echo ok > porting-out/f"],
-                                            cwd=workspace, env=env).returncode, 0)
-            for command in (["git", "rev-parse", "--is-inside-work-tree"],
-                            ["git", "submodule", "foreach", "--recursive", "git config --local --list"]):
-                self.assertEqual(subprocess.run([*agent, *command], cwd=workspace, env=env,
-                                                capture_output=True).returncode, 0, command)
-            self.assertEqual(subprocess.run([*agent, "git", "config", "--get-all", "remote.origin.url"],
-                                            cwd=workspace, env=env, capture_output=True).returncode, 1)
+class TestPiExtensions(unittest.TestCase):
+    """The agents that run Pi with its two extensions."""
 
     def test_every_agent_but_the_dispatcher_has_the_github_server_and_both_extensions(self):
-        for name in ("planner", "worker", "reviewer"):
+        for name in ("planner", "worker"):
             with self.subTest(workflow=name):
                 src = source(name)
                 if name != "worker":
@@ -1328,6 +1170,27 @@ class TestReviewerSandbox(unittest.TestCase):
                     for extension in ("npm:pi-web-access@0.48.0", "npm:pi-subagents@0.89.0"):
                         self.assertIn(f"Install Pi extension {extension}", step_names)
 
+    def test_the_prompt_states_the_review_loop_itself(self):
+        """The loop is written in the worker's own prompt: nothing reads the
+        prompt template of pi-subagents, and no digest pins one."""
+        prompt = (WORKFLOWS / "worker.md").read_text().split("---", 2)[2]
+        section = prompt[prompt.index("## The review loop"):prompt.index("## The worker report")]
+        flat = " ".join(section.split())
+        for needle in ("loop controller and the only decision-maker",
+                       "Exactly one writer", "`async: false`", "fresh `reviewer` children",
+                       "distinct angle", "P0 (blocks publication), P1 (fix now) or P2 (note)",
+                       "BLOCK, OK, or OK with notes", "Triage", "one fresh `worker` child",
+                       "Only the reviewers of a later round can close a P0",
+                       "after 3 rounds", "round_digests", "needs_clarification",
+                       "`fail` verdict with the question", "start no fix pass after 175 minutes",
+                       "no review round after 210 minutes"):
+            self.assertIn(needle, flat)
+        for gone in ("prompts/review-loop.md", "as if this run had been invoked",
+                     "`/review-loop`"):
+            self.assertNotIn(gone, prompt)
+        schema = (ROOT / "schemas" / "worker_report.schema.json").read_text()
+        self.assertNotIn("template", schema.split('"review_loop"')[1].split('"summary"')[0].lower())
+
     def test_the_worker_configures_the_children_of_its_review_loop(self):
         subagents = json.loads(source("worker")["engine"]["config"])["settings"]["subagents"]
         overrides = subagents["agentOverrides"]
@@ -1357,11 +1220,10 @@ class TestReviewerSandbox(unittest.TestCase):
     def test_the_extensions_install_where_the_child_default_points(self):
         # `pi install npm:<name>` puts a package at <agent dir>/npm/node_modules/<name>
         # (Pi 1.5.0, dist/core/package-manager.js).
-        for name in ("planner", "reviewer"):
-            lock = workflow(f"{name}.lock.yml")
-            step = next(s for s in lock["jobs"]["agent"]["steps"]
-                        if s.get("name") == "Install Pi extension npm:pi-web-access@0.48.0")
-            self.assertEqual(step["env"]["PI_CODING_AGENT_DIR"], "/tmp/gh-aw/pi-agent-dir")
+        lock = workflow("planner.lock.yml")
+        step = next(s for s in lock["jobs"]["agent"]["steps"]
+                    if s.get("name") == "Install Pi extension npm:pi-web-access@0.48.0")
+        self.assertEqual(step["env"]["PI_CODING_AGENT_DIR"], "/tmp/gh-aw/pi-agent-dir")
 
     def test_enabled_tools_follows_pi(self):
         self.assertEqual(enabled_tools(["--print"]), {"read", "bash", "edit", "write", "codemode", "tool_search"})
@@ -1369,394 +1231,6 @@ class TestReviewerSandbox(unittest.TestCase):
                          {"grep", "codemode", "tool_search"})
         with self.assertRaises(AssertionError):
             enabled_tools(["--tools", "read,ls"])
-
-    def test_the_changed_files_are_copied_only_under_before(self):
-        step = next(s for s in source("reviewer")["pre-agent-steps"]
-                    if s["name"] == "Check out the fork and rebuild the held patch (read-only)")
-        loop = re.search(r"(case \"/\$file/\" in.*?esac)", step["run"], re.S).group(1)
-        for path, ok in (("a/b.c", True), (".github/x", True), ("a/..b", True), ("../x", False),
-                         ("a/../../x", False), ("a/./b", False), ("/etc/x", False), ("a//b", False),
-                         ("..", False), ("a/..", False)):
-            with self.subTest(path=path):
-                result = subprocess.run(["bash", "-c", f'file="$1"; {loop}; echo ok', "-", path],
-                                        capture_output=True, text=True)
-                self.assertEqual(result.returncode == 0, ok, result.stdout)
-
-    def test_nothing_after_the_agent_runs_code_the_agent_could_change(self):
-        steps = self.lock()["jobs"]["agent"]["steps"]
-        agent = next(i for i, s in enumerate(steps) if s.get("name") == "Execute Pi CLI")
-        # No authored step runs after the agent: the runner scopes
-        # ::stop-commands:: to the step that writes it, so a pair around
-        # the agent step would suspend nothing in it.
-        self.assertNotIn("post-steps", source("reviewer"))
-        self.assertNotIn("stop-commands", (WORKFLOWS / "reviewer.md").read_text())
-        for step in steps[agent + 1:]:
-            with self.subTest(step=step.get("name")):
-                self.assertNotIn("actions/checkout", step.get("uses", ""))
-                body = step.get("run", "") + step.get("with", {}).get("script", "")
-                self.assertNotIn("GITHUB_WORKSPACE", body)
-                if step.get("name") != "Configure Git credentials":
-                    self.assertNotRegex(body, r"(^|[\s;&|(])git\s")
-                else:
-                    self.assertEqual(body, 'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"')
-
-    def test_the_agent_reads_what_the_trusted_steps_prepared(self):
-        steps = "\n".join(step.get("run", "") for step in source("reviewer")["pre-agent-steps"])
-        for output in ("diff.patch", "diffstat.txt", "changed-files.txt", "commits.txt", "log.txt",
-                       "diff-from-base.patch", "head-log.txt", "upstream-log.txt", "before/"):
-            with self.subTest(output=output):
-                self.assertIn(f'"$patch/{output}', steps)
-                self.assertIn(f"`{output.rstrip('/')}", (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2])
-        prompt = (WORKFLOWS / "reviewer.md").read_text().split("---", 2)[2]
-        self.assertNotIn("git -C fork", prompt)
-        self.assertNotIn("submit_review", prompt)
-        self.assertIn("`porting-out/proposal.json`", prompt)
-
-    def test_the_web_tool_claims_match_the_extension(self):
-        text = (WORKFLOWS / "reviewer.md").read_text()
-        prompt = text.split("---", 2)[2]
-        for needle in ("web_fetch_exa", "crawling_exa", "automatic chain reaches only Exa",
-                       "send data to any host inside such a URL", "2026-11-24"):
-            self.assertIn(needle, text)
-        self.assertIn("`fetch_content` reaches only the three search hosts", prompt)
-        self.assertNotIn("a page elsewhere is refused", text)
-
-    def test_the_code_hardening_comes_after_the_trusted_steps_and_before_the_agent(self):
-        steps = self.lock()["jobs"]["agent"]["steps"]
-        names = [s.get("name") for s in steps]
-        code = names.index(CODE_STEP)
-        self.assertLess(names.index("Make the home directories the sandbox mounts read-only to the agent"), code)
-        # The directories it makes root-owned exist by then, and gh-aw's own
-        # steps that create entries in them come before it or only add to
-        # them (a sticky directory still takes the runner's new files).
-        self.assertLess(names.index("Create gh-aw temp directory"), code)
-        self.assertLess(code, names.index("Seal the workspace's git checkout against the agent"))
-        # Every step that writes or runs something in the directories it
-        # makes root-owned is before it; the only gh-aw step that touches
-        # the gh-aw directory after it writes elsewhere.
-        for before in ("Setup Scripts", "Install AWF binary", "Install Pi CLI", "Setup Node.js",
-                       "Install ripgrep and fd for the agent's grep and find tools"):
-            self.assertLess(names.index(before), code)
-        self.assertLess(code, names.index("Execute Pi CLI"))
-        run = steps[code]["run"]
-        for needle in ('harden "$RUNNER_TEMP/gh-aw/actions"', 'harden "$(dirname "$RUNNER_TEMP")/_actions"',
-                       "sudo xargs -0 -r chown -h root:root --", "sudo xargs -0 -r chmod go-w --",
-                       "! -user root -o -perm /022", "exit 1"):
-            self.assertIn(needle, run)
-        # Only the entries that are not root's are changed: never a
-        # recursive chown of a whole tree, which would clear the setuid bit
-        # of sudo in a system directory.
-        code_lines = [line for line in run.splitlines() if not line.lstrip().startswith("#")]
-        self.assertNotRegex("\n".join(code_lines), r"chown -[A-Za-z]*R")
-        # Every action a step after the agent uses is under _actions.
-        for step in steps[names.index("Execute Pi CLI") + 1:]:
-            if "uses" in step:
-                self.assertRegex(step["uses"], r"^(actions|github/gh-aw-actions)/")
-
-    def code_hardening(self, temp: Path, home: Path, path: str, tmp_gh_aw: Path | None = None,
-                       prepare: bool = True) -> subprocess.CompletedProcess:
-        """Run the step with a stand-in for /tmp/gh-aw (a directory the test owns) and sudo."""
-        step = next(s for s in self.lock()["jobs"]["agent"]["steps"] if s.get("name") == CODE_STEP)
-        shim = temp.parent / "shim"
-        shim.mkdir(exist_ok=True)
-        (shim / "sudo").write_text('#!/bin/sh\nexec "$@"\n')
-        (shim / "sudo").chmod(0o755)
-        if os.geteuid() == 0:
-            # The step runs as the runner's user (uid 1001), who owns what
-            # create_gh_aw_tmp_dir.sh made; the test runs it as root.
-            (shim / "id").write_text('#!/bin/sh\n[ "$1" = -u ] && { echo 1001; exit 0; }\nexec /usr/bin/id "$@"\n')
-            (shim / "id").chmod(0o755)
-        tmp_gh_aw = tmp_gh_aw or temp.parent / "tmp-gh-aw"
-        if prepare:
-            (temp / "gh-aw/safeoutputs").mkdir(parents=True, exist_ok=True)
-            (tmp_gh_aw / "sandbox/firewall/logs").mkdir(parents=True, exist_ok=True)
-            (tmp_gh_aw / "sandbox/firewall/audit").mkdir(parents=True, exist_ok=True)
-            if os.geteuid() == 0:
-                for made in (tmp_gh_aw, *tmp_gh_aw.rglob("*")):
-                    os.chown(made, 1001, 1001)
-        run = step["run"].replace("/tmp/gh-aw", str(tmp_gh_aw))
-        return subprocess.run(["bash", "-c", run], capture_output=True, text=True,
-                              env={"HOME": str(home), "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(temp.parent / "ws"),
-                                   "PATH": f"{shim}:{path}"})
-
-    def test_the_code_hardening_refuses_a_link_and_a_missing_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            temp, home = root / "work/_temp", root / "home"
-            temp.mkdir(parents=True)
-            home.mkdir()
-            result = self.code_hardening(temp, home, "/usr/bin:/bin", prepare=False)
-            self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn("gh-aw/actions is not a directory", result.stderr)
-            (temp / "gh-aw").mkdir()
-            (temp / "gh-aw/actions").symlink_to(root)
-            self.assertIn("is not a directory", self.code_hardening(temp, home, "/usr/bin:/bin", prepare=False).stderr)
-
-    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
-                         "chown to root needs root, and the agent's writes run as another user")
-    def test_a_write_through_a_planted_link_cannot_change_the_code_later_steps_run(self):
-        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
-            root = Path(tmp)
-            os.chmod(root, 0o755)
-            temp, home = root / "work/_temp", root / "home"
-            actions, setup = temp / "gh-aw/actions", root / "work/_actions/github/gh-aw-actions/sha/setup"
-            tools = root / "tools/node/x64"
-            for path in (actions, setup, tools / "bin", home):
-                path.mkdir(parents=True)
-            scripts = [actions / "print_firewall_logs.sh", setup / "cleanup.sh", tools / "bin/node"]
-            for script in scripts:
-                script.write_text("#!/bin/sh\necho original\n")
-                script.chmod(0o755)
-            for path in (root / "work", root / "tools", home, *root.rglob("*")):
-                os.lchown(path, 1001, 1001)
-            (root / "ws").mkdir()
-            fake_node = root / "pathbin"
-            fake_node.mkdir()
-            (fake_node / "node").symlink_to(tools / "bin/node")
-            result = self.code_hardening(temp, home, f"{fake_node}:/usr/bin:/bin")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            for script in scripts:
-                self.assertEqual((script.stat().st_uid, script.stat().st_mode & 0o022), (0, 0), script)
-            self.assertEqual((home / ".npmrc").stat().st_uid, 0)
-            # What the agent plants in /tmp/gh-aw, and what the later steps
-            # do with it as the runner's user (uid 1001): the copy, the
-            # echo and the staging copy all write through the link.
-            planted = root / "gh-aw"
-            planted.mkdir()
-            os.chown(planted, 1001, 1001)
-            source_file = planted / "outputs.jsonl"
-            source_file.write_text('{"type":"noop","message":"$(touch /tmp/pwned)"}\n')
-            os.chown(source_file, 1001, 1001)
-            runner = ["setpriv", "--reuid=1001", "--regid=1001", "--clear-groups"]
-            for index, target in enumerate((*scripts, actions / "new.sh", setup / "new.js")):
-                link = planted / f"link{index}"
-                link.symlink_to(target)
-                before = target.read_bytes() if target.exists() else None
-                for command in (f'cp "{source_file}" "{link}"', f'echo \'{{"items":[]}}\' > "{link}"'):
-                    attempt = subprocess.run([*runner, "sh", "-c", command], capture_output=True, text=True)
-                    self.assertNotEqual(attempt.returncode, 0, command)
-                self.assertEqual(target.read_bytes() if target.exists() else None, before, target)
-            self.assertFalse((actions / "new.sh").exists() or (setup / "new.js").exists())
-            # The agent's own uid cannot replace the scripts either.
-            self.assertNotEqual(subprocess.run([*runner, "sh", "-c", f'rm -f "{scripts[0]}" && echo x > "{scripts[0]}"'],
-                                               capture_output=True).returncode, 0)
-
-    AGENT = ["setpriv", "--reuid=1001", "--regid=1001", "--clear-groups"]
-
-    def layout(self, root: Path) -> tuple[Path, Path, Path, Path]:
-        """The job's directories as the runner's user (uid 1001) owns them before the step."""
-        os.chmod(root, 0o755)
-        shared = root / "tmp"  # stands for /tmp
-        shared.mkdir()
-        os.chmod(shared, 0o1777)
-        temp, home = root / "work/_temp", root / "home"
-        for path in (temp / "gh-aw/actions", root / "work/_actions", home, root / "ws"):
-            path.mkdir(parents=True)
-        for path in (root / "work", home, root / "ws"):
-            os.chown(path, 1001, 1001)
-            for child in path.rglob("*"):
-                os.lchown(child, 1001, 1001)
-        return shared / "gh-aw", temp, home, root
-
-    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
-                         "chown to root needs root, and the agent's writes run as another user")
-    def test_the_agent_cannot_replace_a_directory_a_root_step_after_it_acts_on(self):
-        # "Print firewall logs" runs `sudo chmod -R a+rX` and `sudo chown -R`
-        # on the firewall directory, and AWF's cleanup mounts the audit
-        # directory into a root container: each follows a link given as the
-        # directory. The agent renames what it owns and puts a link there.
-        agent = self.AGENT
-        for hardened in (False, True):
-            with self.subTest(hardened=hardened), tempfile.TemporaryDirectory(dir="/tmp") as tmp:
-                gh_aw, temp, home, root = self.layout(Path(tmp))
-                victim = root / "victim"
-                victim.mkdir()
-                secret = victim / "shadow"
-                secret.write_text("x")
-                secret.chmod(0o600)
-                (root / "ws").mkdir(exist_ok=True)
-                (root / "work/_actions").mkdir(exist_ok=True)
-                if hardened:
-                    result = self.code_hardening(temp, home, "/usr/bin:/bin", tmp_gh_aw=gh_aw)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                else:
-                    for sub in ("sandbox/firewall/logs", "sandbox/firewall/audit"):
-                        (gh_aw / sub).mkdir(parents=True)
-                    for made in (gh_aw, *gh_aw.rglob("*")):
-                        os.chown(made, 1001, 1001)
-                firewall = gh_aw / "sandbox/firewall"
-                attacks = []
-                for directory in (firewall, firewall / "audit", firewall / "logs", gh_aw / "sandbox", gh_aw):
-                    moved = directory.with_name(directory.name + ".moved")
-                    attempt = subprocess.run([*agent, "sh", "-c", f'mv "{directory}" "{moved}" && ln -s "{victim}" "{directory}"'],
-                                             capture_output=True, text=True)
-                    attacks.append(attempt.returncode == 0)
-                    if attempt.returncode == 0 and not hardened:
-                        break  # the rest moved with it
-                if not hardened:
-                    # Without the step the first rename succeeds, and root's
-                    # chmod -R follows the link given as the directory.
-                    self.assertEqual(attacks, [True])
-                    subprocess.run(["chmod", "-R", "a+rX", str(firewall)], check=True)
-                    self.assertEqual(secret.stat().st_mode & 0o777, 0o644)
-                    continue
-                self.assertEqual(attacks, [False] * 5)
-                # The modes per directory: sticky for the two above the
-                # firewall, root's 755 for the firewall, the runner's own
-                # for what AWF writes in.
-                for directory, owner, mode in ((gh_aw, 0, 0o1777), (gh_aw / "sandbox", 0, 0o1777),
-                                               (firewall, 0, 0o755), (firewall / "logs", 1001, 0o755),
-                                               (firewall / "audit", 1001, 0o755)):
-                    status = directory.stat()
-                    self.assertEqual((status.st_uid, status.st_mode & 0o7777), (owner, mode), directory)
-                    self.assertFalse(directory.is_symlink())
-                    # The runner's uid creates entries in each but the
-                    # firewall directory, and removes its own, as AWF, Squid
-                    # and the steps do.
-                    made = subprocess.run([*agent, "sh", "-c", f'touch "{directory}/f" && rm "{directory}/f"'],
-                                          capture_output=True)
-                    self.assertEqual(made.returncode == 0, directory != firewall, directory)
-                    removed = subprocess.run([*agent, "sh", "-c", f'rmdir "{directory}" || rm -rf "{directory}"'],
-                                             capture_output=True)
-                    self.assertNotEqual(removed.returncode, 0, directory)
-                # The renames the agent needs for the attack fail for the
-                # directories it owns, because the firewall directory is root's.
-                for name in ("logs", "audit"):
-                    renamed = subprocess.run([*agent, "mv", str(firewall / name), str(firewall / (name + ".moved"))],
-                                             capture_output=True)
-                    self.assertNotEqual(renamed.returncode, 0, name)
-                    self.assertTrue((firewall / name).is_dir() and not (firewall / name).is_symlink())
-                # AWF's writeConfigs makes the audit directory and chmods it,
-                # as the runner's uid, before any container starts.
-                awf = subprocess.run([*agent, "sh", "-c",
-                                      f'mkdir -p -m 755 "{firewall}/audit" && chmod 755 "{firewall}/audit" '
-                                      f'&& mkdir -p "{firewall}/logs" && touch "{firewall}/audit/a" "{firewall}/logs/l"'],
-                                     capture_output=True, text=True)
-                self.assertEqual(awf.returncode, 0, awf.stderr)
-                # What the steps do as root, with links the agent can still
-                # plant inside the directories: -R follows none of them.
-                for directory in (firewall / "logs", firewall / "audit"):
-                    subprocess.run([*agent, "ln", "-s", str(victim), str(directory / "planted")], check=True)
-                for command in (["chmod", "-R", "a+rX", str(firewall)],
-                                ["chown", "-R", "1001:1001", str(firewall)],
-                                ["chmod", "-R", "a+rX", str(os.path.dirname(firewall / "logs"))]):
-                    subprocess.run(command, check=True)
-                self.assertEqual((secret.stat().st_uid, secret.stat().st_mode & 0o777), (0, 0o600))
-                # "Print firewall logs" gave the firewall directory back to the
-                # runner; the later awf-reflect.json write works.
-                self.assertEqual(subprocess.run([*agent, "touch", str(firewall / "awf-reflect.json")]).returncode, 0)
-                self.assertEqual(victim.stat().st_uid, 0)
-
-    @unittest.skipUnless(os.geteuid() == 0 and shutil.which("setpriv"),
-                         "chown to root needs root, and the agent's writes run as another user")
-    def test_the_staging_copy_cannot_plant_a_module_the_safe_outputs_server_loads(self):
-        # otlp.cjs requires send_otlp_span.cjs from its own directory, inside a
-        # try, and setup does not copy it into the safe-outputs directory; the
-        # staging copy writes through a link in the staging directory.
-        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
-            gh_aw, temp, home, root = self.layout(Path(tmp))
-            safeoutputs = temp / "gh-aw/safeoutputs"
-            staging = safeoutputs / "upload-artifacts"
-            staging.mkdir(parents=True)
-            for made in (safeoutputs, staging):
-                os.chown(made, 1001, 1001)
-            result = self.code_hardening(temp, home, "/usr/bin:/bin", tmp_gh_aw=gh_aw)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            stub = safeoutputs / "send_otlp_span.cjs"
-            self.assertEqual((stub.stat().st_uid, stub.stat().st_mode & 0o7777), (0, 0o644))
-            payload = root / "ws/payload.cjs"
-            payload.write_text("require('fs').writeFileSync('/tmp/pwned-by-send-otlp-span', 'x')\n")
-            os.chown(payload, 1001, 1001)
-            agent = self.AGENT
-            # The agent plants a link in the staging directory to the server's
-            # directory (the path is the same inside the sandbox).
-            subprocess.run([*agent, "ln", "-s", str(safeoutputs), str(staging / "L")], check=True)
-            # copyFileSync of the staging copy opens an existing file for
-            # writing; it never removes one.
-            for command in (f'cp "{payload}" "{staging}/L/send_otlp_span.cjs"', f'cp "{payload}" "{stub}"',
-                            f'cat "{payload}" > "{staging}/L/send_otlp_span.cjs"'):
-                attempt = subprocess.run([*agent, "sh", "-c", command], capture_output=True, text=True)
-                self.assertNotEqual(attempt.returncode, 0, command)
-            self.assertNotIn("pwned", stub.read_text())
-            if shutil.which("node"):
-                loaded = subprocess.run(["node", "-e", f'try {{ require("{stub}") }} catch (e) {{ process.exit(7) }}'])
-                self.assertEqual(loaded.returncode, 7)
-            # A file that is already there is refused: it is not ours.
-            stub.unlink()
-            stub.write_text("")
-            self.assertEqual(self.code_hardening(temp, home, "/usr/bin:/bin", tmp_gh_aw=gh_aw, prepare=False).returncode, 1)
-
-    @unittest.skipUnless(os.geteuid() == 0, "chown to root needs root")
-    def test_the_path_hardening_changes_only_what_is_not_root_s_and_follows_links(self):
-        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
-            gh_aw, temp, home, root = self.layout(Path(tmp))
-            bindir, lib = root / "bin", root / "lib"
-            bindir.mkdir()
-            lib.mkdir()
-            # A system directory: root-owned, a setuid program, and one entry
-            # the runner's user left writable.
-            suid = bindir / "su"
-            suid.write_text("#!/bin/sh\n")
-            suid.chmod(0o4755)
-            loose = bindir / "loose"
-            loose.write_text("#!/bin/sh\n")
-            os.chown(loose, 1001, 1001)
-            # A link to a file of the runner's, in a directory of the runner's.
-            real = lib / "tool"
-            real.write_text("#!/bin/sh\n")
-            real.chmod(0o777)
-            os.chown(lib, 1001, 1001)
-            os.chown(real, 1001, 1001)
-            (bindir / "tool").symlink_to(real)
-            (bindir / "gone").symlink_to(lib / "not-yet")
-            result = self.code_hardening(temp, home, f"{bindir}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((suid.stat().st_uid, suid.stat().st_mode & 0o7777), (0, 0o4755))
-            for path in (loose, real, lib):
-                status = path.stat()
-                self.assertEqual((status.st_uid, status.st_mode & 0o022), (0, 0), path)
-            # A link whose target the agent could create in a directory that
-            # cannot be taken over (the home directory) is refused.
-            scratch = root / "path-home-new"
-            scratch.mkdir()
-            (scratch / "home-new").symlink_to(home / "new-file")
-            refused = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
-            self.assertEqual(refused.returncode, 1, refused.stderr)
-            self.assertIn("too wide", refused.stderr)
-            # So is a link to a too wide directory itself.
-            scratch = root / "path-home-dir"
-            scratch.mkdir()
-            (scratch / "home-dir").symlink_to(home)
-            refused = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
-            self.assertEqual(refused.returncode, 1, refused.stderr)
-            self.assertIn("too wide", refused.stderr)
-            # A link to an existing file below a too wide directory ends the walk
-            # there: the file and the directories between are taken over, the
-            # home directory is left as it is.
-            (home / "sub").mkdir()
-            existing = home / "sub/existing"
-            existing.write_text("x")
-            for made in (home / "sub", existing):
-                os.chown(made, 1001, 1001)
-            scratch = root / "path-home-file"
-            scratch.mkdir()
-            (scratch / "home-file").symlink_to(existing)
-            home_status = home.stat()
-            (temp / "gh-aw/safeoutputs/send_otlp_span.cjs").unlink()  # the first run made it
-            accepted = self.code_hardening(temp, home, f"{scratch}:/usr/bin:/bin", tmp_gh_aw=gh_aw)
-            self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            for path in (existing, home / "sub"):
-                self.assertEqual((path.stat().st_uid, path.stat().st_mode & 0o022 & ~0o1000), (0, 0), path)
-            self.assertEqual((home.stat().st_uid, home.stat().st_mode), (home_status.st_uid, home_status.st_mode))
-
-    def test_the_dispatcher_agent_has_no_way_to_plant_a_link(self):
-        # No shell and no file writes: the audit of the post-agent steps that
-        # follow links in /tmp/gh-aw (see the reviewer) finds no writer there.
-        steps = workflow("dispatcher.lock.yml")["jobs"]["agent"]["steps"]
-        run = next(s for s in steps if s.get("name") == "Execute Pi CLI")["run"]
-        args = pi_command_args(run)
-        self.assertTrue({"bash", "edit", "write"} <= excluded_tools(args))
-        self.assertNotIn("mcp-scripts", source("dispatcher"))
 
 
 class TestHistoryAndReports(unittest.TestCase):
@@ -1819,10 +1293,17 @@ class TestHistoryAndReports(unittest.TestCase):
     def test_the_publish_jobs_check_and_keep_the_report(self):
         worker = (WORKFLOWS / "worker.md").read_text()
         self.assertIn("--report ../in/report.json --out ../in/worker-gate.json", worker)
-        self.assertEqual(worker.count("--report ../in/report.json"), 3)
+        self.assertEqual(worker.count("--report ../in/report.json"), 5)
         for name in ("worker.lock.yml", "publish-retry.yml"):
             with self.subTest(workflow=name):
                 jobs = workflow(name)["jobs"]
+                # The summary of the review loop is posted once after the
+                # push, with the fork token and no retry.
+                post = next(s for s in jobs["publish"]["steps"] if s.get("name") ==
+                            "Post the review loop summary on the pushed commit")
+                self.assertIs(post["continue-on-error"], True)
+                self.assertIn("python -m review_loop comment", post["run"])
+                self.assertEqual(set(post["env"]), {"UPSTREAMING_FORK_TOKEN"})
                 upload = next(s for s in jobs["publish"]["steps"]
                               if s.get("with", {}).get("name") == "porting-publication")
                 self.assertIn("in/report.json", upload["with"]["path"].split())

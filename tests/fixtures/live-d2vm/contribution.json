@@ -35,7 +35,6 @@
   "generation": 1,
   "handoff_approval": null,
   "handoff_request": null,
-  "held_patch": null,
   "last_ci_evidence_id": null,
   "merge": null,
   "owners": {
@@ -73,7 +72,6 @@
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
-  "review_comments": [],
   "revision": 4,
   "schema_version": 1,
   "scope_coverage_complete": true,

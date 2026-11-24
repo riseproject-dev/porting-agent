@@ -37,18 +37,17 @@ Every App token is minted for one purpose, with the narrowest permissions and re
 | Controller, `acknowledge-command` | Control | This repository | `issues: write` | On every issue comment, before and separately from reconciliation. It adds an `eyes` reaction to an `/upstreaming` comment. |
 | Controller, `reconcile`: state commit | Control | This repository | `contents: write` | Only when the policy is not `read_only`, after state is staged. Environment `state`. |
 | Controller, `reconcile`: projection | Control | This repository | `contents: read`, `issues: write` | After state publication. |
-| Controller, `reconcile`: launches | Control | This repository | `contents: read`, `actions: write` | On every reconcile run whose policy is not `read_only`. It launches the dispatcher, provisioning, publication retries, review comments, development PR and handoff operations, and, after a state commit, one follow-up controller run. |
+| Controller, `reconcile`: launches | Control | This repository | `contents: read`, `actions: write` | On every reconcile run whose policy is not `read_only`. It launches the dispatcher, provisioning, publication retries, development PR and handoff operations, and, after a state commit, one follow-up controller run. |
 | Dispatcher, queue token | Control | This repository | `contents: write`, `actions: read` | In a pre-agent step of every run, to republish the compiled queue Policy on a quiescent queue. A failure to mint it does not fail the run. |
 | Fork Provisioning | Destination | The organization | `contents: read` and repository creation write | Only when the fork is absent. |
 | Fork Provisioning | Destination | The one fork | `contents`, `workflows`, `actions`, `administration`: write | After verifying the fork. |
 | Development PR | Destination | The one fork | `contents: read`; `pull-requests`, `actions`, `administration`: write | To create or discover the development PR. |
 | Development PR, CI rerun | Destination | The one fork | `actions: write` | To rerun the interrupted jobs the collector recorded. |
-| Worker, publish job | Destination | The one fork | `contents`, `workflows`, `pull-requests`: write | To push a verified proposal. Never for a development patch under review. |
+| Worker, publish job | Destination | The one fork | `contents`, `workflows`, `pull-requests`: write | To push a verified proposal, and to post the summary of its review loop on the pushed commit. |
 | Worker, publish job, rerun | Destination | The one fork | `actions: write` | To rerun the failed jobs for a failure not caused by the patch. |
-| Publish Retry, `publish` | Destination | The one fork | As the worker's publish job and rerun | For a held development patch, only once the contribution is in `development.publishing`; for any other verified proposal, when the job's preflight says to publish. A separate token is minted for a rerun. |
+| Publish Retry, `publish` | Destination | The one fork | As the worker's publish job and rerun | When the job's preflight says to publish. A separate token is minted for a rerun. |
 | Publish Retry, `notify` | Control | This repository | `contents: read`, `issues: write` | To post, or find again, the plan comment of a retried verified plan. |
 | Planner, `notify` | Control | This repository | `contents: read`, `issues: write` | To post the plan comment. |
-| Review Comment | Destination | The one fork | `pull-requests: write` | Only when the comment is still due. |
 | Handoff, `upstream-branch` | Destination | The one fork | `contents`, `workflows`: write | To build `riscv64`. |
 | Handoff, `upstream-branch`, CI | Destination | The one fork | `actions: write` | Only when the clean head needs its own CI dispatched. |
 | Handoff, `submission-comment` | Control | This repository | `issues: write` | To post the submission package. |
@@ -69,4 +68,4 @@ Every handoff job mints its token only after checking that the state it checked 
 
 The planner uses the scoped `GITHUB_TOKEN` and a server-enforced read-only GitHub MCP server. It has no control App private key, destination token, package credential, fork writer, or repository mutation tool.
 
-The worker and the reviewer hold no destination credential either. How each is isolated is on [Agent Isolation]({{ '/security/agents/' | relative_url }}).
+The worker holds no destination credential either, nor do the review children it runs. How each is isolated is on [Agent Isolation]({{ '/security/agents/' | relative_url }}).

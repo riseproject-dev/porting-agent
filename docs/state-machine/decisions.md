@@ -1423,13 +1423,12 @@ flowchart TB
 
 Which outcomes charge `no_progress`, and what starts it again?
 
-**Decision.** Every rejected or blocked worker outcome (`reject_patch_proposal`) charges `no_progress`, whatever `progress` the proposal reports: that field is the worker's own untrusted claim, and letting it stop the streak would let a worker extend its own retries without bound. A published Result starts `no_progress` and `dev_reviews` again as an effect of its row (`record_publish_success` in both development states, `record_revision_publish_success`), which `lifecycle check` enforces; only `scope_paths` stays beside the row. `budget.review_rejections` is cleared by `record_revision_publish_success` as well, although nothing reads it in upstream review. `refresh_on_exhaustion` starts both again too.
+**Decision.** Every rejected or blocked worker outcome (`reject_patch_proposal`) charges `no_progress`, whatever `progress` the proposal reports: that field is the worker's own untrusted claim, and letting it stop the streak would let a worker extend its own retries without bound. A published Result starts `no_progress` again as an effect of its row (`record_publish_success`, `record_revision_publish_success`), which `lifecycle check` enforces; only `scope_paths` stays beside the row. `refresh_on_exhaustion` starts it again too.
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
         development_agent_running["development.agent_running"]
-        development_publishing["development.publishing"]
         development_fix_needed["development.fix_needed"]
         development_waiting_ci["development.waiting_ci"]
     end
@@ -1439,8 +1438,7 @@ flowchart TB
     end
 
     development_agent_running ==>|reject_patch_proposal| development_fix_needed
-    development_agent_running -->|record_publish_success| development_waiting_ci
-    development_publishing ==>|record_publish_success| development_waiting_ci
+    development_agent_running ==>|record_publish_success| development_waiting_ci
     upstream_agent_running -->|record_revision_publish_success| upstream_waiting_ci
 ```
 
@@ -2040,80 +2038,6 @@ flowchart TB
     handoff_preparing_submission ==>|retry_submission_comment| handoff_preparing_submission
 ```
 
-### The review of every development patch before it is published
-
-Whether a development patch is reviewed by a separate model before it is published, where the unpublished patch lives, what pins it, and what ends successive failed reviews.
-
-**Change.** Every development patch is reviewed before it is published. Development Work carries the review contract; its worker's trusted publication job verifies the patch without a token and pushes nothing, and `hold_patch_for_review` holds it in `development.review_pending`, pinned in `held_patch` to the worker run, the publication artifact that carries the series (30 days) and the run that owns it, the Work, the digest of the series, and the commit it rebuilds to. A separate uncredentialed review Work (`development_review`, on its own `reviewer` workflow and model, read and diff only, no reproduction) reads exactly that patch with the worker's report, the plan, and the history. The verdict is derived from its findings: a blocker or a major finding fails it; minor findings and nits pass and are recorded. A pass takes `accept_patch_review` to `development.publishing`, the one state that publishes a held patch, through the publish-only workflow, which pushes only the held series rebuilt to the reviewed commit. A fail takes `reject_patch_review`: the review is the pending feedback of the next Work, which is given the rejected series (`context.previous_patch`, digest-verified by its trusted pre-agent step, skipped once the artifact expired), amends it, and charges `repair_attempts_cluster` again when CI failed (so `work_total` is 36). `dev_reviews` (1) returns one failed review in succession for repair; the second failed review in succession takes `publish_after_failed_reviews`: there is no human wait and no override command; the patch is published anyway and trusted code posts the latest review and why it failed on the development PR, durably: `record_publish_success` adds the comment to those due (`review_comments`, which a later publication or a new generation keeps), and a failed or lost post is launched again, bounded, then alerted in every tick and launched again daily until it is posted. Nothing about reviews is posted on the tracking issue. Every review, passed or failed, is `patch_review` evidence that the history of every later Work and review carries; the report of the patch is stored at the hold. A stop or an expired artifact discards the held patch, and fresh development Work follows. An exhausted recovery of the review Work keeps it in the human wait (`patch_review_unavailable`, stated in plain words), and the resume asks for the review of the same patch again (`resume_patch_review`) while its artifact is current. Work dispatched before the review keeps publishing in its own run (`record_publish_success` from `development.agent_running` with no review contract). New states `development.review_pending`, `development.reviewing`, and `development.publishing`, the budget `dev_reviews`, and the record field `held_patch`.
-
-```mermaid
-flowchart TB
-    subgraph development["development"]
-        development_fix_needed["development.fix_needed"]
-        development_agent_running["development.agent_running"]
-        development_review_pending["development.review_pending"]
-        development_reviewing["development.reviewing"]
-        development_publishing["development.publishing"]
-        development_waiting_ci["development.waiting_ci"]
-    end
-
-    development_fix_needed -->|request_patch| development_agent_running
-    development_agent_running ==>|hold_patch_for_review| development_review_pending
-    development_review_pending -->|request_patch_review| development_reviewing
-    development_review_pending -->|expire_held_patch| development_fix_needed
-    development_reviewing -->|accept_patch_review| development_publishing
-    development_reviewing ==>|reject_patch_review| development_fix_needed
-    development_reviewing ==>|publish_after_failed_reviews| development_publishing
-    development_publishing -->|record_publish_success| development_waiting_ci
-    development_agent_running -->|record_publish_success| development_waiting_ci
-```
-
-### The comment of a patch published anyway, whatever stops its record
-
-When the comment of a patch published after successive failed reviews becomes due if the record stops before the Result of its push is folded, and whether a pause or a missing development PR holds its post.
-
-**Change.** The comment is due whenever a `published` Result is the publication of a patch published anyway: the `patch_review` evidence with the disposition `publish_anyway` whose pin names the Result's worker run, Work, and commit makes it due in the write that records the Result, once per review, on time (`record_publish_success`) or late (`record_late_effect`, in any state: after a pause, a processing error, a stop, or the exhaustion of `publish_recovery`), since the patch is on the fork either way. Posting the comment is not development Work. A pause holds it on a record that is not terminal, and the resume launches it; a terminal record is never resumed, so its pause holds nothing and the comment is posted. A post waits, spending no attempt, until a development PR is recorded. A held comment is alerted on in every tick once held for 24 hours, and at once on a terminal record. The attempts end at 999, the last the workflow input admits; the comment then stays due and alerted on. No row, state, or budget changes.
-
-```mermaid
-flowchart TB
-    subgraph development["development"]
-        development_publishing["development.publishing"]
-        development_waiting_ci["development.waiting_ci"]
-        development_waiting_human["development.waiting_human"]
-        development_fix_needed["development.fix_needed"]
-    end
-    subgraph closed["closed"]
-        closed_idle["closed.idle"]
-    end
-
-    development_publishing ==>|record_publish_success| development_waiting_ci
-    development_publishing -->|exhaust_recovery| development_waiting_human
-```
-
-### The comment of a patch published anyway, from the branch
-
-When the comment of a patch published after successive failed reviews becomes due if no `published` Result of its publication ever reaches the reconciler, and which head Work is requested on after such a publication.
-
-**Change.** Trusted branch evidence makes the comment due too, in the same write, in any state, once per review: a branch operation of the contribution that becomes `confirmed` (by discovery, which reads the branch in a human wait and while paused too, by the read-back of a publish-only retry, in a Result folded or recorded late, or by a human with `resolve-operation`) at the commit a `publish_anyway` review pinned, a fork head at that commit that `record_head_change` records, or the head this tick's observation read at that commit when a command moves the record out of a state whose observation does not record the head (a resume, a park, or a replan from a human wait), since that head is otherwise never recorded. So an uncertain push, or a retry whose run died before its upload, followed by a pause, a processing error, or the exhaustion of `publish_recovery`, still leaves the comment due once the branch shows the commit, whether the record is resumed, parked or replanned. In a human wait with no stored operation of that push (every retry died before its upload, or its `uncertain` Result arrived after the wait began) the comment becomes due only when a command moves the record: an observed head that no write records would make it due again after every post. The comment names the commit the branch holds, which discovery that confirmed the operation by its tree and parents may read under another SHA than the pinned one. An `uncertain` Result alone makes nothing due, since the comment says the patch was published at that commit. A resume from a human wait requests no development Work while this tick's observation read the branch at another head than the recorded one: the next observation records it by `record_head_change` in `development.fix_needed`, and Work is requested on it. A comment that becomes due beyond the 32 the record holds drops the oldest exhausted comment, else the oldest other one, each with an alert. No row, state, or budget changes.
-
-```mermaid
-flowchart TB
-    subgraph development["development"]
-        development_publishing["development.publishing"]
-        development_waiting_human["development.waiting_human"]
-        development_fix_needed["development.fix_needed"]
-        development_waiting_ci["development.waiting_ci"]
-    end
-    subgraph parked["parked"]
-        parked_idle["parked.idle"]
-    end
-
-    development_publishing -->|exhaust_recovery| development_waiting_human
-    development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
-    development_waiting_human -->|park_contribution<br/>/upstreaming park| parked_idle
-    development_fix_needed ==>|record_head_change| development_waiting_ci
-```
-
 ### The Work identity has no pre-identity reading
 
 Whether a Work payload that names neither `generation` nor `dedupe_key`, or requested Work recorded without a generation, is still read as generation 0.
@@ -2636,7 +2560,7 @@ flowchart TB
 
 Which Results are late although the record holds Work, and which phase folds the Result of a held publication?
 
-**Change.** Each phase requests its own Work only (`reconcile.WORK_PHASE`): planning Work in `planning`, patch and patch review Work in `development`, revision Work in `upstream_review`, and the submission rewrite and review in `handoff`. A Result of Work the record holds whose task belongs to another phase takes `record_late_effect`, and so do a plan outside `planning`, any other Result in `planning`, a submission Result outside `handoff`, a review of a held patch outside `development.reviewing`, and the Result of a held publication outside `development` and `upstream_review`. The event names why (`late Result: <task> Work is not requested in the <phase> phase`, and so on). This completes decision 2.
+**Change.** Each phase requests its own Work only (`reconcile.WORK_PHASE`): planning Work in `planning`, patch Work in `development`, revision Work in `upstream_review`, and the submission rewrite and review in `handoff`. A Result of Work the record holds whose task belongs to another phase takes `record_late_effect`, and so do a plan outside `planning`, any other Result in `planning`, a submission Result outside `handoff`, a review of a held patch outside `development.reviewing`, and the Result of a held publication outside `development` and `upstream_review`. The event names why (`late Result: <task> Work is not requested in the <phase> phase`, and so on). This completes decision 2.
 
 ```mermaid
 flowchart TB
@@ -2798,7 +2722,7 @@ flowchart TB
 
 What happens to Work whose last Claim failed before its agent ran, for a step that does not depend on the contribution?
 
-**Change.** The failure is the pipeline's, not the Work's, so none of the budgets of the Work is charged. A run is such a failure when it concluded `failure` and its `activation` job failed, or its `agent` job failed in a step while the step `Execute Pi CLI` was skipped and the first failed step is not one that reads the contribution (the checkout of its fork or of the upstream project, the held patch, the Work and its history, the reproduction image). A cancelled or timed-out run, a lost runner, a failed agent and a failed contribution step are the Work's. The failure carries the version of the pipeline code the run ran, the one the controller resumes its own stop at. While that is the version running now, an available Work with a retry, a cancelled graph and a dispatcher run that ended without claiming are held: nothing is launched, staged or charged, and an alert and a warning say why. A transient failure heals by itself: the Work is launched again free by the first controller run after 30 minutes, 2 hours and 8 hours at one version of the code, and then stays held. Once the pipeline code changes, or a human launches the controller, a retry and a dispatcher are launched again, and a cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh graph at the next revision and charges nothing, so `work_recovery`, `work_total` and the attempts counted so far are unchanged. `allocate_work_retry` and `exhaust_recovery` are refused for such a failure. The record stays in its state instead of pausing: a pause clears the Work while the queue still holds it available, and its resume would charge the repair again.
+**Change.** The failure is the pipeline's, not the Work's, so none of the budgets of the Work is charged. A run is such a failure when it concluded `failure` and its `activation` job failed, or its `agent` job failed in a step while the step `Execute Pi CLI` was skipped and the first failed step is not one that reads the contribution (the checkout of its fork or of the upstream project, the Work and its history, the reproduction image). A cancelled or timed-out run, a lost runner, a failed agent and a failed contribution step are the Work's. The failure carries the version of the pipeline code the run ran, the one the controller resumes its own stop at. While that is the version running now, an available Work with a retry, a cancelled graph and a dispatcher run that ended without claiming are held: nothing is launched, staged or charged, and an alert and a warning say why. A transient failure heals by itself: the Work is launched again free by the first controller run after 30 minutes, 2 hours and 8 hours at one version of the code, and then stays held. Once the pipeline code changes, or a human launches the controller, a retry and a dispatcher are launched again, and a cancelled graph takes `reallocate_after_pipeline_failure`, which allocates a fresh graph at the next revision and charges nothing, so `work_recovery`, `work_total` and the attempts counted so far are unchanged. `allocate_work_retry` and `exhaust_recovery` are refused for such a failure. The record stays in its state instead of pausing: a pause clears the Work while the queue still holds it available, and its resume would charge the repair again.
 
 ```mermaid
 flowchart TB
@@ -3154,21 +3078,19 @@ flowchart TB
 
 What a record in a state always holds, and how the table proves that no row breaks it.
 
-**Change.** Each state names its invariants (`State.requires`, from `lifecycle.REQUIRES`): the bound upstream, the verified plan and scope and the fork from development on, the development PR and the candidate head at the submission gate, the requested Work in the states that run it, the pending action of a wait and none elsewhere, no held patch where none can be held, and no stop in the states a stop leaves. `lifecycle check` proves for every row, the rules and the flag included, that each requirement of the target is kept from the source, implied by a guard (`lifecycle.IMPLIES`), established by the effects, or (`not_paused`) assured by the mask of the flag; fact guards never count. The proof found four rows to change: `nominate_for_handoff` requires the development PR and head it nominates, `resume_patch_review` is taken only once the contribution is not paused (the first resume of a paused wait clears the flag), and `resume_ci`, `rearm_dispatch` and `resume_upstream_read` of `development.waiting_human` discard a held patch, which those waits never keep. The engine refuses a row from a record that breaks its state (`source_invalid`), but for the stops, a late Result and the row that heals the invariant, and a row whose record after it breaks its target (`target_invalid`). A row whose guard is `always` is proved to refuse with no kind.
+**Change.** Each state names its invariants (`State.requires`, from `lifecycle.REQUIRES`): the bound upstream, the verified plan and scope and the fork from development on, the development PR and the candidate head at the submission gate, the requested Work in the states that run it, the pending action of a wait and none elsewhere, and no stop in the states a stop leaves. `lifecycle check` proves for every row, the rules and the flag included, that each requirement of the target is kept from the source, implied by a guard (`lifecycle.IMPLIES`), established by the effects, or (`not_paused`) assured by the mask of the flag; fact guards never count. The proof found a row to change: `nominate_for_handoff` requires the development PR and head it nominates. The engine refuses a row from a record that breaks its state (`source_invalid`), but for the stops, a late Result and the row that heals the invariant, and a row whose record after it breaks its target (`target_invalid`). A row whose guard is `always` is proved to refuse with no kind.
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
         development_waiting_ci["development.waiting_ci"]
         development_waiting_human["development.waiting_human"]
-        development_review_pending["development.review_pending"]
     end
     subgraph handoff["handoff"]
         handoff_awaiting_submission["handoff.awaiting_submission"]
     end
 
     development_waiting_ci ==>|nominate_for_handoff| handoff_awaiting_submission
-    development_waiting_human ==>|resume_patch_review<br/>/upstreaming resume| development_review_pending
     development_waiting_human ==>|resume_ci<br/>/upstreaming resume| development_waiting_ci
 ```
 
@@ -3176,21 +3098,21 @@ flowchart TB
 
 Which state opens the development PR of a published head, now that `development.waiting_ci` requires one (the owner's decision D1 of 2026-11-24).
 
-**Change.** `development.waiting_ci` requires an existing development PR (the invariant `dev_pr`), so the PR of a published head is opened from the state the head is in, before CI is awaited, by the rows the CI wait already had: `launch_development_pr`, `confirm_development_pr` and `exhaust_development_pr_launches`, with no new verb. In `development.publishing` the controller plans the `dev_pr_create` operation once a branch operation confirmed the push of the held patch; the Result of the publication is folded by `record_publish_success` only once the PR is recorded (until then the reconciler defers it and reads it again, and no publish-only retry is launched). In `development.fix_needed`, a head on the branch that no PR shows (a human push before the first PR, or a record that names a head without one) gets its PR first, and the receipt takes `confirm_development_pr` to `development.waiting_ci`; Work and the exhaustion rows there wait while the operation is open. The rows that entered the CI wait without a PR (`record_publish_success`, `request_ci_rerun`, `record_head_change` of `development.fix_needed`, `resume_ci` of `development.waiting_human`) are guarded by "development PR and head recorded". Launches spent without a PR wait for a human with the new pending action `development_pr_not_opened`; `resume_development` returns to `development.fix_needed`, which plans the operation again and adopts a PR a lost launch created. `development.waiting_ci` keeps only the CI bootstrap of a PR created at the recorded head. A first publication by Work dispatched before the review of development patches is a known gap.
+**Change.** `development.waiting_ci` requires an existing development PR (the invariant `dev_pr`), so the PR of a published head is opened from the state the head is in, before CI is awaited, by the rows the CI wait already had: `launch_development_pr`, `confirm_development_pr` and `exhaust_development_pr_launches`, with no new verb. In `development.agent_running` the controller plans the `dev_pr_create` operation once a branch operation confirmed the push of the worker; the Result of the publication is folded by `record_publish_success` only once the PR is recorded (until then the reconciler defers it and reads it again, and no publish-only retry is launched). In `development.fix_needed`, a head on the branch that no PR shows (a human push before the first PR, or a record that names a head without one) gets its PR first, and the receipt takes `confirm_development_pr` to `development.waiting_ci`; Work and the exhaustion rows there wait while the operation is open. The rows that entered the CI wait without a PR (`record_publish_success`, `request_ci_rerun`, `record_head_change` of `development.fix_needed`, `resume_ci` of `development.waiting_human`) are guarded by "development PR and head recorded". Launches spent without a PR wait for a human with the new pending action `development_pr_not_opened`; `resume_development` returns to `development.fix_needed`, which plans the operation again and adopts a PR a lost launch created. `development.waiting_ci` keeps only the CI bootstrap of a PR created at the recorded head.
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_publishing["development.publishing"]
+        development_agent_running["development.agent_running"]
         development_fix_needed["development.fix_needed"]
         development_waiting_ci["development.waiting_ci"]
         development_waiting_human["development.waiting_human"]
     end
 
-    development_publishing ==>|launch_development_pr| development_publishing
-    development_publishing -->|confirm_development_pr| development_publishing
-    development_publishing -->|record_publish_success| development_waiting_ci
-    development_publishing -->|exhaust_development_pr_launches| development_waiting_human
+    development_agent_running ==>|launch_development_pr| development_agent_running
+    development_agent_running -->|confirm_development_pr| development_agent_running
+    development_agent_running -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|exhaust_development_pr_launches| development_waiting_human
     development_fix_needed -->|launch_development_pr| development_fix_needed
     development_fix_needed ==>|confirm_development_pr| development_waiting_ci
     development_fix_needed ==>|exhaust_development_pr_launches| development_waiting_human
@@ -3297,4 +3219,27 @@ flowchart TB
     development_fix_needed -->|request_patch| development_agent_running
     development_agent_running ==>|exhaust_recovery| development_waiting_human
     development_waiting_human ==>|rearm_dispatch| development_fix_needed
+```
+
+### Development and review run in one workflow
+
+Whether a development patch is reviewed by separate Work and held unpublished, or by the worker that wrote it.
+
+**Change.** The worker implements the patch and reviews it in its own run with a review loop on the `subagent` tool of `pi-subagents`: after it commits, fresh reviewers (read only, on the development model) review the series, the worker fixes what a P0 or a worthwhile P1 finding asks, and the loop stops after 3 rounds at most. Its report records the rounds and every finding. A P0 finding is closed only by a later round of fresh reviewers, never by the worker itself; trusted code rejects the Result while one is open, which is `reject_patch_proposal` (a rejected proposal, charged to `no_progress`) and publishes nothing. Otherwise the worker's publication job pushes the patch in the same run and posts the summary of the loop as a comment on the pushed commit. So the states `development.review_pending`, `development.reviewing` and `development.publishing`, the Work kind `development_review`, the budget `dev_reviews` and the record fields `held_patch` and `review_comments` are gone, and `record_publish_success` of `development.agent_running` is the only row that publishes a development patch. It folds the Result once the development PR of the pushed head is recorded: the three rows that open it (`launch_development_pr`, `confirm_development_pr`, `exhaust_development_pr_launches`) are rows of `development.agent_running` too, with no new verb. A record written in one of the removed states is not refused: the record migration drops its held patch and review comments, moves it to `development.fix_needed` with no Work, and turns the pending action `patch_review_unavailable` into `work_failed`. A Result held for a publish-only retry whose report records no review loop at all is of a worker run of the earlier pipeline: `reallocate_after_pipeline_failure` takes it, charging nothing, and drops the held Result. A Result with a review loop must also say which series its last round reviewed: the SHA-256 of that series is the `patch_digest` of the proposal, so a patch changed after its last review is rejected.
+
+```mermaid
+flowchart TB
+    subgraph development["development"]
+        development_fix_needed["development.fix_needed"]
+        development_agent_running["development.agent_running"]
+        development_waiting_ci["development.waiting_ci"]
+        development_waiting_human["development.waiting_human"]
+    end
+
+    development_fix_needed -->|request_patch| development_agent_running
+    development_agent_running ==>|record_publish_success| development_waiting_ci
+    development_agent_running ==>|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|launch_development_pr| development_agent_running
+    development_agent_running -->|confirm_development_pr| development_agent_running
+    development_agent_running -->|exhaust_development_pr_launches| development_waiting_human
 ```

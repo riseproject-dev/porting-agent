@@ -35,7 +35,7 @@ safe-outputs:
     # One current contract per profile. Development queue resets replace
     # stale contracts rather than accumulating workflow versions. gh-aw
     # installs a profile the compiled policy adds on demand.
-    workflows: [planner, worker, reviewer]
+    workflows: [planner, worker]
     target-ref: ${{ github.event.repository.default_branch }}
     max: 1
 steps:
@@ -243,7 +243,7 @@ policyless ledger or a tool error is a failure, not an empty backlog.
 
 The trusted preparation step read the task the porting controller
 requested in the committed `.state/` and staged at most one task
-(for the `planner`, `worker` or `reviewer` profile) followed by
+(for the `planner` or `worker` profile) followed by
 `{"pool":"default","max_claims":1,"max_dispatches":1}`. When the queue
 already holds that task's Work, it staged only the dispatch request: the
 queued Work is dispatched as it was first submitted. Explain the

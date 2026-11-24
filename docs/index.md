@@ -25,7 +25,7 @@ A human then requests submission with `/upstreaming submit-upstream`. Trusted wo
 
 - `.state/` on `main` is lifecycle authority. Only schema-valid state may be published, in a plain fast-forward commit. See [State Publication]({{ '/security/state-publication/' | relative_url }}).
 - Pull-request validation is read-only and receives no App private key, destination token, or package credential. See [Credentials]({{ '/security/credentials/' | relative_url }}).
-- The planner, the worker, and the reviewer run as pinned agentic workflows. None receives a destination credential; trusted jobs verify and publish their results. Every development patch is reviewed by the reviewer, on its own model, before it is published. See [Agent Isolation]({{ '/security/agents/' | relative_url }}).
+- The planner and the worker run as pinned agentic workflows. None receives a destination credential; trusted jobs verify and publish their results. The worker reviews every development patch with fresh reviewers on a stronger model before trusted code publishes it. See [Agent Isolation]({{ '/security/agents/' | relative_url }}).
 - The [status page]({{ '/status/' | relative_url }}) is regenerated from committed state whenever that state or these pages change.
 
 ## Pages
@@ -33,7 +33,7 @@ A human then requests submission with `/upstreaming submit-upstream`. Trusted wo
 | Page | Contents |
 |:-----|:---------|
 | [Status]({{ '/status/' | relative_url }}) | Current state of every contribution, generated from committed lifecycle state, with each contribution's event log. |
-| [Pipeline]({{ '/pipeline/' | relative_url }}) | The path of a contribution from request to upstream review: requests, planning, contribution guidelines, development, patch review, reports and history, submission and handoff. |
+| [Pipeline]({{ '/pipeline/' | relative_url }}) | The path of a contribution from request to upstream review: requests, planning, contribution guidelines, development and its review loop, reports and history, submission and handoff. |
 | [Operations]({{ '/operations/' | relative_url }}) | Repository setup, the workflows and how they are owned, the reproduction image, recovery and retries, and the website. |
 | [Security Model]({{ '/security/' | relative_url }}) | Separation of authority, credentials by workflow, agent isolation, state publication, and the treatment of untrusted input. |
 | [State Machine]({{ '/state-machine/' | relative_url }}) | The contribution lifecycle, generated from the lifecycle table in `lifecycle.py`: the [Lifecycle Table]({{ '/state-machine/table/' | relative_url }}), the [decisions]({{ '/state-machine/decisions/' | relative_url }}) behind it, the [Transition Engine]({{ '/state-machine/engine/' | relative_url }}) that applies it to a record, and the [Known Gaps]({{ '/state-machine/known-gaps/' | relative_url }}) between the code and the table. |

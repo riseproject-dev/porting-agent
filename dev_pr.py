@@ -49,19 +49,40 @@ def body(record: dict, operation: dict) -> str:
 # without one, which `launch_development_pr` and `confirm_development_pr`
 # heal), and `development.waiting_ci`, which requires the PR, runs the CI
 # bootstrap of the recorded PR.
-INTENT_STATES = {"dev_pr_create": ("development.fix_needed", "development.publishing",
+INTENT_STATES = {"dev_pr_create": ("development.fix_needed", "development.agent_running",
                                    "development.waiting_ci"),
                  "dev_pr_update": ("development.waiting_ci",)}
 
 
-def intent_problem(record: dict, op: dict) -> str | None:
+def pushed_head(record: dict, operations) -> str | None:
+    """The commit a worker pushed to the development branch in the run whose
+    Result is not folded yet (it is folded once the development PR is
+    recorded), or ``None``: the commit of the newest branch operation of the
+    record's revision that is confirmed and whose lease is the recorded head,
+    when it is not that head."""
+    fork = record.get("fork") or {}
+    found = [op for op in operations
+             if op.get("contribution_id") == record["contribution_id"]
+             and op.get("kind") in ("branch_update", "branch_rewrite")
+             and op.get("status") == "confirmed" and op.get("revision") == record["revision"]
+             and (op.get("target") or {}).get("ref") == DEV_REF
+             and (op.get("target") or {}).get("expected_head") == fork.get("head_sha")]
+    if not found:
+        return None
+    commit = (max(found, key=lambda op: str(op.get("created_at") or ""))
+              .get("proposed") or {}).get("commit")
+    return commit if isinstance(commit, str) and commit != fork.get("head_sha") else None
+
+
+def intent_problem(record: dict, op: dict, operations=()) -> str | None:
     """Why ``op`` is not the current development PR intent of ``record``,
     or ``None``: a state whose rows launch its kind, the record's revision,
     fork and base, and the head the intent names: the recorded head for the
     CI bootstrap of the recorded PR; for the PR of a published head, no PR
-    recorded and a head that is not the base, which is the commit of the held
-    patch in `development.publishing`. The trusted workflow reads the branch
-    and refuses any other head."""
+    recorded and a head that is not the base, which is the commit a worker
+    pushed in `development.agent_running` (``pushed_head`` of
+    ``operations``). The trusted workflow reads the branch and refuses any
+    other head."""
     fork = record.get("fork") or {}
     target = op.get("target") or {}
     state = f"{record['phase']}.{record['activity']}"
@@ -79,9 +100,8 @@ def intent_problem(record: dict, op: dict) -> str | None:
         return None
     if fork.get("pr_number") is not None or not head or head == record["upstream"].get("base_sha"):
         return "a PR is recorded, or the head is the base"
-    if state == "development.publishing" \
-            and head != (record.get("held_patch") or {}).get("candidate"):
-        return "the head is not the commit of the held patch"
+    if state == "development.agent_running" and head != pushed_head(record, operations):
+        return "the head is not the commit the worker pushed"
     if state == "development.waiting_ci" and head != fork.get("head_sha"):
         return "the head is not the recorded head"
     return None
@@ -98,7 +118,10 @@ def load_request(root: Path, operation_id: str) -> tuple[dict, dict]:
     if op["kind"] not in INTENT_STATES or op["status"] != "planned" \
             or record.get("active_operation_id") != operation_id or record.get("paused"):
         raise DevPRError("operation is not the current authorized development PR intent")
-    problem = intent_problem(record, op)
+    operations = [json.loads(path.read_text())
+                  for path in sorted((root / ".state/operations").glob("op-*.json"))] \
+        if record["phase"] == "development" and record["activity"] == "agent_running" else []
+    problem = intent_problem(record, op, operations)
     if problem:
         raise DevPRError(f"development PR target does not match current fork/base: {problem}")
     return record, op

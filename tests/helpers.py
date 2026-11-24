@@ -321,3 +321,22 @@ def plan(decision="develop", *, allowed_paths=None, admission_class="configurati
     return {"proposal": {"decision": decision, "rationale": rationale,
                          "admission_class": admission_class if decision == "develop" else None,
                          "allowed_paths": list(allowed_paths), "path_coverage": coverage}}
+
+
+def accepted_loop(testcase) -> Path:
+    """A report path whose review loop passes the trusted check, for tests of
+    another step of the publication (``fork_publish.preflight``)."""
+    from unittest import mock
+
+    testcase.enterContext(mock.patch("worker_report.check_path", return_value={"review_loop": {}}))
+    testcase.enterContext(mock.patch("review_loop.check"))
+    return Path("report.json")
+
+
+def without_review_loop(testcase):
+    """Leave the review loop of the worker report unchecked for the rest of
+    ``testcase``: these tests are about another check of the worker gate (the
+    loop has its own, in ``tests/test_review_loop.py``)."""
+    from unittest import mock
+
+    testcase.enterContext(mock.patch("review_loop.check"))

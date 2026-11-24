@@ -41,8 +41,6 @@
   "paused": false,
   "pending_human_action": null,
   "pending_publication": null,
-  "held_patch": null,
-  "review_comments": [],
   "phase": "queued",
   "prerequisite_ids": [],
   "previous_phase": null,

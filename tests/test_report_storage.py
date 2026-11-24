@@ -66,7 +66,7 @@ def large(**fields) -> dict:
                      for i in range(12)]
     base.update(attempted=filler, approaches=approaches, verification=verification)
     # Pad the summary, then the open items, up to the target size.
-    target = worker_report.MAX_REPORT_BYTES - 120
+    target = worker_report.MAX_REPORT_BYTES - 300
     items = []
     while len(compact(dict(base, open_items=items + ["o" * 300]))) < target and len(items) < 10:
         items.append("o" * 300)
@@ -130,6 +130,27 @@ class TestDevelopment(unittest.TestCase):
                           pending_feedback_evidence_ids=["review-1"])
         _new, staged = fold(rec, with_report(rec, publication(rec, "no_change")))
         self.assertEqual([e["kind"] for e in events(staged)], ["reject_patch_proposal"])
+        self.assertEqual(stored(staged), [])
+
+    def test_a_patch_rejected_for_its_review_loop_keeps_the_findings(self):
+        """The gate refused the patch for a P0 finding left open: the report
+        is stored, so the repair that follows reads what the reviewers found."""
+        from tests.test_review_loop import finding, loop
+
+        rec = dev.running()
+        open_p0 = loop(finding("P0", "open", 2, None, title="The riscv64 job skips the tests"))
+        outcome = publication(rec, "rejected_validation")
+        outcome.update(stage="review_loop", reason="the review loop of the patch: P0 finding open")
+        new, staged = fold(rec, with_report(rec, outcome, review_loop=open_p0))
+        [event] = events(staged)
+        [evidence] = stored(staged)
+        self.assertEqual(event["kind"], "reject_patch_proposal")
+        self.assertEqual(event["details"]["report_evidence_id"], evidence["evidence_id"])
+        self.assertEqual(evidence["data"]["report"]["review_loop"]["findings"][0]["title"],
+                         "The riscv64 job skips the tests")
+        # Another rejection of the gate still discards the report.
+        other = dict(outcome, stage="worker_gate")
+        _new, staged = fold(rec, with_report(rec, other, review_loop=open_p0))
         self.assertEqual(stored(staged), [])
 
     def test_a_late_result_stores_nothing(self):

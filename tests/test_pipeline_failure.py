@@ -123,7 +123,6 @@ class TestClassify(unittest.TestCase):
         run, jobs = live()
         for workflow, step in (
                 ("planner.lock.yml", "Check out the upstream project (read-only)"),
-                ("reviewer.lock.yml", "Fetch and verify the held patch"),
                 ("dispatcher.lock.yml", "Replay the controller-requested task from committed "
                                         "state (deterministic, no model)"),
                 ("worker.lock.yml", "Check out the contribution fork at the expected head "
@@ -159,14 +158,14 @@ class TestWorkflowContract(unittest.TestCase):
         cannot read them is a failure of the pipeline, so it is not a
         contribution step."""
         run, jobs = live()
-        for name in ("worker", "planner", "reviewer"):
+        for name in ("worker", "planner"):
             steps = self.frontmatter(f"{name}.md")["pre-agent-steps"]
             [resolve] = [s for s in steps if "task_file.py resolve" in s.get("run", "")]
             self.assertTrue(resolve["name"].startswith("Resolve the task and fetch the pinned"))
             self.assertNotIn(resolve["name"],
                              pipeline_failure.CONTRIBUTION_STEPS[f"{name}.lock.yml"])
             for step in steps:
-                if "held_patch.py" in step.get("run", "") or "git checkout" in step.get("run", ""):
+                if "git checkout" in step.get("run", ""):
                     self.assertIn(step["name"],
                                   pipeline_failure.CONTRIBUTION_STEPS[f"{name}.lock.yml"])
             failed = copy.deepcopy(jobs)
@@ -220,7 +219,7 @@ class TestWorkflowContract(unittest.TestCase):
     def test_every_pre_agent_and_custom_step_is_a_contribution_step_or_the_pipelines(self):
         # A step added to a source must be classified here, and a step that
         # reads the contribution listed in `CONTRIBUTION_STEPS`.
-        for name in ("worker", "planner", "reviewer", "dispatcher"):
+        for name in ("worker", "planner", "dispatcher"):
             data = self.frontmatter(f"{name}.md")
             listed = pipeline_failure.CONTRIBUTION_STEPS[f"{name}.lock.yml"]
             for step in (s for key in ("pre-agent-steps", "steps", "post-steps")

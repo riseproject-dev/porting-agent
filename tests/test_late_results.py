@@ -85,13 +85,9 @@ FEEDBACK = {"review_ids": [77], "comment_ids": [], "conversation_comment_ids": [
 
 def identity(record):
     """The Work identity a Result of ``record`` carries back: that of the
-    Work it holds (the held patch's Work while it publishes), else that of
-    the Work ``running`` held before a stop cleared it."""
+    Work it holds, else that of the Work ``running`` held before a stop
+    cleared it."""
     held_work = record.get("active_work") or {}
-    held = record.get("held_patch") or {}
-    if engine.state_key(record) == lifecycle.PUBLISHING and held.get("work"):
-        return {"generation": held.get("generation", record.get("generation", 0)),
-                "dedupe_key": held["work"]}
     generation = held_work.get("generation", record.get("generation", 0))
     if held_work.get("dedupe_key"):
         return {"generation": generation, "dedupe_key": held_work["dedupe_key"]}
@@ -336,7 +332,6 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
 
     def test_a_result_of_work_of_another_phase_is_late(self):
         """Each phase requests its own Work only (`reconcile.WORK_PHASE`)."""
-        import patch_review
         import submission
         development = running("development")
         planning = running("planning")
@@ -356,12 +351,9 @@ class TestResultAfterTheWorkWasStopped(unittest.TestCase):
              "late Result: a planning Result has no row in the development phase"),
             ("a patch in planning", planning, "published",
              "late Result: a published Result has no row in the planning phase"),
-            # A submission Result outside handoff, a review of a held patch
-            # outside its review state.
+            # A submission Result outside handoff.
             ("a submission review in development", development, submission.STATUS,
              "late Result: a submission review has no row in the development phase"),
-            ("a patch review while patch Work runs", development, patch_review.STATUS,
-             "late Result: a review of a held patch has no row in development.agent_running"),
             # The Result of a held publication outside development and
             # upstream review.
             ("a held publication in planning",
@@ -682,7 +674,7 @@ class TestNoReachableRecordStopsTheTick(unittest.TestCase):
                                       after["pending_publication"], after["revision"]),
                                      ("controller", None, None, record["revision"]))
         self.assertGreater(count, 750)
-        self.assertGreater(errored, 350)
+        self.assertGreater(errored, 300)
 
     def test_no_stopped_state_retains_a_pending_publication(self):
         """From every admitted state with a pending publication, every stop

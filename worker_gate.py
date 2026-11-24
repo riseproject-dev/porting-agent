@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import commit_rules
+import review_loop
 import schemas
 import worker_report
 from common import validate_scope_paths
@@ -27,6 +28,13 @@ FORBIDDEN_PATCH_TEXT = (
 
 class WorkerGateError(ValueError):
     pass
+
+
+class ReviewLoopRejected(WorkerGateError):
+    """The patch is valid and its report is readable, but its review loop is
+    missing, ran no round, or left a P0 finding open. The Result is rejected
+    with the stage ``review_loop``, and the reconciler keeps the report, so
+    the next repair reads the findings."""
 
 
 def _regular(path: Path, *, required: bool) -> bytes | None:
@@ -205,14 +213,21 @@ def validate(task: dict, proposal: dict, mbox_path: Path, report_path: Path | No
         failure_class = "infrastructure" if gate_status == "infrastructure_blocked" else "code"
     else:
         # The report of the run, checked once the Result is otherwise valid
-        # and classified: required when the Work carries a history, and
-        # stored for later Work only if this Result is accepted and
-        # published. A blocked Result is classified as blocked whatever its
+        # and classified: required when the Work carries a history or the
+        # Result delivers a patch, and stored for later Work only if this
+        # Result is accepted and published. A blocked Result is classified as blocked whatever its
         # report, which is discarded with it.
         try:
-            worker_report.check_path(task, report_path)
+            report = worker_report.check_path(task, report_path)
         except worker_report.ReportError as error:
             raise WorkerGateError(f"the worker report is missing or invalid: {error}") from None
+        if proposal.get("outcome") == "patch":
+            # The patch was reviewed in the worker's run: it is published
+            # only when the review loop it reports left no P0 finding open.
+            try:
+                review_loop.check(report, series_digest=proposal.get("patch_digest"))
+            except review_loop.LoopError as error:
+                raise ReviewLoopRejected(f"the review loop of the patch: {error}") from None
     return {
         "status": gate_status,
         "failure_class": failure_class,
@@ -242,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         code = 0
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, schemas.SchemaError,
             WorkerGateError, ValueError) as error:
-        report = {"status": "rejected", "reason": str(error)[:2000]}
+        report = {"status": "rejected", "reason": str(error)[:2000],
+                  "stage": "review_loop" if isinstance(error, ReviewLoopRejected) else "worker_gate"}
         code = 1
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2))

@@ -119,10 +119,10 @@ describe("queue Policy reinstall", () => {
     // profile setting of the compiled policy; at most its ref and logical
     // contract move. A worker run still holding its Claim keeps the queue
     // busy, and neither the reinstall nor gh-aw's dispatch check acts on it.
-    const installed = policy(["planner", "reviewer", "worker"], "1".repeat(40));
+    const installed = policy(["planner", "auditor", "worker"], "1".repeat(40));
     const state = { ...replay.newState(), policy: installed };
     state.works = new Map([["work", { state: "claimed" }]]);
-    const proposal = policy(["planner", "reviewer", "worker"], "2".repeat(40));
+    const proposal = policy(["planner", "auditor", "worker"], "2".repeat(40));
     expect(replay.quiescent(state)).toBe(false);
     expect(decide(lib, state, proposal)).toBe("current");
     expect(() => lib.binding.assertPolicyProposal(state, { policyProposal: proposal })).not.toThrow();
@@ -146,13 +146,13 @@ describe("queue Policy reinstall", () => {
     expect(() => lib.binding.assertPolicyProposal(after, { policyProposal: proposal })).not.toThrow();
   });
 
-  it("installs an added reviewer profile on a live queue without a reinstall", async () => {
+  it("installs an added auditor profile on a live queue without a reinstall", async () => {
     // The queue as it is installed today, and the compiled policy once the
-    // dispatcher dispatches the reviewer workflow too.
+    // dispatcher dispatches the auditor workflow too.
     const before = policy(["planner", "worker"], "1".repeat(40));
     const queue = ledger(before);
-    const proposal = policy(["planner", "worker", "reviewer"], "2".repeat(40));
-    expect(proposal.pools.default.profiles.reviewer.workflow).toBe(".github/workflows/reviewer.lock.yml");
+    const proposal = policy(["planner", "worker", "auditor"], "2".repeat(40));
+    expect(proposal.pools.default.profiles.auditor.workflow).toBe(".github/workflows/auditor.lock.yml");
     // Nothing for the dispatcher's reinstall to do: the compiled policy
     // preserves every installed profile, so no dispatch is refused.
     expect(decide(lib, queue.state(), proposal)).toBe("current");
@@ -175,7 +175,7 @@ describe("queue Policy reinstall", () => {
       verifiedDefaultReference: async () => configRef,
       configuredWorkerDeployment: async ({ profile: wanted }, revision) => {
         verified.push(["deployment", wanted.workflow, revision]);
-        return { profile: { ...wanted, ref: revision, logical_contract: profile("reviewer", revision).logical_contract }, available: true };
+        return { profile: { ...wanted, ref: revision, logical_contract: profile("auditor", revision).logical_contract }, available: true };
       },
       verifyWorkerRoute: async ({ profile: route }) => { verified.push(["route", route.workflow, route.ref]); },
     };
@@ -188,17 +188,17 @@ describe("queue Policy reinstall", () => {
       delete require.cache[installPath];
     }
     expect(verified).toEqual([
-      ["deployment", ".github/workflows/reviewer.lock.yml", configRef],
-      ["route", ".github/workflows/reviewer.lock.yml", configRef],
+      ["deployment", ".github/workflows/auditor.lock.yml", configRef],
+      ["route", ".github/workflows/auditor.lock.yml", configRef],
     ]);
     const after = queue.state();
     expect(after.policy_epoch).toBe(epoch);
-    expect(Object.keys(after.policy.pools.default.profiles).sort()).toEqual(["planner", "reviewer", "worker"]);
+    expect(Object.keys(after.policy.pools.default.profiles).sort()).toEqual(["auditor", "planner", "worker"]);
     expect(after.policy.pools.default.default_profile).toBe("planner");
-    expect([...after.deployments.get("default").keys()].sort()).toEqual(["planner", "reviewer", "worker"]);
+    expect([...after.deployments.get("default").keys()].sort()).toEqual(["auditor", "planner", "worker"]);
     expect(decide(lib, after, proposal)).toBe("current");
     expect(() => lib.binding.assertPolicyProposal(after, { policyProposal: proposal })).not.toThrow();
-    // A rollback that drops the reviewer again is a reinstall on a quiescent queue.
+    // A rollback that drops the auditor again is a reinstall on a quiescent queue.
     expect(decide(lib, after, policy(["planner", "worker"], "4".repeat(40)))).toBe("reinstall");
   });
 

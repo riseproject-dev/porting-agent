@@ -165,12 +165,12 @@ class TestTheProof(unittest.TestCase):
         t = lc.find_edge(state, verb).transition
         from dataclasses import replace
         mutated = replace(t, effects=replace(t.effects, clears=tuple(
-            c for c in t.effects.clears if c != lc.HELD_PATCH)))
+            c for c in t.effects.clears if c != "pending_human_action")))
         with mock.patch.dict(lc.LIFECYCLE[state].transitions,
                              {(verb, "development.waiting_ci"): mutated}):
             problems = lc.check_table(POLICY)
         self.assertTrue(any(p.startswith(f"{state} --{verb}--> development.waiting_ci")
-                            and "'no_held_patch'" in p for p in problems), problems)
+                            and "'no_pending'" in p for p in problems), problems)
 
     def test_a_row_that_always_applies_needs_no_handling(self):
         # No row of the table has the guard `always` today; one that had it

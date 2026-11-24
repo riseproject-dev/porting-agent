@@ -480,31 +480,6 @@ def _waits_for_upstream(event: dict, record: dict) -> bool:
         and pending.get("kind") in UNAVAILABLE_PENDING
 
 
-# The review of a held development patch could not run: its dispatch or its
-# Work recovery is exhausted, and the wait keeps the patch for a resume.
-REVIEW_UNAVAILABLE_TEXT = (
-    "the review of the development patch could not run: every attempt to start it, or to "
-    "get a usable review from it, failed. The patch is kept, unpublished. A resume asks for "
-    "the review of the same patch again; if its stored copy has expired by then, a new patch "
-    "is written instead.")
-
-
-def _review_unavailable(event: dict, record: dict) -> str | None:
-    """The entry, in plain words, of the wait a review that could not run
-    caused, or of its reminder; ``None`` for any other event."""
-    kind = lifecycle.current_name(event["kind"])
-    details = event.get("details") or {}
-    pending = record.get("pending_human_action") or {}
-    if kind == "exhaust_recovery" \
-            and lifecycle.current_name(details.get("from_state")) == "development.reviewing":
-        return "The contribution waits for a human: " + REVIEW_UNAVAILABLE_TEXT
-    if kind in REMINDER_VERBS and engine.state_key(record) == "development.waiting_human" \
-            and pending.get("kind") == lifecycle.PATCH_REVIEW_UNAVAILABLE:
-        return "Reminder: the contribution still waits for a human because " \
-            + REVIEW_UNAVAILABLE_TEXT
-    return None
-
-
 def plain_message(event: dict, record: dict) -> str | None:
     """The entry of an event about an unavailable upstream, in plain words,
     or ``None`` for any other event: what happened and why, what was
@@ -546,9 +521,6 @@ def plain_message(event: dict, record: dict) -> str | None:
                 + f" Pull request {pr} by {_login(details.get('author'))} at "
                   f"{_head(details.get('head'))} is recorded, and the contribution now waits "
                   "for its upstream CI and review.")
-    review_wait = _review_unavailable(event, record)
-    if review_wait:
-        return review_wait
     if _waits_for_upstream(event, record):
         pending = record["pending_human_action"]
         what = ("the upstream repository is unavailable"

@@ -61,7 +61,7 @@ class TestCompiledPolicy(unittest.TestCase):
         p = compiled()
         self.assertEqual(p["authorization"], "aw")
         profiles = p["pools"]["default"]["profiles"]
-        self.assertEqual(sorted(profiles), ["planner", "reviewer", "worker"])
+        self.assertEqual(sorted(profiles), ["planner", "worker"])
         self.assertEqual(p["pools"]["default"]["default_profile"], "planner")
         for name, profile in profiles.items():
             self.assertEqual(profile["workflow"], f".github/workflows/{name}.lock.yml")
@@ -109,27 +109,22 @@ class TestStatus(unittest.TestCase):
             moved["pools"]["default"]["profiles"]["worker"], workflow=".github/workflows/extra.lock.yml")
         self.assertTrue(queue_policy.status(p, moved)["preserved"])
 
-    def test_the_added_reviewer_profile_installs_without_a_reinstall(self):
-        """The queue installed before the review of development patches holds
-        the planner and worker profiles only; the compiled policy adds the
-        reviewer, which gh-aw installs on demand: no profile is dropped, so
-        nothing refuses a dispatch and the dispatcher reinstalls nothing,
-        whether or not the queue is quiescent."""
+    def test_the_dropped_reviewer_profile_is_reinstalled_on_a_quiescent_queue(self):
+        """The queue installed before the review ran in the worker holds a
+        `reviewer` profile the compiled policy no longer has: it is a dropped
+        profile, which the dispatcher reinstalls on a quiescent queue, and
+        nothing else is dropped."""
         p = projection()
-        before = copy.deepcopy(compiled())
-        del before["pools"]["default"]["profiles"]["reviewer"]
-        p["policy"] = before
+        installed = copy.deepcopy(compiled())
+        profiles = installed["pools"]["default"]["profiles"]
+        profiles["reviewer"] = dict(profiles["worker"],
+                                    workflow=".github/workflows/reviewer.lock.yml")
+        p["policy"] = installed
         self.assertEqual(sorted(compiled()["pools"]["default"]["profiles"]),
-                         ["planner", "reviewer", "worker"])
+                         ["planner", "worker"])
         status = queue_policy.status(p, compiled())
-        self.assertEqual((status["preserved"], status["dropped"]), (True, []))
-        next(iter(p["works"].values()))["state"] = "available"
-        self.assertTrue(queue_policy.status(p, compiled())["preserved"])
-        # A rollback that drops the reviewer again is a dropped profile,
-        # which the dispatcher reinstalls on a quiescent queue.
-        p = projection()
-        p["policy"] = copy.deepcopy(compiled())
-        self.assertEqual(queue_policy.status(p, before)["dropped"], ["default/reviewer"])
+        self.assertEqual((status["preserved"], status["dropped"]), (False, ["default/reviewer"]))
+        self.assertTrue(queue_policy.quiescent(p))
 
     def test_a_queue_with_live_work_or_a_held_dispatch_is_not_quiescent(self):
         p = projection()

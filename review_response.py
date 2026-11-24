@@ -30,13 +30,17 @@ class Api:
     def __init__(self, token: str, base: str = "https://api.github.com"):
         self.token, self.base = token, base.rstrip("/")
 
-    def call(self, method: str, path: str, data: dict | None = None) -> Any:
+    def call(self, method: str, path: str, data: dict | None = None, *, attempts: int = 5) -> Any:
+        """One GitHub request, retried up to ``attempts`` times on a network
+        error or a 429 or 5xx answer. A request that must not happen twice (a
+        comment) passes ``attempts=1``: a lost answer may still have posted
+        it."""
         body = json.dumps(data).encode() if data is not None else None
         req = urllib.request.Request(self.base + path, data=body, method=method, headers={
             "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
         last: Exception | None = None
-        for attempt in range(5):
+        for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(req, timeout=60) as response:
                     raw = response.read()
@@ -48,9 +52,9 @@ class Api:
                         f"GitHub {method} {path}: HTTP {exc.code}: {exc.read()[-500:].decode(errors='replace')}") from exc
             except urllib.error.URLError as exc:
                 last = exc
-            if attempt < 4:
+            if attempt < attempts - 1:
                 time.sleep(2 ** attempt)
-        raise ResponseError(f"GitHub {method} {path} failed after retries: {last}")
+        raise ResponseError(f"GitHub {method} {path} failed after {attempts} attempt(s): {last}")
 
     def graphql(self, query: str, variables: dict) -> dict:
         result = self.call("POST", "/graphql", {"query": query, "variables": variables})

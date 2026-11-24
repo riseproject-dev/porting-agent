@@ -215,6 +215,9 @@ def mbox(*commits) -> bytes:
 
 
 class TestWorkerGate(unittest.TestCase):
+    def setUp(self):
+        helpers.without_review_loop(self)
+
     def test_non_debug_paths_of_an_mbox(self):
         data = mbox(("{debug} Lift guard", ["CHANGELOG.md"]), ("Build riscv64", ["setup.py"]))
         self.assertEqual(commit_rules.mbox_non_debug_paths(data), ["setup.py"])
@@ -280,8 +283,9 @@ class TestLiveRecord(unittest.TestCase):
             self.assertEqual(engine.with_defaults(copy.deepcopy(rec))[2], ["next_poll_at"])
         rec.pop("next_poll_at", None)  # retired; the field migration removes it
         added, removed = engine.with_defaults(copy.deepcopy(rec))[1:]
-        self.assertLessEqual(set(added), {"held_patch", "review_comments"})
-        self.assertEqual(removed, [])
+        self.assertEqual(added, [])
+        self.assertLessEqual(set(removed), {"held_patch", "review_comments",
+                                            "budget.review_rejections"})
         self.assertEqual(engine.state_key(rec), "handoff.awaiting_submission")
         plan = json.loads((ROOT / ".state/evidence" / f"{rec['plan_evidence_id']}.json").read_text())
         self.assertEqual(commit_rules.series_requirements_from_plan(plan["data"]), [])

@@ -172,10 +172,10 @@ class TestRecordMigration(unittest.TestCase):
         # in the strict schema: an absent count reads 0, so no record is
         # migrated for them.
         self.assertEqual(set(engine.BUDGET_DEFAULTS) | {"reruns", "policy_id", "attempts_used",
-                                                        "source_unavailable", "review_rejections",
+                                                        "source_unavailable",
                                                         *engine.SOURCE_READ_FIELDS},
                          set(schema["properties"]["budget"]["properties"]))
-        for name in ("source_unavailable", "source_unavailable_since", "review_rejections"):
+        for name in ("source_unavailable", "source_unavailable_since"):
             self.assertNotIn(name, schema["properties"]["budget"]["required"])
 
 

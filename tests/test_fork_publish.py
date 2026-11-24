@@ -3,14 +3,15 @@
 """Fork publisher end to end against local bare repositories."""
 
 import hashlib
+import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
 import fork_publish
 import publisher
 import work
+from tests import helpers
 from tests.helpers import commit_files, contribution, git, init_repo, policy
 
 NOW = "2026-11-18T12:00:00+00:00"
@@ -231,12 +232,78 @@ class TestForkPublish(_ForkFixture, unittest.TestCase):
         self.task["fork_repository_id"] = 3
         self.assertIn("repository ID", self.run_publish().reason)
 
+    def test_a_patch_is_pushed_only_with_a_usable_review_loop(self):
+        """The publish-only retry has no worker gate: the preflight reads the
+        loop of the report itself."""
+        from tests.test_review_loop import finding, loop
+        from tests.test_worker_report import HISTORY, report
+
+        task = dict(self.task, task="development_patch", context={"history": {"sha256": HISTORY}})
+        lookup = lambda n: {"id": 2, "full_name": n, "archived": False}  # noqa: E731
+
+        digest = hashlib.sha256(self.mbox).hexdigest()
+
+        def run(value, write=True):
+            path = Path(self.tmp.name) / "report.json"
+            path.unlink(missing_ok=True)
+            if write:
+                body = report(contribution_id=task["contribution_id"], expected_revision=0,
+                              task="development_patch")
+                body.pop("review_loop")
+                if value is not None:
+                    body["review_loop"] = dict(value, round_digests=[digest] * value["rounds"])
+                path.write_text(json.dumps(body))
+            return fork_publish.preflight(record=self.record, task=task, proposal=self.proposal(),
+                                          fork_lookup=lookup, report_path=path if write else None)
+
+        ok = run(loop(finding("P0", "fixed", 1, 2)))
+        self.assertEqual(ok["status"], "publish", ok)
+        for value, why in ((loop(rounds=0, stopped="deadline"), "no review round ran"),
+                           (loop(finding("P0", "open", 2, None)), "P0 finding open")):
+            with self.subTest(why=why):
+                out = run(value)
+                self.assertEqual((out["publish"], out["status"], out["failure_class"]),
+                                 (False, "rejected", "validation"))
+                self.assertIn(why, out["reason"])
+        out = run(None, write=False)
+        self.assertEqual((out["publish"], out["status"]), (False, "rejected"))
+        self.assertIn("no worker report", out["reason"])
+
+    def test_a_report_of_the_earlier_contract_is_unreviewed_not_rejected(self):
+        """A held Result of a worker run that began before the review loop has
+        a report with no `review_loop` at all: the retry does not push it and
+        does not reject it (a charged rejection), it says `unreviewed`."""
+        from tests.test_worker_report import HISTORY, report
+
+        task = dict(self.task, task="development_patch", context={"history": {"sha256": HISTORY}})
+        path = Path(self.tmp.name) / "report.json"
+        body = report(contribution_id=task["contribution_id"], expected_revision=0,
+                      task="development_patch")
+        body.pop("review_loop")
+        path.write_text(json.dumps(body))
+        out = fork_publish.preflight(record=self.record, task=task, proposal=self.proposal(),
+                                     fork_lookup=lambda n: {"id": 2, "full_name": n},
+                                     report_path=path)
+        self.assertEqual((out["publish"], out["status"], out["failure_class"]),
+                         (False, "unreviewed", None))
+        # A report whose loop fails the check stays a rejection.
+        body["review_loop"] = {"rounds": 0, "round_digests": [], "stopped_because": "deadline",
+                               "findings": [], "summary": "none"}
+        path.write_text(json.dumps(body))
+        out = fork_publish.preflight(record=self.record, task=task, proposal=self.proposal(),
+                                     fork_lookup=lambda n: {"id": 2, "full_name": n},
+                                     report_path=path)
+        self.assertEqual((out["status"], out["failure_class"]), ("rejected", "validation"))
+
     def test_preflight(self):
+        report = helpers.accepted_loop(self)
         ok = fork_publish.preflight(record=self.record, task=self.task, proposal=self.proposal(),
+                                    report_path=report,
                                     fork_lookup=lambda n: {"id": 2, "full_name": n, "archived": False})
         self.assertEqual(ok, {"publish": True, "status": "publish", "reason": None,
                               "fork_name": "proj", "failure_class": None})
         moved = fork_publish.preflight(record=self.record, task=self.task, proposal=self.proposal(),
+                                       report_path=report,
                                        fork_lookup=lambda n: {"id": 77, "full_name": n})
         self.assertFalse(moved["publish"])
         blocked = fork_publish.preflight(record=self.record, task=self.task,
@@ -447,61 +514,6 @@ class TestPublishRetryIdentity(_ForkFixture, unittest.TestCase):
         for bad in (0, -1, True, "2"):
             with self.subTest(attempt=bad), self.assertRaises(ValueError):
                 self.attempt(bad)
-
-
-class TestReviewedPublication(_ForkFixture, unittest.TestCase):
-    """A development patch held for its review is verified without a push in
-    its worker run, then published later, in another run, only when it
-    rebuilds to exactly the verified and reviewed commit."""
-
-    def setUp(self):
-        super().setUp()
-        self.task.update(task="development_patch", review=fork_publish.REVIEW_REQUIRED)
-        self.record.update(activity="agent_running")
-
-    def verify(self):
-        self.invocations += 1
-        return fork_publish.verify(
-            record=self.record, task=self.task, proposal=self.proposal(), mbox=self.mbox,
-            observe_head=self.fork_head,
-            scope=publisher.Scope(allowed_globs=[".github/workflows/*"]),
-            policy=policy(read_only=False), now=NOW, workdir=self.root / f"pub-{self.invocations}")
-
-    def publishing(self, candidate):
-        self.record.update(activity="publishing", pending_publication={
-            "worker_run_id": "7", "attempts": 0, "last_reason": "", "next_attempt_at": NOW})
-        self.record["held_patch"] = {
-            "worker_run_id": "7", "artifact_id": 8, "work": KEY, "generation": 0, "revision": 0,
-            "patch_digest": hashlib.sha256(self.mbox).hexdigest(), "candidate": candidate,
-            "expected_head": self.base}
-
-    def test_the_verified_commit_is_rebuilt_exactly_when_it_is_published(self):
-        verified = self.verify()
-        self.assertEqual(verified.status, "verified", verified.reason)
-        self.assertEqual(verified.patch_digest, hashlib.sha256(self.mbox).hexdigest())
-        self.assertEqual((self.fork_head(), self.ops), (self.base, []))
-        # The worker's own run never pushes a patch held for its review.
-        self.assertIn("published only from development.publishing", self.run_publish().reason)
-        self.assertEqual(self.fork_head(), self.base)
-        # Later, in another run and at another time, the reviewed patch
-        # rebuilds to the very commit that was verified and is pushed.
-        time.sleep(1.1)
-        self.publishing(verified.candidate)
-        out = self.run_publish()
-        self.assertEqual(out.status, "published", out.reason)
-        self.assertEqual((out.candidate, self.fork_head()), (verified.candidate, verified.candidate))
-
-    def test_a_rebuild_other_than_the_reviewed_commit_is_never_pushed(self):
-        verified = self.verify()
-        self.publishing("f" * 40)
-        out = self.run_publish()
-        self.assertEqual((out.status, out.failure_class), ("rejected", "validation"))
-        self.assertIn("not to the reviewed commit", out.reason)
-        self.assertEqual(self.fork_head(), self.base)
-        self.publishing(verified.candidate)
-        self.record["held_patch"]["patch_digest"] = "0" * 64
-        self.assertIn("not the held patch", self.run_publish().reason)
-        self.assertEqual(self.fork_head(), self.base)
 
 
 class TestManyChangedFiles(_ForkFixture, unittest.TestCase):

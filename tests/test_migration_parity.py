@@ -284,25 +284,21 @@ class TestRerunFenceMigration(unittest.TestCase):
                 schemas.validate("contribution", new)
                 self.assertFalse(state.needs_field_migration(new))
 
-    def test_the_live_record_needs_only_the_held_patch_field(self):
+    def test_the_live_record_needs_no_field_beyond_the_retired_ones(self):
         path = ROOT / ".state/contributions/closeio--ciso8601--1.json"
         if not path.exists():
             self.skipTest("no live record in this checkout")
         import schemas
         rec = json.loads(path.read_text())
-        if "next_poll_at" in rec:
-            self.assertTrue(state.needs_field_migration(rec))
-        rec.pop("next_poll_at", None)  # retired; the field migration removes it
-        self.assertNotIn("answered_ci_evidence_id", rec["budget"]["reruns"])
-        if "held_patch" in rec:
-            schemas.validate("contribution", rec)
-            self.assertFalse(state.needs_field_migration(rec))
-            return
-        # The review of development patches added `held_patch` and
-        # `review_comments`: the evented field migration adds them, null and
-        # empty, and changes nothing else.
-        self.assertTrue(state.needs_field_migration(rec))
-        new, event = state.migrate_record_fields(rec, now="2026-11-23T13:00:00+00:00")
-        self.assertEqual((event["details"]["added"], event["details"]["removed"]),
-                         (["held_patch", "review_comments"], []))
-        schemas.validate("contribution", new)
+        # The retired fields (`next_poll_at`, the held patch, the review
+        # comments and the count of failed reviews) are removed by the
+        # evented field migration, and nothing else changes.
+        if state.needs_field_migration(rec):
+            new, event = state.migrate_record_fields(rec, now="2026-11-23T13:00:00+00:00")
+            self.assertEqual(event["details"]["added"], [])
+            self.assertLessEqual(set(event["details"]["removed"]),
+                                 {"next_poll_at", "held_patch", "review_comments",
+                                  "budget.review_rejections"})
+            rec = new
+        schemas.validate("contribution", rec)
+        self.assertFalse(state.needs_field_migration(rec))

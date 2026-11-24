@@ -165,9 +165,8 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertTrue(any(p.startswith("parked.idle: generation_end state has a "
                                          "`/upstreaming resume` row") for p in problems), problems)
 
-    def test_a_published_row_starts_no_progress_and_dev_reviews_again(self):
+    def test_a_published_row_starts_no_progress_again(self):
         for state, verb in (("development.agent_running", "record_publish_success"),
-                            ("development.publishing", "record_publish_success"),
                             ("upstream_review.agent_running", "record_revision_publish_success")):
             clears = lc.find_edge(state, verb).transition.effects.clears
             for name in lc.PUBLISHED_RESTARTS:
@@ -203,7 +202,6 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual({e.verb for e in allocating},
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_submission_rewrite", "request_submission_review",
-                          "request_patch_review",
                           "request_upstream_revision", "request_review_revision",
                           "allocate_work_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
@@ -299,11 +297,9 @@ class TestLifecycleTable(unittest.TestCase):
 
     def test_every_row_that_folds_a_held_result_clears_it(self):
         rows = {
-            "development.agent_running": ("hold_patch_for_review", "record_publish_success",
+            "development.agent_running": ("record_publish_success",
                                           "reject_patch_proposal", "replan_development",
                                           "request_ci_rerun"),
-            lc.PUBLISHING: ("record_publish_success", "replan_development",
-                            "reject_patch_proposal", "expire_held_patch"),
             "upstream_review.agent_running": ("record_revision_publish_success",
                                               "reject_patch_proposal", "require_reviewer_answer"),
         }
@@ -313,7 +309,7 @@ class TestLifecycleTable(unittest.TestCase):
                     t = lc.find_edge(state, verb).transition
                     self.assertIn(lc.HELD_RESULT, t.effects.clears)
         for state, verb in (("development.agent_running", "request_ci_rerun"),
-                            (lc.PUBLISHING, "record_publish_success"),
+                            ("development.agent_running", "record_publish_success"),
                             ("upstream_review.agent_running", "require_reviewer_answer")):
             with self.subTest(dropped=verb):
                 t = lc.find_edge(state, verb).transition
@@ -476,8 +472,7 @@ class TestLifecycleTable(unittest.TestCase):
                          {"dispatch_planning", "request_patch", "request_repair",
                           "request_upstream_revision", "request_review_revision",
                           "request_submission_rewrite", "request_submission_review",
-                          "request_patch_review", "allocate_work_retry",
-                          "reallocate_after_pipeline_failure"})
+                          "allocate_work_retry", "reallocate_after_pipeline_failure"})
         for e in allocating:
             if e.verb == "reallocate_after_pipeline_failure":
                 # The failure of the pipeline is not the Work's: nothing is charged.
@@ -641,7 +636,7 @@ class TestLifecycleTable(unittest.TestCase):
         exhaustions = [e for e in lc.table_edges() if lc.exhausted_budgets(e)
                        and e.target != e.source and lc.LIFECYCLE[e.target].kind == "human_wait"]
         self.assertEqual({b for e in exhaustions for b in lc.exhausted_budgets(e)},
-                         set(lc.BUDGETS) - {"flaky_reruns", "dev_reviews"})
+                         set(lc.BUDGETS) - {"flaky_reruns"})
         for e in exhaustions:
             named = lc.counters_named(e)
             self.assertTrue(named, (e.source, e.verb))
@@ -661,7 +656,6 @@ class TestLifecycleTable(unittest.TestCase):
             ("provisioning.waiting_human", "resume_provisioning"),
             ("development.waiting_human", "resume_ci"),
             ("development.waiting_human", "resume_development"),
-            ("development.waiting_human", "resume_patch_review"),
             ("handoff.waiting_human", "resume_submission_review"),
             ("handoff.waiting_human", "resume_upstream_branch"),
             ("handoff.waiting_human", "resume_ci"),
@@ -714,10 +708,6 @@ class TestLifecycleTable(unittest.TestCase):
         self.assertEqual([(e.source, e.verb, e.target) for e in lc.exhaustion_edges("work_total")
                           if lc.state_phase(e.source) == "development"],
                          [("development.agent_running", "exhaust_recovery",
-                           "development.waiting_human"),
-                          ("development.review_pending", "exhaust_work_total",
-                           "development.waiting_human"),
-                          ("development.reviewing", "exhaust_recovery",
                            "development.waiting_human"),
                           (state, "exhaust_work_total", "development.waiting_human")])
         self.assertFalse([e for e in lc.exhaustion_edges("work_total")
@@ -816,7 +806,6 @@ class TestLifecycleTable(unittest.TestCase):
             "repair_attempts_cluster": "retries.patch_attempts_per_cluster",
             "no_progress": "retries.no_progress_review_after",
             "flaky_reruns": "retries.flaky_reruns",
-            "dev_reviews": "retries.patch_review_rejections",
             "dispatch_recovery": infrastructure, "publish_recovery": infrastructure,
             "interrupted_reruns": infrastructure,
             "operation_launch": infrastructure, "upstream_branch": infrastructure,
@@ -1196,7 +1185,7 @@ class TestConsistencyCheckViolations(unittest.TestCase):
         self.assertEqual(stop.effects, lc.Effects(
             work="clear", sets=("paused", "paused_at", "paused_reason", "paused_by=controller",
                             "paused_at_commit"),
-            clears=(lc.HELD_RESULT, lc.HELD_PATCH, lc.OVERRIDDEN_REVIEWS)))
+            clears=(lc.HELD_RESULT,)))
         self.assertEqual(lc.CALLER_REASONS, ("pause_on_processing_error",))
 
         def problems_with(**changes):

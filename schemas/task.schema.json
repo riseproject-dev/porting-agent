@@ -28,8 +28,7 @@
         "development_repair",
         "upstream_revision",
         "submission_rewrite",
-        "submission_review",
-        "development_review"
+        "submission_review"
       ]
     },
     "instructions": {
@@ -324,12 +323,6 @@
         "series_requirements": {
           "type": "array",
           "maxItems": 6
-        },
-        "patch": {
-          "type": "object"
-        },
-        "previous_patch": {
-          "type": "object"
         },
         "tracking_issue": {
           "type": "object"

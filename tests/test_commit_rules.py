@@ -12,6 +12,7 @@ from pathlib import Path
 
 import commit_rules
 import worker_gate
+from tests import helpers
 from tests.test_milestone5_worker import proposal, task
 from tests.test_plan_gate import plan
 
@@ -137,6 +138,9 @@ class TestRules(unittest.TestCase):
 
 
 class TestWorkerGate(unittest.TestCase):
+    def setUp(self):
+        helpers.without_review_loop(self)
+
     def gate(self, patch: bytes, rules: dict | None):
         value = task()
         if rules is not None:

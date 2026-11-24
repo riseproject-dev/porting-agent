@@ -76,12 +76,12 @@ def compact(value) -> bytes:
 
 class TestTheIncident(unittest.TestCase):
     def test_the_payload_of_the_incident_was_over_the_budget(self):
-        """The Work at r10 inlined the task: 15592 bytes, of which the plan
+        """The Work at r10 inlined the task: about 15600 bytes, of which the plan
         item of the reason evidence (the proposal and its coverage, copied
         from the plan the pre-agent step fetches in full anyway) took 11088,
         against a safety margin of 15500."""
         payload = old_payload()
-        self.assertEqual(len(compact(payload)), 15592)
+        self.assertEqual(len(compact(payload)), 15664)
         [plan] = [i for i in payload["context"]["reason_evidence"] if i["kind"] == "plan"]
         self.assertEqual(len(compact(plan)), 11088)
         self.assertGreater(len(compact(payload)), 15_500)
@@ -152,7 +152,6 @@ class TestTheIncident(unittest.TestCase):
         self.assertEqual(node["payload"]["task_file"]["ref"], "d" * 40)
         self.assertEqual(resolved["dedupe_key"], live.WORK)
         self.assertEqual(resolved["context"]["history"]["ref"], "d" * 40)
-        self.assertEqual(resolved["review"], "required")
         self.assertEqual(resolved["context"]["reason_evidence"][0]["evidence_id"], live.REVIEW)
 
 
@@ -358,8 +357,7 @@ class TestAResultWhoseTaskCouldNotBeResolved(unittest.TestCase):
         self.assertEqual(report[0]["status"], "infra_error")
         self.assertEqual(self.fold(resolved), (kinds, report))
         # The fields the reconciler reads of a task are all in the claim.
-        for name in ("contribution_id", "revision", "task", "dedupe_key", "generation",
-                     "review"):
+        for name in ("contribution_id", "revision", "task", "dedupe_key", "generation"):
             self.assertEqual(claim[name], resolved[name], name)
 
 

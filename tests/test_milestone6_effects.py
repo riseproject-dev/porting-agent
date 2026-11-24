@@ -15,6 +15,7 @@ import controller
 import engine
 import fork_publish
 import publisher
+from tests import helpers
 from tests.helpers import policy
 
 ROOT = Path(__file__).parents[1]
@@ -155,6 +156,7 @@ class TestPublicationAndPRContracts(unittest.TestCase):
         proposal_value["reconstruction_base"] = record["upstream"]["base_sha"]
         result = fork_publish.preflight(
             record=record,
+            report_path=helpers.accepted_loop(self),
             task=task_value,
             proposal=proposal_value,
             fork_lookup=lambda _name: {

@@ -52,7 +52,7 @@ class TestNativeQueueContracts(unittest.TestCase):
     def test_dispatcher_policy_admits_only_current_profiles(self):
         dispatcher = source("dispatcher")
         dispatch = dispatcher["safe-outputs"]["dispatch-workflow"]
-        self.assertEqual(dispatch["workflows"], ["planner", "worker", "reviewer"])
+        self.assertEqual(dispatch["workflows"], ["planner", "worker"])
         self.assertEqual(dispatch["max"], 1)
         lock = workflow("dispatcher.lock.yml")
         policies = []
@@ -64,11 +64,7 @@ class TestNativeQueueContracts(unittest.TestCase):
         self.assertTrue(policies)
         for policy in policies:
             pool = policy["pools"]["default"]
-            self.assertEqual(set(pool["profiles"]), {"planner", "worker", "reviewer"})
-            self.assertEqual(
-                pool["profiles"]["reviewer"]["workflow"],
-                ".github/workflows/reviewer.lock.yml",
-            )
+            self.assertEqual(set(pool["profiles"]), {"planner", "worker"})
             self.assertEqual(
                 pool["profiles"]["planner"]["workflow"],
                 ".github/workflows/planner.lock.yml",
@@ -222,16 +218,14 @@ class TestPlannerSecurityAndContinuation(unittest.TestCase):
                 "Dispatcher",
                 "Planner",
                 "Worker",
-                "Reviewer",
                 "Reproduction Image",
                 "Fork Provisioning",
                 "Development PR",
                 "Publish Retry",
-                "Review Comment",
                 "Handoff",
             },
         )
-        self.assertIn("for workflow in planner.lock.yml worker.lock.yml reviewer.lock.yml",
+        self.assertIn("for workflow in planner.lock.yml worker.lock.yml publish-retry.yml",
                       controller_text)
         self.assertIn("actions/workflows/$workflow/runs?per_page=20", controller_text)
         self.assertIn('name == "porting-publication"', controller_text)

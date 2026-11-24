@@ -34,7 +34,6 @@ import handoff
 import intake
 import isolation
 import lifecycle
-import patch_review
 import recovery
 import schemas
 import state
@@ -129,8 +128,6 @@ def _actionable(c: dict) -> str | None:
         return work_queue.SUBMISSION_REWRITE
     if engine.state_key(c) == "handoff.review_pending":
         return work_queue.SUBMISSION_REVIEW
-    if engine.state_key(c) == "development.review_pending":
-        return work_queue.DEVELOPMENT_REVIEW
     if c["phase"] == "development" and c["activity"] == "fix_needed":
         return "development_repair"
     if engine.state_key(c) == "planning.idle":
@@ -147,7 +144,7 @@ def _actionable(c: dict) -> str | None:
 WORK_DEADLINE_HOURS = 18
 
 PRIORITY = {"upstream_revision": 0, "submission_rewrite": 0, "submission_review": 0,
-            "development_review": 0, "development_repair": 1,
+            "development_repair": 1,
             "development_patch": 2, "planning": 3}
 WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 
@@ -158,7 +155,6 @@ WRITE_KINDS = {"upstream_revision", "development_repair", "development_patch"}
 ALLOCATIONS = {
     "planning.idle": ("dispatch_planning",),
     "development.fix_needed": ("request_repair", "request_patch"),
-    "development.review_pending": ("request_patch_review",),
     "handoff.review_due": ("request_submission_rewrite",),
     "handoff.review_pending": ("request_submission_review",),
     "upstream_review.fix_needed": ("request_upstream_revision", "request_review_revision"),
@@ -169,7 +165,6 @@ EXHAUSTIONS = {
     "planning.idle": ("exhaust_work_total",),
     "development.fix_needed": ("exhaust_work_total", "refresh_on_exhaustion",
                                "exhaust_repair_attempts"),
-    "development.review_pending": ("exhaust_work_total",),
     "handoff.review_due": ("exhaust_work_total",),
     "handoff.review_pending": ("exhaust_work_total",),
     "upstream_review.fix_needed": ("exhaust_repair_attempts",),
@@ -187,8 +182,6 @@ def task_for(verb: str, record: dict) -> str:
         return work_queue.SUBMISSION_REWRITE
     if verb == "request_submission_review":
         return work_queue.SUBMISSION_REVIEW
-    if verb == "request_patch_review":
-        return work_queue.DEVELOPMENT_REVIEW
     if verb in ("request_upstream_revision", "request_review_revision"):
         return "upstream_revision"
     if verb == "request_repair" or record.get("pending_feedback_evidence_ids"):
@@ -881,8 +874,8 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
     # is awaited (`development.waiting_ci` requires it). Persist intent first;
     # the trusted workflow creates/discovers exactly riscv64-dev -> the frozen
     # upstream base ref at the planned head and returns a receipt. The rows
-    # of the state the head is in launch it (`development.publishing` once
-    # the push of the held patch is confirmed, `development.fix_needed` for a
+    # of the state the head is in launch it (`development.agent_running` once
+    # the push of the worker is confirmed, `development.fix_needed` for a
     # head on the branch that no PR shows; the CI bootstrap of a recorded PR
     # in `development.waiting_ci`): `launch_development_pr` within
     # `operation_launch` (counted on the operation), and
@@ -911,7 +904,7 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 handoff.RUN_SECONDS if engine.state_key(c) == "handoff.waiting_ci"
                 else DEV_PR_RUN_SECONDS)
             if operation["kind"] in DEV_PR_KINDS:
-                why = _stale_development_pr(c, operation, held=held)
+                why = _stale_development_pr(c, operation, operations, held=held)
                 if why:
                     _close_development_pr(c, operation, why, by_id, operations, res, now)
                     continue
@@ -1150,33 +1143,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                             raise engine.TransitionRefused(refused, ("controller", "tick"))
                 else:
                     facts = ALLOCATION_FACTS | {"submission_rewrite_current"}
-            if engine.state_key(due) == "development.review_pending":
-                # The review reads the held series from the artifact the
-                # held patch pins: an expired one is never reviewed or
-                # published, and neither is a held patch a stop discarded
-                # during a wait the review's recovery caused; fresh
-                # development Work is due.
-                if not due.get("held_patch") or patch_review.held_patch_expired(due, inputs.now):
-                    match engine.dispatch(engine.try_apply_transition(
-                            due, "expire_held_patch", policy=policy, now=now,
-                            facts={"held_patch_expired"}, open_operations=ops,
-                            cause_id=f"expired-{(due.get('held_patch') or {}).get('worker_run_id')}"),
-                            ("controller", "tick")):
-                        case engine.Applied() as out:
-                            _stage(res, by_id, out)
-                            continue
-                        case engine.Take(verb="exhaust_work_total"):
-                            # `work_total` is spent: the exhaustion below
-                            # discards the held patch.
-                            pass
-                        case engine.Skip(refused):
-                            rep["deferred"].append({"contribution": c["contribution_id"],
-                                                    "why": refused.detail})
-                            continue
-                        case engine.Bug(refused):
-                            raise engine.TransitionRefused(refused, ("controller", "tick"))
-                else:
-                    facts = ALLOCATION_FACTS | {"held_patch_current"}
             state = engine.state_key(due)
             exhaustions = EXHAUSTIONS.get(state, ())
             if exhaustions:
@@ -1255,8 +1221,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 claimed, verb, policy=policy, now=now, cause_id=request["dedupe_key"],
                 facts=ALLOCATION_FACTS | ({"submission_rewrite_current"}
                                           if verb == "request_submission_review"
-                                          else {"held_patch_current"}
-                                          if verb == "request_patch_review"
                                           else set()),
                 values={"active_work": request}, ci_evidence=ci,
                 open_operations=_open_operations(claimed, operations),
@@ -1298,7 +1262,6 @@ def tick(*, contributions: dict[str, dict], operations: dict[str, dict], consume
                 "effect_contract": (
                     {"kind": "none"}
                     if kind == "planning" or kind in work_queue.SUBMISSION_TASKS
-                    or kind == work_queue.DEVELOPMENT_REVIEW
                     else {
                         "kind": "fork_branch",
                         "repository": (claimed.get("fork") or {}).get("name"),
@@ -1434,8 +1397,7 @@ def _unrecorded_head(record: dict, inputs: Inputs) -> str | None:
     observed) did not record. Work built on the recorded head would be
     stale; the next observation takes ``record_head_change`` in
     ``development.fix_needed``, and Work, when still due, is requested on the
-    observed head (which, when it is the commit of a patch published anyway,
-    also makes its comment due)."""
+    observed head."""
     if engine.state_key(record) != "development.fix_needed":
         return None
     observed = inputs.observed_dev_heads.get(record["contribution_id"])
@@ -1538,10 +1500,6 @@ def _work_request(record: dict, kind: str, inputs: Inputs, now: str) -> dict:
         # of the candidate head the rewrite and the review describe.
         reason_ids = [i for i in (record.get("plan_evidence_id"),
                                   record.get("last_ci_evidence_id")) if i]
-    if kind == work_queue.DEVELOPMENT_REVIEW:
-        # What the worker of the held patch answered: the reasons of its
-        # Work (its pending feedback, the CI evidence, the plan).
-        reason_ids = list((record.get("held_patch") or {}).get("reason_ids") or [])
     if kind in ("development_repair", "upstream_revision"):
         reason_ids = list(dict.fromkeys(
             list(record.get("pending_feedback_evidence_ids") or [])
@@ -1772,7 +1730,8 @@ def _held_for_run(op: dict, attempts: int, now: datetime, seconds: int) -> bool:
         (now - datetime.fromisoformat(op["updated_at"])).total_seconds() < seconds
 
 
-def _stale_development_pr(record: dict, op: dict, *, held: bool = False) -> str | None:
+def _stale_development_pr(record: dict, op: dict, operations: dict, *,
+                          held: bool = False) -> str | None:
     """Why a planned development PR operation is closed as failed without a
     row: the contribution is paused and the operation is not held for its
     run (`held`; it is launched no more, and once the run window has passed
@@ -1784,7 +1743,7 @@ def _stale_development_pr(record: dict, op: dict, *, held: bool = False) -> str 
     PR."""
     if record.get("paused") and not held:
         return "the contribution is paused"
-    if dev_pr.intent_problem(record, op):
+    if dev_pr.intent_problem(record, op, operations.values()):
         return "the operation no longer matches the record"
     return None
 
@@ -1792,9 +1751,9 @@ def _stale_development_pr(record: dict, op: dict, *, held: bool = False) -> str 
 def published_head_without_pr(record: dict, operations: dict,
                               observed: str | None) -> str | None:
     """The published head whose development PR is opened before CI is
-    awaited, or ``None``: in `development.publishing`, the commit of the
-    held patch once a branch operation of the contribution confirmed it on
-    the branch (its Result is folded once the PR is recorded); in
+    awaited, or ``None``: in `development.agent_running`, the commit a
+    branch operation of the contribution confirmed on the branch
+    (``dev_pr.pushed_head``; its Result is folded once the PR is recorded); in
     `development.fix_needed`, the head on the branch (the observed one, else
     the recorded one) when it is not the base; in `development.waiting_ci`,
     which requires the PR, the recorded head of a record that waits for CI
@@ -1805,14 +1764,8 @@ def published_head_without_pr(record: dict, operations: dict,
         return None
     state = engine.state_key(record)
     base = record["upstream"].get("base_sha")
-    if state == lifecycle.PUBLISHING:
-        candidate = (record.get("held_patch") or {}).get("candidate")
-        landed = any(op["contribution_id"] == record["contribution_id"]
-                     and op["kind"] in ("branch_update", "branch_rewrite")
-                     and op["status"] == "confirmed"
-                     and (op.get("proposed") or {}).get("commit") == candidate
-                     for op in operations.values())
-        return candidate if candidate and landed else None
+    if state == "development.agent_running":
+        return dev_pr.pushed_head(record, operations.values())
     if state == "development.fix_needed":
         head = observed or fork.get("head_sha")
         return head if head and head != base else None
@@ -2471,11 +2424,6 @@ def _resolve_operation(cmd: Command, receipt: dict, by_id: dict, operations: dic
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("controller", "_resolve_operation"))
     changed = fired.record if fired is not None else recovery.release(rec, new, now)
-    # A branch operation a human confirms whose commit a `publish_anyway`
-    # review pinned: the patch published anyway is on the branch, so its
-    # comment is due, in any state.
-    changed = _landed_due(changed, patch_review.confirmed_heads(changed, [new]), store, res,
-                          now)
     if changed is not rec:
         by_id[rec["contribution_id"]] = changed
         res.stage("contributions", changed)
@@ -2516,42 +2464,12 @@ def _apply(cmd: Command, receipt: dict, by_id: dict, operations: dict, inputs: I
                                          "alert": f"/upstreaming {cmd.verb}: {out.reason}"})
         return dict(receipt, result="rejected", reason=out.reason)
     moved = out.record
-    if engine.state_key(moved) != engine.state_key(rec):
-        # A command that moves the record out of a state whose observation
-        # does not record the head (a human wait) when the development
-        # branch is at a head other than the recorded one: a patch
-        # published anyway that is that head makes its comment due now,
-        # since a park, an abandon or a replan never records it.
-        observed = inputs.observed_dev_heads.get(rec["contribution_id"])
-        if observed and observed != (moved.get("fork") or {}).get("head_sha"):
-            moved = _landed_due(moved, {observed}, evidence, res, now)
     by_id[rec["contribution_id"]] = moved
     res.stage("contributions", moved)
     if out.event:
         res.stage("events", out.event)
     _restart_launches(out, operations, res, now)
     return receipt
-
-
-def _landed_due(rec: dict, heads, evidence: dict[str, dict], res: TickResult,
-                now: str) -> dict:
-    """The record with the comment of every ``publish_anyway`` review whose
-    pinned commit is one of ``heads`` due beside the command
-    (``patch_review.landed_anyway``). The comments made due, and any dropped
-    to fit them, are named in the report (``comments_due``); the tick
-    alerts on each dropped."""
-    due, dropped = patch_review.comment_due(
-        rec, patch_review.landed_anyway(rec, heads, evidence), now=now)
-    if due == (rec.get("review_comments") or []):
-        return rec
-    before = {item["evidence_id"] for item in rec.get("review_comments") or []}
-    entry = {"contribution": rec["contribution_id"],
-             "review_comments_due": [item["evidence_id"] for item in due
-                                     if item["evidence_id"] not in before]}
-    if dropped:
-        entry["review_comments_dropped"] = [item["evidence_id"] for item in dropped]
-    res.report.setdefault("comments_due", []).append(entry)
-    return engine.record_beside(rec, "review_comment_due", now=now, review_comments=due)
 
 
 def _restart_launches(out: engine.Applied, operations: dict, res: TickResult, now: str) -> None:

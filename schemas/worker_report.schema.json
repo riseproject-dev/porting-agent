@@ -215,6 +215,111 @@
           }
         }
       }
+    },
+    "review_loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The review loop of the run (at most 3 rounds of fresh read-only reviewers, each followed by a fix pass): how many rounds ran, the digest of the series each round reviewed, why the loop stopped, and every finding the reviewers made with what became of it. Required of a Result that delivers a series; trusted code publishes nothing while a P0 finding is open, a P0 finding is closed only by a later round than the one that raised it, and the last round must have reviewed exactly the series that is delivered.",
+      "required": [
+        "rounds",
+        "round_digests",
+        "stopped_because",
+        "findings",
+        "summary"
+      ],
+      "properties": {
+        "rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "round_digests": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "description": "The SHA-256 of the series (the `git format-patch --stdout` bytes of the delivered `patches.mbox`) that the reviewers of each round read, one entry per round in order."
+        },
+        "stopped_because": {
+          "enum": [
+            "clean",
+            "optional_only",
+            "decision_needed",
+            "cap_reached",
+            "deadline"
+          ]
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "severity",
+              "status",
+              "round",
+              "closed_in_round",
+              "title",
+              "detail",
+              "resolution"
+            ],
+            "properties": {
+              "severity": {
+                "enum": [
+                  "P0",
+                  "P1",
+                  "P2"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "open",
+                  "fixed",
+                  "withdrawn",
+                  "deferred"
+                ]
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "closed_in_round": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3
+                  }
+                ]
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 150
+              },
+              "detail": {
+                "type": "string",
+                "maxLength": 400
+              },
+              "resolution": {
+                "type": "string",
+                "maxLength": 250
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
     }
   }
 }

@@ -3,7 +3,7 @@
 """A run of an agent workflow that failed before its agent ran, for a step
 of the pipeline.
 
-The worker, planner, reviewer and dispatcher runs prepare their agent in
+The worker, planner and dispatcher runs prepare their agent in
 steps that do not depend on the contribution (the gateway, the runner, the
 tools) and in a few that do (the checkout of the contribution's fork). A run
 that fails in the first kind before ``AGENT_STEP`` is a failure of the
@@ -32,19 +32,10 @@ ACTIVATION_JOB = "activation"
 # report the controller committed, at their pinned commit and digest: a
 # missing or mismatching one is no fault of the contribution). The
 # worker's "Resolve anonymous reproduction image" pulls one fixed image of the
-# pipeline (`worker.md`): it is the pipeline's. So are the reviewer's "Make the
-# code that the steps after the agent run unwritable by the agent" and "Seal the
-# workspace's git checkout against the agent": they harden the runner's own
-# directories and the control repository's checkout in the workspace (its
-# `.git`), whatever the fork holds, which the reviewer checks out in "Check out
-# the fork and rebuild the held patch (read-only)", a contribution step.
+# pipeline (`worker.md`): it is the pipeline's.
 CONTRIBUTION_STEPS: dict[str, frozenset[str]] = {
     "worker.lock.yml": frozenset({
         "Check out the contribution fork at the expected head (read-only)",
-    }),
-    "reviewer.lock.yml": frozenset({
-        "Fetch and verify the held patch",
-        "Check out the fork and rebuild the held patch (read-only)",
     }),
     "planner.lock.yml": frozenset({
         "Check out the upstream project (read-only)",

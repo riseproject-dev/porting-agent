@@ -101,8 +101,8 @@ def canonical_json(data: Any) -> str:
 # keeps the two equal. The plan's own ``allowed_paths`` stay at 32
 # (``schemas/plan.schema.json``), so a scope has room for the exact paths
 # that published patches and review extensions add to it. The files one
-# patch changes are bounded alike (``changed_files`` of a proposal, of a
-# held patch and of a push operation), since they become scope paths when
+# patch changes are bounded alike (``changed_files`` of a proposal and of a
+# push operation), since they become scope paths when
 # the patch is published; the worker gate checks them with
 # ``validate_scope_paths``.
 SCOPE_PATHS_MAX = 64

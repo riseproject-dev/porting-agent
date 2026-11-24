@@ -23,7 +23,7 @@ The porting agent separates trusted authorization and remote effects from model 
 | Dispatcher | Agentic workflow | Strict sandbox, no network, no shell, no file writes | Control token for its Policy reinstall | Native queue Work and the Policy |
 | Planner | Agentic workflow | None, operator-approved | Scoped read-only `GITHUB_TOKEN`; no App key | One `porting-out` artifact |
 | Worker | Agentic workflow | None, operator-approved | No destination credential; the model provider key is removed before tools run | One `porting-out` artifact |
-| Reviewer | Agentic workflow | gh-aw agent sandbox with a firewall | Read-only GitHub tools | One review in `porting-out` |
+| Worker review children | Foreground sub-agents of the worker process | None, read-only tools | None; they inherit the provider and the credential-free environment | Findings returned to the worker |
 | Publish, handoff, provisioning, and development PR jobs | Trusted workflows, no model | n/a | Destination tokens for one fork, except an organization-wide token that only creates a missing fork; each after state checks | The fork, and the tracking issue for the package |
 | Website | Trusted workflow, no model | Jekyll safe mode for previews | Pages and read tokens | The Pages deployment, and one preview comment |
 
@@ -34,9 +34,8 @@ Pull-request validation is read-only. It receives no App private key, destinatio
 The [Known Gaps]({{ '/state-machine/known-gaps/' | relative_url }}) page records every place where the code does not yet match the lifecycle table, including the accepted risks of the agents:
 
 - [The planner and worker agents run on the runner, outside the sandbox]({{ '/state-machine/known-gaps/' | relative_url }}#the-planner-and-worker-agents-run-on-the-runner-outside-the-sandbox)
-- [The reviewer agent has a shell, file writes and web search inside the sandbox]({{ '/state-machine/known-gaps/' | relative_url }}#the-reviewer-agent-has-a-shell-file-writes-and-web-search-inside-the-sandbox)
+- [The review loop's verdict is reported by the run it reviews]({{ '/state-machine/known-gaps/' | relative_url }}#the-review-loops-verdict-is-reported-by-the-run-it-reviews)
 - [Workflow commands in the agent step's output are not suspended]({{ '/state-machine/known-gaps/' | relative_url }}#workflow-commands-in-the-agent-steps-output-are-not-suspended)
-- [The reviewer's upload staging is wider than its one output]({{ '/state-machine/known-gaps/' | relative_url }}#the-reviewers-upload-staging-is-wider-than-its-one-output)
 - [Provisioning and development PR operations validate the checked-out state only]({{ '/state-machine/known-gaps/' | relative_url }}#provisioning-and-development-pr-operations-validate-the-checked-out-state-only)
 
 ## Pages

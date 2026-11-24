@@ -5,8 +5,8 @@
 A published head gets its development PR before CI is awaited:
 `development.waiting_ci` requires it. The PR of a head on the branch that no
 PR shows is opened from `development.fix_needed` (and from
-`development.publishing` for a held patch whose push landed), and the CI
-bootstrap of a recorded PR runs in `development.waiting_ci`."""
+`development.agent_running` for a patch whose push the worker's run confirmed),
+and the CI bootstrap of a recorded PR runs in `development.waiting_ci`."""
 import json
 import tempfile
 import unittest

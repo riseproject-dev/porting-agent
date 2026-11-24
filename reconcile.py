@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import os
 import re
@@ -33,6 +32,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import capacity
@@ -41,12 +41,10 @@ import collect
 import controller
 import dev_pr
 import engine
-import fork_publish
 import handoff
 import isolation
 import lifecycle
 import observe_ci
-import patch_review
 import pipeline_failure
 import plan_gate
 import provisioning
@@ -65,7 +63,6 @@ from common import (
     INTAKE_LABEL,
     UPSTREAM_REF,
     canonical_json,
-    contribution_file_id,
     load_policy,
     repository_root,
     safe_id,
@@ -154,7 +151,6 @@ def migration_report(
         "dispatch_relaunch": [],
         "provision_requests": [],
         "publication_retries": [],
-        "review_comment_requests": [],
         "dev_pr_requests": [],
         "handoff_requests": [],
     }
@@ -986,7 +982,7 @@ def _holds_dispatched_work(rec: dict) -> bool:
 
 # The phase in which the table requests Work of each task.
 WORK_PHASE = {"planning": "planning", "development_patch": "development",
-              "development_repair": "development", patch_review.TASK: "development",
+              "development_repair": "development",
               "upstream_revision": "upstream_review",
               work.SUBMISSION_REWRITE: "handoff", work.SUBMISSION_REVIEW: "handoff"}
 # The states of the handoff phase that hold requested Work: the rewrite and
@@ -1004,9 +1000,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
     A Result is folded only when it matches the Work identity: the current
     generation and revision of the record, and the requested Work, which is
     the Work the record holds (its Work id), or the held Result of the same
-    worker run (a publish-only retry). In ``development.publishing`` the
-    held patch pins the Result instead: the worker run, the Work, and the
-    revision it names. Everything else takes
+    worker run (a publish-only retry). Everything else takes
     ``record_late_effect``. Park, abandon, and
     pause clear the Work and the pending publication, so a matching revision
     alone does not prove a match.
@@ -1034,9 +1028,7 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         return f"late Result of generation {generation}, current is {current}"
     revision = task.get("revision")
     run = str(pub.get("worker_run_id"))
-    pinned = state == lifecycle.PUBLISHING and revision == (rec.get("held_patch") or {}).get(
-        "revision")
-    if revision != rec["revision"] and not pinned:
+    if revision != rec["revision"]:
         return f"late Result of revision {revision}, current is {rec['revision']}"
     if (pub.get("status") == "planning") != (rec["phase"] == "planning"):
         # A plan answers planning Work only, and planning Work
@@ -1044,29 +1036,6 @@ def result_mismatch(rec: dict, pub: dict) -> str | None:
         return f"late Result: a {pub.get('status')} Result has no row in the {rec['phase']} phase"
     if pub.get("status") == submission.STATUS and rec["phase"] != "handoff":
         return f"late Result: a submission review has no row in the {rec['phase']} phase"
-    if pub.get("status") == patch_review.STATUS and state != "development.reviewing":
-        # A review of a held patch answers its review Work only.
-        return f"late Result: a review of a held patch has no row in {state}"
-    if state == lifecycle.PUBLISHING:
-        # The publication of the held patch: the Result of the worker run
-        # the held patch pins, of the Work and revision it names, whatever
-        # revisions its review took since.
-        held = rec.get("held_patch") or {}
-        if held and rec.get("pending_publication") and run == held.get("worker_run_id") \
-                and key == held.get("work") and revision == held.get("revision") \
-                and pub.get("status") in PUBLISHING_STATUSES:
-            if pub.get("status") in ("rejected", "worker_blocked") \
-                    and pub.get("publication_stage") != "publish":
-                # A rejection by a run that did not read the record in
-                # this state (the worker's verification, or a retry of it
-                # made before the review) is not the publication's.
-                return ("late Result: a rejection by a run that did not publish the held "
-                        "patch")
-            return None
-        # A verification or a `no_change` report of the same worker run (an
-        # artifact collected again) is no publication: it is recorded, never
-        # folded.
-        return "late Result: not the publication of the held patch"
     requested = rec.get("active_work")
     if requested and WORK_PHASE.get(requested.get("task")) != rec["phase"]:
         # Each phase requests its own Work only: a Result of Work of another
@@ -1101,10 +1070,10 @@ def _late_effect(rec: dict, pub: dict, why: str, *, policy: dict, now: str,
 
 
 class ResultDeferred(Exception):
-    """The published Result of a held patch whose development PR is not
-    open yet is not folded in this tick: ``development.waiting_ci``
-    requires the PR, which the controller opens from
-    ``development.publishing`` once the push is confirmed. The Result is
+    """The published Result of a patch whose development PR is not open yet
+    is not folded in this tick: ``development.waiting_ci`` requires the PR,
+    which the controller opens from ``development.agent_running`` once the
+    push is confirmed. The Result is
     read again until the PR is recorded; ``staged`` holds the branch
     operation it confirmed."""
 
@@ -1591,99 +1560,6 @@ def fold_submission_review(rec: dict, outcome: dict, *, now: str, policy: dict,
                         ("contributions", out.record)]
 
 
-def _patch_review_problem(rec: dict, outcome: dict, worker_run_id: str | None) -> str | None:
-    """Why the trusted outcome of a review of the held patch is unusable, or
-    ``None``: it must review exactly the patch the record holds."""
-    if outcome.get("status") != patch_review.STATUS:
-        return (f"the review Result is not usable: {outcome.get('status')}: "
-                f"{outcome.get('reason') or ''}")
-    held = rec.get("held_patch") or {}
-    if not held or outcome.get("patch_digest") != held.get("patch_digest") \
-            or outcome.get("candidate") != held.get("candidate"):
-        return "the outcome does not review the patch the record holds"
-    if outcome.get("verdict") not in (patch_review.PASS, patch_review.FAIL) \
-            or not isinstance(outcome.get("findings"), list) \
-            or patch_review.derived_verdict(outcome["findings"]) != outcome["verdict"] \
-            or not isinstance(outcome.get("summary"), str):
-        return "the outcome's verdict or findings are malformed"
-    if not re.fullmatch(r"[1-9][0-9]{0,19}", str(worker_run_id or "")):
-        return "the outcome names no reviewer run"
-    return None
-
-
-def fold_patch_review(rec: dict, outcome: dict, *, now: str, policy: dict,
-                      worker_run_id: str | None) -> tuple[dict, list[tuple[str, dict]]]:
-    """Fold the Result of the review Work of a held patch through the rows of
-    ``development.reviewing``.
-
-    The reviewer's publish job checked the review without a token
-    (``patch_review.check``): it reviews exactly the held patch, and its
-    verdict is derived from its findings. Every usable review is stored as
-    ``patch_review`` evidence, which the history of every later Work and
-    review carries. A pass takes ``accept_patch_review``: the held patch is
-    pending publication at once, with the feedback its Work carried. A fail
-    takes ``reject_patch_review`` while ``dev_reviews`` remains: the review
-    becomes pending feedback of the next development Work and the held
-    patch is discarded; once ``dev_reviews`` is exhausted it takes
-    ``publish_after_failed_reviews``: the held patch is published anyway and
-    the pending publication names the review, which trusted code posts on
-    the development PR once the patch is published. A review that is not
-    usable is Work without a usable Result."""
-    why = _patch_review_problem(rec, outcome, worker_run_id)
-    if why:
-        return _unusable_submission_result(rec, why, now=now, policy=policy)
-    held = rec["held_patch"]
-    run = str(worker_run_id)
-    cause = _result_cause(outcome, worker_run_id)
-    passed = outcome["verdict"] == patch_review.PASS
-    rejections = int(rec["budget"].get("review_rejections", 0))
-
-    def row(verb: str) -> tuple[engine.Applied | engine.Refused, dict]:
-        """The row ``verb`` with the review evidence of its disposition."""
-        disposition = {"accept_patch_review": "publish",
-                       "reject_patch_review": "return_for_repair"}.get(verb, "publish_anyway")
-        review = patch_review.evidence(rec, outcome, now=now, policy=policy, run=run,
-                                       disposition=disposition,
-                                       rejections=0 if passed else rejections + 1)
-        eid = review["evidence_id"]
-        blocking = [f for f in outcome["findings"] if f.get("severity") in patch_review.BLOCKING]
-        details = {"evidence_id": eid, "verdict": outcome["verdict"], "disposition": disposition,
-                   "candidate": held.get("candidate"),
-                   "findings": [isolation.clean_text(f"{f['severity']}: {f['title']}", 300)
-                                for f in (blocking or outcome["findings"])[:8]]}
-        if verb == "reject_patch_review":
-            pending = list(dict.fromkeys((rec.get("pending_feedback_evidence_ids") or [])
-                                         + [eid]))
-            values: dict[str, Any] = {"pending_feedback_evidence_ids": pending[-64:]}
-        else:
-            values = {"pending_publication": {
-                "worker_run_id": held["worker_run_id"], "attempts": 0, "last_reason": "",
-                "next_attempt_at": now,
-                "feedback_evidence_ids": list(held.get("feedback_evidence_ids") or []),
-                "patch_review": {"evidence_id": eid, "verdict": outcome["verdict"],
-                                 "published_anyway": verb == "publish_after_failed_reviews"}}}
-        facts = {"patch_review_passed"} if passed else {"patch_review_failed"}
-        return engine.try_apply_transition(rec, verb, policy=policy, now=now, cause_id=cause,
-                                           facts=facts, values=values,
-                                           details=details), review
-
-    first, review = row("accept_patch_review" if passed else "reject_patch_review")
-    match engine.dispatch(first, ("reconcile", "fold_patch_review")):
-        case engine.Applied() as out:
-            pass
-        case engine.Take(verb="publish_after_failed_reviews"):
-            # `dev_reviews` is exhausted: the held patch is published anyway.
-            anyway, review = row("publish_after_failed_reviews")
-            out = engine.applied(anyway, ("reconcile", "fold_patch_review"))
-        case engine.LateEffect(refused):
-            return late_fold(rec, outcome, refused, now=now, policy=policy,
-                             worker_run_id=worker_run_id, staged=[])
-        case engine.Bug(refused):
-            raise engine.TransitionRefused(refused, ("reconcile", "fold_patch_review"))
-    return out.record, [("evidence", review), ("events", out.event),
-                        ("contributions", out.record)]
-
-
 def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None = None,
                       worker_run_id: str | None = None, evidence: dict | None = None,
                       pypi=None, operations: dict[str, dict] | None = None
@@ -1693,8 +1569,6 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     * planning Work: the plan decides, by the table (``fold_plan``);
     * the submission rewrite and review Work: their trusted checks decide
       (``fold_submission_rewrite``, ``fold_submission_review``);
-    * the review Work of a held development patch: its trusted check
-      decides (``fold_patch_review``);
     * patch Work in development and revision Work in upstream review: the
       table's rows (``fold_patch_result``).
 
@@ -1712,9 +1586,6 @@ def apply_publication(rec: dict, outcome: dict, *, now: str, policy: dict | None
     if engine.state_key(rec) == SUBMISSION_REVIEW_STATE:
         return fold_submission_review(rec, outcome, now=now, policy=policy or {},
                                       worker_run_id=worker_run_id, evidence=evidence)
-    if engine.state_key(rec) == "development.reviewing":
-        return fold_patch_review(rec, outcome, now=now, policy=policy or {},
-                                 worker_run_id=worker_run_id)
     return fold_patch_result(rec, outcome, now=now, policy=policy or {},
                              worker_run_id=worker_run_id, operations=operations,
                              evidence=evidence)
@@ -1729,7 +1600,6 @@ _ARTIFACT_KEYS = ("work_id", "claim_id", "artifact_id", "name", "digest", "run_i
 # (`pushed_report_evidence`); the report of any other fold is discarded
 # with the artifact.
 REPORT_VERBS = frozenset({"record_publish_success", "record_revision_publish_success",
-                          "hold_patch_for_review",
                           "accept_submission_rewrite", "accept_submission_review",
                           "request_ci_rerun", "require_reviewer_answer"})
 
@@ -1748,8 +1618,7 @@ def report_evidence(rec: dict, outcome: dict, verb: str, *, now: str, policy: di
     operation the row names, whose commit the report records as the head
     the Work left. ``head_verb`` names the success row whose head the
     report records when ``verb`` holds a patch it did not publish, and
-    ``revision`` the revision of the Work when the record has left it (the
-    publication of a held patch)."""
+    ``revision`` the revision of the Work when the record has left it."""
     if verb not in REPORT_VERBS:
         return []
     evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
@@ -1828,9 +1697,7 @@ def _fail_publication(rec: dict, run: str, reason: str, *, now: str, policy: dic
     before = int(held.get("attempts", 0))
     pending = {"worker_run_id": run, "attempts": before + 1, "last_reason": reason[:2000],
                "next_attempt_at": (datetime.fromisoformat(now) + timedelta(
-                   minutes=publish_retry_delay(before + 1))).isoformat(),
-               # The review a held patch was published after stays with it.
-               **({"patch_review": held["patch_review"]} if held.get("patch_review") else {})}
+                   minutes=publish_retry_delay(before + 1))).isoformat()}
     match engine.dispatch(engine.try_apply_transition(
             rec, "schedule_publish_retry", policy=policy, now=now, cause_id=cause,
             facts={"publication_infrastructure_error"}, values={"pending_publication": pending},
@@ -1871,27 +1738,16 @@ def _charged_launch(held: dict, outcome: dict) -> bool:
 # was read back, so in both states a publication whose push was not read back
 # (`uncertain`) is a failed publication: the Result stays held, and the
 # publish-only retry reads back the head a lost push left.
-# The statuses of the publication of a held patch in `development.publishing`.
 # The publication artifacts a record remembers as folded: the controller
-# collects the 20 newest runs of each of four workflows (planner, worker,
-# reviewer, publish-only retry), so 80 artifacts can be collected again; the
-# fence keeps more than three times as many.
+# collects the 20 newest runs of each of three workflows (planner, worker,
+# publish-only retry), so 60 artifacts can be collected again; the fence keeps
+# more than four times as many.
 PROCESSED_PUBLICATIONS = 256
-PUBLISHING_STATUSES = ("published", "rejected", "worker_blocked", "infra_error", "uncertain",
-                       "proposal")
 WORK_RESULT_STATES = {
     "development.agent_running": {"published": "record_publish_success",
                                   "success": ("published",),
                                   "failed": ("infra_error", "uncertain"),
-                                  "stale": "replan_development",
-                                  "verified": "hold_patch_for_review"},
-    # The publication of a held patch after its review: its rejection is
-    # the held patch no longer rebuilding to the reviewed commit.
-    lifecycle.PUBLISHING: {"published": "record_publish_success",
-                           "success": ("published",),
-                           "failed": ("infra_error", "uncertain"),
-                           "stale": "replan_development",
-                           "rejected": "held_patch_rejected"},
+                                  "stale": "replan_development"},
     "upstream_review.agent_running": {"published": "record_revision_publish_success",
                                       "success": ("published",),
                                       "failed": ("infra_error", "uncertain"),
@@ -1974,30 +1830,6 @@ def _confirm_read_back(op: dict, candidate: str, attempt: Any, *, now: str) -> d
     return recovery.record_discovery(
         op, "confirmed",
         f"{op['target']['ref']} at {candidate}, read back by publish attempt {attempt}", now)
-
-
-def _note_due(details: dict, rec: dict, due: list[dict], dropped: list[dict]) -> None:
-    """Name in the event the comments a write makes due and those it drops
-    to fit them (``patch_review.comment_due``); the tick alerts on each
-    comment dropped (``review_comments``)."""
-    before = {item["evidence_id"] for item in rec.get("review_comments") or []}
-    added = [item["evidence_id"] for item in due if item["evidence_id"] not in before]
-    if added:
-        details["review_comments_due"] = added
-    if dropped:
-        details["review_comments_dropped"] = [item["evidence_id"] for item in dropped]
-
-
-def _landed_due(rec: dict, landed: list[tuple[str, str]], details: dict, *,
-                now: str) -> list[dict] | None:
-    """The due comments once the reviews of ``landed`` are due, written
-    beside the row that folds the Result (whose rows never write
-    ``review_comments``), or ``None`` when nothing landed."""
-    if not landed:
-        return None
-    due, dropped = patch_review.comment_due(rec, landed, now=now)
-    _note_due(details, rec, due, dropped)
-    return due
 
 
 def extended_scope(scope_paths: list[str] | None, changed_files: list[str] | None
@@ -2086,14 +1918,37 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             f"the Result of patch or revision Work is folded in "
             f"{' or '.join(WORK_RESULT_STATES)} only, not in {engine.state_key(rec)}")
     status, fclass = outcome.get("status"), outcome.get("failure_class")
+    if status in ("verified", "unreviewed"):
+        # The Result of a worker run that began before the review loop: its
+        # publication job held the patch for a review that no longer exists
+        # and pushed nothing (``verified``), or the retry of its held Result
+        # found a report with no review loop (``unreviewed``). It is Work without a usable Result of the
+        # pipeline that dispatched it, relaunched with nothing charged.
+        aw = rec.get("active_work")
+        if aw is None and rec.get("pending_publication"):
+            # A Result held for a publish-only retry: its Work was cleared when
+            # it was held, so the request that replaces it is rebuilt from the
+            # record, like an allocation of the same task.
+            task = (outcome.get("task") or {}).get("task") or "development_repair"
+            aw = controller._work_request(
+                rec, task, SimpleNamespace(now=datetime.fromisoformat(now), tracking_issues={},
+                                           issues=[]), now)
+            aw["feedback_evidence_ids"] = list(rec.get("pending_feedback_evidence_ids") or [])
+        new, event, decision = _terminal_work(
+            rec, aw or {}, "result_unusable",
+            now=datetime.fromisoformat(now), policy=policy,
+            details={"pipeline_failure": {"version": "review-loop", "free_count": 0},
+                     "why": "the Result is a patch held for a review that no longer exists"})
+        if new is None:
+            raise lifecycle.TransitionError(f"a Result of the retired review: {decision}")
+        return new, [("contributions", new), ("events", event)]
     if status == "proposal":
         status, fclass = "rejected", "validation"
     held = rec.get("pending_publication")
     run = str(worker_run_id or (held or {}).get("worker_run_id")
               or (outcome.get("artifact") or {}).get("run_id") or "0")
     cause = _result_cause(outcome, worker_run_id)
-    # The revision of the Work the Result answers: the record's, but for the
-    # publication of a held patch, whose review took revisions since.
+    # The revision of the Work the Result answers.
     revision = (outcome.get("task") or {}).get("revision")
     if not isinstance(revision, int) or isinstance(revision, bool):
         revision = None
@@ -2119,27 +1974,9 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
     details: dict[str, Any] = {"result_status": status}
     if fclass:
         details["failure_class"] = fclass
-    # Trusted branch evidence of a patch published anyway: a branch
-    # operation this Result confirms (its own, or the one of an earlier
-    # attempt it read back) whose commit is the commit a `publish_anyway`
-    # review pinned. Its comment is due in this write, whichever row folds
-    # the Result (`patch_review.landed_anyway`).
-    landed = patch_review.landed_anyway(
-        rec, patch_review.confirmed_heads(rec, [r for k, r in staged if k == "operations"]),
-        evidence or {})
     if outcome.get("reason"):
         details["reason"] = str(outcome["reason"])[:500]
     failed = status in rows["failed"]
-    if status == "verified" and "verified" in rows \
-            and outcome.get("publication_series_digest") != outcome.get("patch_digest"):
-        # The patch is held by the artifact that carries the verified
-        # series, which the review reads by its run and id; an artifact
-        # without it (a retry of older trusted code) is a failed
-        # publication, verified again by the next publish-only retry.
-        failed = True
-        outcome = dict(outcome, reason="the publication artifact does not carry the verified "
-                                       "series")
-        details["reason"] = outcome["reason"]
     rerun_missing = None
     if status == "no_change" and "no_change" not in rows and not engine.row_admitted(
             rec, "request_ci_rerun", policy=policy, now=now,
@@ -2170,16 +2007,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         reported = late_report_evidence(
             rec, dict(outcome, worker_run_id=run), now=now, policy=policy,
             known=evidence or {}, details=late) if status == "uncertain" else []
-        due = _landed_due(rec, landed, late, now=now)
-        if due is not None and due != (rec.get("review_comments") or []):
-            rec = engine.record_beside(rec, "review_comment_due", now=now, review_comments=due)
         event = engine.record_late_effect(rec, policy=policy, now=now, cause_id=cause,
                                           details=late)
         return rec, staged + reported + [("contributions", rec), ("events", event)]
-    landed_due = None
     scope = rec.get("scope_paths")
     if failed:
-        landed_due = _landed_due(rec, landed, details, now=now)
         if status == "uncertain":
             # The push may have landed: the report is kept whatever ends
             # the hold (`pushed_report_evidence`).
@@ -2195,10 +2027,6 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
         if status in rows["success"]:
             verb = rows["published"]
             facts = {"result_published" if verb == "record_publish_success" else "revision_published"}
-        elif status == "verified" and "verified" in rows:
-            # The worker's trusted publication job verified the patch and
-            # published nothing: it is held for its review.
-            verb, facts = rows["verified"], {"patch_verified"}
         elif status == "rejected" and fclass == "stale" and "stale" in rows \
                 and earlier and earlier["status"] == "confirmed":
             # The publication of the held Result landed (an earlier attempt's
@@ -2235,12 +2063,17 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                     "runs": [{k: int(r[k]) for k in ("run_id", "from_attempt", "run_attempt")}
                              for r in rerun["runs"][:ci_rerun.MAX_RUNS]],
                     "operation": (op or {}).get("operation_id")}
-        elif status in ("rejected", "worker_blocked") and "rejected" in rows:
-            # The held patch no longer rebuilds to the reviewed commit, or
-            # the trusted validation rejects it: nothing is pushed.
-            verb, facts = "reject_patch_proposal", {rows["rejected"]}
         elif status in ("rejected", "worker_blocked"):
             verb, facts = "reject_patch_proposal", {"proposal_rejected_or_blocked"}
+            if status == "rejected" and outcome.get("stage") == "review_loop":
+                # The patch was refused for its review loop (an open P0
+                # finding, or no loop): its report holds the findings, so it
+                # is kept for the repair that follows.
+                evidence = worker_report.evidence(rec, outcome, verb=verb, now=now, policy=policy,
+                                                  run=str(run or "0"), revision=revision)
+                if evidence is not None:
+                    details["report_evidence_id"] = evidence["evidence_id"]
+                    staged.append(("evidence", evidence))
             if status == "rejected" and fclass == "stale" and earlier:
                 # A revision retry rejected as stale behind the operation of
                 # an earlier attempt: that push landed or may have, so the
@@ -2250,11 +2083,6 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                     operation=earlier, revision=revision))
         else:
             raise lifecycle.TransitionError(f"no row folds a patch Result with status {status!r}")
-        if verb == "record_publish_success" and engine.state_key(rec) == "development.agent_running" \
-                and not fork_publish.review_required(outcome.get("task") or {}):
-            # Work dispatched before development patches were reviewed still
-            # publishes its Result here; every other patch is held.
-            facts = set(facts) | {"no_review_contract"}
         values: dict[str, Any] = {}
         if verb in ("record_publish_success", "record_revision_publish_success"):
             art = outcome.get("artifact") or {}
@@ -2265,20 +2093,6 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             values = {"proposal_artifact": artifact,
                       "publication_operation_id": (op or {}).get("operation_id")
                       or rec.get("publication_operation_id")}
-        if verb == "record_publish_success" and engine.state_key(rec) == lifecycle.PUBLISHING:
-            # A patch published after successive failed reviews: the latest
-            # review is due on the development PR, at exactly the reviewed
-            # commit the pin names, beside every comment still due, posted
-            # by trusted code that the tick launches (`review_comments`)
-            # until it is posted or found. The pending publication names the
-            # review; the stored review that published this patch anyway
-            # names it too (`patch_review.published_anyway`).
-            values["review_comments"], dropped = patch_review.comment_due(
-                rec, patch_review.pending_published_anyway(rec)
-                + patch_review.published_anyway(rec, outcome, evidence or {}) + landed,
-                now=now)
-            _note_due(details, rec, values["review_comments"], dropped)
-            landed = []
         if verb == "record_revision_publish_success":
             head = published_head(outcome)
             values["upstream_pr.head_sha"] = head
@@ -2288,24 +2102,9 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             staged.append(("evidence", evidence))
             details["evidence_id"] = evidence["evidence_id"]
         # The report of a successful worker is kept for later Work; any
-        # other report is discarded. The report of a held patch is stored at
-        # the hold with the commit it proposed, and again with the head its
-        # publication read back.
-        reports = report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
-                                  details=details, operation=op, revision=revision,
-                                  head_verb=("record_publish_success"
-                                             if verb == "hold_patch_for_review" else None))
-        staged.extend(reports)
-        if verb == "hold_patch_for_review":
-            try:
-                values["held_patch"] = patch_review.held_patch(
-                    rec, outcome, run=run, now=now,
-                    report_evidence_id=reports[0][1]["evidence_id"] if reports else None)
-            except ValueError as error:
-                raise lifecycle.TransitionError(str(error)) from None
-            details.update(candidate=values["held_patch"]["candidate"],
-                           patch_digest=values["held_patch"]["patch_digest"])
-        landed_due = _landed_due(rec, landed, details, now=now)
+        # other report is discarded.
+        staged.extend(report_evidence(rec, outcome, verb, now=now, policy=policy, run=run,
+                                      details=details, operation=op, revision=revision))
         if verb in ("record_publish_success", "record_revision_publish_success"):
             scope, added, problem = extended_scope(
                 rec.get("scope_paths"), ((op or {}).get("proposed") or {}).get("changed_files"))
@@ -2318,15 +2117,13 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
                 details=details), ("reconcile", "fold_patch_result")):
             case engine.Applied() as out:
                 pass
-            case engine.Skip(refused) if engine.state_key(rec) == lifecycle.PUBLISHING:
+            case engine.Skip(refused) if verb == "record_publish_success":
                 # The first published patch: its development PR is opened
                 # before CI is awaited, and the Result is folded then.
                 raise ResultDeferred(
                     f"the Result is folded once the development PR is open: {refused.detail}",
                     [item for item in staged if item[0] == "operations"])
             case engine.Skip(refused):
-                # Work dispatched before patches were reviewed published its
-                # first patch from its own run; nothing opens its PR here.
                 raise engine.TransitionRefused(refused, ("reconcile", "fold_patch_result"))
             case engine.LateEffect(refused):
                 return late_fold(rec, outcome, refused, now=now, policy=policy,
@@ -2334,15 +2131,11 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("reconcile", "fold_patch_result"))
     new = out.record
-    if landed_due is not None and landed_due != (new.get("review_comments") or []):
-        new = engine.record_beside(new, "review_comment_due", now=now,
-                                   review_comments=landed_due)
     if out.verb in ("record_publish_success", "record_revision_publish_success"):
         # Beside the row: the published files that no admitted path matches
         # join the admitted scope (the extension the trusted publisher
         # admitted for a repair backed by review feedback, which may change
-        # a path the plan missed). The row starts `no_progress` and
-        # `dev_reviews` again.
+        # a path the plan missed). The row starts `no_progress` again.
         new = engine.record_beside(new, "patch_published", now=now, scope_paths=scope)
     schemas.validate("contribution", new)
     staged.extend([("contributions", new), ("events", out.event)])
@@ -2351,8 +2144,7 @@ def fold_patch_result(rec: dict, outcome: dict, *, now: str, policy: dict,
 
 # The lists of a tick report that name what the tick asks the workflow to launch.
 _EFFECT_LISTS = ("requested_effects", "dispatch_relaunch", "provision_requests",
-                 "dev_pr_requests", "publication_retries", "handoff_requests",
-                 "review_comment_requests")
+                 "dev_pr_requests", "publication_retries", "handoff_requests")
 
 
 def _touched(out: TickOutput, contribution_id: str) -> list[str]:
@@ -3030,7 +2822,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
          handoff_runs: dict[str, int] | None = None,
          development_pr_runs: dict[str, int] | None = None,
          provision_runs: dict[str, int] | None = None,
-         review_comment_receipts: list[dict] | None = None,
          skip: frozenset[str] = frozenset(), pypi=None,
          queue_policy: dict | None = None, pipeline: str | None = None) -> TickOutput:
     """One attempt at the tick. ``skip`` names the contributions it does not
@@ -3213,6 +3004,10 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
     publications = [item[1] for item in latest.values()] + [
         dict(pub, superseded=True) for pub in superseded]
     pubs_report = []
+    # Contributions whose Result was deferred in this tick: its Work is not
+    # missing, the artifact is read again once the development PR is open,
+    # so dispatch recovery leaves them alone.
+    deferred_cids: set[str] = set()
     for pub in publications:
         cid = (pub.get("task") or {}).get("contribution_id")
         if cid not in by_cid:
@@ -3247,22 +3042,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 extra: dict[str, Any] = {}
                 reported = late_report_evidence(rec, pub, now=iso, policy=policy,
                                                 known=snap.evidence, details=extra)
-                # A late `published` Result of a patch published anyway (its
-                # record stopped, paused, or exhausted the publication before
-                # this Result was folded): the patch is on the fork, so the
-                # comment of the review is due all the same, in this write.
-                # So does a branch operation the late Result confirms whose
-                # commit a `publish_anyway` review pinned.
-                due, dropped = patch_review.comment_due(
-                    rec, patch_review.published_anyway(rec, pub, snap.evidence)
-                    + patch_review.landed_anyway(
-                        rec, patch_review.confirmed_heads(rec, [pub.get("operation") or {}]),
-                        snap.evidence), now=iso)
-                if due != (rec.get("review_comments") or []):
-                    _note_due(extra, rec, due, dropped)
-                    rec = engine.record_beside(rec, "review_comment_due", now=iso,
-                                               review_comments=due)
-                    contributions[key] = rec
                 out.staged.extend(reported + [("contributions", rec), ("events", _late_effect(
                     rec, pub, unrequested, policy=policy, now=iso, extra=extra))])
                 pubs_report.append({"contribution": cid, "ignored": unrequested})
@@ -3278,6 +3057,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 out.staged.extend(deferred.staged)
                 for _kind, r in deferred.staged:
                     snap.operations[r["operation_id"]] = r
+                deferred_cids.add(cid)
                 pubs_report.append({"contribution": cid, "status": pub.get("status"),
                                     "deferred": deferred.reason[:500]})
                 continue
@@ -3300,7 +3080,8 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         (pub.get("task") or {}).get("dedupe_key") for pub in publications)
         if isinstance(key, str))
     relaunch, staged, rep = dispatch_recovery(contributions, runs=dispatcher_runs, queue_works=queue_works,
-                                              now=now, policy=policy, skip=skip,
+                                              now=now, policy=policy,
+                                              skip=frozenset(skip) | deferred_cids,
                                               queue_policy=queue_policy, evidence=snap.evidence,
                                               queue_retries=queue_retries,
                                               work_results=work_results, collected=collected,
@@ -3400,7 +3181,7 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
         with isolation.contribution(c["contribution_id"], "publication_retry"):
             pp = c.get("pending_publication")
             if pp and controller.published_head_without_pr(c, snap.operations, None):
-                # The push of the held patch landed and its development PR
+                # The push of the worker landed and its development PR
                 # is being opened: its Result is folded once the PR is
                 # recorded, so nothing is retried or expired meanwhile.
                 continue
@@ -3416,23 +3197,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 # a Result that reports one: `schedule_publish_retry` charges
                 # `publish_recovery` again, or `exhaust_recovery`
                 # waits for a human once it is spent.
-                if engine.state_key(c) == lifecycle.PUBLISHING \
-                        and patch_review.held_patch_expired(c, now):
-                    # An artifact the publication reads expired or expires
-                    # within a day: nothing is launched again, whether or
-                    # not a retry was lost, the held patch is
-                    # discarded and fresh development Work is due.
-                    held = c.get("held_patch") or {}
-                    fired = engine.applied(engine.try_apply_transition(
-                        c, "expire_held_patch", policy=policy, now=now.isoformat(),
-                        cause_id=f"expired-{held.get('worker_run_id')}",
-                        facts={"held_patch_expired"},
-                        details={"expires_at": held.get("expires_at"),
-                                 "candidate": held.get("candidate")}), ("reconcile", "_tick"))
-                    schemas.validate("contribution", fired.record)
-                    contributions[key] = fired.record
-                    out.staged.extend([("contributions", fired.record), ("events", fired.event)])
-                    continue
                 if pp.get("launched_at"):
                     fired = _fail_publication(
                         c, pp["worker_run_id"],
@@ -3455,10 +3219,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
                 retries.append({"type": "retry_publication", "contribution_id": c["contribution_id"],
                                 "worker_run_id": pp["worker_run_id"], "attempt": attempt})
     out.report["publication_retries"] = retries
-    # 4b. The comment of a patch published after successive failed reviews:
-    # its receipts are folded, and a due post is launched, bounded.
-    out.report["review_comment_posts"] = review_comments(
-        contributions, review_comment_receipts or [], out, policy=policy, now=now, skip=skip)
     # 5. The history of every requested Work that has none yet, normally
     # recorded in the tick that allocates it: the new human steering of the
     # contribution, then the history built from all its evidence. A failed
@@ -3475,188 +3235,6 @@ def _tick(api: collect.Api, snap: Snapshot, *, policy: dict, now: datetime,
             contributions, out, snap, policy=policy, now=iso, skip=skip)
     out.staged = observe_ci.dedupe(out.staged)
     return out
-
-
-def review_comments(contributions: dict[str, dict], receipts: list[dict], out: TickOutput, *,
-                    policy: dict, now: datetime, skip: frozenset[str]) -> list[dict]:
-    """Post every comment due on a development PR for a patch published
-    after successive failed reviews (``review_comments``), durably.
-
-    Each due comment has its own attempts. The receipt of a launched post
-    (``review-comment.json`` of the ``review-comment.yml`` run, for the
-    contribution, the review and its current attempt) is folded first: a
-    comment posted, or found by its marker, ends it and only then is it
-    removed; a post that failed, was skipped, or left no receipt within
-    ``COMMENT_RECEIPT_WAIT_MINUTES`` is launched again later. Once
-    ``COMMENT_ATTEMPTS`` are spent the comment is ``exhausted``: it stays
-    recorded with the last reason, an alert in every tick says that the
-    development PR lacks it, and it is launched again every
-    ``COMMENT_EXHAUSTED_RETRY_HOURS``, so the alert ends once a human has
-    restored what the post needs, up to ``COMMENT_LAST_ATTEMPT``, the last
-    attempt ``review-comment.yml`` admits. A due post is launched while the
-    policy permits writes, unless it is held: by the pause of a record that
-    is not terminal (``patch_review.held_by_pause``), or while no
-    development PR is recorded; a held post spends no attempt, and is
-    alerted on in every tick once it has been held for
-    ``COMMENT_HELD_ALERT_HOURS``, or at once for a terminal record. Its
-    attempt is recorded before the launch, so a post is never launched twice
-    for one attempt. Beyond ``MAX_DUE_COMMENTS`` the oldest exhausted
-    comments are dropped, each with an alert, and so is every comment this
-    tick dropped to fit the comments it made due within
-    ``RECORDED_DUE_COMMENTS`` (``patch_review.comment_due``), named in its
-    event, its observation or the report of the controller."""
-    report: list[dict] = []
-    out.report.setdefault("review_comment_requests", [])
-    alerts = out.report["controller"]["alerts"]
-    iso = now.isoformat()
-    named = [(r.get("contribution_id"), (r.get("details") or {}).get("review_comments_dropped"))
-             for kind, r in out.staged if kind == "events"] + [
-        (item.get("contribution"), item.get("review_comments_dropped"))
-        for item in (out.report.get("observation") or [])
-        + ((out.report.get("controller") or {}).get("comments_due") or [])]
-    for cid, dropped in named:
-        for eid in dropped or []:
-            alerts.append({"contribution": cid, "alert": (
-                f"the comment of the review {eid} is no longer posted: more than "
-                f"{patch_review.RECORDED_DUE_COMMENTS} comments were due on the development PR "
-                "when another became due, and it was dropped to fit it; the patch was "
-                "published although that review failed, and the PR does not say so")})
-            report.append({"contribution": cid, "evidence_id": eid, "status": "dropped"})
-    folded: dict[tuple[str, str, int], dict] = {}
-    for receipt in receipts:
-        attempt = receipt.get("attempt")
-        if isinstance(attempt, int) and not isinstance(attempt, bool):
-            folded[(str(receipt.get("contribution_id")), str(receipt.get("evidence_id")),
-                    attempt)] = receipt
-    for key in list(contributions):
-        c = contributions[key]
-        cid = c["contribution_id"]
-        if not c.get("review_comments") or cid in skip:
-            continue
-        with isolation.contribution(cid, "review_comment"):
-            # 1. The receipts of launched posts.
-            kept: list[dict] = []
-            answered = False
-            for due in c["review_comments"]:
-                attempt = int(due["attempts"])
-                entry: dict[str, Any] = {"contribution": cid, "evidence_id": due["evidence_id"],
-                                         "attempt": attempt}
-                if not due.get("launched_at"):
-                    kept.append(due)
-                    continue
-                receipt = folded.get((cid, due["evidence_id"], attempt))
-                waited = now - datetime.fromisoformat(due["launched_at"])
-                if receipt is None and waited < timedelta(
-                        minutes=patch_review.COMMENT_RECEIPT_WAIT_MINUTES):
-                    kept.append(due)
-                    report.append(entry | {"status": "launched"})
-                    continue
-                answered = True
-                status = (receipt or {}).get("status")
-                if status in patch_review.COMMENT_DONE:
-                    report.append(entry | {"status": status,
-                                           "comment_id": (receipt or {}).get("comment_id")})
-                    continue
-                reason = isolation.clean_text(
-                    (receipt or {}).get("reason") or (
-                        f"{status}" if receipt else
-                        f"no receipt within {patch_review.COMMENT_RECEIPT_WAIT_MINUTES} minutes"),
-                    500)
-                spent = bool(due.get("exhausted")) \
-                    or attempt >= patch_review.COMMENT_ATTEMPTS
-                wait = (timedelta(hours=patch_review.COMMENT_EXHAUSTED_RETRY_HOURS) if spent
-                        else timedelta(minutes=patch_review.COMMENT_RETRY_MINUTES * attempt))
-                kept.append(dict(due, launched_at=None, last_reason=reason, exhausted=spent,
-                                 next_attempt_at=(now + wait).isoformat()))
-                entry["reason"] = reason
-            # 2. The bound: the oldest exhausted comments beyond it are
-            # dropped, each with an alert.
-            while len(kept) > patch_review.MAX_DUE_COMMENTS:
-                oldest = next((d for d in kept if d.get("exhausted")
-                               and not d.get("launched_at")), None)
-                if oldest is None:
-                    break
-                kept.remove(oldest)
-                answered = True
-                alerts.append({"contribution": cid, "alert": (
-                    f"the comment of the review {oldest['evidence_id']} is no longer posted: "
-                    f"more than {patch_review.MAX_DUE_COMMENTS} comments are due on the "
-                    "development PR, and it is the oldest whose attempts are spent (last: "
-                    f"{oldest.get('last_reason')}); the patch was published although that "
-                    "review failed, and the PR does not say so")})
-                report.append({"contribution": cid, "evidence_id": oldest["evidence_id"],
-                               "attempt": int(oldest["attempts"]), "status": "dropped"})
-            if answered:
-                c = engine.record_beside(c, "review_comment_answered", now=iso,
-                                         review_comments=kept)
-                contributions[key] = c
-                out.staged.append(("contributions", c))
-            # 3. An alert for every exhausted comment, in every tick, and the
-            # launch of every comment that is due now.
-            launched: list[dict] = []
-            requests: list[dict] = []
-            terminal = engine.state_key(c) in lifecycle.TERMINAL_STATES
-            for due in kept:
-                attempt = int(due["attempts"])
-                entry = {"contribution": cid, "evidence_id": due["evidence_id"],
-                         "attempt": attempt}
-                repository, number = patch_review.comment_target(c, due)
-                last = attempt >= patch_review.COMMENT_LAST_ATTEMPT
-                if due.get("exhausted"):
-                    alerts.append({"contribution": cid, "alert": (
-                        f"the comment of the review {due['evidence_id']} on the development PR "
-                        f"{repository or '(none recorded)'}#{number or '?'} could not be posted "
-                        f"in {attempt} attempts (last: {due.get('last_reason')}); the patch was "
-                        "published although that review failed, and the PR does not say so. "
-                        + ("Its attempts are spent and it is no longer posted; a human posts "
-                           "it" if last else
-                           "It is posted again every "
-                           f"{patch_review.COMMENT_EXHAUSTED_RETRY_HOURS} hours until it is "
-                           "posted"))})
-                # A post that cannot be made yet is held without spending an
-                # attempt: by the pause of a contribution that is not
-                # terminal (its resume launches it), or until a development
-                # PR is recorded (the first patch published anyway has none
-                # until the development PR operation confirms one).
-                held = ("the contribution is paused" if patch_review.held_by_pause(c)
-                        else None if repository and number
-                        else "no development PR is recorded")
-                due_at = datetime.fromisoformat(due["next_attempt_at"])
-                if held and not due.get("launched_at") and due_at <= now and (
-                        terminal or now - due_at >= timedelta(
-                            hours=patch_review.COMMENT_HELD_ALERT_HOURS)):
-                    alerts.append({"contribution": cid, "alert": (
-                        f"the comment of the review {due['evidence_id']} is due on the "
-                        f"development PR since {due['next_attempt_at']} and is not posted: "
-                        f"{held}"
-                        + ("; the contribution is terminal, so nothing else will post it"
-                           if terminal else "")
-                        + ". The patch was published although that review failed, and the "
-                        "PR does not say so")})
-                if due.get("launched_at") or held or policy.get("read_only", True) \
-                        or due_at > now or (last and due.get("exhausted")):
-                    launched.append(due)
-                    if not due.get("launched_at"):
-                        report.append(entry | {"status": "exhausted" if due.get("exhausted")
-                                               else "held" if held and due_at <= now
-                                               else "waiting"} | (
-                            {"reason": held} if held and due_at <= now else {}))
-                    continue
-                attempt += 1
-                launched.append(dict(due, attempts=attempt, launched_at=iso,
-                                     repository=repository, pr_number=number))
-                requests.append({
-                    "type": "post_review_comment", "contribution_id": cid,
-                    "contribution_file": contribution_file_id(cid),
-                    "evidence_id": due["evidence_id"], "attempt": attempt})
-                report.append(entry | {"status": "launch", "attempt": attempt})
-            if requests:
-                new = engine.record_beside(c, "review_comment_launched", now=iso,
-                                           review_comments=launched)
-                contributions[key] = new
-                out.staged.append(("contributions", new))
-                out.report["review_comment_requests"].extend(requests)
-    return report
 
 
 # The bounds of what the histories of one tick stage, in bytes of canonical
@@ -3961,27 +3539,11 @@ def _publication_outcomes(directory: str | None) -> list[dict]:
         outcome["publication_artifact_id"] = (
             int(artifact_id.read_text().strip()) if artifact_id.exists() else None
         )
-        # The run that owns the artifact (the directory is named by it): the
-        # worker run, or the publish-only retry that wrote it. A held patch
-        # is pinned to it, with the digest of the series it carries and the
-        # expiry GitHub reported for the artifact.
-        outcome["publication_run_id"] = path.parent.name
-        # The stage of a publish-only retry: `publish` when it read the record
-        # in development.publishing (the controller keeps the file of a
-        # retry only).
-        stage = path.parent / "publication-stage"
-        outcome["publication_stage"] = (
-            "publish" if stage.is_file() and stage.read_text().strip() == "publish" else None)
         expires = path.parent / "artifact-expires-at"
         text = expires.read_text().strip() if expires.is_file() else ""
         outcome["publication_artifact_expires_at"] = (
             text if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}:[0-9]{2})",
                                  text) else None)
-        series = path.parent / "patches.mbox"
-        outcome["publication_series_digest"] = (
-            hashlib.sha256(series.read_bytes()).hexdigest()
-            if series.is_file() and not series.is_symlink() else None
-        )
         # The worker's report (untrusted): the bytes of the file, read as the
         # gate read them, checked again and stored only when a success row
         # folds the Result. A file that cannot be read is named, so that a
@@ -4046,21 +3608,6 @@ def _handoff_runs(path: str | None, prefix: str = HANDOFF_RUN_PREFIX) -> dict[st
         if match:
             runs[match.group(1)] = run_id
     return runs
-
-
-def _review_comment_receipts(directory: str | None) -> list[dict]:
-    """The receipts of the posts of review comments (``review-comment.json``
-    of each collected ``review-comment.yml`` run); a malformed one is
-    skipped."""
-    receipts = []
-    for path in sorted(Path(directory).glob("*/review-comment.json")) if directory else []:
-        try:
-            receipt = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError, RecursionError):
-            continue
-        if isinstance(receipt, dict):
-            receipts.append(receipt)
-    return receipts
 
 
 def _receipt_outcomes(directory: str | None, *, kind: str) -> list[dict]:
@@ -4161,7 +3708,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         getattr(args, "development_pr_runs", None), DEVELOPMENT_PR_RUN_PREFIX)
     provision_runs = None if args.offline else _handoff_runs(
         getattr(args, "provision_runs", None), PROVISION_RUN_PREFIX)
-    comment_receipts = _review_comment_receipts(getattr(args, "review_comments", None))
     issues = [] if args.offline else collect.intake_issues(api)
     tracking = sorted(
         {record["tracking_issue"]["number"] for record in snapshot.contributions.values()}
@@ -4251,7 +3797,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             handoff_runs=handoff_runs,
             development_pr_runs=development_pr_runs,
             provision_runs=provision_runs,
-            review_comment_receipts=comment_receipts,
         )
     except isolation.TickFailure as failure:
         # A pipeline failure: nothing is written, so nothing is committed.
@@ -4308,7 +3853,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provisions")
     parser.add_argument("--development-prs")
     parser.add_argument("--ci-reruns")
-    parser.add_argument("--review-comments")
     parser.add_argument("--handoffs")
     parser.add_argument("--handoff-runs")
     parser.add_argument("--development-pr-runs")

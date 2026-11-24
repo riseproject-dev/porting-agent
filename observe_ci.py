@@ -77,7 +77,6 @@ import engine
 import handoff
 import isolation
 import lifecycle
-import patch_review
 import recovery
 import release
 import schemas
@@ -384,15 +383,6 @@ def observe(api: collect.Api, *, contributions: dict[str, dict], operations: dic
                     operations[op["operation_id"]] = new
                     discovered.append(new)
                     entry["operation"] = {"id": op["operation_id"], "discovery": result}
-            # A branch operation discovery confirms whose commit a
-            # `publish_anyway` review pinned: the patch published anyway is
-            # on the branch, so its comment is due, in any state. The
-            # comment names the head discovery read, which a signed replay
-            # confirmed by its tree and parents may have changed.
-            rec = landed_comment(obs, entry, rec,
-                                 patch_review.confirmed_heads(rec, discovered,
-                                                              head and head["head"]),
-                                 evidence, now=now)
             if rec["phase"] == "upstream_review" and not human_wait_without_observation(rec):
                 # The upstream PR, not the branch, is what upstream review
                 # observes: a merged PR whose branch was deleted is still
@@ -484,29 +474,6 @@ def _ci_snapshot(api: collect.Api, record: dict, head: str, *, contracts: dict, 
                            if debug_present is None else debug_present),
             limitations=[] if verdict.state == "passed" else ["see problems"])
     return verdict, ev, snap
-
-
-def landed_comment(obs: Observation, entry: dict, record: dict,
-                   heads: set[str] | dict[str, str],
-                   evidence: dict[str, dict], *, now: str) -> dict:
-    """Make due, beside the observation, the comment of every
-    ``publish_anyway`` review whose pinned commit is one of ``heads``, the
-    commits trusted branch evidence shows on the development branch
-    (``patch_review.landed_anyway``), and stage the record. The comments
-    made due, and any dropped to fit them, are named in the report, and the
-    tick alerts on each dropped."""
-    due, dropped = patch_review.comment_due(
-        record, patch_review.landed_anyway(record, heads, evidence), now=now)
-    if due == (record.get("review_comments") or []):
-        return record
-    before = {item["evidence_id"] for item in record.get("review_comments") or []}
-    entry["review_comments_due"] = [item["evidence_id"] for item in due
-                                    if item["evidence_id"] not in before]
-    if dropped:
-        entry["review_comments_dropped"] = [item["evidence_id"] for item in dropped]
-    new = engine.record_beside(record, "review_comment_due", now=now, review_comments=due)
-    obs.staged.append(("contributions", new))
-    return new
 
 
 def _stage(obs: Observation, out: engine.Applied) -> dict:
@@ -712,7 +679,6 @@ def _observe_development(api: collect.Api, obs: Observation, entry: dict, rec: d
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("observe_ci", "_observe_development"))
         entry["head_changed"] = True
-        cur = landed_comment(obs, entry, cur, {head}, evidence or {}, now=now)
     ops = recovery.open_operations(cur["contribution_id"], operations, cur.get("active_operation_id"))
     if cur["fork"].get("pr_number"):
         review, inquiry, mismatch = _feedback(api, cur, head, policy=policy, now=now,
@@ -1003,7 +969,6 @@ def _observe_gate(api: collect.Api, obs: Observation, entry: dict, rec: dict, he
             case engine.Bug(refused):
                 raise engine.TransitionRefused(refused, ("observe_ci", "_observe_gate"))
         entry["head_changed"] = True
-        cur = landed_comment(obs, entry, cur, {head}, evidence or {}, now=now)
         _observe_development(api, obs, entry, cur, head, contracts=contracts, policy=policy,
                              now=now, operations=operations, evidence=evidence)
         return

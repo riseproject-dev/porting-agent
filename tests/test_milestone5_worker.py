@@ -15,6 +15,7 @@ import capacity
 import controller
 import reconcile
 import worker_gate
+from tests import helpers
 from tests.helpers import contribution, policy
 
 ROOT = Path(__file__).parents[1]
@@ -331,9 +332,7 @@ class TestWorkerContract(unittest.TestCase):
         self.assertTrue(policies)
         for queue_policy in policies:
             profiles = queue_policy["pools"]["default"]["profiles"]
-            self.assertEqual(set(profiles), {"planner", "worker", "reviewer"})
-            self.assertEqual(profiles["reviewer"]["workflow"],
-                             ".github/workflows/reviewer.lock.yml")
+            self.assertEqual(set(profiles), {"planner", "worker"})
             self.assertEqual(profiles["worker"]["workflow"], ".github/workflows/worker.lock.yml")
             self.assertEqual(profiles["worker"]["max_claims"], 1)
 
@@ -399,6 +398,9 @@ class TestProposalOnlyReconciliation(unittest.TestCase):
 
 
 class TestWorkerGate(unittest.TestCase):
+    def setUp(self):
+        helpers.without_review_loop(self)
+
     def test_accepts_exact_bounded_patch_and_reproduction(self):
         patch = mbox()
         with tempfile.TemporaryDirectory() as directory:

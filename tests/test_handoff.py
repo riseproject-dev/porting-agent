@@ -1520,7 +1520,7 @@ class TestLockedWait(unittest.TestCase):
         self.assertEqual(world.state, "development.agent_running")
         world.record = take(
             world.record, "record_publish_success", policy=world.policy, now=T0,
-            facts={"result_published", "no_review_contract"}, values={
+            facts={"result_published"}, values={
                 "proposal_artifact": {"work_id": "w", "claim_id": "c", "artifact_id": 1,
                                       "name": "n", "digest": "sha256:" + "0" * 64, "run_id": "1"},
                 "publication_operation_id": "op-x"}).record

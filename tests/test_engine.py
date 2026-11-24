@@ -61,16 +61,6 @@ SAMPLE = {
                           "digest": "sha256:" + "0" * 64, "run_id": "1"},
     "pending_publication": {"worker_run_id": "1", "attempts": 1, "last_reason": "push failed",
                             "next_attempt_at": NOW, "exhausted": False},
-    "held_patch": {"worker_run_id": "1", "artifact_run_id": "1", "artifact_id": 1, "work": "example--proj/12@g0.r0:development_patch",
-                   "generation": 0, "revision": 0, "patch_digest": "a" * 64, "candidate": SHA_C,
-                   "tree": SHA_B, "expected_head": SHA_A, "operation": "append",
-                   "changed_files": ["pyproject.toml"], "reason_ids": [], "feedback_evidence_ids": [],
-                   "report_evidence_id": None, "held_at": NOW,
-                   "expires_at": "2026-12-18T12:00:00+00:00"},
-    "review_comments": [{"evidence_id": "patch-review-1", "head": SHA_C,
-                         "repository": "riseproject-upstreaming/proj", "pr_number": 1,
-                         "attempts": 0, "next_attempt_at": NOW, "launched_at": None,
-                         "last_reason": "", "exhausted": False}],
     "pending_feedback_evidence_ids": ["review-2-1-5"],
     "processed_review_ids": [5], "processed_review_comment_ids": [6],
     "processed_pr_conversation_comment_ids": [7],
@@ -188,8 +178,6 @@ def scenario(state, verb, t):
                              source_unavailable_since=LONG_AGO)
     if verb == "reject_patch_proposal" and state == "development.agent_running":
         facts.add("proposal_rejected_or_blocked")
-    if state in lc.HELD_PATCH_STATES:
-        rec["held_patch"] = copy.deepcopy(SAMPLE["held_patch"])
     # The invariants the state requires (``lifecycle.REQUIRES``).
     requires = lc.LIFECYCLE[state].requires
     if {"work", "work_or_publication"} & set(requires) \
@@ -522,7 +510,7 @@ class TestTableDecisions(unittest.TestCase):
         running = dict(running, pending_feedback_evidence_ids=["review-1", "review-9"])
         published = take(
             running, "record_publish_success", policy=POLICY, now=NOW,
-            facts={"result_published", "no_review_contract"},
+            facts={"result_published"},
             values={"proposal_artifact": dict(SAMPLE["proposal_artifact"]),
                     "publication_operation_id": "op-publish-1"})
         self.assertTrue(published.accepted, published.reason)
@@ -557,7 +545,7 @@ class TestTableDecisions(unittest.TestCase):
         self.assertEqual(retry.record["pending_publication"]["feedback_evidence_ids"], ["review-1"])
         published = take(
             retry.record, "record_publish_success", policy=POLICY, now=NOW,
-            facts={"result_published", "no_review_contract"},
+            facts={"result_published"},
             values={"proposal_artifact": dict(SAMPLE["proposal_artifact"]),
                     "publication_operation_id": "op-publish-1"})
         self.assertEqual(published.record["pending_feedback_evidence_ids"], [])

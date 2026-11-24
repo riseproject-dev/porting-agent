@@ -16,7 +16,6 @@
       "head_sha": "6578833f81dda98923270270c97321516d1b2243",
       "interrupted": 0
     },
-    "review_rejections": 0,
     "spent_estimate_usd_cents": 0
   },
   "clean_head_ci_since": null,
@@ -36,7 +35,6 @@
   "generation": 1,
   "handoff_approval": null,
   "handoff_request": null,
-  "held_patch": null,
   "last_ci_evidence_id": null,
   "merge": null,
   "owners": {
@@ -90,7 +88,6 @@
   "refresh": null,
   "release_acceptance": null,
   "retirement": null,
-  "review_comments": [],
   "revision": 10,
   "schema_version": 1,
   "scope_coverage_complete": true,

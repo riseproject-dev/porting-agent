@@ -589,7 +589,8 @@ def migrated_view(kind: str, record: Any) -> Any:
 # `blocked_reason`, always null, or the retired `next_poll_at`.
 # ``migrate_record_fields`` adds each missing field with the value the
 # pipeline reads for an absent one (``engine.with_defaults``), and removes
-# the null `blocked_reason` and `next_poll_at`; it changes nothing else. Any other difference from
+# the null `blocked_reason` and the retired fields of the separate reviews,
+# and it moves a record out of a state of those reviews; it changes nothing else. Any other difference from
 # the strict schema, and a state that is not a state of the table, fail
 # closed.
 
@@ -629,10 +630,9 @@ def migrate_record_fields(record: dict, *, now: str) -> tuple[dict, dict]:
     problem = engine.state_problem(new)
     if problem:
         raise StateError(f"no reviewed record migration for this record: {problem}")
-    state = engine.state_key(new)
     event = lifecycle._event(record, new, FIELD_MIGRATED, "migration", FIELD_MIGRATION, now, False)
-    event["details"] = {"from_state": state, "to_state": state, "added": added,
-                        "removed": removed}
+    event["details"] = {"from_state": engine.state_key(record), "to_state": engine.state_key(new),
+                        "added": added, "removed": removed}
     schemas.validate("event", event)
     return new, event
 

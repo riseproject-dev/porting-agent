@@ -925,7 +925,7 @@ class TestFiresBindings(unittest.TestCase):
         # CI wait too, for a loaded record that waits without one); the CI
         # bootstrap of a recorded PR runs in the CI wait.
         for state, kind in (("development.fix_needed", "dev_pr_create"),
-                            ("development.publishing", "dev_pr_create"),
+                            ("development.agent_running", "dev_pr_create"),
                             ("development.waiting_ci", "dev_pr_create"),
                             ("development.waiting_ci", "dev_pr_update")):
             self.assertEqual(recovery.FIRES[(state, kind)],

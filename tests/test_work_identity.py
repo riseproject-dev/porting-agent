@@ -149,8 +149,7 @@ class TestLateResultMatrix(unittest.TestCase):
     def test_every_payload_carries_the_identity(self):
         """Every Work the dispatcher submits names its generation and Work
         id, and the pending feedback ids it answers."""
-        tasks = sorted(work.WRITE_TASKS) + list(work.SUBMISSION_TASKS) + [
-            "planning", work.DEVELOPMENT_REVIEW]
+        tasks = sorted(work.WRITE_TASKS) + list(work.SUBMISSION_TASKS) + ["planning"]
         for task in tasks:
             for generation in (0, 2):
                 with self.subTest(task=task, generation=generation):
@@ -644,16 +643,14 @@ class TestExhaustion(unittest.TestCase):
 
     def test_every_published_row_starts_the_streaks_again_as_a_row_effect(self):
         for source, verb in (("development.agent_running", "record_publish_success"),
-                            ("development.publishing", "record_publish_success"),
                             ("upstream_review.agent_running", "record_revision_publish_success")):
             with self.subTest(state=source, verb=verb):
                 edge = lc.find_edge(source, verb)
                 rec, kwargs = scenario(source, verb, edge.transition)
-                rec["budget"] = dict(rec["budget"], no_progress_streak=2, review_rejections=1)
+                rec["budget"] = dict(rec["budget"], no_progress_streak=2)
                 out = take(rec, verb, **kwargs)
                 self.assertTrue(out.accepted, out.reason)
-                self.assertEqual((out.record["budget"]["no_progress_streak"],
-                                  out.record["budget"]["review_rejections"]), (0, 0))
+                self.assertEqual(out.record["budget"]["no_progress_streak"], 0)
         # The write beside the row keeps to the admitted scope.
         with self.assertRaises(lc.TransitionError):
             engine.record_beside(contribution(), "patch_published", now=NOW,

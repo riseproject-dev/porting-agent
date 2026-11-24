@@ -25,12 +25,10 @@ on:
       - Dispatcher
       - Planner
       - Worker
-      - Reviewer
       - Reproduction Image
       - Fork Provisioning
       - Development PR
       - Publish Retry
-      - Review Comment
       - Handoff
     types: [completed]
   workflow_dispatch:
@@ -154,7 +152,7 @@ jobs:
           path: ${{ runner.temp }}/porting-http-cache
           key: porting-http-cache-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: porting-http-cache-
-      - name: Collect verified planner, worker, reviewer, and publish-only retry outcomes
+      - name: Collect verified planner, worker, and publish-only retry outcomes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -168,7 +166,7 @@ jobs:
           # When the listing started: a run created after it is not in the
           # inventory for want of being listed, not for being out of reach.
           date -u +%Y-%m-%dT%H:%M:%SZ > publications/.listed-at
-          for workflow in planner.lock.yml worker.lock.yml reviewer.lock.yml publish-retry.yml; do
+          for workflow in planner.lock.yml worker.lock.yml publish-retry.yml; do
             filter=
             if [ "$workflow" = publish-retry.yml ]; then
               # A retry the controller launched on main, once it completed.
@@ -199,21 +197,21 @@ jobs:
               unzip -q -o -j "publications/$run/a.zip" -d "publications/$run" \
                 || { rm -rf "publications/$run"; uncollected "$run" download_failed; continue; }
               printf '%s' "$id" > "publications/$run/artifact-id"
-              # When GitHub deletes the artifact: a held patch is pinned to it.
+              # When GitHub deletes the artifact: a rewrite expires with it.
               printf '%s' "$expires" > "publications/$run/artifact-expires-at"
               task=$(jq -r '.task // empty' "publications/$run/task.json" 2>/dev/null || true)
               # A retry's Result is the Result of the worker run it publishes.
-              # Only a publish-only retry names another run: a planner,
-              # worker, or reviewer artifact is the Result of its own run,
-              # whatever it holds. The directory stays named by the run that
-              # owns the artifact, to which a held patch is pinned.
+              # Only a publish-only retry names another run: a planner or
+              # worker artifact is the Result of its own run, whatever it
+              # holds. The directory stays named by the run that owns the
+              # artifact.
               worker_run=$run
               if [ "$workflow" = publish-retry.yml ]; then
                 worker_run=$(cat "publications/$run/worker-run-id" 2>/dev/null || true)
                 [[ "$worker_run" =~ ^[1-9][0-9]{0,19}$ ]] \
                   || { echo "publish-only retry $run names no worker run" >&2; rm -rf "publications/$run"; continue; }
               else
-                rm -f "publications/$run/worker-run-id" "publications/$run/publication-stage"
+                rm -f "publications/$run/worker-run-id"
               fi
               if [ ! -f "publications/$run/outcome.json" ]; then
                 if [ "$task" = planning ] && [ -f "publications/$run/result.json" ] \
@@ -363,23 +361,6 @@ jobs:
             unzip -q -o -j "handoffs/$run/a.zip" -d "handoffs/$run" || continue
             printf '%s' "$id" > "handoffs/$run/artifact-id"
           done
-      - name: Collect trusted review comment receipts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p review-comments
-          runs=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/review-comment.yml/runs?status=completed&branch=main&event=workflow_dispatch&per_page=20" \
-            --jq '.workflow_runs[].id') || runs=
-          printf '%s\n' "$runs" | while read -r run; do
-            [ -n "$run" ] || continue
-            id=$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" \
-              --jq '[.artifacts[] | select(.name == "porting-review-comment" and (.expired | not))][0].id // empty') || continue
-            [ -n "$id" ] || continue
-            mkdir -p "review-comments/$run"
-            gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "review-comments/$run/a.zip" || continue
-            unzip -q -o -j "review-comments/$run/a.zip" review-comment.json -d "review-comments/$run" || continue
-          done
       - name: Reconcile deterministic state locally
         env:
           GH_TOKEN: ${{ github.token }}
@@ -398,7 +379,6 @@ jobs:
             --handoff-runs handoff-runs.json --development-pr-runs development-pr-runs.json \
             --provision-runs provision-runs.json \
             --ci-reruns ci-reruns \
-            --review-comments review-comments \
             --report report.json \
             ${MANUAL:+--manual} \
             ${gh_aw:+--gh-aw "$gh_aw"}
@@ -541,17 +521,6 @@ jobs:
             | while read -r run attempt; do
               gh workflow run publish-retry.yml --repo "$GITHUB_REPOSITORY" --ref main \
                 -f worker-run-id="$run" -f attempt="$attempt"
-            done
-      - name: Launch due review comments on development PRs
-        if: steps.policy.outputs.read_only == 'false'
-        env:
-          GH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          jq -r '(.review_comment_requests // [])[] | "\(.contribution_file) \(.evidence_id) \(.attempt)"' report.json \
-            | while read -r contribution evidence attempt; do
-              gh workflow run review-comment.yml --repo "$GITHUB_REPOSITORY" --ref main \
-                -f contribution="$contribution" -f evidence-id="$evidence" -f attempt="$attempt"
             done
       - name: Launch durable development PR operations
         if: steps.policy.outputs.read_only == 'false'

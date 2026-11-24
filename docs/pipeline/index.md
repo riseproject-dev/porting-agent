@@ -17,7 +17,7 @@ flowchart LR
   planning --> worker
   subgraph development["Development"]
     direction LR
-    worker["Worker patch"] --> review["Patch review"] --> ci["Development PR and CI"]
+    worker["Worker patch<br/>and its review loop"] --> ci["Development PR and CI"]
   end
   ci --> submit["/upstreaming submit-upstream"]
   submit --> handoff["Handoff<br/>riscv64 branch and package"]
@@ -29,8 +29,7 @@ flowchart LR
 |:------|:-------------|:-----|
 | Request | An issue labelled `upstreaming-request` is parsed and frozen. | [Requests]({{ '/pipeline/requests/' | relative_url }}) |
 | Planning | The planner researches the project and returns a plan that trusted code verifies. | [Planning]({{ '/pipeline/planning/' | relative_url }}), [Contribution Guidelines]({{ '/pipeline/contribution-guidelines/' | relative_url }}) |
-| Development | The worker proposes a bounded patch on a fork, reproduced in the `riscv64` image. | [Development]({{ '/pipeline/development/' | relative_url }}) |
-| Patch Review | A separate reviewer checks every development patch before it is published. | [Patch Review]({{ '/pipeline/patch-review/' | relative_url }}) |
+| Development | The worker proposes a bounded patch on a fork, reproduced in the `riscv64` image, and reviews it with fresh reviewers before trusted code publishes it. | [Development]({{ '/pipeline/development/' | relative_url }}) |
 | Reports and History | Each Work reports what it tried, and later Work reads that history. | [Reports and History]({{ '/pipeline/history/' | relative_url }}) |
 | Submission | A human requests submission; trusted workflows prepare the upstream branch and a package. | [Submission and Handoff]({{ '/pipeline/submission/' | relative_url }}) |
 | Upstream review and release | The controller observes the upstream PR, its review, and its release. | [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#upstream-review-and-release) |

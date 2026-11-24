@@ -20,6 +20,7 @@ import common
 import reconcile
 import schemas
 from common import SCOPE_PATH_MAX_LENGTH, SCOPE_PATHS_MAX, validate_scope_paths, widen_scope
+from tests import helpers
 from tests.test_development_table import NOW, POLICY, publication
 from tests.test_development_table import running as _running
 
@@ -150,18 +151,18 @@ def _changed_files_arrays():
 
 class TestChangedFilesBounds(unittest.TestCase):
     """The files one patch changes become scope paths once it is published,
-    so the worker gate (``validate_scope_paths``), the proposal, the held
-    patch, the push operation and the publisher all bound them by
+    so the worker gate (``validate_scope_paths``), the proposal, the push
+    operation and the publisher all bound them by
     ``SCOPE_PATHS_MAX``: a patch the gate passes is a patch the publisher
     can record."""
+    def setUp(self):
+        helpers.without_review_loop(self)
 
     def test_every_schema_bounds_changed_files_by_the_scope_bound(self):
         arrays = _changed_files_arrays()
         for where in ("proposal.schema.json/properties/changed_files",
                       "operation.schema.json/properties/proposed/properties/changed_files"):
             self.assertIn(where, arrays)
-        self.assertTrue(any(where.startswith("contribution.schema.json/properties/held_patch")
-                            for where in arrays))
         for where, array in arrays.items():
             with self.subTest(schema=where):
                 self.assertEqual(array["maxItems"], SCOPE_PATHS_MAX)

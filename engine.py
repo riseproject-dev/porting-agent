@@ -645,8 +645,6 @@ def budget_count(name: str, ctx: Context) -> int | None:
         return int(budget.get("no_progress_streak", 0))
     if name == "planning_attempts":
         return int(budget.get("planning_attempts", 0))
-    if name == "dev_reviews":
-        return int(budget.get("review_rejections", 0))
     if name == "repair_attempts_cluster":
         clusters = budget.get("clusters") or {}
         if ctx.cluster is not None:
@@ -683,7 +681,7 @@ def head_reruns(record: dict) -> dict:
 
 
 # Budgets whose counter is a field of the contribution record.
-RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts", "dev_reviews",
+RECORD_COUNTERS = ("work_total", "no_progress", "planning_attempts",
                    "repair_attempts_cluster", "work_recovery", "publish_recovery",
                    "source_reads", *RERUN_COUNTERS)
 
@@ -1012,13 +1010,6 @@ for _guard, _name in (
     (lc.REWRITE_CURRENT, "submission_rewrite_current"),
     (lc.REVIEW_PASSED, "submission_review_passed"),
     (lc.REVIEW_FAILED, "submission_review_failed"),
-    (lc.PATCH_VERIFIED, "patch_verified"),
-    (lc.NO_REVIEW_CONTRACT, "no_review_contract"),
-    (lc.PATCH_REVIEW_PASSED, "patch_review_passed"),
-    (lc.PATCH_REVIEW_FAILED, "patch_review_failed"),
-    (lc.HELD_PATCH_CURRENT, "held_patch_current"),
-    (lc.HELD_PATCH_EXPIRED, "held_patch_expired"),
-    (lc.HELD_PATCH_REJECTED, "held_patch_rejected"),
     (lc.CLEAN_HEAD_CI_PASSED, "ci_passed_on_clean_head"),
     (lc.CLEAN_HEAD_CI_MISSING, "clean_head_ci_missing"),
     ("a blocking CI failure on the clean head, or the observed `riscv64` head differs from the "
@@ -1077,8 +1068,6 @@ CONTRADICTORY_FACTS = (("candidate_head_failed", "candidate_head_not_failed"),
                        ("submission_rewrite_passed", "submission_rewrite_failed"),
                        ("submission_rewrite_current", "submission_rewrite_expired"),
                        ("submission_review_passed", "submission_review_failed"),
-                       ("patch_review_passed", "patch_review_failed"),
-                       ("held_patch_current", "held_patch_expired"),
                        ("base_branch_unread", "base_branch_missing"),
                        ("upstream_repository_unread", "base_branch_missing"),
                        ("upstream_repository_renamed", "base_branch_missing"),
@@ -1127,7 +1116,6 @@ PIPELINE_VERBS: dict[str, str] = {
     # the fork head, or held for a publish-only retry within
     # `publish_recovery`, and the wait once that budget is exhausted.
     "record_publish_success": "reconcile",
-    "hold_patch_for_review": "reconcile",
     "reject_patch_proposal": "reconcile",
     "replan_development": "reconcile",
     "schedule_publish_retry": "reconcile",
@@ -1192,7 +1180,6 @@ PIPELINE_VERBS: dict[str, str] = {
     "resume_provisioning": "controller",
     "resume_ci": "controller",
     "resume_development": "controller",
-    "resume_patch_review": "controller",
     "resume_submission_review": "controller",
     "resume_upstream_branch": "controller",
     "resume_submission_preparation": "controller",
@@ -1245,13 +1232,6 @@ PIPELINE_VERBS: dict[str, str] = {
     "request_submission_review": "controller",
     "accept_submission_review": "reconcile",
     "reject_submission_review": "reconcile",
-    # The review of a development patch: the review Work is allocated by the
-    # controller, and its Result is folded by the reconciler.
-    "request_patch_review": "controller",
-    "expire_held_patch": "controller",
-    "accept_patch_review": "reconcile",
-    "reject_patch_review": "reconcile",
-    "publish_after_failed_reviews": "reconcile",
     # The handoff operations (building `riscv64`, the submission package):
     # the rows each attempt fires through ``recovery.fire`` when its verified
     # receipt is folded, or when the controller closes an attempt whose
@@ -1557,7 +1537,7 @@ REASON_VALUES = frozenset({"parked_reason", "paused_reason"})
 
 _EMPTY: dict[str, Any] = {
     "pending_feedback_evidence_ids": [], "scope_coverage_complete": False, "paused": False,
-    "budget.clusters": {}, "budget.no_progress_streak": 0, "budget.review_rejections": 0,
+    "budget.clusters": {}, "budget.no_progress_streak": 0,
 }
 
 
@@ -1596,13 +1576,7 @@ def reset_generation(record: dict) -> dict:
         "prerequisite_ids": [], "active_operation_id": None,
         "queue_work_id": None, "queue_claim_handle": None, "queue_result_id": None,
         "proposal_artifact": None, "publication_operation_id": None,
-        "pending_publication": None, "held_patch": None,
-        # The comments due on development PRs are kept, each pinned to the PR
-        # it is posted on: a new generation never drops one silently.
-        "review_comments": [
-            dict(item, repository=item.get("repository") or (record.get("fork") or {}).get("name"),
-                 pr_number=item.get("pr_number") or (record.get("fork") or {}).get("pr_number"))
-            for item in record.get("review_comments") or []],
+        "pending_publication": None,
         # processed_publications is kept as a replay fence against old run artifacts.
         "processed_review_ids": [], "processed_review_comment_ids": [],
         "processed_pr_conversation_comment_ids": [],
@@ -1618,7 +1592,6 @@ def reset_generation(record: dict) -> dict:
     })
     rec["budget"] = {"policy_id": record["budget"]["policy_id"], "attempts_used": 0,
                      "no_progress_streak": 0, "clusters": {}, "planning_attempts": 0,
-                     "review_rejections": 0,
                      "reruns": {"head_sha": None, "flaky": 0, "interrupted": 0},
                      "spent_estimate_usd_cents": 0}
     return rec
@@ -1652,8 +1625,6 @@ def _charge(rec: dict, name: str, ctx: Context) -> bool:
         budget["no_progress_streak"] = int(budget.get("no_progress_streak", 0)) + 1
     elif name == "planning_attempts":
         budget["planning_attempts"] = int(budget.get("planning_attempts", 0)) + 1
-    elif name == "dev_reviews":
-        budget["review_rejections"] = int(budget.get("review_rejections", 0)) + 1
     elif name == "repair_attempts_cluster":
         if not ctx.cluster:
             raise TransitionError("charging repair_attempts_cluster needs the failing CI job")
@@ -1693,10 +1664,6 @@ def _clear(rec: dict, before: dict, name: str) -> None:
         carried = set(carried_feedback(before))
         rec["pending_feedback_evidence_ids"] = [
             i for i in before.get("pending_feedback_evidence_ids") or [] if i not in carried]
-    elif name == lc.OVERRIDDEN_REVIEWS:
-        if (((before.get("pending_publication") or {}).get("patch_review") or {})
-                .get("published_anyway")):
-            rec["budget"] = dict(rec["budget"], review_rejections=0)
     elif name in lc.QUALIFIED_CLEARS:
         raise TransitionError(f"the qualified clear {name!r} is not implemented")
     else:
@@ -2032,6 +1999,10 @@ def state_problem(record: dict) -> str | None:
     state = lc.LIFECYCLE.get(key)
     if state is None:
         return f"{key} is not a lifecycle state"
+    if key.endswith(".fix_needed") and record.get("pending_publication"):
+        # Work is requested again from here, and a held publication is read
+        # nowhere in it: the record would wait forever.
+        return f"{key} holds the publication of a Result"
     if state.kind == "human_wait" and not (record.get("pending_human_action") or {}).get("kind"):
         # Every row into a human wait sets the pending action, and no row in
         # it clears the action without setting it (`lifecycle check`).
@@ -2092,8 +2063,8 @@ RECORD_DEFAULTS: dict[str, Any] = {
     "distributions": [], "fork": None, "upstream_pr": None, "target_contract_id": None,
     "prerequisite_ids": [], "active_operation_id": None, "queue_work_id": None,
     "queue_claim_handle": None, "queue_result_id": None, "proposal_artifact": None,
-    "publication_operation_id": None, "pending_publication": None, "held_patch": None,
-    "review_comments": [], "processed_publications": [], "processed_review_ids": [],
+    "publication_operation_id": None, "pending_publication": None,
+    "processed_publications": [], "processed_review_ids": [],
     "processed_review_comment_ids": [], "processed_pr_conversation_comment_ids": [],
     "pending_feedback_evidence_ids": [], "active_work": None, "plan_evidence_id": None,
     "scope_coverage_complete": False, "scope_paths": None, "debug_commits": [],
@@ -2123,8 +2094,24 @@ WORK_DEFAULTS: dict[str, Any] = {
 RETIRED_FIELDS = ("blocked_reason",)
 # Fields removed whatever their value: `next_poll_at` was written by CI
 # observation (nothing read it for CI) and by release observation (which now
-# reads PyPI on every run).
-RETIRED_ANY_FIELDS = ("next_poll_at",)
+# reads PyPI on every run); `held_patch` was the unpublished patch of the
+# review Work that no longer exists, `review_comments` the comments due on
+# development PRs for the same review.
+RETIRED_ANY_FIELDS = ("next_poll_at", "held_patch", "review_comments")
+# The states of the separate reviews, which the review loop of the worker
+# retired, and the state each record in one goes to: the unpublished patch
+# is dropped, and the Work is requested again.
+RETIRED_STATES = {
+    "development.review_pending": "development.fix_needed",
+    "development.reviewing": "development.fix_needed",
+    "development.publishing": "development.fix_needed",
+}
+# The pending action of a review of a held patch that could not run, which
+# now is a failed Work.
+RETIRED_PENDING_KINDS = {"patch_review_unavailable": "work_failed"}
+# The count of failed reviews in succession, a field of `budget` removed
+# whatever its value.
+RETIRED_BUDGET_FIELD = "review_rejections"
 # A field of `budget.reruns` that is removed whatever its value.
 RETIRED_RERUN_FIELD = "answered_ci_evidence_id"
 
@@ -2133,11 +2120,31 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     """``record`` with every field the strict schema requires and it lacks
     added at the value the pipeline reads for an absent one, the null
     retired fields, `next_poll_at`, and `budget.reruns.answered_ci_evidence_id` removed, with
-    the names added and removed. Raises
+    the names added and removed. A record in a retired state of the separate
+    reviews goes to the state that requests the Work again, and a pending
+    action of a retired kind to its replacement; both are listed as
+    ``state <name>`` and ``pending_human_action.kind <name>``. Raises
     ``TransitionError`` for a retired field that is set."""
     new = copy.deepcopy(record)
     added: list[str] = []
     removed: list[str] = []
+    moved = RETIRED_STATES.get(state_key(new))
+    if moved:
+        removed.append(f"state {state_key(new)}")
+        new["phase"], new["activity"] = moved.split(".")
+        added.append(f"state {moved}")
+        new["active_work"] = None
+        # The held Result of a publication is the held patch's: nothing in
+        # `development.fix_needed` reads it, so it would strand the record.
+        if new.get("pending_publication") is not None:
+            removed.append("pending_publication")
+        new["pending_publication"] = None
+    pending = new.get("pending_human_action")
+    if isinstance(pending, dict) and pending.get("kind") in RETIRED_PENDING_KINDS:
+        replacement = RETIRED_PENDING_KINDS[pending["kind"]]
+        removed.append(f"pending_human_action.kind {pending['kind']}")
+        new["pending_human_action"] = dict(pending, kind=replacement)
+        added.append(f"pending_human_action.kind {replacement}")
     for name in RETIRED_FIELDS:
         if name in new:
             if new[name] is not None:
@@ -2155,6 +2162,9 @@ def with_defaults(record: dict) -> tuple[dict, list[str], list[str]]:
     budget = new.get("budget")
     if isinstance(budget, dict):
         budget = new["budget"] = dict(budget)
+        if RETIRED_BUDGET_FIELD in budget:
+            del budget[RETIRED_BUDGET_FIELD]
+            removed.append(f"budget.{RETIRED_BUDGET_FIELD}")
         for name, value in BUDGET_DEFAULTS.items():
             if name not in budget:
                 budget[name] = copy.deepcopy(value)
@@ -2263,14 +2273,6 @@ BESIDE_ROW: dict[str, tuple[str, ...]] = {
     "ci_rerun_recorded": ("active_operation_id",),
     # The publish-only retry of the held Result is launched.
     "publish_retry_launched": ("pending_publication",),
-    # The comment of a patch published after successive failed reviews, due
-    # once `record_publish_success` published it: its posts launched and
-    # their receipts folded, until it is posted or its attempts are spent.
-    "review_comment_launched": ("review_comments",),
-    # A late `published` Result of a patch published anyway makes the
-    # comment of its review due all the same.
-    "review_comment_due": ("review_comments",),
-    "review_comment_answered": ("review_comments",),
     # The automatic resume of a stop the controller set failed at this
     # version of the pipeline code: it is attempted once per version.
     "restop_attempted": ("paused_at_commit",),
@@ -2495,20 +2497,16 @@ handles("reconcile", "fold_submission_rewrite",
         ("accept_submission_rewrite", "reject_submission_rewrite"), D_RESULT)
 handles("reconcile", "fold_submission_review",
         ("accept_submission_review", "reject_submission_review"), D_RESULT)
-handles("reconcile", "fold_patch_review", "accept_patch_review", D_RESULT)
-handles("reconcile", "fold_patch_review", "reject_patch_review", D_RESULT,
-        BUDGET_EXHAUSTED=TAKE("publish_after_failed_reviews"))
-handles("reconcile", "fold_patch_review", "publish_after_failed_reviews", _ALL_BUG)
 handles("reconcile", "_fail_publication", "schedule_publish_retry", _ALL_BUG,
         BUDGET_EXHAUSTED=TAKE("exhaust_recovery"))
 handles("reconcile", "_fail_publication", "exhaust_recovery", _ALL_BUG)
 # The first published patch is folded once its development PR is open
 # (`development.waiting_ci` requires it): a Result refused for want of the
-# PR is deferred in `development.publishing`, and a bug elsewhere.
+# PR is deferred in `development.agent_running`, and a bug elsewhere.
 handles("reconcile", "fold_patch_result", "record_publish_success", D_RESULT,
         GUARD_UNMET=SKIP)
 handles("reconcile", "fold_patch_result",
-        ("hold_patch_for_review", "reject_patch_proposal",
+        ("reject_patch_proposal",
          "replan_development", "request_ci_rerun", "record_revision_publish_success",
          "require_reviewer_answer"), D_RESULT)
 # The stop after a processing error is the last resort: a refusal (already
@@ -2527,7 +2525,7 @@ handles("reconcile", "fold_handoff_receipts", ("confirm_clean_head", "confirm_su
         _ALL_BUG)
 handles("reconcile", "fold_provisioning_receipts",
         ("confirm_provisioning", "require_provisioning_intervention"), _ALL_BUG)
-handles("reconcile", "_tick", ("confirm_development_pr", "expire_held_patch"), _ALL_BUG)
+handles("reconcile", "_tick", "confirm_development_pr", _ALL_BUG)
 
 # handoff: a failed attempt fires the one row of its state.
 handles("handoff", "fail_attempt",
@@ -2546,20 +2544,20 @@ handles("controller", "_source_unavailable",
          "require_upstream_access", "require_renamed_upstream"), D_TICK)
 handles("controller", "tick", "withdraw_request", D_OBS, FACT_MISSING=SKIP)
 handles("controller", "tick", "record_reminder", D_TICK)
-handles("controller", "tick", ("expire_submission_rewrite", "expire_held_patch"), D_TICK,
+handles("controller", "tick", "expire_submission_rewrite", D_TICK,
         BUDGET_EXHAUSTED=_TAKE_WORK_TOTAL)
 handles("controller", "tick",
         ("exhaust_work_total", "exhaust_work_total|refresh_on_exhaustion|exhaust_repair_attempts",
          "exhaust_repair_attempts"), D_TICK, BUDGET_EXHAUSTED=SKIP)
 handles("controller", "_due_allocation",
-        ("dispatch_planning", "request_repair|request_patch", "request_patch_review",
+        ("dispatch_planning", "request_repair|request_patch",
          "request_submission_rewrite", "request_submission_review",
          "request_upstream_revision|request_review_revision"), D_TICK, BUDGET_EXHAUSTED=SKIP)
 # A paused request does not begin planning.
 handles("controller", "tick", "begin_planning", D_TICK)
 handles("controller", "tick",
         ("dispatch_planning", "request_repair", "request_patch",
-         "request_patch_review", "request_submission_rewrite", "request_submission_review",
+         "request_submission_rewrite", "request_submission_review",
          "request_upstream_revision", "request_review_revision"), _ALL_BUG)
 # A record that breaks its state is left to the heal of its tick (nothing is
 # decided for its Work).

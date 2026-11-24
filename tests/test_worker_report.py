@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -44,6 +45,9 @@ def report(**over) -> dict:
         "verification": [{"check": "build and test in the riscv64 image", "result": "passed",
                           "evidence": "exit 0"}],
         "revisited": [],
+        "review_loop": {"rounds": 1, "round_digests": ["0" * 64], "stopped_because": "clean",
+                        "findings": [],
+                        "summary": "One round of fresh reviewers found nothing to fix."},
     }
     value.update(over)
     return value
@@ -164,6 +168,7 @@ class TestGates(unittest.TestCase):
         series = m5.mbox()
         own = dict(m5.task(), context={"history": {"sha256": HISTORY}})
         valid = report(contribution_id=own["contribution_id"], task=own["task"])
+        valid["review_loop"]["round_digests"] = [hashlib.sha256(series).hexdigest()]
         with tempfile.TemporaryDirectory() as directory:
             mbox = Path(directory) / "patches.mbox"
             mbox.write_bytes(series)
@@ -177,10 +182,11 @@ class TestGates(unittest.TestCase):
             path.write_bytes(raw(valid))
             self.assertEqual(worker_gate.validate(own, m5.proposal(series), mbox, path)["status"],
                              "accepted")
-            # Work dispatched before reports existed needs none.
-            self.assertEqual(worker_gate.validate(m5.task(), m5.proposal(series), mbox,
-                                                  Path(directory) / "none.json")["status"],
-                             "accepted")
+            # A patch needs its report whatever the Work carries: it holds
+            # the review loop.
+            with self.assertRaisesRegex(worker_gate.WorkerGateError, "review loop"):
+                worker_gate.validate(m5.task(), m5.proposal(series), mbox,
+                                     Path(directory) / "none.json")
             # The CLI reports the rejection.
             (Path(directory) / "task.json").write_text(json.dumps(own))
             (Path(directory) / "proposal.json").write_text(json.dumps(m5.proposal(series)))

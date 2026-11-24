@@ -34,9 +34,35 @@ It initializes the exact `riscv64-dev` base from the frozen base, and verifies t
 - pinned QEMU and an optional pinned `gh-act`;
 - a read back of the immutable plan;
 - direct build and test reproduction in the [reproduction image]({{ '/operations/reproduction-image/' | relative_url }});
+- the review loop of its patch;
 - bounded proposal evidence.
 
 The worker holds no destination credential and cannot push. See [Agent Isolation]({{ '/security/agents/' | relative_url }}).
+
+## The review loop
+
+The worker reviews its own patch before trusted code publishes it, in the same run, with a review loop that its prompt describes and that runs on the `subagent` tool of `pi-subagents`. Development, review and fixes are one workflow; there is no separate review Work and no unpublished patch.
+
+Once the series is committed and validated in the image, the worker runs the loop its prompt describes. The worker is the controller and the only decision-maker; its children only review or implement, one writer at a time, always in the foreground.
+
+- **Rounds.** At most 3. Each round launches fresh reviewers, in parallel and in the foreground, on the worker's model with read, grep, find and ls only. They read the series (`format-patch` output, which holds the commit messages), the tree after it, the task, the plan and the history. Angles: correctness on riscv64, scope and precedent, project conventions and reviewers' expectations, tests and CI coverage, security, and whether the report matches the series.
+- **Findings.** Reviewers label findings P0 (blocks), P1 (fix before release) or P2 (report only). After a round the worker fixes what a P0 or a worthwhile P1 asks, through one forked `worker` child, or itself when the child fails. It starts no fix pass after 175 minutes and no round after 210 minutes of the 330 minute run, so that a review round always follows a fix pass.
+- **Stop.** When fresh reviewers find no P0 and no P1 worth fixing, when only optional notes remain, when the cap is reached, when time runs out, or when a decision that the worker may not take is needed. In the last case the outcome is `needs_clarification` with the question.
+- **Closing a P0.** Only the fresh reviewers of a later round close a P0 finding, as fixed or withdrawn. The worker never closes or drops one.
+
+The last round must have reviewed exactly the series that is published, and nothing changes after it. The worker records the loop in `report.json` as `review_loop`: the rounds, the SHA-256 of the series each round reviewed, why it stopped, at most 10 findings with their status and what became of them, and a summary.
+
+## The worker gate
+
+Before any token, the trusted worker gate validates the Result's structural scope, its debug commits, and its reproduction. It has no destination token and no publication path of its own. The [commit rules]({{ '/pipeline/contribution-guidelines/' | relative_url }}#how-the-rules-are-enforced) are part of the gate.
+
+For a patch, the gate also checks the review loop (`review_loop.check`). It is the agent's own account, so the gate checks its shape and its P0 findings, not that the reviews happened:
+
+- at least one round ran, and the loop did not stop for a decision;
+- no P0 finding is open or deferred;
+- a P0 finding is closed only in a later round than the one that raised it.
+
+A patch that fails the check is a rejected proposal: nothing is pushed, `reject_patch_proposal` returns the contribution to `development.fix_needed`, and the attempt is charged to `no_progress`. The pending feedback is kept.
 
 ## Reproduction evidence
 
@@ -54,10 +80,6 @@ The trusted worker gate accepts a `patch` or `no_change` outcome only with at le
 - A blocked Result in a `reproduction-image-infrastructure` cluster whose only failed commands are `gh act` is refused as a validation failure, with its reason fed back, instead of being counted as an infrastructure blocker.
 - Stored proposals and evidence with `workflows` and `runner_mappings` stay valid.
 
-## The worker gate
-
-Before any token, the trusted worker gate validates the Result's structural scope, its debug commits, and its reproduction. It has no destination token and no publication path of its own. The [commit rules]({{ '/pipeline/contribution-guidelines/' | relative_url }}#how-the-rules-are-enforced) are part of the gate.
-
 ## Publication
 
 A separate trusted publish job publishes the verified proposal. It:
@@ -67,11 +89,11 @@ A separate trusted publish job publishes the verified proposal. It:
 - persists operation evidence;
 - pushes under an exact-head lease.
 
-A development patch is first held for review, and its publish job mints no token; see [Patch Review]({{ '/pipeline/patch-review/' | relative_url }}). A repair worker's report of a failure not caused by the patch is published by rerunning the failed jobs on the exact head, with a one-fork token that carries only `actions: write`.
+Once the gate accepts a patch, the publish job of the worker's run pushes it. After the push it posts the summary of the review loop as one comment on the pushed commit, which shows on the development PR; the post is made once, with no retry, and a failure is only logged. The publish-only retry of a failed push posts the same summary and finds an earlier one by its marker. A repair worker's report of a failure not caused by the patch is published by rerunning the failed jobs on the exact head, with a one-fork token that carries only `actions: write`.
 
 ## Development PR and CI
 
-`dev-pr.yml` creates or discovers one marked same-fork pull request, bootstraps inherited Actions safely, and executes the CI reruns the collector records for interrupted CI. The controller observes CI on the exact head. The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#development) lists the rows, and [CI reruns]({{ '/state-machine/engine/' | relative_url }}#ci-reruns) describes how reruns are requested and read back.
+The first published patch has no development PR yet: the controller opens it once the push is confirmed, and folds the Result of the worker once the PR is recorded. `dev-pr.yml` creates or discovers one marked same-fork pull request, bootstraps inherited Actions safely, and executes the CI reruns the collector records for interrupted CI. The controller observes CI on the exact head. The [Transition Engine]({{ '/state-machine/engine/' | relative_url }}#development) lists the rows, and [CI reruns]({{ '/state-machine/engine/' | relative_url }}#ci-reruns) describes how reruns are requested and read back.
 
 ## Infrastructure blockers
 

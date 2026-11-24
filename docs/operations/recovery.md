@@ -19,7 +19,7 @@ The pipeline is built to continue after a failure without duplicating a remote e
 
 ## Continuations and fallbacks
 
-Every terminal path of a trusted workflow explicitly continues `controller.yml`: the dispatcher, planner, worker, and reviewer paths, and the `continuation` job of provisioning, development PR, publish retry, review comment, and handoff. Workflow completion events and the schedule are fallbacks if a continuation is lost. Scheduled runs can themselves be delayed or skipped, so a fallback is not a guarantee of timing.
+Every terminal path of a trusted workflow explicitly continues `controller.yml`: the dispatcher, planner, and worker paths, and the `continuation` job of provisioning, development PR, publish retry, and handoff. Workflow completion events and the schedule are fallbacks if a continuation is lost. Scheduled runs can themselves be delayed or skipped, so a fallback is not a guarantee of timing.
 
 ## Failing closed
 
@@ -45,6 +45,14 @@ It never resets Work, fabricates a Result, or reruns the planner.
 A dispatcher workflow may conclude `failure` after gh-aw reports `recovery_required`, even though the native workflow dispatch was accepted. For example, the durable ledger may record one accepted worker launch while an earlier control intent stays blocked, so safe-output processing fails closed and the worker still starts.
 
 This is expected self-healing, not proof that nothing launched. Controller replay treats a live Claim as authoritative and neither releases nor duplicates it. Explicit continuation and the schedule fallback reconcile the terminal result.
+
+## Deploying the review loop
+
+The worker reviews its own patch, so the states of the separate review (`development.review_pending`, `development.reviewing` and `development.publishing`) and their record fields (`held_patch`, `review_comments`, `budget.review_rejections`) no longer exist. The record migration (`state.migrate_record_fields`, one `record_fields_migrated` event per record) drops `held_patch` and `review_comments` whatever they hold, moves a record in a removed development state to `development.fix_needed` with no Work and no held publication Result (the next patch is requested again), and turns the pending action `patch_review_unavailable` into `work_failed`. It refuses nothing, so a store with such records is migrated rather than stopped. The unpublished patch of a held record is lost: its Work is requested again. Before merging the change, confirm that no publish-only retry of a held patch is in flight.
+
+A worker run that began before the deploy returns a Result the controller reads as Work without a usable Result of the earlier pipeline and relaunches, with nothing charged.
+
+The installed queue Policy still lists the `reviewer` profile until the dispatcher installs the compiled Policy, which no longer has it. The dispatcher reinstalls it only on a quiescent queue (no live Claim), so after the deploy a dispatch is refused, and the request waits with `dispatch_failed`, until that reinstall has happened; `rearm_dispatch` then re-arms the dispatch and gives back the budgets the lost allocation charged. Expect the first dispatches after the deploy to wait for the queue to drain.
 
 ## Repairing tracking-issue output
 

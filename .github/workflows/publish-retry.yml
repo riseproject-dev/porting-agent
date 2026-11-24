@@ -13,15 +13,9 @@
 # by the patch) is published by rerunning the failed jobs on the exact head
 # with a token for the one fork that carries only `actions: write`; a rerun
 # that already landed is read back instead of being requested again.
-# A development patch is reviewed before it is published: while its Work is
-# still the one that wrote it, a retry only verifies it again without a fork
-# token, and its artifact carries the verified series (`patches.mbox`), which
-# the held patch then pins by this run and the artifact's id. Once its review
-# is done (`development.publishing`), the patch is pushed only when the series
-# has the held digest and rebuilds to exactly the reviewed commit. The
-# comment of a patch published after successive failed reviews is posted by
-# `review-comment.yml`, which the controller launches once the publication is
-# folded.
+# A development patch was reviewed in its worker's run, so a retry publishes
+# it like any other patch and posts the summary of that review on the pushed
+# commit once, as the worker's publish job does.
 #
 # Launched by the controller's reconcile job (never by the agent), with the
 # worker run ID it recorded in state.
@@ -116,15 +110,10 @@ jobs:
           fi
           uv run --locked \
             python -m fork_publish preflight --record ../in/record.json --task ../in/task.json \
-              --proposal ../in/proposal.json --out ../in/preflight.json
+              --proposal ../in/proposal.json --report ../in/report.json \
+              --out ../in/preflight.json
           jq -r '"fork_name=" + .fork_name, "publish=" + (.publish|tostring)' ../in/preflight.json >> "$GITHUB_OUTPUT"
-          if [ "$(jq -r .status ../in/preflight.json)" = verify ]; then
-            # Held for its review: verified again without a fork token.
-            uv run --locked \
-              python -m fork_publish verify --record ../in/record.json --task ../in/task.json \
-                --proposal ../in/proposal.json --mbox ../in/patches.mbox --result ../in/result.json \
-                --out ../in/outcome.json || true
-          elif [ "$(jq -r .status ../in/preflight.json)" = no_change ]; then
+          if [ "$(jq -r .status ../in/preflight.json)" = no_change ]; then
             # The held Result reports a failure not caused by the patch: its
             # publication is the rerun of the failed jobs on the exact head.
             jq '{status:"no_change", failure_class:null, reason, stage:"preflight"}' \
@@ -133,6 +122,11 @@ jobs:
               python -m ci_rerun preflight --record ../in/record.json --task ../in/task.json \
                 --proposal ../in/proposal.json --out ../in/rerun.json
             jq -r '"rerun=" + (.rerun|tostring), "rerun_fork=" + .fork_name' ../in/rerun.json >> "$GITHUB_OUTPUT"
+          elif [ "$(jq -r .status ../in/preflight.json)" = unreviewed ]; then
+            # A held Result of a worker run of the earlier pipeline: no review
+            # loop was run on it; it is relaunched, with nothing charged.
+            jq '{status:"unreviewed", failure_class:null, reason, stage:"preflight"}' \
+              ../in/preflight.json > ../in/outcome.json
           elif [ "$(jq -r .publish ../in/preflight.json)" != true ]; then
             jq '{status:"rejected", failure_class:(.failure_class // "validation"), reason, stage:"preflight"}' \
               ../in/preflight.json > ../in/outcome.json
@@ -168,6 +162,20 @@ jobs:
           jq . ../in/outcome.json >> "$GITHUB_STEP_SUMMARY"
           exit $(( rc == 1 || rc == 3 ? 0 : rc ))
 
+      - name: Post the review loop summary on the pushed commit
+        if: steps.result.outputs.publish == 'true'
+        continue-on-error: true
+        working-directory: control
+        env:
+          UPSTREAMING_FORK_TOKEN: ${{ steps.fork-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ "$(jq -r .status ../in/outcome.json)" = published ] && [ -f ../in/report.json ]; then
+            uv run --locked \
+              python -m review_loop comment --task ../in/task.json --report ../in/report.json \
+                --fork "$(jq -r .fork ../in/task.json)" --head "$(jq -r .candidate ../in/outcome.json)"
+          fi
+
       - name: Mint a CI rerun token for exactly this fork
         id: rerun-token
         if: steps.result.outputs.rerun == 'true'
@@ -202,16 +210,6 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$RUN" > in/worker-run-id
-          # The stage of this run: `publish` when it read the record in
-          # development.publishing, where only the publication of the held
-          # patch is folded; a verification, or an attempt made before the
-          # review, collected late is never taken as its rejection.
-          state=$(jq -r '"\(.phase).\(.activity)"' in/record.json 2>/dev/null || true)
-          if [ "$state" = development.publishing ]; then
-            printf publish > in/publication-stage
-          else
-            printf other > in/publication-stage
-          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
@@ -230,7 +228,6 @@ jobs:
             in/plan.json
             in/report.json
             in/worker-run-id
-            in/publication-stage
           if-no-files-found: ignore
           retention-days: 30
 

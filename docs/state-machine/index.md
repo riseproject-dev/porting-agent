@@ -60,9 +60,6 @@ flowchart TB
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
-        development_review_pending["development.review_pending"]
-        development_reviewing["development.reviewing"]
-        development_publishing["development.publishing"]
         development_waiting_ci["development.waiting_ci"]
         development_waiting_human["development.waiting_human"]
     end
@@ -113,12 +110,7 @@ flowchart TB
     provisioning_idle -->|confirm_provisioning| development_fix_needed
     development_fix_needed -->|request_patch| development_agent_running
     development_fix_needed -->|request_repair| development_agent_running
-    development_agent_running -->|hold_patch_for_review| development_review_pending
-    development_review_pending -->|request_patch_review| development_reviewing
-    development_reviewing -->|accept_patch_review| development_publishing
-    development_reviewing -->|reject_patch_review| development_fix_needed
-    development_reviewing -->|publish_after_failed_reviews| development_publishing
-    development_publishing -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|record_publish_success| development_waiting_ci
     development_agent_running -->|reject_patch_proposal| development_fix_needed
     development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|record_ci_failure| development_fix_needed
@@ -163,7 +155,7 @@ flowchart TB
     closed_idle --> end_3(( ))
 ```
 
-On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. Every development patch is reviewed before it is published. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and linked from the event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
+On both the development PR and the upstream PR, a CI failure keeps the contribution in its phase while a bounded repair is prepared and tested, and an actionable review comment is included in the next repair. The worker reviews every development patch in its own run before it publishes it. An explanation-only comment is answered on the development PR; at the submission gate and on the upstream PR it is recorded and linked from the event log of the website, and nothing is answered automatically. Transitions that apply in many states (`park_contribution`, `resume_stale`, `record_reminder`, `record_late_effect`) are drawn once, under the rules below.
 
 ## Planning and provisioning failure cases
 
@@ -279,18 +271,15 @@ flowchart TB
 
 ## Development and repair cases
 
-Development is one bounded loop around the same development PR. A worker proposes a patch, trusted code validates it, a separate review Work reviews exactly that patch, trusted code publishes it, and CI plus authorized review evaluate the exact head. Only `nominate_for_handoff` leaves development forward.
+Development is one bounded loop around the same development PR. A worker implements a patch and reviews it with fresh reviewers in the same run (the review loop, at most 3 rounds), trusted code validates it and publishes it unless a P0 finding is still open, and CI plus authorized review evaluate the exact head. Only `nominate_for_handoff` leaves development forward.
 
-### Success case: patch, review, publish, CI, and handoff
+### Success case: patch, review loop, publish, CI, and handoff
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
-        development_review_pending["development.review_pending"]
-        development_reviewing["development.reviewing"]
-        development_publishing["development.publishing"]
         development_waiting_ci["development.waiting_ci"]
     end
     subgraph handoff["handoff"]
@@ -299,16 +288,13 @@ flowchart TB
 
     start_1(( )) --> development_fix_needed
     development_fix_needed -->|request_patch| development_agent_running
-    development_agent_running -->|hold_patch_for_review| development_review_pending
-    development_review_pending -->|request_patch_review| development_reviewing
-    development_reviewing -->|accept_patch_review| development_publishing
-    development_publishing -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|record_publish_success| development_waiting_ci
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
 ```
 
-Every Work carries its history: the reports of the earlier successful workers, the CI runs and reviews that followed them, every review of a development patch, and the owner's steering from the tracking issue and the pull requests. A repair after failing CI reads the report of the worker whose head failed.
+Every Work carries its history: the reports of the earlier successful workers, the CI runs that followed them, and the owner's steering from the tracking issue and the pull requests. A repair after failing CI reads the report of the worker whose head failed.
 
-The worker's trusted publication job verifies the patch without a token and publishes nothing: `hold_patch_for_review` holds it, pinned to its series and the commit it rebuilds to. A separate review Work, on its own workflow and model, reads and diffs exactly that patch with the worker's report, the plan, and the history; `accept_patch_review` makes it pending publication, and the publish-only workflow pushes it only when it rebuilds to the reviewed commit.
+The worker commits the patch and runs a review loop on it with the `subagent` tool of `pi-subagents` (at most 3 rounds: fresh reviewers (read only), then a fix pass while a P0 or a P1 fix worth doing is found); its report records the loop. Trusted code publishes the patch only when no P0 finding is left open, and `record_publish_success` folds its Result.
 
 `development.fix_needed` is the one state in which development Work is due, and it is entered only after `confirm_provisioning`: no patch is proposed before the fork exists. `request_repair` applies while a failing CI job is recorded for the head and charges `repair_attempts_cluster` for that job; `request_patch` applies otherwise (the first patch, a rejected proposal, a repair driven only by review feedback) and charges `work_total` only. Both need write admission. Every applicable build and test job must execute and pass on the exact head.
 
@@ -343,45 +329,39 @@ Dispatch recovery and bounded repair are automatic. Dispatch and Work exhaustion
 flowchart TB
     subgraph development["development"]
         development_agent_running["development.agent_running"]
-        development_publishing["development.publishing"]
         development_fix_needed["development.fix_needed"]
         development_waiting_human["development.waiting_human"]
         development_waiting_ci["development.waiting_ci"]
-        development_review_pending["development.review_pending"]
     end
 
     start_1(( )) --> development_agent_running
-    development_agent_running -->|hold_patch_for_review| development_review_pending
     development_agent_running -->|record_publish_success| development_waiting_ci
     development_agent_running -->|schedule_publish_retry| development_agent_running
     development_agent_running -->|exhaust_recovery| development_waiting_human
-    development_publishing -->|record_publish_success| development_waiting_ci
-    development_publishing -->|schedule_publish_retry| development_publishing
-    development_publishing -->|exhaust_recovery| development_waiting_human
-    development_publishing -->|replan_development| development_fix_needed
-    development_publishing -->|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|replan_development| development_fix_needed
+    development_agent_running -->|reject_patch_proposal| development_fix_needed
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_fix_needed -->|request_repair| development_agent_running
 ```
 
-An infrastructure failure of the worker's verification, or of the publication of a reviewed patch, runs the same trusted step again for the same Result within `publish_recovery`, with no model call. The reviewed patch is pushed only when it rebuilds to the reviewed commit; a fork head that moved replans, and a patch that no longer rebuilds is rejected. After exhaustion and a resume, fresh Work is requested; the held Result is not reused. Work dispatched before development patches were reviewed still publishes its Result in `development.agent_running`.
+An infrastructure failure of the publication runs the same trusted step again for the same Result within `publish_recovery`, with no model call. A fork head that moved replans, and a patch that no longer rebuilds, or whose review loop left a P0 finding open, is rejected. After exhaustion and a resume, fresh Work is requested; the held Result is not reused.
 
 ### The development PR operation
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
-        development_publishing["development.publishing"]
+        development_agent_running["development.agent_running"]
         development_fix_needed["development.fix_needed"]
         development_waiting_ci["development.waiting_ci"]
         development_waiting_human["development.waiting_human"]
     end
 
-    start_1(( )) --> development_publishing
-    development_publishing -->|launch_development_pr| development_publishing
-    development_publishing -->|confirm_development_pr| development_publishing
-    development_publishing -->|exhaust_development_pr_launches| development_waiting_human
-    development_publishing -->|record_publish_success| development_waiting_ci
+    start_1(( )) --> development_agent_running
+    development_agent_running -->|launch_development_pr| development_agent_running
+    development_agent_running -->|confirm_development_pr| development_agent_running
+    development_agent_running -->|exhaust_development_pr_launches| development_waiting_human
+    development_agent_running -->|record_publish_success| development_waiting_ci
     development_fix_needed -->|launch_development_pr| development_fix_needed
     development_fix_needed -->|confirm_development_pr| development_waiting_ci
     development_fix_needed -->|exhaust_development_pr_launches| development_waiting_human
@@ -392,41 +372,26 @@ flowchart TB
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
 ```
 
-CI is awaited only on a development PR: `development.waiting_ci` requires it. A published head without one gets it through a trusted operation, planned and launched by the controller within `operation_launch` (counted on the operation) in the state the head is in: in `development.publishing` once the push of the held patch is confirmed, where the Result of the publication is folded (`record_publish_success`) only once the PR is recorded, and in `development.fix_needed` for a head on the branch that no PR shows, where the verified receipt enters the CI wait. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human (`development_pr_not_opened`); `resume_development` returns to `development.fix_needed`, which plans a new operation that adopts a PR a lost launch created. In `development.waiting_ci` the same rows run the CI bootstrap of a PR created at the recorded head with no CI evidence, and `resume_ci` follows the exhaustion of its launches. A loaded record that waits for CI on a head without a PR runs `dev_pr_create` here too (its invariant is healed by these rows, `record_pr_mismatch` being the fallback).
+CI is awaited only on a development PR: `development.waiting_ci` requires it. A published head without one gets it through a trusted operation, planned and launched by the controller within `operation_launch` (counted on the operation) in the state the head is in: in `development.agent_running` once the push of the worker is confirmed, where the Result of the publication is folded (`record_publish_success`) only once the PR is recorded, and in `development.fix_needed` for a head on the branch that no PR shows, where the verified receipt enters the CI wait. A verified receipt with the exact readback takes `confirm_development_pr`. Launches spent without one close the operation as failed and wait for a human (`development_pr_not_opened`); `resume_development` returns to `development.fix_needed`, which plans a new operation that adopts a PR a lost launch created. In `development.waiting_ci` the same rows run the CI bootstrap of a PR created at the recorded head with no CI evidence, and `resume_ci` follows the exhaustion of its launches. A loaded record that waits for CI on a head without a PR runs `dev_pr_create` here too (its invariant is healed by these rows, `record_pr_mismatch` being the fallback).
 
-### Failure case 3: the review of a held patch fails, or its Work fails
+### Failure case 3: the review loop leaves a P0 finding open
 
 ```mermaid
 flowchart TB
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
-        development_review_pending["development.review_pending"]
-        development_reviewing["development.reviewing"]
-        development_publishing["development.publishing"]
-        development_waiting_human["development.waiting_human"]
         development_waiting_ci["development.waiting_ci"]
     end
 
-    start_1(( )) --> development_agent_running
-    development_agent_running -->|hold_patch_for_review| development_review_pending
-    development_review_pending -->|request_patch_review| development_reviewing
-    development_review_pending -->|expire_held_patch| development_fix_needed
-    development_review_pending -->|exhaust_work_total| development_waiting_human
-    development_reviewing -->|retry_dispatch| development_reviewing
-    development_reviewing -->|allocate_work_retry| development_reviewing
-    development_reviewing -->|reallocate_after_pipeline_failure| development_reviewing
-    development_reviewing -->|exhaust_recovery| development_waiting_human
-    development_reviewing -->|reject_patch_review| development_fix_needed
-    development_reviewing -->|publish_after_failed_reviews| development_publishing
-    development_reviewing -->|accept_patch_review| development_publishing
-    development_publishing -->|record_publish_success| development_waiting_ci
-    development_publishing -->|expire_held_patch| development_fix_needed
+    start_1(( )) --> development_fix_needed
+    development_fix_needed -->|request_patch| development_agent_running
+    development_agent_running -->|reject_patch_proposal| development_fix_needed
+    development_agent_running -->|record_publish_success| development_waiting_ci
     development_fix_needed -->|request_repair| development_agent_running
-    development_waiting_human -->|resume_patch_review<br/>/upstreaming resume| development_review_pending
 ```
 
-A review fails on a blocker or a major finding, whatever it declares. `reject_patch_review` discards the held patch and makes the review pending feedback of the next development Work, which amends the patch it is given (`context.previous_patch`), and charges `dev_reviews` (1: one failed review in succession). Once `dev_reviews` is exhausted, the next failed review, the second in succession, takes `publish_after_failed_reviews`: the held patch is published anyway, and trusted code posts on the development PR the latest review and why it failed. A passing review, a published patch, and a patch to be published anyway that a stop, a resume, or a rejected publication discards start `dev_reviews` again. Every review, passed or failed, is stored as evidence that the history of every later Work and review carries; nothing about a review is posted on the tracking issue. A review Work that fails to dispatch or returns no usable Result is recovered like any Work; its exhaustion waits for a human and keeps the held patch, and the resume asks for the review of the same patch again (`resume_patch_review`). A held patch whose artifact expires is never reviewed or published.
+The worker reviews its patch with fresh reviewers in at most 3 rounds and records every finding in its report. A P0 finding still open when the loop ends (the third round, or the deadline of the run) is a rejected proposal: trusted code pushes nothing and `reject_patch_proposal` returns to `development.fix_needed`, charging `no_progress`. Only a later round of fresh reviewers can close a P0 finding; the worker never closes one itself. A published patch starts `no_progress` again.
 
 ### Failure case 4: internal PR CI or review failure
 
@@ -436,9 +401,6 @@ flowchart TB
         development_waiting_ci["development.waiting_ci"]
         development_fix_needed["development.fix_needed"]
         development_agent_running["development.agent_running"]
-        development_review_pending["development.review_pending"]
-        development_reviewing["development.reviewing"]
-        development_publishing["development.publishing"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -451,10 +413,7 @@ flowchart TB
     development_fix_needed -->|record_actionable_review| development_fix_needed
     development_waiting_ci -->|record_explanation| development_waiting_ci
     development_fix_needed -->|request_repair| development_agent_running
-    development_agent_running -->|hold_patch_for_review| development_review_pending
-    development_review_pending -->|request_patch_review| development_reviewing
-    development_reviewing -->|accept_patch_review| development_publishing
-    development_publishing -->|record_publish_success| development_waiting_ci
+    development_agent_running -->|record_publish_success| development_waiting_ci
     development_agent_running -->|request_ci_rerun| development_waiting_ci
     development_waiting_ci -->|nominate_for_handoff| handoff_awaiting_submission
     development_waiting_ci -->|rerun_interrupted_ci| development_waiting_ci
@@ -645,7 +604,6 @@ flowchart TB
     end
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
-        development_review_pending["development.review_pending"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -668,8 +626,6 @@ flowchart TB
     provisioning_waiting_human -->|resume_provisioning<br/>/upstreaming resume| provisioning_idle
     development_fix_needed -->|require_base_branch| development_waiting_human
     development_fix_needed -->|exhaust_source_reads| development_waiting_human
-    development_review_pending -->|require_base_branch| development_waiting_human
-    development_review_pending -->|exhaust_source_reads| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     handoff_review_due -->|require_base_branch| handoff_waiting_human
     handoff_review_due -->|exhaust_source_reads| handoff_waiting_human
@@ -705,7 +661,6 @@ flowchart TB
     end
     subgraph development["development"]
         development_fix_needed["development.fix_needed"]
-        development_review_pending["development.review_pending"]
         development_waiting_human["development.waiting_human"]
     end
     subgraph handoff["handoff"]
@@ -732,8 +687,6 @@ flowchart TB
     provisioning_waiting_human -->|require_base_branch| provisioning_waiting_human
     development_fix_needed -->|require_upstream_access| development_waiting_human
     development_fix_needed -->|require_renamed_upstream| development_waiting_human
-    development_review_pending -->|require_upstream_access| development_waiting_human
-    development_review_pending -->|require_renamed_upstream| development_waiting_human
     development_waiting_human -->|resume_development<br/>/upstreaming resume| development_fix_needed
     development_waiting_human -->|resume_upstream_read| development_fix_needed
     development_waiting_human -->|require_base_branch| development_waiting_human
@@ -1109,7 +1062,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, development.review_pending, handoff.review_due, handoff.review_pending, and upstream_review.fix_needed"]
+    any["every state in which the controller needs the upstream base branch: queued.idle, planning.idle, provisioning.idle, development.fix_needed, handoff.review_due, handoff.review_pending, and upstream_review.fix_needed"]
 
     any -->|record_source_unavailable| any
 ```
@@ -1170,7 +1123,6 @@ Every `/upstreaming` command that the tables accept, with the transitions it tri
 | `/upstreaming resume` | `resume_ci` | `development.waiting_human` | `development.waiting_ci` |
 | `/upstreaming resume` | `resume_ci` | `handoff.waiting_human` | `handoff.waiting_ci` |
 | `/upstreaming resume` | `resume_development` | `development.waiting_human` | `development.fix_needed` |
-| `/upstreaming resume` | `resume_patch_review` | `development.waiting_human` | `development.review_pending` |
 | `/upstreaming resume` | `resume_pause` | every non-terminal state | same state |
 | `/upstreaming resume` | `resume_planning` | `planning.waiting_human` | `planning.idle` |
 | `/upstreaming resume` | `resume_provisioning` | `provisioning.waiting_human` | `provisioning.idle` |

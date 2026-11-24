@@ -51,8 +51,6 @@
     "requested_at": "2026-11-23T17:49:25.917601+00:00"
   },
   "pending_publication": null,
-  "held_patch": null,
-  "review_comments": [],
   "phase": "planning",
   "plan_evidence_id": null,
   "prerequisite_ids": [],

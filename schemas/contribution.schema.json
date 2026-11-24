@@ -53,8 +53,6 @@
     "proposal_artifact",
     "publication_operation_id",
     "pending_publication",
-    "held_patch",
-    "review_comments",
     "processed_publications",
     "processed_review_ids",
     "processed_review_comment_ids",
@@ -153,13 +151,12 @@
         "idle",
         "agent_running",
         "waiting_human",
-        "review_pending",
-        "reviewing",
-        "publishing",
         "waiting_ci",
         "fix_needed",
         "awaiting_submission",
         "review_due",
+        "review_pending",
+        "reviewing",
         "building_upstream_branch",
         "preparing_submission",
         "waiting_upstream_pr"
@@ -922,10 +919,6 @@
           "type": "integer",
           "minimum": 0
         },
-        "review_rejections": {
-          "type": "integer",
-          "minimum": 0
-        },
         "source_unavailable": {
           "type": "integer",
           "minimum": 0
@@ -1018,7 +1011,6 @@
                 "planning_attempts",
                 "repair_attempts_cluster",
                 "no_progress",
-                "dev_reviews",
                 "flaky_reruns",
                 "interrupted_reruns",
                 "dispatch_recovery",
@@ -1173,233 +1165,10 @@
                 "type": "string",
                 "maxLength": 200
               }
-            },
-            "patch_review": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "evidence_id",
-                "verdict",
-                "published_anyway"
-              ],
-              "properties": {
-                "evidence_id": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
-                },
-                "verdict": {
-                  "enum": [
-                    "pass",
-                    "fail"
-                  ]
-                },
-                "published_anyway": {
-                  "type": "boolean"
-                }
-              }
             }
           }
         }
       ]
-    },
-    "held_patch": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "worker_run_id",
-            "artifact_run_id",
-            "artifact_id",
-            "work",
-            "generation",
-            "revision",
-            "patch_digest",
-            "candidate",
-            "tree",
-            "expected_head",
-            "operation",
-            "changed_files",
-            "reason_ids",
-            "feedback_evidence_ids",
-            "report_evidence_id",
-            "held_at",
-            "expires_at"
-          ],
-          "properties": {
-            "worker_run_id": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,19}$"
-            },
-            "artifact_run_id": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]{0,19}$"
-            },
-            "artifact_id": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "work": {
-              "type": "string",
-              "maxLength": 300
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "revision": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "patch_digest": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "candidate": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "tree": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "expected_head": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "operation": {
-              "enum": [
-                "append",
-                "rewrite"
-              ]
-            },
-            "changed_files": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "type": "string",
-                "maxLength": 300
-              }
-            },
-            "reason_ids": {
-              "type": "array",
-              "maxItems": 16,
-              "items": {
-                "type": "string",
-                "maxLength": 200
-              }
-            },
-            "feedback_evidence_ids": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "type": "string",
-                "maxLength": 200
-              }
-            },
-            "report_evidence_id": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
-                }
-              ]
-            },
-            "held_at": {
-              "type": "string",
-              "format": "date-time"
-            },
-            "expires_at": {
-              "type": "string",
-              "format": "date-time"
-            }
-          }
-        }
-      ]
-    },
-    "review_comments": {
-      "type": "array",
-      "maxItems": 32,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "evidence_id",
-          "head",
-          "repository",
-          "pr_number",
-          "attempts",
-          "next_attempt_at",
-          "launched_at",
-          "last_reason",
-          "exhausted"
-        ],
-        "properties": {
-          "evidence_id": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
-          },
-          "head": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{40}$"
-          },
-          "repository": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string",
-                "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
-              }
-            ]
-          },
-          "pr_number": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "integer",
-                "minimum": 1
-              }
-            ]
-          },
-          "attempts": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 999
-          },
-          "next_attempt_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "launched_at": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string",
-                "format": "date-time"
-              }
-            ]
-          },
-          "last_reason": {
-            "type": "string",
-            "maxLength": 2000
-          },
-          "exhausted": {
-            "type": "boolean"
-          }
-        }
-      }
     },
     "processed_publications": {
       "type": "array",

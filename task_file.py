@@ -6,8 +6,8 @@ The work queue carries a fixed-size reference to the task of a Work
 (``task_file``: the control repository, the pinned commit, the path, the
 SHA-256 and the evidence id), and the controller commits the task itself as
 the ``task`` evidence file the reference names (``work_task``). Every reader
-of a claimed Work (the trusted pre-agent steps of the worker, the planner and
-the reviewer, the trusted jobs after them, the queue result resolver and
+of a claimed Work (the trusted pre-agent steps of the worker and the planner,
+the trusted jobs after them, the queue result resolver and
 the controller) resolves the claim's Work with ``resolve``, and then sees the
 payload shape the Work always had: the task, with ``resource_scope`` and
 ``effect_contract`` from the queue and ``ref`` (and the plan ``url``) filled in

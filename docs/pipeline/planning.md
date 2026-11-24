@@ -51,7 +51,7 @@ A Python project is also audited against public PyPI and the RISE index. That a 
 1. The controller selects a queued contribution and commits an immutable `active_work` request.
 2. It launches `dispatcher.lock.yml`.
 3. Trusted dispatcher preparation replays that exact request into the native queue. The model never selects or mutates Work.
-4. Each dispatcher run admits at most one Claim, for the planner, the worker, or the reviewer profile (`dispatch-workflow` with `max: 1`). Planning dispatches the planner profile through gh-aw native Work.
+4. Each dispatcher run admits at most one Claim, for the planner or the worker profile (`dispatch-workflow` with `max: 1`). Planning dispatches the planner profile through gh-aw native Work.
 
 A requested task that cannot be replayed is reported and skipped, so it never blocks the dispatch of another contribution. That happens when its upstream identity or base is not bound, or when it has no frozen tracking-issue description.
 
@@ -59,7 +59,7 @@ A requested task that cannot be replayed is reported and skipped, so it never bl
 
 Before it stages any Work, the dispatcher compares the compiled queue policy of its lock with the Policy installed in the ledger. When the compiled policy drops an installed worker profile, which gh-aw refuses on every dispatch, and the queue is quiescent, the dispatcher publishes the compiled policy as a new Policy epoch through an administrator `policy` request authenticated as its own run.
 
-The `reviewer` profile is added to the compiled policy, which gh-aw installs on demand without a Policy reinstall. A rollback that drops it is reinstalled by the dispatcher on a quiescent queue.
+The compiled policy has the `planner` and `worker` profiles only. A queue installed when it also had a `reviewer` profile drops that profile, and the dispatcher reinstalls the compiled policy on a quiescent queue.
 
 ## What the planner reads
 

@@ -52,21 +52,6 @@
       "agentic": false
     },
     {
-      "file": "review-comment.yml",
-      "owner": "review comment on the development PR",
-      "agentic": false
-    },
-    {
-      "file": "reviewer.lock.yml",
-      "owner": "generated reviewer lock",
-      "agentic": false
-    },
-    {
-      "file": "reviewer.md",
-      "owner": "review of a held development patch",
-      "agentic": true
-    },
-    {
       "file": "validate.yml",
       "owner": "repository validation",
       "agentic": false
@@ -83,7 +68,7 @@
     },
     {
       "file": "worker.md",
-      "owner": "bounded patch proposal",
+      "owner": "bounded patch proposal and its review loop",
       "agentic": true
     }
   ]

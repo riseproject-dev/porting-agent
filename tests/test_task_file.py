@@ -259,12 +259,11 @@ class TestBounds(unittest.TestCase):
         longest contribution id and Work id, the longest repository id, and
         the largest effect contract."""
         longest = "a" * 128
-        request = {"task": "development_review", "contribution_id": longest, "generation": 10**9,
+        request = {"task": "development_patch", "contribution_id": longest, "generation": 10**9,
                    "revision": 10**9, "dedupe_key": "x" * 300}
         reference = task_file.reference(request["dedupe_key"], COMMIT, "f" * 64)
         sizes = []
-        for task in ("planning", *sorted(work.WRITE_TASKS), *work.SUBMISSION_TASKS,
-                     work.DEVELOPMENT_REVIEW):
+        for task in ("planning", *sorted(work.WRITE_TASKS), *work.SUBMISSION_TASKS):
             payload = work.queue_payload(dict(request, task=task),
                                          control_repo_id="9" * work.CONTROL_REPO_ID_MAX_DIGITS,
                                          reference=reference)

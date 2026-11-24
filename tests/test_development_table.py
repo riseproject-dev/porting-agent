@@ -458,7 +458,7 @@ class TestPatchResults(unittest.TestCase):
                 self.assertEqual([e["kind"] for e in events], [verb])
                 self.assertIsNone(new["pending_publication"])
         # Taken through the engine alone, the row clears it.
-        for verb, facts in (("record_publish_success", {"result_published", "no_review_contract"}),
+        for verb, facts in (("record_publish_success", {"result_published"}),
                             ("replan_development", {"proposal_stale"})):
             with self.subTest(row=verb):
                 out = take(
@@ -527,9 +527,8 @@ class TestUncertainPublication(unittest.TestCase):
     """In development a Result whose push was not read back (`uncertain`) is
     a failed publication: it is held in `development.agent_running`
     (`schedule_publish_retry`) and `record_publish_success` is taken once
-    the publication is confirmed. (Work dispatched before patches were
-    reviewed published its patches on the recorded development PR: a first
-    publication has its PR opened from `development.publishing`.)"""
+    the publication is confirmed. (A first publication has its PR opened from
+    `development.agent_running`.)"""
 
     def setUp(self):
         self.rec = running()
