@@ -1,0 +1,40 @@
+{
+  "at": "2026-11-24T20:12:26.955488+00:00",
+  "cause": {
+    "id": "pipeline:6eaab0390b22",
+    "type": "tick"
+  },
+  "contribution_id": "luhenry--d2vm/3",
+  "details": {
+    "automatic": true,
+    "cause": "pipeline_changed",
+    "credited": [
+      "work_total"
+    ],
+    "failed_at_version": null,
+    "from_state": "development.waiting_human",
+    "pipeline_version": "6eaab0390b221437b66efc74c5f29bb0f6aedac96408b66513ad40909625667d",
+    "restarted": {
+      "count": null,
+      "counter": "dispatch_recovery"
+    },
+    "to_state": "development.fix_needed",
+    "verb": "rearm_dispatch"
+  },
+  "from": {
+    "activity": "waiting_human",
+    "revision": 10
+  },
+  "kind": "rearm_dispatch",
+  "revision_bumped": true,
+  "run": {
+    "attempt": 1,
+    "id": 45478190328
+  },
+  "schema_version": 1,
+  "sequence": 42,
+  "to": {
+    "activity": "fix_needed",
+    "revision": 11
+  }
+}
