@@ -64,7 +64,6 @@
   "held_patch": null,
   "last_ci_evidence_id": "ci-1469259163-45391735151-1",
   "merge": null,
-  "next_poll_at": null,
   "owners": {
     "backup": null,
     "handoff_reviewer": null,
@@ -155,7 +154,7 @@
     "number": 3,
     "url": "https://github.com/riseproject-dev/porting-agent/issues/3"
   },
-  "updated_at": "2026-11-24T12:46:16.080097+00:00",
+  "updated_at": "2026-11-24T14:16:58.378042+00:00",
   "upstream": {
     "base_ref": "main",
     "base_sha": "7184ff1d93728355fd8c12d75e11ac4b1ef2c6f0",
